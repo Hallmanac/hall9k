@@ -65,7 +65,7 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
         foreach ((ProjectDetails project, TaskRollup rollup) in listed)
         {
             string name = project.IsArchived
-                ? $"{project.Name.EscapeMarkup()} [yellow](archived {project.ArchivedAt:yyyy-MM-dd})[/]"
+                ? $"{project.Name.EscapeMarkup()} [yellow](archived {project.ArchivedAt?.ToLocalTime():yyyy-MM-dd})[/]"
                 : project.Name.EscapeMarkup();
             table.AddRow([name, .. rollup.Cells]);
         }
@@ -85,11 +85,11 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
             $"[dim]Settings and recent tasks:[/] h9k project show {first} [dim]· "
             + $"browse its tasks:[/] h9k task list --project {first} --include-archived");
 
-        // rows covers every task on this install, but the table above only ever shows projects
-        // is filtered to (review comment, PR #336): without --include-archived, an archived
-        // project's own needs-you or stalled task must not trigger this footer — the table just
-        // told the operator that project is hidden, and h9k status would show the identical row
-        // with nothing to act on until it is reactivated.
+        // rows covers every task on this install, but the table above only ever shows whatever
+        // projects is filtered to: without --include-archived, an archived project's own
+        // needs-you or stalled task must not trigger this footer — the table just told the
+        // operator that project is hidden, and h9k status would show the identical row with
+        // nothing to act on until it is reactivated.
         HashSet<Guid> listedProjectIds = [.. projects.Select(project => project.Id)];
         if (rows.Any(row => listedProjectIds.Contains(row.ProjectId)
             && row.Group is AttentionBucket.NeedsYou or AttentionBucket.Stalled))
