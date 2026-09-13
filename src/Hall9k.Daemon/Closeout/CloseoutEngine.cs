@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -1833,6 +1834,13 @@ public sealed class CloseoutEngine(
                 session.Events.Append(
                     task.Id, expectedVersion: taskFence.Version + 1,
                     TaskDecider.Complete(task, run.Id, task.PullRequestUrl, now));
+
+                // A Claimed task completed here still holds the live lease dispatch wrote for it
+                // (RunLauncher.cs and PullRequestOpener.cs both delete it in the same transaction
+                // as their own TaskDecider.Complete, for the identical reason): left on file, this
+                // node's own LeaseHeartbeatService keeps refreshing it unconditionally, so it never
+                // ages past DispatchEngine's own expiry filter and never gets tidied up on its own.
+                session.Delete<TaskLease>(task.Id);
             }
         }
 
