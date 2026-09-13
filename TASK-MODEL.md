@@ -576,7 +576,7 @@ which is also where the ranking model's facts will land when it retires those tw
 queued row names its own rank — a follow-up lap past its first pull request, a retry or hand-back
 before any pull request, or a plain first claim — wherever that row's own facts are said: inside
 the derived-facts line for a plain `Published` row, or on the phase line for a `Delivered` follow-up,
-since the derived-facts line composes only for `Published` (Decisions Log #187), and
+since the derived-facts line composes only for `Published` (Decisions Log #188), and
 names a dispatch slot only where `DispatchPressure`
 carries a current measurement saying this node is full (Decisions Log #64); with no slot
 measurement, it says it is ready and stops, because a queue that is not moving has many causes and

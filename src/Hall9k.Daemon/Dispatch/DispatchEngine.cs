@@ -562,7 +562,7 @@ public sealed class DispatchEngine(
     /// placeholder against the wrong argument (the lesson
     /// <see cref="ReportProjectCapDeferrals"/>'s own two templates carry). <see cref="ReportRankDecision"/>
     /// is exactly this discipline applied to the rank decision (Decisions Log
-    /// #187): its own call, logged only when rank actually decided the slot against
+    /// #188): its own call, logged only when rank actually decided the slot against
     /// another eligible task in the same project, rather than a clause folded into the sentences
     /// below — which would print against every claim whether or not a rank decision was ever made.
     /// </para>
@@ -614,7 +614,7 @@ public sealed class DispatchEngine(
     }
 
     /// <summary>
-    /// The rank decision's own sentence (Decisions Log #187), beside the project
+    /// The rank decision's own sentence (Decisions Log #188), beside the project
     /// sentence above rather than folded into it: a follow-up lap on a task past its first pull
     /// request outranks a retry or hand-back before any pull request, which outranks a first
     /// claim, and the queue's own age order only breaks a tie inside one rank. Logged only when
@@ -648,7 +648,7 @@ public sealed class DispatchEngine(
     /// This order is the queue's own, and it stays what decides <em>within</em> one project and
     /// what breaks a tie between two equally unserved ones (Decisions Log #141). Across projects
     /// under contention it is <see cref="ProjectRotation"/> that picks, so this list is the set
-    /// and the tie-break rather than the running order. Since Decisions Log #187,
+    /// and the tie-break rather than the running order. Since Decisions Log #188,
     /// it is also merely the tie-break <em>within a rank</em>: <see cref="ProjectRotation.NextSlot"/>
     /// decides which of a winning project's own tasks actually takes the slot by
     /// <see cref="Hall9k.Domain.Features.Tasks.TaskRank"/> first, falling back to this same
@@ -683,7 +683,7 @@ public sealed class DispatchEngine(
         // Six fields, never the documents: nothing below reads any other projection field.
         // TryClaimAsync decides from the task's own stream, a deferral is logged by id and by the
         // project whose cap held it, and the rotation needs the project, the marker, and — since
-        // Decisions Log #187 — the three fields TaskListItem.Rank resolves from,
+        // Decisions Log #188 — the three fields TaskListItem.Rank resolves from,
         // so every other document body fetched here would be deserialized and dropped. It is
         // worth saying because of what follows — the whole queue
         // is read rather than just the claimable head, so that every task either ceiling defers
@@ -712,7 +712,7 @@ public sealed class DispatchEngine(
                 row.QueuePriorityMarked ?? false,
                 // The same resolver TaskListItem.Rank calls, applied to the three raw fields this
                 // row selected rather than to a materialized document (Decisions Log
-                // #187) — the projection widened for exactly this, never for a
+                // #188) — the projection widened for exactly this, never for a
                 // display duty the daemon has no use for. RetryPending reads absent (pre-marker
                 // document) as false, same as QueuePriorityMarked below — the backfill's own
                 // marker is what closes that window rather than this read.
@@ -751,7 +751,7 @@ public sealed class DispatchEngine(
     /// too, and a task genuinely mid-retry on a document old enough to lack the key must be
     /// rebuilt before it reads as a plain first claim, not merely deserialize-fail the sweep.
     /// <para>
-    /// <see cref="FollowUpBranch"/> and <see cref="PullRequestUrl"/> (Decisions Log #187) are
+    /// <see cref="FollowUpBranch"/> and <see cref="PullRequestUrl"/> (Decisions Log #188) are
     /// plain nullable strings, so the same hazard does not apply to them — a missing key
     /// deserializes as null either way, which is exactly why the backfill's own
     /// <c>StaleListOnlyDocument</c> gained a marker for the first: a task genuinely

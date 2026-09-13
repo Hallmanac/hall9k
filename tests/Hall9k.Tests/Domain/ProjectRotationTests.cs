@@ -219,7 +219,7 @@ public sealed class ProjectRotationTests
     [Fact]
     public void A_first_claim_assigned_earlier_does_not_take_the_slot_ahead_of_a_follow_up_lap_reopened_a_minute_ago()
     {
-        // Decisions Log #187: a task one lap from merging is never held behind
+        // Decisions Log #188: a task one lap from merging is never held behind
         // brand-new work at the ceiling. The first claim is first in queue order — assigned an
         // hour earlier — and the follow-up lap sits behind it, reopened a minute ago; rank still
         // decides ahead of that age difference.

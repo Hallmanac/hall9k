@@ -125,7 +125,7 @@ internal static class PublishedFacts
             // ceiling does, so it is the more specific answer to "why is this not moving" and the
             // browse surfaces show only the first line (TaskStatusRow.SummaryMarkup).
             // The rank rides inside this same sentence rather than as a separate fact (Decisions
-            // Log #187): it is why a row waits behind another one of the same
+            // Log #188): it is why a row waits behind another one of the same
             // project, so it belongs beside the phrase that already says the row is waiting, not
             // beside the held/tracker reasons that follow, which are a different question — why
             // the dispatcher has not claimed anything of this project's at all.
