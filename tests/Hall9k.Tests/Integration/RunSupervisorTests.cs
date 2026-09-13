@@ -1034,6 +1034,60 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The sibling race, through the sawAnyResult branch instead of the no-result one (task: a
+    /// run can be killed without killing its task; independent pre-PR review, cycle 2,
+    /// adversarial lens): a session that DID write a terminal result line before h9k run kill
+    /// ended its process still has that result read once the process actually exits —
+    /// <c>CompleteRunAsync</c>'s own already-terminal guard, checked against the run AGGREGATE
+    /// rather than the RunDetails projection (so nothing here needs to race a later event's own
+    /// projection Apply the way the review-loop guards do), must find the run already Killed and
+    /// record only this session's real spend, never a completion over the human's own kill.
+    /// </summary>
+    [Fact]
+    public async Task A_run_killed_after_its_terminal_result_lands_still_records_its_tokens_but_never_a_completion()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        // Writes its result, then keeps running for 2s before exiting on its own — long enough
+        // for this test to land RunKilled well before the process actually dies and
+        // CompleteRunAsync reads the run fresh.
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Emit(ResultLine).Pause(2));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        // h9k run kill lands here, right after the result line is on disk but well before the
+        // scripted process's own 2s pause elapses — mirroring FailRunAsync's sibling test above,
+        // just through the branch that already has a real result to read.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunKilled(runId, KillReason.HumanRequested, node.OwnerId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Long enough for the process to actually exit and CompleteRunAsync to have run if the
+        // guard were missing.
+        await Task.Delay(TimeSpan.FromSeconds(5), cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.Killed,
+            "a human's own kill record must never be overwritten by a completion arriving after it");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<TokensRecorded>().Should().ContainSingle(
+            "the session still spent real tokens even though its own completion lost the race to the kill — "
+            + "nothing else ever reads this dead session's stream.jsonl back once the run has retired");
+        events.OfType<AgentSessionCompleted>().Should().BeEmpty("a run already recorded as killed must never also record a completion");
+        events.OfType<VerificationPassed>().Should().BeEmpty("a run already recorded as killed must never also record a completion");
+    }
+
+    /// <summary>
     /// Catch-up's defect (backlog 39, origin incident 2026-08-21): every adopted case except
     /// ReviewParked used to skip the lease refresh, so the expiry sweep that runs one line
     /// later in startup order requeued the very task adoption had just reattached — two
