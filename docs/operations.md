@@ -598,6 +598,21 @@ h9k owner set --rerequest-review on
 `h9k project show <name>` prints every setting a project runs by, alongside how it is registered.
 Ask `h9k project set --help` for the current list and what each value means.
 
+### One setting that lives on the repository, not in Hall9k
+
+**If you stack tasks (`h9k task add --stacked-on`), turn on automatic head-branch deletion in the
+repository: Settings, Pull Requests, "Automatically delete head branches".** GitHub retargets the
+open pull requests stacked on a merged branch onto the base branch only when GitHub itself deletes
+that branch. A raw ref deletion — `git push origin --delete`, which is what closeout used to do
+unconditionally — closes those children instead, with nothing on their timeline but
+`base_ref_deleted`. That is how PR #338 was closed six hours after its parent merged, 2026-09-13.
+
+Closeout now reads the setting (`gh api repos/{owner}/{repo} --jq .delete_branch_on_merge`) before
+it deletes anything and skips the remote deletion where GitHub owns it, saying so in the log. Where
+the setting is off — or could not be read, which includes any project whose remote is not GitHub —
+branch cleanup behaves exactly as it always has, so nothing here is required of a repository with
+no stacked work in it (Decisions Log #PLACEHOLDER-c9a3a6c8).
+
 ### A project's own run ceiling
 
 `--max-parallel-tasks <N|default>` caps how many of one project's **task runs** may be live at

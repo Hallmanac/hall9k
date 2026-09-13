@@ -286,7 +286,12 @@ What the edge changes, and nothing else does:
   going to be dispatched: if the child is out of budget or otherwise owed a park, it parks with the
   stack left intact rather than aimed at the base with the replay undone. The
   replay runs the gates and triggers **no review cycle** — nothing new entered the branch, so there
-  is nothing for a reviewer to have an opinion about.
+  is nothing for a reviewer to have an opinion about. Where the repository deletes head branches on
+  merge, GitHub has usually moved the base already — it retargets every open child itself when it
+  deletes the parent's branch — and the sweep records what it found rather than claiming a move it
+  did not make; `h9k task show` reads that account back. Closeout leaves the parent's deletion on
+  origin to GitHub for exactly this reason, because a raw ref deletion closes the children instead
+  of retargeting them ([docs/operations.md](operations.md#one-setting-that-lives-on-the-repository-not-in-hall9k)).
 - **A parent branch that moves without merging dispatches the same replay** onto its new head,
   bounded by the child's own rebase budget (`MaxStackReplayRuns`). Past that cap the child parks
   for a human, which is the honest signal that the two branches are not converging. Ordinarily that
