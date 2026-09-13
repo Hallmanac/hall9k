@@ -47,9 +47,10 @@ public sealed class IdeaAddCommand : Hall9kAsyncCommand<IdeaAddCommand.Settings>
             : null;
         if (project?.PurgeAt is { } purgeDeadline)
         {
-            // Same reasoning as h9k task add's own refusal: an idea assigned to a project after
-            // scheduling and before the sweep fires would be an orphan the ownership snapshot
-            // never counted (Copilot review, PR #338).
+            // Same reasoning as h9k task add's own refusal: the sweep re-queries ownership at
+            // fire time, so an idea assigned to a project after scheduling is destroyed along
+            // with everything else rather than orphaned — refused here so new work does not
+            // accrue on a project already scheduled for destruction.
             throw new DomainValidationException(
                 $"Project '{project.Name}' is scheduled for permanent deletion at "
                 + $"{purgeDeadline.ToLocalTime():g}, so it cannot take a new idea. Cancel the purge "

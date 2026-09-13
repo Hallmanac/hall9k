@@ -271,10 +271,13 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         ProjectDetails projectDetails = await ProjectResolver.ResolveAsync(session, project, cancellationToken);
         if (projectDetails.PurgeAt is { } purgeDeadline)
         {
-            // A purge destroys every task stream it finds under the project at the moment the
-            // sweep fires; a task created after scheduling and before then would be an orphan
-            // the ownership snapshot never counted (Copilot review, PR #338) — refused here
-            // rather than left to race the sweep.
+            // The sweep re-queries ownership at fire time (ProjectPurgeEngine.PurgeOneAsync), so
+            // there is no ownership snapshot taken at scheduling for a later task to slip past —
+            // a task created after scheduling and before the deadline is destroyed along with
+            // everything else, not orphaned. This refuses new work on a project already scheduled
+            // for destruction, so nobody starts something with no warning it will not survive the
+            // day (independent pre-PR review, cycle 1, conformance lens, low: an earlier version
+            // of this comment described the sweep as missing such a task rather than destroying it).
             throw new DomainValidationException(
                 $"Project '{projectDetails.Name}' is scheduled for permanent deletion at "
                 + $"{purgeDeadline.ToLocalTime():g}, so it cannot take a new task. Cancel the purge "
