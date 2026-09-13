@@ -545,6 +545,23 @@ public sealed class RunLauncher(
             // assembly take" down to the gap between this read and the spawn call, and a
             // rejection here retires the run stream StartStream already opened above rather than
             // spawning into a task nobody is coming back to.
+            //
+            // The same window is exactly where h9k run kill (task: a run can be killed without
+            // killing its task) can end this run's own context-synthesis session, and TaskFailed
+            // never clears CurrentRunId either, so the identity fence below alone still says yes
+            // to a run already recorded Killed. Checked as its own branch first, rather than
+            // folded into the rejection below (which retires the run with RunSuperseded): a run
+            // already carrying a terminal record must never have a second terminal event
+            // appended over it (independent pre-PR review, cycle 1, conformance lens).
+            RunDetails? currentRun = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+            if (currentRun is { State.IsTerminal: true })
+            {
+                logger.LogInformation(
+                    "Run {RunId}: already {State} by the time its pre-spawn fence was checked - not spawning",
+                    runId, currentRun.State.Value);
+                return;
+            }
+
             if (!await GenerationFence.AllowsAsync(
                 session, logger, taskId, runId, leaseGeneration, "to spawn", cancellationToken,
                 refuseAbandonedTask: true))

@@ -6129,6 +6129,24 @@ public sealed class ReviewEngine(
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
+
+        // Reloaded here, immediately before appending anything (mirrors RunSupervisor's own
+        // guard, task: a run can be killed without killing its task): h9k run kill can end a
+        // review pass's, a fix session's, a rebase-recovery session's, or a settling-repair
+        // session's process directly, from outside this loop, which leaves behind exactly the
+        // "died without a result" or "reported an error" shape every branch above already
+        // funnels into this method. Without this check, this method would win that race and
+        // silently overwrite the run's own Killed record with Failed (independent pre-PR
+        // review, cycle 1, both lenses).
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is { State.IsTerminal: true })
+        {
+            logger.LogInformation(
+                "Run {RunId}: already {State} by the time the review loop's own failure was about to be recorded - not recording a failure over it",
+                runId, run.State.Value);
+            return;
+        }
+
         session.Events.Append(runId, new RunFailed(runId, reason, now));
 
         // LoadFencedAsync's read must happen before the AllowsAsync identity check below —
@@ -6136,7 +6154,6 @@ public sealed class ReviewEngine(
         // read rather than baked into `current.Task` as an already-stale ownership fact
         // that AllowsAsync never gets asked about (adversarial review, cycle 2).
         (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
-        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         if (fenced is { } current
             && TaskDecider.CanFail(current.Task)
             && (run is null || await GenerationFence.AllowsAsync(
@@ -6188,6 +6205,23 @@ public sealed class ReviewEngine(
     {
         await using (IQuerySession query = store.QuerySession())
         {
+            // Read fresh rather than trusting context.Run, which can be an iteration or more
+            // stale: h9k run kill (task: a run can be killed without killing its task) records
+            // RunKilled and TaskFailed together, but TaskFailed never clears CurrentRunId, so
+            // GenerationFence.AllowsAsync's identity check alone still says yes for a run this
+            // loop has no business continuing to drive — the exact gap that let a pass which had
+            // already written its verdict before the kill keep this loop dispatching fresh fix
+            // and review sessions onto a Killed run whose task is Failed (independent pre-PR
+            // review, cycle 1, conformance lens).
+            RunDetails? current = await query.LoadAsync<RunDetails>(context.RunId, cancellationToken);
+            if (current is { State.IsTerminal: true })
+            {
+                logger.LogInformation(
+                    "Run {RunId}: already {State} - not continuing the review loop over it",
+                    context.RunId, current.State.Value);
+                return false;
+            }
+
             if (await GenerationFence.AllowsAsync(
                 query, logger, context.TaskId, context.RunId, context.Run.LeaseGeneration,
                 "to continue the review loop", cancellationToken, refuseAbandonedTask: true))

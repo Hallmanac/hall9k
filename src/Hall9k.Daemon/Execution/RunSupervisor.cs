@@ -793,6 +793,28 @@ public sealed class RunSupervisor(
             run = await earlyQuery.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
         }
 
+        // Mirrors FailRunAsync's own guard (task: a run can be killed without killing its task):
+        // a result line landing on the stream right as h9k run kill ends the process is the same
+        // race, just through the sawAnyResult branch instead of the no-result one — this run's own
+        // terminal record, once one stands, must never be overwritten by a completion arriving
+        // after it.
+        if (run is { State.IsTerminal: true })
+        {
+            logger.LogInformation(
+                "Run {RunId}: already {State} by the time its terminal result was read — not recording a completion over it",
+                runId, run.State.Value);
+
+            // The session still spent real tokens even though its own completion lost the race
+            // to a kill (independent pre-PR review, cycle 2, adversarial lens): recording them
+            // here, on their own, is the only chance this run's own enforced-spend accounting
+            // ever gets at that observed cost — nothing else reads this dead session's
+            // stream.jsonl back once the run has retired.
+            await using IDocumentSession tokenSession = store.LightweightSession();
+            tokenSession.Events.Append(runId, result.ToTokensRecorded(runId, now, run.Model));
+            await tokenSession.SaveChangesAsync(cancellationToken);
+            return null;
+        }
+
         // Budget-exhaustion is checked FIRST and excluded here, even though this classifies on
         // the zero-work SHAPE and never on message text otherwise (the 2026-09-07 outage's own
         // two causes, an expired credential and a GitHub fetch timeout, were already two
@@ -2057,6 +2079,22 @@ public sealed class RunSupervisor(
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
+
+        // A process this monitor is watching die without ever writing a result is exactly the
+        // shape h9k run kill leaves behind (task: a run can be killed without killing its task):
+        // the process is gone before this loop's own DeadProcessGrace expires, landing here right
+        // behind a human's own RunKilled. Reload rather than trust anything cached: this run's
+        // own terminal record, if one already stands, must never be overwritten by a RunFailed
+        // arriving after it and silently rewriting an honest kill into a failure.
+        RunDetails? current = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (current is { State.IsTerminal: true })
+        {
+            logger.LogInformation(
+                "Run {RunId}: already {State} by the time its dead process was confirmed — not recording a failure over it",
+                runId, current.State.Value);
+            return;
+        }
+
         session.Events.Append(runId, new RunFailed(runId, reason, now));
         await AppendFencedTaskFailureAsync(session, runId, taskId, reason, now, cancellationToken);
         try
