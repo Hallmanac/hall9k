@@ -739,7 +739,7 @@ reactivate it in place, or to rename the archive and free the name for the new r
 `--reactivate-archived` and `--rename-archived-to <NAME>` answer that non-interactively, refusing
 with the three choices named when neither is given and there is no terminal to ask. All three
 commands act on this install's own database only — a registration of the same repository on
-another node is unaffected. See [PLAN.md Decisions Log #PLACEHOLDER-7228d4c7](../PLAN.md).
+another node is unaffected. See [PLAN.md Decisions Log #182](../PLAN.md).
 
 ### The project home
 

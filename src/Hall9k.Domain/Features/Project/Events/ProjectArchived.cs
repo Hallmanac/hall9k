@@ -2,7 +2,7 @@ namespace Hall9k.Domain.Features.Project.Events;
 
 /// <summary>
 /// A project archived on this install alone (task: a project can be archived, listed as archived,
-/// reactivated, and renamed — Decisions Log #PLACEHOLDER-7228d4c7). Reversible by
+/// reactivated, and renamed — Decisions Log #182). Reversible by
 /// <see cref="ProjectReactivated"/>: nothing here is deleted, the project's stream, tasks, runs,
 /// ideas, settings, and recorded home are all untouched, and the home directory on disk is never
 /// touched either — only <see cref="Projections.ProjectDetails.IsArchived"/> and
