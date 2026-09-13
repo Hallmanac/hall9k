@@ -212,6 +212,27 @@ public sealed class ProjectCapSurfaceTests
             + "that the rotation note was interpolated with a space of its own rather than joined in");
     }
 
+    [Fact]
+    public void The_queued_heading_carries_the_backlogs_total_wait_when_it_has_waited_at_all()
+    {
+        string heading = StatusCommand.QueuedHeading(
+            atCeiling: true, atProjectCap: false, atSpendBudget: false, spend: null,
+            totalQueueTime: TimeSpan.FromHours(7));
+
+        heading.Should().Contain("waited 7h00m total so far");
+    }
+
+    [Fact]
+    public void The_queued_heading_says_nothing_extra_when_the_backlog_has_waited_zero()
+    {
+        // A queue whose rows all just landed — or whose own wait reads unknown — has nothing this
+        // clause could honestly add to a heading already full of causes.
+        string heading = StatusCommand.QueuedHeading(
+            atCeiling: true, atProjectCap: false, atSpendBudget: false, spend: null);
+
+        heading.Should().NotContain("waited");
+    }
+
     /// <summary>A budget this node is enforcing and has spent — what the queued section gates on.</summary>
     private static SpendPressure Spend() => new(
         SpentTokens: 500_000,
