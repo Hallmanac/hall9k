@@ -139,6 +139,20 @@ public sealed class JiraWriteRetryEngine(
                     continue;
                 }
 
+                // The same skip CloseoutEngine, the render sweep, and auto-pr-review already give
+                // an archived project (task: a project can be archived, listed as archived,
+                // reactivated, and renamed) — without it, a Done task under an archived project
+                // with an auth-failed write keeps retrying it against a real Jira site
+                // (independent pre-PR review, cycle 1, conformance lens). The write stays pending;
+                // reactivating the project resumes the retry on the next sweep.
+                if (project.IsArchived)
+                {
+                    logger.LogDebug(
+                        "Task {TaskId} has a Jira write pending but its project is archived; leaving it "
+                        + "pending until the project is reactivated", task.Id);
+                    continue;
+                }
+
                 // The strict lookup: a pending write retried here can be closeout's own merge
                 // comment (recorded pending rather than queued, when its first attempt reached
                 // Jira but failed to authenticate), so a missing connection is skipped rather than
@@ -225,6 +239,17 @@ public sealed class JiraWriteRetryEngine(
                     logger.LogWarning(
                         "Task {TaskId} has a Jira merge notice queued but its project is not registered on "
                         + "this node; leaving it for a node that has it", task.Id);
+                    continue;
+                }
+
+                // Same archived-project skip as the pending-write loop above: a queued merge
+                // notice under an archived project stays queued rather than draining to a real
+                // Jira write (independent pre-PR review, cycle 1, conformance lens).
+                if (project.IsArchived)
+                {
+                    logger.LogDebug(
+                        "Task {TaskId} has a Jira merge notice queued but its project is archived; leaving "
+                        + "it queued until the project is reactivated", task.Id);
                     continue;
                 }
 

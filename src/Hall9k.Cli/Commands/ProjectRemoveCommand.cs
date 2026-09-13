@@ -36,8 +36,12 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
     /// still-open pull request is admitted here on the strength of <c>CloseoutEngine</c> itself
     /// skipping every archived project's tasks (the same skip the render and auto-pr-review sweeps
     /// already had) rather than this predicate refusing over it — see the archived-project checks
-    /// beside every <c>ProjectDetails</c> load in <c>CloseoutEngine</c> (independent pre-PR review,
-    /// cycle 1, adversarial lens: this predicate's own claim was true only once that skip existed).
+    /// beside every <c>ProjectDetails</c> load in <c>CloseoutEngine</c>. A Draft or Published task
+    /// is admitted the same way, on the strength of <c>CardPublicationEngine</c> and
+    /// <c>JiraWriteRetryEngine</c> giving the same skip to a publication request or a pending Jira
+    /// write, rather than this predicate refusing over either state directly (independent pre-PR
+    /// review, cycle 1, both lenses: this predicate's own claim was true only once every one of
+    /// these skips existed).
     /// </summary>
     internal static bool IsInertUnderArchive(TaskState state) =>
         state == TaskState.Draft || state == TaskState.Published
@@ -109,7 +113,7 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
         // assign or the dispatcher's own claim to land a task in a state this method already
         // refused to archive over. The blocking check is re-run against the database right before
         // the append, not only against the snapshot read before the prompt, so a task that turned
-        // live while the operator was answering still stops the archive (review thread, PR #336).
+        // live while the operator was answering still stops the archive.
         IReadOnlyList<TaskListItem> tasksAtCommit = await session.Query<TaskListItem>()
             .Where(task => task.ProjectId == project.Id)
             .ToListAsync(cancellationToken);
