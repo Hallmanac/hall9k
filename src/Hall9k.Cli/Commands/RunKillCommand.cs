@@ -70,6 +70,16 @@ public sealed class RunKillCommand : Hall9kAsyncCommand<RunKillCommand.Settings>
         RunDetails run = await session.LoadAsync<RunDetails>(runId, cancellationToken)
             ?? throw new DomainNotFoundException($"No run {runId}.");
 
+        // Captured now, before the process tree is actually torn down: killing an entire process
+        // tree and NodeBootstrap.EnsureAsync's own queries below both take real wall-clock time, and
+        // the daemon's own monitors (RunSupervisor, ReviewEngine, PrReviewEngine) poll on a 1-second
+        // cadence and can drive this exact run forward — a completion, a fresh review dispatch — in
+        // that gap. Appending RunKilled below against this version means a daemon write that lands
+        // first is detected as a conflict instead of being silently stacked on top of (adversarial
+        // review, cycle 1).
+        StreamState? runFence = await session.Events.FetchStreamStateAsync(runId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No run {runId}.");
+
         if (run.ActiveSessions.Count == 0)
         {
             throw new DomainConflictException(
@@ -132,7 +142,9 @@ public sealed class RunKillCommand : Hall9kAsyncCommand<RunKillCommand.Settings>
 
         DateTimeOffset killedAt = DateTimeOffset.UtcNow;
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        session.Events.Append(runId, new RunKilled(runId, KillReason.HumanRequested, context.OwnerId, killedAt));
+        session.Events.Append(
+            runId, expectedVersion: runFence.Version + 1,
+            new RunKilled(runId, KillReason.HumanRequested, context.OwnerId, killedAt));
 
         // Only when this run is still the task's own current attempt — a stale run id named
         // explicitly (an earlier retry's own run, say) is killed on its own stream without
@@ -158,8 +170,16 @@ public sealed class RunKillCommand : Hall9kAsyncCommand<RunKillCommand.Settings>
         }
         catch (EventStreamUnexpectedMaxEventIdException)
         {
+            // Either stream can be the one that moved: the daemon can drive the run forward (a
+            // completion, a fresh review dispatch) in the gap this command's own process-tree
+            // kill and NodeBootstrap.EnsureAsync spend before this append, and the task stream
+            // races the same way any other fenced append here does. The process this command
+            // terminated is already dead either way — h9k status says where the run and task
+            // actually landed.
             throw new DomainConflictException(
-                $"Task {taskId} changed while killing run {runId} — check h9k status and try again.");
+                $"Run {runId} or task {taskId} changed while killing run {runId} — the daemon (or another "
+                + "command) got there first, so this kill was not recorded. The process was already "
+                + $"terminated regardless. Check h9k status and try again.");
         }
 
         await Doorbell.RingAsync($"run-killed:{runId}", cancellationToken);
