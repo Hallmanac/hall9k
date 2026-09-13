@@ -117,6 +117,20 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         CancellationToken cancellationToken)
     {
         ProjectDetails project = await ResolveProjectAsync(session, settings.Project, cancellationToken);
+        if (project.PurgeAt is { } purgeDeadline)
+        {
+            // A review lap mints a task stream (AdoptAndClaimAsync, when no live task already
+            // holds the pull request) and dispatches work against it, so opening one here would
+            // hand a fresh task, its run, and any unpushed review work to a project whose whole
+            // database footprint the sweep destroys at the deadline — the same hazard h9k task
+            // add, h9k idea add, h9k epic add, h9k idea promote, and h9k idea assign already refuse
+            // (independent pre-PR review, cycle 3, adversarial lens, medium).
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is scheduled for permanent deletion at "
+                + $"{purgeDeadline.ToLocalTime():g}, so it cannot take a new review lap. Cancel the "
+                + $"purge first: h9k project cancel-purge {project.Name}");
+        }
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         GitHubPullRequestSurface github = new(processRunner);
