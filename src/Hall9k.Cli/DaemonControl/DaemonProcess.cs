@@ -99,4 +99,37 @@ public static class DaemonProcess
             return false;
         }
     }
+
+    /// <summary>
+    /// Ends a process this machine's own process table confirms is the one recorded — the same
+    /// pid-and-start-time identity check <see cref="IsAlive"/> already makes (Decisions Log #2),
+    /// so a pid the OS has since recycled for an unrelated process is left alone rather than
+    /// killed by mistake. Used by <c>h9k run kill</c> to end a run's live agent process tree:
+    /// a request could travel to <c>h9kd</c> and back over the Doorbell and the event stream,
+    /// the same channel every other CLI-to-daemon interaction already uses, but this command
+    /// acts directly instead — this machine can already see and kill the process itself, and
+    /// waiting on the daemon's own poll loop to notice and act would only add a hop with
+    /// nothing to gain from it. Still gated on the daemon being alive, so there is somebody left
+    /// to supervise what happens next. Returns whether a process was actually found and killed —
+    /// false means there was nothing left to end.
+    /// </summary>
+    public static bool Terminate(int processId, DateTimeOffset startedAt)
+    {
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            DateTimeOffset actualStart = new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+            if ((actualStart - startedAt).Duration() > StartTimeTolerance)
+            {
+                return false;
+            }
+
+            process.Kill(entireProcessTree: true);
+            return true;
+        }
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
+        {
+            return false;
+        }
+    }
 }
