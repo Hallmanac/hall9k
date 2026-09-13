@@ -129,6 +129,13 @@ public sealed class ProjectAggregate
     public DateTimeOffset? ArchivedAt { get; private set; }
     /// <summary>Why this project was archived; left unknown when omitted, never inferred (the same discipline TaskAbandoned's own Reason follows).</summary>
     public string? ArchivedReason { get; private set; }
+    /// <summary>
+    /// When a scheduled purge (task: an archived project can be purged) will fire; null while
+    /// none is pending or after <see cref="ProjectPurgeCancelled"/> clears it. A daemon sweep
+    /// checks this deadline each tick and on start, and it is what makes the schedule durable —
+    /// nothing else on this project survives a purge that actually fires.
+    /// </summary>
+    public DateTimeOffset? PurgeAt { get; private set; }
 
     private readonly List<VerifyCommand> _verifyCommands = [];
     public IReadOnlyList<VerifyCommand> VerifyCommands => _verifyCommands;
@@ -316,5 +323,15 @@ public sealed class ProjectAggregate
     public void Apply(ProjectRenamed @event)
     {
         Name = @event.NewName;
+    }
+
+    public void Apply(ProjectPurgeScheduled @event)
+    {
+        PurgeAt = @event.PurgeAt;
+    }
+
+    public void Apply(ProjectPurgeCancelled @event)
+    {
+        PurgeAt = null;
     }
 }

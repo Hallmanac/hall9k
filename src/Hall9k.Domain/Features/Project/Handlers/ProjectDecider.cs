@@ -394,7 +394,14 @@ public static class ProjectDecider
         return new ProjectArchived(project.Id, reason.IsBlank() ? null : reason, archivedAt, archivedByOwnerId);
     }
 
-    /// <summary>Ends an archive in place, on the same stream and the same id — the inverse of <see cref="Archive"/>.</summary>
+    /// <summary>
+    /// Ends an archive in place, on the same stream and the same id — the inverse of
+    /// <see cref="Archive"/>. Refused while a purge is pending (<see cref="SchedulePurge"/>): the
+    /// daemon's purge sweep reads only <see cref="ProjectAggregate.PurgeAt"/>, not liveness, so a
+    /// project reactivated out from under a still-pending deadline would be destroyed the next
+    /// time the sweep runs. Cancel the purge first (<c>h9k project cancel-purge</c>), which is
+    /// exactly what leaves a project reactivatable again.
+    /// </summary>
     public static ProjectReactivated Reactivate(
         ProjectAggregate project, DateTimeOffset reactivatedAt, Guid reactivatedByOwnerId)
     {
@@ -404,7 +411,56 @@ public static class ProjectDecider
                 $"Project '{project.Name}' is not archived, so there is nothing to reactivate.");
         }
 
+        if (project.PurgeAt is { } pendingDeadline)
+        {
+            throw new DomainValidationException(
+                $"Project '{project.Name}' has a purge scheduled for {pendingDeadline:g}. Cancel it first: "
+                + $"h9k project cancel-purge {project.Name}. Reactivating a project the sweep would still "
+                + "destroy is refused rather than left to race the deadline.");
+        }
+
         return new ProjectReactivated(project.Id, reactivatedAt, reactivatedByOwnerId);
+    }
+
+    /// <summary>
+    /// Schedules a permanent hard delete of an archived project's database footprint (task: an
+    /// archived project can be purged — the second half of the two-tier project-removal design,
+    /// PLAN.md §16 #182's purge follow-up). Pure and database-free like every decider method
+    /// here: the scope this purge will destroy (how many tasks, runs, and ideas) is a database
+    /// query only the CLI can run, the same division <see cref="Archive"/>'s own task-state
+    /// refusal already draws.
+    /// </summary>
+    public static ProjectPurgeScheduled SchedulePurge(
+        ProjectAggregate project, DateTimeOffset scheduledAt, Guid scheduledByOwnerId, TimeSpan? gracePeriod = null)
+    {
+        if (!project.IsArchived)
+        {
+            throw new DomainValidationException(
+                $"Project '{project.Name}' must be archived before it can be purged; "
+                + "h9k project remove --purge does both together.");
+        }
+
+        if (project.PurgeAt is { } existingDeadline)
+        {
+            throw new DomainValidationException(
+                $"Project '{project.Name}' already has a purge scheduled for {existingDeadline:g}. "
+                + $"Cancel it first: h9k project cancel-purge {project.Name}");
+        }
+
+        TimeSpan period = gracePeriod ?? ProjectPurge.GracePeriod;
+        return new ProjectPurgeScheduled(project.Id, scheduledAt, scheduledAt + period, scheduledByOwnerId);
+    }
+
+    /// <summary>Ends a pending purge before it fires, on the same stream — the inverse of <see cref="SchedulePurge"/>. Leaves the project archived, never reactivated.</summary>
+    public static ProjectPurgeCancelled CancelPurge(
+        ProjectAggregate project, DateTimeOffset cancelledAt, Guid cancelledByOwnerId)
+    {
+        if (project.PurgeAt is null)
+        {
+            throw new DomainValidationException($"Project '{project.Name}' has no purge scheduled.");
+        }
+
+        return new ProjectPurgeCancelled(project.Id, cancelledAt, cancelledByOwnerId);
     }
 
     /// <summary>
