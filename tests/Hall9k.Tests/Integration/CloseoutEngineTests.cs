@@ -160,6 +160,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         /// <summary>Set to make RetargetAsync throw, as the provider seam's own convention says a refused write does.</summary>
         public string? RetargetFailureMessage { get; set; }
 
+        public Task<bool> DeletesHeadBranchOnMergeAsync(
+            string repositoryPath, CancellationToken cancellationToken) => Task.FromResult(false);
+
         public Task RetargetAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
             CancellationToken cancellationToken)

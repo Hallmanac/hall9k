@@ -1592,7 +1592,9 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
             return Task.CompletedTask;
         }
 
-        public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken) =>
+        public Task DeleteBranchEverywhereAsync(
+            string repositoryPath, string branch, RemoteBranchDeletionOwner remoteDeletion,
+            CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
         public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;

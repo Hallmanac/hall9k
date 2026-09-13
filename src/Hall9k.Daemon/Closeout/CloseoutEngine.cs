@@ -99,6 +99,14 @@ public sealed class CloseoutEngine(
 {
     private readonly DaemonOptions _options = options.Value;
 
+    /// <summary>
+    /// Who deletes a merged branch from origin, per repository, read once per sweep (Decisions Log
+    /// #PLACEHOLDER-c9a3a6c8). Built here rather than injected for the reason that type's own doc
+    /// gives, and reachable by <c>RunLauncher</c> through
+    /// <see cref="RemoteBranchDeletionOwnerAsync"/> so its launch-time cleanup shares this cache.
+    /// </summary>
+    private readonly RemoteBranchDeletionPolicy _remoteBranchDeletion = new(inspector, logger);
+
     /// <summary>How one run's inspection ended — unpersisted in-process outcome, so an enum is fine (TASK-MODEL.md §8).</summary>
     private enum InspectionOutcome
     {
@@ -107,9 +115,26 @@ public sealed class CloseoutEngine(
         MergeObserved,
     }
 
+    /// <summary>
+    /// Who owns deleting a merged branch from origin in <paramref name="repositoryPath"/>, from this
+    /// sweep's own cached read of the repository's <c>delete_branch_on_merge</c> setting (Decisions
+    /// Log #PLACEHOLDER-c9a3a6c8). Public for <c>RunLauncher</c>'s launch-time cleanup of a merged
+    /// workspace, which deletes the same branch the same way and so must decide it the same way —
+    /// asked through this engine, like the rest of that path's closeout, so both share one cache and
+    /// one <c>gh</c> read per sweep instead of each keeping its own.
+    /// </summary>
+    public Task<RemoteBranchDeletionOwner> RemoteBranchDeletionOwnerAsync(
+        string repositoryPath, CancellationToken cancellationToken) =>
+        _remoteBranchDeletion.OwnerAsync(repositoryPath, cancellationToken);
+
     /// <summary>One sweep over this node's watched pull requests, plus its orphans (Decisions Log #72).</summary>
     public async Task<CloseoutSweepResult> PollOnceAsync(CancellationToken cancellationToken)
     {
+        // One read of each repository's own head-branch-deletion setting per sweep, not per merged
+        // run (Decisions Log #PLACEHOLDER-c9a3a6c8) — the cache this drops is what makes the reads
+        // fresh every sweep while still costing one call per repository within it.
+        _remoteBranchDeletion.Forget();
+
         IReadOnlyList<RunDetails> watched;
         IReadOnlyList<RunDetails> orphaned;
         await using (IQuerySession query = store.QuerySession())
@@ -1967,9 +1992,18 @@ public sealed class CloseoutEngine(
             return;
         }
 
+        // Who deletes it from origin is asked before anything is deleted, because getting it wrong
+        // is not recoverable: a raw `git push --delete` of a merged branch CLOSES every open pull
+        // request stacked on it, while GitHub's own deletion retargets them onto the base branch
+        // (Decisions Log #PLACEHOLDER-c9a3a6c8; origin incident 2026-09-13, PR #338). So where this
+        // repository deletes head branches on merge, the remote half is left to GitHub.
+        RemoteBranchDeletionOwner remoteDeletion =
+            await RemoteBranchDeletionOwnerAsync(project.RepositoryPath, cancellationToken);
+
         try
         {
-            await worktrees.DeleteBranchEverywhereAsync(project.RepositoryPath, run.Branch, cancellationToken);
+            await worktrees.DeleteBranchEverywhereAsync(
+                project.RepositoryPath, run.Branch, remoteDeletion, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

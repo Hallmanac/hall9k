@@ -239,10 +239,26 @@ public static class ProjectHomePaths
     public static bool SameDirectory(string? left, string? right) =>
         left.IsNotBlank()
         && right.IsNotBlank()
-        && string.Equals(
-            Path.TrimEndingDirectorySeparator(left),
-            Path.TrimEndingDirectorySeparator(right),
-            OperatingSystem.IsLinux() ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase);
+        && DirectoryComparer.Equals(DirectoryKey(left), DirectoryKey(right));
+
+    /// <summary>
+    /// The comparer <see cref="SameDirectory"/> itself uses, for a dictionary or a set keyed by
+    /// directory path — so a cache keyed by repository path answers "same directory?" exactly the
+    /// way the path-ownership checks above do rather than having its own opinion about case. Keys
+    /// go through <see cref="DirectoryKey"/> first, which is what handles a trailing separator
+    /// (external review of this branch, 2026-09-13: the head-branch-deletion cache was keyed
+    /// case-insensitively everywhere, which on Linux conflates <c>/work/Repo</c> and
+    /// <c>/work/repo</c> — two distinct registrations there, because
+    /// <c>ProjectHomeClaims</c> compares through the ordinal-on-Linux rule right here).
+    /// </summary>
+    public static StringComparer DirectoryComparer =>
+        OperatingSystem.IsLinux() ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
+
+    /// <summary>
+    /// A directory path reduced to what <see cref="DirectoryComparer"/> compares: the path with any
+    /// trailing separator dropped, so <c>/work/repo</c> and <c>/work/repo/</c> are one key.
+    /// </summary>
+    public static string DirectoryKey(string path) => Path.TrimEndingDirectorySeparator(path);
 
     /// <summary>
     /// A project name reduced to a directory name: lowercase, ASCII letters and digits, single

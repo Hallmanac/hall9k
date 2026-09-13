@@ -269,6 +269,31 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         await RunGhAsync(
             repositoryPath, ["pr", "edit", pullRequestNumber.ToString(), "--base", baseBranch], cancellationToken);
 
+    /// <summary>
+    /// One repository read: <c>gh api repos/{owner}/{repo} --jq .delete_branch_on_merge</c>. The
+    /// <c>{owner}</c>/<c>{repo}</c> placeholders are gh's own, filled from the repository this call
+    /// runs in — the same origin-remote resolution every other read here relies on, so no pull
+    /// request URL has to be parsed for a fact about the repository.
+    /// <para>
+    /// A body that is neither <c>true</c> nor <c>false</c> throws rather than being read as either:
+    /// the caller's own fallback for an unreadable setting is the behaviour that predates this read,
+    /// and inventing a value here would be the guess it exists to avoid.
+    /// </para>
+    /// </summary>
+    public async Task<bool> DeletesHeadBranchOnMergeAsync(
+        string repositoryPath, CancellationToken cancellationToken)
+    {
+        string setting = await RunGhAsync(
+            repositoryPath,
+            ["api", "repos/{owner}/{repo}", "--jq", ".delete_branch_on_merge"],
+            cancellationToken);
+
+        return bool.TryParse(setting.Trim(), out bool deletesOnMerge)
+            ? deletesOnMerge
+            : throw new InvalidOperationException(
+                $"gh reported delete_branch_on_merge as '{setting.Trim()}', which is neither true nor false");
+    }
+
     /// <summary>What one GraphQL call saw about a pull request's reviews.</summary>
     internal sealed record ReviewObservation(
         int UnresolvedThreads,

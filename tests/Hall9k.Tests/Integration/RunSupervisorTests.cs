@@ -2874,6 +2874,10 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             CancellationToken cancellationToken) =>
             throw NeverInvoked();
 
+        public Task<bool> DeletesHeadBranchOnMergeAsync(
+            string repositoryPath, CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+
         public Task RetargetAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
             CancellationToken cancellationToken) =>

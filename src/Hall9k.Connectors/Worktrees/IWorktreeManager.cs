@@ -114,11 +114,22 @@ public interface IWorktreeManager
     /// Best-effort deletion of a task branch everywhere it lingers after its pull request
     /// merged: the local branch (git branch -D — PRs land via rebase merge, so the tip is
     /// never an ancestor of the base branch; the merged-PR signal the caller observed is
-    /// the justification), the remote branch (when the merge did not already delete it),
+    /// the justification), the remote branch (when the merge did not already delete it, and
+    /// when <paramref name="remoteDeletion"/> says that deletion is this platform's to make),
     /// and stale remote-tracking refs (git fetch --prune). Call only after the branch's
     /// worktree is removed — a checked-out branch cannot be deleted.
+    /// <para>
+    /// <paramref name="remoteDeletion"/> is the caller's decision, never inferred here: the whole
+    /// sequence is <see cref="MergedBranchCleanup.Plan"/>, and why a repository that deletes head
+    /// branches on merge must be left to make the remote deletion itself is that type's own doc
+    /// (Decisions Log #PLACEHOLDER-c9a3a6c8).
+    /// </para>
     /// </summary>
-    Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken);
+    Task DeleteBranchEverywhereAsync(
+        string repositoryPath,
+        string branch,
+        RemoteBranchDeletionOwner remoteDeletion,
+        CancellationToken cancellationToken);
 
     /// <summary>Startup sweep: collect worktree records orphaned by crashes.</summary>
     Task PruneAsync(string repositoryPath, CancellationToken cancellationToken);

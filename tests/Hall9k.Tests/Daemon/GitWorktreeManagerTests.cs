@@ -491,7 +491,10 @@ public sealed class GitWorktreeManagerTests : IDisposable
 
         // Closeout order: worktree first (a checked-out branch cannot be deleted), then branches.
         await _manager.RemoveAsync(_repositoryPath, worktree.Path, cts.Token);
-        await _manager.DeleteBranchEverywhereAsync(_repositoryPath, worktree.Branch, cts.Token);
+        // Daemon: the repository does not delete head branches on merge, so the remote deletion is
+        // this platform's to make — the sequence MergedBranchCleanupTests covers under that owner.
+        await _manager.DeleteBranchEverywhereAsync(
+            _repositoryPath, worktree.Branch, RemoteBranchDeletionOwner.Daemon, cts.Token);
 
         TryGit(_repositoryPath, $"rev-parse --verify refs/heads/{worktree.Branch}")
             .ExitCode.Should().NotBe(0, "the local branch is deleted");

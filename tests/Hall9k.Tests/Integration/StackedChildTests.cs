@@ -911,6 +911,9 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
             return Task.CompletedTask;
         }
 
+        public Task<bool> DeletesHeadBranchOnMergeAsync(
+            string repositoryPath, CancellationToken cancellationToken) => Task.FromResult(false);
+
         public Task RetargetAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
             CancellationToken cancellationToken)
@@ -1579,6 +1582,9 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
             CancellationToken cancellationToken) =>
             Task.FromException(new InvalidOperationException("a stacked child is never at the merge bar"));
+
+        public Task<bool> DeletesHeadBranchOnMergeAsync(
+            string repositoryPath, CancellationToken cancellationToken) => Task.FromResult(false);
 
         public Task RetargetAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,

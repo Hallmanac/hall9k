@@ -340,48 +340,98 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         }
     }
 
-    public async Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken)
+    public async Task DeleteBranchEverywhereAsync(
+        string repositoryPath,
+        string branch,
+        RemoteBranchDeletionOwner remoteDeletion,
+        CancellationToken cancellationToken)
     {
         repositoryPath = Path.GetFullPath(repositoryPath);
         await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
+
+        // The sequence itself is decided by MergedBranchCleanup, not here: which steps run is the
+        // one thing about this method worth reading (and testing) on its own, and running the plan
+        // is what is left. A nonzero exit on the origin probe leaves originPresent false, which
+        // skips every remaining step — all of them are about origin.
+        bool originPresent = true;
+        bool localDeleted = false;
+        bool remoteDeleteAttempted = false;
+        foreach (MergedBranchCleanupStep step in MergedBranchCleanup.Plan(branch, remoteDeletion))
         {
-            // -D, not -d: PRs land via rebase merge, so the branch tip is never an ancestor
-            // of the base branch. The caller's merged-PR observation is the justification.
-            (int localExit, _, string localError) = await TryRunGitAsync(
-                repositoryPath, $"branch -D \"{branch}\"", cancellationToken);
-            if (localExit != 0)
+            if (!originPresent && step.Stage != MergedBranchCleanupStage.DeleteLocalBranch)
             {
-                logger.LogDebug("Local branch {Branch} not deleted ({Error})", branch, localError.Trim());
+                continue;
             }
 
-            (int originExit, _, _) = await TryRunGitAsync(repositoryPath, "remote get-url origin", cancellationToken);
-            if (originExit == 0)
+            (int exitCode, _, string error) = await TryRunGitAsync(repositoryPath, step.Arguments, cancellationToken);
+            switch (step.Stage)
             {
-                // The merge often deletes the remote branch already; a failure here is expected.
-                (int remoteExit, _, string remoteError) = await TryRunGitAsync(
-                    repositoryPath, $"push origin --delete \"{branch}\"", cancellationToken);
-                if (remoteExit != 0)
-                {
-                    logger.LogDebug("Remote branch {Branch} not deleted ({Error})", branch, remoteError.Trim());
-                }
+                case MergedBranchCleanupStage.DeleteLocalBranch:
+                    localDeleted = exitCode == 0;
+                    if (!localDeleted)
+                    {
+                        logger.LogDebug("Local branch {Branch} not deleted ({Error})", branch, error.Trim());
+                    }
 
-                (int pruneExit, _, string pruneError) = await TryRunGitAsync(
-                    repositoryPath, "fetch --prune origin", cancellationToken);
-                if (pruneExit != 0)
-                {
-                    logger.LogWarning("git fetch --prune failed for {Repository} ({Error})", repositoryPath, pruneError.Trim());
-                }
+                    break;
+
+                case MergedBranchCleanupStage.ReadOriginUrl:
+                    originPresent = exitCode == 0;
+                    break;
+
+                case MergedBranchCleanupStage.DeleteRemoteBranch:
+                    remoteDeleteAttempted = true;
+
+                    // The merge often deletes the remote branch already; a failure here is expected.
+                    if (exitCode != 0)
+                    {
+                        logger.LogDebug("Remote branch {Branch} not deleted ({Error})", branch, error.Trim());
+                    }
+
+                    break;
+
+                case MergedBranchCleanupStage.PruneRemoteRefs:
+                    if (exitCode != 0)
+                    {
+                        logger.LogWarning(
+                            "git fetch --prune failed for {Repository} ({Error})", repositoryPath, error.Trim());
+                    }
+
+                    break;
             }
-
-            // Best effort by design: local/remote deletion failures are logged above and
-            // are often expected (the merge may have deleted the remote branch already).
-            logger.LogInformation(
-                "Branch {Branch} cleanup pass finished for {Repository} (local {LocalOutcome}, remote push {RemoteOutcome})",
-                branch, repositoryPath,
-                localExit == 0 ? "deleted" : "not deleted",
-                originExit == 0 ? "attempted" : "skipped");
         }
+
+        // Best effort by design: local/remote deletion failures are logged above and
+        // are often expected (the merge may have deleted the remote branch already).
+        logger.LogInformation(
+            "Branch {Branch} cleanup pass finished for {Repository} (local {LocalOutcome}, remote push {RemoteOutcome})",
+            branch, repositoryPath,
+            localDeleted ? "deleted" : "not deleted",
+            DescribeRemoteDeletion(originPresent, remoteDeleteAttempted, remoteDeletion));
     }
+
+    /// <summary>
+    /// What the cleanup's own log line says about the remote half. "GitHub owns the deletion" is
+    /// the line a human reads when a merged branch is still on origin after a closeout and wants
+    /// to know whether this platform decided not to touch it (Decisions Log #PLACEHOLDER-c9a3a6c8)
+    /// or simply failed to.
+    /// <para>
+    /// Every arm reports what this pass actually did, the owner included: "GitHub owns it" is said
+    /// only where that owner is what left the step out, so a plan that one day omits the step for
+    /// some other reason reads as the honest gap it would be rather than inheriting this sentence.
+    /// </para>
+    /// </summary>
+    private static string DescribeRemoteDeletion(
+        bool originPresent, bool remoteDeleteAttempted, RemoteBranchDeletionOwner remoteDeletion) =>
+        (originPresent, remoteDeleteAttempted, remoteDeletion) switch
+        {
+            (false, _, _) => "skipped (no origin remote)",
+            (_, true, _) => "attempted",
+            (_, false, RemoteBranchDeletionOwner.GitHub) =>
+                "skipped (GitHub owns the deletion: this repository deletes head branches on merge, "
+                + "and only its own deletion retargets stacked children instead of closing them)",
+            _ => "skipped (nothing in this cleanup's plan pushed a deletion)",
+        };
 
     /// <summary>Scans git worktree list for the worktree (other than the repo itself) holding the branch.</summary>
     private static async Task<string?> FindWorktreeHoldingBranchAsync(
