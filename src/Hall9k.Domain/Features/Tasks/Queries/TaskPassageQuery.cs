@@ -110,6 +110,7 @@ public static class TaskPassageQuery
         Dictionary<Guid, RunFold> foldsByRun = folds.ToDictionary(fold => fold.RunId);
 
         PassagePhase queued = FoldQueued(taskEvents, now);
+        PassagePhase queuedBeforeFirstClaim = FoldQueuedBeforeFirstClaim(taskEvents);
         PassagePhase building = FoldBuilding(folds, now);
         PassagePhase gates = FoldGates(folds);
         ReviewCyclePassage review = new(
@@ -167,22 +168,48 @@ public static class TaskPassageQuery
         int sessions = folds.Aggregate(0, (total, fold) => total + fold.SessionCount);
 
         return new TaskPassage(
-            queued, building, gates, review, delivery, mergeWait, humanWaits, claimToMerge, laps, sessions, mergedAt);
+            queued, building, gates, review, delivery, mergeWait, humanWaits, claimToMerge, laps, sessions, mergedAt,
+            queuedBeforeFirstClaim);
     }
 
     /// <summary>
-    /// The queued phase alone (task: h9k status reports throughput beside spend) — the exact fold
-    /// <see cref="Compute"/> uses for <see cref="TaskPassage.Queued"/>, exposed on its own because
-    /// it needs only the task's own stream, never a run's: a queued task's own row in the queued
-    /// section (<c>StatusCommand</c>) can say how long it has waited without paying for every run
-    /// stream <see cref="ReadAsync"/> would otherwise fetch for a task that has not dispatched
-    /// anything yet.
+    /// One queued row's own current wait (task: h9k status reports throughput beside spend): the
+    /// segment this task is queued in right now, alone — not <see cref="FoldQueued"/>'s lifetime
+    /// sum across every lap it has ever taken, which <see cref="TaskPassage.Queued"/> reports for
+    /// <c>h9k task show</c>'s own passage section. A row in the queued section (<c>StatusCommand</c>)
+    /// means "waiting right now": a task that queued 30h behind a project cap, ran, and was
+    /// reopened five minutes ago has waited five minutes for its present slot, not 30h05m
+    /// (independent pre-PR review, cycle 1, adversarial lens). Exposed on its own because it needs
+    /// only the task's own stream, never a run's, so a queued row can say how long it has waited
+    /// without paying for every run stream <see cref="ReadAsync"/> would otherwise fetch for a task
+    /// that has not dispatched anything yet.
     /// </summary>
     public static async Task<PassagePhase> ReadQueuedAsync(
         IQuerySession session, Guid taskId, DateTimeOffset now, CancellationToken cancellationToken)
     {
         IReadOnlyList<IEvent> taskEvents = await session.Events.FetchStreamAsync(taskId, token: cancellationToken);
-        return FoldQueued(taskEvents, now);
+        return FoldCurrentQueueSegment(taskEvents, now);
+    }
+
+    /// <summary>
+    /// How much of <paramref name="taskEvents"/>' own queued time falls inside
+    /// [<paramref name="periodStart"/>, <paramref name="now"/>) — every queued segment this task
+    /// has ever taken, clipped to the window, summed (task: h9k status reports throughput beside
+    /// spend). Backs the queued section's own heading total in <c>StatusCommand</c>
+    /// (<see cref="QueuedPeriodTotal"/>), which needs the period's own total rather than a row's
+    /// lifetime wait or its current segment alone. Pure and DB-free, the same split every other
+    /// fold in this type draws between the network round trip and the arithmetic.
+    /// </summary>
+    internal static TimeSpan FoldQueuedWithinPeriod(
+        IReadOnlyList<IEvent> taskEvents, DateTimeOffset periodStart, DateTimeOffset now)
+    {
+        TimeSpan total = TimeSpan.Zero;
+        foreach (QueueSegment segment in BuildQueueSegments(taskEvents))
+        {
+            total += SegmentElapsedWithin(segment, segment.End ?? now, periodStart);
+        }
+
+        return total;
     }
 
     private static void AddIfPresent(List<HumanWaitPassage> waits, HumanWaitKind kind, PassagePhase phase)
@@ -209,13 +236,52 @@ public static class TaskPassageQuery
     // that already lives in one place. A stacked task's queued figure can therefore include a
     // stacked-parent wait that a plain dependency edge would have excluded.
 
-    private static PassagePhase FoldQueued(IReadOnlyList<IEvent> taskEvents, DateTimeOffset now)
+    /// <summary>
+    /// One stretch of this task's life between entering the queue and leaving it, in whichever
+    /// direction it left — a claim, or a departure (unassigned, abandoned, resolved, returned to
+    /// draft, completed). <see cref="End"/> null means still queued as of whatever "now" the
+    /// caller folds against. <see cref="BlockedStart"/> null means this segment was never blocked
+    /// on a dependency; set with <see cref="BlockedEnd"/> null means the dependency never cleared
+    /// before the segment itself closed (or is still unmet, for an open segment) — blocked runs to
+    /// the segment's own end either way, never past it, mirroring the single block/unblock pair
+    /// <see cref="BuildQueueSegments"/>'s own state machine can ever record for one segment.
+    /// </summary>
+    private readonly record struct QueueSegment(
+        DateTimeOffset Start, DateTimeOffset? End, DateTimeOffset? BlockedStart, DateTimeOffset? BlockedEnd);
+
+    // --- Queued: TaskAssigned/TaskRequeued/TaskReopened to the next TaskClaimed, excluding time Blocked ---
+    //
+    // "Blocked" here means only a dependency hold: TaskAssigned's own UnmetDependencies, cleared
+    // by TaskDependencyCompleted once RemainingDependencies is empty — the only pair that can ever
+    // move TaskDetails between Blocked and Queued for that reason (TaskDetailsProjection's own
+    // Apply(TaskDependencyCompleted) refuses to touch state that is not already Blocked, and
+    // TaskDependencyFailed/Recovered never change state at all, only the reason shown while
+    // Blocked). A stacked task can also hold at Blocked -> Queued on RemoteStackedParentObserved
+    // (AwaitsRemoteStackedParent) — deliberately not modelled here: that hold is a fact about the
+    // parent pull request's own progress, not a dependency in this task's own BlockedBy list, and
+    // reproducing TaskAggregate's full AwaitsRemoteStackedParent logic here would duplicate a rule
+    // that already lives in one place. A stacked task's queued figure can therefore include a
+    // stacked-parent wait that a plain dependency edge would have excluded.
+    //
+    // Every reader below (the lifetime sum FoldQueued needs for TaskPassage.Queued, the
+    // leading-edge-only sum FoldQueuedBeforeFirstClaim needs, one row's own current segment
+    // FoldCurrentQueueSegment needs, and the period-clipped sum FoldQueuedWithinPeriod needs)
+    // shares this one state machine rather than re-deriving it (independent pre-PR review, cycle 1,
+    // both lenses against the queued/claim-to-merge mismatch this split now backs): four
+    // hand-written replicas of the same block/unblock bookkeeping would drift from each other in
+    // exactly the way a fifth reviewer would eventually catch one of them not having.
+
+    /// <summary>
+    /// Every queued segment this task's own stream ever opened, in stream order, with the last one
+    /// left open (<see cref="QueueSegment.End"/> null) if this task is still queued as of whatever
+    /// "now" the caller reads against.
+    /// </summary>
+    private static List<QueueSegment> BuildQueueSegments(IReadOnlyList<IEvent> taskEvents)
     {
-        TimeSpan total = TimeSpan.Zero;
+        List<QueueSegment> segments = [];
         DateTimeOffset? segmentStart = null;
-        DateTimeOffset? blockedSince = null;
-        TimeSpan blockedDeduction = TimeSpan.Zero;
-        bool everStarted = false;
+        DateTimeOffset? blockedStart = null;
+        DateTimeOffset? blockedEnd = null;
         // The last-known answer to "does this task still have an unmet dependency", frozen
         // exactly the way TaskDetailsProjection.Apply(TaskDependencyCompleted) freezes
         // UnmetDependencies while the task is not currently Blocked: a dependency completion
@@ -225,11 +291,18 @@ public static class TaskPassageQuery
         // cycle 3, conformance finding).
         bool dependenciesUnresolved = false;
 
-        // Closes whatever queued/blocked segment is currently open, deducting any still-open
-        // blocked window along the way — shared by every event that can end that segment
-        // without the task ever being claimed: TaskClaimed, and every terminal-or-departing
-        // event below it (independent pre-PR review, cycle 3, adversarial finding: a task
-        // unassigned, abandoned, or resolved while still queued left segmentStart open forever).
+        void Open(DateTimeOffset at)
+        {
+            segmentStart = at;
+            blockedStart = dependenciesUnresolved ? at : null;
+            blockedEnd = null;
+        }
+
+        // Closes whatever queued/blocked segment is currently open — shared by every event that
+        // can end that segment without the task ever being claimed: TaskClaimed, and every
+        // terminal-or-departing event below it (independent pre-PR review, cycle 3, adversarial
+        // finding: a task unassigned, abandoned, or resolved while still queued left segmentStart
+        // open forever).
         void Close(DateTimeOffset at)
         {
             if (segmentStart is not { } start)
@@ -237,16 +310,10 @@ public static class TaskPassageQuery
                 return;
             }
 
-            TimeSpan segment = at - start;
-            if (blockedSince is { } stillBlockedSince)
-            {
-                blockedDeduction += at - stillBlockedSince;
-                blockedSince = null;
-            }
-
-            total += Clamp(segment - blockedDeduction);
+            segments.Add(new QueueSegment(start, at, blockedStart, blockedEnd));
             segmentStart = null;
-            blockedDeduction = TimeSpan.Zero;
+            blockedStart = null;
+            blockedEnd = null;
         }
 
         foreach (IEvent recorded in taskEvents)
@@ -254,23 +321,14 @@ public static class TaskPassageQuery
             switch (recorded.Data)
             {
                 case TaskAssigned assigned:
-                    everStarted = true;
-                    segmentStart = assigned.AssignedAt;
-                    blockedDeduction = TimeSpan.Zero;
                     dependenciesUnresolved = assigned.UnmetDependencies.Count > 0;
-                    blockedSince = dependenciesUnresolved ? assigned.AssignedAt : null;
+                    Open(assigned.AssignedAt);
                     break;
                 case TaskRequeued requeued:
-                    everStarted = true;
-                    segmentStart = requeued.RequeuedAt;
-                    blockedDeduction = TimeSpan.Zero;
-                    blockedSince = dependenciesUnresolved ? requeued.RequeuedAt : null;
+                    Open(requeued.RequeuedAt);
                     break;
                 case TaskReopened reopened:
-                    everStarted = true;
-                    segmentStart = reopened.ReopenedAt;
-                    blockedDeduction = TimeSpan.Zero;
-                    blockedSince = dependenciesUnresolved ? reopened.ReopenedAt : null;
+                    Open(reopened.ReopenedAt);
                     break;
                 case TaskRetried retried:
                     // h9k task retry appends only TaskRetried — no TaskRequeued alongside it — so
@@ -278,20 +336,14 @@ public static class TaskPassageQuery
                     // dropped from the queued total entirely (independent pre-PR review, cycle 1,
                     // adversarial lens): both this and TaskHandedBack below carry their own
                     // timestamp for exactly the segment TaskRequeued/TaskReopened already open.
-                    everStarted = true;
-                    segmentStart = retried.RetriedAt;
-                    blockedDeduction = TimeSpan.Zero;
-                    blockedSince = dependenciesUnresolved ? retried.RetriedAt : null;
+                    Open(retried.RetriedAt);
                     break;
                 case TaskHandedBack handedBack:
-                    everStarted = true;
-                    segmentStart = handedBack.HandedBackAt;
-                    blockedDeduction = TimeSpan.Zero;
-                    blockedSince = dependenciesUnresolved ? handedBack.HandedBackAt : null;
+                    Open(handedBack.HandedBackAt);
                     break;
-                case TaskDependencyCompleted completed when blockedSince is { } since && completed.RemainingDependencies.Count == 0:
-                    blockedDeduction += completed.CompletedAt - since;
-                    blockedSince = null;
+                case TaskDependencyCompleted completed when blockedStart is not null && blockedEnd is null
+                    && completed.RemainingDependencies.Count == 0:
+                    blockedEnd = completed.CompletedAt;
                     dependenciesUnresolved = false;
                     break;
                 case TaskClaimed claimed:
@@ -325,23 +377,112 @@ public static class TaskPassageQuery
             }
         }
 
-        if (!everStarted)
+        if (segmentStart is { } openStart)
+        {
+            segments.Add(new QueueSegment(openStart, null, blockedStart, blockedEnd));
+        }
+
+        return segments;
+    }
+
+    /// <summary>One segment's own elapsed queued time as of <paramref name="endAt"/> (its own close, or "now" while open), net of whatever portion of it was blocked.</summary>
+    private static TimeSpan SegmentElapsed(QueueSegment segment, DateTimeOffset endAt)
+    {
+        TimeSpan blocked = segment.BlockedStart is { } blockedStart
+            ? (segment.BlockedEnd ?? endAt) - blockedStart
+            : TimeSpan.Zero;
+        return Clamp(endAt - segment.Start - blocked);
+    }
+
+    /// <summary>
+    /// The portion of one segment's own elapsed queued time that falls at or after
+    /// <paramref name="periodStart"/> — <see cref="SegmentElapsed"/>'s own arithmetic, with both
+    /// the segment and its blocked sub-interval (if any) first clipped to start no earlier than
+    /// the period itself.
+    /// </summary>
+    private static TimeSpan SegmentElapsedWithin(QueueSegment segment, DateTimeOffset endAt, DateTimeOffset periodStart)
+    {
+        DateTimeOffset overlapStart = segment.Start > periodStart ? segment.Start : periodStart;
+        if (endAt <= overlapStart)
+        {
+            return TimeSpan.Zero;
+        }
+
+        TimeSpan blocked = TimeSpan.Zero;
+        if (segment.BlockedStart is { } blockedStart)
+        {
+            DateTimeOffset blockedEnd = segment.BlockedEnd ?? endAt;
+            DateTimeOffset clippedBlockedStart = blockedStart > overlapStart ? blockedStart : overlapStart;
+            if (blockedEnd > clippedBlockedStart)
+            {
+                blocked = blockedEnd - clippedBlockedStart;
+            }
+        }
+
+        return Clamp(endAt - overlapStart - blocked);
+    }
+
+    /// <summary>
+    /// The queued phase's lifetime total (task: h9k task show tells a task's passage in time) —
+    /// every segment this task has ever queued in, summed, exactly as <see cref="TaskPassage.Queued"/>
+    /// reports it.
+    /// </summary>
+    private static PassagePhase FoldQueued(IReadOnlyList<IEvent> taskEvents, DateTimeOffset now)
+    {
+        List<QueueSegment> segments = BuildQueueSegments(taskEvents);
+        if (segments.Count == 0)
         {
             return PassagePhase.NotApplicable;
         }
 
-        if (segmentStart is not { } openStart)
+        TimeSpan total = segments.Aggregate(TimeSpan.Zero, (sum, segment) => sum + SegmentElapsed(segment, segment.End ?? now));
+        return segments[^1].End is null ? PassagePhase.Open(total) : PassagePhase.Closed(total);
+    }
+
+    /// <summary>
+    /// The queued phase's leading edge alone (task: h9k status reports throughput beside spend):
+    /// every segment that closes before this task's first ever <c>TaskClaimed</c>, summed — see
+    /// <see cref="TaskPassage.QueuedBeforeFirstClaim"/>'s own doc for why a period throughput
+    /// rollup needs this split out from the lifetime total.
+    /// </summary>
+    private static PassagePhase FoldQueuedBeforeFirstClaim(IReadOnlyList<IEvent> taskEvents)
+    {
+        List<DateTimeOffset> claims = [.. taskEvents.Select(recorded => recorded.Data).OfType<TaskClaimed>().Select(claimed => claimed.ClaimedAt)];
+        if (claims.Count == 0)
         {
-            return PassagePhase.Closed(total);
+            return PassagePhase.NotApplicable;
         }
 
-        TimeSpan openSegment = now - openStart;
-        if (blockedSince is { } openBlockedSince)
+        DateTimeOffset firstClaim = claims.Min();
+        TimeSpan total = TimeSpan.Zero;
+        foreach (QueueSegment segment in BuildQueueSegments(taskEvents))
         {
-            blockedDeduction += now - openBlockedSince;
+            if (segment.Start >= firstClaim)
+            {
+                break;
+            }
+
+            total += SegmentElapsed(segment, segment.End ?? firstClaim);
         }
 
-        return PassagePhase.Open(total + Clamp(openSegment - blockedDeduction));
+        return PassagePhase.Closed(total);
+    }
+
+    /// <summary>
+    /// One queued row's own current segment alone — the fold behind <see cref="ReadQueuedAsync"/>;
+    /// see that method's own doc for why this differs from <see cref="FoldQueued"/>'s lifetime sum.
+    /// </summary>
+    internal static PassagePhase FoldCurrentQueueSegment(IReadOnlyList<IEvent> taskEvents, DateTimeOffset now)
+    {
+        List<QueueSegment> segments = BuildQueueSegments(taskEvents);
+        if (segments.Count == 0)
+        {
+            return PassagePhase.NotApplicable;
+        }
+
+        QueueSegment last = segments[^1];
+        TimeSpan elapsed = SegmentElapsed(last, last.End ?? now);
+        return last.End is null ? PassagePhase.Open(elapsed) : PassagePhase.Closed(elapsed);
     }
 
     // --- Per-run fold: build end, gates, review cycles, fix sessions, review/closeout parks, sessions, PR merged ---
