@@ -34,6 +34,10 @@ public sealed class ProjectReactivateCommand : Hall9kAsyncCommand<ProjectReactiv
         await using IDocumentSession session = store.LightweightSession();
 
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
+        // Fenced against the version just read (Copilot review, PR #338): SchedulePurge is now a
+        // second writer on this same stream, and an unfenced append here could land after a
+        // purge scheduled in the moment between this read and the save, leaving IsArchived=false
+        // with PurgeAt still set — a project the sweep would destroy while it reads as live.
         StreamState? fence = await session.Events.FetchStreamStateAsync(project.Id, cancellationToken)
             ?? throw new DomainNotFoundException($"No project {project.Id}.");
         ProjectAggregate aggregate = await session.Events.AggregateStreamAsync<ProjectAggregate>(
@@ -56,8 +60,8 @@ public sealed class ProjectReactivateCommand : Hall9kAsyncCommand<ProjectReactiv
         catch (EventStreamUnexpectedMaxEventIdException)
         {
             throw new DomainConflictException(
-                $"Project '{project.Name}' changed while reactivating — check h9k status and re-run this "
-                + "command if it should still be reactivated.");
+                $"Project '{project.Name}' changed while reactivating — a purge may have just been "
+                + "scheduled. Check h9k project show and try again.");
         }
 
         await Doorbell.RingAsync($"project-reactivated:{project.Id}", cancellationToken);
