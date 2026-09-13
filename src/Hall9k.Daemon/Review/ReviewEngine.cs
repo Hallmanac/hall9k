@@ -1275,10 +1275,13 @@ public sealed class ReviewEngine(
     /// <c>RunLauncher.TryCloseOutMergedPullRequestAsync</c> applies at dispatch, moved here for
     /// the one case that guard cannot see: a human merging while a follow-up run's OWN review
     /// loop is already mid-flight, between one pass and the next. A fix session already
-    /// executing is never touched here — this is called only immediately before each of the
-    /// three places <see cref="DriveAsync"/> is about to dispatch a fresh review pass
-    /// (<see cref="ReviewPhase.None"/>'s opening cycle, <see cref="ReviewPhase.Settling"/>'s
-    /// mandatory final pass, and <see cref="ReviewPhase.Reverify"/>'s post-fix pass), never at a
+    /// executing is never touched here — this is called at four of <see cref="DriveAsync"/>'s own
+    /// boundaries: immediately before each of the three places it is about to dispatch a fresh
+    /// review pass (<see cref="ReviewPhase.None"/>'s opening cycle, <see cref="ReviewPhase.Settling"/>'s
+    /// mandatory final pass, and <see cref="ReviewPhase.Reverify"/>'s post-fix pass), plus once
+    /// more as soon as the <see cref="ReviewPhase.Reverify"/> arm is entered rather than only
+    /// immediately before its own dispatch — the fix session that phase just resumed from is
+    /// exactly the kind of real wall-clock window a human merging mid-review needs. Never at a
     /// boundary that is only resuming one already in flight.
     /// <para>
     /// Applies only to a follow-up run whose task already has an open pull request —
@@ -1397,14 +1400,24 @@ public sealed class ReviewEngine(
         string upstream = $"origin/{context.BaseBranch}";
         try
         {
-            ProcessResult fetch = await git("git", ["fetch", "origin", context.BaseBranch], worktreePath, cancellationToken);
-            if (fetch.ExitCode != 0)
+            // The fetch is taken under the same repository lock every other fetch touching
+            // this project's shared bare repository already serializes behind (Decisions Log
+            // #4) — the identical convention EnsureRebasedBeforeFinalPassAsync and
+            // DispatchRebaseRecoverySessionAsync already follow. Scoped to the fetch alone:
+            // the reads below never mutate the shared repository, only read this worktree's
+            // own now-updated remote-tracking ref.
+            await using (IAsyncDisposable repositoryLock =
+                await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
             {
-                logger.LogWarning(
-                    "Run {RunId}: could not fetch {Upstream} to read the worktree's own stranded delta " +
-                    "(exit {ExitCode}); treating as unread, not as nothing stranded: {StandardError}",
-                    context.RunId, upstream, fetch.ExitCode, fetch.StandardError);
-                return StrandedDeltaCapture.Failed();
+                ProcessResult fetch = await git("git", ["fetch", "origin", context.BaseBranch], worktreePath, cancellationToken);
+                if (fetch.ExitCode != 0)
+                {
+                    logger.LogWarning(
+                        "Run {RunId}: could not fetch {Upstream} to read the worktree's own stranded delta " +
+                        "(exit {ExitCode}); treating as unread, not as nothing stranded: {StandardError}",
+                        context.RunId, upstream, fetch.ExitCode, fetch.StandardError);
+                    return StrandedDeltaCapture.Failed();
+                }
             }
 
             ProcessResult cherry = await git("git", ["cherry", "-v", upstream, "HEAD"], worktreePath, cancellationToken);
@@ -1495,9 +1508,12 @@ public sealed class ReviewEngine(
     /// after they publish it (Decisions Log #34), definitionally later than that sweep, so it has
     /// to name where the sweep is about to put these files, not where they were written a moment
     /// before that became true. Null on a write failure (<see cref="IOException"/> or
-    /// <see cref="UnauthorizedAccessException"/>) — best-effort, the same stance
-    /// <see cref="CaptureStrandedDeltaAsync"/> already takes: losing the artifact must not fail
-    /// the closeout that is already certain to happen, it just leaves nothing for a draft to name.
+    /// <see cref="UnauthorizedAccessException"/>) — the closeout this call is part of still
+    /// completes regardless, the same stance <see cref="CaptureStrandedDeltaAsync"/> already
+    /// takes, but a null here means no draft was minted for a delta the caller already confirmed
+    /// existed, so <see cref="ConcludeOnMergedPullRequestAsync"/> treats it exactly like an
+    /// unread capture and keeps the worktree and branch in place rather than deleting the only
+    /// remaining copy of the commits this write just lost.
     /// </summary>
     private async Task<(string PatchFile, string CommitListFile)?> SaveStrandedDeltaAsync(
         ReviewContext context, StrandedDelta delta, CancellationToken cancellationToken)
@@ -1556,6 +1572,13 @@ public sealed class ReviewEngine(
             }
         }
 
+        // A confirmed delta that could not be saved is exactly as unaccounted-for as an unread
+        // one: the worktree and branch are still the only place those commits exist, so deleting
+        // either below is the same unread guess CaptureFailed already exists to prevent, just
+        // reached from the write side instead of the read side (independent pre-PR review,
+        // cycle 1, both lenses).
+        bool strandedButUnsaved = captured.Delta is not null && saved is null;
+
         await using IDocumentSession session = store.LightweightSession();
         StreamState? taskFence = await session.Events.FetchStreamStateAsync(context.TaskId, cancellationToken);
         TaskAggregate? task = taskFence is null
@@ -1593,7 +1616,7 @@ public sealed class ReviewEngine(
             session, task, context.Project, context.RunId, context.Run.NodeId, context.Run.OwnerId,
             mergedAt, now, cancellationToken, completeClaimedTaskHere: true,
             precedingRunEvents: [new ReviewEndedByMerge(context.RunId, run.ReviewCycle, reLandDraftTaskId, now)],
-            preserveWorkspaceOnCaptureFailure: captured.CaptureFailed);
+            preserveWorkspaceOnCaptureFailure: captured.CaptureFailed || strandedButUnsaved);
         if (!committed)
         {
             logger.LogInformation(

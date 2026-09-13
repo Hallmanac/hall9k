@@ -465,9 +465,12 @@ public interface IPullRequestInspector
     /// <summary>
     /// The lean read behind <see cref="PullRequestStateSnapshot"/> — merge/close facts
     /// only, one remote call regardless of whether the pull request is still open. The
-    /// orphan sweep is the only caller: it watches for a merge or a close and nothing
-    /// else, so it never needs the reviews and checks <see cref="InspectAsync"/> also
-    /// gathers.
+    /// orphan sweep was the only caller until <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s
+    /// own mid-review merge short-circuit (task: a post-PR follow-up's review loop checks the
+    /// pull request's merge state between passes) added a second, called at every review-pass
+    /// boundary rather than once per orphan candidate per sweep. Both callers watch for a merge
+    /// or a close and nothing else, so neither needs the reviews and checks
+    /// <see cref="InspectAsync"/> also gathers.
     /// </summary>
     Task<PullRequestStateSnapshot> InspectStateAsync(
         string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken);

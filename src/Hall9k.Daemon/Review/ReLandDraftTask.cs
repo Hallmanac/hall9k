@@ -50,14 +50,13 @@ public static class ReLandDraftTask
             ownerId);
 
     /// <summary>
-    /// Composed entirely from platform-known facts (an id, a branch name) rather than from any
-    /// agent or reviewer's own prose, unlike <see cref="ReviewDraftBugTask"/>'s finding-derived
-    /// objective — there is no free text in this OBJECTIVE line for a closing keyword to hide in
-    /// (the agent context below, built from the commits' own subject lines, is a separate risk,
-    /// fenced there for that reason). The defusing still runs, the same as every other stored
-    /// objective seeded from text this platform did not type by hand
-    /// (<c>TaskAddCommand.ObjectiveSeed</c>), since a branch name is itself arbitrary text a
-    /// task's own past revision chose.
+    /// Composed entirely from a platform-known fact (the originating task's own id) rather than
+    /// from any agent or reviewer's own prose, unlike <see cref="ReviewDraftBugTask"/>'s
+    /// finding-derived objective — there is no free text in this OBJECTIVE line for a closing
+    /// keyword to hide in (the agent context below, built from the branch name and the commits'
+    /// own subject lines, is a separate risk, fenced there for that reason). The defusing still
+    /// runs anyway, the same as every other stored objective seeded from text this platform did
+    /// not type by hand (<c>TaskAddCommand.ObjectiveSeed</c>).
     /// </summary>
     private static string Objective(TaskAggregate originatingTask) =>
         RelayedText.WithoutClosingKeywords(RelayedText.OneLine(
