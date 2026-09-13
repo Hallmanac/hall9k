@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -44,6 +45,17 @@ public sealed class IdeaAddCommand : Hall9kAsyncCommand<IdeaAddCommand.Settings>
         ProjectDetails? project = settings.Project.IsNotBlank()
             ? await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken)
             : null;
+        if (project?.PurgeAt is { } purgeDeadline)
+        {
+            // Same reasoning as h9k task add's own refusal: an idea assigned to a project after
+            // scheduling and before the sweep fires would be an orphan the ownership snapshot
+            // never counted (Copilot review, PR #338).
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is scheduled for permanent deletion at "
+                + $"{purgeDeadline.ToLocalTime():g}, so it cannot take a new idea. Cancel the purge "
+                + $"first: h9k project cancel-purge {project.Name}");
+        }
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         // Whether the workspace starts life under the project's home is decided right here,
