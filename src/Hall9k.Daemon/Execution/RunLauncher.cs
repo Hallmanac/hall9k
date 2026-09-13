@@ -935,9 +935,18 @@ public sealed class RunLauncher(
             return;
         }
 
+        // The same question closeout asks before it deletes anything from origin, for the same
+        // reason and through the same seam (Decisions Log #PLACEHOLDER-c9a3a6c8): a raw remote
+        // deletion of a merged branch closes every open pull request stacked on it. GitHub has
+        // usually deleted this branch itself long before a later run reaches this cleanup, in which
+        // case the push would merely fail harmlessly — but "usually" is not the guarantee, and this
+        // arm is the sibling of the one the decision was written for, not an exception to it.
+        RemoteBranchDeletionOwner remoteDeletion =
+            await closeout.RemoteBranchDeletionOwnerAsync(repositoryPath, cancellationToken);
+
         try
         {
-            await worktrees.DeleteBranchEverywhereAsync(repositoryPath, branch, cancellationToken);
+            await worktrees.DeleteBranchEverywhereAsync(repositoryPath, branch, remoteDeletion, cancellationToken);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {

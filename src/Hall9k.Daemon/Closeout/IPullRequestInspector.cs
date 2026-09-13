@@ -517,4 +517,20 @@ public interface IPullRequestInspector
     Task RetargetAsync(
         string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
         CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Whether the repository itself deletes a pull request's head branch when it merges — GitHub's
+    /// own <c>delete_branch_on_merge</c> setting (Settings, Pull Requests, "Automatically delete
+    /// head branches"). A repository-level read rather than a pull-request one, and it lives on this
+    /// seam anyway because it answers a question only closeout asks, about the one thing closeout
+    /// does to a branch after a merge: whether the remote deletion is this platform's to make at all
+    /// (<see cref="Hall9k.Connectors.Worktrees.MergedBranchCleanup"/>, Decisions Log
+    /// #PLACEHOLDER-c9a3a6c8).
+    /// <para>
+    /// Throws on any failure, the same convention every other call on this seam uses. The caller
+    /// treats a throw as "unread", which falls back to deleting the branch itself — an unread
+    /// setting is never evidence the repository has one turned on.
+    /// </para>
+    /// </summary>
+    Task<bool> DeletesHeadBranchOnMergeAsync(string repositoryPath, CancellationToken cancellationToken);
 }

@@ -9335,6 +9335,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             CancellationToken cancellationToken) =>
             throw new InvalidOperationException("the pull request is already merged — nothing here merges it again");
 
+        public Task<bool> DeletesHeadBranchOnMergeAsync(
+            string repositoryPath, CancellationToken cancellationToken) => Task.FromResult(false);
+
         public Task RetargetAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
             CancellationToken cancellationToken) =>
@@ -9372,7 +9375,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken)
+        public Task DeleteBranchEverywhereAsync(
+            string repositoryPath, string branch, RemoteBranchDeletionOwner remoteDeletion,
+            CancellationToken cancellationToken)
         {
             DeletedBranches.Add(branch);
             return Task.CompletedTask;
@@ -9571,6 +9576,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         public Task MergeAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
             CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+
+        public Task<bool> DeletesHeadBranchOnMergeAsync(
+            string repositoryPath, CancellationToken cancellationToken) =>
             throw NeverInvoked();
 
         public Task RetargetAsync(

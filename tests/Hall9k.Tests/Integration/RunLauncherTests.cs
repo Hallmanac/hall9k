@@ -75,6 +75,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
             CancellationToken cancellationToken) => Task.CompletedTask;
 
+        public Task<bool> DeletesHeadBranchOnMergeAsync(
+            string repositoryPath, CancellationToken cancellationToken) => Task.FromResult(false);
+
         public Task RetargetAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
             CancellationToken cancellationToken) => Task.CompletedTask;
@@ -103,6 +106,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
             CancellationToken cancellationToken) => Task.CompletedTask;
 
+        public Task<bool> DeletesHeadBranchOnMergeAsync(
+            string repositoryPath, CancellationToken cancellationToken) => Task.FromResult(false);
+
         public Task RetargetAsync(
             string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
             CancellationToken cancellationToken) => Task.CompletedTask;
@@ -128,7 +134,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken)
+        public Task DeleteBranchEverywhereAsync(
+            string repositoryPath, string branch, RemoteBranchDeletionOwner remoteDeletion,
+            CancellationToken cancellationToken)
         {
             DeletedBranches.Add(branch);
             return Task.CompletedTask;
@@ -691,7 +699,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken) =>
+        public Task DeleteBranchEverywhereAsync(
+            string repositoryPath, string branch, RemoteBranchDeletionOwner remoteDeletion,
+            CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
         public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
@@ -1038,7 +1048,9 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task DeleteBranchEverywhereAsync(string repositoryPath, string branch, CancellationToken cancellationToken) =>
+        public Task DeleteBranchEverywhereAsync(
+            string repositoryPath, string branch, RemoteBranchDeletionOwner remoteDeletion,
+            CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
         public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
