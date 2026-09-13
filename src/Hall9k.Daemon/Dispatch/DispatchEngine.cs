@@ -1073,7 +1073,7 @@ public sealed class DispatchEngine(
         // — passing that same already-materialized set here (an earlier version of this method
         // did) could never catch a project archived after the queue was read, since a task's own
         // ProjectId never changes and the set was read before this call, making that branch dead
-        // code the moment it was written (independent pre-PR review, cycle 1, adversarial lens).
+        // code the moment it was written.
         // This read is against the current database instead, so a project archived between the
         // queue read and this claim is the one case this actually closes. A project with no
         // document at all is a different, pre-existing shape (A_task_whose_project_has_no_document_is_uncapped_rather_than_stuck)
@@ -1110,8 +1110,8 @@ public sealed class DispatchEngine(
         // The archive check above is a fresh read too, but CheckTrackerGateAsync can itself pay
         // for a slow tracker read (Jira, a GitHub issue) between that check and this claim's own
         // commit — the same window InspectAndActAsync's own slow-network revalidation closes for
-        // closeout (review thread, PR #336). Re-read immediately before the append, as close to
-        // the commit as this method gets.
+        // closeout. Re-read immediately before the append, as close to the commit as this method
+        // gets.
         if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is { IsArchived: true })
         {
             logger.LogWarning(
