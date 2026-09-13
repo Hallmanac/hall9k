@@ -4,7 +4,7 @@ namespace Hall9k.Domain.Features.Tasks;
 
 /// <summary>
 /// How far along a queued task is toward merging, and so how urgently it should take the next
-/// free dispatch slot (Decisions Log #187): a follow-up lap on a task already past
+/// free dispatch slot (Decisions Log #188): a follow-up lap on a task already past
 /// its first pull request outranks a retry or hand-back before any pull request, which outranks a
 /// plain first claim. An in-process, unpersisted outcome (AGENTS.md: enums only for unpersisted
 /// in-process outcomes) — what is persisted is <see cref="TaskListItem.FollowUpBranch"/>,

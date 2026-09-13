@@ -276,7 +276,7 @@ public sealed class TaskListItem
     /// </summary>
     public bool RetryPending { get; set; }
     /// <summary>
-    /// How far along this queued task is toward merging (Decisions Log #187),
+    /// How far along this queued task is toward merging (Decisions Log #188),
     /// resolved the same way on every reader: a follow-up lap on a task already past its first
     /// pull request (<see cref="FollowUpBranch"/> set, and <see cref="PullRequestUrl"/> non-blank)
     /// outranks a retry or hand-back before any pull request (<see cref="RetryPending"/> set), which

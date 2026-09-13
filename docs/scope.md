@@ -675,7 +675,7 @@ converted (nothing enforced it, so its number is not carried into a setting that
 retirement named in `h9k project show`/`h9k project set`; `--max-parallel` itself survives as a
 quiet alias for the new option. Which project receives a free slot when several are ready is a
 round-robin across the eligible ones — longest unserved wins; which of that project's own tasks
-takes it is decided by rank then oldest assignment (Decisions Log #187), no
+takes it is decided by rank then oldest assignment (Decisions Log #188), no
 configuration and no cross-project difference at all — with an optional priority tier
 (`h9k project set --priority high|normal|low`, Decisions Log #141) that outranks the rotation
 while its project has ready work and releases itself when that queue drains, the self-releasing
@@ -690,7 +690,7 @@ budget is set.
 
 Within the project the rotation and its tier hand a free slot to, which of that project's own
 ready tasks actually takes it is decided by rank before assignment age (Decisions Log
-#187): a follow-up lap on a task already past its first pull request outranks a
+#188): a follow-up lap on a task already past its first pull request outranks a
 retry or hand-back before any pull request, which outranks a plain first claim, so a task one lap
 from merging is never held behind brand-new work at the ceiling — the queue's own age order still
 breaks a tie between two tasks of the same rank, exactly as it always has. The queue-first marker

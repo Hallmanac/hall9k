@@ -6,7 +6,7 @@ namespace Hall9k.Daemon.Dispatch;
 /// <summary>
 /// One queued task as the claim loop needs it: the task, the project whose cap and tier it
 /// answers to, whether a human marked it queue-first (Decisions Log #127), and its own
-/// <see cref="TaskRank"/> (Decisions Log #187).
+/// <see cref="TaskRank"/> (Decisions Log #188).
 /// </summary>
 /// <param name="QueueFirst">
 /// The human's own per-task override, which is why it outranks the rotation entirely: it is more
@@ -46,7 +46,7 @@ public enum SlotReason
 /// </summary>
 /// <param name="Candidate">
 /// The winning project's own task that takes this slot — rank decides among that project's
-/// eligible tasks before assignment age (Decisions Log #187), so this is not
+/// eligible tasks before assignment age (Decisions Log #188), so this is not
 /// always the project's own oldest one; see <see cref="RankBeatenTaskId"/>.
 /// </param>
 /// <param name="Reason">Why this project won, for the claim's own log line.</param>
@@ -63,7 +63,7 @@ public enum SlotReason
 /// or the oldest one already carried the best rank, so age alone would have picked the same
 /// winner. Named so the claim's log can state the rank decision as its own sentence, beside the
 /// rotation's, exactly when the rank actually decided something (Decisions Log
-/// #187).
+/// #188).
 /// </param>
 public sealed record RotationSlot(
     QueuedCandidate Candidate,
@@ -77,7 +77,7 @@ public sealed record RotationSlot(
 /// How free run slots are shared across projects (Decisions Log #141): round-robin by default —
 /// the eligible project longest unserved since its last dispatch wins the next slot, its own rank
 /// then oldest-assignment order deciding which of its tasks takes it (Decisions Log
-/// #187) — with an optional priority tier that outranks the rotation while it has
+/// #188) — with an optional priority tier that outranks the rotation while it has
 /// eligible work and releases itself the moment its queue drains.
 /// <para>
 /// Pure and one decision at a time: it answers "who gets THIS slot" and is asked again for the
@@ -127,7 +127,7 @@ public static class ProjectRotation
     /// oldest-first once one of its tasks outranks another.</item>
     /// <item><b>Rank, within the winning project.</b> Once a project has won the slot, which of
     /// its own eligible tasks actually takes it is decided by <see cref="TaskRank"/> before
-    /// assignment age (Decisions Log #187): a follow-up lap on a task past its
+    /// assignment age (Decisions Log #188): a follow-up lap on a task past its
     /// first pull request outranks a retry or hand-back before any pull request, which outranks a
     /// first claim — with the queue's own order (already assignment-age order within one project)
     /// breaking a tie inside one rank, exactly as it always has. This is the only step rank

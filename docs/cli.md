@@ -834,7 +834,7 @@ rather than in the config file, so a change lands on the next dispatch cycle wit
 
 Which project a free slot actually goes to is a rotation (Decisions Log #141): the eligible
 project longest unserved since its last dispatch wins the next one; which of its own tasks takes
-the slot is decided by rank before assignment age (Decisions Log #187) — a
+the slot is decided by rank before assignment age (Decisions Log #188) — a
 follow-up lap past its first pull request outranks a retry or hand-back, which outranks a plain
 first claim — with no configuration and nothing to set on a single-project node beyond that.
 `h9k project set <project> --priority high|normal|low|default` overrides it for a focus — a higher

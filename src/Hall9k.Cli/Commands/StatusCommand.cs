@@ -539,7 +539,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// Marker first, then rank, then oldest assignment, ties broken by when the task was added
     /// (Decisions Log #64, the queue-first marker, task 45136b29, idea fcaded0b's R7 ruling, and
     /// the rank a follow-up lap, a retry or hand-back, and a first claim take relative to each
-    /// other, Decisions Log #187) — exactly what decides the winner once
+    /// other, Decisions Log #188) — exactly what decides the winner once
     /// <see cref="Hall9k.Daemon.Dispatch.ProjectRotation"/> has already picked a project, but not
     /// exactly the claim query's own SQL, which orders by marker, then assignment, then added and
     /// leaves rank to that later, in-process step. So this order is service order within one

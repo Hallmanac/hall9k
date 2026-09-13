@@ -61,7 +61,7 @@ internal sealed record TaskStatusRow(
     /// </summary>
     bool QueuePriorityMarked = false,
     /// <summary>
-    /// How far along this task is toward merging (Decisions Log #187), mirroring
+    /// How far along this task is toward merging (Decisions Log #188), mirroring
     /// <see cref="Hall9k.Domain.Features.Tasks.Projections.TaskListItem.Rank"/> — what the queued
     /// section orders on ahead of <see cref="AssignedAt"/> and behind
     /// <see cref="QueuePriorityMarked"/>, and what the row's own waiting fact names.
