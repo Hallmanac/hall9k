@@ -46,9 +46,10 @@ public sealed class EpicAddCommand : Hall9kAsyncCommand<EpicAddCommand.Settings>
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
         if (project.PurgeAt is { } purgeDeadline)
         {
-            // Same reasoning as h9k task add's own refusal: an epic created after scheduling and
-            // before the sweep fires would be an orphan the ownership snapshot never counted
-            // (Copilot review, PR #338).
+            // Same reasoning as h9k task add's own refusal: the sweep re-queries ownership at
+            // fire time, so an epic created after scheduling is destroyed along with everything
+            // else rather than orphaned — refused here so new work does not accrue on a project
+            // already scheduled for destruction.
             throw new DomainValidationException(
                 $"Project '{project.Name}' is scheduled for permanent deletion at "
                 + $"{purgeDeadline.ToLocalTime():g}, so it cannot take a new epic. Cancel the purge "
