@@ -71,6 +71,11 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
                 ideaId, version: fence.Version, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No idea {ideaId}.");
 
+        // Checked here, before project resolution below, so an idea already concluded or archived
+        // earns its own refusal rather than "promotion needs a project" when it happens to have
+        // none (independent pre-PR review, conformance lens).
+        IdeaDecider.RequireCaptured(idea, "promote");
+
         ProjectDetails? project = settings.Project.IsNotBlank()
             ? await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken)
             : idea.ProjectId is { } assigned
