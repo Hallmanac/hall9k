@@ -8227,6 +8227,100 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// Regression for the race h9k run kill introduces on this loop's own failure path (task: a
+    /// run can be killed without killing its task; independent pre-PR review, cycle 2,
+    /// conformance lens): FailAsync's own already-terminal guard is proven here on the genuine
+    /// call path that reaches it — a review session dying without a result — rather than only by
+    /// inspection. Both lenses are seeded already dispatched (the shape a daemon restart re-enters
+    /// mid-cycle) so EnsureCurrentGenerationAsync's own per-iteration check passes once, cleanly,
+    /// before the kill ever lands — isolating FailAsync's own guard from EnsureCurrentGenerationAsync's,
+    /// which the sibling test below covers on its own. Neither seeded session was ever marked
+    /// alive and neither wrote a result file, so WaitForSessionResultAsync's own five-second
+    /// DeadProcessGrace is the window: the kill lands about a second and a half into it, well
+    /// before the grace expires and this loop reaches FailAsync. Without the guard, FailAsync would
+    /// win that race and overwrite the human's own RunKilled with RunFailed.
+    /// </summary>
+    [Fact]
+    public async Task A_run_killed_while_its_review_session_is_dying_without_a_result_is_never_also_failed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId,
+                new ReviewDispatched(runId, DomainId.New(), 1, 9_001, Now, Now, null, ReviewLens.Conformance),
+                new ReviewDispatched(runId, DomainId.New(), 1, 9_002, Now, Now, null, ReviewLens.Adversarial));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Task killTask = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(1.5), cts.Token);
+            await using IDocumentSession session = store.LightweightSession();
+            session.Events.Append(runId, new RunKilled(runId, KillReason.HumanRequested, null, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }, cts.Token);
+
+        ScriptedExecutor executor = new();
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+        await killTask;
+
+        mergeReady.Should().BeFalse();
+        executor.Spawns.Should().BeEmpty("both passes were already dispatched by this test's own seed");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.Killed,
+            "a human's own kill record must never be overwritten by the review loop's own dead-session handling");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunFailed>().Should().BeEmpty("a run already recorded as killed must never also be recorded as failed");
+    }
+
+    /// <summary>
+    /// Regression for the same race, on the loop's own per-iteration fence instead of its failure
+    /// path (task: a run can be killed without killing its task; independent pre-PR review, cycle
+    /// 2, conformance lens): EnsureCurrentGenerationAsync reloads the run fresh every iteration —
+    /// including the very first — so a kill that lands before ReviewAsync is ever entered must
+    /// stop the loop before it dispatches anything, rather than reading GenerationFence's own
+    /// identity check alone (which TaskFailed's own CurrentRunId leaves still naming this run).
+    /// </summary>
+    [Fact]
+    public async Task A_run_already_killed_before_the_review_loop_starts_is_never_dispatched_into()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _) = await SeedVerifiedRunAsync(store, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunKilled(runId, KillReason.HumanRequested, null, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("a killed run has nothing left for the loop to drive toward merge-ready");
+        executor.Spawns.Should().BeEmpty(
+            "the per-iteration fence must stop the loop before either lens is ever dispatched");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Killed, "the loop must leave a human's own kill record exactly as it found it");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunFailed>().Should().BeEmpty("a run already recorded as killed must never also be recorded as failed");
+    }
+
+    /// <summary>
     /// The core case (task: a session that reports an error result is retried once in place,
     /// measured 2026-09-05: bursty across only 18 distinct hours, the shape of a provider-side
     /// burst): the conformance pass reports a generic error while the adversarial pass reads

@@ -18,6 +18,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -793,6 +794,157 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.Model.Value.Should().Be("claude-opus-5[1m]", "the run records what it was actually dispatched on");
         (await query.LoadAsync<RunListItem>(runId, cts.Token))!.Model.Value.Should().Be("claude-opus-5[1m]");
+    }
+
+    /// <summary>
+    /// Spawns a context-synthesis session that lands h9k run kill's own RunKilled on the run
+    /// stream before writing its result — the same window RunLauncher's own pre-spawn fence
+    /// names (task: a run can be killed without killing its task): the run stream already exists
+    /// by the time a fan-in dependent's blockers are condensed, and the build session has not
+    /// spawned yet.
+    /// </summary>
+    private sealed class KillDuringSynthesisExecutor(DocumentStore store) : IExecutor
+    {
+        public FakeProcessManager Processes { get; } = new();
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                session.Events.Append(
+                    request.RunId, new RunKilled(request.RunId, KillReason.HumanRequested, null, Now));
+                await session.SaveChangesAsync(cancellationToken);
+            }
+
+            string line = System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, object?>
+            {
+                ["type"] = "result",
+                ["subtype"] = "success",
+                ["is_error"] = false,
+                ["usage"] = new Dictionary<string, long> { ["input_tokens"] = 10, ["output_tokens"] = 5 },
+                ["result"] = BlockerContextDocument.Heading + "\nCondensed, for whatever it is still worth.",
+            });
+            Directory.CreateDirectory(request.RunDirectory);
+            await File.WriteAllTextAsync(
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
+                line + "\n", cancellationToken);
+
+            return new SpawnedAgent(8_800, Now);
+        }
+    }
+
+    /// <summary>
+    /// Regression for the race h9k run kill introduces on this method's own pre-spawn fence
+    /// (task: a run can be killed without killing its task; independent pre-PR review, cycle 2,
+    /// conformance lens): the fence's own comment names the context-synthesis window explicitly —
+    /// the run stream already committed, the build session not yet spawned — so this seeds a
+    /// fan-in dependent (blockers above <see cref="DaemonOptions.BlockerSynthesisThreshold"/>)
+    /// whose condensing session lands RunKilled mid-dispatch, and proves the fence catches it
+    /// before <see cref="RefusingExecutor"/> is ever asked to spawn the build session itself.
+    /// </summary>
+    [Fact]
+    public async Task A_run_killed_during_its_own_context_synthesis_is_never_spawned_into()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        List<Guid> blockers = [];
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"launcher-kill-fence-{taskId:N}", "/tmp/launcher-kill-fence-repo",
+                null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+            // Four blockers, one above the default BlockerSynthesisThreshold of 3, each closed
+            // out with a handoff of its own — the fan-in shape that routes through
+            // BlockerContextAssembler.SynthesizeOrFallBackAsync's own condensing spawn.
+            for (int i = 1; i <= 4; i++)
+            {
+                Guid blockerId = DomainId.New();
+                blockers.Add(blockerId);
+                Guid blockerRunId = DomainId.New();
+
+                // TaskDependencyQuery reads true closeout as both halves (its own doc): the task
+                // itself Done, not merely its run RunCompleted — so the blocker's own TaskAggregate
+                // has to walk all the way to TaskCompleted, or the dependent below stays Blocked
+                // and never reaches Claim.
+                (TaskAggregate blockerTask, object[] blockerLifecycle) = TaskSeed.Start(
+                    TaskDecider.Add(
+                        blockerId, projectId, $"Blocker {i}", ["merged"], TaskType.Chore,
+                        null, null, null, Now, node.OwnerId),
+                    node.OwnerId, Now);
+                Hall9k.Domain.Features.Tasks.Events.TaskClaimed blockerClaimed =
+                    TaskDecider.Claim(blockerTask, node.NodeId, node.OwnerId, blockerRunId, Now);
+                blockerTask.Apply(blockerClaimed);
+                Hall9k.Domain.Features.Tasks.Events.TaskCompleted blockerCompleted = TaskDecider.Complete(
+                    blockerTask, blockerRunId, $"https://github.com/x/y/pull/{i}", Now);
+                session.Events.StartStream<TaskAggregate>(
+                    blockerId, [.. blockerLifecycle, blockerClaimed, blockerCompleted]);
+
+                session.Events.StartStream<RunAggregate>(blockerRunId,
+                    new RunDispatched(
+                        blockerRunId, blockerId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                        "/tmp/blocker-worktree", $"task/blocker-{i}", ExecutorMode.Subscription, Now),
+                    new PullRequestOpened(blockerRunId, $"https://github.com/x/y/pull/{i}", i, Now),
+                    new PullRequestMerged(blockerRunId, Now, Now),
+                    new RunHandoffRecorded(blockerRunId, HandoffOutcome.Captured, $"Handoff from blocker {i}.", Now),
+                    new RunCompleted(blockerRunId, Now));
+            }
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDependencyGraph graph = await TaskSeed.DependencyGraphAsync(query, blockers, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Integrate the blockers", ["it integrates"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId, blockedBy: blockers),
+                node.OwnerId, Now, graph);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RefusingExecutor buildExecutor = new();
+        StubWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        KillDuringSynthesisExecutor synthesisExecutor = new(store);
+        BlockerContextAssembler killingContextAssembler = new(
+            store, synthesisExecutor, synthesisExecutor.Processes,
+            Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
+        RunLauncher launcher = new(store, worktrees, buildExecutor,
+            NewSupervisor(store, node), killingContextAssembler, inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        // RefusingExecutor throws if the build session is ever spawned; if the pre-spawn fence
+        // failed to catch the kill, LaunchAsync's own catch-all would swallow that throw and
+        // record a launch failure instead of leaving the human's own kill record alone — so the
+        // real assertions below, not the absence of an exception, are what prove the fence held.
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        await using IQuerySession afterQuery = store.QuerySession();
+        RunDetails run = (await afterQuery.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.Killed,
+            "a human's own kill record must never be overwritten by the launcher's own pre-spawn spawn");
+
+        List<object> events = [.. (await afterQuery.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunProcessStarted>().Should().BeEmpty(
+            "the build session must never be spawned once the run is already recorded Killed");
+        events.OfType<RunSuperseded>().Should().BeEmpty(
+            "this is the terminal-run branch, not the identity-fence rejection — the two are checked separately");
     }
 
     /// <summary>

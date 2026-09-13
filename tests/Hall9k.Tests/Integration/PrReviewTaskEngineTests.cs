@@ -1538,6 +1538,98 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// Regression for the race h9k run kill introduces on this engine's own failure path
+    /// (task: a run can be killed without killing its task; independent pre-PR review, cycle 2,
+    /// conformance lens): PrReviewEngine.FailAsync carries the identical already-terminal guard
+    /// ReviewEngine.FailAsync and RunSupervisor's own dead-process handler do, and this proves it
+    /// holds on the genuine call path this engine actually takes to a failure — a conformance
+    /// session reporting an ordinary error — rather than only by inspection. The kill has to land
+    /// after PrReviewConformanceDispatched's own commit, not before: that event's own projection
+    /// unconditionally re-marks the run UnderReview, so a kill landed any earlier is clobbered by
+    /// dispatch itself and would prove nothing about FailAsync's own guard. KillingErrorExecutor
+    /// therefore keeps its process alive for one poll before landing the kill and then dying, the
+    /// same <see cref="ReviewEngineTests"/>-style window <see cref="FakeProcessManager"/> gives
+    /// every other test here that needs one.
+    /// </summary>
+    [Fact]
+    public async Task A_run_killed_while_its_conformance_session_errors_is_never_also_failed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, PrReviewNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        KillingErrorExecutor killingError = new(store);
+        PrReviewEngine engine = NewPrReviewEngine(store, killingError, killingError.Processes, new NoOpWorktreeManager());
+        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+        await killingError.Background;
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
+        run!.State.Should().Be(
+            RunState.Killed,
+            "a human's own kill record must never be overwritten by the conformance lens's own ordinary error");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunFailed>().Should().BeEmpty("a run already recorded as killed must never also be recorded as failed");
+    }
+
+    /// <summary>
+    /// Writes an ordinary conformance-lens error, exactly like <see cref="OrdinaryErrorExecutor"/>,
+    /// but keeps the process marked alive for one SessionResultWaiter poll before landing h9k run
+    /// kill's own RunKilled and then dying — landing the kill only once
+    /// PrReviewConformanceDispatched has already committed, the same window RunLauncher's own
+    /// pre-spawn fence names for the identical race (task: a run can be killed without killing
+    /// its task).
+    /// </summary>
+    private sealed class KillingErrorExecutor(DocumentStore store) : IExecutor
+    {
+        private const string OrdinaryErrorResultLine =
+            """{"type":"result","subtype":"error_during_execution","is_error":true,"num_turns":4,"duration_ms":45000,"usage":{"input_tokens":1200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":80},"result":"Hit a transient snag."}""";
+
+        public FakeProcessManager Processes { get; } = new();
+
+        public Task Background { get; private set; } = Task.CompletedTask;
+
+        public async Task<SpawnedAgent> SpawnAsync(AgentSpawnRequest request, CancellationToken cancellationToken)
+        {
+            Directory.CreateDirectory(request.RunDirectory);
+            await File.WriteAllTextAsync(
+                RunPaths.SessionStreamFile(request.RunDirectory, request.SessionArtifactName!),
+                OrdinaryErrorResultLine + "\n", cancellationToken);
+
+            const int processId = 7_700;
+            Processes.MarkAlive(processId);
+
+            Task killTask = Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(500), cancellationToken);
+                await using IDocumentSession session = store.LightweightSession();
+                session.Events.Append(
+                    request.RunId, new RunKilled(request.RunId, KillReason.HumanRequested, null, PrReviewNow));
+                await session.SaveChangesAsync(cancellationToken);
+            }, cancellationToken);
+            Task dieTask = Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(1_200), cancellationToken);
+                Processes.MarkDead(processId);
+            }, cancellationToken);
+            Background = Task.WhenAll(killTask, dieTask);
+
+            return new SpawnedAgent(processId, PrReviewNow);
+        }
+    }
+
+    /// <summary>
     /// The conformance lens's own launch-hold branch (independent pre-PR review, cycle 3,
     /// conformance lens), on the one run shape it can reach with a sentinel node id: a Now-speed
     /// auto-pr-review run, which carries <see cref="Guid.Empty"/> on <c>NodeId</c> and names its
@@ -1795,6 +1887,44 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         await using IQuerySession query = store.QuerySession();
         RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
         run!.State.Should().Be(RunState.Superseded, "the fence must retire the run rather than let it dispatch on abandoned work");
+    }
+
+    /// <summary>
+    /// The pre-spawn terminal check <c>DispatchConformanceAsync</c> gained alongside the fences
+    /// above (task: a run can be killed without killing its task; Copilot review, PR #343): a
+    /// human's own h9k run kill can land after the adversarial result is already on disk but
+    /// before this dispatch's own generation-fence check, and unlike a reclaim or an abandon,
+    /// TaskFailed leaves CurrentRunId untouched, so the generation fence alone still says yes.
+    /// The run must stay Killed, not Superseded — this is the terminal-run branch, not the
+    /// identity-fence rejection the two sibling tests above exercise.
+    /// </summary>
+    [Fact]
+    public async Task A_killed_run_is_never_spawned_into_by_the_conformance_dispatch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        (Guid taskId, Guid runId, string runDirectory) = await SeedClaimedPrReviewRunAsync(store, node, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new AgentSessionCompleted(runId, PrReviewNow));
+            session.Events.Append(runId, new RunKilled(runId, KillReason.HumanRequested, node.OwnerId, PrReviewNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PrReviewEngine engine = NewPrReviewEngine(store, new RefusingExecutor("A killed run must never be spawned into."), new FakeProcessManager(), new NoOpWorktreeManager());
+        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+
+        await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token);
+        run!.State.Should().Be(RunState.Killed, "the pre-spawn fence must leave a human's own kill record alone rather than dispatch over it");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<PrReviewConformanceDispatched>().Should().BeEmpty("the conformance lens must never dispatch onto an already-killed run");
     }
 
     /// <summary>
