@@ -464,10 +464,16 @@ own channels can see, honestly — best-effort by construction, not enforcement.
 
 ### Recovery
 
-`h9k task retry | resolve | abandon` · `h9k pr resolve` · `h9k review resolve` ·
+`h9k run kill` · `h9k task retry | resolve | abandon` · `h9k pr resolve` · `h9k review resolve` ·
 `h9k review proceed` · `h9k review fixed`
 
-Seven levers, and picking the wrong one loses work. [operations.md](operations.md#the-recovery-levers)
+`h9k run kill <task-or-run-id> [--reason "…"]` is the run-level stop, distinct from `h9k task
+abandon`'s task-level walk-away: it ends a run's live agent process tree on this machine and
+records the run **Killed** (never **Failed**), while the task itself lands exactly where any
+other run failure leaves it, **Failed**, with `retry`, `resolve`, and `abandon` all still open.
+Refused when `h9kd` is not running, since a stopped daemon supervises nothing.
+
+Eight levers, and picking the wrong one loses work. [operations.md](operations.md#the-recovery-levers)
 is the decision table. Two are interactive mode's own: `review proceed` is the bare-approval lever
 for a routine phase-boundary park, alongside `review resolve`'s redirect verbs, and `review fixed`
 is the newest — you did the fix yourself, in your own worktree, and the review agents check it the
