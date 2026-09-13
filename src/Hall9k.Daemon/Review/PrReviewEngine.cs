@@ -738,6 +738,23 @@ public sealed class PrReviewEngine(
 
         await using IDocumentSession session = store.LightweightSession();
 
+        // Reloaded here, immediately before the fence check below (mirrors DispatchConformanceAsync's
+        // and FailAsync's own guard, task: a run can be killed without killing its task): h9k run
+        // kill can end this run's conformance session right after it wrote its own terminal result
+        // line but before SessionResultWaiter's own dead-process read notices — the identity fence
+        // below only knows about a reclaim or an abandon, not a kill, since TaskFailed never clears
+        // CurrentRunId. Without this, ComposeReportAndParkAsync would win that race and silently
+        // overwrite the run's own Killed record with a live ReviewParked (independent pre-PR review,
+        // cycle 1, conformance lens).
+        RunDetails? terminalCheck = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (terminalCheck is { State.IsTerminal: true })
+        {
+            logger.LogInformation(
+                "Run {RunId}: already {State} by the time the pr-review findings park was about to be recorded - not parking over it",
+                runId, terminalCheck.State.Value);
+            return;
+        }
+
         // Mirrors DispatchConformanceAsync's and FinalizeAsync's own fence-rejection (Copilot
         // review, PR #30's RunSuperseded fix): without it, a run reclaimed while the
         // conformance lens was still running would append ReviewParked here unfenced after a
