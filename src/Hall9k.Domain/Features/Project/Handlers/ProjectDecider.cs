@@ -396,11 +396,13 @@ public static class ProjectDecider
 
     /// <summary>
     /// Ends an archive in place, on the same stream and the same id — the inverse of
-    /// <see cref="Archive"/>. Refused while a purge is pending (<see cref="SchedulePurge"/>): the
-    /// daemon's purge sweep reads only <see cref="ProjectAggregate.PurgeAt"/>, not liveness, so a
-    /// project reactivated out from under a still-pending deadline would be destroyed the next
-    /// time the sweep runs. Cancel the purge first (<c>h9k project cancel-purge</c>), which is
-    /// exactly what leaves a project reactivatable again.
+    /// <see cref="Archive"/>. Refused while a purge is pending (<see cref="SchedulePurge"/>): this
+    /// is the fence itself, and it is the reason <c>ProjectPurgeEngine</c>'s own liveness re-check
+    /// (defense in depth, for any writer that reactivates without going through this method fenced)
+    /// almost never fires — without this refusal, a project reactivated out from under a
+    /// still-pending deadline would be destroyed the next time the sweep runs. Cancel the purge
+    /// first (<c>h9k project cancel-purge</c>), which is exactly what leaves a project reactivatable
+    /// again.
     /// </summary>
     public static ProjectReactivated Reactivate(
         ProjectAggregate project, DateTimeOffset reactivatedAt, Guid reactivatedByOwnerId)
