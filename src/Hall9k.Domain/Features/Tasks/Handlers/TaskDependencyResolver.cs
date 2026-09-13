@@ -125,14 +125,37 @@ public static class TaskDependencyResolver
                 continue;
             }
 
-            IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
-                session, task.UnmetDependencies, cancellationToken);
+            (IReadOnlyList<TaskDependency> dependencies, IReadOnlyList<Guid> missingDependencyIds) =
+                await TaskDependencyQuery.LoadWithMissingAsync(session, task.UnmetDependencies, cancellationToken);
 
             // The newest death this pass recorded, which is the one the task surface will show:
             // a recovery later in the same walk only removes blockers that are alive now, so it
             // can never displace a death recorded a moment ago.
             string? held = null;
             bool lifted = false;
+
+            // A dependency id naming no TaskListItem at all — most likely a purged project's own
+            // task, hard-deleted regardless of what other projects' tasks still declare it as a
+            // blocker (ProjectPurgeEngine). There is no TaskDependency snapshot to ask
+            // StackedEdgeRules about (no state, no run, nothing that could ever reach closeout or
+            // Delivered), so this is unconditionally dead for either kind of edge — the same dead
+            // hold a Failed or Abandoned blocker gets, with its own remedy on the dependent's side
+            // rather than a lever the decider would refuse (independent pre-PR review, cycle 1,
+            // adversarial lens: this id was previously dropped silently by TaskDependencyQuery,
+            // leaving the dependent Blocked forever with no blocker even named).
+            foreach (Guid missingId in missingDependencyIds)
+            {
+                string reason = MissingDependencyReason(task, missingId);
+                if (task.RecordedDependencyFailure(missingId) == reason)
+                {
+                    continue;
+                }
+
+                TaskDependencyFailed died = TaskDecider.DependencyFailed(task, missingId, reason, now);
+                session.Events.Append(task.Id, died);
+                task.Apply(died);
+                held = reason;
+            }
 
             // Each decision is applied to the in-memory aggregate as it is appended, so a pass
             // that clears two blockers records the second one's remaining set correctly rather
@@ -218,4 +241,15 @@ public static class TaskDependencyResolver
     private static string DeathReason(TaskAggregate task, TaskDependency dependency) =>
         $"{dependency.DescribeDeath()} (h9k task unassign {task.Id}, then h9k task draft {task.Id}).";
 
+    /// <summary>
+    /// Why a blocker id that names no task at all will never close out — there is no
+    /// <see cref="TaskDependency"/> snapshot to describe, so this names only the id
+    /// (<see cref="TaskDependencyGraph.DescribeCycle"/>'s own short-id convention) and the one
+    /// remedy left: nothing on the blocker's own side can ever put it back under watch, because
+    /// there is no blocker left.
+    /// </summary>
+    private static string MissingDependencyReason(TaskAggregate task, Guid dependencyId) =>
+        $"Dependency {dependencyId.ToString("N")[^8..]} no longer exists — most likely its project was "
+        + "purged — so it will never close out. Revise this task's dependencies "
+        + $"(h9k task unassign {task.Id}, then h9k task draft {task.Id}).";
 }
