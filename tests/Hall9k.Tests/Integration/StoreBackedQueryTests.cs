@@ -54,9 +54,11 @@ namespace Hall9k.Tests.Integration;
 /// narrowing that candidate set actually translates against Marten.
 /// </para>
 /// <para>
-/// <see cref="QueuedPeriodTotal"/> — its own raw <c>TaskClaimed</c> event query, the second half
-/// of the same task: a fake candidate list cannot exercise whether
-/// <c>QueryRawEventDataOnly&lt;TaskClaimed&gt;</c> actually finds a claim against a real store.
+/// <see cref="QueuedPeriodTotal"/> — its own raw event queries across every kind that can close a
+/// queued segment (<c>TaskClaimed</c>, <c>TaskUnassigned</c>, <c>TaskAbandoned</c>, and the rest of
+/// <c>TaskPassageQuery</c>'s own <c>BuildQueueSegments</c> switch): a fake candidate list cannot
+/// exercise whether <c>QueryRawEventDataOnly&lt;T&gt;</c> actually finds one of these against a
+/// real store.
 /// </para>
 /// </summary>
 [Trait("Category", "RequiresDocker")]
@@ -888,6 +890,70 @@ public sealed class StoreBackedQueryTests(PostgresFixture postgres) : IClassFixt
             query, [stillQueuedTaskId], periodStart, now, cts.Token);
 
         total.Should().Be(TimeSpan.FromHours(6) + TimeSpan.FromHours(3));
+    }
+
+    /// <summary>
+    /// The narrower gap independent pre-PR review, cycle 2, conformance lens found in the fix
+    /// above: a task that leaves the queue mid-period by unassignment or abandonment, never
+    /// reaching <c>TaskClaimed</c>, held no row in the queued section by the time this reads and so
+    /// was invisible to both candidate sources the first fix added — the raw <c>TaskClaimed</c>
+    /// query and <paramref name="currentlyQueuedTaskIds"/> alike.
+    /// </summary>
+    [Fact]
+    public async Task Queued_period_total_sweeps_in_a_task_that_left_the_queue_unassigned_or_abandoned()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid unassignedTaskId = DomainId.New();
+        Guid abandonedTaskId = DomainId.New();
+
+        // A window of its own, well clear of every other test's own timeline sharing this fixture's
+        // store (HandoffNow +/- 40h and +/- 7 days elsewhere in this class): the candidate scan this
+        // test exercises reads every stream in the store within [periodStart, now), not only the
+        // ones this test seeded, so an overlapping window would let another test's own event leak
+        // into this one's total.
+        DateTimeOffset now = HandoffNow.AddDays(-30);
+        DateTimeOffset periodStart = now.AddHours(-6);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // Queued at the start of the period, unassigned two hours later — never claimed, so
+            // no TaskClaimed and no queued-section row is left for either candidate source to
+            // find it by.
+            session.Events.StartStream<TaskAggregate>(unassignedTaskId,
+            [
+                .. TaskSeed.Dispatchable(
+                    TaskDecider.Add(
+                        unassignedTaskId, projectId, "Unassigned mid-period", ["merged"], TaskType.Chore,
+                        null, null, null, periodStart, ownerId),
+                    ownerId, periodStart),
+                new TaskUnassigned(unassignedTaskId, "cap lowered", periodStart.AddHours(2), ownerId),
+            ]);
+
+            // Queued at the start of the period, abandoned one hour later — the same shape, a
+            // different terminal exit.
+            session.Events.StartStream<TaskAggregate>(abandonedTaskId,
+            [
+                .. TaskSeed.Dispatchable(
+                    TaskDecider.Add(
+                        abandonedTaskId, projectId, "Abandoned mid-period", ["merged"], TaskType.Chore,
+                        null, null, null, periodStart, ownerId),
+                    ownerId, periodStart),
+                new TaskAbandoned(abandonedTaskId, "no longer needed", periodStart.AddHours(1), ownerId),
+            ]);
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+
+        TimeSpan total = await QueuedPeriodTotal.ReadAsync(
+            query, currentlyQueuedTaskIds: [], periodStart, now, cts.Token);
+
+        total.Should().Be(TimeSpan.FromHours(2) + TimeSpan.FromHours(1));
     }
 
     /// <summary>A task claimed, pushed, and merged — the <see cref="TaskState.Done"/> shape <see cref="ThroughputQuery"/> reads.</summary>
