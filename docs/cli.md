@@ -481,8 +481,8 @@ reaches the reviewer.
 
 ### Projects, owners, connections
 
-`h9k project add | init | list | show | set | remove | reactivate | rename` · `h9k owner show | set` ·
-`h9k connection add jira | list`
+`h9k project add | init | list | show | set | remove | cancel-purge | reactivate | rename` ·
+`h9k owner show | set` · `h9k connection add jira | list`
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
 recipe for a project that has none yet, and the repair path for one that is incomplete. See
