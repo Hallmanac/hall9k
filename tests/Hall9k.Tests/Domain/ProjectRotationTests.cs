@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Infrastructure.Ids;
 using Xunit;
 
@@ -216,6 +217,93 @@ public sealed class ProjectRotationTests
     }
 
     [Fact]
+    public void A_first_claim_assigned_earlier_does_not_take_the_slot_ahead_of_a_follow_up_lap_reopened_a_minute_ago()
+    {
+        // Decisions Log #187: a task one lap from merging is never held behind
+        // brand-new work at the ceiling. The first claim is first in queue order — assigned an
+        // hour earlier — and the follow-up lap sits behind it, reopened a minute ago; rank still
+        // decides ahead of that age difference.
+        QueuedCandidate[] queue =
+        [
+            Queued(Alpha, rank: TaskRank.FirstClaim),
+            Queued(Alpha, rank: TaskRank.FollowUpLap),
+        ];
+
+        RotationSlot slot = Next(queue, Load(Uncapped(Alpha)))!;
+
+        slot.Candidate.Should().Be(queue[1], "a follow-up lap past its first pull request outranks a first claim");
+        slot.RankBeatenTaskId.Should().Be(queue[0].TaskId, "the first claim was the project's own oldest task");
+    }
+
+    [Fact]
+    public void A_retry_outranks_a_first_claim_but_not_a_follow_up_lap()
+    {
+        QueuedCandidate[] queue =
+        [
+            Queued(Alpha, rank: TaskRank.FirstClaim),
+            Queued(Alpha, rank: TaskRank.RetryOrHandback),
+            Queued(Alpha, rank: TaskRank.FollowUpLap),
+        ];
+
+        RotationSlot slot = Next(queue, Load(Uncapped(Alpha)))!;
+
+        slot.Candidate.Should().Be(queue[2]);
+        slot.RankBeatenTaskId.Should().Be(queue[0].TaskId, "the oldest task is the one the rank decision names, "
+            + "not every task it outranks");
+    }
+
+    [Fact]
+    public void Two_tasks_of_the_same_rank_still_dispatch_oldest_first()
+    {
+        // No rank decision to report here at all: the queue's own order already picked the same
+        // winner rank would have, so nothing was beaten.
+        QueuedCandidate[] queue =
+        [
+            Queued(Alpha, rank: TaskRank.RetryOrHandback),
+            Queued(Alpha, rank: TaskRank.RetryOrHandback),
+        ];
+
+        RotationSlot slot = Next(queue, Load(Uncapped(Alpha)))!;
+
+        slot.Candidate.Should().Be(queue[0], "equal ranks fall back to the queue's own oldest-first order");
+        slot.RankBeatenTaskId.Should().BeNull();
+    }
+
+    [Fact]
+    public void A_first_claim_marked_queue_first_takes_the_slot_ahead_of_a_pending_lap()
+    {
+        // The marker outranks every rank, exactly as it outranks the rotation and every tier
+        // (Decisions Log #127) — rank never even gets asked.
+        QueuedCandidate[] queue =
+        [
+            Queued(Alpha, rank: TaskRank.FollowUpLap),
+            Queued(Alpha, queueFirst: true, rank: TaskRank.FirstClaim),
+        ];
+
+        RotationSlot slot = Next(queue, Load(Uncapped(Alpha)))!;
+
+        slot.Candidate.Should().Be(queue[1]);
+        slot.Reason.Should().Be(SlotReason.QueueFirstMarker);
+        slot.RankBeatenTaskId.Should().BeNull("the marker decided this slot, not the rank rule");
+    }
+
+    [Fact]
+    public void A_pending_lap_in_the_project_the_rotation_did_not_choose_does_not_take_the_slot()
+    {
+        // Rank only ever decides within the project the rotation already picked — it never
+        // reaches across projects to reorder them. Beta's follow-up lap has the higher rank, but
+        // the rotation chose Alpha (the queue's own head-order tie-break on a cold start), so
+        // Alpha's first claim still wins.
+        QueuedCandidate[] queue = [Queued(Alpha, rank: TaskRank.FirstClaim), Queued(Beta, rank: TaskRank.FollowUpLap)];
+
+        RotationSlot slot = Next(queue, Load(Uncapped(Alpha), Uncapped(Beta)))!;
+
+        slot.Candidate.ProjectId.Should().Be(Alpha, "the rotation, not rank, decides which project gets the slot");
+        slot.Candidate.Rank.Should().Be(TaskRank.FirstClaim);
+        slot.RankBeatenTaskId.Should().BeNull("Beta's task was never eligible for this slot at all");
+    }
+
+    [Fact]
     public void Nothing_is_offered_when_no_project_can_admit_a_claim()
     {
         DispatchLoad load = Load(
@@ -243,8 +331,8 @@ public sealed class ProjectRotationTests
         IReadOnlyDictionary<Guid, int>? claimed = null) =>
         ProjectRotation.NextSlot(queue, load, claimed ?? new Dictionary<Guid, int>(), served ?? new Dictionary<Guid, DateTimeOffset>());
 
-    private static QueuedCandidate Queued(Guid projectId, bool queueFirst = false) =>
-        new(DomainId.New(), projectId, queueFirst);
+    private static QueuedCandidate Queued(Guid projectId, bool queueFirst = false, TaskRank rank = TaskRank.FirstClaim) =>
+        new(DomainId.New(), projectId, queueFirst, rank);
 
     private static DispatchLoad Load(params ProjectLoad[] projects) =>
         new(new NodeLoad(LiveRuns: 0, ConfiguredMaxConcurrentRuns: 2),

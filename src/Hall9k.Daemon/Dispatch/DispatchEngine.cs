@@ -560,7 +560,11 @@ public sealed class DispatchEngine(
     /// One call per reason rather than one template with substituted clauses, because the numbers
     /// each reason states differ, and a shared template would either drop them or print a
     /// placeholder against the wrong argument (the lesson
-    /// <see cref="ReportProjectCapDeferrals"/>'s own two templates carry).
+    /// <see cref="ReportProjectCapDeferrals"/>'s own two templates carry). <see cref="ReportRankDecision"/>
+    /// is exactly this discipline applied to the rank decision (Decisions Log
+    /// #187): its own call, logged only when rank actually decided the slot against
+    /// another eligible task in the same project, rather than a clause folded into the sentences
+    /// below — which would print against every claim whether or not a rank decision was ever made.
     /// </para>
     /// </summary>
     private void ReportSlotClaimed(RotationSlot slot, DispatchLoad load)
@@ -585,25 +589,51 @@ public sealed class DispatchEngine(
             case SlotReason.LongestUnserved when slot.LastServedAt is { } servedAt:
                 logger.LogInformation(
                     "Free slot to project {Project} (task {TaskId}): longest unserved of {EligibleProjects} "
-                    + "project(s) with ready work — last dispatched for at {LastServedAt:u}, oldest task first "
-                    + "within it",
+                    + "project(s) with ready work — last dispatched for at {LastServedAt:u}; rank decides which "
+                    + "of its own tasks, oldest first within a rank",
                     project, slot.Candidate.TaskId, slot.EligibleProjects, servedAt);
                 break;
             case SlotReason.LongestUnserved:
                 logger.LogInformation(
                     "Free slot to project {Project} (task {TaskId}): longest unserved of {EligibleProjects} "
                     + "project(s) with ready work — nothing has been dispatched for it since this daemon "
-                    + "started, oldest task first within it",
+                    + "started; rank decides which of its own tasks, oldest first within a rank",
                     project, slot.Candidate.TaskId, slot.EligibleProjects);
                 break;
             case SlotReason.OnlyEligibleProject:
             default:
                 logger.LogInformation(
                     "Free slot to project {Project} (task {TaskId}): the only project with ready work under "
-                    + "every applicable limit this sweep — oldest task first within it",
+                    + "every applicable limit this sweep — rank decides which of its own tasks, oldest first "
+                    + "within a rank",
                     project, slot.Candidate.TaskId);
                 break;
         }
+
+        ReportRankDecision(slot, project);
+    }
+
+    /// <summary>
+    /// The rank decision's own sentence (Decisions Log #187), beside the project
+    /// sentence above rather than folded into it: a follow-up lap on a task past its first pull
+    /// request outranks a retry or hand-back before any pull request, which outranks a first
+    /// claim, and the queue's own age order only breaks a tie inside one rank. Logged only when
+    /// <see cref="RotationSlot.RankBeatenTaskId"/> names a task the rank decision actually beat —
+    /// two tasks of the same rank dispatch oldest first with no rank decision to report at all,
+    /// and a slot with nothing else eligible in its project has nothing to have beaten either — so
+    /// a claim where rank changed nothing prints only the project sentence, unchanged.
+    /// </summary>
+    private void ReportRankDecision(RotationSlot slot, string project)
+    {
+        if (slot.RankBeatenTaskId is not { } beatenTaskId)
+        {
+            return;
+        }
+
+        logger.LogInformation(
+            "Task {TaskId} in project {Project} takes the slot as {Rank}, ahead of task {BeatenTaskId}, which "
+            + "has waited longer but ranks behind it",
+            slot.Candidate.TaskId, project, slot.Candidate.Rank.Describe(), beatenTaskId);
     }
 
     /// <summary>
@@ -618,7 +648,11 @@ public sealed class DispatchEngine(
     /// This order is the queue's own, and it stays what decides <em>within</em> one project and
     /// what breaks a tie between two equally unserved ones (Decisions Log #141). Across projects
     /// under contention it is <see cref="ProjectRotation"/> that picks, so this list is the set
-    /// and the tie-break rather than the running order.
+    /// and the tie-break rather than the running order. Since Decisions Log #187,
+    /// it is also merely the tie-break <em>within a rank</em>: <see cref="ProjectRotation.NextSlot"/>
+    /// decides which of a winning project's own tasks actually takes the slot by
+    /// <see cref="Hall9k.Domain.Features.Tasks.TaskRank"/> first, falling back to this same
+    /// assignment-age order only between two tasks of the same rank.
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<QueuedCandidate>> ReadQueueAsync(
@@ -646,11 +680,12 @@ public sealed class DispatchEngine(
         // ProjectRotation picks the marked candidate by value (Decisions Log #141), leaving the
         // NULL to misplace a stale row only among the unmarked ones.
         //
-        // Three fields, never the documents: nothing below reads any other projection field.
+        // Six fields, never the documents: nothing below reads any other projection field.
         // TryClaimAsync decides from the task's own stream, a deferral is logged by id and by the
-        // project whose cap held it, and the rotation needs the project and the marker, so every
-        // other document body fetched here would be deserialized and dropped. It is worth saying
-        // because of what follows — the whole queue
+        // project whose cap held it, and the rotation needs the project, the marker, and — since
+        // Decisions Log #187 — the three fields TaskListItem.Rank resolves from,
+        // so every other document body fetched here would be deserialized and dropped. It is
+        // worth saying because of what follows — the whole queue
         // is read rather than just the claimable head, so that every task either ceiling defers
         // can be named in the log exactly once, which makes this the one read here whose size
         // grows with the backlog rather than with the ceiling.
@@ -660,7 +695,8 @@ public sealed class DispatchEngine(
             .OrderByDescending(t => t.QueuePriorityMarked)
             .ThenBy(t => t.AssignedAt)
             .ThenBy(t => t.AddedAt)
-            .Select(t => new QueuedRow(t.Id, t.ProjectId, t.QueuePriorityMarked))
+            .Select(t => new QueuedRow(
+                t.Id, t.ProjectId, t.QueuePriorityMarked, t.FollowUpBranch, t.RetryPending, t.PullRequestUrl))
             .ToListAsync(cancellationToken);
 
         // An archived project's tasks stay Queued in the database (h9k project remove already
@@ -670,7 +706,17 @@ public sealed class DispatchEngine(
         // means invisible, not held with a reason the way a paused project's own cap holds one.
         return [.. rows
             .Where(row => !archivedProjects.Contains(row.ProjectId))
-            .Select(row => new QueuedCandidate(row.Id, row.ProjectId, row.QueuePriorityMarked ?? false))];
+            .Select(row => new QueuedCandidate(
+                row.Id,
+                row.ProjectId,
+                row.QueuePriorityMarked ?? false,
+                // The same resolver TaskListItem.Rank calls, applied to the three raw fields this
+                // row selected rather than to a materialized document (Decisions Log
+                // #187) — the projection widened for exactly this, never for a
+                // display duty the daemon has no use for. RetryPending reads absent (pre-marker
+                // document) as false, same as QueuePriorityMarked below — the backfill's own
+                // marker is what closes that window rather than this read.
+                TaskRankResolution.Resolve(row.FollowUpBranch, row.PullRequestUrl, row.RetryPending ?? false)))];
     }
 
     /// <summary>
@@ -690,18 +736,36 @@ public sealed class DispatchEngine(
     }
 
     /// <summary>
-    /// The three selected columns, with the marker <em>nullable</em> — the shape a document
+    /// The six selected columns, with both bools <em>nullable</em> — the shape a document
     /// written before the marker existed actually has (see the ordering note above: it carries no
     /// such key at all). Selected into a non-nullable bool, a missing key deserializes as JSON
     /// null against a bool and throws, which would take the whole sweep down and wedge the queue
     /// rather than merely misordering one row — a far worse failure than the one the startup
     /// backfill exists to repair, and reachable by any sweep that races that repair. Absent reads
-    /// as unmarked, which is what an absent marker means. Origin incident (2026-09-06): the queue
-    /// read's own first version selected it as a bool and
+    /// as unmarked/not-pending, which is what an absent marker means. Origin incident (2026-09-06):
+    /// the queue read's own first version selected <see cref="QueuePriorityMarked"/> as a bool and
     /// <c>TaskProjectionBackfillTests.A_stale_unmarked_document_does_not_outrank_a_marked_one_before_or_after_the_backfill</c>
     /// — which strips exactly that key — failed on the deserialization.
+    /// <see cref="RetryPending"/> (Copilot review, PR #346) is selected the identical way for the
+    /// identical reason: <see cref="TaskListItem.RetryPending"/> is non-nullable on the document
+    /// too, and a task genuinely mid-retry on a document old enough to lack the key must be
+    /// rebuilt before it reads as a plain first claim, not merely deserialize-fail the sweep.
+    /// <para>
+    /// <see cref="FollowUpBranch"/> and <see cref="PullRequestUrl"/> (Decisions Log #187) are
+    /// plain nullable strings, so the same hazard does not apply to them — a missing key
+    /// deserializes as null either way, which is exactly why the backfill's own
+    /// <c>StaleListOnlyDocument</c> gained a marker for the first: a task genuinely
+    /// mid-lap on a document old enough to lack the key must be rebuilt before it reads as a plain
+    /// first claim, rather than merely sorting oddly the way a stale bool would have.
+    /// </para>
     /// </summary>
-    private sealed record QueuedRow(Guid Id, Guid ProjectId, bool? QueuePriorityMarked);
+    private sealed record QueuedRow(
+        Guid Id,
+        Guid ProjectId,
+        bool? QueuePriorityMarked,
+        string? FollowUpBranch,
+        bool? RetryPending,
+        string? PullRequestUrl);
 
     /// <summary>
     /// Whether this node's periodic token-spend budget (backlog: spend-governor step three) is
