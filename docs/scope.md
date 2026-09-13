@@ -676,6 +676,22 @@ period rolls — never killing or parking work already running. Unset means unbu
 status`/`h9k config show` show the current period's own recorded spend, by model, whether or not a
 budget is set.
 
+`h9k status` prints a throughput block beneath those spend lines, for the identical period, so
+speed and efficiency read beside cost rather than instead of it: how many tasks merged this
+period, the median and p90 time from claim to merge, the first-pass merge share (merged with no
+reopen and exactly one review cycle), laps per merged task, and the share of each merged task's
+own life — from its first entry into the queue to its merge — spent queued behind the ceiling or
+waiting on a human. Every figure folds `TaskPassage`, the same record `h9k task show`'s own
+passage section renders, so a per-task number and the period's own number can never disagree.
+Under five merged tasks in the period every derived figure stays back for a plain count and an
+honest "too few to summarize" — a median of two or three data points is a data point wearing a
+statistic's clothes. Each row in the queued section also says how long it has waited for its
+present slot, and the section's own heading carries the period's total queue time — every task
+that queued during the period, whether it is still queued now or has since been claimed, not just
+the rows still on the board. `h9k project show` prints the identical block scoped to its own
+project, the current period beside the previous one, so a trend reads without needing two
+separate reads to compare.
+
 The review loop's four cycle caps — the conformance and adversarial per-track caps, the mandatory
 final-full-pass round cap, and the task-lifetime review-cycle budget that survives run resets — are
 settable the same way, at three levels apiece with the same

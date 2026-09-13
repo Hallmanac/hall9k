@@ -136,7 +136,12 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   Resolution is task override, then this node's per-role default, then the project's own
   `--model`, then the platform fallback.
 - **The shape of spend.** Prints the current period's recorded spend, by model, whether or not a
-  budget is set; a node-level budget paces dispatch rather than reducing total spend.
+  budget is set; a node-level budget paces dispatch rather than reducing total spend. `h9k status`
+  prints a throughput block right beneath it, for the same period: tasks merged, median and p90
+  claim-to-merge, first-pass merge share, laps per merged task, and the share of task time spent
+  queued or waiting on a human — held back for a plain count under five merged tasks, rather than a
+  median of two. `h9k project show` prints the same block scoped to its own project, current
+  period beside the previous one.
 
   ```bash
   h9k config show

@@ -47,7 +47,7 @@ One line per branch. Ask `--help` for the rest.
 
 | Command | What it is for |
 |---|---|
-| `h9k status` | The attention pane: what needs you, what has gone quiet, what is running. Bounded on purpose. |
+| `h9k status` | The attention pane: what needs you, what has gone quiet, what is running. Bounded on purpose. Beneath the spend lines it prints a throughput block for the current spend period — tasks merged, median and p90 claim-to-merge, first-pass merge share, laps per merged task, and the share of task time spent queued or waiting on a human — so speed and efficiency read in the same glance as cost. Under five merged tasks it prints the count and says there are too few to summarize rather than a median of two. Each queued row also says how long it has waited for its present slot, and the queued section's own heading carries the period's total queue time. |
 | `h9k task show <id>` | One task in full: contract, dependencies, external reference, conversation, its own passage in time (how long it queued, built, sat in gates, cycled through review, waited on a human, and waited for its merge, plus lap, cycle, and session counts), every run and its outcome, each run's own gate wall-clock durations, a flag when one materially exceeds the project's recent recorded average for that gate, and each run's own worktree path, branch and live agent sessions. The second command of any investigation. |
 | `h9k logs <id>` | A run's transcript, rendered from its stream-json (`--raw` for the stream-json itself). The log dive `h9k status` is meant to save you. |
 
