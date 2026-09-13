@@ -185,6 +185,54 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The other half of that ordinary path, and the arm a repository with automatic head-branch
+    /// deletion turned on actually takes: GitHub took the parent's branch off origin at the merge
+    /// and moved this child's base onto the project's own before any sweep here looked, so the
+    /// retarget is not attempted a second time and the record says plainly that nothing on this
+    /// platform moved it (Decisions Log #186). The replay behind it is owed either
+    /// way — the parent's commits are duplicated on this branch whoever moved the base.
+    /// </summary>
+    [Fact]
+    public async Task A_child_github_already_retargeted_is_not_moved_again_and_still_replays()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+        await MergeTheParentAsync(fixture, cts.Token);
+
+        // GitHub's own post-merge cleanup, in the order it really happens: the branch goes, every
+        // open child's base moves onto the base branch, and only then does a sweep here look.
+        Git(fixture.OriginPath, $"update-ref refs/pull/{FakeStackedInspector.ParentNumber}/head {fixture.ParentHeadCommit}");
+        Git(fixture.OriginPath, $"update-ref -d refs/heads/{fixture.ParentBranch}");
+        Git(fixture.RepoPath, "fetch --prune -q origin");
+
+        FakeStackedInspector inspector = new()
+        {
+            Snapshot = FakeStackedInspector.Quiet() with { BaseRefName = "main" },
+        };
+        await NewEngine(fixture, inspector).PollOnceAsync(cts.Token);
+
+        inspector.Retargets.Should().BeEmpty(
+            "the base GitHub reports is already the project's own, so there is nothing left to move");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+        run.LastStackedRetargetSucceeded.Should().BeTrue(
+            "the base is where a retarget would have put it, so the replay behind it proceeds");
+        run.LastStackedRetargetDetail.Should().Contain("nothing here moved it",
+            "the record must not claim this platform performed a retarget GitHub performed");
+        run.StackedOnBranch.Should().BeNull("the recorded base goes back to the project's, retarget or none");
+        run.State.Should().Be(RunState.Superseded, "the reopen hands the pull request to the replay run");
+
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        child.State.Should().Be(TaskState.Queued);
+        child.FollowUpKind.Should().Be(FollowUpKind.StackReplay);
+        child.StackReplaysDispatched.Should().Be(1, "the duplicated parent commits still have to be dropped");
+        child.StackReplayUpstreamCommit.Should().Be(fixture.ParentHeadCommit,
+            "the boundary is the parent's own head, read from the ref GitHub keeps after the deletion");
+    }
+
+    /// <summary>
     /// The retarget comes first and nothing replays without it: replaying onto the project's base
     /// while the pull request is still aimed at a deleted branch would leave a pull request nobody
     /// can merge and no dispatch coming to fix it.
