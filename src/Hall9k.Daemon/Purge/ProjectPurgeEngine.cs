@@ -14,6 +14,17 @@ public sealed record ProjectPurgeSweepResult(
     int ProjectsPurged, int TasksDestroyed, int RunsDestroyed, int IdeasDestroyed, int EpicsDestroyed, int Failures);
 
 /// <summary>
+/// One project's own turn. <see cref="LiveWithPurgeDeadlineSet"/> is distinct from an ordinary
+/// skip: a cancel or reschedule clears <c>ProjectAggregate.PurgeAt</c>, which drops the project out
+/// of the sweep's own due list entirely, so it never reaches <c>PurgeOneAsync</c> at all. This flag
+/// names the one path that still can: a project that reads live (<c>IsArchived=false</c>) with
+/// <c>PurgeAt</c> still set — the state <c>ProjectDecider.Reactivate</c>'s own purge-pending
+/// refusal exists to prevent.
+/// </summary>
+internal sealed record PurgeOneResult(
+    bool Purged, bool LiveWithPurgeDeadlineSet, int Tasks, int Runs, int Ideas, int Epics);
+
+/// <summary>
 /// Carries out a due <c>ProjectPurgeScheduled</c> deadline (task: an archived project can be
 /// purged — the second half of the two-tier project-removal design, PLAN.md §16 #182's purge
 /// follow-up; the one explicit exception to the platform's nothing-is-deleted doctrine, Brian's
@@ -78,8 +89,27 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         {
             try
             {
-                (bool purged, int tasks, int runs, int ideas, int epics) = await PurgeOneAsync(project, cancellationToken);
-                if (!purged)
+                PurgeOneResult result = await PurgeOneAsync(project, cancellationToken);
+                if (result.LiveWithPurgeDeadlineSet)
+                {
+                    // Not "cancelled or rescheduled" — those clear PurgeAt, so the project would
+                    // have dropped out of this sweep's own due list. This project reads live
+                    // (IsArchived=false) with PurgeAt still set, the exact state ProjectDecider
+                    // .Reactivate's own fence exists to prevent; some writer reached
+                    // ProjectReactivated without going through it. Warned, not merely logged,
+                    // because nothing else names this until h9k project cancel-purge clears it, and
+                    // this project stays in the due list forever otherwise (independent pre-PR
+                    // review, cycle 3, adversarial lens, medium).
+                    logger.LogWarning(
+                        "Project '{Name}' ({Id}) reads live but still has a purge deadline set — "
+                        + "not destroyed. This is not an ordinary cancellation: a writer reactivated "
+                        + "it without going through ProjectDecider.Reactivate's own purge-pending "
+                        + "refusal. Resolve with h9k project cancel-purge, naming this project.",
+                        project.Name, project.Id);
+                    continue;
+                }
+
+                if (!result.Purged)
                 {
                     logger.LogInformation(
                         "Skipped project '{Name}' ({Id}): its purge was cancelled or rescheduled after "
@@ -87,6 +117,8 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
                         project.Name, project.Id);
                     continue;
                 }
+
+                int tasks = result.Tasks, runs = result.Runs, ideas = result.Ideas, epics = result.Epics;
 
                 projectsPurged++;
                 tasksDestroyed += tasks;
@@ -124,7 +156,7 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
     /// A fresh session per project so one project's failure never rolls back another's, already
     /// committed sweep in the same tick.
     /// </summary>
-    private async Task<(bool Purged, int Tasks, int Runs, int Ideas, int Epics)> PurgeOneAsync(
+    private async Task<PurgeOneResult> PurgeOneAsync(
         ProjectDetails project, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
@@ -136,15 +168,22 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         // sweep's own due-list query" down to "one project's own turn in the loop".
         ProjectAggregate? aggregate = await session.Events.AggregateStreamAsync<ProjectAggregate>(
             project.Id, token: cancellationToken);
+        if (aggregate is null || aggregate.PurgeAt is null || aggregate.PurgeAt > DateTimeOffset.UtcNow)
+        {
+            return new PurgeOneResult(Purged: false, LiveWithPurgeDeadlineSet: false, 0, 0, 0, 0);
+        }
+
         // Liveness, not only the deadline: the invariant this re-check leans on ("a project with
         // PurgeAt set is archived") is enforced by ProjectDecider.Reactivate, but only when every
         // writer that can append ProjectReactivated goes through it fenced — an unfenced writer
         // racing a schedule can still leave IsArchived=false with PurgeAt set (independent pre-PR
         // review, cycle 1, adversarial lens, high). Checked here too, defensively, so a project
-        // that reads as live is never destroyed regardless of how it got that way.
-        if (aggregate is null || !aggregate.IsArchived || aggregate.PurgeAt is null || aggregate.PurgeAt > DateTimeOffset.UtcNow)
+        // that reads as live is never destroyed regardless of how it got that way — reported back
+        // distinctly from an ordinary cancel or reschedule, since neither of those happened
+        // (independent pre-PR review, cycle 3, adversarial lens, medium).
+        if (!aggregate.IsArchived)
         {
-            return (false, 0, 0, 0, 0);
+            return new PurgeOneResult(Purged: false, LiveWithPurgeDeadlineSet: true, 0, 0, 0, 0);
         }
 
         Guid[] taskIds = [.. (await session.Query<TaskListItem>()
@@ -197,6 +236,8 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         }
 
         await session.SaveChangesAsync(cancellationToken);
-        return (true, taskIds.Length, runIds.Length, ideaIds.Length, epicIds.Length);
+        return new PurgeOneResult(
+            Purged: true, LiveWithPurgeDeadlineSet: false,
+            taskIds.Length, runIds.Length, ideaIds.Length, epicIds.Length);
     }
 }
