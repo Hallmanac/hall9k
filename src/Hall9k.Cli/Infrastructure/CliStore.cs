@@ -11,10 +11,20 @@ namespace Hall9k.Cli.Infrastructure;
 /// </summary>
 public static class CliStore
 {
-    public static DocumentStore Open() => DocumentStore.For(opts =>
+    public static DocumentStore Open() => Open(CliConfig.ConnectionString, AutoCreate.CreateOnly);
+
+    /// <summary>
+    /// The same pre-generated-code store every ordinary command opens through <see cref="Open()"/>,
+    /// for a caller that already resolved its own connection string and needs a schema policy other
+    /// than <see cref="AutoCreate.CreateOnly"/> — <c>ToolDoctor</c>'s read is the first such caller:
+    /// it must never create schema, so it opens with <see cref="AutoCreate.None"/>, but still wants
+    /// the cold-start-avoiding codegen below rather than a raw <c>DocumentStore.For</c> that would
+    /// fall back to a dynamic Roslyn compile every invocation.
+    /// </summary>
+    public static DocumentStore Open(string connectionString, AutoCreate autoCreate) => DocumentStore.For(opts =>
     {
-        opts.Connection(CliConfig.ConnectionString);
-        opts.ConfigureHall9k(AutoCreate.CreateOnly);
+        opts.Connection(connectionString);
+        opts.ConfigureHall9k(autoCreate);
 
         // Execute-and-exit means every invocation is a cold start. Auto mode loads the
         // pre-generated projection/session code compiled into this assembly (written to

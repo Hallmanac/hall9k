@@ -6,9 +6,12 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// The standalone half of the database doctor check (Decisions Log #58, #73): the same
-/// four questions any other command runs automatically when it hits an unreachable
-/// database, on demand, whether or not anything is actually broken right now.
+/// The tool check (<see cref="ToolDoctor"/>) and the database doctor check (Decisions Log #58,
+/// #73), in that order. The tool check runs first — and needs no daemon and no reachable
+/// database itself — so it still runs on the database section's own early-return path below,
+/// exactly the moment the generated project <c>AGENTS.md</c> promises it will. The database
+/// check is the same four questions any other command runs automatically when it hits an
+/// unreachable database, on demand, whether or not anything is actually broken right now.
 /// </summary>
 public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
 {
@@ -25,6 +28,8 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        await ToolDoctor.RunAsync(cancellationToken);
+
         if (await DatabaseDoctor.RunAsync(offerFixes: true, settings.Yes, cancellationToken) is null)
         {
             return ExitCodes.Error;
