@@ -101,7 +101,7 @@ public sealed class CloseoutEngine(
 
     /// <summary>
     /// Who deletes a merged branch from origin, per repository, read once per sweep (Decisions Log
-    /// #PLACEHOLDER-c9a3a6c8). Built here rather than injected for the reason that type's own doc
+    /// #186). Built here rather than injected for the reason that type's own doc
     /// gives, and reachable by <c>RunLauncher</c> through
     /// <see cref="RemoteBranchDeletionOwnerAsync"/> so its launch-time cleanup shares this cache.
     /// </summary>
@@ -118,7 +118,7 @@ public sealed class CloseoutEngine(
     /// <summary>
     /// Who owns deleting a merged branch from origin in <paramref name="repositoryPath"/>, from this
     /// sweep's own cached read of the repository's <c>delete_branch_on_merge</c> setting (Decisions
-    /// Log #PLACEHOLDER-c9a3a6c8). Public for <c>RunLauncher</c>'s launch-time cleanup of a merged
+    /// Log #186). Public for <c>RunLauncher</c>'s launch-time cleanup of a merged
     /// workspace, which deletes the same branch the same way and so must decide it the same way —
     /// asked through this engine, like the rest of that path's closeout, so both share one cache and
     /// one <c>gh</c> read per sweep instead of each keeping its own.
@@ -131,7 +131,7 @@ public sealed class CloseoutEngine(
     public async Task<CloseoutSweepResult> PollOnceAsync(CancellationToken cancellationToken)
     {
         // One read of each repository's own head-branch-deletion setting per sweep, not per merged
-        // run (Decisions Log #PLACEHOLDER-c9a3a6c8) — the cache this drops is what makes the reads
+        // run (Decisions Log #186) — the cache this drops is what makes the reads
         // fresh every sweep while still costing one call per repository within it.
         _remoteBranchDeletion.Forget();
 
@@ -1995,7 +1995,7 @@ public sealed class CloseoutEngine(
         // Who deletes it from origin is asked before anything is deleted, because getting it wrong
         // is not recoverable: a raw `git push --delete` of a merged branch CLOSES every open pull
         // request stacked on it, while GitHub's own deletion retargets them onto the base branch
-        // (Decisions Log #PLACEHOLDER-c9a3a6c8; origin incident 2026-09-13, PR #338). So where this
+        // (Decisions Log #186; origin incident 2026-09-13, PR #338). So where this
         // repository deletes head branches on merge, the remote half is left to GitHub.
         RemoteBranchDeletionOwner remoteDeletion =
             await RemoteBranchDeletionOwnerAsync(project.RepositoryPath, cancellationToken);
@@ -3221,7 +3221,7 @@ public sealed class CloseoutEngine(
         {
             // The base GitHub reports is read before the retarget is attempted, and a pull request
             // already on the project's own base is not moved again (Decisions Log
-            // #PLACEHOLDER-c9a3a6c8). Not for the provider call's sake — gh pr edit --base is
+            // #186). Not for the provider call's sake — gh pr edit --base is
             // idempotent — but for the record's: a run whose pull request GitHub retargeted itself,
             // when it deleted the merged parent's head branch, must not carry an event claiming
             // this platform moved it, which is the guessed provenance AGENTS.md's never-guess rule
@@ -3284,7 +3284,7 @@ public sealed class CloseoutEngine(
         /// says plainly that nothing here moved it, and names the two ways a base gets there without
         /// this platform's help: GitHub's own retarget when it deletes a merged parent's head branch
         /// (which is what a repository with automatic head-branch deletion does, Decisions Log
-        /// #PLACEHOLDER-c9a3a6c8), and a pull request opened straight against the base because the
+        /// #186), and a pull request opened straight against the base because the
         /// parent's branch was already gone at open time
         /// (<c>PullRequestOpener.ResolveOpenBaseAsync</c>). Which of the two it was is not something
         /// this sweep observed, so neither is asserted.

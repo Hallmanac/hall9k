@@ -936,7 +936,7 @@ public sealed class RunLauncher(
         }
 
         // The same question closeout asks before it deletes anything from origin, for the same
-        // reason and through the same seam (Decisions Log #PLACEHOLDER-c9a3a6c8): a raw remote
+        // reason and through the same seam (Decisions Log #186): a raw remote
         // deletion of a merged branch closes every open pull request stacked on it. GitHub has
         // usually deleted this branch itself long before a later run reaches this cleanup, in which
         // case the push would merely fail harmlessly — but "usually" is not the guarantee, and this

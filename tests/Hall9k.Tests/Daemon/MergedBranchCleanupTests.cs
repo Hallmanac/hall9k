@@ -7,7 +7,7 @@ namespace Hall9k.Tests.Daemon;
 /// <summary>
 /// The one decision closeout makes before it deletes a merged run's branch: whether the deletion on
 /// origin is this platform's to make at all (task: a stacked child's pull request survives its
-/// parent's merge; Decisions Log #PLACEHOLDER-c9a3a6c8). Asserted over the generated git sequence
+/// parent's merge; Decisions Log #186). Asserted over the generated git sequence
 /// rather than by running it, which is the whole reason that sequence is a pure function — the
 /// behaviour being pinned is "no <c>push --delete</c> is issued", and proving that against a real
 /// repository would mean standing up branches and a remote to watch something NOT happen, while

@@ -122,7 +122,7 @@ public interface IWorktreeManager
     /// <paramref name="remoteDeletion"/> is the caller's decision, never inferred here: the whole
     /// sequence is <see cref="MergedBranchCleanup.Plan"/>, and why a repository that deletes head
     /// branches on merge must be left to make the remote deletion itself is that type's own doc
-    /// (Decisions Log #PLACEHOLDER-c9a3a6c8).
+    /// (Decisions Log #186).
     /// </para>
     /// </summary>
     Task DeleteBranchEverywhereAsync(

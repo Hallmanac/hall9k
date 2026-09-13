@@ -16,7 +16,7 @@ public enum RemoteBranchDeletionOwner
     /// GitHub deletes it, because the repository has automatic head-branch deletion turned on
     /// (<c>delete_branch_on_merge</c>), and only GitHub's OWN deletion retargets the open pull
     /// requests stacked on that branch — a raw <c>git push --delete</c> closes them instead
-    /// (Decisions Log #PLACEHOLDER-c9a3a6c8).
+    /// (Decisions Log #186).
     /// </summary>
     GitHub,
 }

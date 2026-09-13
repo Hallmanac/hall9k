@@ -611,7 +611,7 @@ Closeout now reads the setting (`gh api repos/{owner}/{repo} --jq .delete_branch
 it deletes anything and skips the remote deletion where GitHub owns it, saying so in the log. Where
 the setting is off — or could not be read, which includes any project whose remote is not GitHub —
 branch cleanup behaves exactly as it always has, so nothing here is required of a repository with
-no stacked work in it (Decisions Log #PLACEHOLDER-c9a3a6c8).
+no stacked work in it (Decisions Log #186).
 
 ### A project's own run ceiling
 
