@@ -1339,10 +1339,22 @@ public sealed class ReviewEngine(
     /// Whatever this run's worktree carries beyond the just-merged base branch, read fresh — a
     /// fetch first, never the worktree's own possibly-stale remote-tracking ref, since the merge
     /// this method exists to react to may be minutes old by the time it runs. Best-effort: a
-    /// worktree this read cannot account for (removed, unreachable, any git failure) returns
-    /// null exactly as "nothing stranded" does, because this method is only ever called once the
-    /// merge itself is already certain, and there is nowhere honest left to report a read failure
-    /// separately from an honestly empty delta — either way, closeout proceeds without a draft.
+    /// worktree this read cannot account for (removed, unreachable, any git failure — a non-zero
+    /// exit AND anything <see cref="ExternalProcess.RunAsync"/> throws, since this repo's own
+    /// deadline-bound runner signals a stuck pipe or an expired deadline by throwing rather than
+    /// returning a non-zero exit) returns null exactly as "nothing stranded" does, because this
+    /// method is only ever called once the merge itself is already certain, and there is nowhere
+    /// honest left to report a read failure separately from an honestly empty delta — either way,
+    /// closeout proceeds without a draft.
+    /// <para>
+    /// The comparison is by content, never by commit identity: this project rebase-merges
+    /// (docs/concepts.md), so every commit a pull request just landed sits on the base branch
+    /// under a brand-new sha. <c>git cherry</c> is what tells "already landed under a new sha"
+    /// apart from "never landed at all" — it matches each commit reachable from HEAD but not the
+    /// upstream against the upstream's own commits by patch-id, not by sha, so a rebase-merged
+    /// commit reads as landed (<c>-</c>) exactly like an ordinary fast-forwarded one would, and
+    /// only a commit with no equivalent patch upstream reads as stranded (<c>+</c>).
+    /// </para>
     /// </summary>
     private async Task<StrandedDelta?> CaptureStrandedDeltaAsync(ReviewContext context, CancellationToken cancellationToken)
     {
@@ -1354,33 +1366,55 @@ public sealed class ReviewEngine(
 
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
         string upstream = $"origin/{context.BaseBranch}";
-        ProcessResult fetch = await git("git", ["fetch", "origin", context.BaseBranch], worktreePath, cancellationToken);
-        if (fetch.ExitCode != 0)
+        try
         {
+            ProcessResult fetch = await git("git", ["fetch", "origin", context.BaseBranch], worktreePath, cancellationToken);
+            if (fetch.ExitCode != 0)
+            {
+                return null;
+            }
+
+            ProcessResult cherry = await git("git", ["cherry", "-v", upstream, "HEAD"], worktreePath, cancellationToken);
+            if (cherry.ExitCode != 0)
+            {
+                return null;
+            }
+
+            string[] strandedShas = [.. cherry.StandardOutput
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(line => line.StartsWith('+'))
+                .Select(line => line[1..].TrimStart().Split(' ', 2)[0])];
+            if (strandedShas.Length == 0)
+            {
+                // Either the read failed or HEAD's every commit already has an equivalent patch
+                // upstream — the ordinary case either way: nothing here for a draft to name.
+                return null;
+            }
+
+            List<string> summaries = [];
+            StringBuilder patch = new();
+            foreach (string sha in strandedShas)
+            {
+                ProcessResult log = await git("git", ["log", "--oneline", "-1", sha], worktreePath, cancellationToken);
+                ProcessResult formatted = await git("git", ["format-patch", "--stdout", "-1", sha], worktreePath, cancellationToken);
+                if (log.ExitCode != 0 || formatted.ExitCode != 0)
+                {
+                    return null;
+                }
+
+                summaries.Add(log.StandardOutput.Trim());
+                patch.Append(formatted.StandardOutput);
+            }
+
+            return new StrandedDelta(summaries, patch.ToString());
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Run {RunId}: could not read the worktree's own stranded delta against {Upstream}; treating as nothing stranded",
+                context.RunId, upstream);
             return null;
         }
-
-        ProcessResult revList = await git("git", ["rev-list", $"{upstream}..HEAD"], worktreePath, cancellationToken);
-        string[] shas = revList.ExitCode == 0
-            ? revList.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            : [];
-        if (shas.Length == 0)
-        {
-            // Either the read failed or HEAD is already fully reflected in the merged base — the
-            // ordinary case either way: nothing here for a draft to name.
-            return null;
-        }
-
-        ProcessResult log = await git("git", ["log", "--oneline", $"{upstream}..HEAD"], worktreePath, cancellationToken);
-        ProcessResult diff = await git("git", ["diff", $"{upstream}...HEAD"], worktreePath, cancellationToken);
-        if (log.ExitCode != 0 || diff.ExitCode != 0)
-        {
-            return null;
-        }
-
-        return new StrandedDelta(
-            log.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries),
-            diff.StandardOutput);
     }
 
     /// <summary>
@@ -1409,17 +1443,45 @@ public sealed class ReviewEngine(
         return RunPaths.ResolveCurrentDirectory(context.Run.RunDirectory);
     }
 
-    private static async Task<(string PatchFile, string CommitListFile)> SaveStrandedDeltaAsync(
+    /// <summary>
+    /// Writes the stranded delta to the directory it actually sits in right now, but returns the
+    /// paths the draft this feeds should name: the closeout this call is part of drives the task
+    /// to Done in the same transaction, which makes the render sweep move this exact directory
+    /// into <c>tasks/_archive/</c> on its very next pass — a resolved path is a fact only until
+    /// then (<see cref="RunPaths.AnticipateDirectoryAfterSweep"/>'s own doc), the same hazard
+    /// <see cref="ComposeHandoffAsync"/> already accounts for. The draft is read by a human only
+    /// after they publish it (Decisions Log #34), definitionally later than that sweep, so it has
+    /// to name where the sweep is about to put these files, not where they were written a moment
+    /// before that became true. Null on a write failure (<see cref="IOException"/> or
+    /// <see cref="UnauthorizedAccessException"/>) — best-effort, the same stance
+    /// <see cref="CaptureStrandedDeltaAsync"/> already takes: losing the artifact must not fail
+    /// the closeout that is already certain to happen, it just leaves nothing for a draft to name.
+    /// </summary>
+    private async Task<(string PatchFile, string CommitListFile)?> SaveStrandedDeltaAsync(
         ReviewContext context, StrandedDelta delta, CancellationToken cancellationToken)
     {
         string directory = ResolveStrandedDeltaDirectory(context);
-        Directory.CreateDirectory(directory);
         string patchFile = Path.Combine(directory, $"re-land-{context.RunId}.patch");
         string commitListFile = Path.Combine(directory, $"re-land-{context.RunId}-commits.txt");
-        await File.WriteAllTextAsync(patchFile, delta.Patch, cancellationToken);
-        await File.WriteAllTextAsync(
-            commitListFile, string.Join(Environment.NewLine, delta.CommitSummaries), cancellationToken);
-        return (patchFile, commitListFile);
+        try
+        {
+            Directory.CreateDirectory(directory);
+            await File.WriteAllTextAsync(patchFile, delta.Patch, cancellationToken);
+            await File.WriteAllTextAsync(
+                commitListFile, string.Join(Environment.NewLine, delta.CommitSummaries), cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(exception,
+                "Run {RunId}: could not save the stranded delta this merge left behind; no re-land draft will be minted",
+                context.RunId);
+            return null;
+        }
+
+        string anticipatedDirectory = RunPaths.AnticipateDirectoryAfterSweep(directory, willArchive: true);
+        return (
+            Path.Combine(anticipatedDirectory, Path.GetFileName(patchFile)),
+            Path.Combine(anticipatedDirectory, Path.GetFileName(commitListFile)));
     }
 
     /// <summary>
@@ -1445,8 +1507,11 @@ public sealed class ReviewEngine(
         (string PatchFile, string CommitListFile, IReadOnlyList<string> CommitSummaries)? saved = null;
         if (stranded is { } delta)
         {
-            (string PatchFile, string CommitListFile) written = await SaveStrandedDeltaAsync(context, delta, cancellationToken);
-            saved = (written.PatchFile, written.CommitListFile, delta.CommitSummaries);
+            (string PatchFile, string CommitListFile)? written = await SaveStrandedDeltaAsync(context, delta, cancellationToken);
+            if (written is { } writtenFiles)
+            {
+                saved = (writtenFiles.PatchFile, writtenFiles.CommitListFile, delta.CommitSummaries);
+            }
         }
 
         await using IDocumentSession session = store.LightweightSession();
