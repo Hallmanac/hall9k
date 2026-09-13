@@ -157,7 +157,14 @@ public static class IdeaDecider
 
     private static Guid? Vet(Guid? projectId) => projectId == Guid.Empty ? null : projectId;
 
-    private static void RequireCaptured(IdeaAggregate idea, string verb)
+    /// <summary>
+    /// Every decider method below that requires a captured idea calls this first, so it is also
+    /// the refusal to lead with in a command that resolves other things (a project, a task) before
+    /// deciding: an idea's own terminal state is the one refusal every path through it shares, and
+    /// checking it after everything else means an already-archived idea earns whatever unrelated
+    /// validation runs first instead (independent pre-PR review).
+    /// </summary>
+    public static void RequireCaptured(IdeaAggregate idea, string verb)
     {
         if (idea.State == IdeaState.Captured)
         {

@@ -313,6 +313,10 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             Guid ideaId = await IdeaIdResolver.ResolveAsync(session, settings.FromIdea, cancellationToken);
             sourceIdea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cancellationToken)
                 ?? throw new DomainNotFoundException($"No idea {ideaId}.");
+            // Checked here, before any project resolution below, so an idea already concluded or
+            // archived earns its own refusal rather than whatever unrelated validation runs next
+            // (independent pre-PR review, conformance lens).
+            IdeaDecider.RequireCaptured(sourceIdea, "cut a task from");
             // An ordinary --from-idea cut always names its own project; falling back to the
             // idea's own only spares typing it twice when the two already agree.
             project ??= sourceIdea.ProjectId?.ToString();
