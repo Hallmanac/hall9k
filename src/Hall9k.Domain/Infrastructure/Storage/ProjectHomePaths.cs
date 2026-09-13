@@ -60,8 +60,7 @@ public static class ProjectHomePaths
     /// <see cref="BareRepository"/>'s own name-derived filename, because a project rename changes
     /// the name without ever moving the clone on disk: the clone keeps whatever filename it was
     /// given when first made, and recomputing that filename from the project's current name would
-    /// desync from it the moment the name changes (independent pre-PR review, cycle 1, adversarial
-    /// lens).
+    /// desync from it the moment the name changes.
     /// </summary>
     public static bool IsWithinRepoDirectory(string home, string? repositoryPath) =>
         !string.IsNullOrWhiteSpace(repositoryPath)

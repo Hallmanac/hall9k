@@ -351,7 +351,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // and h9k task publish --assign (task: a project can be archived, listed as archived,
         // reactivated, and renamed) — this door claims a task the identical way, calling
         // TaskDecider.Assign/ClaimDeliberately directly rather than through AppendAsync, so it
-        // never inherited that guard on its own (review thread, PR #336).
+        // never inherited that guard on its own.
         if (project.IsArchived)
         {
             throw new DomainValidationException(

@@ -23,11 +23,10 @@ namespace Hall9k.Cli.Commands;
 /// clone's filename and derive it from the name when nothing is recorded yet to prefer instead —
 /// but they go through <see cref="ProjectHomePaths.ResolveBareRepository"/>, which always prefers
 /// the recorded <c>RepositoryPath</c> once it already lives inside the home's own <c>repo/</c>
-/// directory, so a rename never desyncs the two (independent pre-PR review, cycle 1, adversarial
-/// lens — the earlier version of this comment claimed no name-keyed lookup existed at all, which
-/// was false: <c>ProjectHomePaths.BareRepository(home, project.Name)</c> was one, called directly
-/// at four sites, and every one of them stopped recognising its own clone the moment a project was
-/// renamed). Its main use is freeing an archived project's name for a fresh registration
+/// directory, so a rename never desyncs the two: <c>ProjectHomePaths.BareRepository(home,
+/// project.Name)</c> was the one name-keyed lookup left, called directly at four sites, and every
+/// one of them stopped recognising its own clone the moment a project was renamed until this
+/// resolver replaced them. Its main use is freeing an archived project's name for a fresh registration
 /// (h9k project add offers this same rename inline on a name collision), but nothing here requires
 /// the project to be archived — a live project may be renamed too.
 /// </summary>

@@ -401,7 +401,7 @@ public sealed class CloseoutEngine(
             // reactivated, and renamed) gets the same skip the render and auto-pr-review sweeps
             // already give it — this install is no longer maintaining that repository, so no gh
             // inspection, merge, or closeout event runs against it; h9k project reactivate resumes
-            // this sweep for it immediately (independent pre-PR review, cycle 1, adversarial lens).
+            // this sweep for it immediately.
             return InspectionOutcome.Skipped;
         }
 
@@ -429,8 +429,8 @@ public sealed class CloseoutEngine(
 
         // The archive check above is only as fresh as the moment it ran — the same slow network
         // call could just as easily straddle an archive landing mid-inspection, and a project
-        // archive never advances the task stream the check above just revalidated (review thread,
-        // PR #336). Re-read it here too, rather than trusting the earlier answer through the call.
+        // archive never advances the task stream the check above just revalidated. Re-read it
+        // here too, rather than trusting the earlier answer through the call.
         if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is not { IsArchived: false })
         {
             logger.LogDebug(
@@ -688,8 +688,8 @@ public sealed class CloseoutEngine(
 
         // The archive check above is only as fresh as the moment it ran — the same slow network
         // call could just as easily straddle an archive landing mid-inspection, and a project
-        // archive never advances the task stream the check above just revalidated (review thread,
-        // PR #336). Re-read it here too, rather than trusting the earlier answer through the call.
+        // archive never advances the task stream the check above just revalidated. Re-read it
+        // here too, rather than trusting the earlier answer through the call.
         if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is not { IsArchived: false })
         {
             logger.LogDebug(
@@ -801,8 +801,8 @@ public sealed class CloseoutEngine(
 
         // The archive check above is only as fresh as the moment it ran — the same slow network
         // call could just as easily straddle an archive landing mid-inspection, and a project
-        // archive never advances the task stream the check above just revalidated (review thread,
-        // PR #336). Re-read it here too, rather than trusting the earlier answer through the call.
+        // archive never advances the task stream the check above just revalidated. Re-read it
+        // here too, rather than trusting the earlier answer through the call.
         if (await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken) is not { IsArchived: false })
         {
             logger.LogDebug(
