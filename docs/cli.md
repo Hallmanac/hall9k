@@ -503,6 +503,20 @@ in place or to rename the archive and free the name, with `--reactivate-archived
 `--rename-archived-to <NAME>` answering that non-interactively. All three commands act on this
 install's own database only; a registration of the same repository on another node is unaffected.
 
+`project remove --purge` accepts an already-archived project or archives one first, then schedules
+a permanent hard delete of its database footprint 24 hours out: its own stream, every task, run,
+and idea stream it owns, and their projection documents. This is the one operation in Hall9k that
+actually deletes anything — linked tracker items, the repository, and the home directory on disk
+are outside its scope and are never touched. The confirmation names the scope in numbers (tasks,
+runs, ideas) and the deadline; `--yes` covers non-interactive use. `project cancel-purge <project>`
+ends a pending purge before it fires, leaving the project archived, never reactivated; reactivating
+a project with a purge still pending is refused (cancel it first) so a daemon sweep can never
+destroy a project that has gone live again. `project list --include-archived` and `project show`
+mark a purge-pending project with its deadline and the cancel command. A daemon sweep, alongside
+the closeout and auto-pr-review sweeps, checks for due purges on start and on its own poll
+interval, so a purge whose deadline passed while the daemon was down fires on the next start rather
+than never; it logs what it destroyed in numbers.
+
 `project set` is where the verification gates, the agent model, parallelism, commit style,
 context links, skip-permissions, the Jira board binding, the backlog policy (`--backlog
 none|github-issues|jira`) and its routing guidance, the review re-request policy, the

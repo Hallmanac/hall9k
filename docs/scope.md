@@ -718,7 +718,7 @@ in a non-interactive session without an explicit `--yes`.
 
 See [PLAN.md Decisions Log #78, #83, #85](../PLAN.md).
 
-### Archiving, reactivating, and renaming a project
+### Archiving, purging, reactivating, and renaming a project
 
 `h9k project remove <project>` archives a project on this install: an event on its own stream,
 reversible, and nothing is deleted — a different "archive" from the task-directory one described
@@ -740,6 +740,23 @@ reactivate it in place, or to rename the archive and free the name for the new r
 with the three choices named when neither is given and there is no terminal to ask. All three
 commands act on this install's own database only — a registration of the same repository on
 another node is unaffected. See [PLAN.md Decisions Log #182](../PLAN.md).
+
+`h9k project remove --purge` is the one command in Hall9k that actually deletes something: it
+accepts a project already archived, or archives one first in the same transaction, then schedules
+a permanent hard delete of the project's database footprint — its own stream, every task, run, and
+idea stream it owns, and their projection documents — 24 hours out. Linked tracker items, the
+repository, and the home directory on disk are outside its scope and are never touched; the
+confirmation names the scope in numbers (tasks, runs, ideas) and the deadline, and refuses under
+the identical task-state predicate a plain archive refuses under. `h9k project cancel-purge
+<project>` ends a pending purge before it fires, leaving the project archived, never reactivated —
+reactivating a project with a purge still pending is refused, naming the cancel command, so a
+project cannot go live again while a sweep is still scheduled to destroy it. A daemon sweep,
+alongside the closeout and auto-pr-review sweeps, checks for due purges on start and on its own
+poll interval, so a purge whose deadline passed while the daemon was down fires on the next start
+rather than never; it logs what it destroyed in numbers. `h9k project list --include-archived` and
+`h9k project show` mark a purge-pending project with its deadline and the cancel command. Purge
+acts on this install's own database only, the same as archive, reactivate, and rename. See [PLAN.md
+Decisions Log #182](../PLAN.md) and its purge follow-up entry immediately after it.
 
 ### The project home
 
