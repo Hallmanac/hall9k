@@ -459,6 +459,52 @@ public sealed class TaskPassageQueryTests
         passage.MergeWait.Applicable.Should().BeTrue();
         passage.MergeWait.StillOpen.Should().BeFalse();
         passage.MergeWait.Elapsed.Should().Be(TimeSpan.FromHours(2));
+        // Surfaced so a period-scoped rollup (h9k status/project show throughput) can tell which
+        // period this merge falls in without re-deriving the same fold (task: h9k status reports
+        // throughput beside spend).
+        passage.MergedAt.Should().Be(mergedAt);
+    }
+
+    [Fact]
+    public void Merged_at_falls_back_to_observed_at_when_the_provider_reported_no_merge_timestamp()
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset observedAt = Now.AddHours(-1);
+
+        RunEventSet run = new(runId, Now.AddHours(-4), observedAt,
+            [Ev(new PullRequestMerged(runId, null, observedAt))]);
+        List<IEvent> taskEvents = [Ev(new TaskCompleted(taskId, runId, "https://github.com/o/r/pull/1", Now.AddHours(-3)))];
+
+        TaskPassage passage = Compute(taskEvents, [run], taskConcluded: true);
+
+        passage.MergedAt.Should().Be(observedAt);
+    }
+
+    [Fact]
+    public void Merged_at_is_null_when_nothing_has_merged()
+    {
+        TaskPassage passage = Compute([], []);
+
+        passage.MergedAt.Should().BeNull();
+    }
+
+    [Fact]
+    public void Merged_at_is_always_null_for_a_pr_review_task()
+    {
+        // A pr-review task never watches a merge of its own (its Done means a review verdict was
+        // delivered) — even a run whose stream somehow carried PullRequestMerged must not leak
+        // into a period's throughput rollup as one of its merged tasks.
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset mergedAt = Now.AddHours(-1);
+
+        RunEventSet run = new(runId, Now.AddHours(-4), mergedAt, [Ev(new PullRequestMerged(runId, mergedAt, mergedAt))]);
+        List<IEvent> taskEvents = [Ev(new TaskCompleted(taskId, runId, "https://github.com/o/r/pull/1", Now.AddHours(-3)))];
+
+        TaskPassage passage = Compute(taskEvents, [run], TaskType.PrReview, taskConcluded: true);
+
+        passage.MergedAt.Should().BeNull();
     }
 
     [Fact]

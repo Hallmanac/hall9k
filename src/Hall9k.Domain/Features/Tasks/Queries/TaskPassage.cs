@@ -105,4 +105,14 @@ public sealed record TaskPassage(
     IReadOnlyList<HumanWaitPassage> HumanWaits,
     PassagePhase ClaimToMerge,
     IReadOnlyList<LapKindCount> Laps,
-    int Sessions);
+    int Sessions,
+    /// <summary>
+    /// The instant <c>PullRequestMerged</c> (its own <c>MergedAt</c>, or <c>ObservedAt</c> when the
+    /// provider reported none) recorded this task's one pull request merged — the same anchor
+    /// <see cref="MergeWait"/> and <see cref="ClaimToMerge"/> already close against, surfaced
+    /// rather than re-derived so a period-scoped rollup (h9k status/project show throughput) can
+    /// tell which period a merge falls in without owning a second copy of this fold. Null for a
+    /// task that has not merged (or never will), and always null for a <c>PrReview</c> task, which
+    /// never watches a merge of its own.
+    /// </summary>
+    DateTimeOffset? MergedAt);
