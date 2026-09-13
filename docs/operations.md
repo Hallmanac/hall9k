@@ -671,10 +671,13 @@ project is uncapped until you set the new ceiling yourself.
 
 A cap says how many runs a project *may* hold. Which project actually receives a slot when
 several are ready is a separate question, and the answer is a **rotation** (Decisions Log #141):
-whichever eligible project has gone longest without a dispatch takes the next free slot, oldest
-task first within it. Eligible means ready work under every applicable limit — a project at its
-own cap, paused at 0, or with nothing assigned is skipped without consuming a turn. Nothing has to
-be configured for this, and on a single-project node it is exactly plain oldest-first.
+whichever eligible project has gone longest without a dispatch takes the next free slot, its own
+rank then oldest assignment deciding which of its tasks takes it (Decisions Log
+#187) — a follow-up lap past its first pull request outranks a retry or hand-back,
+which outranks a plain first claim. Eligible means ready work under every applicable limit — a
+project at its own cap, paused at 0, or with nothing assigned is skipped without consuming a turn.
+Nothing has to be configured for this, and on a single-project node with no rank difference among
+its ready tasks it is plain oldest-first.
 
 What it looks like on a node of two, with both projects holding queues: a stable one-and-one
 split, alternating, and a project reaches beyond one slot only when the other has nothing ready.
