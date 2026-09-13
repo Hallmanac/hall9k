@@ -3,6 +3,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
@@ -94,6 +95,23 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "stacked-on-pull-request/epic) + markdown "
             + "body as agent context")]
         public string? File { get; init; }
+
+        [CommandOption("--from-idea <ID>")]
+        [Description(
+            "Cut a draft task from an idea (h9k idea add): its id or an unambiguous fragment. Through "
+            + "the same source-resolver seam as --from-issue and --from-jira (backlog 17/31) — pass it "
+            + "as often as discovery produces work, and one idea yields as many tasks as you cut. "
+            + "--objective is required here and is never taken from the note: several tasks fanned out "
+            + "from one idea cannot share its first sentence. The idea's whole note and its discovery "
+            + "workspace pointer ride in as agent context automatically, with --context adding to that "
+            + "rather than replacing it, and --blocked-by works normally so discovery's output can "
+            + "become a dependency graph of drafts. Falls back to the idea's own assigned project when "
+            + "--project is left off. Provenance runs both ways and is repeatable, not terminal: this "
+            + "task records the idea it came from, the idea's own stream records this cut, and h9k idea "
+            + "show lists every task it has fanned out to. Cutting a task never concludes or archives "
+            + "the idea — discovery may keep producing, and ending it is the separate, explicit "
+            + "h9k idea conclude / h9k idea archive")]
+        public string? FromIdea { get; init; }
 
         [CommandOption("--from-issue <NUMBER-OR-URL>")]
         [Description(
@@ -236,6 +254,30 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 + $"{seeded.Option} with --context.");
         }
 
+        // --from-idea is not part of the AdoptionSource seam (it names no WorkItemProvider — an
+        // idea is a local record, not something read over gh or a registered connection), so its
+        // exclusivity with every other seed is checked here rather than folded into ChooseSource.
+        if (settings.FromIdea.IsNotBlank() && adoption is { } externalSeed)
+        {
+            throw new DomainValidationException(
+                $"--from-idea and {externalSeed.Option} each seed a draft from a different place; pass one.");
+        }
+
+        if (settings.FromIdea.IsNotBlank() && settings.File.IsNotBlank())
+        {
+            throw new DomainValidationException(
+                "--from-idea and --file both seed a draft, from different places; pass one.");
+        }
+
+        if (settings.FromIdea.IsNotBlank() && objective.IsBlank())
+        {
+            throw new DomainValidationException(
+                "--from-idea cuts one task at a time, so it needs its own objective — several tasks "
+                + $"fanned out from one idea cannot share its first sentence: h9k task add --from-idea "
+                + $"{settings.FromIdea} --objective \"<one outcome-phrased sentence>\". The idea's whole "
+                + "note still rides along as agent context automatically.");
+        }
+
         if (settings.File.IsNotBlank())
         {
             if (!System.IO.File.Exists(settings.File))
@@ -257,16 +299,35 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             stackedOnPullRequest ??= file.StackedOnPullRequest;
         }
 
+        using var store = CliStore.Open();
+        await using IDocumentSession session = store.LightweightSession();
+
+        // Unfenced, like every other ordinary idea mutation (h9k idea assign, h9k idea revise):
+        // cutting has no "once" invariant to protect against racing itself, unlike promotion's
+        // atomic cut-then-conclude — fan-out is meant to be freely repeatable, including two
+        // cuts landing at the same moment, so this never competes with another cut for an
+        // expected version the way a one-time transition would.
+        IdeaAggregate? sourceIdea = null;
+        if (settings.FromIdea.IsNotBlank())
+        {
+            Guid ideaId = await IdeaIdResolver.ResolveAsync(session, settings.FromIdea, cancellationToken);
+            sourceIdea = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cancellationToken)
+                ?? throw new DomainNotFoundException($"No idea {ideaId}.");
+            // An ordinary --from-idea cut always names its own project; falling back to the
+            // idea's own only spares typing it twice when the two already agree.
+            project ??= sourceIdea.ProjectId?.ToString();
+        }
+
         if (project.IsBlank())
         {
             throw new DomainValidationException(adoption is { } source
                 ? $"{source.Option} files the {source.Noun} against a project, so it needs "
                     + "--project <name>."
-                : "A task needs a project (--project or 'project:' in the file).");
+                : settings.FromIdea.IsNotBlank()
+                    ? $"--from-idea cuts a task against a project too: pass --project <name>, or "
+                        + $"assign the idea to one first: h9k idea assign {settings.FromIdea} --project <name>."
+                    : "A task needs a project (--project or 'project:' in the file).");
         }
-
-        using var store = CliStore.Open();
-        await using IDocumentSession session = store.LightweightSession();
 
         ProjectDetails projectDetails = await ProjectResolver.ResolveAsync(session, project, cancellationToken);
         if (projectDetails.PurgeAt is { } purgeDeadline)
@@ -429,6 +490,17 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             agentContext = WorkItemContext.Compose(imported, additional);
             criteria = criteria.Count > 0 ? criteria : AskForCriteria(imported, adoption);
         }
+        else if (sourceIdea is not null)
+        {
+            // The whole note rides along automatically — unlike h9k idea promote's mechanical
+            // first-sentence split, nothing was carved out of it to become the objective here, so
+            // none of it is redundant with --objective's own words. --context adds to it rather
+            // than replacing it, the same composition every other source uses.
+            string note = agentContext.IsNotBlank()
+                ? $"{sourceIdea.Text.Trim()}\n\n{agentContext.Trim()}"
+                : sourceIdea.Text.Trim();
+            agentContext = IdeaPromoteCommand.AgentContext(sourceIdea, note);
+        }
 
         TaskAdded added = TaskDecider.Add(
             taskId,
@@ -453,10 +525,19 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             // block that says nothing about where it came from leaves this null rather than an
             // origin with empty ids, which would read as a mirror of nowhere (AGENTS.md, never
             // guess at unobserved facts).
-            origin: record?.Origin is { } candidate && candidate.TaskId != Guid.Empty ? candidate : null);
+            origin: record?.Origin is { } candidate && candidate.TaskId != Guid.Empty ? candidate : null,
+            sourceIdeaId: sourceIdea?.Id);
         session.Events.StartStream<TaskAggregate>(taskId, added);
         AppendRecordCaps(
             session, taskId, added, reconstructed?.Caps ?? TaskRecordCaps.None, context.OwnerId);
+
+        if (sourceIdea is not null)
+        {
+            // The idea decides too: its own refusal (concluded, archived since the read above)
+            // teaches better than a bare append would.
+            IdeaTaskCut cut = IdeaDecider.CutTask(sourceIdea, taskId, added.Objective, added.AddedAt, context.OwnerId);
+            session.Events.Append(sourceIdea.Id, cut);
+        }
 
         await session.SaveChangesAsync(cancellationToken);
 
@@ -510,6 +591,14 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         if (epicId is { } joinedEpic)
         {
             AnsiConsole.MarkupLine($"[dim]  in epic {TaskListCommand.ShortId(joinedEpic)}[/]");
+        }
+
+        if (sourceIdea is not null)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]  cut from idea {TaskListCommand.ShortId(sourceIdea.Id)} — cutting never concludes "
+                + "or archives it, so discovery can keep producing:[/] h9k idea show "
+                + TaskListCommand.ShortId(sourceIdea.Id));
         }
 
         if (dependencies.Length > 0)
