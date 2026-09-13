@@ -53,11 +53,17 @@ One line per branch. Ask `--help` for the rest.
 
 ### Ideas: capture and discovery
 
-`h9k idea add | list | show | revise | assign | promote | discard`
+`h9k idea add | list | show | revise | assign | promote | conclude | archive`
 
 Capture is one command with one argument and an optional project. Revision has no ceremony,
-because nothing dispatches from an idea and there is no promise an edit could break. `promote` is
-the hinge to a draft task and is the only step that requires a project.
+because nothing dispatches from an idea and there is no promise an edit could break. There is no
+single graduation ceremony: `h9k task add --from-idea <id> --objective "…"` cuts a draft task from
+an idea through the ordinary add door, and invoked repeatedly one idea fans out into any number of
+them — each cut needing its own objective and requiring a project, supplied on the cut or already
+assigned to the idea. `promote` survives as sugar over cutting exactly one task (the note's first
+sentence becomes the objective) and concluding in the same breath. Cutting a task never ends the
+idea; only an explicit `conclude` (something came of discovery) or `archive` (nothing did) does,
+each with its own required `--reason`.
 
 ### Tasks: development and dispatch
 

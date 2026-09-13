@@ -96,32 +96,38 @@ workspace. The hall9k project's own move into its default home landed as that cu
 (backlog 52): the project home at `~/.hall9k/projects/hall9k` is canonical, and this repository is
 worked from its `repo/dev` worktree.
 
-Ideas come before tasks (Decisions Log #35). An idea undergoes **discovery** (what is this?);
-a draft task undergoes **refinement** (how does this become executable?). A task is an idea with
-intent, and `h9k idea promote` is the hinge between the two.
+Ideas come before tasks (Decisions Log #35, redesigned by backlog 31). An idea undergoes
+**discovery** (what is this?); a draft task undergoes **refinement** (how does this become
+executable?). A task is an idea with intent, and there is no single graduation ceremony: an idea
+fans out into any number of draft tasks through the ordinary add door, and an explicit human act
+concludes it.
 
 ```bash
 h9k idea add "<text>"                             # capture: one command, one argument
 h9k idea add "<text>" --project <name>            # --project is optional, at capture and after
 h9k idea list                                     # what is still in discovery, newest first
-h9k idea show <id>                                # note, project, workspace path, history, outcome
+h9k idea show <id>                                # note, project, workspace path, history, fan-out, outcome
 h9k idea revise <id> "<text>"                     # rewrite the note; every version stays on the stream
 h9k idea assign <id> --project <name>             # set or change where it belongs
-h9k idea promote <id> [--project <name>]          # becomes a draft task; needs a project
-h9k idea discard <id> --reason "<why>"            # closed honestly, never deleted
+h9k task add --from-idea <id> --objective "<…>"   # cut a draft task from it; repeatable, needs a project
+h9k idea promote <id> [--project <name>]          # sugar: cuts one task (note's first sentence) and concludes
+h9k idea conclude <id> --reason "<what came of it>"  # terminal: discovery produced something
+h9k idea archive <id> --reason "<why>"            # terminal: discovery produced nothing; never deleted
 ```
 
 Every idea owns a discovery workspace, where research notes, gathered files, and prototypes
 accumulate: `~/.hall9k/ideas/<idea-id>/workspace` for an idea whose capture-time project had no
 home yet (or had none at all), or `<home>/ideas/<shortid>-<slug>/workspace` when it did (backlog
-49). The stream records milestones only, never file contents, and promotion carries the current
-workspace path forward as the draft's agent context.
+49). The stream records milestones only, never file contents, and every cut carries the current
+workspace path forward as the draft's agent context. Cutting a task never concludes or archives
+the idea — discovery may keep producing — so ending it is always the separate, explicit act above.
 
 Task development and task dispatch are separate lifecycles (Decisions Log #34): `h9k task add`
 creates a **draft**, and nothing dispatches until a human publishes and assigns it.
 
 ```bash
 h9k task add --project <name> --objective "…"     # creates a Draft (identity, not readiness)
+h9k task add --from-idea <id> --objective "…"     # cut a draft from an idea (backlog 31); repeatable, falls back to the idea's own project
 h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number, owner/repo#42, or URL)
 h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or URL)
 h9k task add --project <name> --from-pr 42        # adopt a pull request to review (always pr-review)

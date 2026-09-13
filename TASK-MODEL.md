@@ -1451,12 +1451,14 @@ Rules carried over:
 - Where `Optional<T>` and shared value objects land (`Hall9k.Domain/Shared/` vs `Hall9k.Contracts`).
 - Package versions: Marten 8.17.0, WolverineFx(.Marten) 5.9.2, UUIDNext 4.2.3 — pinned once, centrally (Directory.Packages.props).
 
-## 10. Idea slice (log #35)
+## 10. Idea slice (log #35, redesigned by backlog 31)
 
 Ideas sit in front of tasks: an idea undergoes **discovery** (what is this?), and a draft task
 undergoes **refinement** (how does this become executable?). A task is an idea with intent, and
-promotion is the hinge. Flat tiny-slice layout, like Owner and Node: aggregate, events, decider,
-and projection as sibling files under `Features/Idea/`.
+there is no single graduation ceremony: `h9k task add --from-idea` cuts a draft through the
+ordinary add door, through the same source-resolver seam `--from-issue`/`--from-jira` use, and an
+idea fans out into as many tasks as discovery produces. Flat tiny-slice layout, like Owner and
+Node: aggregate, events, decider, and projection as sibling files under `Features/Idea/`.
 
 ```csharp
 // Features/Idea/  (one record per file)
@@ -1464,13 +1466,17 @@ public sealed record IdeaCaptured(Guid Id, Guid OwnerId, string Text, Guid? Proj
 public sealed record IdeaRevised(Guid Id, string Text, DateTimeOffset RevisedAt, Guid RevisedByOwnerId);
 public sealed record IdeaAssignedToProject(
     Guid Id, Guid ProjectId, Guid? PreviousProjectId, DateTimeOffset AssignedAt, Guid AssignedByOwnerId);
-public sealed record IdeaPromoted(                 // names the draft it became; TaskAdded.SourceIdeaId
-    Guid Id, Guid TaskId, Guid ProjectId,          // names this idea back (two-way provenance)
-    string Objective, DateTimeOffset PromotedAt, Guid PromotedByOwnerId);
-public sealed record IdeaDiscarded(Guid Id, string Reason, DateTimeOffset DiscardedAt, Guid DiscardedByOwnerId);
+public sealed record IdeaTaskCut(               // repeatable: one per cut, never terminal
+    Guid Id, Guid TaskId, string Objective, DateTimeOffset CutAt, Guid CutByOwnerId);
+public sealed record IdeaConcluded(Guid Id, string Reason, DateTimeOffset ConcludedAt, Guid ConcludedByOwnerId);
+public sealed record IdeaArchived(Guid Id, string Reason, DateTimeOffset ArchivedAt, Guid ArchivedByOwnerId);
 
-// IdeaState: Captured (in discovery) -> Promoted | Discarded. Both endings are terminal;
-// there is no "refined" state, because refinement belongs to the draft, not to the idea.
+// IdeaState: Captured (in discovery) -> Concluded | Archived. Both endings are terminal, both
+// explicit human acts; cutting a task never appends either on its own, because discovery may
+// keep producing. There is no "refined" state, because refinement belongs to the draft(s), not
+// to the idea. The shipped 1:1 IdeaPromoted/IdeaDiscarded (log #35) are retired: their own
+// Apply handlers stay, for historical replay only, reconciled into Concluded/Archived
+// respectively, and h9k idea promote survives as sugar over IdeaTaskCut + IdeaConcluded.
 ```
 
 Three things this slice deliberately does not do:
@@ -1480,13 +1486,16 @@ Three things this slice deliberately does not do:
    `RunPaths` derives a run's directory. Research notes, gathered files, and prototypes
    accumulate there; the stream carries milestones only. Per-file provenance is the
    attachments feature's job (IDEA-task-attachments), not this one's.
-2. **It does not duplicate the task lifecycle.** Promotion emits an ordinary `TaskAdded`
-   (a Draft, per log #34) whose agent context is the note's remainder plus the workspace
-   pointer, and the human then walks the ordinary ceremony: revise, publish, assign.
-3. **It does not interpret the note.** The objective is the first sentence, taken by a
-   mechanical scan and printed back, or whatever `--objective` said. Nothing is inferred.
+2. **It does not duplicate the task lifecycle.** Cutting a task emits an ordinary `TaskAdded`
+   (a Draft, per log #34) whose agent context is the note plus the workspace pointer, and the
+   human then walks the ordinary ceremony: revise, publish, assign — once per cut.
+3. **It does not interpret the note.** A cut's objective is always typed (`--objective`),
+   never taken from the note — several tasks fanned out from one idea cannot share its first
+   sentence. `h9k idea promote`'s own mechanical first-sentence split is the one exception,
+   preserved because it is sugar over a single cut.
 
 Reads follow the house rule: one inline `SingleStreamProjection` (`IdeaDetails`), carrying the
-current note, every earlier version of it, the project (or its honest absence), and what the
-idea became. No multi-stream projection: `h9k idea show` issues its own small queries for the
-project, the owner, and the promoted task.
+current note, every earlier version of it, the project (or its honest absence), the list of
+every task cut from it, and how it ended. No multi-stream projection: `h9k idea show` joins the
+board's own `TaskStatusComposer` (the same seam `h9k epic show` joins on `EpicId`) to show each
+fanned-out task's current state, plus its own small queries for the project and the owner.

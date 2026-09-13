@@ -316,8 +316,13 @@ against Jira.
 ### Ideas
 
 Capture with one command and one argument, a discovery workspace per idea, revision with full
-history, assignment to a project after the fact, promotion into a draft task, and discard with
-the reason kept. Provenance is recorded in both directions.
+history, and assignment to a project after the fact. `h9k task add --from-idea` cuts a draft task
+from an idea through the ordinary add door — repeatable, so one idea fans out into any number of
+tasks, each cut needing its own objective, with provenance recorded in both directions and `h9k
+idea show` listing the whole fan-out and each task's current state. `h9k idea promote` survives as
+sugar over cutting one task and concluding in the same breath. An idea reaches one of its two
+terminal states only by an explicit, separate act: `h9k idea conclude` (something came of
+discovery) or `h9k idea archive` (nothing did), each with the reason kept and nothing deleted.
 
 ### External work items
 
@@ -970,12 +975,12 @@ See [`backlog/IDEA-coordinator-agent.md`](../backlog/IDEA-coordinator-agent.md).
 
 ### The formal funnel
 
-`h9k idea add` and promotion exist. Triage as a batch gate, conversational discovery as a named
-flow, the parking garage with resurfacing counts, and idea fan-out into several drafts are
+`h9k idea add`, promotion, and idea fan-out into any number of drafts (`h9k task add
+--from-idea`, `h9k idea conclude`/`archive`, backlog 31) exist. Triage as a batch gate,
+conversational discovery as a named flow, and the parking garage with resurfacing counts are
 designed and unbuilt.
 
-See [PLAN.md §3 and §7](../PLAN.md),
-[`backlog/31-idea-fanout.md`](../backlog/31-idea-fanout.md).
+See [PLAN.md §3 and §7](../PLAN.md).
 
 ### Multi-node and peer-to-peer
 
