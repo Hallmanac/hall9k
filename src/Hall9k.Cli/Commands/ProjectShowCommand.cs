@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Project.Queries;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -43,10 +44,47 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         ProjectSettingsHistory history = await ProjectSettingsHistory.ReadAsync(session, project.Id, cancellationToken);
         AnsiConsole.Write(SettingsPane(project, operatingSettings, history));
 
-        IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
-            session, DateTimeOffset.UtcNow, cancellationToken);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(session, now, cancellationToken);
         WriteTasks(project, [.. rows.Where(row => row.ProjectId == project.Id)]);
+
+        await WriteThroughputAsync(session, project, operatingSettings, now, cancellationToken);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The throughput block, scoped to this project, current period beside the previous one (task:
+    /// h9k status reports throughput beside spend). The previous period is shown for the same
+    /// reason Brian's own framing names comparing week over week as the one number that matters
+    /// (idea fc85f609's <c>measurement-recipes.md</c>): a single period's figure says nothing about
+    /// direction on its own. Degraded rather than fatal on a DB hiccup, the same posture every
+    /// other best-effort pane on this command and <c>h9k status</c> already take.
+    /// </summary>
+    private static async Task WriteThroughputAsync(
+        IQuerySession session, ProjectDetails project, OperatingSettings operatingSettings, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            SpendPeriod period = SpendPeriod.FromInput(operatingSettings.SpendPeriod ?? OperatingSettings.DefaultSpendPeriod);
+            DateTimeOffset periodStart = period.StartOf(now);
+            DateTimeOffset previousPeriodStart = period == SpendPeriod.Day ? periodStart.AddDays(-1) : periodStart.AddDays(-7);
+
+            ThroughputSummary current = await ThroughputQuery.ReadAsync(
+                session, periodStart, now, now, project.Id, cancellationToken);
+            ThroughputSummary previous = await ThroughputQuery.ReadAsync(
+                session, previousPeriodStart, periodStart, now, project.Id, cancellationToken);
+
+            AnsiConsole.MarkupLine("\n[bold]Throughput[/]");
+            foreach (string line in ThroughputPane.ComposeLines(current, previous, period.Value))
+            {
+                AnsiConsole.MarkupLineInterpolated($"[dim]{line}[/]");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"\n[dim]throughput: unavailable ({exception.Message})[/]");
+        }
     }
 
     private static Table Registration(ProjectDetails project, ConnectionDetails? connection, OwnerDetails? owner)

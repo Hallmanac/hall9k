@@ -1,6 +1,8 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -95,6 +97,30 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             AnsiConsole.MarkupLineInterpolated($"[dim]spend this period: unavailable ({exception.Message})[/]");
         }
 
+        // Throughput beside spend (task: h9k status reports throughput beside spend, discovery
+        // session for idea cc9b7aec): the same period spend was just read for, so the two blocks
+        // can never name different windows. Skipped, not degraded to its own error line, when
+        // spend itself could not be read — there is no period to scope it to, and the line above
+        // already said the picture is incomplete.
+        if (spend is not null)
+        {
+            try
+            {
+                SpendPeriod period = SpendPeriod.FromInput(spend.Period);
+                DateTimeOffset periodStart = period.StartOf(now);
+                ThroughputSummary throughput = await ThroughputQuery.ReadAsync(
+                    session, periodStart, now, now, projectId: null, cancellationToken);
+                foreach (string line in ThroughputPane.ComposeLines(throughput, period.Value))
+                {
+                    AnsiConsole.MarkupLineInterpolated($"[dim]{line}[/]");
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                AnsiConsole.MarkupLineInterpolated($"[dim]throughput this period: unavailable ({exception.Message})[/]");
+            }
+        }
+
         // A project paused at a cap of 0 while the machine sits idle is the one queue state that
         // looks exactly like a fault (Decisions Log #140): the deliberate pause and the forgotten
         // one are the same setting, so the pane says out loud what is held, how much of it, and
@@ -180,9 +206,37 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 .Select(row => row.ProjectId)
                 .Distinct()
                 .Count();
+
+            // How long each queued row has actually waited, and the section's own total — the
+            // exact FoldQueued TaskPassageQuery.Compute already owns for the passage section's own
+            // Queued row (task: h9k status reports throughput beside spend), so this can never
+            // read a different wait for the same task than h9k task show does. Read for every row
+            // the section is holding, not only the ones it prints: the total belongs to the whole
+            // queue, and PerSection's own "… and N more" is a display cutoff, not a scope on what
+            // this figure counts.
+            IReadOnlyList<TaskStatusRow> queuedRows = SectionRows(rows, AttentionBucket.Queued, inServiceOrder: true);
+            Dictionary<Guid, PassagePhase> queuedWaits = [];
+            foreach (TaskStatusRow queuedRow in queuedRows)
+            {
+                queuedWaits[queuedRow.TaskId] = await TaskPassageQuery.ReadQueuedAsync(
+                    session, queuedRow.TaskId, now, cancellationToken);
+            }
+
+            TimeSpan totalQueueTime = queuedWaits.Values
+                .Select(phase => phase.Elapsed)
+                .OfType<TimeSpan>()
+                .Aggregate(TimeSpan.Zero, (sum, elapsed) => sum + elapsed);
+
+            IReadOnlyList<TaskStatusRow> rowsWithWait =
+            [
+                .. rows.Select(row => row.Group == AttentionBucket.Queued && queuedWaits.TryGetValue(row.TaskId, out PassagePhase wait)
+                    ? row with { Facts = [.. row.Facts, WaitedForSlotFact(wait)] }
+                    : row),
+            ];
+
             listed += Section(
-                rows, AttentionBucket.Queued, "queued",
-                QueuedHeading(atCeiling, atProjectCap, atSpendBudget, spend, queuedProjects, heldByTracker), now,
+                rowsWithWait, AttentionBucket.Queued, "queued",
+                QueuedHeading(atCeiling, atProjectCap, atSpendBudget, spend, totalQueueTime, queuedProjects, heldByTracker), now,
                 inServiceOrder: true);
         }
 
@@ -284,12 +338,22 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// the tracker per card, so a queue the gate alone is holding renders no "raise one with"
     /// clause at all.
     /// </para>
+    /// <para>
+    /// <paramref name="totalQueueTime"/> is the sum of every row's own current wait
+    /// (<see cref="TaskPassageQuery.ReadQueuedAsync"/>, the identical fold the passage section's
+    /// own Queued row uses) across every row this section is holding, not only the ones it prints
+    /// — the same total the throughput block would report if this backlog closed out today (task:
+    /// h9k status reports throughput beside spend). Zero renders nothing extra: a queue nothing
+    /// has waited in yet (every row just landed, or every row's own wait reads unknown) has
+    /// nothing worth adding to a heading already full of causes.
+    /// </para>
     /// </summary>
     internal static string QueuedHeading(
         bool atCeiling,
         bool atProjectCap,
         bool atSpendBudget,
         SpendPressure? spend,
+        TimeSpan totalQueueTime = default,
         int queuedProjects = 1,
         bool heldByTracker = false)
     {
@@ -345,6 +409,9 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         // heading it always did rather than one carrying a stray double space.
         string[] notes =
         [
+            .. totalQueueTime > TimeSpan.Zero
+                ? (string[])[$"This backlog has waited {DurationFormat.Short(totalQueueTime)} total so far."]
+                : [],
             .. countedNote is not null ? (string[])[countedNote] : [],
             .. heldByTracker
                 ? (string[])
@@ -371,6 +438,19 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             : "[/]";
         return $"[blue]Queued[/] [dim]— {string.Join("; ", causes)}. {string.Join(" ", notes)}{leverClause}";
     }
+
+    /// <summary>
+    /// One queued row's own wait, appended to its fact line (task: h9k status reports throughput
+    /// beside spend): the row already says it is "waiting for a slot" or "held" — this says for
+    /// how long, off the identical fold <see cref="TaskPassageQuery.ReadQueuedAsync"/> shares with
+    /// the passage section's own Queued row, so the two can never disagree about the same task.
+    /// Unknown rather than a guessed zero for a stream whose own queued boundary could not be
+    /// found (<see cref="PassagePhase.IsUnknown"/>) — the same honesty <see cref="PassagePhase"/>'s
+    /// own doc asks of every other reader of this fold.
+    /// </summary>
+    private static string WaitedForSlotFact(PassagePhase queued) => queued.Elapsed is { } elapsed
+        ? $"waited {DurationFormat.Short(elapsed)} for a slot"
+        : "waited an unknown time for a slot";
 
     /// <summary>
     /// The unmissable line a project paused at a cap of 0 earns while this node sits idle
