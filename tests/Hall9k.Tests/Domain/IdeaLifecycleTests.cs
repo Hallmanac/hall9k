@@ -8,10 +8,10 @@ using Xunit;
 namespace Hall9k.Tests.Domain;
 
 /// <summary>
-/// Discovery as its own phase (Decisions Log #35): capture asks for nothing but the thought,
-/// the note is revisable for as long as the idea is being figured out, and the two endings —
-/// promoted into a draft, or discarded with a reason — both refuse to pretend anything else
-/// is still happening.
+/// Discovery as its own phase (backlog 31): capture asks for nothing but the thought, the note
+/// is revisable for as long as the idea is being figured out, cutting a task is repeatable and
+/// never ends the idea on its own, and the two endings — concluded, or archived — both refuse to
+/// pretend anything else is still happening.
 /// </summary>
 public sealed class IdeaLifecycleTests
 {
@@ -103,83 +103,97 @@ public sealed class IdeaLifecycleTests
     }
 
     [Fact]
-    public void Promotion_needs_a_project_and_teaches_the_one_path_to_a_new_one()
+    public void Cutting_a_task_is_repeatable_and_never_ends_the_idea()
+    {
+        IdeaAggregate idea = Captured("Give ideas a discovery workspace");
+        Guid firstTask = DomainId.New();
+        Guid secondTask = DomainId.New();
+
+        IdeaTaskCut first = IdeaDecider.CutTask(idea, firstTask, "Give ideas a workspace directory", Now, Owner);
+        idea.Apply(first);
+        IdeaTaskCut second = IdeaDecider.CutTask(idea, secondTask, "Render the workspace path on idea show", Now.AddDays(1), Owner);
+        idea.Apply(second);
+
+        idea.State.Should().Be(IdeaState.Captured, "cutting a task never ends the idea on its own");
+        idea.CutTaskIds.Should().Equal(firstTask, secondTask);
+        first.Objective.Should().Be("Give ideas a workspace directory");
+    }
+
+    [Fact]
+    public void Cutting_a_task_needs_its_own_objective()
     {
         IdeaAggregate idea = Captured("Give ideas a discovery workspace");
 
-        Action act = () => IdeaDecider.Promote(idea, DomainId.New(), projectId: null, "objective", Now, Owner);
+        Action act = () => IdeaDecider.CutTask(idea, DomainId.New(), "  ", Now, Owner);
 
         act.Should().Throw<DomainValidationException>()
-            .WithMessage("*--project*")
-            .WithMessage("*h9k project add*", "an idea that IS a new project needs the registration first")
-            .WithMessage("*will not invent a repository*");
+            .WithMessage("*own objective*")
+            .WithMessage("*--from-idea*");
     }
 
     [Fact]
-    public void Promotion_uses_the_project_the_idea_was_already_assigned_to()
+    public void Concluding_records_why_and_ends_the_idea()
     {
         Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
         IdeaAggregate idea = Captured("Give ideas a discovery workspace", projectId);
-        Guid taskId = DomainId.New();
+        idea.Apply(IdeaDecider.CutTask(idea, taskId, "Give ideas a workspace directory", Now, Owner));
 
-        IdeaPromoted promoted = IdeaDecider.Promote(idea, taskId, projectId: null, "Give ideas a workspace", Now, Owner);
-        idea.Apply(promoted);
+        IdeaConcluded concluded = IdeaDecider.Conclude(idea, "Cut one task; discovery is done here", Now.AddDays(1), Owner);
+        idea.Apply(concluded);
 
-        promoted.ProjectId.Should().Be(projectId);
-        promoted.TaskId.Should().Be(taskId, "the idea's stream names the task it became");
-        idea.State.Should().Be(IdeaState.Promoted);
-        idea.PromotedTaskId.Should().Be(taskId);
+        idea.State.Should().Be(IdeaState.Concluded);
+        idea.ConcludeReason.Should().Be("Cut one task; discovery is done here");
+        idea.CutTaskIds.Should().Equal(taskId);
     }
 
     [Fact]
-    public void An_idea_promotes_once_and_the_refusal_names_the_task_it_became()
+    public void Concluding_without_a_reason_is_refused()
     {
-        Guid projectId = DomainId.New();
-        Guid taskId = DomainId.New();
-        IdeaAggregate idea = Captured("note", projectId);
-        idea.Apply(IdeaDecider.Promote(idea, taskId, projectId, "objective", Now, Owner));
+        IdeaAggregate idea = Captured("note");
 
-        Action act = () => IdeaDecider.Promote(idea, DomainId.New(), projectId, "objective", Now.AddDays(1), Owner);
+        Action act = () => IdeaDecider.Conclude(idea, "  ", Now, Owner);
 
-        act.Should().Throw<DomainConflictException>()
-            .WithMessage($"*{taskId}*")
-            .WithMessage("*h9k task show*");
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*--reason*")
+            .WithMessage("*h9k idea conclude*");
     }
 
     [Fact]
-    public void A_promoted_idea_is_not_revised_or_discarded_the_draft_is_where_the_work_moved()
+    public void A_concluded_idea_refuses_further_cuts_and_the_refusal_points_at_idea_show()
     {
         Guid projectId = DomainId.New();
-        Guid taskId = DomainId.New();
         IdeaAggregate idea = Captured("note", projectId);
-        idea.Apply(IdeaDecider.Promote(idea, taskId, projectId, "objective", Now, Owner));
+        idea.Apply(IdeaDecider.Conclude(idea, "Nothing more coming", Now, Owner));
 
+        Action cut = () => IdeaDecider.CutTask(idea, DomainId.New(), "objective", Now.AddDays(1), Owner);
         Action revise = () => IdeaDecider.Revise(idea, "second thoughts", Now.AddDays(1), Owner);
-        Action discard = () => IdeaDecider.Discard(idea, "changed my mind", Now.AddDays(1), Owner);
+        Action archive = () => IdeaDecider.Archive(idea, "changed my mind", Now.AddDays(1), Owner);
 
-        revise.Should().Throw<DomainConflictException>().WithMessage("*h9k task show*");
-        discard.Should().Throw<DomainConflictException>().WithMessage("*h9k task abandon*");
+        cut.Should().Throw<DomainConflictException>().WithMessage("*h9k idea show*");
+        revise.Should().Throw<DomainConflictException>().WithMessage("*h9k idea show*");
+        archive.Should().Throw<DomainConflictException>().WithMessage("*h9k idea show*");
     }
 
     [Fact]
-    public void Discarding_records_the_reason_and_keeps_the_idea()
+    public void Archiving_records_the_reason_and_keeps_the_idea()
     {
         IdeaAggregate idea = Captured("A thought that did not survive contact");
 
-        IdeaDiscarded discarded = IdeaDecider.Discard(idea, "Superseded by the attachments design", Now, Owner);
-        idea.Apply(discarded);
+        IdeaArchived archived = IdeaDecider.Archive(idea, "Superseded by the attachments design", Now, Owner);
+        idea.Apply(archived);
 
-        idea.State.Should().Be(IdeaState.Discarded);
-        idea.DiscardReason.Should().Be("Superseded by the attachments design");
+        idea.State.Should().Be(IdeaState.Archived);
+        idea.ArchiveReason.Should().Be("Superseded by the attachments design");
         idea.Text.Should().Be("A thought that did not survive contact", "nothing is deleted");
     }
 
     [Fact]
-    public void Discarding_without_a_reason_is_refused_because_the_reason_is_the_signal()
+    public void Archiving_without_a_reason_is_refused_because_the_reason_is_the_signal()
     {
         IdeaAggregate idea = Captured("note");
 
-        Action act = () => IdeaDecider.Discard(idea, "  ", Now, Owner);
+        Action act = () => IdeaDecider.Archive(idea, "  ", Now, Owner);
 
         act.Should().Throw<DomainValidationException>()
             .WithMessage("*--reason*")
@@ -187,16 +201,53 @@ public sealed class IdeaLifecycleTests
     }
 
     [Fact]
-    public void A_discarded_idea_stays_discarded_and_the_refusal_quotes_why()
+    public void An_archived_idea_stays_archived_and_the_refusal_quotes_why()
     {
         IdeaAggregate idea = Captured("note");
-        idea.Apply(IdeaDecider.Discard(idea, "Not worth the complexity", Now, Owner));
+        idea.Apply(IdeaDecider.Archive(idea, "Not worth the complexity", Now, Owner));
 
         Action act = () => IdeaDecider.Revise(idea, "unless…", Now.AddDays(30), Owner);
 
         act.Should().Throw<DomainConflictException>()
             .WithMessage("*Not worth the complexity*")
             .WithMessage("*h9k idea add*", "a returning thought is a fresh idea, not a resurrection");
+    }
+
+    /// <summary>
+    /// A legacy promotion replays into exactly the fan-out shape a fresh cut-then-conclude
+    /// would have left: the task joins <see cref="IdeaAggregate.CutTaskIds"/>, and the idea
+    /// reaches <see cref="IdeaState.Concluded"/> with no reason recorded (the original promote
+    /// never asked for one). This is the mechanism <c>h9k idea show</c> depends on to display a
+    /// pre-existing promoted idea's fan-out correctly: it reads the aggregate fresh from events
+    /// rather than trusting <c>IdeaDetails.CutTaskIds</c>, which an already-materialized
+    /// document from before this field existed would never carry.
+    /// </summary>
+    [Fact]
+    public void A_legacy_promotion_replays_as_a_fan_out_of_one_and_a_conclusion()
+    {
+        IdeaAggregate idea = Captured("Give ideas a discovery workspace", DomainId.New());
+        Guid taskId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        idea.Apply(new IdeaPromoted(idea.Id, taskId, projectId, "Give ideas a workspace", Now.AddDays(1), Owner));
+
+        idea.State.Should().Be(IdeaState.Concluded, "a promotion always meant something came of the idea");
+        idea.CutTaskIds.Should().Equal(taskId);
+        idea.ConcludeReason.Should().BeNull("the original promote never asked for a reason");
+        idea.ConcludedAt.Should().Be(Now.AddDays(1));
+    }
+
+    /// <summary>The discard counterpart of the test above.</summary>
+    [Fact]
+    public void A_legacy_discard_replays_as_an_archive()
+    {
+        IdeaAggregate idea = Captured("A thought that did not survive contact");
+
+        idea.Apply(new IdeaDiscarded(idea.Id, "Superseded by attachments", Now.AddDays(4), Owner));
+
+        idea.State.Should().Be(IdeaState.Archived, "a discard always meant nothing came of the idea");
+        idea.ArchiveReason.Should().Be("Superseded by attachments");
+        idea.ArchivedAt.Should().Be(Now.AddDays(4));
     }
 
     /// <summary>

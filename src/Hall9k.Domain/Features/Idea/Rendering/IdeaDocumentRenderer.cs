@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -29,14 +30,19 @@ public static class IdeaDocumentRenderer
         document.AppendLine($"project: {projectName}");
         document.AppendLine($"state: {idea.State.Value}");
         document.AppendLine($"revisions: {idea.Revisions}");
-        if (idea.PromotedTaskId is { } taskId)
+        if (idea.CutTaskIds.Count > 0)
         {
-            document.AppendLine($"promoted-task: {DomainId.Short(taskId)}");
+            document.AppendLine($"cut-tasks: {string.Join(", ", idea.CutTaskIds.Select(DomainId.Short))}");
         }
 
-        if (idea.DiscardReason is { } reason && reason.IsNotBlank())
+        if (idea.ConcludeReason is { } concludeReason && concludeReason.IsNotBlank())
         {
-            document.AppendLine($"discard-reason: {reason.ReplaceLineEndings(" ").Trim()}");
+            document.AppendLine($"conclude-reason: {concludeReason.ReplaceLineEndings(" ").Trim()}");
+        }
+
+        if (idea.ArchiveReason is { } archiveReason && archiveReason.IsNotBlank())
+        {
+            document.AppendLine($"archive-reason: {archiveReason.ReplaceLineEndings(" ").Trim()}");
         }
 
         document.AppendLine("---");

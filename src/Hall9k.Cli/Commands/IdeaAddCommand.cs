@@ -102,9 +102,12 @@ public sealed class IdeaAddCommand : Hall9kAsyncCommand<IdeaAddCommand.Settings>
         AnsiConsole.MarkupLine($"[dim]  workspace:[/] {workspace.EscapeMarkup()}");
         AnsiConsole.MarkupLine(
             "[dim]Discovery is what happens next: research it, gather files into the workspace, "
-            + "prototype. When it has intent, it is a task:[/]");
+            + "prototype. When it has intent, it is a task — cut as many as discovery produces:[/]");
+        AnsiConsole.MarkupLine($"  h9k task add --from-idea {shortId} --objective \"…\""
+            + (project is null ? " --project <name>" : string.Empty));
         AnsiConsole.MarkupLine(
-            $"  h9k idea promote {shortId}" + (project is null ? " --project <name>" : string.Empty));
+            "[dim]Done producing? Say so:[/] h9k idea conclude " + shortId + " --reason \"…\" "
+            + "[dim]or[/] h9k idea archive " + shortId + " --reason \"…\"");
         return ExitCodes.Ok;
     }
 }

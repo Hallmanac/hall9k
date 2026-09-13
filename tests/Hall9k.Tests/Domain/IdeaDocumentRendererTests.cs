@@ -36,15 +36,17 @@ public sealed class IdeaDocumentRendererTests
     }
 
     [Fact]
-    public void A_promoted_idea_names_the_task_it_became()
+    public void A_concluded_idea_names_every_task_it_fanned_out_into()
     {
         IdeaDetails idea = SomeIdea();
-        idea.PromotedTaskId = DomainId.New();
-        idea.State = IdeaState.Promoted;
+        Guid firstTask = DomainId.New();
+        Guid secondTask = DomainId.New();
+        idea.CutTaskIds = [firstTask, secondTask];
+        idea.State = IdeaState.Concluded;
 
         string rendered = IdeaDocumentRenderer.Render(idea, "hall9k");
 
-        rendered.Should().Contain($"promoted-task: {DomainId.Short(idea.PromotedTaskId.Value)}");
+        rendered.Should().Contain($"cut-tasks: {DomainId.Short(firstTask)}, {DomainId.Short(secondTask)}");
     }
 
     private static IdeaDetails SomeIdea() => new()

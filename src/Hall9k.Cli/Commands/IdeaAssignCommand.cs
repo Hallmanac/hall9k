@@ -70,7 +70,8 @@ public sealed class IdeaAssignCommand : Hall9kAsyncCommand<IdeaAssignCommand.Set
             $"[blue]Idea {shortId}[/] belongs to '{project.Name.EscapeMarkup()}'"
             + (assigned.PreviousProjectId is null ? string.Empty : " [dim](moved)[/]"));
         AnsiConsole.MarkupLine(
-            $"[dim]Promotion no longer needs to be told where it goes:[/] h9k idea promote {shortId}");
+            $"[dim]Cutting a task no longer needs to be told where it goes:[/] "
+            + $"h9k task add --from-idea {shortId} --objective \"…\"");
         return ExitCodes.Ok;
     }
 }

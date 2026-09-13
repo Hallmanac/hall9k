@@ -5,9 +5,9 @@ namespace Hall9k.Domain.Features.Idea;
 
 /// <summary>
 /// Every decision an idea makes, in one place (TASK-MODEL.md §7). The rules are deliberately
-/// few: capture asks for a thought and nothing else, and the only hard edges are the two
-/// endings — a promoted idea's story continues on its task, a discarded one's is over
-/// (Decisions Log #35).
+/// few: capture asks for a thought and nothing else, cutting a task is repeatable and never
+/// ends the idea on its own, and the only hard edges are the two endings — concluded, discovery
+/// produced something, or archived, it did not — both explicit human acts (Brian, 2026-08-21).
 /// </summary>
 public static class IdeaDecider
 {
@@ -42,8 +42,9 @@ public static class IdeaDecider
     }
 
     /// <summary>
-    /// Rewriting the note as discovery sharpens it. Captured-only: after promotion the draft
-    /// task is the thing being worked on, and h9k task revise is where wording changes.
+    /// Rewriting the note as discovery sharpens it. Captured-only: once concluded or archived
+    /// the ending is the record, and once a draft exists h9k task revise is where its own
+    /// wording changes.
     /// </summary>
     public static IdeaRevised Revise(IdeaAggregate idea, string text, DateTimeOffset revisedAt, Guid revisedByOwnerId)
     {
@@ -53,7 +54,7 @@ public static class IdeaDecider
         {
             throw new DomainValidationException(
                 $"A revision replaces the whole note, so it needs text: h9k idea revise {idea.Id} \"<the sharper version>\". "
-                + $"To close the idea instead: h9k idea discard {idea.Id} --reason \"<why>\"");
+                + $"To close the idea instead: h9k idea archive {idea.Id} --reason \"<why>\"");
         }
 
         if (text.Trim() == idea.Text)
@@ -90,74 +91,68 @@ public static class IdeaDecider
     }
 
     /// <summary>
-    /// Discovery is over and the idea has intent: it becomes a draft task, which is where
-    /// REFINEMENT happens. Promotion needs a project — supplied now or already assigned — and
-    /// an objective taken from the note or typed by the human, never inferred.
+    /// One task cut from an idea, through the ordinary add door (<c>h9k task add --from-idea</c>,
+    /// backlog 31). Repeatable: cutting a task never ends the idea's own story, because
+    /// discovery may keep producing more of them. The objective is required and never taken
+    /// mechanically from the note — several tasks fanned out from one idea cannot share its
+    /// first sentence, so each cut supplies its own in the human's own words.
     /// </summary>
-    public static IdeaPromoted Promote(
-        IdeaAggregate idea,
-        Guid taskId,
-        Guid? projectId,
-        string objective,
-        DateTimeOffset promotedAt,
-        Guid promotedByOwnerId)
+    public static IdeaTaskCut CutTask(
+        IdeaAggregate idea, Guid taskId, string objective, DateTimeOffset cutAt, Guid cutByOwnerId)
     {
-        if (idea.State == IdeaState.Promoted)
-        {
-            throw new DomainConflictException(
-                $"Idea {idea.Id} was already promoted — it became task {idea.PromotedTaskId}. "
-                + $"Work on that draft: h9k task show {idea.PromotedTaskId}. "
-                + "An idea promotes once; a second thought about it is a second idea.");
-        }
-
-        RequireCaptured(idea, "promote");
-
-        Guid destination = projectId ?? idea.ProjectId ?? Guid.Empty;
-        if (destination == Guid.Empty)
-        {
-            throw new DomainValidationException(
-                "Promotion needs a project, because a task belongs to one: h9k idea promote "
-                + $"{idea.Id} --project <name>. If this idea IS a new project, register it first "
-                + "(h9k project add --name <name> --repo <path>) and then promote into it — the platform "
-                + "will not invent a repository for you (Decisions Log #35).");
-        }
+        RequireCaptured(idea, "cut a task from");
 
         if (objective.IsBlank())
         {
             throw new DomainValidationException(
-                "The draft needs an objective and the note gave nothing to take one from. "
-                + $"Say it outright: h9k idea promote {idea.Id} --objective \"<one outcome-phrased sentence>\"");
+                "Cutting a task from an idea needs its own objective — several tasks fanned out "
+                + $"from one idea cannot share its first sentence: h9k task add --from-idea {idea.Id} "
+                + "--objective \"<one outcome-phrased sentence>\".");
         }
 
-        return new IdeaPromoted(idea.Id, taskId, destination, objective.Trim(), promotedAt, promotedByOwnerId);
+        return new IdeaTaskCut(idea.Id, taskId, objective.Trim(), cutAt, cutByOwnerId);
     }
 
     /// <summary>
-    /// Closing an idea honestly. The reason is required: an idea dropped without one leaves
-    /// the next reader (or the same human in six months) guessing at why, which is exactly the
-    /// provenance the never-guess rule exists to protect. Nothing is deleted.
+    /// Discovery happened and something came of it: tasks were cut, or an outcome was acted on
+    /// some other way. Always an explicit human act (Brian, 2026-08-21) — cutting a task never
+    /// appends this on its own, because discovery may keep producing.
     /// </summary>
-    public static IdeaDiscarded Discard(
-        IdeaAggregate idea, string reason, DateTimeOffset discardedAt, Guid discardedByOwnerId)
+    public static IdeaConcluded Conclude(
+        IdeaAggregate idea, string reason, DateTimeOffset concludedAt, Guid concludedByOwnerId)
     {
-        if (idea.State == IdeaState.Promoted)
-        {
-            throw new DomainConflictException(
-                $"Idea {idea.Id} became task {idea.PromotedTaskId}, so discarding the idea would close "
-                + $"nothing. Walk away from the work instead: h9k task abandon {idea.PromotedTaskId} --reason \"<why>\"");
-        }
-
-        RequireCaptured(idea, "discard");
+        RequireCaptured(idea, "conclude");
 
         if (reason.IsBlank())
         {
             throw new DomainValidationException(
-                $"Discarding records why: h9k idea discard {idea.Id} --reason \"<why this is not worth pursuing>\". "
-                + "The idea is kept either way — a discarded idea that keeps coming back is a signal, and "
-                + "a discard with no reason throws that signal away.");
+                $"Concluding an idea records why: h9k idea conclude {idea.Id} --reason \"<what came of it>\". "
+                + "Tasks cut, or an outcome acted on some other way — either way, say what happened.");
         }
 
-        return new IdeaDiscarded(idea.Id, reason.Trim(), discardedAt, discardedByOwnerId);
+        return new IdeaConcluded(idea.Id, reason.Trim(), concludedAt, concludedByOwnerId);
+    }
+
+    /// <summary>
+    /// Discovery happened and nothing came of it. The reason is required: an idea set aside
+    /// without one leaves the next reader (or the same human in six months) guessing at why,
+    /// which is exactly the provenance the never-guess rule exists to protect. Nothing is
+    /// deleted.
+    /// </summary>
+    public static IdeaArchived Archive(
+        IdeaAggregate idea, string reason, DateTimeOffset archivedAt, Guid archivedByOwnerId)
+    {
+        RequireCaptured(idea, "archive");
+
+        if (reason.IsBlank())
+        {
+            throw new DomainValidationException(
+                $"Archiving an idea records why: h9k idea archive {idea.Id} --reason \"<why this is not worth pursuing>\". "
+                + "The idea is kept either way — an idea that keeps coming back is a signal, and "
+                + "an archive with no reason throws that signal away.");
+        }
+
+        return new IdeaArchived(idea.Id, reason.Trim(), archivedAt, archivedByOwnerId);
     }
 
     private static Guid? Vet(Guid? projectId) => projectId == Guid.Empty ? null : projectId;
@@ -171,11 +166,12 @@ public static class IdeaDecider
 
         throw idea.State switch
         {
-            var state when state == IdeaState.Promoted => new DomainConflictException(
-                $"Idea {idea.Id} is promoted — it became task {idea.PromotedTaskId}, and the draft is what "
-                + $"moves now: h9k task show {idea.PromotedTaskId}."),
-            var state when state == IdeaState.Discarded => new DomainConflictException(
-                $"Idea {idea.Id} was discarded ({idea.DiscardReason}), so there is nothing to {verb}. "
+            var state when state == IdeaState.Concluded => new DomainConflictException(
+                $"Idea {idea.Id} was concluded"
+                + (idea.ConcludeReason.IsNotBlank() ? $" ({idea.ConcludeReason})" : string.Empty)
+                + $", so there is nothing to {verb}. See what it fanned out to: h9k idea show {idea.Id}"),
+            var state when state == IdeaState.Archived => new DomainConflictException(
+                $"Idea {idea.Id} was archived ({idea.ArchiveReason}), so there is nothing to {verb}. "
                 + "It stays on the record; capture a fresh idea if the thought has come back: h9k idea add \"…\""),
             _ => new DomainNotFoundException($"Idea {idea.Id} has no captured state to {verb}."),
         };

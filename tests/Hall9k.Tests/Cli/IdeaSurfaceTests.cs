@@ -12,9 +12,10 @@ using Xunit;
 namespace Hall9k.Tests.Cli;
 
 /// <summary>
-/// The idea surfaces as a human reads them (Decisions Log #35): a browse list that teaches
-/// promotion, an honest absence where a project would be, and a promotion that shows exactly
-/// what it took from the note rather than asking to be trusted.
+/// The idea surfaces as a human reads them (backlog 31): a browse list that teaches cutting a
+/// task, an honest absence where a project would be, and a promotion — the one-task-and-done
+/// sugar over that same door — that shows exactly what it took from the note rather than asking
+/// to be trusted.
 /// </summary>
 // Two tests below resolve IdeaPaths.WorkspaceDirectory, which reads the process-wide
 // HALL9K_HOME. Sharing the collection serializes this file against every test that
@@ -60,14 +61,13 @@ public sealed class IdeaSurfaceTests
     }
 
     [Fact]
-    public void The_footer_teaches_promotion_because_that_is_what_the_list_is_for()
+    public void The_footer_teaches_cutting_a_task_because_that_is_what_the_list_is_for()
     {
         string footer = IdeaListCommand.Footer(
             matched: 3, shown: 3, States(captured: 3), new IdeaListCommand.Settings(), project: null,
             state: IdeaState.Captured);
 
-        footer.Should().Contain("h9k idea promote");
-        footer.Should().Contain("refinement", "promotion is the hand-off between the two phases");
+        footer.Should().Contain("h9k task add --from-idea");
     }
 
     [Fact]
@@ -87,21 +87,21 @@ public sealed class IdeaSurfaceTests
     public void The_footer_keeps_the_state_the_reader_typed_when_it_suggests_seeing_the_rest()
     {
         string footer = IdeaListCommand.Footer(
-            matched: 42, shown: 20, States(promoted: 42),
-            new IdeaListCommand.Settings { State = "promoted" }, project: null, state: IdeaState.Promoted);
+            matched: 42, shown: 20, States(concluded: 42),
+            new IdeaListCommand.Settings { State = "concluded" }, project: null, state: IdeaState.Concluded);
 
-        footer.Should().Contain("h9k idea list --all --state promoted",
-            "expanding a promoted view must show more promoted ideas, not the captured ones");
+        footer.Should().Contain("h9k idea list --all --state concluded",
+            "expanding a concluded view must show more concluded ideas, not the captured ones");
     }
 
     [Fact]
     public void The_footer_counts_what_the_default_state_filter_is_hiding()
     {
         string footer = IdeaListCommand.Footer(
-            matched: 4, shown: 4, States(captured: 4, promoted: 5, discarded: 2),
+            matched: 4, shown: 4, States(captured: 4, concluded: 5, archived: 2),
             new IdeaListCommand.Settings(), project: null, state: IdeaState.Captured);
 
-        footer.Should().Contain("5 promoted, 2 discarded");
+        footer.Should().Contain("5 concluded, 2 archived");
         footer.Should().Contain("--state all", "a filtered view must never read as the whole truth");
     }
 
@@ -109,12 +109,12 @@ public sealed class IdeaSurfaceTests
     public void The_footer_names_the_states_it_is_hiding_rather_than_assuming_the_default_view()
     {
         string footer = IdeaListCommand.Footer(
-            matched: 1, shown: 1, States(captured: 3, promoted: 1, discarded: 1),
-            new IdeaListCommand.Settings(), project: null, state: IdeaState.Promoted);
+            matched: 1, shown: 1, States(captured: 3, concluded: 1, archived: 1),
+            new IdeaListCommand.Settings(), project: null, state: IdeaState.Concluded);
 
-        footer.Should().Contain("3 captured, 1 discarded",
-            "asking for promoted ideas hides the ones still in discovery, not the promoted ones");
-        footer.Should().NotContain("promoted or discarded");
+        footer.Should().Contain("3 captured, 1 archived",
+            "asking for concluded ideas hides the ones still in discovery, not the concluded ones");
+        footer.Should().NotContain("concluded or archived");
     }
 
     [Fact]
@@ -142,18 +142,18 @@ public sealed class IdeaSurfaceTests
         footer.Should().NotContain("--state all");
     }
 
-    private static IReadOnlyList<IdeaState> States(int captured = 0, int promoted = 0, int discarded = 0) =>
+    private static IReadOnlyList<IdeaState> States(int captured = 0, int concluded = 0, int archived = 0) =>
     [
         .. Enumerable.Repeat(IdeaState.Captured, captured),
-        .. Enumerable.Repeat(IdeaState.Promoted, promoted),
-        .. Enumerable.Repeat(IdeaState.Discarded, discarded),
+        .. Enumerable.Repeat(IdeaState.Concluded, concluded),
+        .. Enumerable.Repeat(IdeaState.Archived, archived),
     ];
 
     [Theory]
     [InlineData(null, "Captured")]
     [InlineData("captured", "Captured")]
-    [InlineData("Promoted", "Promoted")]
-    [InlineData("discarded", "Discarded")]
+    [InlineData("Concluded", "Concluded")]
+    [InlineData("archived", "Archived")]
     public void The_state_filter_speaks_the_idea_vocabulary(string? input, string expected)
     {
         IdeaListCommand.ParseState(input)!.Value.Should().Be(expected);
@@ -166,7 +166,7 @@ public sealed class IdeaSurfaceTests
 
         Action act = () => IdeaListCommand.ParseState("parked");
 
-        act.Should().Throw<DomainValidationException>().WithMessage("*captured, promoted, discarded, all*");
+        act.Should().Throw<DomainValidationException>().WithMessage("*captured, concluded, archived, all*");
     }
 
     [Fact]
@@ -282,7 +282,6 @@ public sealed class IdeaSurfaceTests
             projectName is null ? null : DomainId.New(),
             projectName,
             IdeaState.Captured,
-            PromotedTaskId: null,
             Now.AddHours(-5));
 
     private static string[] Render(IRenderable renderable, int width)
