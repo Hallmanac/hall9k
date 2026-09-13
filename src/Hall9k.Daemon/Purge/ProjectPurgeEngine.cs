@@ -2,9 +2,16 @@ using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Microsoft.Extensions.Logging;
 
 namespace Hall9k.Daemon.Purge;
@@ -65,7 +72,7 @@ internal sealed record PurgeOneResult(
 /// orphaned rather than accounted for by them: <c>CleanBaseGateVerdict</c>, <c>ObservedReviewRequest</c>
 /// and <c>ObservedReviewMention</c> (all keyed in part by <c>ProjectId</c>), and
 /// <c>TrackerClaimHold</c> (keyed by <c>TaskId</c>) are each mutable telemetry rather than
-/// projections of an event stream, so none is deleted by the seven queued statements above. Each
+/// projections of an event stream, so none is deleted by the nine queued statements above. Each
 /// sits harmlessly under an id nothing will ever look up again once its owning project or task is
 /// gone (independent pre-PR review, cycle 1, conformance lens, low) — this exclusion list is not
 /// exhaustive by omission, it names every document this purge deliberately leaves behind.
@@ -161,13 +168,24 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
     {
         await using IDocumentSession session = store.LightweightSession();
 
-        // The due list this sweep is working from was read before this project's own turn came
-        // up; re-read the canonical, event-sourced state right before queuing the deletes (Copilot
-        // review, PR #338) so a cancel that commits in between is honoured instead of raced —
-        // there is no lock between the two reads, but this closes the window from "the whole
-        // sweep's own due-list query" down to "one project's own turn in the loop".
-        ProjectAggregate? aggregate = await session.Events.AggregateStreamAsync<ProjectAggregate>(
-            project.Id, token: cancellationToken);
+        // Exclusive, not a plain re-read (independent pre-PR review, cycle 1: conformance and
+        // adversarial lenses, both medium — the same race, reported by each lens on its own
+        // pass). FetchForExclusiveWriting takes a `SELECT ... FOR UPDATE` lock on this project's
+        // own stream row on this session's own transaction and holds it from this read straight
+        // through SaveChangesAsync below, closing the window a plain re-read (Copilot review, PR
+        // #338) only narrowed: "the whole sweep's own due-list query" down to "one project's own
+        // turn in the loop", not to zero. h9k project cancel-purge's own fenced append
+        // (ProjectCancelPurgeCommand) needs this exact row locked to bump its expected version, so
+        // a concurrent cancel now either lands and commits entirely before this lock is taken —
+        // this sweep's own read below then sees it live, the ordinary skip path just below — or it
+        // blocks until this transaction commits or rolls back. If this purge commits first, the
+        // blocked cancel's own version check then finds a stream that no longer exists and fails
+        // loudly (DomainConflictException) rather than printing "nothing was destroyed" over a
+        // project that is; if this purge instead rolls back (a failure elsewhere in this method),
+        // the blocked cancel proceeds normally and the next sweep re-reads a live project.
+        IEventStream<ProjectAggregate> stream = await session.Events.FetchForExclusiveWriting<ProjectAggregate>(
+            project.Id, cancellationToken);
+        ProjectAggregate? aggregate = stream.Aggregate;
         if (aggregate is null || aggregate.PurgeAt is null || aggregate.PurgeAt > DateTimeOffset.UtcNow)
         {
             return new PurgeOneResult(Purged: false, LiveWithPurgeDeadlineSet: false, 0, 0, 0, 0);
@@ -206,6 +224,43 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
             .ToListAsync(cancellationToken))];
 
         Guid[] everyStreamId = [project.Id, .. taskIds, .. runIds, .. ideaIds, .. epicIds];
+
+        // The spend governor's own undercount (independent pre-PR review, cycle 1, adversarial
+        // lens, medium): PeriodSpend.ReadAsync sums TokensRecorded (on a run's own stream) and
+        // PublicationTokensRecorded (on a task's own stream) live, across the whole install, with
+        // no regard for whether the stream that recorded them still exists — so deleting them
+        // below would silently hand the purged project's own in-period spend back to the node's
+        // budget. Excluding just these two event types from the events delete does not save them:
+        // mt_events.stream_id cascades from mt_streams.id (confirmed against a real database), so
+        // deleting the stream row two statements down would erase them anyway regardless of any
+        // type filter on the events delete itself. Carrying the total forward onto a plain
+        // PurgedSpendRecord document — never a projection of an event stream, so untouched by
+        // either delete — is the only way to keep both: every stream, event, and projection row
+        // for this project gone, and its own already-spent tokens still counted against the
+        // node's budget for the rest of the period they were recorded in.
+        Guid[] spendBearingStreamIds = [.. runIds, .. taskIds];
+        if (spendBearingStreamIds.Length > 0)
+        {
+            IReadOnlyList<IEvent> spendCandidates = await session.Events.QueryAllRawEvents()
+                .Where(e => spendBearingStreamIds.Contains(e.StreamId))
+                .ToListAsync(cancellationToken);
+            foreach (IEvent candidate in spendCandidates)
+            {
+                (long TotalInputTokens, AgentModel Model, DateTimeOffset RecordedAt)? spend = candidate.Data switch
+                {
+                    TokensRecorded e => (e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens,
+                        e.Model ?? AgentModel.Unknown, e.RecordedAt),
+                    PublicationTokensRecorded e => (e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens,
+                        e.Model ?? AgentModel.Unknown, e.RecordedAt),
+                    _ => null,
+                };
+                if (spend is { } toCarryForward)
+                {
+                    session.Store(new PurgedSpendRecord(
+                        DomainId.New(), toCarryForward.RecordedAt, toCarryForward.TotalInputTokens, toCarryForward.Model));
+                }
+            }
+        }
 
         // Events before streams: safe regardless of whether mt_events.stream_id cascades from
         // mt_streams.id, since a child row never blocks on its own deletion.

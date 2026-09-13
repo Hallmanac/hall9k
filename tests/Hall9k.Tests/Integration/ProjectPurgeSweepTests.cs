@@ -15,7 +15,9 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Tests.Fakes;
+using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -149,6 +151,123 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         result.ProjectsPurged.Should().Be(0, "a purge whose deadline has not passed must never fire early");
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<ProjectDetails>(projectId, cts.Token)).Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// The race between the sweep and <c>h9k project cancel-purge</c> (independent pre-PR review,
+    /// cycle 1: conformance and adversarial lenses, both medium). Before this fix,
+    /// <c>PurgeOneAsync</c> re-read the project with a plain <c>AggregateStreamAsync</c>, leaving a
+    /// window between that read and its own <c>SaveChangesAsync</c> in which a concurrent cancel
+    /// could commit "Purge cancelled... nothing was destroyed" right before the sweep destroyed it
+    /// anyway. This proves the fix without racing the full sweep against a real clock: the sweep's
+    /// own <c>FetchForExclusiveWriting</c> is exercised directly, mirroring exactly what
+    /// <c>PurgeOneAsync</c> now does, and a concurrent cancel is mirrored the same way
+    /// <c>ProjectCancelPurgeCommand</c> itself is written (fence, versioned append, save) rather
+    /// than invoked through the CLI process. The ordering is deterministic, not raced: the
+    /// exclusive read is awaited to completion — its lock is already held — before the cancel is
+    /// ever started, so the assertion that it is still blocked one hundred milliseconds later can
+    /// never be flaky in the other direction.
+    /// </summary>
+    [Fact]
+    public async Task A_cancel_racing_the_sweeps_exclusive_read_fails_loudly_instead_of_landing_after_the_purge_commits()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        IDocumentStore store = postgres.Store;
+        await store.Advanced.ResetAllData(cts.Token);
+        Guid ownerId = DomainId.New();
+
+        Guid projectId = await SeedProjectAsync(store, "raced", ownerId, cts.Token);
+        await SchedulePastDuePurgeAsync(store, projectId, ownerId, cts.Token);
+
+        await using IDocumentSession sweepSession = store.LightweightSession();
+        IEventStream<ProjectAggregate> sweepStream =
+            await sweepSession.Events.FetchForExclusiveWriting<ProjectAggregate>(projectId, cts.Token);
+        sweepStream.Aggregate.Should().NotBeNull("the project must still be there for the sweep to find due");
+
+        Task cancelTask = Task.Run(async () =>
+        {
+            await using IDocumentSession cancelSession = store.LightweightSession();
+            StreamState fence = await cancelSession.Events.FetchStreamStateAsync(projectId, cts.Token)
+                ?? throw new InvalidOperationException("project must exist to fence a cancel against it");
+            ProjectAggregate aggregate = await cancelSession.Events.AggregateStreamAsync<ProjectAggregate>(
+                    projectId, version: fence.Version, token: cts.Token)
+                ?? throw new InvalidOperationException("project must exist to rebuild for a cancel");
+            cancelSession.Events.Append(
+                projectId, expectedVersion: fence.Version + 1,
+                ProjectDecider.CancelPurge(aggregate, Now, ownerId));
+            await cancelSession.SaveChangesAsync(cts.Token);
+        }, cts.Token);
+
+        // Not a flaky race: the cancel cannot have finished, because it needs the exact stream
+        // row the sweep's own exclusive read above is still holding locked, and that lock is not
+        // released until sweepSession commits (or is disposed) below.
+        await Task.Delay(TimeSpan.FromMilliseconds(200), cts.Token);
+        cancelTask.IsCompleted.Should().BeFalse(
+            "the cancel needs the same stream row the sweep's own exclusive read is still holding");
+
+        // The sweep "wins": destroys the project's stream while still holding the lock, exactly
+        // as PurgeOneAsync's own delete-then-SaveChangesAsync does.
+        sweepSession.QueueSqlCommand("delete from mt_events where stream_id = ?", projectId);
+        sweepSession.QueueSqlCommand("delete from mt_streams where id = ?", projectId);
+        await sweepSession.SaveChangesAsync(cts.Token);
+
+        // The blocked cancel now resumes against a project whose stream is already gone. It must
+        // fail loudly — never silently succeed over a purge that already committed.
+        Func<Task> awaitCancel = async () => await cancelTask;
+        await awaitCancel.Should().ThrowAsync<Exception>(
+            "a cancel that lost the race to a committed purge must never report success");
+    }
+
+    /// <summary>
+    /// The spend-governor undercount (independent pre-PR review, cycle 1, adversarial lens,
+    /// medium): <see cref="PeriodSpend.ReadAsync"/> sums <see cref="TokensRecorded"/> and
+    /// <see cref="PublicationTokensRecorded"/> live, across the whole install, with no regard for
+    /// whether the stream that recorded them still exists. Before this fix, a purge deleted every
+    /// event in the streams it owned, these two included, silently handing the purged project's
+    /// own in-period spend back to the node's spend budget. This proves the fix: the events
+    /// themselves are gone (mt_events.stream_id cascades from mt_streams.id, so excluding them by
+    /// type alone would not have saved them), but the total they represent survives as a
+    /// <see cref="PurgedSpendRecord"/> and still counts.
+    /// </summary>
+    [Fact]
+    public async Task A_purge_carries_its_own_spend_forward_so_the_period_total_still_counts_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        IDocumentStore store = postgres.Store;
+        await store.Advanced.ResetAllData(cts.Token);
+        Guid ownerId = DomainId.New();
+
+        Guid projectId = await SeedProjectAsync(store, "spendy", ownerId, cts.Token);
+        Guid[] taskIds = await SeedTasksAsync(store, projectId, ownerId, count: 1, cts.Token);
+        Guid runId = await SeedRunAsync(store, taskIds[0], ownerId, cts.Token);
+
+        DateTimeOffset periodStart = Now.AddDays(-1);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new TokensRecorded(DomainId.New(), 6_000_000, 1_000, null, Now));
+            session.Events.Append(
+                taskIds[0], new PublicationTokensRecorded(DomainId.New(), 500, 100, null, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await SchedulePastDuePurgeAsync(store, projectId, ownerId, cts.Token);
+
+        ProjectPurgeEngine engine = new(store, NullLogger<ProjectPurgeEngine>.Instance);
+        ProjectPurgeSweepResult result = await engine.SweepOnceAsync(cts.Token);
+        result.ProjectsPurged.Should().Be(1);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<ProjectDetails>(projectId, cts.Token)).Should().BeNull("the project itself is gone");
+
+        long remainingEventRows = (await query.QueryAsync<long>(
+            "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, new Guid[] { runId, taskIds[0] })).Single();
+        remainingEventRows.Should().Be(0, "every event on the purged project's own streams, spend events included, is gone");
+
+        PeriodSpend spend = await PeriodSpend.ReadAsync(query, periodStart, cts.Token);
+        spend.TotalInputTokens.Should().Be(
+            6_000_000 + 500,
+            "the purged project's own in-period spend must still be counted against the node's budget "
+            + "even though the events that recorded it are gone");
     }
 
     /// <summary>
