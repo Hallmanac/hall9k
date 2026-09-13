@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -29,7 +30,7 @@ namespace Hall9k.Cli.Commands;
 /// <c>--purge</c> (task: an archived project can be purged — the second half of the two-tier
 /// design) archives the project if it is not already, then schedules a permanent hard delete of
 /// its database footprint 24 hours out (<see cref="ProjectPurge.GracePeriod"/>): the project's own
-/// stream, every task, run, and idea stream it owns, and their projection documents. Linked
+/// stream, every task, run, idea, and epic stream it owns, and their projection documents. Linked
 /// tracker items, the repository, and the home directory on disk are outside its scope; the
 /// confirmation and every message here say so. This is the one explicit exception to the
 /// platform's nothing-is-deleted doctrine (Brian's ruling, 2026-08-29) — without <c>--purge</c>
@@ -79,10 +80,10 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
         [Description(
             "Archive the project (or accept one already archived) and schedule a permanent hard "
             + "delete of its database footprint 24 hours from now: the project's own stream, every "
-            + "task, run, and idea stream it owns, and their projection documents. Linked tracker "
-            + "items, the repository, and the home directory on disk are never touched by this. "
-            + "Cancellable any time before it fires: h9k project cancel-purge <project>. Without "
-            + "this flag, nothing is ever deleted.")]
+            + "task, run, idea, and epic stream it owns, and their projection documents. Linked "
+            + "tracker items, the repository, and the home directory on disk are never touched by "
+            + "this. Cancellable any time before it fires: h9k project cancel-purge <project>. "
+            + "Without this flag, nothing is ever deleted.")]
         public bool Purge { get; init; }
 
         [CommandOption("--yes")]
@@ -146,7 +147,7 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
 
         if (settings.Purge)
         {
-            return await ExecutePurgeAsync(session, project, aggregate, tasks, settings, cancellationToken);
+            return await ExecutePurgeAsync(session, project, tasks, settings, cancellationToken);
         }
 
         TaskListItem[] stayingAsIs = [.. tasks.Where(task => task.State == TaskState.Draft || task.State == TaskState.Published)];
@@ -249,12 +250,12 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
     /// The <c>--purge</c> path: archives the project first if it is not already (in the same
     /// transaction as the schedule itself, so both commit together or neither does), then appends
     /// <see cref="ProjectPurgeScheduled"/>. The scope named in the confirmation and the final
-    /// message — every task, run, and idea this purge will destroy — is counted here, the same
-    /// division the archive-only path already draws between the pure decider and the database
-    /// query only a command can run.
+    /// message — every task, run, idea, and epic this purge will destroy — is counted here, the
+    /// same division the archive-only path already draws between the pure decider and the
+    /// database query only a command can run.
     /// </summary>
     private static async Task<int> ExecutePurgeAsync(
-        IDocumentSession session, ProjectDetails project, ProjectAggregate aggregate,
+        IDocumentSession session, ProjectDetails project,
         IReadOnlyList<TaskListItem> tasks, Settings settings, CancellationToken cancellationToken)
     {
         Guid[] taskIds = [.. tasks.Select(task => task.Id)];
@@ -264,11 +265,12 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
         int ideaCount = await session.Query<IdeaDetails>()
             .Where(idea => idea.ProjectId == project.Id)
             .CountAsync(cancellationToken);
+        int epicCount = await session.Query<EpicDetails>()
+            .Where(epic => epic.ProjectId == project.Id)
+            .CountAsync(cancellationToken);
 
-        DateTimeOffset scheduledAt = DateTimeOffset.UtcNow;
-        DateTimeOffset deadline = scheduledAt + ProjectPurge.GracePeriod;
-
-        if (!ConfirmPurge(project, tasks.Count, runCount, ideaCount, deadline, settings.Yes))
+        DateTimeOffset previewDeadline = DateTimeOffset.UtcNow + ProjectPurge.GracePeriod;
+        if (!ConfirmPurge(project, tasks.Count, runCount, ideaCount, epicCount, previewDeadline, settings.Yes))
         {
             await Console.Error.WriteLineAsync(
                 "Refusing to purge without confirmation — nothing was touched. Re-run with --yes to "
@@ -276,25 +278,71 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
             return ExitCodes.Error;
         }
 
-        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        if (!aggregate.IsArchived)
+        // The confirmation prompt can sit open indefinitely, so nothing read before it is trusted
+        // for the append: re-fetch the stream and re-check the task states as they are now, and
+        // fence every append below against exactly the version just read (Copilot review, PR
+        // #338) — a task claimed while the prompt was open, or another command racing the same
+        // project stream, must not still get purged out from under it.
+        StreamState fence = await session.Events.FetchStreamStateAsync(project.Id, cancellationToken)
+            ?? throw new DomainNotFoundException($"No project {project.Id}.");
+        ProjectAggregate current = await session.Events.AggregateStreamAsync<ProjectAggregate>(
+                project.Id, version: fence.Version, token: cancellationToken)
+            ?? throw new DomainNotFoundException($"No project {project.Id}.");
+
+        if (current.PurgeAt is { } racedDeadline)
         {
-            ProjectArchived archived = ProjectDecider.Archive(aggregate, settings.Reason, scheduledAt, context.OwnerId);
-            session.Events.Append(project.Id, archived);
-            aggregate.Apply(archived);
+            throw new DomainConflictException(
+                $"Project '{project.Name}' already has a purge scheduled for {racedDeadline.ToLocalTime():g} "
+                + "— another command scheduled it while this one waited on confirmation. Nothing was touched.");
         }
 
-        session.Events.Append(project.Id, ProjectDecider.SchedulePurge(aggregate, scheduledAt, context.OwnerId));
-        await session.SaveChangesAsync(cancellationToken);
+        IReadOnlyList<TaskListItem> freshTasks = await session.Query<TaskListItem>()
+            .Where(task => task.ProjectId == project.Id)
+            .ToListAsync(cancellationToken);
+        TaskListItem[] freshBlocking = [.. freshTasks.Where(task => !IsInertUnderArchive(task.State))];
+        if (freshBlocking.Length > 0)
+        {
+            throw new DomainConflictException(
+                $"Project '{project.Name}' cannot be purged: {freshBlocking.Length} of its task(s) moved "
+                + "into a state the daemon may still act on while this command waited on confirmation — "
+                + string.Join(", ", freshBlocking.Select(task => $"{DomainId.Short(task.Id)} ({task.State.Value})"))
+                + ". Nothing was touched; resolve them and purge again.");
+        }
+
+        DateTimeOffset scheduledAt = DateTimeOffset.UtcNow;
+        DateTimeOffset deadline = scheduledAt + ProjectPurge.GracePeriod;
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        long expectedVersion = fence.Version;
+        if (!current.IsArchived)
+        {
+            ProjectArchived archived = ProjectDecider.Archive(current, settings.Reason, scheduledAt, context.OwnerId);
+            session.Events.Append(project.Id, expectedVersion: ++expectedVersion, archived);
+            current.Apply(archived);
+        }
+
+        session.Events.Append(
+            project.Id, expectedVersion: ++expectedVersion,
+            ProjectDecider.SchedulePurge(current, scheduledAt, context.OwnerId));
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Project '{project.Name}' changed while scheduling the purge — check h9k project show "
+                + "and try again.");
+        }
+
         await Doorbell.RingAsync($"project-purge-scheduled:{project.Id}", cancellationToken);
 
         AnsiConsole.MarkupLine(
             $"[red]Project '{project.Name.EscapeMarkup()}' scheduled for permanent deletion at "
-            + $"{deadline.ToLocalTime():g}.[/] {tasks.Count} task(s), {runCount} run(s), and {ideaCount} "
-            + "idea(s) will be permanently destroyed from this install's own database — the project "
-            + "stream and every task, run, and idea stream it owns, with their projection documents. "
-            + "Linked tracker items, the repository, and the home directory are outside this operation's "
-            + "scope and are never touched.");
+            + $"{deadline.ToLocalTime():g}.[/] {tasks.Count} task(s), {runCount} run(s), {ideaCount} "
+            + $"idea(s), and {epicCount} epic(s) will be permanently destroyed from this install's own "
+            + "database — the project stream and every task, run, idea, and epic stream it owns, with "
+            + "their projection documents. Linked tracker items, the repository, and the home directory "
+            + "are outside this operation's scope and are never touched.");
         AnsiConsole.MarkupLine(project.HomeDirectory.HasValue
             ? $"[dim]The home directory stays exactly where it is:[/] {project.HomeDirectory.Value.EscapeMarkup()}"
             : "[dim]No home directory was ever recorded for it.[/]");
@@ -310,7 +358,7 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
     /// guessing — the same discipline <see cref="Confirm"/> already follows for a plain archive.
     /// </summary>
     private static bool ConfirmPurge(
-        ProjectDetails project, int taskCount, int runCount, int ideaCount, DateTimeOffset deadline, bool yes)
+        ProjectDetails project, int taskCount, int runCount, int ideaCount, int epicCount, DateTimeOffset deadline, bool yes)
     {
         if (yes)
         {
@@ -319,11 +367,12 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
 
         AnsiConsole.MarkupLine(
             $"[red]Purging '{project.Name.EscapeMarkup()}'[/] archives it if it is not already, then "
-            + $"permanently destroys {taskCount} task(s), {runCount} run(s), and {ideaCount} idea(s) — "
-            + "every stream, event, and projection document this install's database holds for the "
-            + $"project and everything it owns — at {deadline.ToLocalTime():g}, 24 hours from now. "
-            + "Linked tracker items, the repository, and the home directory on disk are outside this "
-            + "operation's scope; they are never touched. This cannot be undone once it fires.");
+            + $"permanently destroys {taskCount} task(s), {runCount} run(s), {ideaCount} idea(s), and "
+            + $"{epicCount} epic(s) — every stream, event, and projection document this install's "
+            + $"database holds for the project and everything it owns — at {deadline.ToLocalTime():g}, "
+            + "24 hours from now. Linked tracker items, the repository, and the home directory on disk "
+            + "are outside this operation's scope; they are never touched. This cannot be undone once "
+            + "it fires.");
 
         if (!AnsiConsole.Profile.Capabilities.Interactive)
         {

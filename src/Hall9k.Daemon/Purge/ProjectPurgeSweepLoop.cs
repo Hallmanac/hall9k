@@ -25,9 +25,10 @@ public sealed class ProjectPurgeSweepLoop(
                 {
                     logger.LogInformation(
                         "Project purge sweep: {Projects} project(s) purged, destroying {Tasks} task(s), "
-                        + "{Runs} run(s), {Ideas} idea(s); {Failures} failed and will retry next sweep",
+                        + "{Runs} run(s), {Ideas} idea(s), {Epics} epic(s); {Failures} failed and will "
+                        + "retry next sweep",
                         sweep.ProjectsPurged, sweep.TasksDestroyed, sweep.RunsDestroyed, sweep.IdeasDestroyed,
-                        sweep.Failures);
+                        sweep.EpicsDestroyed, sweep.Failures);
                 }
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
