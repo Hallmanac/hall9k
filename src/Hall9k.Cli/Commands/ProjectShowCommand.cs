@@ -57,10 +57,17 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Id", $"[dim]{project.Id}[/]");
         if (project.IsArchived)
         {
+            // While a purge is pending, ProjectDecider.Reactivate refuses it outright — offering
+            // that command here would send the operator straight into that refusal. The cancel
+            // command is the one that actually works, so it leads here too, not only in the Purge
+            // row below (independent pre-PR review, cycle 1, conformance lens, low).
+            string archivedAction = project.PurgeAt is { } pendingPurgeAt
+                ? $"cancel the purge first: h9k project cancel-purge {project.Name.EscapeMarkup()}"
+                : $"reactivate: h9k project reactivate {project.Name.EscapeMarkup()}";
             table.AddRow("Status", project.ArchivedAt is { } archivedAt
                 ? $"[yellow]archived since {archivedAt.ToLocalTime():g}[/] [dim]"
                   + (project.ArchivedReason.IsNotBlank() ? $"({project.ArchivedReason.EscapeMarkup()}) " : string.Empty)
-                  + $"— reactivate: h9k project reactivate {project.Name.EscapeMarkup()}[/]"
+                  + $"— {archivedAction}[/]"
                 : "[yellow]archived[/]");
             if (project.PurgeAt is { } purgeAt)
             {

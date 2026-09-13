@@ -386,13 +386,24 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             + "--rename-archived-to.");
     }
 
-    private static string ArchivedCollisionChoices(ProjectDetails existing) =>
-        $"A project named '{existing.Name}' is archived (since {existing.ArchivedAt:g}). Choose one: "
-        + $"reactivate it (h9k project add --name {existing.Name} --reactivate-archived, or "
-        + $"h9k project reactivate {existing.Name}), rename the archived one to free this name "
-        + $"(h9k project add --name {existing.Name} --rename-archived-to <NEW_NAME>, or "
-        + $"h9k project rename {existing.Name} <NEW_NAME>), or register the new project under a "
-        + "different --name.";
+    private static string ArchivedCollisionChoices(ProjectDetails existing)
+    {
+        // Reactivating is one of three choices here, and ProjectDecider.Reactivate refuses it
+        // outright while a purge is pending — the same reason ProjectShowCommand's own Status row
+        // leads with the cancel command instead while one is pending (independent pre-PR review,
+        // cycle 1, conformance lens, low, on that sibling site). Naming it here too rather than
+        // sending an operator into that refusal after already choosing it.
+        string reactivateChoice = existing.PurgeAt is { } pendingPurgeAt
+            ? $"cancel its pending purge first (h9k project cancel-purge {existing.Name}, scheduled "
+              + $"for {pendingPurgeAt.ToLocalTime():g}) before reactivating it"
+            : $"reactivate it (h9k project add --name {existing.Name} --reactivate-archived, or "
+              + $"h9k project reactivate {existing.Name})";
+        return $"A project named '{existing.Name}' is archived (since {existing.ArchivedAt:g}). Choose one: "
+            + $"{reactivateChoice}, rename the archived one to free this name "
+            + $"(h9k project add --name {existing.Name} --rename-archived-to <NEW_NAME>, or "
+            + $"h9k project rename {existing.Name} <NEW_NAME>), or register the new project under a "
+            + "different --name.";
+    }
 
     private static async Task<int> ReactivateInPlaceAsync(
         IDocumentSession session, ProjectAggregate archived, ProjectDetails existing, StreamState fence,

@@ -309,6 +309,22 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
                 + ". Nothing was touched; resolve them and purge again.");
         }
 
+        // Recounted, not the pre-prompt tasks/runCount/ideaCount/epicCount above: those are only a
+        // preview for the confirmation, and the prompt can sit open long enough for h9k task add
+        // (or an idea/epic add) to land while nothing is pending yet — the success message below
+        // must name what the sweep will actually destroy, not what it would have (independent
+        // pre-PR review, cycle 1, adversarial lens, low).
+        Guid[] freshTaskIds = [.. freshTasks.Select(task => task.Id)];
+        int freshRunCount = freshTaskIds.Length == 0
+            ? 0
+            : await session.Query<RunListItem>().Where(run => freshTaskIds.Contains(run.TaskId)).CountAsync(cancellationToken);
+        int freshIdeaCount = await session.Query<IdeaDetails>()
+            .Where(idea => idea.ProjectId == project.Id)
+            .CountAsync(cancellationToken);
+        int freshEpicCount = await session.Query<EpicDetails>()
+            .Where(epic => epic.ProjectId == project.Id)
+            .CountAsync(cancellationToken);
+
         DateTimeOffset scheduledAt = DateTimeOffset.UtcNow;
         DateTimeOffset deadline = scheduledAt + ProjectPurge.GracePeriod;
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
@@ -338,11 +354,11 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
 
         AnsiConsole.MarkupLine(
             $"[red]Project '{project.Name.EscapeMarkup()}' scheduled for permanent deletion at "
-            + $"{deadline.ToLocalTime():g}.[/] {tasks.Count} task(s), {runCount} run(s), {ideaCount} "
-            + $"idea(s), and {epicCount} epic(s) will be permanently destroyed from this install's own "
-            + "database — the project stream and every task, run, idea, and epic stream it owns, with "
-            + "their projection documents. Linked tracker items, the repository, and the home directory "
-            + "are outside this operation's scope and are never touched.");
+            + $"{deadline.ToLocalTime():g}.[/] {freshTasks.Count} task(s), {freshRunCount} run(s), "
+            + $"{freshIdeaCount} idea(s), and {freshEpicCount} epic(s) will be permanently destroyed "
+            + "from this install's own database — the project stream and every task, run, idea, and "
+            + "epic stream it owns, with their projection documents. Linked tracker items, the "
+            + "repository, and the home directory are outside this operation's scope and are never touched.");
         AnsiConsole.MarkupLine(project.HomeDirectory.HasValue
             ? $"[dim]The home directory stays exactly where it is:[/] {project.HomeDirectory.Value.EscapeMarkup()}"
             : "[dim]No home directory was ever recorded for it.[/]");
@@ -365,14 +381,17 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
             return true;
         }
 
+        string homeDescription = project.HomeDirectory.HasValue
+            ? project.HomeDirectory.Value.EscapeMarkup()
+            : "none recorded";
         AnsiConsole.MarkupLine(
             $"[red]Purging '{project.Name.EscapeMarkup()}'[/] archives it if it is not already, then "
             + $"permanently destroys {taskCount} task(s), {runCount} run(s), {ideaCount} idea(s), and "
             + $"{epicCount} epic(s) — every stream, event, and projection document this install's "
             + $"database holds for the project and everything it owns — at {deadline.ToLocalTime():g}, "
             + "24 hours from now. Linked tracker items, the repository, and the home directory on disk "
-            + "are outside this operation's scope; they are never touched. This cannot be undone once "
-            + "it fires.");
+            + $"({homeDescription}) are outside this operation's scope; they are never touched. This "
+            + "cannot be undone once it fires.");
 
         if (!AnsiConsole.Profile.Capabilities.Interactive)
         {
