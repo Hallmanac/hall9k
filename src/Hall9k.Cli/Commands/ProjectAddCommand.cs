@@ -85,13 +85,15 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         // Case-insensitive, matching ProjectResolver's own OrdinalIgnoreCase name matching: an
         // archived 'Hall9k' must be found by --name hall9k the same way h9k project reactivate
         // Hall9k would find it, or this collision silently registers a second, ambiguous project
-        // instead of offering reactivation or rename (review thread, PR #336).
+        // instead of offering reactivation or rename.
         IReadOnlyList<ProjectDetails> allProjects = await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
         ProjectDetails? existing = allProjects.FirstOrDefault(
             p => p.Name.Equals(name, StringComparison.OrdinalIgnoreCase));
 
         string? homeOverride = null;
         string? pendingRenameMessage = null;
+
+        RequireArchivedCollisionTargetExists(existing, settings, name);
 
         if (existing is not null)
         {
@@ -250,7 +252,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
 
         if (settings.ReactivateArchived)
         {
-            return new ArchivedCollisionOutcome(await ReactivateInPlaceAsync(session, archived, existing, fence, cancellationToken), null, null);
+            return new ArchivedCollisionOutcome(await ReactivateInPlaceAsync(session, archived, existing, fence, settings, cancellationToken), null, null);
         }
 
         if (settings.RenameArchivedTo.IsNotBlank())
@@ -259,8 +261,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             // and the new registration both discover the dead end downstream (EnsureUnclaimedAsync,
             // naming the archived project by a name it no longer has because the rename that would
             // have changed it was never saved) after this method already reported the rename as
-            // done (independent pre-PR review, cycle 1: conformance and adversarial lenses, both
-            // high).
+            // done.
             RequireHomeAwayFromArchivedDefault(existing, settings);
             string message = await RenameArchivedInPlaceAsync(
                 session, archived, existing, fence, settings.RenameArchivedTo, cancellationToken);
@@ -277,7 +278,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             + $"(since {existing.ArchivedAt:g}).");
         if (AnsiConsole.Confirm("Reactivate it instead of registering a new one?", defaultValue: false))
         {
-            return new ArchivedCollisionOutcome(await ReactivateInPlaceAsync(session, archived, existing, fence, cancellationToken), null, null);
+            return new ArchivedCollisionOutcome(await ReactivateInPlaceAsync(session, archived, existing, fence, settings, cancellationToken), null, null);
         }
 
         if (AnsiConsole.Confirm("Rename the archived project so this name is free for the new one?", defaultValue: false))
@@ -321,7 +322,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
     /// <summary>
     /// Refuses --reactivate-archived and --rename-archived-to together, before either mutates
     /// anything: they answer the same archived-name collision two different ways, and the
-    /// interactive prompt only ever offers one at a time (review comment, PR #336). Left
+    /// interactive prompt only ever offers one at a time. Left
     /// unchecked, ExecuteAsync's own ReactivateArchived branch runs first and silently discards
     /// --rename-archived-to, leaving a non-interactive caller believing the rename it asked for
     /// happened.
@@ -334,6 +335,27 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
                 "--reactivate-archived and --rename-archived-to answer the same collision two "
                 + "different ways — pass only one.");
         }
+    }
+
+    /// <summary>
+    /// Both --reactivate-archived and --rename-archived-to answer a collision with an archived
+    /// project's name — with no project by that name at all, live or archived, there is nothing
+    /// to reactivate or rename, and silently falling through to an ordinary registration reads to
+    /// the operator as the flag having been honoured, when the registration it produces is not
+    /// what either flag asked for.
+    /// </summary>
+    internal static void RequireArchivedCollisionTargetExists(ProjectDetails? existing, Settings settings, string name)
+    {
+        if (existing is not null || (!settings.ReactivateArchived && settings.RenameArchivedTo.IsBlank()))
+        {
+            return;
+        }
+
+        string flag = settings.ReactivateArchived ? "--reactivate-archived" : "--rename-archived-to";
+        throw new DomainValidationException(
+            $"{flag} was passed, but no project named '{name}' — live or archived — exists on this "
+            + $"install. Check h9k project list --include-archived, or drop {flag} to register a "
+            + "plain new project under this name.");
     }
 
     /// <summary>
@@ -369,7 +391,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
 
     private static async Task<int> ReactivateInPlaceAsync(
         IDocumentSession session, ProjectAggregate archived, ProjectDetails existing, StreamState fence,
-        CancellationToken cancellationToken)
+        Settings settings, CancellationToken cancellationToken)
     {
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         session.Events.Append(
@@ -393,14 +415,45 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             + "ideas, and home; the daemon's sweeps resume for it. This is this install's own record — "
             + "a registration of the same repository on another node is unaffected.");
         ProjectHomeDirectoryStatus.Report(existing);
+
+        // Reactivation restores the project exactly as it was archived — none of these settings
+        // apply to an existing registration, so an operator re-running an install script with
+        // --repo-url (or --home, --base-branch, --repo) must be told they were not recorded,
+        // rather than left to assume a flag that did nothing was honoured.
+        IReadOnlyList<string> discarded = DiscardedRegistrationFlags(settings);
+        if (discarded.Count > 0)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]Ignored, since reactivation changes nothing about an existing registration: "
+                + $"{string.Join(", ", discarded)}. Change them with h9k project set "
+                + $"{existing.Name.EscapeMarkup()} instead.[/]");
+        }
+
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Every registration-only flag the operator passed alongside --reactivate-archived, named so
+    /// the discard is reported rather than silent.
+    /// </summary>
+    internal static IReadOnlyList<string> DiscardedRegistrationFlags(Settings settings)
+    {
+        (bool Passed, string Flag)[] candidates =
+        [
+            (settings.RepositoryUrl.IsNotBlank(), "--repo-url"),
+            (settings.RepositoryPath.IsNotBlank(), "--repo"),
+            (settings.Home.IsNotBlank(), "--home"),
+            (settings.NoHome, "--no-home"),
+            (settings.BaseBranch.IsNotBlank(), "--base-branch"),
+        ];
+        return [.. candidates.Where(candidate => candidate.Passed).Select(candidate => candidate.Flag)];
     }
 
     /// <summary>
     /// Appends the rename, unsaved — the caller's own <c>SaveChangesAsync</c> is what actually
     /// commits it, atomically with the registration it is freeing this name for — and returns the
     /// success line rather than printing it, so nothing claims the rename happened before it truly
-    /// has (independent pre-PR review, cycle 1, conformance lens).
+    /// has.
     /// </summary>
     private static async Task<string> RenameArchivedInPlaceAsync(
         IDocumentSession session, ProjectAggregate archived, ProjectDetails existing, StreamState fence,
@@ -413,7 +466,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             ProjectDecider.Rename(archived, newName, DateTimeOffset.UtcNow, context.OwnerId));
 
         // Names the recorded path, or its absence, the same way h9k project rename's own success
-        // line does (review comment, PR #336) — this inline rename left the operator to guess
+        // line does — this inline rename left the operator to guess
         // where the archived project's files actually are.
         return $"[dim]Archived project '{existing.Name.EscapeMarkup()}' renamed to '{newName.EscapeMarkup()}' "
             + "— the home directory on disk keeps its old folder name"
