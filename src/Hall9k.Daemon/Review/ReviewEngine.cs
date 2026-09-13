@@ -1343,9 +1343,10 @@ public sealed class ReviewEngine(
     /// exit AND anything <see cref="ExternalProcess.RunAsync"/> throws, since this repo's own
     /// deadline-bound runner signals a stuck pipe or an expired deadline by throwing rather than
     /// returning a non-zero exit) returns null exactly as "nothing stranded" does, because this
-    /// method is only ever called once the merge itself is already certain, and there is nowhere
-    /// honest left to report a read failure separately from an honestly empty delta — either way,
-    /// closeout proceeds without a draft.
+    /// method is only ever called once the merge itself is already certain, so closeout proceeds
+    /// without a draft either way — but a read failure is logged as a warning distinct from an
+    /// honestly empty delta (AGENTS.md: an unobserved fact is recorded as unknown, never guessed
+    /// at as empty), so a lost stranded delta leaves a trace even though it leaves no draft.
     /// <para>
     /// The comparison is by content, never by commit identity: this project rebase-merges
     /// (docs/concepts.md), so every commit a pull request just landed sits on the base branch
@@ -1371,12 +1372,20 @@ public sealed class ReviewEngine(
             ProcessResult fetch = await git("git", ["fetch", "origin", context.BaseBranch], worktreePath, cancellationToken);
             if (fetch.ExitCode != 0)
             {
+                logger.LogWarning(
+                    "Run {RunId}: could not fetch {Upstream} to read the worktree's own stranded delta " +
+                    "(exit {ExitCode}); treating as unread, not as nothing stranded: {StandardError}",
+                    context.RunId, upstream, fetch.ExitCode, fetch.StandardError);
                 return null;
             }
 
             ProcessResult cherry = await git("git", ["cherry", "-v", upstream, "HEAD"], worktreePath, cancellationToken);
             if (cherry.ExitCode != 0)
             {
+                logger.LogWarning(
+                    "Run {RunId}: could not read the worktree's own stranded delta against {Upstream} " +
+                    "(git cherry exit {ExitCode}); treating as unread, not as nothing stranded: {StandardError}",
+                    context.RunId, upstream, cherry.ExitCode, cherry.StandardError);
                 return null;
             }
 
@@ -1399,6 +1408,11 @@ public sealed class ReviewEngine(
                 ProcessResult formatted = await git("git", ["format-patch", "--stdout", "-1", sha], worktreePath, cancellationToken);
                 if (log.ExitCode != 0 || formatted.ExitCode != 0)
                 {
+                    logger.LogWarning(
+                        "Run {RunId}: could not read commit {Sha} of the worktree's own stranded delta " +
+                        "(git log exit {LogExitCode}, git format-patch exit {FormatPatchExitCode}); " +
+                        "treating the whole delta as unread, not as nothing stranded",
+                        context.RunId, sha, log.ExitCode, formatted.ExitCode);
                     return null;
                 }
 
