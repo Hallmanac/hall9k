@@ -102,6 +102,10 @@ public sealed class DispatchLoop(
         // Before anything reads the task projections: bring documents written by an older
         // projection shape up to date, or the claim filter cannot see them (log #34).
         await BackfillLifecycleProjectionsAsync(stoppingToken);
+        // Same reasoning, for ideas: the fan-out redesign (backlog 31) renamed the ending fields
+        // an idea's document carries, and a finished idea never gets another event to trigger an
+        // ordinary Inline rewrite.
+        await BackfillIdeaProjectionsAsync(stoppingToken);
 
         // Startup order matters: reattach before declaring anything dead, requeue the
         // genuinely abandoned, and only then take new work.
@@ -346,6 +350,35 @@ public sealed class DispatchLoop(
                 "Re-projecting out-of-date task documents failed. Tasks last projected before a "
                 + "projection shape change will misread until this succeeds; the next daemon start "
                 + "retries it");
+        }
+    }
+
+    /// <summary>
+    /// The migration the fan-out redesign's field rename needs (backlog 31), run at startup for
+    /// the same reason <see cref="BackfillLifecycleProjectionsAsync"/> is: <c>h9k idea show</c>
+    /// and the project-home render sweep both read the renamed fields straight off the document.
+    /// A failure is logged rather than fatal, and the next start tries again.
+    /// </summary>
+    private async Task BackfillIdeaProjectionsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<Guid> rebuilt = await IdeaDetailsProjectionBackfill.RunAsync(store, cancellationToken);
+            if (rebuilt.Count > 0)
+            {
+                logger.LogInformation(
+                    "Re-projected {Count} idea(s) whose documents were written before the fan-out "
+                    + "redesign renamed the ending fields — an absent field reads as no reason, date, "
+                    + "or task link ever recorded",
+                    rebuilt.Count);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception,
+                "Re-projecting out-of-date idea documents failed. Ideas last projected before the "
+                + "fan-out redesign will misread their ending until this succeeds; the next daemon "
+                + "start retries it");
         }
     }
 
