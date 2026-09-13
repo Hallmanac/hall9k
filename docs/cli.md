@@ -508,7 +508,7 @@ a permanent hard delete of its database footprint 24 hours out: its own stream, 
 idea, and epic stream it owns, and their projection documents. This is the one operation in Hall9k that
 actually deletes anything — linked tracker items, the repository, and the home directory on disk
 are outside its scope and are never touched. The confirmation names the scope in numbers (tasks,
-runs, ideas) and the deadline; `--yes` covers non-interactive use. `project cancel-purge <project>`
+runs, ideas, and epics) and the deadline; `--yes` covers non-interactive use. `project cancel-purge <project>`
 ends a pending purge before it fires, leaving the project archived, never reactivated; reactivating
 a project with a purge still pending is refused (cancel it first) so a daemon sweep can never
 destroy a project that has gone live again. `project list --include-archived` and `project show`
