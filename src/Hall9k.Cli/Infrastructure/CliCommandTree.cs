@@ -159,16 +159,29 @@ public static class CliCommandTree
                     + "daemon may still act on (anything other than Draft, Published, Done, or "
                     + "Abandoned), naming those tasks and the fix. Neither the home directory on disk "
                     + "nor a registration of the same repository on another node is touched. "
-                    + "h9k project reactivate undoes it in place.")
+                    + "h9k project reactivate undoes it in place. --purge additionally schedules a "
+                    + "permanent hard delete of the project's database footprint 24 hours out (its own "
+                    + "stream, every task, run, and idea stream it owns, and their projection documents) "
+                    + "— cancellable until it fires (h9k project cancel-purge); linked tracker items, "
+                    + "the repository, and the home directory are never touched by it.")
                 .WithExample("project", "remove", "hall9k", "--reason", "\"Accidentally registered during an install\"")
-                .WithExample("project", "remove", "hall9k", "--yes");
+                .WithExample("project", "remove", "hall9k", "--yes")
+                .WithExample("project", "remove", "hall9k", "--purge", "--yes");
             project.AddCommand<ProjectReactivateCommand>("reactivate")
                 .WithDescription(
                     "End an archive in place (h9k project remove's inverse): same id, settings, tasks, "
                     + "ideas, and recorded home; the dispatcher's claim sweep and both daemon sweeps "
                     + "resume for it immediately. Reports whether the home directory is still intact on "
-                    + "this machine, pointing at h9k project init if not.")
+                    + "this machine, pointing at h9k project init if not. Refused while a purge is "
+                    + "pending (h9k project cancel-purge it first) — a reactivated project the sweep is "
+                    + "still scheduled to destroy is refused rather than left to race the deadline.")
                 .WithExample("project", "reactivate", "hall9k");
+            project.AddCommand<ProjectCancelPurgeCommand>("cancel-purge")
+                .WithDescription(
+                    "End a pending purge (h9k project remove --purge's inverse) before it fires. "
+                    + "Leaves the project archived, never reactivated — reactivate separately once "
+                    + "nothing is scheduled to destroy it.")
+                .WithExample("project", "cancel-purge", "hall9k");
             project.AddCommand<ProjectRenameCommand>("rename")
                 .WithDescription(
                     "Change a project's name and nothing else — the id, the recorded home path, the "

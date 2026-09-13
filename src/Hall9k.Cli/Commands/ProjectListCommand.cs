@@ -66,6 +66,10 @@ public sealed class ProjectListCommand : Hall9kAsyncCommand<ProjectListCommand.S
         {
             string name = project.IsArchived
                 ? $"{project.Name.EscapeMarkup()} [yellow](archived {project.ArchivedAt:yyyy-MM-dd})[/]"
+                    + (project.PurgeAt is { } purgeAt
+                        ? $" [red](purge {purgeAt.ToLocalTime():yyyy-MM-dd HH:mm} — "
+                          + $"h9k project cancel-purge {project.Name.EscapeMarkup()})[/]"
+                        : string.Empty)
                 : project.Name.EscapeMarkup();
             table.AddRow([name, .. rollup.Cells]);
         }
