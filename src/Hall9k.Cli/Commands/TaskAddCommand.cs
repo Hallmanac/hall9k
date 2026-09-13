@@ -269,6 +269,18 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         await using IDocumentSession session = store.LightweightSession();
 
         ProjectDetails projectDetails = await ProjectResolver.ResolveAsync(session, project, cancellationToken);
+        if (projectDetails.PurgeAt is { } purgeDeadline)
+        {
+            // A purge destroys every task stream it finds under the project at the moment the
+            // sweep fires; a task created after scheduling and before then would be an orphan
+            // the ownership snapshot never counted (Copilot review, PR #338) — refused here
+            // rather than left to race the sweep.
+            throw new DomainValidationException(
+                $"Project '{projectDetails.Name}' is scheduled for permanent deletion at "
+                + $"{purgeDeadline.ToLocalTime():g}, so it cannot take a new task. Cancel the purge "
+                + $"first: h9k project cancel-purge {projectDetails.Name}");
+        }
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         // Everything that can be refused is refused before anything is asked of the human: a
