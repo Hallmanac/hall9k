@@ -49,6 +49,16 @@ public sealed record ProjectPurgeSweepResult(
 /// conditionally here. Either row would sit orphaned under an id nothing will ever look up again —
 /// harmless, unlike a stream, event, or projection row, which is exactly what this purge is scoped to.
 /// </para>
+/// <para>
+/// The same reasoning leaves four more documents unmentioned in the deletes above and genuinely
+/// orphaned rather than accounted for by them: <c>CleanBaseGateVerdict</c>, <c>ObservedReviewRequest</c>
+/// and <c>ObservedReviewMention</c> (all keyed in part by <c>ProjectId</c>), and
+/// <c>TrackerClaimHold</c> (keyed by <c>TaskId</c>) are each mutable telemetry rather than
+/// projections of an event stream, so none is deleted by the seven queued statements above. Each
+/// sits harmlessly under an id nothing will ever look up again once its owning project or task is
+/// gone (independent pre-PR review, cycle 1, conformance lens, low) — this exclusion list is not
+/// exhaustive by omission, it names every document this purge deliberately leaves behind.
+/// </para>
 /// </summary>
 public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurgeEngine> logger)
 {
@@ -126,7 +136,13 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         // sweep's own due-list query" down to "one project's own turn in the loop".
         ProjectAggregate? aggregate = await session.Events.AggregateStreamAsync<ProjectAggregate>(
             project.Id, token: cancellationToken);
-        if (aggregate is null || aggregate.PurgeAt is null || aggregate.PurgeAt > DateTimeOffset.UtcNow)
+        // Liveness, not only the deadline: the invariant this re-check leans on ("a project with
+        // PurgeAt set is archived") is enforced by ProjectDecider.Reactivate, but only when every
+        // writer that can append ProjectReactivated goes through it fenced — an unfenced writer
+        // racing a schedule can still leave IsArchived=false with PurgeAt set (independent pre-PR
+        // review, cycle 1, adversarial lens, high). Checked here too, defensively, so a project
+        // that reads as live is never destroyed regardless of how it got that way.
+        if (aggregate is null || !aggregate.IsArchived || aggregate.PurgeAt is null || aggregate.PurgeAt > DateTimeOffset.UtcNow)
         {
             return (false, 0, 0, 0, 0);
         }
