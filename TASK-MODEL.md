@@ -1456,8 +1456,11 @@ Rules carried over:
 Ideas sit in front of tasks: an idea undergoes **discovery** (what is this?), and a draft task
 undergoes **refinement** (how does this become executable?). A task is an idea with intent, and
 there is no single graduation ceremony: `h9k task add --from-idea` cuts a draft through the
-ordinary add door, through the same source-resolver seam `--from-issue`/`--from-jira` use, and an
-idea fans out into as many tasks as discovery produces. Flat tiny-slice layout, like Owner and
+ordinary add door, sitting alongside `--from-issue`/`--from-jira` as its own option rather than
+their shared `AdoptionSource`/`WorkItemProvider` source-resolver seam — an idea is a local record
+with nothing to read over `gh` or a registered connection, and that seam refuses a second adoption
+of the same item, which would block the repeatable cuts this door exists for — and an idea fans
+out into as many tasks as discovery produces. Flat tiny-slice layout, like Owner and
 Node: aggregate, events, decider, and projection as sibling files under `Features/Idea/`.
 
 ```csharp
