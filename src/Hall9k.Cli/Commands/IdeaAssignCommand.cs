@@ -37,7 +37,8 @@ public sealed class IdeaAssignCommand : Hall9kAsyncCommand<IdeaAssignCommand.Set
             throw new DomainValidationException(
                 $"Which project? h9k idea assign {settings.Id} --project <name>. "
                 + "If the idea has no home yet, leaving it unassigned is a legitimate answer — "
-                + "promotion is where a project becomes required.");
+                + "it only becomes required when the first task is cut from it (h9k task add "
+                + "--from-idea) or when it is promoted.");
         }
 
         using var store = CliStore.Open();
