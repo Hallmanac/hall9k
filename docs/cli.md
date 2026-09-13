@@ -505,7 +505,7 @@ install's own database only; a registration of the same repository on another no
 
 `project remove --purge` accepts an already-archived project or archives one first, then schedules
 a permanent hard delete of its database footprint 24 hours out: its own stream, every task, run,
-and idea stream it owns, and their projection documents. This is the one operation in Hall9k that
+idea, and epic stream it owns, and their projection documents. This is the one operation in Hall9k that
 actually deletes anything — linked tracker items, the repository, and the home directory on disk
 are outside its scope and are never touched. The confirmation names the scope in numbers (tasks,
 runs, ideas) and the deadline; `--yes` covers non-interactive use. `project cancel-purge <project>`
