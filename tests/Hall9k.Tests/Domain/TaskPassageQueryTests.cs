@@ -220,6 +220,134 @@ public sealed class TaskPassageQueryTests
     }
 
     [Fact]
+    public void Queued_before_first_claim_equals_the_lifetime_total_when_the_task_was_claimed_only_once()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        DateTimeOffset assignedAt = Now.AddMinutes(-30);
+        DateTimeOffset claimedAt = Now.AddMinutes(-18);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskAssigned(taskId, ownerId, [], assignedAt, ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, DomainId.New(), claimedAt)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, []);
+
+        // A task claimed once, never reopened: its leading queue wait is its whole queued life.
+        passage.QueuedBeforeFirstClaim.Elapsed.Should().Be(passage.Queued.Elapsed);
+        passage.QueuedBeforeFirstClaim.Elapsed.Should().Be(TimeSpan.FromMinutes(12));
+    }
+
+    [Fact]
+    public void Queued_before_first_claim_excludes_a_later_requeue_after_a_reopen()
+    {
+        // The exact shape an independent pre-PR review found reading over 100 percent queued: a
+        // task's lifetime Queued total sums every lap, but only the leading segment — before this
+        // task was ever claimed — belongs in a denominator built from ClaimToMerge, since
+        // everything after the first claim is already inside that window.
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset assignedAt = Now.AddHours(-10);
+        DateTimeOffset firstClaimedAt = Now.AddHours(-8);
+        DateTimeOffset reopenedAt = Now.AddHours(-2);
+        DateTimeOffset reclaimedAt = Now.AddHours(-1);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskAssigned(taskId, ownerId, [], assignedAt, ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, runId, firstClaimedAt)),
+            Ev(new TaskReopened(taskId, runId, "task/x", null, reopenedAt, ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 2, runId, reclaimedAt)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, []);
+
+        passage.Queued.Elapsed.Should().Be(TimeSpan.FromHours(2) + TimeSpan.FromHours(1));
+        passage.QueuedBeforeFirstClaim.Elapsed.Should().Be(TimeSpan.FromHours(2));
+    }
+
+    [Fact]
+    public void A_task_never_claimed_reports_queued_before_first_claim_as_not_applicable()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        List<IEvent> taskEvents = [Ev(new TaskAssigned(taskId, ownerId, [], Now.AddMinutes(-20), ownerId))];
+
+        TaskPassage passage = Compute(taskEvents, []);
+
+        passage.QueuedBeforeFirstClaim.Applicable.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Current_queue_segment_reports_the_open_segment_alone_not_the_lifetime_total()
+    {
+        // A task queued 30h behind a project cap, ran, and was reopened and requeued five minutes
+        // ago: the row it holds in the queued section right now means "waiting right now", not the
+        // sum of every wait this task has ever taken (independent pre-PR review, cycle 1,
+        // adversarial lens).
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset assignedAt = Now.AddHours(-32);
+        DateTimeOffset firstClaimedAt = Now.AddHours(-2);
+        DateTimeOffset reopenedAt = Now.AddMinutes(-5);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskAssigned(taskId, ownerId, [], assignedAt, ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, runId, firstClaimedAt)),
+            Ev(new TaskReopened(taskId, runId, "task/x", null, reopenedAt, ownerId)),
+        ];
+
+        PassagePhase current = TaskPassageQuery.FoldCurrentQueueSegment(taskEvents, Now);
+
+        current.StillOpen.Should().BeTrue();
+        current.Elapsed.Should().Be(TimeSpan.FromMinutes(5));
+    }
+
+    [Fact]
+    public void Queued_within_period_clips_a_segment_that_started_before_the_period()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        DateTimeOffset assignedAt = Now.AddHours(-18);
+        DateTimeOffset periodStart = Now.AddHours(-10);
+
+        List<IEvent> taskEvents = [Ev(new TaskAssigned(taskId, ownerId, [], assignedAt, ownerId))];
+
+        TimeSpan withinPeriod = TaskPassageQuery.FoldQueuedWithinPeriod(taskEvents, periodStart, Now);
+
+        withinPeriod.Should().Be(TimeSpan.FromHours(10));
+    }
+
+    [Fact]
+    public void Queued_within_period_sums_a_segment_that_closed_and_reopened_inside_the_window()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset periodStart = Now.AddHours(-6);
+        DateTimeOffset assignedAt = Now.AddHours(-5);
+        DateTimeOffset claimedAt = Now.AddHours(-3);
+        DateTimeOffset reopenedAt = Now.AddHours(-1);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskAssigned(taskId, ownerId, [], assignedAt, ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, runId, claimedAt)),
+            Ev(new TaskReopened(taskId, runId, "task/x", null, reopenedAt, ownerId)),
+        ];
+
+        TimeSpan withinPeriod = TaskPassageQuery.FoldQueuedWithinPeriod(taskEvents, periodStart, Now);
+
+        // Both segments started within the period: 2h (assigned -> claimed) + 1h (reopened -> now).
+        withinPeriod.Should().Be(TimeSpan.FromHours(3));
+    }
+
+    [Fact]
     public void Building_runs_from_dispatch_to_the_first_verification()
     {
         Guid runId = DomainId.New();

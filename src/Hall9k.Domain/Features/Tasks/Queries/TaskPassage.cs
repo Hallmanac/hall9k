@@ -115,4 +115,18 @@ public sealed record TaskPassage(
     /// task that has not merged (or never will), and always null for a <c>PrReview</c> task, which
     /// never watches a merge of its own.
     /// </summary>
-    DateTimeOffset? MergedAt);
+    DateTimeOffset? MergedAt,
+    /// <summary>
+    /// The queued phase's own leading edge alone: from this task's very first entry into the
+    /// queue up to its first <c>TaskClaimed</c> — every segment that closes before that claim,
+    /// summed, as opposed to <see cref="Queued"/>'s lifetime sum across every lap this task has
+    /// ever taken (task: h9k status reports throughput beside spend). <see cref="ClaimToMerge"/>
+    /// starts exactly where this ends, so the two together span this task's whole life from its
+    /// first queue entry to its merge with no gap and no overlap — the denominator a period
+    /// throughput rollup's queued and human-wait shares need, since <see cref="ClaimToMerge"/>
+    /// alone excludes the very queue time a "how much of this task's life was spent queued"
+    /// question is asking about (independent pre-PR review, cycle 1, both lenses: the same fold
+    /// against only <see cref="ClaimToMerge"/> read over 100% queued whenever a task ever waited
+    /// before its first claim).
+    /// </summary>
+    PassagePhase QueuedBeforeFirstClaim);
