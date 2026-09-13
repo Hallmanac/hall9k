@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -526,6 +527,13 @@ public sealed class CloseoutEngine(
     /// recording why this closeout ran without the review loop ever reaching MergeReady on its
     /// own. Null for every other caller.
     /// </param>
+    /// <param name="preserveWorkspaceOnCaptureFailure">
+    /// True only when <c>ReviewEngine.CaptureStrandedDeltaAsync</c> could not read the worktree's
+    /// own stranded delta (a git failure, never a confirmed-empty read) — the worktree and branch
+    /// this closeout would otherwise delete may be the only copy of commits the merge never
+    /// included, so deleting either on an unread guess is the same "guessed at as empty" AGENTS.md
+    /// forbids, just paid for in commits instead of a field. False for every other caller.
+    /// </param>
     public async Task<bool> ReconstructAndCompleteAsync(
         IDocumentSession session,
         TaskAggregate task,
@@ -537,7 +545,8 @@ public sealed class CloseoutEngine(
         DateTimeOffset now,
         CancellationToken cancellationToken,
         bool completeClaimedTaskHere = false,
-        IReadOnlyList<object>? precedingRunEvents = null)
+        IReadOnlyList<object>? precedingRunEvents = null,
+        bool preserveWorkspaceOnCaptureFailure = false)
     {
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         long? expectedRunVersion = null;
@@ -594,7 +603,7 @@ public sealed class CloseoutEngine(
         {
             await CompleteCloseoutAsync(
                 session, run, project, task, mergedAt, now, expectedRunVersion, cancellationToken,
-                completeClaimedTaskHere, precedingRunEvents);
+                completeClaimedTaskHere, precedingRunEvents, preserveWorkspaceOnCaptureFailure);
             return true;
         }
         catch (ExistingStreamIdCollisionException)
@@ -1841,7 +1850,8 @@ public sealed class CloseoutEngine(
         long? expectedVersion,
         CancellationToken cancellationToken,
         bool completeClaimedTaskHere = false,
-        IReadOnlyList<object>? precedingRunEvents = null)
+        IReadOnlyList<object>? precedingRunEvents = null,
+        bool preserveWorkspaceOnCaptureFailure = false)
     {
         RunHandoffRecorded handoff = await ComposeHandoffAsync(session, run, now, cancellationToken);
         PullRequestMerged merged = new(run.Id, mergedAt, now);
@@ -1885,9 +1895,39 @@ public sealed class CloseoutEngine(
             StreamState? taskFence = await session.Events.FetchStreamStateAsync(task.Id, cancellationToken);
             if (taskFence is not null)
             {
-                session.Events.Append(
-                    task.Id, expectedVersion: taskFence.Version + 1,
-                    TaskDecider.Complete(task, run.Id, task.PullRequestUrl, now));
+                // taskFence only fences the append's own version; it says nothing about whether
+                // the state this block already decided on (task.State, read before this fetch)
+                // still holds. A lease reclaim or another claim landing between that read and this
+                // fetch can move the task on (a new run claims it) while leaving its State exactly
+                // where this check expects it — Marten's own version guard would not catch that,
+                // since it validates the position of the append, not the content of the decision
+                // made to reach it. Reload at the fence and re-decide from what is actually there
+                // now, so a task no longer this run's to close out is left alone rather than
+                // completed for the wrong run with the wrong lease deleted underneath it.
+                TaskAggregate? current = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                    task.Id, version: taskFence.Version, token: cancellationToken);
+                if (current is { } currentTask
+                    && currentTask.CurrentRunId == run.Id
+                    && (currentTask.State == TaskState.Blocked
+                        || (completeClaimedTaskHere && currentTask.State == TaskState.Claimed)))
+                {
+                    session.Events.Append(
+                        task.Id, expectedVersion: taskFence.Version + 1,
+                        TaskDecider.Complete(currentTask, run.Id, task.PullRequestUrl, now));
+
+                    // A Claimed task completed here still holds the live lease dispatch wrote for it
+                    // (RunLauncher.cs and PullRequestOpener.cs both delete it in the same transaction
+                    // as their own TaskDecider.Complete, for the identical reason): left on file, this
+                    // node's own LeaseHeartbeatService keeps refreshing it unconditionally, so it never
+                    // ages past DispatchEngine's own expiry filter and never gets tidied up on its own.
+                    session.Delete<TaskLease>(task.Id);
+                }
+                else
+                {
+                    logger.LogInformation(
+                        "Run {RunId}: task {TaskId} moved on before its own closeout could finalize it; leaving it to whatever claimed it",
+                        run.Id, task.Id);
+                }
             }
         }
 
@@ -1898,6 +1938,22 @@ public sealed class CloseoutEngine(
 
         await UnblockDependentsAsync(run.TaskId, now, cancellationToken);
         await TellTheCardAsync(run.TaskId, project, task, cancellationToken);
+
+        // A stranded-delta read that failed outright (rather than confirming nothing was
+        // stranded) leaves this worktree and branch as the only place commits the merge never
+        // included could still exist. Deleting either on that unread guess is the same "guessed
+        // at as empty" AGENTS.md forbids, just paid for in commits instead of a field — so both
+        // destructive steps are skipped and the run/task closeout still finishes normally, since
+        // nothing here changes whether the merge itself happened.
+        if (preserveWorkspaceOnCaptureFailure)
+        {
+            logger.LogWarning(
+                "Run {RunId}: the stranded-delta read failed rather than confirming nothing was stranded; " +
+                "leaving worktree {WorktreePath} and branch {Branch} in place for manual recovery instead of deleting them",
+                run.Id, run.WorktreePath, run.Branch);
+            return;
+        }
+
         await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
 
         // Blank on a reconstructed run (ReconstructAndCompleteAsync): it never actually
