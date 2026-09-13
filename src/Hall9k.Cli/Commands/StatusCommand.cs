@@ -536,13 +536,16 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// dispatcher will actually serve them in.
     /// </summary>
     /// <param name="inServiceOrder">
-    /// Marker first, then oldest assignment, ties broken by when the task was added — exactly
-    /// the claim query's own ordering (Decisions Log #64, and the queue-first marker, task
-    /// 45136b29, idea fcaded0b's R7 ruling). It is service order within one project, and the
-    /// honest approximation of it across several: which project takes the next free slot is the
-    /// daemon's rotation (Decisions Log #141), whose memory is in-process and so invisible to any
-    /// CLI — <see cref="QueuedHeading"/> says so in the section's own words rather than leaving
-    /// the top row to imply otherwise. The queue section tells a human that each of its
+    /// Marker first, then rank, then oldest assignment, ties broken by when the task was added —
+    /// exactly the claim query's own ordering (Decisions Log #64, the queue-first marker, task
+    /// 45136b29, idea fcaded0b's R7 ruling, and the rank a follow-up lap, a retry or hand-back, and
+    /// a first claim take relative to each other, Decisions Log PLACEHOLDER-307f922b). It is
+    /// service order within one project, and the honest approximation of it across several: which
+    /// project takes the next free slot is the daemon's rotation (Decisions Log #141), whose memory
+    /// is in-process and so invisible to any CLI — <see cref="QueuedHeading"/> says so in the
+    /// section's own words rather than leaving the top row to imply otherwise; rank, unlike the
+    /// rotation, is read straight off each row so it orders correctly across projects too, not only
+    /// within one. The queue section tells a human that each of its
     /// rows starts as a run finishes, so its top row has to be the one that starts next;
     /// listed newest-first, the pane's default everywhere else, it showed the eight tasks that
     /// run last and collapsed the imminent ones into "… and N more" (pre-PR review, 2026-08-22).
@@ -556,6 +559,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         return [.. inServiceOrder
             ? inGroup
                 .OrderByDescending(row => row.QueuePriorityMarked)
+                .ThenBy(row => row.Rank)
                 .ThenBy(row => row.AssignedAt ?? DateTimeOffset.MaxValue)
                 .ThenBy(row => row.AddedAt)
             : inGroup

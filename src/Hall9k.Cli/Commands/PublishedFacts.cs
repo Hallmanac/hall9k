@@ -124,9 +124,14 @@ internal static class PublishedFacts
             // tracker says somebody else holds is not going to be claimed here whatever the
             // ceiling does, so it is the more specific answer to "why is this not moving" and the
             // browse surfaces show only the first line (TaskStatusRow.SummaryMarkup).
+            // The rank rides inside this same sentence rather than as a separate fact (Decisions
+            // Log #187): it is why a row waits behind another one of the same
+            // project, so it belongs beside the phrase that already says the row is waiting, not
+            // beside the held/tracker reasons that follow, which are a different question — why
+            // the dispatcher has not claimed anything of this project's at all.
             "Queued" =>
             [
-                "assigned and ready; the dispatcher has not claimed it yet",
+                $"assigned and ready as {task.Rank.Describe()}; the dispatcher has not claimed it yet",
                 .. heldByTracker is not null ? (string[])[heldByTracker.ReasonLine] : [],
                 .. held is not null ? (string[])[held.ReasonLine] : [],
             ],

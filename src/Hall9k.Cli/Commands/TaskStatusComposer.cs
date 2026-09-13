@@ -293,6 +293,7 @@ internal static class TaskStatusComposer
             held,
             task.AssignedAt,
             task.QueuePriorityMarked,
+            task.Rank,
             heldByTracker is not null);
     }
 
