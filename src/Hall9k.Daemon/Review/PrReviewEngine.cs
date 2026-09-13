@@ -369,6 +369,26 @@ public sealed class PrReviewEngine(
         // and one conformance pass — so this reads as cycle 1 always, never RunDetails.ReviewCycle,
         // which pr-review never sets.
         string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.ReviewConformance(1));
+
+        // Reloaded here, immediately before the actual spawn, mirroring RunLauncher's own
+        // pre-spawn guard and ReviewEngine.EnsureCurrentGenerationAsync (task: a run can be
+        // killed without killing its task): the generation fence above only knows about a
+        // reclaim or an abandon, not a kill — TaskFailed leaves CurrentRunId set, so it still
+        // says yes to a run already recorded Killed. Without this, h9k run kill could end this
+        // run's own conformance session directly, only for this method to spawn a brand-new one
+        // right over the terminal record the kill just left behind.
+        await using (IQuerySession terminalCheck = store.QuerySession())
+        {
+            RunDetails? current = await terminalCheck.LoadAsync<RunDetails>(runId, cancellationToken);
+            if (current is { State.IsTerminal: true })
+            {
+                logger.LogInformation(
+                    "Run {RunId}: already {State} by the time the conformance dispatch's own pre-spawn fence was checked - not spawning",
+                    runId, current.State.Value);
+                return false;
+            }
+        }
+
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             runId, sessionId, run.WorktreePath, runDirectory, prompt, (ExecutorMode)run.ExecutorMode, model,
             project.SkipPermissions, ConformanceArtifactName(sessionId), UntrustedWorkingDirectory: true)
@@ -969,6 +989,22 @@ public sealed class PrReviewEngine(
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
+
+        // Reloaded here, immediately before appending anything (mirrors RunSupervisor's and
+        // ReviewEngine.FailAsync's own guard, task: a run can be killed without killing its
+        // task): h9k run kill can end this run's conformance session directly, from outside
+        // this loop, leaving behind exactly the shape every branch above funnels into this
+        // method. Without this check, this method would win that race and silently overwrite
+        // the run's own Killed record with Failed.
+        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        if (run is { State.IsTerminal: true })
+        {
+            logger.LogInformation(
+                "Run {RunId}: already {State} by the time the pr-review loop's own failure was about to be recorded - not recording a failure over it",
+                runId, run.State.Value);
+            return;
+        }
+
         session.Events.Append(runId, new RunFailed(runId, reason, now));
 
         // LoadFencedAsync's read must happen before the AllowsAsync identity check below —
@@ -976,7 +1012,6 @@ public sealed class PrReviewEngine(
         // read rather than baked into `current.Task` as an already-stale ownership fact
         // (ReviewEngine.FailAsync uses the same ordering for the same reason).
         (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
-        RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         if (fenced is { } current
             && TaskDecider.CanFail(current.Task)
             && (run is null || await GenerationFence.AllowsAsync(

@@ -991,6 +991,49 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// Regression for the race h9k run kill introduces (task: a run can be killed without
+    /// killing its task): ending a monitored run's process directly leaves behind exactly the
+    /// "died without a result" shape the test above exercises, landing squarely inside this
+    /// monitor's own <c>DeadProcessGrace</c> window. Without <c>FailRunAsync</c>'s own
+    /// already-terminal guard, the monitor would win that race once its grace period expired and
+    /// silently overwrite a human's own <see cref="RunKilled"/> with <see cref="RunFailed"/>.
+    /// </summary>
+    [Fact]
+    public async Task A_run_already_killed_before_its_dead_process_is_confirmed_is_never_also_failed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(AssistantLine).Exit(1));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        // h9k run kill lands its own RunKilled the moment it ends the process — well before this
+        // monitor's own DeadProcessGrace (5s) even confirms the process is gone, let alone before
+        // FailRunAsync would otherwise run.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunKilled(runId, KillReason.HumanRequested, node.OwnerId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Long enough for the monitor to have reached FailRunAsync if the guard were missing.
+        await Task.Delay(TimeSpan.FromSeconds(8), cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.Killed, "a human's own kill record must never be overwritten by the monitor's own dead-process handling");
+
+        IReadOnlyList<object> events =
+            [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunFailed>().Should().BeEmpty("a run already recorded as killed must never also be recorded as failed");
+    }
+
+    /// <summary>
     /// Catch-up's defect (backlog 39, origin incident 2026-08-21): every adopted case except
     /// ReviewParked used to skip the lease refresh, so the expiry sweep that runs one line
     /// later in startup order requeued the very task adoption had just reattached — two
