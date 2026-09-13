@@ -413,10 +413,15 @@ public static class ProjectDecider
 
         if (project.PurgeAt is { } pendingDeadline)
         {
+            // Local time, not raw UTC: every other place this deadline reaches an operator
+            // (h9k project show, h9k project list --include-archived, the remove/purge messages)
+            // prints it in local time, and a raw UTC instant here would read as a different
+            // deadline for the same purge with no offset on either to tell them apart
+            // (independent pre-PR review, cycle 1, conformance lens).
             throw new DomainValidationException(
-                $"Project '{project.Name}' has a purge scheduled for {pendingDeadline:g}. Cancel it first: "
-                + $"h9k project cancel-purge {project.Name}. Reactivating a project the sweep would still "
-                + "destroy is refused rather than left to race the deadline.");
+                $"Project '{project.Name}' has a purge scheduled for {pendingDeadline.ToLocalTime():g}. "
+                + $"Cancel it first: h9k project cancel-purge {project.Name}. Reactivating a project the "
+                + "sweep would still destroy is refused rather than left to race the deadline.");
         }
 
         return new ProjectReactivated(project.Id, reactivatedAt, reactivatedByOwnerId);
@@ -442,8 +447,9 @@ public static class ProjectDecider
 
         if (project.PurgeAt is { } existingDeadline)
         {
+            // Local time, the same fix and the same reason as Reactivate's own refusal above.
             throw new DomainValidationException(
-                $"Project '{project.Name}' already has a purge scheduled for {existingDeadline:g}. "
+                $"Project '{project.Name}' already has a purge scheduled for {existingDeadline.ToLocalTime():g}. "
                 + $"Cancel it first: h9k project cancel-purge {project.Name}");
         }
 
