@@ -624,13 +624,13 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
-        // The archive check runs ahead of the CurrentRunId branch below (independent review, PR
-        // #336): that branch appends RunSuperseded on its own, unfenced by anything here, and an
-        // archived project (task: a project can be archived, listed as archived, reactivated, and
-        // renamed) gets the same skip the render and auto-pr-review sweeps already give it before
-        // any event lands on any of its streams — this install is no longer maintaining that
-        // repository, so no gh inspection, merge, or closeout event runs against it;
-        // h9k project reactivate resumes this sweep for it immediately.
+        // The archive check runs ahead of the CurrentRunId branch below: that branch appends
+        // RunSuperseded on its own, unfenced by anything here, and an archived project (task: a
+        // project can be archived, listed as archived, reactivated, and renamed) gets the same
+        // skip the render and auto-pr-review sweeps already give it before any event lands on any
+        // of its streams — this install is no longer maintaining that repository, so no gh
+        // inspection, merge, or closeout event runs against it; h9k project reactivate resumes
+        // this sweep for it immediately.
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
         if (project is null || project.IsArchived)
         {
@@ -741,13 +741,13 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
-        // The archive check runs ahead of the CurrentRunId branch below (independent review, PR
-        // #336): that branch appends RunSuperseded on its own, unfenced by anything here, and an
-        // archived project (task: a project can be archived, listed as archived, reactivated, and
-        // renamed) gets the same skip the render and auto-pr-review sweeps already give it before
-        // any event lands on any of its streams — this install is no longer maintaining that
-        // repository, so no gh inspection, merge, or closeout event runs against it;
-        // h9k project reactivate resumes this sweep for it immediately.
+        // The archive check runs ahead of the CurrentRunId branch below: that branch appends
+        // RunSuperseded on its own, unfenced by anything here, and an archived project (task: a
+        // project can be archived, listed as archived, reactivated, and renamed) gets the same
+        // skip the render and auto-pr-review sweeps already give it before any event lands on any
+        // of its streams — this install is no longer maintaining that repository, so no gh
+        // inspection, merge, or closeout event runs against it; h9k project reactivate resumes
+        // this sweep for it immediately.
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
         if (project is null || project.IsArchived)
         {
