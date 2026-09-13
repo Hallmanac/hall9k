@@ -14,7 +14,6 @@ internal sealed record IdeaRow(
     Guid? ProjectId,
     string? ProjectName,
     IdeaState State,
-    Guid? PromotedTaskId,
     DateTimeOffset CapturedAt)
 {
     public static IdeaRow Compose(IdeaDetails idea, IReadOnlyDictionary<Guid, ProjectDetails> projects) =>
@@ -25,7 +24,6 @@ internal sealed record IdeaRow(
                 ? project.Name
                 : null,
             idea.State,
-            idea.PromotedTaskId,
             idea.CapturedAt);
 
     public string IdMarkup => $"[dim]{TaskListCommand.ShortId(Id)}[/]";
@@ -33,8 +31,8 @@ internal sealed record IdeaRow(
     public string StateMarkup => State.Value switch
     {
         "Captured" => "[blue]Captured[/]",
-        "Promoted" => "[green]Promoted[/]",
-        "Discarded" => "[dim]Discarded[/]",
+        "Concluded" => "[green]Concluded[/]",
+        "Archived" => "[dim]Archived[/]",
         _ => State.Value.EscapeMarkup(),
     };
 

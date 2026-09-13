@@ -561,9 +561,12 @@ public static class CliCommandTree
         config.AddBranch("idea", idea =>
         {
             idea.SetDescription(
-                "Capture and develop ideas. An idea undergoes DISCOVERY — what is this? — and becomes a "
-                + "draft task the moment discovery gives it intent; the draft then undergoes REFINEMENT — "
-                + "how does this become executable? (Decisions Log #35). A task is an idea with intent.");
+                "Capture and develop ideas. An idea undergoes DISCOVERY — what is this? — and fans out "
+                + "into any number of draft tasks the moment discovery gives it intent, through the "
+                + "ordinary h9k task add --from-idea door; each draft then undergoes REFINEMENT — how "
+                + "does this become executable? (backlog 31). Cutting a task never ends the idea's own "
+                + "story — discovery may keep producing — so an idea concludes or archives only by an "
+                + "explicit, separate act.");
             idea.AddCommand<IdeaAddCommand>("add")
                 .WithDescription(
                     "Capture an idea: one command, one argument, no ceremony. --project is the only "
@@ -576,7 +579,8 @@ public static class CliCommandTree
                 .WithDescription(
                     "Browse ideas newest-first, with their age and their project (or the honest absence "
                     + "of one). Shows what is still in discovery by default; --state all adds what was "
-                    + "promoted or discarded. The footer teaches promotion, which is what the list is for.")
+                    + "concluded or archived. The footer teaches cutting a task, which is what the list "
+                    + "is for.")
                 .WithExample("idea", "list")
                 .WithExample("idea", "list", "--project", "hall9k")
                 .WithExample("idea", "list", "--unassigned")
@@ -584,8 +588,8 @@ public static class CliCommandTree
             idea.AddCommand<IdeaShowCommand>("show")
                 .WithDescription(
                     "One idea: its note, its project, its discovery workspace path and what has piled up "
-                    + "in it, every version the note has had, and what the idea became if it was promoted "
-                    + "or why it was discarded.")
+                    + "in it, every version the note has had, the whole fan-out of tasks it has been cut "
+                    + "into with each one's current state, and why it was concluded or archived.")
                 .WithExample("idea", "show", "28b19893");
             idea.AddCommand<IdeaReviseCommand>("revise")
                 .WithDescription(
@@ -597,23 +601,32 @@ public static class CliCommandTree
                 .WithDescription(
                     "Set or change the project an idea belongs to — for when capture did not know yet, "
                     + "which is most of the time. An unassigned idea is honest, not incomplete; a project "
-                    + "only becomes required at promotion.")
+                    + "only becomes required when the first task is cut from it.")
                 .WithExample("idea", "assign", "28b19893", "--project", "hall9k");
             idea.AddCommand<IdeaPromoteCommand>("promote")
                 .WithDescription(
-                    "Promote an idea into a draft task: discovery ends, refinement begins. The note seeds "
-                    + "the draft (its first sentence becomes the objective — taken mechanically, never "
-                    + "interpreted, and overridable with --objective; the remainder becomes agent context), "
-                    + "the discovery workspace pointer rides along, and provenance is recorded both ways. "
-                    + "Needs a project, supplied here or already assigned.")
+                    "Sugar over the ordinary fan-out door: cuts exactly one task from the idea (its "
+                    + "first sentence becomes the objective — taken mechanically, never interpreted, and "
+                    + "overridable with --objective; the remainder becomes agent context) and concludes "
+                    + "the idea in the same breath. For the common case where a single idea deserved a "
+                    + "single task and nothing more is coming; for a fan-out, use h9k task add --from-idea "
+                    + "for each task and h9k idea conclude by hand once discovery stops producing. Needs a "
+                    + "project, supplied here or already assigned.")
                 .WithExample("idea", "promote", "28b19893")
                 .WithExample("idea", "promote", "28b19893", "--project", "hall9k")
                 .WithExample("idea", "promote", "28b19893", "--objective", "\"Give every idea a discovery workspace\"");
-            idea.AddCommand<IdeaDiscardCommand>("discard")
+            idea.AddCommand<IdeaConcludeCommand>("conclude")
                 .WithDescription(
-                    "Close an idea with the reason recorded. Nothing is deleted and the workspace stays "
-                    + "put: an idea that keeps coming back is a signal, and only a kept record can show it.")
-                .WithExample("idea", "discard", "28b19893", "--reason", "\"Superseded by the attachments design\"");
+                    "One of an idea's two terminal acts, always explicit: discovery happened and "
+                    + "something came of it — tasks cut, or an outcome acted on some other way. Cutting "
+                    + "a task never appends this on its own, because discovery may keep producing.")
+                .WithExample("idea", "conclude", "28b19893", "--reason", "\"Cut three tasks; discovery is done here\"");
+            idea.AddCommand<IdeaArchiveCommand>("archive")
+                .WithDescription(
+                    "An idea's other terminal act: discovery happened and nothing came of it. Recorded "
+                    + "with its reason, nothing deleted, and the workspace stays put — an idea that keeps "
+                    + "coming back is a signal.")
+                .WithExample("idea", "archive", "28b19893", "--reason", "\"Superseded by the attachments design\"");
         });
 
         config.AddBranch("epic", epic =>
@@ -665,17 +678,19 @@ public static class CliCommandTree
                 + "A task runs only once a human assigns it and every dependency has closed out.");
             task.AddCommand<TaskAddCommand>("add")
                 .WithDescription(
-                    "Create a draft (flags, --file task.md, --from-issue to adopt a GitHub issue, or "
-                    + "--from-pr to adopt a pull request to review — a pr-review task, read-only until "
-                    + "you direct otherwise). Creation is identity, not readiness: a project and an "
-                    + "objective are all it takes, and the draft is invisible to the dispatcher until you "
-                    + "publish and assign it. Acceptance criteria are what h9k task publish demands, and "
-                    + "an adopted issue or pull request never supplies them — unless the issue carries a "
-                    + "task record another hall9k install published into it, which holds the whole task "
-                    + "(criteria, context, type, model, caps, dependencies, epic) and is read once, here.")
+                    "Create a draft (flags, --file task.md, --from-idea to cut it from an idea's "
+                    + "discovery, --from-issue to adopt a GitHub issue, or --from-pr to adopt a pull "
+                    + "request to review — a pr-review task, read-only until you direct otherwise). "
+                    + "Creation is identity, not readiness: a project and an objective are all it takes, "
+                    + "and the draft is invisible to the dispatcher until you publish and assign it. "
+                    + "Acceptance criteria are what h9k task publish demands, and an adopted issue or "
+                    + "pull request never supplies them — unless the issue carries a task record another "
+                    + "hall9k install published into it, which holds the whole task (criteria, context, "
+                    + "type, model, caps, dependencies, epic) and is read once, here.")
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Add the project browse surface\"",
                     "--criteria", "\"h9k project list shows one row per project\"")
                 .WithExample("task", "add", "--file", "backlog/19-model-policy.md", "--model", "claude-opus-5")
+                .WithExample("task", "add", "--from-idea", "28b19893", "--objective", "\"Add the project browse surface\"")
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "42")
                 .WithExample("task", "add", "--project", "hall9k", "--from-issue", "266", "--pre-approved")
                 .WithExample("task", "add", "--project", "hall9k", "--from-jira", "PROJ-123")

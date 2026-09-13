@@ -19,10 +19,15 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// The hinge between the two phases (Decisions Log #35): discovery asked "what is this?" and
-/// answered it, so the idea becomes a draft task, where refinement asks "how does this become
-/// executable?". Promotion composes with the existing lifecycle rather than duplicating it —
-/// what it produces is an ordinary draft, entering the ordinary draft ceremony.
+/// Sugar over the ordinary fan-out door (backlog 31): cuts exactly one task from the idea, with
+/// the note's first sentence taken mechanically as the objective unless --objective overrides
+/// it, then concludes the idea in the same breath — for the common case where a single idea
+/// deserved a single task and nothing more is coming. Reconciles the shipped 1:1 promote: it
+/// used to be its own ceremony with its own event and its own "promotes once" rule; now it
+/// composes the same two acts every other path to fan-out and conclusion uses
+/// (<c>h9k task add --from-idea</c> and <c>h9k idea conclude</c>), so there are never two doors
+/// with diverging semantics. When discovery is going to keep producing, cut tasks one at a time
+/// with <c>h9k task add --from-idea</c> instead and conclude by hand once it stops.
 /// </summary>
 public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.Settings>
 {
@@ -54,10 +59,11 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
 
-        // Fence before aggregating: promotion is a one-time transition that mints a second
-        // stream, so a promote racing another promote (or a revise, or an assign) must not
-        // land on an idea that has already moved. The task stream is only started if this
-        // append wins, so the two halves of the provenance trail cannot come apart.
+        // Fence before aggregating: this appends two events on the idea's own stream (the cut,
+        // then the conclusion) plus a new task stream, so a promote racing another promote (or a
+        // revise, or an assign) must not land on an idea that has already moved. The task stream
+        // is only started if the fenced appends win, so the two halves of the provenance trail
+        // cannot come apart.
         Guid ideaId = await IdeaIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
         StreamState fence = await session.Events.FetchStreamStateAsync(ideaId, cancellationToken)
             ?? throw new DomainNotFoundException($"No idea {ideaId}.");
@@ -78,7 +84,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
             // Same reasoning as h9k task add's own refusal: the sweep re-queries ownership at
             // fire time, so a task minted here would be destroyed along with everything else at
             // the deadline rather than orphaned — refused here so a promotion does not silently
-            // hand a fresh task (and this idea, once IdeaPromoted binds it) to a project already
+            // hand a fresh task (and this idea, once concluded, binds to it) to a project already
             // scheduled for destruction (independent pre-PR review, cycle 1, both lenses, medium).
             throw new DomainValidationException(
                 $"Project '{project.Name}' is scheduled for permanent deletion at "
@@ -86,33 +92,49 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
                 + $"first: h9k project cancel-purge {project.Name}");
         }
 
+        // A task belongs to a project, and this door still needs one up front — CutTask itself
+        // does not ask, since an ordinary --from-idea cut always has one from --project. Kept as
+        // its own check, worded the way promotion always worded it, rather than folded into
+        // TaskDecider.Add's generic "a task belongs to a project" (independent pre-PR review).
+        Guid destinationProjectId = project?.Id ?? idea.ProjectId ?? Guid.Empty;
+        if (destinationProjectId == Guid.Empty)
+        {
+            throw new DomainValidationException(
+                "Promotion needs a project, because a task belongs to one: h9k idea promote "
+                + $"{idea.Id} --project <name>. If this idea IS a new project, register it first "
+                + "(h9k project add --name <name> --repo <path>) and then promote into it — the platform "
+                + "will not invent a repository for you (Decisions Log #35).");
+        }
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         IdeaSeed seed = Seed(idea.Text, settings.Objective);
         Guid taskId = DomainId.New();
+        DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        // The idea decides first: its refusals (already promoted, discarded, no project) teach
-        // better than the task decider's would, and nothing is appended when one fires.
-        IdeaPromoted promoted = IdeaDecider.Promote(
-            idea, taskId, project?.Id, seed.Objective, DateTimeOffset.UtcNow, context.OwnerId);
+        // The idea decides first: its refusals (already concluded, archived) teach better than
+        // the task decider's would, and nothing is appended when one fires.
+        IdeaTaskCut cut = IdeaDecider.CutTask(idea, taskId, seed.Objective, now, context.OwnerId);
+        IdeaConcluded concluded = IdeaDecider.Conclude(
+            idea, $"Promoted into a single task: {seed.Objective}", now, context.OwnerId);
 
         TaskAdded added = TaskDecider.Add(
             taskId,
-            promoted.ProjectId,
-            promoted.Objective,
+            destinationProjectId,
+            cut.Objective,
             acceptanceCriteria: [],
             TaskType.Parse(null),
             AgentContext(idea, seed.Context),
             constraints: null,
             externalReference: null,
-            promoted.PromotedAt,
+            now,
             context.OwnerId,
             model: null,
             blockedBy: null,
             sourceIdeaId: idea.Id);
 
         session.Events.StartStream<TaskAggregate>(taskId, added);
-        session.Events.Append(idea.Id, expectedVersion: fence.Version + 1, promoted);
+        session.Events.Append(idea.Id, expectedVersion: fence.Version + 2, cut, concluded);
         try
         {
             await session.SaveChangesAsync(cancellationToken);
@@ -126,7 +148,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
 
         // No doorbell: what promotion produces is a draft, and a draft is invisible to the
         // dispatcher until a human publishes and assigns it (Decisions Log #34).
-        Announce(idea, promoted, project, seed, settings.Objective.IsNotBlank());
+        Announce(idea, taskId, destinationProjectId, project, seed, settings.Objective.IsNotBlank());
         return ExitCodes.Ok;
     }
 
@@ -179,17 +201,18 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
     /// rather than trusted — then hands off to the draft ceremony refinement happens in.
     /// </summary>
     private static void Announce(
-        IdeaAggregate idea, IdeaPromoted promoted, ProjectDetails? project, IdeaSeed seed, bool objectiveGiven)
+        IdeaAggregate idea, Guid taskId, Guid projectId, ProjectDetails? project, IdeaSeed seed, bool objectiveGiven)
     {
         string ideaShortId = TaskListCommand.ShortId(idea.Id);
-        string taskShortId = TaskListCommand.ShortId(promoted.TaskId);
-        string projectName = project?.Name ?? promoted.ProjectId.ToString();
+        string taskShortId = TaskListCommand.ShortId(taskId);
+        string projectName = project?.Name ?? projectId.ToString();
 
         AnsiConsole.MarkupLine(
-            $"[green]Idea {ideaShortId} promoted[/] into draft [dim]{taskShortId}[/] in '{projectName.EscapeMarkup()}'");
+            $"[green]Idea {ideaShortId} promoted[/] into draft [dim]{taskShortId}[/] in '{projectName.EscapeMarkup()}', "
+            + "and concluded");
         AnsiConsole.MarkupLine(
             $"[dim]  objective ({(objectiveGiven ? "yours" : "the note's first sentence, taken as written")}):[/] "
-            + ExternalText.OneLineMarkup(promoted.Objective));
+            + ExternalText.OneLineMarkup(seed.Objective));
         AnsiConsole.MarkupLine(seed.Context.IsNotBlank()
             ? "[dim]  context:[/] the rest of the note, plus the discovery workspace path"
             : "[dim]  context:[/] the discovery workspace path");
@@ -198,7 +221,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         AnsiConsole.MarkupLine(
             $"[dim]  workspace:[/] {IdeaPaths.WorkspaceDirectory(ideaDirectory).EscapeMarkup()}");
 
-        if (SharpenNudge(promoted.Objective, seed.Context, objectiveGiven) is { } nudge)
+        if (SharpenNudge(seed.Objective, seed.Context, objectiveGiven) is { } nudge)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]  {nudge.EscapeMarkup()}[/] "

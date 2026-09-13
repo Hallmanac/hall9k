@@ -55,38 +55,83 @@ public sealed class IdeaDetailsProjectionTests
     }
 
     [Fact]
-    public void Promotion_records_what_the_idea_became()
+    public void Cutting_a_task_fans_out_the_idea_without_ending_it()
     {
         IdeaDetailsProjection projection = new();
         Guid id = DomainId.New();
-        Guid taskId = DomainId.New();
-        Guid projectId = DomainId.New();
+        Guid firstTask = DomainId.New();
+        Guid secondTask = DomainId.New();
 
         IdeaDetails view = projection.Create(new FakeEvent<IdeaCaptured>(
             new IdeaCaptured(id, DomainId.New(), "Give ideas a workspace", ProjectId: null, Now)));
-        projection.Apply(new FakeEvent<IdeaPromoted>(
-            new IdeaPromoted(id, taskId, projectId, "Give ideas a workspace", Now.AddDays(1), DomainId.New())), view);
+        projection.Apply(new FakeEvent<IdeaTaskCut>(
+            new IdeaTaskCut(id, firstTask, "Give ideas a workspace directory", Now.AddDays(1), DomainId.New())), view);
+        projection.Apply(new FakeEvent<IdeaTaskCut>(
+            new IdeaTaskCut(id, secondTask, "Render the path on idea show", Now.AddDays(2), DomainId.New())), view);
 
-        view.State.Should().Be(IdeaState.Promoted);
-        view.PromotedTaskId.Should().Be(taskId);
-        view.ProjectId.Should().Be(projectId, "promotion is also where a project finally gets settled");
-        view.PromotedAt.Should().Be(Now.AddDays(1));
+        view.State.Should().Be(IdeaState.Captured, "cutting a task never ends the idea on its own");
+        view.CutTaskIds.Should().Equal(firstTask, secondTask);
     }
 
     [Fact]
-    public void A_discard_keeps_the_note_and_carries_the_reason()
+    public void Concluding_records_why_something_came_of_it()
+    {
+        IdeaDetailsProjection projection = new();
+        Guid id = DomainId.New();
+
+        IdeaDetails view = projection.Create(new FakeEvent<IdeaCaptured>(
+            new IdeaCaptured(id, DomainId.New(), "Give ideas a workspace", ProjectId: null, Now)));
+        projection.Apply(new FakeEvent<IdeaConcluded>(
+            new IdeaConcluded(id, "Cut two tasks; discovery is done here", Now.AddDays(1), DomainId.New())), view);
+
+        view.State.Should().Be(IdeaState.Concluded);
+        view.ConcludeReason.Should().Be("Cut two tasks; discovery is done here");
+        view.ConcludedAt.Should().Be(Now.AddDays(1));
+    }
+
+    [Fact]
+    public void An_archive_keeps_the_note_and_carries_the_reason()
     {
         IdeaDetailsProjection projection = new();
         Guid id = DomainId.New();
 
         IdeaDetails view = projection.Create(new FakeEvent<IdeaCaptured>(
             new IdeaCaptured(id, DomainId.New(), "A thought that did not survive", ProjectId: null, Now)));
-        projection.Apply(new FakeEvent<IdeaDiscarded>(
-            new IdeaDiscarded(id, "Superseded by attachments", Now.AddDays(4), DomainId.New())), view);
+        projection.Apply(new FakeEvent<IdeaArchived>(
+            new IdeaArchived(id, "Superseded by attachments", Now.AddDays(4), DomainId.New())), view);
 
-        view.State.Should().Be(IdeaState.Discarded);
-        view.DiscardReason.Should().Be("Superseded by attachments");
-        view.DiscardedAt.Should().Be(Now.AddDays(4));
-        view.Text.Should().Be("A thought that did not survive", "discarding is recorded, never deleted");
+        view.State.Should().Be(IdeaState.Archived);
+        view.ArchiveReason.Should().Be("Superseded by attachments");
+        view.ArchivedAt.Should().Be(Now.AddDays(4));
+        view.Text.Should().Be("A thought that did not survive", "archiving is recorded, never deleted");
+    }
+
+    /// <summary>
+    /// A document a legacy IdeaPromoted/IdeaDiscarded last wrote reads under the vocabulary it
+    /// was reconciled into (backlog 31), never a state that no longer exists.
+    /// </summary>
+    [Fact]
+    public void A_legacy_promotion_or_discard_replays_into_the_reconciled_states()
+    {
+        IdeaDetailsProjection projection = new();
+        Guid promotedId = DomainId.New();
+        Guid discardedId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        IdeaDetails promoted = projection.Create(new FakeEvent<IdeaCaptured>(
+            new IdeaCaptured(promotedId, DomainId.New(), "Give ideas a workspace", ProjectId: null, Now)));
+        projection.Apply(new FakeEvent<IdeaPromoted>(
+            new IdeaPromoted(promotedId, taskId, DomainId.New(), "Give ideas a workspace", Now.AddDays(1), DomainId.New())), promoted);
+
+        promoted.State.Should().Be(IdeaState.Concluded, "a promotion always meant something came of the idea");
+        promoted.CutTaskIds.Should().Equal(taskId);
+
+        IdeaDetails discarded = projection.Create(new FakeEvent<IdeaCaptured>(
+            new IdeaCaptured(discardedId, DomainId.New(), "A thought that did not survive", ProjectId: null, Now)));
+        projection.Apply(new FakeEvent<IdeaDiscarded>(
+            new IdeaDiscarded(discardedId, "Superseded by attachments", Now.AddDays(4), DomainId.New())), discarded);
+
+        discarded.State.Should().Be(IdeaState.Archived, "a discard always meant nothing came of the idea");
+        discarded.ArchiveReason.Should().Be("Superseded by attachments");
     }
 }

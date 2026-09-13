@@ -54,10 +54,10 @@ namespace Hall9k.Tests.Integration;
 /// Project registration — a project's own record and the settings changes applied on top of it.
 /// </para>
 /// <para>
-/// Idea promotion — promotion writes two streams in one transaction (Decisions Log #35): the
-/// idea's, which records what it became, and the task's, which records where it came from. Either
-/// half alone would be a broken provenance trail, so the append is atomic and this is what proves
-/// both projections land.
+/// Idea fan-out (backlog 31) — cutting a task writes two streams in one transaction: the idea's,
+/// which records the cut, and the task's, which records where it came from. Either half alone
+/// would be a broken provenance trail, so the append is atomic and this is what proves both
+/// projections land — and, unlike the retired 1:1 promote, that the fan-out itself is repeatable.
 /// </para>
 /// <para>
 /// Logged interactions — <see cref="TaskLogInteractionCommand.AppendInteractionAsync"/> against a
@@ -503,11 +503,11 @@ public sealed class StoreBackedRecordTests(PostgresFixture postgres) : IClassFix
         }
     }
 
-    // ── idea promotion ──
+    // ── idea fan-out ──
     private static readonly DateTimeOffset PromotionNow = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public async Task Promoting_an_idea_records_provenance_in_both_directions()
+    public async Task An_idea_fans_out_into_two_draft_tasks_and_provenance_runs_both_ways()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
@@ -515,7 +515,8 @@ public sealed class StoreBackedRecordTests(PostgresFixture postgres) : IClassFix
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
         Guid ideaId = DomainId.New();
-        Guid taskId = DomainId.New();
+        Guid firstTaskId = DomainId.New();
+        Guid secondTaskId = DomainId.New();
 
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -536,48 +537,52 @@ public sealed class StoreBackedRecordTests(PostgresFixture postgres) : IClassFix
             await session.SaveChangesAsync(cts.Token);
         }
 
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(
-                ideaId, token: cts.Token))!;
-            IdeaSeed seed = IdeaText.Seed(idea.Text);
-
-            IdeaPromoted promoted = IdeaDecider.Promote(
-                idea, taskId, projectId: null, seed.Objective, PromotionNow.AddDays(1), ownerId);
-            TaskAdded added = TaskDecider.Add(
-                taskId, promoted.ProjectId, promoted.Objective, acceptanceCriteria: [], TaskType.Feature,
-                seed.Context, constraints: null, externalReference: null, promoted.PromotedAt, ownerId,
-                model: null, blockedBy: null, sourceIdeaId: ideaId);
-
-            session.Events.StartStream<TaskAggregate>(taskId, added);
-            session.Events.Append(ideaId, promoted);
-            await session.SaveChangesAsync(cts.Token);
-        }
+        await Cut(store, ideaId, firstTaskId, projectId, "Give ideas a discovery workspace", ownerId, PromotionNow.AddDays(1), cts.Token);
+        await Cut(store, ideaId, secondTaskId, projectId, "Render the workspace path on idea show", ownerId, PromotionNow.AddDays(2), cts.Token);
 
         await using (IQuerySession session = store.QuerySession())
         {
             IdeaDetails? idea = await session.LoadAsync<IdeaDetails>(ideaId, cts.Token);
-            TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cts.Token);
+            TaskDetails? first = await session.LoadAsync<TaskDetails>(firstTaskId, cts.Token);
+            TaskDetails? second = await session.LoadAsync<TaskDetails>(secondTaskId, cts.Token);
 
-            idea!.State.Should().Be(IdeaState.Promoted);
-            idea.PromotedTaskId.Should().Be(taskId, "the idea's stream names the task it became");
+            idea!.State.Should().Be(IdeaState.Captured, "cutting tasks never ends the idea on its own");
+            idea.CutTaskIds.Should().Equal(firstTaskId, secondTaskId);
             idea.ProjectId.Should().Be(projectId);
 
-            task!.SourceIdeaId.Should().Be(ideaId, "the task's stream names the idea it came from");
-            task.State.Should().Be(TaskState.Draft, "promotion produces an ordinary draft (log #34)");
-            task.Objective.Should().Be("Ideas deserve their own discovery phase.");
-            task.AgentContext.Should().Be("The workspace is where research lands.");
+            first!.SourceIdeaId.Should().Be(ideaId, "the task's stream names the idea it came from");
+            first.State.Should().Be(TaskState.Draft, "cutting produces an ordinary draft (log #34)");
+            first.Objective.Should().Be("Give ideas a discovery workspace");
+            second!.SourceIdeaId.Should().Be(ideaId);
+            second.Objective.Should().Be("Render the workspace path on idea show");
         }
     }
 
     /// <summary>
-    /// Promotion is a one-time transition that mints a second stream, so two of them racing
-    /// must not both land: the loser is refused at the database, and because the two appends
-    /// share one transaction, the task it would have created never exists. Provenance stays
-    /// two-way or it does not happen at all.
+    /// A stream carrying the retired <see cref="IdeaPromoted"/> event — no decider method
+    /// produces it any more, but a stream that recorded one before this branch shipped still
+    /// carries it forever — replays correctly against a real store, both through the Inline
+    /// <see cref="IdeaDetails"/> projection (today's <c>Apply</c> handler reconciles it into
+    /// <see cref="IdeaState.Concluded"/> and adds the task to <c>CutTaskIds</c>, so a document
+    /// materialized by <em>this</em> build reads right) and through a fresh
+    /// <c>AggregateStreamAsync</c> read of <see cref="IdeaAggregate"/>.
+    /// <para>
+    /// <see cref="IdeaShowCommand.WriteFanOutAsync"/> deliberately reads the aggregate rather than
+    /// the projection for this exact reason: <see cref="IdeaDetails"/> is Inline, so a document an
+    /// <em>old</em> build's <c>IdeaPromoted</c> handler already materialized — before
+    /// <c>CutTaskIds</c> existed on that projection's shape at all, the shape 34a618a6's own
+    /// promotion from 3ba186b6 was written under — carries no such key and would read as an
+    /// empty fan-out forever, since a terminal idea's stream never gets another event to trigger
+    /// a re-materialization. That specific stale-document shape cannot be reproduced here without
+    /// hand-writing raw JSON under the old build's schema, which this test does not attempt; what
+    /// it does prove is that the mechanism <c>WriteFanOutAsync</c> actually relies on — event
+    /// replay of <see cref="IdeaPromoted"/>, independent of whatever the projection currently
+    /// holds — works end to end against a real store, including through Marten's own JSON
+    /// round-trip of the event type itself.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task Two_racing_promotions_leave_exactly_one_task_behind()
+    public async Task A_legacy_promoted_idea_replays_correctly_through_both_the_projection_and_a_fresh_aggregate_read()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
@@ -585,58 +590,53 @@ public sealed class StoreBackedRecordTests(PostgresFixture postgres) : IClassFix
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
         Guid ideaId = DomainId.New();
+        Guid taskId = DomainId.New();
 
-        await using (IDocumentSession setup = store.LightweightSession())
+        await using (IDocumentSession session = store.LightweightSession())
         {
-            setup.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(
-                ideaId, ownerId, "Two promotions race. Exactly one may win.", projectId, PromotionNow, ProjectHome.None));
-            await setup.SaveChangesAsync(cts.Token);
+            session.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(
+                ideaId, ownerId, "An idea promoted before the fan-out redesign shipped.",
+                projectId, PromotionNow, ProjectHome.None));
+            session.Events.Append(ideaId, new IdeaPromoted(
+                ideaId, taskId, projectId, "An idea promoted before the fan-out redesign shipped.",
+                PromotionNow.AddDays(1), ownerId));
+            await session.SaveChangesAsync(cts.Token);
         }
 
-        // Two invocations read the same stream state, then both promote at the same expected
-        // version — the database, not timing, decides which one becomes a task.
-        await using IDocumentSession first = store.LightweightSession();
-        await using IDocumentSession second = store.LightweightSession();
+        await using (IQuerySession session = store.QuerySession())
+        {
+            IdeaDetails? details = await session.LoadAsync<IdeaDetails>(ideaId, cts.Token);
+            details!.State.Should().Be(IdeaState.Concluded, "a promotion always meant something came of the idea");
+            details.CutTaskIds.Should().Equal(taskId);
 
-        StreamState fence1 = (await first.Events.FetchStreamStateAsync(ideaId, cts.Token))!;
-        StreamState fence2 = (await second.Events.FetchStreamStateAsync(ideaId, cts.Token))!;
-        IdeaAggregate view1 = (await first.Events.AggregateStreamAsync<IdeaAggregate>(
-            ideaId, version: fence1.Version, token: cts.Token))!;
-        IdeaAggregate view2 = (await second.Events.AggregateStreamAsync<IdeaAggregate>(
-            ideaId, version: fence2.Version, token: cts.Token))!;
-
-        Guid winningTaskId = DomainId.New();
-        Guid losingTaskId = DomainId.New();
-        Promote(first, view1, winningTaskId, fence1.Version, ownerId);
-        Promote(second, view2, losingTaskId, fence2.Version, ownerId);
-
-        await first.SaveChangesAsync(cts.Token);
-        Func<Task> losing = () => second.SaveChangesAsync(cts.Token);
-        await losing.Should().ThrowAsync<EventStreamUnexpectedMaxEventIdException>(
-            "the second promotion must lose at the database, not by luck");
-
-        await using IQuerySession verify = store.QuerySession();
-        IdeaDetails? idea = await verify.LoadAsync<IdeaDetails>(ideaId, cts.Token);
-        idea!.PromotedTaskId.Should().Be(winningTaskId, "the idea names the one task it became");
-
-        TaskDetails? orphan = await verify.LoadAsync<TaskDetails>(losingTaskId, cts.Token);
-        orphan.Should().BeNull("a task whose idea never recorded it would be provenance in one direction only");
+            IdeaAggregate? live = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token);
+            live!.CutTaskIds.Should().Equal([taskId], "h9k idea show reads this list, not the projection's own");
+        }
     }
 
-    /// <summary>What h9k idea promote writes: the task's first event and the idea's last, fenced together.</summary>
-    private static void Promote(
-        IDocumentSession session, IdeaAggregate idea, Guid taskId, long version, Guid ownerId)
+    /// <summary>
+    /// What h9k task add --from-idea writes: the task's first event and the idea's own cut,
+    /// unfenced — the same way every ordinary idea mutation is (h9k idea assign, h9k idea
+    /// revise). Cutting has no "once" invariant to protect against racing itself, unlike
+    /// promotion's atomic cut-then-conclude: fan-out is meant to be freely repeatable.
+    /// </summary>
+    private static async Task Cut(
+        DocumentStore store, Guid ideaId, Guid taskId, Guid projectId, string objective, Guid ownerId,
+        DateTimeOffset cutAt, CancellationToken cancellationToken)
     {
-        IdeaSeed seed = IdeaText.Seed(idea.Text);
-        IdeaPromoted promoted = IdeaDecider.Promote(
-            idea, taskId, projectId: null, seed.Objective, PromotionNow.AddDays(1), ownerId);
+        await using IDocumentSession session = store.LightweightSession();
+        IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(
+            ideaId, token: cancellationToken))!;
+
+        IdeaTaskCut cut = IdeaDecider.CutTask(idea, taskId, objective, cutAt, ownerId);
         TaskAdded added = TaskDecider.Add(
-            taskId, promoted.ProjectId, promoted.Objective, acceptanceCriteria: [], TaskType.Feature,
-            seed.Context, constraints: null, externalReference: null, promoted.PromotedAt, ownerId,
+            taskId, projectId, cut.Objective, acceptanceCriteria: [], TaskType.Feature,
+            agentContext: null, constraints: null, externalReference: null, cutAt, ownerId,
             model: null, blockedBy: null, sourceIdeaId: idea.Id);
 
         session.Events.StartStream<TaskAggregate>(taskId, added);
-        session.Events.Append(idea.Id, expectedVersion: version + 1, promoted);
+        session.Events.Append(idea.Id, cut);
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     // ── logged interactions ──

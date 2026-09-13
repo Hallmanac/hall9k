@@ -15,7 +15,7 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
     internal const int DefaultLimit = 20;
 
     /// <summary>The states a human may ask for, spelled as they are typed.</summary>
-    internal const string StateSpelling = "captured, promoted, discarded, all";
+    internal const string StateSpelling = "captured, concluded, archived, all";
 
     public sealed class Settings : CommandSettings
     {
@@ -32,8 +32,8 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
         [CommandOption("--state <STATE>")]
         [Description(
             "Which ideas to show: " + StateSpelling + ". Defaults to captured — the ones still in "
-            + "discovery — because a promoted idea's story continues on its task and a discarded "
-            + "one is history. The footer always says how many were left out")]
+            + "discovery — because a concluded or archived idea is history. The footer always says "
+            + "how many were left out")]
         public string? State { get; init; }
 
         [CommandOption("--limit <N>")]
@@ -152,7 +152,7 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
 
     /// <summary>
     /// Two jobs: never let a truncated view read as the whole truth, and teach the one act the
-    /// list exists to lead to — promotion, when discovery has given an idea intent.
+    /// list exists to lead to — cutting a task, any time discovery gives an idea intent.
     /// </summary>
     internal static string Footer(
         int matched, int shown, IReadOnlyList<IdeaState> scopedStates, Settings settings,
@@ -165,8 +165,8 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
               + $"h9k idea list --all{Repeat(settings, project)}{RepeatState(settings, state)}"
             : $"[dim]{scope}{Elsewhere(scopedStates, settings, project, state)}[/]";
 
-        return counts + "\n[dim]An idea with intent is a task:[/] h9k idea promote <id> "
-            + "[dim](discovery ends, refinement begins)[/]";
+        return counts + "\n[dim]An idea with intent is a task, any number of times:[/] "
+            + "h9k task add --from-idea <id> --objective \"…\"";
     }
 
     /// <summary>
@@ -198,8 +198,8 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
     private static int Vocabulary(IdeaState state) => state switch
     {
         _ when state == IdeaState.Captured => 0,
-        _ when state == IdeaState.Promoted => 1,
-        _ when state == IdeaState.Discarded => 2,
+        _ when state == IdeaState.Concluded => 1,
+        _ when state == IdeaState.Archived => 2,
         _ => 3,
     };
 
@@ -244,7 +244,7 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
     {
         bool defaulted = settings.State.IsBlank() && project is null && !settings.Unassigned;
         return defaulted
-            ? $"[dim]Nothing is in discovery right now — all {total} idea(s) were promoted or discarded. "
+            ? $"[dim]Nothing is in discovery right now — all {total} idea(s) were concluded or archived. "
               + "See them with:[/] h9k idea list --state all [dim]· capture a new one:[/] h9k idea add \"…\""
             : $"[dim]No ideas match {Filters(settings, project)}. Drop a filter, or see everything:[/] "
               + "h9k idea list --state all --all";
@@ -278,8 +278,8 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
     internal static IdeaState? ParseState(string? value) => value?.Trim().ToLowerInvariant() switch
     {
         null or "" or "captured" or "open" => IdeaState.Captured,
-        "promoted" => IdeaState.Promoted,
-        "discarded" => IdeaState.Discarded,
+        "concluded" => IdeaState.Concluded,
+        "archived" => IdeaState.Archived,
         "all" => null,
         _ => throw new DomainValidationException(
             $"Unknown idea state '{value}'. Use one of: {StateSpelling}."),

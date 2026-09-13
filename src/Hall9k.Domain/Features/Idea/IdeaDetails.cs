@@ -26,11 +26,18 @@ public sealed class IdeaDetails
     public IdeaState State { get; set; } = IdeaState.Unknown;
     /// <summary>Every version the note has had, oldest first: how the thinking moved.</summary>
     public List<IdeaNote> History { get; set; } = [];
-    /// <summary>The draft this idea became; null unless it was promoted.</summary>
-    public Guid? PromotedTaskId { get; set; }
-    public DateTimeOffset? PromotedAt { get; set; }
-    public string? DiscardReason { get; set; }
-    public DateTimeOffset? DiscardedAt { get; set; }
+    /// <summary>
+    /// Every task this idea has fanned out into, cut order (backlog 31). Includes the one task a
+    /// legacy promotion named, so a promoted idea's own history reads as a fan-out of one rather
+    /// than a gap.
+    /// </summary>
+    public List<Guid> CutTaskIds { get; set; } = [];
+    /// <summary>Why discovery ended with something to show for it, or null on a legacy promotion, which never asked.</summary>
+    public string? ConcludeReason { get; set; }
+    public DateTimeOffset? ConcludedAt { get; set; }
+    /// <summary>Why discovery ended with nothing to show for it.</summary>
+    public string? ArchiveReason { get; set; }
+    public DateTimeOffset? ArchivedAt { get; set; }
     public DateTimeOffset CapturedAt { get; set; }
     /// <summary>The home the discovery workspace was captured under, or <see cref="ProjectHome.None"/> — see <see cref="IdeaCaptured"/>.</summary>
     public ProjectHome WorkspaceHome { get; set; } = ProjectHome.None;
@@ -62,18 +69,37 @@ public sealed class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, 
     public void Apply(IEvent<IdeaAssignedToProject> @event, IdeaDetails view) =>
         view.ProjectId = @event.Data.ProjectId;
 
-    public void Apply(IEvent<IdeaPromoted> @event, IdeaDetails view)
+    public void Apply(IEvent<IdeaTaskCut> @event, IdeaDetails view) =>
+        view.CutTaskIds.Add(@event.Data.TaskId);
+
+    public void Apply(IEvent<IdeaConcluded> @event, IdeaDetails view)
     {
-        view.PromotedTaskId = @event.Data.TaskId;
-        view.ProjectId = @event.Data.ProjectId;
-        view.PromotedAt = @event.Data.PromotedAt;
-        view.State = IdeaState.Promoted;
+        view.ConcludeReason = @event.Data.Reason;
+        view.ConcludedAt = @event.Data.ConcludedAt;
+        view.State = IdeaState.Concluded;
     }
 
+    public void Apply(IEvent<IdeaArchived> @event, IdeaDetails view)
+    {
+        view.ArchiveReason = @event.Data.Reason;
+        view.ArchivedAt = @event.Data.ArchivedAt;
+        view.State = IdeaState.Archived;
+    }
+
+    /// <summary>Historical replay only — see <see cref="IdeaPromoted"/>'s own doc comment.</summary>
+    public void Apply(IEvent<IdeaPromoted> @event, IdeaDetails view)
+    {
+        view.CutTaskIds.Add(@event.Data.TaskId);
+        view.ProjectId = @event.Data.ProjectId;
+        view.ConcludedAt = @event.Data.PromotedAt;
+        view.State = IdeaState.Concluded;
+    }
+
+    /// <summary>Historical replay only — see <see cref="IdeaDiscarded"/>'s own doc comment.</summary>
     public void Apply(IEvent<IdeaDiscarded> @event, IdeaDetails view)
     {
-        view.DiscardReason = @event.Data.Reason;
-        view.DiscardedAt = @event.Data.DiscardedAt;
-        view.State = IdeaState.Discarded;
+        view.ArchiveReason = @event.Data.Reason;
+        view.ArchivedAt = @event.Data.DiscardedAt;
+        view.State = IdeaState.Archived;
     }
 }

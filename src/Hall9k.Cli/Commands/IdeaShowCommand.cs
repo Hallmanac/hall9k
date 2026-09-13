@@ -3,7 +3,6 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
-using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
@@ -61,8 +60,68 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
             }
         }
 
-        await AnnounceOutcomeAsync(session, idea, cancellationToken);
+        // Aggregated fresh from events rather than read off idea (IdeaDetails), the Inline
+        // projection: a terminal idea's document is only ever rewritten when its stream gets a
+        // new event, and a terminal idea never gets one, so a document an old build's
+        // IdeaPromoted/IdeaDiscarded handler last wrote keeps the old field shape forever
+        // (IdeaDetailsProjectionBackfill's own doc comment) until daemon backfill runs. The fresh
+        // aggregate is what both the fan-out list and the outcome below are read from, so neither
+        // one depends on that backfill having happened (independent post-PR review — AnnounceOutcome
+        // previously read the possibly-stale idea document directly).
+        IdeaAggregate live = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cancellationToken)
+            ?? throw new DomainNotFoundException($"No idea {ideaId}.");
+        await WriteFanOutAsync(session, idea, live, cancellationToken);
+        AnnounceOutcome(idea, live);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Every task this idea has fanned out into, off the fan-out ids the fresh aggregate carries
+    /// (see <see cref="ExecuteAsync"/>'s own reasoning) rather than <see cref="IdeaDetails.CutTaskIds"/>.
+    /// Once the id list is in hand, each task's live state is joined through the board's own status
+    /// composition — the same seam <c>h9k epic show</c> joins on <c>EpicId</c> — so it can never
+    /// disagree with <c>h9k status</c> or <c>h9k task show</c> about what a task currently is.
+    /// </summary>
+    private static async Task WriteFanOutAsync(
+        IQuerySession session, IdeaDetails idea, IdeaAggregate live, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<Guid> cutTaskIds = live.CutTaskIds;
+        if (cutTaskIds.Count == 0)
+        {
+            AnsiConsole.MarkupLine(
+                "\n[bold]Tasks[/] [dim]none cut yet. Any time discovery gives it intent:[/] "
+                + $"h9k task add --from-idea {TaskListCommand.ShortId(idea.Id)} --objective \"…\"");
+            return;
+        }
+
+        IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
+            session, DateTimeOffset.UtcNow, cancellationToken);
+        List<TaskStatusRow> fannedOut = [.. rows.Where(row => cutTaskIds.Contains(row.TaskId))];
+        if (fannedOut.Count == 0)
+        {
+            // A cut this idea's own stream recorded named a task the board no longer carries — a
+            // purged project destroys every task it owns regardless of what recorded it (AGENTS.md,
+            // never guess at unobserved facts): said plainly rather than showing an empty section
+            // that would read as no fan-out ever happened.
+            AnsiConsole.MarkupLine(
+                $"\n[bold]Tasks[/] [dim]{cutTaskIds.Count} cut on record, but none are on the "
+                + "board any more — the project that held them was likely removed.[/]");
+            return;
+        }
+
+        AnsiConsole.MarkupLine($"\n[bold]Tasks[/] {TaskRollup.From(fannedOut).Summary()}");
+        AnsiConsole.Write(ProjectShowCommand.TaskTable(
+            [.. fannedOut.OrderByDescending(row => row.AddedAt)], AnsiConsole.Profile.Width, DateTimeOffset.UtcNow));
+        if (fannedOut.Count < cutTaskIds.Count)
+        {
+            // Same reasoning as the all-missing case above, but for a fan-out sent to more than
+            // one project where only some of them were purged: the visible rollup and table cover
+            // only what is still on the board, so the gap is said out loud rather than left to
+            // read as the whole fan-out (AGENTS.md, never guess at unobserved facts).
+            AnsiConsole.MarkupLine(
+                $"[dim]{cutTaskIds.Count - fannedOut.Count} more cut on record but no longer on "
+                + "the board — the project(s) that held them were likely removed.[/]");
+        }
     }
 
     /// <summary>
@@ -102,42 +161,43 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
         return owner is null ? $"[dim]{ownerId}[/]" : owner.Name.EscapeMarkup();
     }
 
-    /// <summary>What the idea became, or the one act it is waiting for.</summary>
-    private static async Task AnnounceOutcomeAsync(
-        IQuerySession session, IdeaDetails idea, CancellationToken cancellationToken)
+    /// <summary>
+    /// What the idea became, or the one act it is waiting for. Reads the reason and the date off
+    /// the fresh aggregate, not <paramref name="idea"/> (see <see cref="ExecuteAsync"/>'s own
+    /// reasoning).
+    /// </summary>
+    private static void AnnounceOutcome(IdeaDetails idea, IdeaAggregate live)
     {
         string shortId = TaskListCommand.ShortId(idea.Id);
-        if (idea.PromotedTaskId is { } taskId)
+        if (live.State == IdeaState.Concluded)
         {
-            TaskDetails? task = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
-            string taskShortId = TaskListCommand.ShortId(taskId);
             AnsiConsole.MarkupLine(
-                $"\n[green]Promoted[/] [dim]{idea.PromotedAt?.ToLocalTime():g}[/] into task [dim]{taskShortId}[/] "
-                + (task is null ? string.Empty : $"{ExternalText.OneLineMarkup(task.Objective)} [dim]({task.State.Value})[/]"));
-            AnsiConsole.MarkupLine(
-                $"[dim]Discovery ended there; refinement continues on the draft:[/] h9k task show {taskShortId}");
+                $"\n[green]Concluded[/] [dim]{live.ConcludedAt?.ToLocalTime():g}:[/] "
+                + (live.ConcludeReason.IsNotBlank() ? live.ConcludeReason.EscapeMarkup() : "[dim]no reason recorded[/]"));
             return;
         }
 
-        if (idea.State == IdeaState.Discarded)
+        if (live.State == IdeaState.Archived)
         {
             AnsiConsole.MarkupLine(
-                $"\n[dim]Discarded {idea.DiscardedAt?.ToLocalTime():g}:[/] {idea.DiscardReason.EscapeMarkup()}");
+                $"\n[dim]Archived {live.ArchivedAt?.ToLocalTime():g}:[/] {live.ArchiveReason.EscapeMarkup()}");
             AnsiConsole.MarkupLine("[dim]Kept on the record — if the thought comes back, that is a signal.[/]");
             return;
         }
 
         AnsiConsole.MarkupLine(
             $"\n[dim]In discovery — what is this? Sharpen it:[/] h9k idea revise {shortId} \"…\" "
-            + "[dim]· when it has intent:[/] h9k idea promote " + shortId
-            + (idea.ProjectId is null ? " --project <name>" : string.Empty));
+            + "[dim]· cut a task any time it has intent:[/] h9k task add --from-idea " + shortId
+            + " --objective \"…\"" + (idea.ProjectId is null ? " --project <name>" : string.Empty)
+            + "\n[dim]Done producing? Say so:[/] h9k idea conclude " + shortId + " --reason \"…\" "
+            + "[dim]or[/] h9k idea archive " + shortId + " --reason \"…\"");
     }
 
     private static string StateMarkup(IdeaState state) => state.Value switch
     {
         "Captured" => "[blue]Captured[/] [dim](in discovery)[/]",
-        "Promoted" => "[green]Promoted[/]",
-        "Discarded" => "[dim]Discarded[/]",
+        "Concluded" => "[green]Concluded[/]",
+        "Archived" => "[dim]Archived[/]",
         _ => state.Value.EscapeMarkup(),
     };
 }
