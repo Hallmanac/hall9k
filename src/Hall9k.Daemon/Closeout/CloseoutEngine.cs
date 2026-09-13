@@ -528,11 +528,13 @@ public sealed class CloseoutEngine(
     /// own. Null for every other caller.
     /// </param>
     /// <param name="preserveWorkspaceOnCaptureFailure">
-    /// True only when <c>ReviewEngine.CaptureStrandedDeltaAsync</c> could not read the worktree's
-    /// own stranded delta (a git failure, never a confirmed-empty read) — the worktree and branch
-    /// this closeout would otherwise delete may be the only copy of commits the merge never
-    /// included, so deleting either on an unread guess is the same "guessed at as empty" AGENTS.md
-    /// forbids, just paid for in commits instead of a field. False for every other caller.
+    /// True when <c>ReviewEngine.CaptureStrandedDeltaAsync</c> could not read the worktree's own
+    /// stranded delta (a git failure, never a confirmed-empty read), OR when it read a confirmed
+    /// delta but <c>SaveStrandedDeltaAsync</c> could not write it to disk — either way, the
+    /// worktree and branch this closeout would otherwise delete may be the only copy of commits
+    /// the merge never included, so deleting either without a delta safely accounted for
+    /// elsewhere is the same "guessed at as empty" AGENTS.md forbids, just paid for in commits
+    /// instead of a field. False for every other caller.
     /// </param>
     public async Task<bool> ReconstructAndCompleteAsync(
         IDocumentSession session,
@@ -1940,16 +1942,18 @@ public sealed class CloseoutEngine(
         await TellTheCardAsync(run.TaskId, project, task, cancellationToken);
 
         // A stranded-delta read that failed outright (rather than confirming nothing was
-        // stranded) leaves this worktree and branch as the only place commits the merge never
-        // included could still exist. Deleting either on that unread guess is the same "guessed
+        // stranded), or one that read a confirmed delta but could not save it to disk, both
+        // leave this worktree and branch as the only place commits the merge never included
+        // could still exist. Deleting either on that unaccounted-for guess is the same "guessed
         // at as empty" AGENTS.md forbids, just paid for in commits instead of a field — so both
         // destructive steps are skipped and the run/task closeout still finishes normally, since
         // nothing here changes whether the merge itself happened.
         if (preserveWorkspaceOnCaptureFailure)
         {
             logger.LogWarning(
-                "Run {RunId}: the stranded-delta read failed rather than confirming nothing was stranded; " +
-                "leaving worktree {WorktreePath} and branch {Branch} in place for manual recovery instead of deleting them",
+                "Run {RunId}: the stranded-delta read failed, or a confirmed delta could not be saved, " +
+                "rather than confirming nothing was stranded; leaving worktree {WorktreePath} and branch " +
+                "{Branch} in place for manual recovery instead of deleting them",
                 run.Id, run.WorktreePath, run.Branch);
             return;
         }

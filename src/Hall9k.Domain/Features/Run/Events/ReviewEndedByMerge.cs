@@ -15,8 +15,12 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// <param name="Cycle">The review cycle in progress when the merge was observed — the cycle whose next pass never dispatched.</param>
 /// <param name="ReLandDraftTaskId">
 /// The draft task naming the stranded delta (patch and commit list), when this run's worktree
-/// carried commits the merged pull request never included. Null when the worktree's tip was
-/// already fully reflected in the merge, so there was nothing to strand.
+/// carried commits the merged pull request never included. Null both when the worktree's tip
+/// was confirmed already fully reflected in the merge, so there was nothing to strand, AND when
+/// the delta could not be read or saved at all — this field alone cannot tell those two apart,
+/// so a reader after "confirmed nothing was stranded" specifically needs the daemon's own logs
+/// for this run, not just this event (AGENTS.md: an unobserved fact is never folded into the
+/// negative case it happens to render the same as).
 /// </param>
 public sealed record ReviewEndedByMerge(
     Guid Id,
