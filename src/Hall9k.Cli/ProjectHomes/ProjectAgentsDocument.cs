@@ -10,11 +10,13 @@ namespace Hall9k.Cli.ProjectHomes;
 /// <para>
 /// It exists so a session started in the project home bootstraps itself. It names the layout,
 /// points at the repository's own <c>AGENTS.md</c> as the deep layer rather than restating it,
-/// and lists the tool dependencies derived from the project's bindings — <c>h9k</c> always,
-/// <c>gh</c> for a GitHub remote, the Atlassian CLI when a Jira board is bound. Everything in it
-/// is read off <see cref="ProjectDetails"/>, which is what makes "rewritten when the facts
-/// change" a mechanical guarantee instead of a promise: <c>project add</c>, <c>project init</c>
-/// and <c>project set</c> all re-render it.
+/// and lists the tool dependencies derived from the project's bindings — <c>h9k</c> and
+/// <c>git</c> always, <c>gh</c> for a GitHub remote. There is deliberately no Atlassian CLI
+/// entry: Decisions Log #114 moved every Jira write onto hall9k's own REST client, so a Jira
+/// board bound to a project needs a registered connection (<c>h9k connection add jira</c>), not
+/// a local tool. Everything in it is read off <see cref="ProjectDetails"/>, which is what makes
+/// "rewritten when the facts change" a mechanical guarantee instead of a promise:
+/// <c>project add</c>, <c>project init</c> and <c>project set</c> all re-render it.
 /// </para>
 /// <para>
 /// The same one-way-render ruling the task and idea files get (backlog 48): the store is the
@@ -203,8 +205,8 @@ public static class ProjectAgentsDocument
 
         document.AppendLine();
         document.AppendLine(
-            "A missing tool fails honestly at the moment it is used. `h9k doctor` (backlog 24) checks "
-            + "the same list up front, from the same facts.");
+            "A missing tool fails honestly at the moment it is used. `h9k doctor` checks the same "
+            + "facts up front: git always, and gh when a registered project's remote is GitHub.");
         document.AppendLine();
 
         document.AppendLine("## Orchestrator");
@@ -236,8 +238,10 @@ public static class ProjectAgentsDocument
 
     /// <summary>
     /// The tool list, derived rather than declared: each entry is here because a binding on the
-    /// project put it here, so a project that binds nothing lists only <c>h9k</c> and git and
-    /// nobody installs an Atlassian CLI for a repository that has never seen Jira.
+    /// project put it here, so a project with no GitHub remote lists only <c>h9k</c> and git.
+    /// <c>h9k doctor</c>'s own tool probe (<see cref="Hall9k.Cli.Diagnostics.ToolDoctor"/>) reads
+    /// <see cref="NeedsGitHubCli"/> too, so the render here and the probe there can never drift
+    /// into two different lists of what a project needs.
     /// </summary>
     public static IReadOnlyList<string> ToolDependencies(ProjectDetails project)
     {
@@ -248,7 +252,7 @@ public static class ProjectAgentsDocument
             "`git`: `repo/` is a bare clone with worktrees cut from it.",
         ];
 
-        if (project.RepositoryUrl is { Host: var host } && host.Contains("github", StringComparison.OrdinalIgnoreCase))
+        if (NeedsGitHubCli(project))
         {
             dependencies.Add(
                 "`gh`: the remote is GitHub, and the platform's pull-request and issue work goes "
@@ -256,16 +260,16 @@ public static class ProjectAgentsDocument
                 + "pushes here authenticate.");
         }
 
-        if (project.JiraProjectKey.HasValue)
-        {
-            dependencies.Add(
-                $"the Atlassian CLI: a Jira board (`{project.JiraProjectKey.Value}`) is bound, and "
-                + "cards are authored by an agent session in this project rather than by the "
-                + "platform, so the session needs a pen.");
-        }
-
         return dependencies;
     }
+
+    /// <summary>
+    /// Whether this project's remote needs the GitHub CLI — the fact both <see cref="ToolDependencies"/>'s
+    /// <c>gh</c> entry and <c>h9k doctor</c>'s tool probe derive from, kept in one place so
+    /// neither can name a different condition than the other.
+    /// </summary>
+    public static bool NeedsGitHubCli(ProjectDetails project) =>
+        project.RepositoryUrl is { Host: var host } && host.Contains("github", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// One entry of the tree's inner level, padded so the comments line up whatever the project

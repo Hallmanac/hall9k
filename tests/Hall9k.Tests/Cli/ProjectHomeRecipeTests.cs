@@ -428,19 +428,20 @@ public sealed class ProjectHomeRecipeTests : IDisposable
     }
 
     [Fact]
-    public void Binding_a_jira_board_adds_the_atlassian_cli_and_nothing_else()
+    public void Binding_a_jira_board_adds_nothing_to_the_tool_list()
     {
         ProjectDetails project = GitHubProject();
         project.JiraProjectKey = JiraProjectKey.Parse("PROJ");
 
         IReadOnlyList<string> dependencies = ProjectAgentsDocument.ToolDependencies(project);
 
-        dependencies.Should().ContainSingle(dependency => dependency.Contains("Atlassian CLI"));
+        dependencies.Should().HaveCount(3, "Jira writes go through hall9k's own REST client (Decisions Log #114), not a local tool");
+        dependencies.Should().NotContain(dependency => dependency.Contains("Atlassian CLI"));
         dependencies.Should().ContainSingle(dependency => dependency.Contains("`gh`"));
     }
 
     [Fact]
-    public void A_project_with_no_remote_needs_neither_gh_nor_an_atlassian_cli()
+    public void A_project_with_no_remote_needs_only_h9k_and_git()
     {
         ProjectDetails project = SomeProject();
 
@@ -449,6 +450,13 @@ public sealed class ProjectHomeRecipeTests : IDisposable
         dependencies.Should().HaveCount(2);
         dependencies.Should().ContainSingle(dependency => dependency.Contains("`h9k`"));
         dependencies.Should().ContainSingle(dependency => dependency.Contains("`git`"));
+    }
+
+    [Fact]
+    public void NeedsGitHubCli_reads_the_same_fact_as_the_gh_entry()
+    {
+        ProjectAgentsDocument.NeedsGitHubCli(SomeProject()).Should().BeFalse();
+        ProjectAgentsDocument.NeedsGitHubCli(GitHubProject()).Should().BeTrue();
     }
 
     /// <summary>
