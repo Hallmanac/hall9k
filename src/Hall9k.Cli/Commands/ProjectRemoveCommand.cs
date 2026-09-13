@@ -96,17 +96,26 @@ public sealed class ProjectRemoveCommand : Hall9kAsyncCommand<ProjectRemoveComma
 
         if (aggregate.IsArchived && !settings.Purge)
         {
+            // A pending purge makes both usual remedies dead ends: Reactivate refuses outright
+            // while PurgeAt is set, and a second --purge refuses on the very next check below —
+            // so name the deadline and the one command that actually gets the operator anywhere
+            // (independent pre-PR review, cycle 1, adversarial lens).
+            string remedy = aggregate.PurgeAt is { } pendingDeadline
+                ? $"A purge is already scheduled for {pendingDeadline.ToLocalTime():g}. Cancel it "
+                  + $"first: h9k project cancel-purge {project.Name}, which also makes it "
+                  + $"reactivatable again: h9k project reactivate {project.Name}"
+                : $"Reactivate it: h9k project reactivate {project.Name}, or schedule a permanent "
+                  + $"delete: h9k project remove {project.Name} --purge";
             throw new DomainValidationException(
                 $"Project '{project.Name}' is already archived"
-                + (aggregate.ArchivedAt is { } at ? $" (since {at:g})" : string.Empty)
-                + $". Reactivate it: h9k project reactivate {project.Name}, or schedule a permanent "
-                + $"delete: h9k project remove {project.Name} --purge");
+                + (aggregate.ArchivedAt is { } at ? $" (since {at.ToLocalTime():g})" : string.Empty)
+                + $". {remedy}");
         }
 
         if (settings.Purge && aggregate.PurgeAt is { } existingDeadline)
         {
             throw new DomainValidationException(
-                $"Project '{project.Name}' already has a purge scheduled for {existingDeadline:g}. "
+                $"Project '{project.Name}' already has a purge scheduled for {existingDeadline.ToLocalTime():g}. "
                 + $"Cancel it first: h9k project cancel-purge {project.Name}");
         }
 
