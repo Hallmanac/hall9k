@@ -636,9 +636,15 @@ Depth: PLAN.md Decisions Log #135, #150.
 
 ### Recovery
 
-`h9k task retry`, `h9k task resolve`, `h9k task abandon`, `h9k pr resolve`, `h9k review resolve`,
-and — on an interactive-mode task — `h9k review proceed` and `h9k review fixed`, all human-only.
-`Failed` is a waypoint with exactly three exits, and none of them is automatic.
+`h9k run kill`, `h9k task retry`, `h9k task resolve`, `h9k task abandon`, `h9k pr resolve`,
+`h9k review resolve`, and — on an interactive-mode task — `h9k review proceed` and
+`h9k review fixed`, all human-only. `Failed` is a waypoint with exactly three exits, and none of
+them is automatic. `h9k run kill` is the one lever below the task level: it stops a run's live
+agent session (the daemon-supervised process tree) without ending the task, refusing when `h9kd`
+is not running: a stopped daemon supervises nothing, and a detached agent from before the stop
+answers to nobody until the next `h9k daemon start` adopts it. The run records **Killed**, never
+**Failed**, and the task lands Failed exactly as any other run failure leaves it, with `retry`,
+`resolve`, and `abandon` all open next.
 
 ### Configuration and policy
 
