@@ -19,7 +19,7 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// Archives a project on this install — reversible (h9k project reactivate), never deletes
 /// anything, and never touches the home directory on disk (task: a project can be archived, listed
-/// as archived, reactivated, and renamed; Decisions Log #PLACEHOLDER-7228d4c7). Kept named "remove"
+/// as archived, reactivated, and renamed; Decisions Log #182). Kept named "remove"
 /// per Brian's own ruling (2026-09-12): what it does is archive, but the escape hatch a stray
 /// registration needs is spelled the way an operator reaches for it.
 /// </summary>
