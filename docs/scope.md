@@ -765,7 +765,11 @@ confirmation names the scope in numbers (tasks, runs, ideas, and epics) and the 
 the identical task-state predicate a plain archive refuses under. `h9k project cancel-purge
 <project>` ends a pending purge before it fires, leaving the project archived, never reactivated —
 reactivating a project with a purge still pending is refused, naming the cancel command, so a
-project cannot go live again while a sweep is still scheduled to destroy it. A daemon sweep,
+project cannot go live again while a sweep is still scheduled to destroy it. The same reasoning
+refuses new work a purge-pending project would otherwise carry to the deadline and lose along with
+everything else: `h9k task add`, `h9k idea add`, `h9k epic add`, `h9k idea promote`,
+`h9k idea assign`, and `h9k pr review` all refuse against a project with a purge scheduled, naming
+the deadline and the cancel command. A daemon sweep,
 alongside the closeout and auto-pr-review sweeps, checks for due purges on start and on its own
 poll interval, so a purge whose deadline passed while the daemon was down fires on the next start
 rather than never; it logs what it destroyed in numbers. `h9k project list --include-archived` and

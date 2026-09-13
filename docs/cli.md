@@ -511,7 +511,10 @@ are outside its scope and are never touched. The confirmation names the scope in
 runs, ideas, and epics) and the deadline; `--yes` covers non-interactive use. `project cancel-purge <project>`
 ends a pending purge before it fires, leaving the project archived, never reactivated; reactivating
 a project with a purge still pending is refused (cancel it first) so a daemon sweep can never
-destroy a project that has gone live again. `project list --include-archived` and `project show`
+destroy a project that has gone live again. The same reasoning refuses handing a purge-pending
+project new work it would otherwise destroy along with everything else at the deadline: `task add`,
+`idea add`, `epic add`, `idea promote`, `idea assign`, and `pr review` all refuse against a project
+with a purge scheduled, naming the deadline and the cancel command. `project list --include-archived` and `project show`
 mark a purge-pending project with its deadline and the cancel command. A daemon sweep, alongside
 the closeout and auto-pr-review sweeps, checks for due purges on start and on its own poll
 interval, so a purge whose deadline passed while the daemon was down fires on the next start rather
