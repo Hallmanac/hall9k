@@ -17,7 +17,7 @@ using Xunit;
 namespace Hall9k.Tests.Integration;
 
 /// <summary>
-/// The widened queue read, end to end (Decisions Log PLACEHOLDER-307f922b):
+/// The widened queue read, end to end (Decisions Log #187):
 /// <see cref="TaskListItem.FollowUpBranch"/> and <see cref="TaskListItem.RetryBranch"/>, set by
 /// real events on a real stream and selected straight off <c>DispatchEngine.ReadQueueAsync</c>'s
 /// own six-column projection, reach <see cref="ProjectRotation.NextSlot"/> as a
@@ -31,7 +31,7 @@ public sealed class RankedQueueDispatchTests(PostgresFixture postgres) : IClassF
     private static readonly DateTimeOffset Now = new(2026, 9, 13, 12, 0, 0, TimeSpan.Zero);
 
     [Fact]
-    public async Task A_follow_up_lap_reopened_a_minute_ago_takes_the_slot_ahead_of_a_first_claim_assigned_an_hour_earlier()
+    public async Task A_follow_up_lap_reopened_a_minute_ago_takes_the_slot_ahead_of_a_first_claim_assigned_two_hours_earlier()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
@@ -50,40 +50,40 @@ public sealed class RankedQueueDispatchTests(PostgresFixture postgres) : IClassF
 
         Guid projectId = DomainId.New();
 
-        // The first claim: never touched before, assigned an hour before this sweep runs —
-        // older, by assignment, than anything else in the queue.
+        // The first claim: never touched before, assigned two hours before this sweep runs —
+        // older, by assignment, than the lap below. Age alone — the ordering this queue used
+        // before this task — would hand the slot to this row; rank must not let that happen.
         Guid firstClaimId = DomainId.New();
         await using (IDocumentSession seed = store.LightweightSession())
         {
             seed.Events.StartStream<TaskAggregate>(firstClaimId, TaskSeed.Dispatchable(
                 TaskDecider.Add(
                     firstClaimId, projectId, "A brand-new first claim", ["done"], TaskType.Chore,
-                    null, null, null, Now.AddHours(-1), node.OwnerId),
-                node.OwnerId, Now.AddHours(-1)));
+                    null, null, null, Now.AddHours(-2), node.OwnerId),
+                node.OwnerId, Now.AddHours(-2)));
             await seed.SaveChangesAsync(cts.Token);
         }
 
-        // The follow-up lap: assigned two hours ago (older still), claimed, completed with a
-        // pull request, and reopened for review feedback a minute ago. Age alone — the ordering
-        // this queue used before this task — would hand the slot to the first claim above; rank
-        // must not let that happen.
+        // The follow-up lap: assigned an hour ago (younger, by assignment, than the first claim
+        // above), claimed, completed with a pull request, and reopened for review feedback a
+        // minute ago.
         Guid lapId = DomainId.New();
         await using (IDocumentSession seed = store.LightweightSession())
         {
             (TaskAggregate task, object[] events) = TaskSeed.Start(
                 TaskDecider.Add(
                     lapId, projectId, "A task on its second lap", ["done"], TaskType.Chore,
-                    null, null, null, Now.AddHours(-2), node.OwnerId),
-                node.OwnerId, Now.AddHours(-2));
+                    null, null, null, Now.AddHours(-1), node.OwnerId),
+                node.OwnerId, Now.AddHours(-1));
             seed.Events.StartStream<TaskAggregate>(lapId, events);
 
             Guid firstRunId = DomainId.New();
-            TaskClaimed firstClaimEvent = TaskDecider.Claim(task, node.NodeId, node.OwnerId, firstRunId, Now.AddHours(-2));
+            TaskClaimed firstClaimEvent = TaskDecider.Claim(task, node.NodeId, node.OwnerId, firstRunId, Now.AddHours(-1));
             task.Apply(firstClaimEvent);
             seed.Events.Append(lapId, firstClaimEvent);
 
             TaskCompleted completed = TaskDecider.Complete(
-                task, firstRunId, "https://github.com/example/hall9k/pull/1", Now.AddMinutes(-90));
+                task, firstRunId, "https://github.com/example/hall9k/pull/1", Now.AddMinutes(-50));
             task.Apply(completed);
             seed.Events.Append(lapId, completed);
 
