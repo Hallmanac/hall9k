@@ -1,6 +1,7 @@
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Tasks;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 
@@ -59,6 +60,13 @@ internal sealed record TaskStatusRow(
     /// orders on ahead of <see cref="AssignedAt"/>, mirroring the dispatcher's own claim query.
     /// </summary>
     bool QueuePriorityMarked = false,
+    /// <summary>
+    /// How far along this task is toward merging (Decisions Log #187), mirroring
+    /// <see cref="Hall9k.Domain.Features.Tasks.Projections.TaskListItem.Rank"/> — what the queued
+    /// section orders on ahead of <see cref="AssignedAt"/> and behind
+    /// <see cref="QueuePriorityMarked"/>, and what the row's own waiting fact names.
+    /// </summary>
+    TaskRank Rank = TaskRank.FirstClaim,
     /// <summary>
     /// Queued behind this project's claim gate: the tracker does not show this task's linked item
     /// assigned to this install's own tracker identity, or could not be read at all (idea
