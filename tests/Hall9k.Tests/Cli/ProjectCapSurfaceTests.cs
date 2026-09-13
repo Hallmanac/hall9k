@@ -197,7 +197,7 @@ public sealed class ProjectCapSurfaceTests
         string several = StatusCommand.QueuedHeading(
             atCeiling: true, atProjectCap: false, atSpendBudget: false, spend: null, queuedProjects: 3);
 
-        several.Should().Contain("oldest first within each project");
+        several.Should().Contain("ranked, then oldest, first within each project");
         several.Should().Contain("which of these 3 projects takes the next free slot");
         several.Should().Contain("longest unserved first, or a --priority tier");
 

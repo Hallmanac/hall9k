@@ -397,12 +397,18 @@ internal static class TaskPhaseComposer
         // never-guess rule).
         if (task.State == TaskState.Queued)
         {
-            // The claim gate is named ahead of the ceiling for the same reason PublishedFacts
-            // orders them that way: a reopened follow-up whose card the tracker says somebody else
-            // holds is not going to be claimed here whatever the ceiling does (idea 64c75e43), and
-            // this line has room for exactly one cause.
+            // A row here is Delivered, not Published (State() above maps a pushed Queued task to
+            // Delivered) — so PublishedFacts' own "assigned and ready as {rank}" line never
+            // composes for it, and this is the only place a follow-up lap's rank is said at all
+            // (independent pre-PR review, cycle 1, both lenses). The claim gate is named ahead of
+            // the ceiling for the same reason PublishedFacts orders them that way: a reopened
+            // follow-up whose card the tracker says somebody else holds is not going to be claimed
+            // here whatever the ceiling does (idea 64c75e43), and this line has room for exactly
+            // one cause.
             return WithChecksPendingDetail(
-                new TaskPhase($"follow-up queued for {pullRequest}", SessionLiveness.NotApplicable,
+                new TaskPhase(
+                    $"follow-up queued for {pullRequest}, ready as {task.Rank.Describe()}",
+                    SessionLiveness.NotApplicable,
                     heldByTracker?.ReasonLine ?? held?.ReasonLine ?? "not claimed yet"),
                 task, now);
         }
