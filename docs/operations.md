@@ -171,9 +171,19 @@ yourself.
 h9k doctor
 ```
 
-Runs automatically, too: the first command that needs a database and cannot reach one runs this
-check instead of failing raw, and `h9k daemon start` runs it before spawning the daemon process at
-all. Four questions, answered in order, stopping at the first one that fails (Decisions Log #73,
+Running `h9k doctor` itself checks the tools a registered project needs are actually on `PATH`
+first: `git` always, and `gh` when any registered project's remote is GitHub (the same facts the
+generated project `AGENTS.md` lists under "Tools this project needs"). A present tool is reported
+quietly; a missing one is taught the install (and, for `gh`, the login) fix rather than left to
+fail raw the next time something actually needs it. Deciding whether `gh` is one of those tools
+reads registered projects straight off Postgres when a connection string resolves and the
+database is reachable with its schema already there; it needs no daemon for that read, only a
+direct connection. When it cannot get that far (no connection string configured, an unreachable
+database, or a broken platform config file), it degrades to the git-only check and reports `gh`'s
+own requirement as unconfirmed rather than guessing, so this still runs, and still says something
+useful, even when the database questions below cannot get past the first one.
+
+Then, four questions, answered in order, stopping at the first one that fails (Decisions Log #73,
 #74):
 
 1. **Is a connection string configured at all?** If not, that is the entire answer.
@@ -186,6 +196,10 @@ all. Four questions, answered in order, stopping at the first one that fails (De
    ("your database exists, it is just not running"), or — the nicest possible finding — a
    `hall9k-postgres` container already **running** and answering, where there is nothing to
    start at all, only something to point at.
+
+These four database questions also run automatically on their own, without the tool check above:
+the first command that needs a database and cannot reach one runs them instead of failing raw,
+and `h9k daemon start` runs them before spawning the daemon process at all.
 
 When the check finds Postgres not running but a container runtime available, it offers to start
 it; when `hall9k-postgres` is already running and answering, there is nothing left to start, so
