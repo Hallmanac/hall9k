@@ -775,7 +775,7 @@ poll interval, so a purge whose deadline passed while the daemon was down fires 
 rather than never; it logs what it destroyed in numbers. `h9k project list --include-archived` and
 `h9k project show` mark a purge-pending project with its deadline and the cancel command. Purge
 acts on this install's own database only, the same as archive, reactivate, and rename. See [PLAN.md
-Decisions Log #182](../PLAN.md) and its purge follow-up entry immediately after it.
+Decisions Log #185](../PLAN.md).
 
 ### The project home
 
