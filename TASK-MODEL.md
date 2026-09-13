@@ -569,11 +569,14 @@ why - and the answer is three surfaces, composed in `TaskStatusComposer` and rea
 **State** is the lifecycle, in seven words: `Draft`, `Published`, `Working`, `Delivered`, `Done`,
 `Failed`, `Archived`. It is display-only; nothing about the persisted model changes. `Queued` and
 `Blocked` both render as `Published`, with the difference moved onto that row's derived-facts line
-("assigned and ready; the dispatcher has not claimed it yet", "waiting on 2 dependencies to close
-out"), which is also where the ranking model's facts will land when it retires those two states. A
-queued row names a dispatch slot only where `DispatchPressure` carries a current measurement saying
-this node is full (Decisions Log #64); with none, it says it is ready and stops, because a queue
-that is not moving has many causes and a stopped daemon is the commonest of them. `Delivered` is the new word: pushed, with
+("assigned and ready as a first claim; the dispatcher has not claimed it yet", "waiting on 2
+dependencies to close out"), which is also where the ranking model's facts will land when it
+retires those two states. A queued row names its own rank — a follow-up lap past its first pull
+request, a retry or hand-back before any pull request, or a plain first claim — inside that same
+line (Decisions Log PLACEHOLDER-307f922b), and names a dispatch slot only where `DispatchPressure`
+carries a current measurement saying this node is full (Decisions Log #64); with no slot
+measurement, it says it is ready and stops, because a queue that is not moving has many causes and
+a stopped daemon is the commonest of them. `Delivered` is the new word: pushed, with
 the merge not yet observed, which is the window the old display called `Done` while the pull request
 was still open. `Done` now renders only at true closeout - the merge observed, or the task closed with
 no pull request to watch - which is exactly the bar the dependency rule uses (§2.3), so the board and

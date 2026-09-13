@@ -687,6 +687,19 @@ period rolls — never killing or parking work already running. Unset means unbu
 status`/`h9k config show` show the current period's own recorded spend, by model, whether or not a
 budget is set.
 
+Within the project the rotation and its tier hand a free slot to, which of that project's own
+ready tasks actually takes it is decided by rank before assignment age (Decisions Log
+PLACEHOLDER-307f922b): a follow-up lap on a task already past its first pull request outranks a
+retry or hand-back before any pull request, which outranks a plain first claim, so a task one lap
+from merging is never held behind brand-new work at the ceiling — the queue's own age order still
+breaks a tie between two tasks of the same rank, exactly as it always has. The queue-first marker
+still outranks every rank, precisely as it outranks the rotation and every tier. A claim's log line
+names the rank decision as its own sentence, beside the one already naming the project and why,
+only when rank actually decided the slot against another eligible task in the same project — two
+tasks of equal rank dispatch oldest first with nothing to report. `h9k status` lists a project's
+queued rows in this same order and names the rank each one waits under inside the sentence that
+already says a row is assigned and ready.
+
 `h9k status` prints a throughput block beneath those spend lines, for the identical period, so
 speed and efficiency read beside cost rather than instead of it: how many tasks merged this
 period, the median and p90 time from claim to merge, the first-pass merge share (merged with no
