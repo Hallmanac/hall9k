@@ -73,6 +73,19 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
                         $"Idea {idea.Id} is assigned to project {assigned}, which is not registered here. "
                         + $"Name the project to promote into: h9k idea promote {settings.Id} --project <name>")
                 : null;
+        if (project?.PurgeAt is { } purgeDeadline)
+        {
+            // Same reasoning as h9k task add's own refusal: the sweep re-queries ownership at
+            // fire time, so a task minted here would be destroyed along with everything else at
+            // the deadline rather than orphaned — refused here so a promotion does not silently
+            // hand a fresh task (and this idea, once IdeaPromoted binds it) to a project already
+            // scheduled for destruction (independent pre-PR review, cycle 1, both lenses, medium).
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is scheduled for permanent deletion at "
+                + $"{purgeDeadline.ToLocalTime():g}, so it cannot take a new task. Cancel the purge "
+                + $"first: h9k project cancel-purge {project.Name}");
+        }
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         IdeaSeed seed = Seed(idea.Text, settings.Objective);
