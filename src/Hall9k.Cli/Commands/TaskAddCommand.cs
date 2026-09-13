@@ -98,8 +98,10 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         [CommandOption("--from-idea <ID>")]
         [Description(
-            "Cut a draft task from an idea (h9k idea add): its id or an unambiguous fragment. Through "
-            + "the same source-resolver seam as --from-issue and --from-jira (backlog 17/31) — pass it "
+            "Cut a draft task from an idea (h9k idea add): its id or an unambiguous fragment. Its own "
+            + "door, deliberately not the shared source-resolver seam --from-issue and --from-jira use "
+            + "(backlog 17/31) — an idea is a local record, and that seam refuses a second adoption of "
+            + "the same item, which would block the repeatable cuts this needs. Pass it "
             + "as often as discovery produces work, and one idea yields as many tasks as you cut. "
             + "--objective is required here and is never taken from the note: several tasks fanned out "
             + "from one idea cannot share its first sentence. The idea's whole note and its discovery "
@@ -537,8 +539,20 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         if (sourceIdea is not null)
         {
-            // The idea decides too: its own refusal (concluded, archived since the read above)
-            // teaches better than a bare append would.
+            // The idea decides too: refused if it was already concluded or archived at the time
+            // it was read above. Re-read fresh and re-checked immediately before the append
+            // rather than trusting that earlier read, so a conclude or archive racing this
+            // command has the smallest possible window to land unseen — everything else this
+            // command does (project/dependency resolution, adoption, criteria) happens before
+            // this point, not between the check and the append. Deliberately not fenced with an
+            // expected version: that would make two ordinary concurrent cuts compete with each
+            // other for it, which is exactly what h9k idea promote's own fencing is for and this
+            // is not — cutting has no "once" invariant, and fan-out is meant to stay freely
+            // repeatable (independent post-PR review).
+            IdeaAggregate freshSourceIdea = await session.Events.AggregateStreamAsync<IdeaAggregate>(
+                    sourceIdea.Id, token: cancellationToken)
+                ?? throw new DomainNotFoundException($"No idea {sourceIdea.Id}.");
+            IdeaDecider.RequireCaptured(freshSourceIdea, "cut a task from");
             IdeaTaskCut cut = IdeaDecider.CutTask(sourceIdea, taskId, added.Objective, added.AddedAt, context.OwnerId);
             session.Events.Append(sourceIdea.Id, cut);
         }
