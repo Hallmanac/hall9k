@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Run.Queries;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -41,6 +42,15 @@ namespace Hall9k.Tests.Integration;
 /// <see cref="BlockerHandoffQuery"/> — assembling a dependent's starting context from its
 /// BlockedBy edges (Decisions Log #36): depth one and no further, the successful run's handoff
 /// after a retry, and an honest fallback for every blocker that handed nothing down.
+/// </para>
+/// <para>
+/// <see cref="ThroughputQuery"/> — its own candidate read (task: h9k status reports throughput
+/// beside spend): the <c>Done</c> filter runs server-side via <c>MatchesSql</c> rather than a
+/// plain LINQ <c>==</c> against <see cref="TaskState"/>, the same reason
+/// <see cref="Hall9k.Daemon.Dispatch.DispatchEngine"/>'s own claim query and
+/// <see cref="Hall9k.Daemon.Closeout.CloseoutEngine"/>'s own missing-run sweep already do — a unit
+/// test constructing a fake candidate list never exercises whether that filter actually finds
+/// anything against a real store.
 /// </para>
 /// </summary>
 [Trait("Category", "RequiresDocker")]
@@ -761,6 +771,77 @@ public sealed class StoreBackedQueryTests(PostgresFixture postgres) : IClassFixt
         handoffs.Should().BeEmpty("a dangling edge is the dependency query's story; inventing a blocker here would be a guess");
     }
 
+    /// <summary>
+    /// The candidate read against a real store, covering the three things a fake candidate list
+    /// (<see cref="ThroughputQueryTests"/>) cannot: the <c>MatchesSql</c> Done filter actually
+    /// finds a merged task, the period boundary excludes one merged before it, a pr-review task
+    /// never counts even though its own run carries <see cref="PullRequestMerged"/>, and the
+    /// project scope excludes a sibling project's own merge.
+    /// </summary>
+    [Fact]
+    public async Task Throughput_finds_only_the_scoped_projects_tasks_merged_within_the_period()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid otherProjectId = DomainId.New();
+        DateTimeOffset periodStart = HandoffNow;
+        DateTimeOffset periodEnd = HandoffNow.AddDays(7);
+        DateTimeOffset insidePeriod = HandoffNow.AddDays(1);
+        DateTimeOffset beforePeriod = HandoffNow.AddDays(-1);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // In scope: this project, merged inside the period.
+            SeedMergedTask(session, DomainId.New(), projectId, ownerId, TaskType.Chore, insidePeriod);
+            // Out of period: merged the day before it started.
+            SeedMergedTask(session, DomainId.New(), projectId, ownerId, TaskType.Chore, beforePeriod);
+            // Out of project scope, though merged inside the period.
+            SeedMergedTask(session, DomainId.New(), otherProjectId, ownerId, TaskType.Chore, insidePeriod);
+            // A pr-review task never counts, even merged inside the period on the right project.
+            SeedMergedTask(session, DomainId.New(), projectId, ownerId, TaskType.PrReview, insidePeriod);
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+
+        ThroughputSummary scoped = await ThroughputQuery.ReadAsync(
+            query, periodStart, periodEnd, periodEnd, projectId, cts.Token);
+        scoped.MergedCount.Should().Be(1, "only one seeded task is this project's own, merged inside the period, and not a pr-review");
+
+        ThroughputSummary wholeNode = await ThroughputQuery.ReadAsync(
+            query, periodStart, periodEnd, periodEnd, projectId: null, cts.Token);
+        wholeNode.MergedCount.Should().Be(2, "the sibling project's own merge joins once no project scopes the read");
+    }
+
+    /// <summary>A task claimed, pushed, and merged — the <see cref="TaskState.Done"/> shape <see cref="ThroughputQuery"/> reads.</summary>
+    private static void SeedMergedTask(
+        IDocumentSession session, Guid taskId, Guid projectId, Guid ownerId, TaskType type, DateTimeOffset mergedAt)
+    {
+        Guid runId = DomainId.New();
+        DateTimeOffset claimedAt = mergedAt.AddHours(-2);
+        DateTimeOffset completedAt = mergedAt.AddHours(-1);
+
+        session.Events.StartStream<TaskAggregate>(taskId,
+        [
+            .. TaskSeed.Dispatchable(
+                TaskDecider.Add(
+                    taskId, projectId, "Ship it", ["merged"], type, null, null, null,
+                    claimedAt.AddHours(-1), ownerId),
+                ownerId, claimedAt.AddHours(-1)),
+            new TaskClaimed(taskId, ownerId, ownerId, 1, runId, claimedAt),
+            new TaskCompleted(taskId, runId, HandoffPullRequestUrl, completedAt),
+        ]);
+
+        session.Events.StartStream<RunAggregate>(runId,
+            Dispatch(runId, taskId, ownerId, claimedAt),
+            new PullRequestOpened(runId, HandoffPullRequestUrl, 42, completedAt),
+            new PullRequestMerged(runId, mergedAt, mergedAt),
+            new RunCompleted(runId, mergedAt));
+    }
 
     private static void SeedClosedOutBlocker(
         IDocumentSession session, Guid taskId, Guid ownerId, string objective,
