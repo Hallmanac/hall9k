@@ -241,4 +241,23 @@ public sealed class ProjectDetailsProjectionTests
         view.Name.Should().Be("hall9k-old");
         view.RepositoryPath.Should().Be("/repos/hall9k.git", "NAME IS NOT AN IDENTIFIER — nothing else changes");
     }
+
+    [Fact]
+    public void Purge_scheduled_then_cancelled_round_trips_the_deadline()
+    {
+        ProjectDetailsProjection projection = new();
+        Guid id = DomainId.New();
+
+        ProjectDetails view = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            id, DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+
+        DateTimeOffset deadline = Now.AddDays(1);
+        projection.Apply(new FakeEvent<ProjectPurgeScheduled>(
+            new ProjectPurgeScheduled(id, Now, deadline, DomainId.New())), view);
+        view.PurgeAt.Should().Be(deadline);
+
+        projection.Apply(new FakeEvent<ProjectPurgeCancelled>(
+            new ProjectPurgeCancelled(id, Now.AddHours(1), DomainId.New())), view);
+        view.PurgeAt.Should().BeNull();
+    }
 }

@@ -135,6 +135,14 @@ public sealed class ProjectDetails
     public DateTimeOffset? ArchivedAt { get; set; }
     /// <summary>Why this project was archived; left unknown when omitted, never inferred.</summary>
     public string? ArchivedReason { get; set; }
+    /// <summary>
+    /// When a scheduled purge (task: an archived project can be purged) will fire; null while
+    /// none is pending or after a cancel clears it. <c>h9k project list --include-archived</c> and
+    /// <c>h9k project show</c> read this to mark a purge-pending project with its deadline and the
+    /// cancel command; the daemon's purge sweep reads it to find every project whose deadline has
+    /// passed.
+    /// </summary>
+    public DateTimeOffset? PurgeAt { get; set; }
 }
 
 public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDetails, Guid>
@@ -312,5 +320,15 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
     public void Apply(IEvent<ProjectRenamed> @event, ProjectDetails view)
     {
         view.Name = @event.Data.NewName;
+    }
+
+    public void Apply(IEvent<ProjectPurgeScheduled> @event, ProjectDetails view)
+    {
+        view.PurgeAt = @event.Data.PurgeAt;
+    }
+
+    public void Apply(IEvent<ProjectPurgeCancelled> @event, ProjectDetails view)
+    {
+        view.PurgeAt = null;
     }
 }

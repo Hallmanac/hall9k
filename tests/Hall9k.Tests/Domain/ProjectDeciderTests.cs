@@ -824,6 +824,80 @@ public sealed class ProjectDeciderTests
     }
 
     [Fact]
+    public void Reactivate_refuses_a_project_with_a_purge_pending()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(ProjectDecider.Archive(project, null, Now, DomainId.New()));
+        project.Apply(ProjectDecider.SchedulePurge(project, Now, DomainId.New()));
+
+        Action reactivate = () => ProjectDecider.Reactivate(project, Now.AddHours(1), DomainId.New());
+
+        reactivate.Should().Throw<DomainValidationException>()
+            .WithMessage("*cancel-purge*", "reactivating a project the sweep would still destroy must be refused, not left to race the deadline");
+    }
+
+    [Fact]
+    public void SchedulePurge_produces_an_event_the_aggregate_replays_as_a_deadline()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(ProjectDecider.Archive(project, null, Now, DomainId.New()));
+
+        ProjectPurgeScheduled scheduled = ProjectDecider.SchedulePurge(project, Now, DomainId.New());
+        project.Apply(scheduled);
+
+        scheduled.ScheduledAt.Should().Be(Now);
+        scheduled.PurgeAt.Should().Be(Now + ProjectPurge.GracePeriod, "the default grace period is 24 hours");
+        project.PurgeAt.Should().Be(scheduled.PurgeAt);
+    }
+
+    [Fact]
+    public void SchedulePurge_refuses_a_project_that_is_not_archived()
+    {
+        Action schedule = () => ProjectDecider.SchedulePurge(RegisteredProject(), Now, DomainId.New());
+
+        schedule.Should().Throw<DomainValidationException>()
+            .WithMessage("*archived*", "--purge archives the project first; scheduling without archiving is refused");
+    }
+
+    [Fact]
+    public void SchedulePurge_refuses_a_project_that_already_has_one_pending()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(ProjectDecider.Archive(project, null, Now, DomainId.New()));
+        project.Apply(ProjectDecider.SchedulePurge(project, Now, DomainId.New()));
+
+        Action scheduleAgain = () => ProjectDecider.SchedulePurge(project, Now.AddHours(1), DomainId.New());
+
+        scheduleAgain.Should().Throw<DomainValidationException>()
+            .WithMessage("*already has a purge scheduled*");
+    }
+
+    [Fact]
+    public void CancelPurge_clears_the_deadline_leaving_the_project_archived()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(ProjectDecider.Archive(project, "temporary", Now, DomainId.New()));
+        project.Apply(ProjectDecider.SchedulePurge(project, Now, DomainId.New()));
+
+        ProjectPurgeCancelled cancelled = ProjectDecider.CancelPurge(project, Now.AddHours(2), DomainId.New());
+        project.Apply(cancelled);
+
+        project.PurgeAt.Should().BeNull();
+        project.IsArchived.Should().BeTrue("cancelling a purge leaves the project archived, never reactivated");
+    }
+
+    [Fact]
+    public void CancelPurge_refuses_a_project_with_nothing_scheduled()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(ProjectDecider.Archive(project, null, Now, DomainId.New()));
+
+        Action cancel = () => ProjectDecider.CancelPurge(project, Now, DomainId.New());
+
+        cancel.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
     public void Rename_changes_the_name_only()
     {
         ProjectAggregate project = RegisteredProject();
