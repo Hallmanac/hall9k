@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Purge;
+using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -9,6 +10,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -48,6 +50,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid[] purgedTaskIds = await SeedTasksAsync(store, purgedProjectId, ownerId, count: 2, cts.Token);
         Guid purgedRunId = await SeedRunAsync(store, purgedTaskIds[0], ownerId, cts.Token);
         Guid purgedIdeaId = await SeedIdeaAsync(store, purgedProjectId, ownerId, cts.Token);
+        Guid purgedEpicId = await SeedEpicAsync(store, purgedProjectId, ownerId, cts.Token);
         await SchedulePastDuePurgeAsync(store, purgedProjectId, ownerId, cts.Token);
 
         // A sibling project, untouched by this sweep — the control that proves the purge is
@@ -56,6 +59,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid[] survivingTaskIds = await SeedTasksAsync(store, survivingProjectId, ownerId, count: 1, cts.Token);
         Guid survivingRunId = await SeedRunAsync(store, survivingTaskIds[0], ownerId, cts.Token);
         Guid survivingIdeaId = await SeedIdeaAsync(store, survivingProjectId, ownerId, cts.Token);
+        Guid survivingEpicId = await SeedEpicAsync(store, survivingProjectId, ownerId, cts.Token);
 
         ProjectPurgeEngine engine = new(store, NullLogger<ProjectPurgeEngine>.Instance);
         ProjectPurgeSweepResult result = await engine.SweepOnceAsync(cts.Token);
@@ -64,6 +68,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         result.TasksDestroyed.Should().Be(2);
         result.RunsDestroyed.Should().Be(1);
         result.IdeasDestroyed.Should().Be(1);
+        result.EpicsDestroyed.Should().Be(1);
         result.Failures.Should().Be(0);
 
         await using (IQuerySession query = store.QuerySession())
@@ -78,8 +83,9 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<RunDetails>(purgedRunId, cts.Token)).Should().BeNull();
             (await query.LoadAsync<RunListItem>(purgedRunId, cts.Token)).Should().BeNull();
             (await query.LoadAsync<IdeaDetails>(purgedIdeaId, cts.Token)).Should().BeNull();
+            (await query.LoadAsync<EpicDetails>(purgedEpicId, cts.Token)).Should().BeNull();
 
-            Guid[] purgedStreamIds = [purgedProjectId, .. purgedTaskIds, purgedRunId, purgedIdeaId];
+            Guid[] purgedStreamIds = [purgedProjectId, .. purgedTaskIds, purgedRunId, purgedIdeaId, purgedEpicId];
             long eventRows = (await query.QueryAsync<long>(
                 "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, purgedStreamIds)).Single();
             eventRows.Should().Be(0, "no event for the purged project or anything it owned should remain");
@@ -92,7 +98,8 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<TaskDetails>(survivingTaskIds[0], cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<RunDetails>(survivingRunId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<IdeaDetails>(survivingIdeaId, cts.Token)).Should().NotBeNull();
-            Guid[] survivingStreamIds = [survivingProjectId, survivingTaskIds[0], survivingRunId, survivingIdeaId];
+            (await query.LoadAsync<EpicDetails>(survivingEpicId, cts.Token)).Should().NotBeNull();
+            Guid[] survivingStreamIds = [survivingProjectId, survivingTaskIds[0], survivingRunId, survivingIdeaId, survivingEpicId];
             long survivingEventRows = (await query.QueryAsync<long>(
                 "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, survivingStreamIds)).Single();
             survivingEventRows.Should().BeGreaterThan(0, "the sibling project's own history is untouched");
@@ -124,8 +131,15 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             ProjectArchived archived = ProjectDecider.Archive(aggregate, null, Now, ownerId);
             session.Events.Append(projectId, archived);
             aggregate.Apply(archived);
+
+            // Grace period measured from the real wall clock, not the fixed `Now` — the engine
+            // under test selects due projects against DateTimeOffset.UtcNow, so a deadline pinned
+            // to a frozen instant becomes genuinely due (and this test permanently red) once real
+            // time passes it. A day's grace from "right now" never does.
             session.Events.Append(
-                projectId, ProjectDecider.SchedulePurge(aggregate, Now, ownerId, gracePeriod: TimeSpan.FromDays(1)));
+                projectId,
+                ProjectDecider.SchedulePurge(
+                    aggregate, Now, ownerId, gracePeriod: DateTimeOffset.UtcNow.AddDays(1) - Now));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -135,6 +149,80 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         result.ProjectsPurged.Should().Be(0, "a purge whose deadline has not passed must never fire early");
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<ProjectDetails>(projectId, cts.Token)).Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// A plain cross-project BlockedBy edge is harmless while both projects live (TaskDependency's
+    /// own doc comment: "it never reads the blocker's branch"), but a purge hard-deletes the
+    /// blocker's stream and TaskListItem out from under whatever other project's task still names
+    /// it — and TaskDependencyQuery silently dropped an id it could not find before this fix, so
+    /// the dependent's re-evaluation pass walked an empty dependency list and never appended
+    /// anything, leaving it Blocked forever with no blocker even named (independent pre-PR review,
+    /// cycle 1, adversarial lens). This proves the fix: the missing id surfaces as a dead
+    /// dependency, the same NeedsHuman hold a Failed or Abandoned blocker gets, with a remedy on
+    /// the dependent's own side.
+    /// </summary>
+    [Fact]
+    public async Task A_purge_that_destroys_another_projects_blocker_parks_the_dependent_rather_than_stranding_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        IDocumentStore store = postgres.Store;
+        await store.Advanced.ResetAllData(cts.Token);
+        Guid ownerId = DomainId.New();
+
+        Guid blockerProjectId = await SeedProjectAsync(store, "blocker-project", ownerId, cts.Token);
+        Guid[] blockerTaskIds = await SeedTasksAsync(store, blockerProjectId, ownerId, count: 1, cts.Token);
+        Guid blockerTaskId = blockerTaskIds[0];
+
+        Guid dependentProjectId = await SeedProjectAsync(store, "dependent-project", ownerId, cts.Token);
+        Guid dependentTaskId = await SeedBlockedTaskAsync(store, dependentProjectId, ownerId, blockerTaskId, cts.Token);
+
+        await SchedulePastDuePurgeAsync(store, blockerProjectId, ownerId, cts.Token);
+
+        ProjectPurgeEngine engine = new(store, NullLogger<ProjectPurgeEngine>.Instance);
+        ProjectPurgeSweepResult purgeResult = await engine.SweepOnceAsync(cts.Token);
+        purgeResult.ProjectsPurged.Should().Be(1);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await query.LoadAsync<TaskListItem>(blockerTaskId, cts.Token)).Should()
+                .BeNull("the blocker's own project was purged, taking its task stream with it");
+        }
+
+        DependencyReevaluation reevaluation;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            // The dispatch loop's own safety net (ForEveryBlockedTaskAsync) — no RunCompleted
+            // ever arrives for a blocker that no longer exists, so nothing would ever call
+            // ForDependencyAsync for it.
+            reevaluation = await TaskDependencyResolver.ForEveryBlockedTaskAsync(session, DateTimeOffset.UtcNow, cts.Token);
+        }
+
+        reevaluation.Parked.Should().ContainSingle(hold => hold.TaskId == dependentTaskId)
+            .Which.Reason.Should().Contain("no longer exists");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails? dependent = await query.LoadAsync<TaskDetails>(dependentTaskId, cts.Token);
+            dependent.Should().NotBeNull();
+            dependent!.State.Should().Be(TaskState.Blocked, "the dependency never completes — it is dead, not met");
+            dependent.DependencyFailureReason.Should().NotBeNull().And.Contain("no longer exists");
+        }
+    }
+
+    private static async Task<Guid> SeedBlockedTaskAsync(
+        IDocumentStore store, Guid projectId, Guid ownerId, Guid blockedByTaskId, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "a task blocked on another project's task", ["done"], TaskType.Chore,
+            null, null, null, Now, ownerId, blockedBy: [blockedByTaskId]);
+
+        await using IDocumentSession session = store.LightweightSession();
+        TaskDependencyGraph graph = await TaskSeed.DependencyGraphAsync(session, [blockedByTaskId], cancellationToken);
+        session.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(added, ownerId, Now, graph));
+        await session.SaveChangesAsync(cancellationToken);
+        return taskId;
     }
 
     private static async Task<Guid> SeedProjectAsync(
@@ -193,6 +281,18 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         session.Events.StartStream<IdeaAggregate>(ideaId, captured);
         await session.SaveChangesAsync(cancellationToken);
         return ideaId;
+    }
+
+    private static async Task<Guid> SeedEpicAsync(
+        IDocumentStore store, Guid projectId, Guid ownerId, CancellationToken cancellationToken)
+    {
+        Guid epicId = DomainId.New();
+        EpicAdded added = EpicDecider.Add(epicId, projectId, "an epic worth destroying", Now, ownerId);
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<EpicAggregate>(epicId, added);
+        await session.SaveChangesAsync(cancellationToken);
+        return epicId;
     }
 
     /// <summary>Archives (fresh) and schedules a purge whose deadline already passed — a negative grace period, so the sweep finds it due immediately.</summary>
