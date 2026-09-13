@@ -815,13 +815,20 @@ public sealed class TaskPhaseSurfaceTests
                 StatusFixtures.Run(runId, RunState.Running))
             .Phase.Text.Should().Be("follow-up on PR #24: building");
 
-        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Queued, null, pullRequest))
-            .Phase.Text.Should().Be("follow-up queued for PR #24");
+        TaskListItem queuedWithNumber = StatusFixtures.Task(TaskState.Queued, null, pullRequest);
+        queuedWithNumber.FollowUpBranch = "task/follow-up";
+        StatusFixtures.Compose(queuedWithNumber)
+            .Phase.Text.Should().Be(
+                "follow-up queued for PR #24, ready as a follow-up lap on a task past its first pull request");
 
         // A URL whose shape the parser does not recognize yields no number, so the line names the
         // pull request without one rather than printing a guess.
-        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Queued, null, "https://example.test/nope"))
-            .Phase.Text.Should().Be("follow-up queued for the pull request");
+        TaskListItem queuedNoNumber = StatusFixtures.Task(TaskState.Queued, null, "https://example.test/nope");
+        queuedNoNumber.FollowUpBranch = "task/follow-up";
+        StatusFixtures.Compose(queuedNoNumber)
+            .Phase.Text.Should().Be(
+                "follow-up queued for the pull request, ready as a follow-up lap on a task past its first "
+                + "pull request");
     }
 
     /// <summary>
@@ -840,8 +847,10 @@ public sealed class TaskPhaseSurfaceTests
 
         TaskListItem queued = StatusFixtures.Task(TaskState.Queued, null, pullRequest);
         queued.FollowUpChecksPendingSince = StatusFixtures.Now.AddHours(-9);
+        queued.FollowUpBranch = "task/follow-up";
         TaskPhase queuedPhase = StatusFixtures.Compose(queued).Phase;
-        queuedPhase.Text.Should().Be("follow-up queued for PR #2042");
+        queuedPhase.Text.Should().Be(
+            "follow-up queued for PR #2042, ready as a follow-up lap on a task past its first pull request");
         queuedPhase.Detail.Should().Be("not claimed yet; a check has been pending 9h");
 
         TaskListItem claimed = StatusFixtures.Task(TaskState.Claimed, runId, pullRequest);

@@ -568,12 +568,16 @@ why - and the answer is three surfaces, composed in `TaskStatusComposer` and rea
 
 **State** is the lifecycle, in seven words: `Draft`, `Published`, `Working`, `Delivered`, `Done`,
 `Failed`, `Archived`. It is display-only; nothing about the persisted model changes. `Queued` and
-`Blocked` both render as `Published`, with the difference moved onto that row's derived-facts line
-("assigned and ready as a first claim; the dispatcher has not claimed it yet", "waiting on 2
-dependencies to close out"), which is also where the ranking model's facts will land when it
-retires those two states. A queued row names its own rank — a follow-up lap past its first pull
-request, a retry or hand-back before any pull request, or a plain first claim — inside that same
-line (Decisions Log PLACEHOLDER-307f922b), and names a dispatch slot only where `DispatchPressure`
+`Blocked` render as `Published` unless the task has already been pushed once — a reopened task
+carrying a pull request is a follow-up in flight, which reads `Delivered` instead (a plain `Queued`
+or `Blocked` row's difference moves onto that row's derived-facts line: "assigned and ready as a
+first claim; the dispatcher has not claimed it yet", "waiting on 2 dependencies to close out",
+which is also where the ranking model's facts will land when it retires those two states). A
+queued row names its own rank — a follow-up lap past its first pull request, a retry or hand-back
+before any pull request, or a plain first claim — wherever that row's own facts are said: inside
+the derived-facts line for a plain `Published` row, or on the phase line for a `Delivered` follow-up,
+since the derived-facts line composes only for `Published` (Decisions Log #187), and
+names a dispatch slot only where `DispatchPressure`
 carries a current measurement saying this node is full (Decisions Log #64); with no slot
 measurement, it says it is ready and stops, because a queue that is not moving has many causes and
 a stopped daemon is the commonest of them. `Delivered` is the new word: pushed, with

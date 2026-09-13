@@ -434,9 +434,9 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             .. queuedProjects > 1
                 ? (string[])
                 [
-                    $"Rows are oldest first within each project; which of these {queuedProjects} projects takes "
-                    + "the next free slot is the daemon's own rotation (longest unserved first, or a --priority "
-                    + "tier), and its log names the winner and why on every claim.",
+                    $"Rows are ranked, then oldest, first within each project; which of these {queuedProjects} "
+                    + "projects takes the next free slot is the daemon's own rotation (longest unserved first, "
+                    + "or a --priority tier), and its log names the winner and why on every claim.",
                 ]
                 : [],
         ];
@@ -536,17 +536,21 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// dispatcher will actually serve them in.
     /// </summary>
     /// <param name="inServiceOrder">
-    /// Marker first, then rank, then oldest assignment, ties broken by when the task was added —
-    /// exactly the claim query's own ordering (Decisions Log #64, the queue-first marker, task
-    /// 45136b29, idea fcaded0b's R7 ruling, and the rank a follow-up lap, a retry or hand-back, and
-    /// a first claim take relative to each other, Decisions Log PLACEHOLDER-307f922b). It is
-    /// service order within one project, and the honest approximation of it across several: which
-    /// project takes the next free slot is the daemon's rotation (Decisions Log #141), whose memory
-    /// is in-process and so invisible to any CLI — <see cref="QueuedHeading"/> says so in the
-    /// section's own words rather than leaving the top row to imply otherwise; rank, unlike the
-    /// rotation, is read straight off each row so it orders correctly across projects too, not only
-    /// within one. The queue section tells a human that each of its
-    /// rows starts as a run finishes, so its top row has to be the one that starts next;
+    /// Marker first, then rank, then oldest assignment, ties broken by when the task was added
+    /// (Decisions Log #64, the queue-first marker, task 45136b29, idea fcaded0b's R7 ruling, and
+    /// the rank a follow-up lap, a retry or hand-back, and a first claim take relative to each
+    /// other, Decisions Log #187) — exactly what decides the winner once
+    /// <see cref="Hall9k.Daemon.Dispatch.ProjectRotation"/> has already picked a project, but not
+    /// exactly the claim query's own SQL, which orders by marker, then assignment, then added and
+    /// leaves rank to that later, in-process step. So this order is service order within one
+    /// project, and only the honest approximation of it across several: which project takes the
+    /// next free slot is the daemon's rotation (Decisions Log #141), whose memory is in-process and
+    /// so invisible to any CLI — <see cref="QueuedHeading"/> says so in the section's own words
+    /// rather than leaving the top row to imply otherwise — and rank itself never reaches across
+    /// projects either: the daemon applies it only inside the project the rotation already chose,
+    /// so a rank-ordered row from a different project than the rotation's own pick can still list
+    /// above the row the daemon actually serves next. The queue section tells a human that each of
+    /// its rows starts as a run finishes, so its top row has to be the one that starts next;
     /// listed newest-first, the pane's default everywhere else, it showed the eight tasks that
     /// run last and collapsed the imminent ones into "… and N more" (pre-PR review, 2026-08-22).
     /// A row with nothing assigned cannot be in that section — the dispatcher cannot see an
