@@ -244,6 +244,11 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
     private static async Task<ArchivedCollisionOutcome> HandleArchivedCollisionAsync(
         IDocumentSession session, ProjectDetails existing, Settings settings, CancellationToken cancellationToken)
     {
+        // Fenced against this read (independent pre-PR review, cycle 1: conformance and adversarial
+        // lenses, both high): the interactive prompt below can sit open for as long as an operator
+        // takes to answer it, and a purge scheduled in that window must not be silently reactivated
+        // past — the same hazard commit 936b89cc fenced in ProjectReactivateCommand, open here too
+        // because SchedulePurge is a second writer on this same stream.
         StreamState? fence = await session.Events.FetchStreamStateAsync(existing.Id, cancellationToken)
             ?? throw new DomainNotFoundException($"No project {existing.Id}.");
         ProjectAggregate archived = await session.Events.AggregateStreamAsync<ProjectAggregate>(
@@ -394,6 +399,9 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         Settings settings, CancellationToken cancellationToken)
     {
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        // Fenced against the version read when the collision was first seen — see the comment on
+        // that read in HandleArchivedCollisionAsync. A purge scheduled while this collision's
+        // prompt sat open lands as a version mismatch here rather than a silent reactivation past it.
         session.Events.Append(
             existing.Id, expectedVersion: fence.Version + 1,
             ProjectDecider.Reactivate(archived, DateTimeOffset.UtcNow, context.OwnerId));
@@ -404,8 +412,8 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         catch (EventStreamUnexpectedMaxEventIdException)
         {
             throw new DomainConflictException(
-                $"Project '{existing.Name}' changed while reactivating — check h9k status and re-run this "
-                + "command if it should still be reactivated.");
+                $"Project '{existing.Name}' changed while reactivating — a purge may have just been "
+                + "scheduled. Check h9k project show and try again.");
         }
 
         await Doorbell.RingAsync($"project-reactivated:{existing.Id}", cancellationToken);
