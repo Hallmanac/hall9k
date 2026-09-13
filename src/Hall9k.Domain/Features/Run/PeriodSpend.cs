@@ -12,10 +12,12 @@ public sealed record PeriodSpendByModel(AgentModel Model, long TotalInputTokens)
 /// The platform's whole recorded token spend since a period start, summed live from
 /// <see cref="TokensRecorded"/> — a run session's spend — and
 /// <see cref="PublicationTokensRecorded"/> — a card-publication errand's, which rides the task's
-/// own stream because it has no run to carry a <see cref="TokensRecorded"/> of its own — rather
-/// than held in a stored counter (backlog: spend-governor step three): a daemon restart can
-/// neither lose nor double-count it, because there is nothing to lose, every read replays the
-/// same events. Platform-wide rather than scoped to one node, the same way the total either event
+/// own stream because it has no run to carry a <see cref="TokensRecorded"/> of its own — plus
+/// every <see cref="PurgedSpendRecord"/> a project purge has ever carried forward on their behalf
+/// (task: an archived project can be purged), rather than held in a stored counter (backlog:
+/// spend-governor step three): a daemon restart can neither lose nor double-count it, because
+/// there is nothing to lose, every read replays the same events (and re-reads the same surviving
+/// records). Platform-wide rather than scoped to one node, the same way the total either event
 /// already prices is: the spend-budget setting is a per-node pacing throttle, but what it paces
 /// against is every token the install has ever spent, on any node.
 /// </summary>
@@ -33,11 +35,16 @@ public sealed record PeriodSpend(long TotalInputTokens, IReadOnlyList<PeriodSpen
             .Where(e => e.RecordedAt >= periodStart)
             .ToListAsync(cancellationToken);
 
+        IReadOnlyList<PurgedSpendRecord> purgedRecords = await session.Query<PurgedSpendRecord>()
+            .Where(r => r.RecordedAt >= periodStart)
+            .ToListAsync(cancellationToken);
+
         List<(AgentModel Model, long InputTokens)> spend = [
             .. runEvents.Select(e => (
                 e.Model ?? AgentModel.Unknown, e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens)),
             .. publicationEvents.Select(e => (
                 e.Model ?? AgentModel.Unknown, e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens)),
+            .. purgedRecords.Select(r => (r.Model, r.TotalInputTokens)),
         ];
 
         List<PeriodSpendByModel> byModel = [.. spend
