@@ -62,6 +62,11 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
                   + (project.ArchivedReason.IsNotBlank() ? $"({project.ArchivedReason.EscapeMarkup()}) " : string.Empty)
                   + $"— reactivate: h9k project reactivate {project.Name.EscapeMarkup()}[/]"
                 : "[yellow]archived[/]");
+            if (project.PurgeAt is { } purgeAt)
+            {
+                table.AddRow("Purge", $"[red]scheduled for {purgeAt.ToLocalTime():g}[/] [dim]— cancel: "
+                    + $"h9k project cancel-purge {project.Name.EscapeMarkup()}[/]");
+            }
         }
 
         // The home leads, because it is the answer to "where do I go to work on this" — the
