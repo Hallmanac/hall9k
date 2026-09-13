@@ -247,8 +247,8 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         // Fenced against this read (independent pre-PR review, cycle 1: conformance and adversarial
         // lenses, both high): the interactive prompt below can sit open for as long as an operator
         // takes to answer it, and a purge scheduled in that window must not be silently reactivated
-        // past — the same hazard commit 936b89cc fenced in ProjectReactivateCommand, open here too
-        // because SchedulePurge is a second writer on this same stream.
+        // past — the same hazard ProjectReactivateCommand's own fence closes, open here too because
+        // SchedulePurge is a second writer on this same stream.
         StreamState? fence = await session.Events.FetchStreamStateAsync(existing.Id, cancellationToken)
             ?? throw new DomainNotFoundException($"No project {existing.Id}.");
         ProjectAggregate archived = await session.Events.AggregateStreamAsync<ProjectAggregate>(
