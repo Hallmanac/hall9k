@@ -380,10 +380,10 @@ public static class CliCommandTree
 
         config.AddCommand<DoctorCommand>("doctor")
             .WithDescription(
-                "Check the tools a registered project needs (git always, gh when a remote is GitHub — "
+                "Check the tools a registered project needs (git always, gh when a remote is GitHub, "
                 + "the same facts the generated project AGENTS.md lists) and diagnose the database "
                 + "situation: is a connection string configured, is it reachable (nothing listening vs. "
-                + "credentials rejected are named separately), and is the schema there — offering to fix "
+                + "credentials rejected are named separately), and is the schema there, offering to fix "
                 + "what it can along the way (starting Hall9k's own Postgres, creating the schema). The "
                 + "database check is the same one any other command runs automatically the moment it "
                 + "cannot reach a database, available here on demand (Decisions Log #58, #73). --yes "

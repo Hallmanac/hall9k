@@ -287,11 +287,12 @@ Two install paths exist; pick the one that matches the machine, and run its step
 | Claude Code CLI (`claude`), logged in | The executor: every agent session is a detached `claude -p` |
 
 Nothing else is required: no repo checkout, no .NET SDK. `gh` is what the bootstrap script
-itself needs; Docker is the only one of the other three `h9k doctor` ever checks, and the
-bootstrap script already runs that check for you as its last step, the same check you can
-re-run yourself in *Verify the install* below. `git` and the Claude Code CLI aren't checked by
-anything in this install path; they matter once a project is registered and a dispatched
-session actually runs, so their absence surfaces there instead.
+itself needs. `h9k doctor` checks Docker and `git` (`git` always; `gh` too, but only once a
+project's remote is GitHub, which none is yet at install time, since installing never
+registers one); the bootstrap script already runs that check for you as its last step, the
+same check you can re-run yourself in *Verify the install* below. The Claude Code CLI isn't
+checked by anything in this install path; it matters once a project is registered and a
+dispatched session actually runs, so its absence surfaces there instead.
 
 ### Prerequisites for building from source
 

@@ -925,8 +925,10 @@ Two separate absences, each designed:
   ([`backlog/21-session-peek.md`](../backlog/21-session-peek.md)).
 
 `h9k doctor` — the database doctor check — is built (Decisions Log #73, #74; see
-[operations.md](operations.md#postgres)). It diagnoses reachability, credentials, and schema; it
-does not diagnose the separate daemon-liveness gap described in
+[operations.md](operations.md#postgres)). It diagnoses reachability, credentials, and schema, and,
+before any of that, whether the tools a registered project needs are actually on PATH (git always,
+gh when a remote is GitHub, the same facts the generated project `AGENTS.md` lists). It does not
+diagnose the separate daemon-liveness gap described in
 [operations.md](operations.md#known-operational-gaps) (whether a running daemon is serving *this*
 database), which stays open.
 
