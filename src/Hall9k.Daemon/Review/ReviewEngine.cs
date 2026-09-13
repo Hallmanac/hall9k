@@ -1205,6 +1205,18 @@ public sealed class ReviewEngine(
                         return false;
                     }
 
+                    // The already-merged guard, repeated immediately before this branch's own
+                    // dispatch rather than trusted from this phase's entry above: the gate this
+                    // fix just ran, the cap checks, and the interactive proceed just above can all
+                    // spend real wall-clock time — minutes to, under interactive mode, days — after
+                    // that entry check already passed, plenty of time for a human to merge the pull
+                    // request this pass is about to re-review. Mirrors the Settling branch's own
+                    // identical repeat immediately before its mandatory FinalFullPass dispatch.
+                    if (await TryShortCircuitOnMergedPullRequestAsync(context, run, cancellationToken))
+                    {
+                        return false;
+                    }
+
                     IReadOnlyList<ReviewLens> reverifyLenses = reverifyMode == ReviewMode.Verify
                         ? run.ActiveReviewLenses
                         : run.ReviewStageComposition.OpeningLenses();
@@ -1336,16 +1348,33 @@ public sealed class ReviewEngine(
     private readonly record struct StrandedDelta(IReadOnlyList<string> CommitSummaries, string Patch);
 
     /// <summary>
+    /// Whether <see cref="CaptureStrandedDeltaAsync"/> confirmed there was nothing stranded, or
+    /// merely failed to find out — the distinction <see cref="ConcludeOnMergedPullRequestAsync"/>
+    /// needs before it lets closeout delete this run's worktree and branch. A confirmed-empty
+    /// read (<c>git cherry</c> ran clean and named nothing) makes both safe to delete exactly as
+    /// before; a failed one (a git error, a thrown exception, a deadline) does not, because the
+    /// worktree and branch may be the only place a commit the merge never included still exists.
+    /// </summary>
+    private readonly record struct StrandedDeltaCapture(StrandedDelta? Delta, bool CaptureFailed)
+    {
+        public static readonly StrandedDeltaCapture ConfirmedEmpty = new(null, CaptureFailed: false);
+
+        public static StrandedDeltaCapture Failed() => new(null, CaptureFailed: true);
+    }
+
+    /// <summary>
     /// Whatever this run's worktree carries beyond the just-merged base branch, read fresh — a
     /// fetch first, never the worktree's own possibly-stale remote-tracking ref, since the merge
-    /// this method exists to react to may be minutes old by the time it runs. Best-effort: a
-    /// worktree this read cannot account for (removed, unreachable, any git failure — a non-zero
-    /// exit AND anything <see cref="ExternalProcess.RunAsync"/> throws, since this repo's own
-    /// deadline-bound runner signals a stuck pipe or an expired deadline by throwing rather than
-    /// returning a non-zero exit) returns null exactly as "nothing stranded" does, because this
-    /// method is only ever called once the merge itself is already certain, and there is nowhere
-    /// honest left to report a read failure separately from an honestly empty delta — either way,
-    /// closeout proceeds without a draft.
+    /// this method exists to react to may be minutes old by the time it runs. Best-effort in the
+    /// sense that a read this cannot account for (removed, unreachable, any git failure — a
+    /// non-zero exit AND anything <see cref="ExternalProcess.RunAsync"/> throws, since this repo's
+    /// own deadline-bound runner signals a stuck pipe or an expired deadline by throwing rather
+    /// than returning a non-zero exit) never fails the closeout that is already certain to happen
+    /// — but it is reported as <see cref="StrandedDeltaCapture.CaptureFailed"/>, not folded into
+    /// "nothing stranded", so the caller can tell an unread delta apart from a confirmed-empty one
+    /// (AGENTS.md: an unobserved fact is recorded as unknown, never guessed at as empty) and keep
+    /// the worktree and branch around rather than deleting the one place an unread commit could
+    /// still live.
     /// <para>
     /// The comparison is by content, never by commit identity: this project rebase-merges
     /// (docs/concepts.md), so every commit a pull request just landed sits on the base branch
@@ -1356,12 +1385,12 @@ public sealed class ReviewEngine(
     /// only a commit with no equivalent patch upstream reads as stranded (<c>+</c>).
     /// </para>
     /// </summary>
-    private async Task<StrandedDelta?> CaptureStrandedDeltaAsync(ReviewContext context, CancellationToken cancellationToken)
+    private async Task<StrandedDeltaCapture> CaptureStrandedDeltaAsync(ReviewContext context, CancellationToken cancellationToken)
     {
         string worktreePath = context.Run.WorktreePath;
         if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
         {
-            return null;
+            return StrandedDeltaCapture.ConfirmedEmpty;
         }
 
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
@@ -1371,24 +1400,32 @@ public sealed class ReviewEngine(
             ProcessResult fetch = await git("git", ["fetch", "origin", context.BaseBranch], worktreePath, cancellationToken);
             if (fetch.ExitCode != 0)
             {
-                return null;
+                logger.LogWarning(
+                    "Run {RunId}: could not fetch {Upstream} to read the worktree's own stranded delta " +
+                    "(exit {ExitCode}); treating as unread, not as nothing stranded: {StandardError}",
+                    context.RunId, upstream, fetch.ExitCode, fetch.StandardError);
+                return StrandedDeltaCapture.Failed();
             }
 
             ProcessResult cherry = await git("git", ["cherry", "-v", upstream, "HEAD"], worktreePath, cancellationToken);
             if (cherry.ExitCode != 0)
             {
-                return null;
+                logger.LogWarning(
+                    "Run {RunId}: could not read the worktree's own stranded delta against {Upstream} " +
+                    "(git cherry exit {ExitCode}); treating as unread, not as nothing stranded: {StandardError}",
+                    context.RunId, upstream, cherry.ExitCode, cherry.StandardError);
+                return StrandedDeltaCapture.Failed();
             }
 
+            // git cherry -v ran clean above, so an empty list here is confirmed rather than
+            // guessed: HEAD's every commit already has an equivalent patch upstream.
             string[] strandedShas = [.. cherry.StandardOutput
                 .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Where(line => line.StartsWith('+'))
                 .Select(line => line[1..].TrimStart().Split(' ', 2)[0])];
             if (strandedShas.Length == 0)
             {
-                // Either the read failed or HEAD's every commit already has an equivalent patch
-                // upstream — the ordinary case either way: nothing here for a draft to name.
-                return null;
+                return StrandedDeltaCapture.ConfirmedEmpty;
             }
 
             List<string> summaries = [];
@@ -1399,21 +1436,26 @@ public sealed class ReviewEngine(
                 ProcessResult formatted = await git("git", ["format-patch", "--stdout", "-1", sha], worktreePath, cancellationToken);
                 if (log.ExitCode != 0 || formatted.ExitCode != 0)
                 {
-                    return null;
+                    logger.LogWarning(
+                        "Run {RunId}: could not read commit {Sha} of the worktree's own stranded delta " +
+                        "(git log exit {LogExitCode}, git format-patch exit {FormatPatchExitCode}); " +
+                        "treating the whole delta as unread, not as nothing stranded",
+                        context.RunId, sha, log.ExitCode, formatted.ExitCode);
+                    return StrandedDeltaCapture.Failed();
                 }
 
                 summaries.Add(log.StandardOutput.Trim());
                 patch.Append(formatted.StandardOutput);
             }
 
-            return new StrandedDelta(summaries, patch.ToString());
+            return new StrandedDeltaCapture(new StrandedDelta(summaries, patch.ToString()), CaptureFailed: false);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogWarning(exception,
-                "Run {RunId}: could not read the worktree's own stranded delta against {Upstream}; treating as nothing stranded",
+                "Run {RunId}: could not read the worktree's own stranded delta against {Upstream}; treating as unread, not as nothing stranded",
                 context.RunId, upstream);
-            return null;
+            return StrandedDeltaCapture.Failed();
         }
     }
 
@@ -1503,9 +1545,9 @@ public sealed class ReviewEngine(
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        StrandedDelta? stranded = await CaptureStrandedDeltaAsync(context, cancellationToken);
+        StrandedDeltaCapture captured = await CaptureStrandedDeltaAsync(context, cancellationToken);
         (string PatchFile, string CommitListFile, IReadOnlyList<string> CommitSummaries)? saved = null;
-        if (stranded is { } delta)
+        if (captured.Delta is { } delta)
         {
             (string PatchFile, string CommitListFile)? written = await SaveStrandedDeltaAsync(context, delta, cancellationToken);
             if (written is { } writtenFiles)
@@ -1550,7 +1592,8 @@ public sealed class ReviewEngine(
         bool committed = await closeout.ReconstructAndCompleteAsync(
             session, task, context.Project, context.RunId, context.Run.NodeId, context.Run.OwnerId,
             mergedAt, now, cancellationToken, completeClaimedTaskHere: true,
-            precedingRunEvents: [new ReviewEndedByMerge(context.RunId, run.ReviewCycle, reLandDraftTaskId, now)]);
+            precedingRunEvents: [new ReviewEndedByMerge(context.RunId, run.ReviewCycle, reLandDraftTaskId, now)],
+            preserveWorkspaceOnCaptureFailure: captured.CaptureFailed);
         if (!committed)
         {
             logger.LogInformation(
