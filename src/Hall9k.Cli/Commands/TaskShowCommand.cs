@@ -498,6 +498,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             RunDetails? newestRun = runDetailsById.GetValueOrDefault(runs[^1].Id);
             WriteReviewScopeSeed(newestRun);
             WriteReviewOutcome(newestRun);
+            WriteReviewEndedByMerge(newestRun);
             WriteUnfixedFindings(newestRun);
             WriteRideAlongFindings(newestRun);
             WriteFixEscalation(newestRun);
@@ -691,10 +692,19 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// of their own, or folded into the project's standing sweep draft (Decisions Log #117).
     /// A reader deciding how much to trust a pull request should not have to dig through the run
     /// stream to learn which of those happened.
+    /// <para>
+    /// Silent whenever <see cref="WriteReviewEndedByMerge"/> has something to say instead: a cycle
+    /// can conclude merge-ready (setting <see cref="RunDetails.LastReviewVerdict"/>) and then have
+    /// its mandatory final pass short-circuited by a merge observed at the Settling boundary
+    /// (task: a post-PR follow-up's review loop checks the pull request's merge state between
+    /// passes) — a verdict this line would otherwise report alongside a line saying the loop never
+    /// reached one on its own. <see cref="RunDetails.ReviewEndedByMergeAtCycle"/> having a value at
+    /// all is what that short-circuit leaves behind, regardless of what the last cycle concluded.
+    /// </para>
     /// </summary>
     private static void WriteReviewOutcome(RunDetails? run)
     {
-        if (run is null || run.LastReviewVerdict != ReviewVerdict.MergeReady)
+        if (run is null || run.ReviewEndedByMergeAtCycle is not null || run.LastReviewVerdict != ReviewVerdict.MergeReady)
         {
             return;
         }
@@ -713,6 +723,31 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         };
 
         AnsiConsole.MarkupLine($"\n[bold]Pre-PR review[/]  {outcome}");
+    }
+
+    /// <summary>
+    /// Whether the newest run's review loop ended not by settling but because its own pull
+    /// request merged mid-review (task: a post-PR follow-up's review loop checks the pull
+    /// request's merge state between passes) — a human merging under a live follow-up. Shown
+    /// instead of <see cref="WriteReviewOutcome"/>'s line, never alongside it: this method's own
+    /// guard is the one that decides which of the two shows, since a cycle that already concluded
+    /// <see cref="ReviewVerdict.MergeReady"/> can still be short-circuited before its mandatory
+    /// final pass — <see cref="RunDetails.ReviewEndedByMergeAtCycle"/> having a value always wins
+    /// over whatever the last cycle's own verdict says.
+    /// </summary>
+    private static void WriteReviewEndedByMerge(RunDetails? run)
+    {
+        if (run is not { ReviewEndedByMergeAtCycle: { } cycle })
+        {
+            return;
+        }
+
+        string reLand = run.ReLandDraftTaskId is { } draftId
+            ? $" [dim]— stranded commits saved and routed to draft task {TaskListCommand.ShortId(draftId)}[/]"
+            : string.Empty;
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Pre-PR review[/]  [yellow]ended — the pull request merged mid-review[/] "
+            + $"[dim](cycle {cycle}, no further passes dispatched){reLand}[/]");
     }
 
     /// <summary>

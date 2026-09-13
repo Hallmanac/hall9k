@@ -1978,7 +1978,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
 
-    private static RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)
+    private RunSupervisor NewSupervisor(DocumentStore store, NodeContext node)
     {
         FakeProcessManager processes = new();
         VerificationRunner verification = new(
@@ -1986,6 +1986,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes);
         LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        NotMergedInspector reviewInspector = new();
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
@@ -1993,7 +1994,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             new StackedParentWatch(
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
                 NullLogger<StackedParentWatch>.Instance),
-            launchHold);
+            launchHold, reviewInspector,
+            NewCloseoutEngine(store, node, reviewInspector, new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance)));
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,

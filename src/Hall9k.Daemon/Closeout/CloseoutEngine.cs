@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -488,6 +489,27 @@ public sealed class CloseoutEngine(
     /// (independent pre-PR review, cycle 1, conformance finding).
     /// </para>
     /// </summary>
+    /// <param name="completeClaimedTaskHere">
+    /// Whether <paramref name="task"/> should be finalized to Done here, atomically with the
+    /// run's own completion, when it is still <see cref="TaskState.Claimed"/> — false everywhere
+    /// this method's own three ordinary callers reach it (a Done or, for the Blocked case
+    /// <see cref="CompleteCloseoutAsync"/> already handles unconditionally, a Blocked task), so
+    /// its default preserves every existing caller exactly. <c>ReviewEngine</c>'s own mid-review
+    /// merge short-circuit (task: a post-PR follow-up's review loop checks the pull request's
+    /// merge state between passes) is the one caller with a still-Claimed task nothing has
+    /// completed yet, and passes true so the task's own completion lands in the identical
+    /// transaction as the run's — never a separate save a crash between the two could strand
+    /// (RunLauncher's own two-save version of this same operation is safe only because its run
+    /// stream does not exist yet, so a crash between its saves leaves an absent run record
+    /// <see cref="TasksWithMissingRunRecordsAsync"/>'s own query already catches; this run's
+    /// stream is already live and non-terminal, a shape that query does not admit).
+    /// </param>
+    /// <param name="precedingRunEvents">
+    /// Extra run-stream events appended immediately before <see cref="PullRequestMerged"/>,
+    /// in the same transaction — <c>ReviewEngine</c>'s own <see cref="ReviewEndedByMerge"/>,
+    /// recording why this closeout ran without the review loop ever reaching MergeReady on its
+    /// own. Null for every other caller.
+    /// </param>
     public async Task<bool> ReconstructAndCompleteAsync(
         IDocumentSession session,
         TaskAggregate task,
@@ -497,7 +519,9 @@ public sealed class CloseoutEngine(
         Guid ownerId,
         DateTimeOffset? mergedAt,
         DateTimeOffset now,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool completeClaimedTaskHere = false,
+        IReadOnlyList<object>? precedingRunEvents = null)
     {
         RunDetails? run = await session.LoadAsync<RunDetails>(runId, cancellationToken);
         long? expectedRunVersion = null;
@@ -552,7 +576,9 @@ public sealed class CloseoutEngine(
 
         try
         {
-            await CompleteCloseoutAsync(session, run, project, task, mergedAt, now, expectedRunVersion, cancellationToken);
+            await CompleteCloseoutAsync(
+                session, run, project, task, mergedAt, now, expectedRunVersion, cancellationToken,
+                completeClaimedTaskHere, precedingRunEvents);
             return true;
         }
         catch (ExistingStreamIdCollisionException)
@@ -1759,18 +1785,23 @@ public sealed class CloseoutEngine(
         DateTimeOffset? mergedAt,
         DateTimeOffset now,
         long? expectedVersion,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool completeClaimedTaskHere = false,
+        IReadOnlyList<object>? precedingRunEvents = null)
     {
         RunHandoffRecorded handoff = await ComposeHandoffAsync(session, run, now, cancellationToken);
         PullRequestMerged merged = new(run.Id, mergedAt, now);
         RunCompleted completed = new(run.Id, now);
+        object[] runEvents = precedingRunEvents is { Count: > 0 }
+            ? [.. precedingRunEvents, merged, handoff, completed]
+            : [merged, handoff, completed];
         if (expectedVersion is { } version)
         {
-            session.Events.Append(run.Id, expectedVersion: version + 3, merged, handoff, completed);
+            session.Events.Append(run.Id, expectedVersion: version + runEvents.Length, runEvents);
         }
         else
         {
-            session.Events.Append(run.Id, merged, handoff, completed);
+            session.Events.Append(run.Id, runEvents);
         }
 
         // A Blocked task reaches here only through the one case InspectAndActAsync and
@@ -1786,7 +1817,16 @@ public sealed class CloseoutEngine(
         // in the same transaction as the run's own completion, closes that door — Apply
         // (TaskDependencyCompleted) only ever acts on a task still reading Blocked, so a task
         // already Done from this point on can never be re-queued by a dependency clearing late.
-        if (task.State == TaskState.Blocked)
+        //
+        // Claimed is admitted alongside Blocked only when the caller explicitly asks for it
+        // (completeClaimedTaskHere): ReviewEngine's own mid-review merge short-circuit reaches
+        // here with a task nothing has completed yet, and needs that completion in this exact
+        // transaction for the identical reason the Blocked case does — a task left Claimed while
+        // its run finishes has nothing left driving it and nothing else watching for its own
+        // pull request either. Every other caller leaves this false, so a task that is Claimed
+        // for any other reason (RunLauncher already completed it itself before calling in, and
+        // holds the pre-completion TaskAggregate only to skip completing it twice) is untouched.
+        if (task.State == TaskState.Blocked || (completeClaimedTaskHere && task.State == TaskState.Claimed))
         {
             StreamState? taskFence = await session.Events.FetchStreamStateAsync(task.Id, cancellationToken);
             if (taskFence is not null)
@@ -1794,6 +1834,13 @@ public sealed class CloseoutEngine(
                 session.Events.Append(
                     task.Id, expectedVersion: taskFence.Version + 1,
                     TaskDecider.Complete(task, run.Id, task.PullRequestUrl, now));
+
+                // A Claimed task completed here still holds the live lease dispatch wrote for it
+                // (RunLauncher.cs and PullRequestOpener.cs both delete it in the same transaction
+                // as their own TaskDecider.Complete, for the identical reason): left on file, this
+                // node's own LeaseHeartbeatService keeps refreshing it unconditionally, so it never
+                // ages past DispatchEngine's own expiry filter and never gets tidied up on its own.
+                session.Delete<TaskLease>(task.Id);
             }
         }
 

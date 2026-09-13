@@ -245,5 +245,42 @@ public sealed class RunPathsTests
             RunPaths.AnticipateDirectoryAfterSweep(archived, willArchive: true).Should().Be(archived,
                 "already archived and staying archived is a no-op in this direction");
         }
+
+        // A task's own workspace directory (…/tasks/<taskDir>/workspace) sits one segment
+        // shallower than a run directory (…/tasks/<taskDir>/runs/<runId>) — "tasks" anchors at
+        // [^3] rather than [^4] — so a caller anticipating a stranded-delta save's own directory
+        // (ReviewEngine.SaveStrandedDeltaAsync) needs this to resolve at either depth.
+        [Fact]
+        public void A_live_workspace_directory_composing_text_for_its_own_archiving_event_anticipates_tasks_archive()
+        {
+            string home = Path.Combine(Path.GetTempPath(), "hall9k-anticipate-home");
+            string live = Path.Combine(home, "tasks", "abc12345-some-task", "workspace");
+
+            RunPaths.AnticipateDirectoryAfterSweep(live, willArchive: true).Should().Be(
+                Path.Combine(home, "tasks", "_archive", "abc12345-some-task", "workspace"),
+                "a task workspace directory is one segment shallower than a run directory, and must anticipate the same archive move");
+        }
+
+        [Fact]
+        public void An_archived_workspace_directory_composing_text_for_a_park_that_ends_its_liveness_anticipates_tasks()
+        {
+            string home = Path.Combine(Path.GetTempPath(), "hall9k-anticipate-home");
+            string archived = Path.Combine(home, "tasks", "_archive", "abc12345-some-task", "workspace");
+
+            RunPaths.AnticipateDirectoryAfterSweep(archived, willArchive: false).Should().Be(
+                Path.Combine(home, "tasks", "abc12345-some-task", "workspace"),
+                "the shallower workspace shape un-archives the same way the deeper run shape does");
+        }
+
+        [Fact]
+        public void An_archived_workspace_directory_composing_text_for_its_own_archiving_event_is_returned_unchanged()
+        {
+            string home = Path.Combine(Path.GetTempPath(), "hall9k-anticipate-home");
+            string archived = Path.Combine(home, "tasks", "_archive", "abc12345-some-task", "workspace");
+
+            RunPaths.AnticipateDirectoryAfterSweep(archived, willArchive: true).Should().Be(archived,
+                "already archived and staying archived is a no-op in this direction — the four trailing " +
+                "segments here must not be mistaken for the deeper run shape and doubled into tasks/_archive/_archive");
+        }
     }
 }

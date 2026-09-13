@@ -99,6 +99,13 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </summary>
     public DateTimeOffset? PullRequestPushedAt { get; set; }
     public DateTimeOffset? PullRequestMergedAt { get; set; }
+
+    /// <summary>The cycle the review loop was in when <see cref="Events.ReviewEndedByMerge"/> observed the pull request already merged — null for every run that never short-circuited this way.</summary>
+    public int? ReviewEndedByMergeAtCycle { get; set; }
+
+    /// <summary><see cref="Events.ReviewEndedByMerge"/>'s own draft task naming the stranded delta, when this run's worktree carried commits the merge never included.</summary>
+    public Guid? ReLandDraftTaskId { get; set; }
+
     public List<string> FailingChecks { get; set; } = [];
     public int UnresolvedReviewThreads { get; set; }
     /// <summary>
@@ -1503,6 +1510,12 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
 
     public void Apply(IEvent<PullRequestMerged> @event, RunDetails view) =>
         view.PullRequestMergedAt = @event.Data.MergedAt;
+
+    public void Apply(IEvent<ReviewEndedByMerge> @event, RunDetails view)
+    {
+        view.ReviewEndedByMergeAtCycle = @event.Data.Cycle;
+        view.ReLandDraftTaskId = @event.Data.ReLandDraftTaskId;
+    }
 
     public void Apply(IEvent<PullRequestClosed> @event, RunDetails view)
     {

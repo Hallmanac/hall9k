@@ -551,10 +551,19 @@ duplicating it, so eight one-line pre-existing defects cost one build-gate-revie
 than eight. A human grooms and publishes the sweep once it is fat enough; the moment it
 publishes, the next routed low finding starts a fresh one.
 
-The terminal verdict is always MergeReady, but the *settlement* records how it was reached:
-Clean means a reviewer read the final tip and found nothing, Settled means the severity gate,
-routing, or a human's resolution ended it, with the residuals recorded. A settled ending never
-reads like a clean one.
+A loop that reaches a verdict on its own always reaches MergeReady, but the *settlement* records
+how it was reached: Clean means a reviewer read the final tip and found nothing, Settled means the
+severity gate, routing, or a human's resolution ended it, with the residuals recorded. A settled
+ending never reads like a clean one.
+
+**A loop can also end without ever reaching a verdict at all.** Between passes, the engine checks
+whether the pull request already merged — a human can merge a follow-up's PR while its own review
+loop is still dispatching passes, since nothing about the loop blocks a human's own merge — and if
+so, stops there rather than keep reviewing a branch that can never ship any differently. This ending
+carries neither a verdict nor a settlement; `h9k task show` reports it as its own outcome, distinct
+from both Clean and Settled. If the run's worktree carried commits the merge itself never included,
+the platform saves the patch and the commit list to disk before closing the run out and routes a
+**re-land draft task** naming them, inert until a human publishes it, the same as a draft bug task.
 
 **Fresh context does not mean no memory (Decisions Log #88).** Each cycle's reviewers are new
 sessions with no memory of the task's earlier cycles, but the prompt they are handed carries

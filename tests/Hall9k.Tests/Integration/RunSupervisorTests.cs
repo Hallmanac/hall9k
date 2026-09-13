@@ -4,6 +4,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
+using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
@@ -2845,6 +2846,40 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         }
     }
 
+    /// <summary>
+    /// Every run this file's <c>ReviewEngine</c> factory drives is a fresh, non-follow-up run, so
+    /// <c>ReviewEngine</c>'s own already-merged guard (<see cref="RunAggregate.IsFollowUp"/>)
+    /// always returns before ever reaching this — it exists solely to satisfy the constructor.
+    /// </summary>
+    private sealed class NeverInvokedPullRequestInspector : IPullRequestInspector
+    {
+        private static InvalidOperationException NeverInvoked([System.Runtime.CompilerServices.CallerMemberName] string member = "") =>
+            new($"This file's review loop never drives a follow-up run, so {member} must never be called.");
+
+        public Task<PullRequestSnapshot> InspectAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+
+        public Task<PullRequestStateSnapshot> InspectStateAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+
+        public Task RerequestReviewAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, PullRequestReviewer reviewer,
+            CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+
+        public Task MergeAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string? expectedHeadCommit,
+            CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+
+        public Task RetargetAsync(
+            string repositoryPath, string pullRequestUrl, int pullRequestNumber, string baseBranch,
+            CancellationToken cancellationToken) =>
+            throw NeverInvoked();
+    }
+
     private static int SpawnFakeAgent(Guid runId, FakeAgentScript script)
     {
         string runDirectory = RunPaths.GlobalDirectory(runId);
@@ -2994,6 +3029,18 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             store, resolvedOptions, NullLogger<VerificationRunner>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), resolvedExecutor, processManager);
         LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
+        // Every run this factory's ReviewEngine drives is a fresh, non-follow-up run, so its own
+        // already-merged guard (RunAggregate.IsFollowUp) always returns before ever reaching
+        // either dependency below — both exist solely to satisfy the constructor.
+        NeverInvokedPullRequestInspector reviewInspector = new();
+        CloseoutEngine unusedCloseout = new(
+            store, node, new DaemonConnection("unused"), reviewInspector,
+            new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+            new Hall9k.Daemon.Closeout.StackedParentWatch(
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+                NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
+            RecordingProcessRunner.NeverInvoked(), FakeJiraRequester.NeverInvoked(),
+            resolvedOptions, NullLogger<CloseoutEngine>.Instance);
         ReviewEngine review = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions), processManager, verification,
             resolvedOptions, NullLogger<ReviewEngine>.Instance,
@@ -3001,7 +3048,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             new Hall9k.Daemon.Closeout.StackedParentWatch(
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
                 NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
-            launchHold);
+            launchHold, reviewInspector, unusedCloseout);
         PrReviewEngine prReview = new(
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions), processManager,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), launchHold,
