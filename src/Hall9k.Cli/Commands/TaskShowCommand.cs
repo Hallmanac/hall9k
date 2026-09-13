@@ -743,7 +743,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         string reLand = run.ReLandDraftTaskId is { } draftId
-            ? $" [dim]— stranded commits saved and routed to draft task {draftId}[/]"
+            ? $" [dim]— stranded commits saved and routed to draft task {TaskListCommand.ShortId(draftId)}[/]"
             : string.Empty;
         AnsiConsole.MarkupLine(
             $"\n[bold]Pre-PR review[/]  [yellow]ended — the pull request merged mid-review[/] "
