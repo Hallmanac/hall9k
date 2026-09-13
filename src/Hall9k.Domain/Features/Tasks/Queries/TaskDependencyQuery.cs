@@ -27,6 +27,28 @@ public static class TaskDependencyQuery
     }
 
     /// <summary>
+    /// <see cref="LoadAsync"/>, plus the ids among <paramref name="ids"/> that name no
+    /// <c>TaskListItem</c> at all. <see cref="Handlers.TaskDependencyResolver"/> is the one
+    /// caller that needs both: a dependency id can go missing without ever failing or completing
+    /// when the task it named is hard-deleted out from under it — a purged project destroys every
+    /// task it owns (<c>ProjectPurgeEngine</c>) regardless of what other projects' tasks still
+    /// declare it as a blocker — and <see cref="LoadAsync"/> alone silently drops that id rather
+    /// than reporting it, which is indistinguishable from "still waiting" to a caller that never
+    /// asks for the missing set too.
+    /// </summary>
+    public static async Task<(IReadOnlyList<TaskDependency> Found, IReadOnlyList<Guid> Missing)> LoadWithMissingAsync(
+        IQuerySession session, IReadOnlyList<Guid> ids, CancellationToken cancellationToken)
+    {
+        if (ids.Count == 0)
+        {
+            return ([], []);
+        }
+
+        TaskDependencyGraph graph = new(await SnapshotAsync(session, ids, cancellationToken));
+        return ([.. ids.Select(graph.Node).OfType<TaskDependency>()], graph.Missing(ids));
+    }
+
+    /// <summary>
     /// Everything reachable from <paramref name="blockedBy"/> through BlockedBy edges — the
     /// closure publish needs to see a cycle anywhere in the chain, not just at the first hop.
     /// Breadth-first in batches, so a chain of depth n costs n queries rather than one per task.
