@@ -347,6 +347,18 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(taskDetails.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"Task {task.Id}'s project no longer exists.");
 
+        // The same archived-project refusal TaskAssignCommand.AppendAsync gives h9k task assign
+        // and h9k task publish --assign (task: a project can be archived, listed as archived,
+        // reactivated, and renamed) — this door claims a task the identical way, calling
+        // TaskDecider.Assign/ClaimDeliberately directly rather than through AppendAsync, so it
+        // never inherited that guard on its own (review thread, PR #336).
+        if (project.IsArchived)
+        {
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is archived, so its tasks cannot be started. Reactivate it "
+                + $"first: h9k project reactivate {project.Name}");
+        }
+
         AgentModel model = await ResolveBuildModelAsync(taskDetails, project, cancellationToken);
 
         // A pr-review task dispatches through a completely different path (a detached checkout of
