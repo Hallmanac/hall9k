@@ -60,15 +60,22 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     /// direction on its own. Degraded rather than fatal on a DB hiccup, the same posture every
     /// other best-effort pane on this command and <c>h9k status</c> already take.
     /// <para>
-    /// The period comes from <see cref="OperatingSettingsResolver.ResolveAsync"/>, the identical
-    /// resolution <c>h9k status</c> reads <see cref="SpendPressure"/> through — never the raw
-    /// config-file settings <see cref="SettingsPane"/> renders above, which skips the
-    /// <c>Hall9k__SpendPeriod</c> environment variable entirely and never validates the value it
-    /// does read: a hand-written <c>spend-period = "weekly"</c> in the config file reads back as
-    /// <see cref="SpendPeriod.Unknown"/>, whose blank <see cref="SpendPeriod.Value"/> would print
-    /// an empty period name, and <see cref="SpendPeriod.StartOf"/> quietly treats it as a week
-    /// regardless (independent pre-PR review, cycle 1, adversarial lens: this project's own
-    /// throughput could disagree with <c>h9k status</c> about which period is even current).
+    /// The period comes from <see cref="SpendPressure.ReadAsync"/>, the exact call <c>h9k status</c>
+    /// reads its own period through — never a bare <see cref="OperatingSettingsResolver.ResolveAsync"/>,
+    /// which only ever sees the freshly-resolved config and does not know a daemon is currently
+    /// enforcing a different one. <see cref="SpendPressure"/> prefers the published, confirmed-live
+    /// <c>NodeDispatchLoad.SpendPeriod</c> over the freshly-resolved value whenever a budget is
+    /// confirmed enforced, so a config-file edit an operator makes without restarting the daemon is
+    /// not reported here as though it were already in force (independent pre-PR review, cycle 2,
+    /// conformance lens: this project's own throughput could otherwise disagree with <c>h9k
+    /// status</c> about which period is even current whenever a budget is actually enforced by a
+    /// live daemon). It also never reads the raw config-file settings <see cref="SettingsPane"/>
+    /// renders above, which skips the <c>Hall9k__SpendPeriod</c> environment variable entirely and
+    /// never validates the value it does read: a hand-written <c>spend-period = "weekly"</c> in the
+    /// config file reads back as <see cref="SpendPeriod.Unknown"/>, whose blank <see
+    /// cref="SpendPeriod.Value"/> would print an empty period name, and <see
+    /// cref="SpendPeriod.StartOf"/> quietly treats it as a week regardless (independent pre-PR
+    /// review, cycle 1, adversarial lens).
     /// </para>
     /// </summary>
     private static async Task WriteThroughputAsync(
@@ -77,7 +84,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         try
         {
             OperatingSettingsReport settingsReport = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
-            SpendPeriod period = SpendPeriod.FromInput(settingsReport.SpendPeriod.Value);
+            SpendPressure spendPressure = await SpendPressure.ReadAsync(session, settingsReport, now, cancellationToken);
+            SpendPeriod period = SpendPeriod.FromInput(spendPressure.Period);
             DateTimeOffset periodStart = period.StartOf(now);
             DateTimeOffset previousPeriodStart = period == SpendPeriod.Day ? periodStart.AddDays(-1) : periodStart.AddDays(-7);
 
