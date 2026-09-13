@@ -127,11 +127,16 @@ public static class DaemonProcess
             process.Kill(entireProcessTree: true);
             return true;
         }
-        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException
-            or Win32Exception or AggregateException)
+        catch (Exception exception) when (exception is ArgumentException or InvalidOperationException or Win32Exception)
         {
-            // AggregateException: Process.Kill(entireProcessTree: true) is documented to throw it
-            // when some descendant in the tree could not be signalled (a setuid helper, a process
+            // The pid is no longer running, has already exited, or was reused by another
+            // user's process — nothing this call did ended it, so report it that way.
+            return false;
+        }
+        catch (AggregateException)
+        {
+            // Process.Kill(entireProcessTree: true) is documented to throw it when some
+            // descendant in the tree could not be signalled (a setuid helper, a process
             // owned by another user) — the root is already dead by the time it is thrown, so this
             // still reads as "terminated" rather than surfacing an unmapped failure that would
             // abandon the rest of h9k run kill's own loop over the run's other active sessions.
