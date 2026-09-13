@@ -465,13 +465,22 @@ their own. Both:
   there, never into a `repo/dev` worktree) and where its working state lives (the idea's
   `workspace/`, or the draft's own directory under `tasks/`) — nothing it remembers is
   authoritative if that directory disagrees.
-- State the boundary: discovery turns a settled idea into a draft with `h9k idea promote
-  <idea-id> [--project <name>] [--objective ...]` (`--project` is required unless the idea is
-  already assigned to one), never `h9k task add`, because promotion is the
-  platform's own hinge (Decisions Log #35) and the only way a draft's provenance carries the idea
-  it came from (`TaskAggregate.SourceIdeaId`, rendered by `h9k task show` as "From idea") rather
-  than a hand-typed id in free text; once promoted, discovery revises the draft with
-  `h9k task revise` the same as refinement does. Neither discovery nor refinement ever publishes,
+- State the boundary: discovery turns a settled idea into a draft with `h9k task add --from-idea
+  <idea-id> --objective "…" [--project <name>]` (`--project` falls back to the idea's own assigned
+  project, `--objective` is required — never hand-typed as a plain `h9k task add --objective`,
+  which would carry the idea's id nowhere), through the ordinary add door rather than a separate
+  ceremony (backlog 31), and repeatably: discovery may keep producing, so cutting a second or
+  third task from the same idea is normal, not a mistake to flag. That is the only way a draft's
+  provenance carries the idea it came from (`TaskAggregate.SourceIdeaId`, rendered by `h9k task
+  show` as "From idea" and by `h9k idea show` as the whole fan-out) rather than a hand-typed id in
+  free text. `h9k idea promote <idea-id> [--project <name>] [--objective ...]` is sugar over
+  cutting exactly one task and concluding the idea in the same breath — reach for it only when
+  discovery is genuinely done producing after this one task, never as the default door, since it
+  forecloses the idea before a fan-out session's own next round of discovery gets a chance to
+  produce a second task from it. Once a task exists, discovery revises it with `h9k task revise`
+  the same as refinement does, and closes the idea's own loop explicitly with `h9k idea conclude
+  <id> --reason "…"` (something came of it) or `h9k idea archive <id> --reason "…"` (nothing did) once
+  discovery has genuinely stopped producing — never left implicit. Neither discovery nor refinement ever publishes,
   assigns, or touches the daemon, the board, or a running task; refinement revises with
   `h9k task revise` and reads with `h9k task show`. Publishing waits for the operator to walk the
   criteria.

@@ -81,12 +81,19 @@ owns a workspace directory at `~/.hall9k/ideas/<idea-id>/workspace` where resear
 gathered files, and prototypes accumulate. The event stream records milestones only; file
 contents stay on disk.
 
-A **task** is an idea with intent. `h9k idea promote` is the hinge: discovery ends and
-**refinement** begins, which answers "how does this become executable?". The idea's note seeds
-the draft mechanically (its first sentence becomes the objective, the remainder becomes agent
-context), the workspace pointer rides along, and provenance is recorded in both directions. An
-idea that is discarded is closed with its reason and never deleted, because an idea that keeps
-coming back is a signal and only a kept record can show it.
+A **task** is an idea with intent. There is no single graduation ceremony: `h9k task add
+--from-idea <id> --objective "…"` cuts one draft task from an idea through the ordinary add door,
+and it fans out into as many tasks as discovery produces — invoked repeatedly, one idea yields
+many. Each cut needs its own objective (several tasks fanned out from one idea cannot share its
+first sentence), the idea's whole note and its workspace pointer ride along as agent context
+automatically, and provenance is recorded in both directions: the task names the idea, and the
+idea's own stream names every task cut from it (`h9k idea show` lists the whole fan-out with each
+task's current state). Cutting a task never ends the idea — discovery may keep producing — so an
+idea reaches one of its two terminal states only by an explicit, separate human act: **concluded**
+(`h9k idea conclude <id> --reason "…"`, discovery produced something) or **archived** (`h9k idea archive
+<id> --reason "…"`, it did not). `h9k idea promote` survives as sugar over cutting exactly one task with
+the note's first sentence as the objective and concluding in the same breath, for the common case
+where a single idea deserved a single task and nothing more is coming.
 
 A task always maps to at most one external work item: a GitHub issue or a Jira card. **Content
 belongs to the external system; everything operational belongs to the task.** The task carries

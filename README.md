@@ -82,8 +82,9 @@ deeper dives live in [docs/](docs/).
    builds the project's home directory. Everything else happens inside a registered project.
 2. **[Capture an idea](#capture-an-idea)** records a thought in whatever words you had it in.
    Discovery is what happens to it next: figuring out what it actually is.
-3. **[Promote it into a task](#promote-an-idea-into-a-task)** is the hinge from thinking to
-   intent. A task can also be written directly when the work arrives already formed.
+3. **[Cut a task from it](#cut-a-task-from-an-idea)** is the hinge from thinking to intent —
+   through the ordinary add door, repeatable, so one idea can fan out into any number of tasks.
+   A task can also be written directly when the work arrives already formed.
 4. **[Refine the draft](#refine-the-draft)** until it carries checkable acceptance criteria.
    A draft is invisible to the dispatcher, so this is the safe place to iterate.
 5. **[Publish it, then assign it](#publish-it-then-assign-it)** is the readiness gate followed
@@ -121,18 +122,27 @@ on the record.
 
 ```
 $ h9k idea list                              # what is still in discovery
-$ h9k idea show 3ba186b6                     # note, workspace path, history
+$ h9k idea show 3ba186b6                     # note, workspace path, history, fan-out
 $ h9k idea revise 3ba186b6 "Sharper wording"
-$ h9k idea discard 3ba186b6 --reason "…"     # closed honestly, never deleted
+$ h9k idea archive 3ba186b6 --reason "…"     # closed honestly, never deleted
 ```
 
-### Promote an idea into a task
+### Cut a task from an idea
 
-A task is an idea with intent, and `h9k idea promote` is the hinge between the two:
+A task is an idea with intent, and there is no single graduation ceremony: `h9k task add
+--from-idea` cuts one, through the same door every other task comes through, and one idea fans
+out into as many tasks as discovery produces:
 
 ```
-$ h9k idea promote 3ba186b6
+$ h9k task add --from-idea 3ba186b6 --objective "Add rate limiting to the auth endpoints"
 ```
+
+The idea's whole note and its discovery workspace pointer ride along as agent context
+automatically. Cutting a task never ends the idea — discovery may keep producing — so say so
+explicitly once it stops: `h9k idea conclude 3ba186b6 --reason "…"` when something came of it, or
+`h9k idea archive 3ba186b6 --reason "…"` when nothing did. For the common case of one idea and one
+task, `h9k idea promote 3ba186b6` does both in one command: cuts the task (its first sentence
+becomes the objective) and concludes the idea.
 
 Work that arrives already formed can skip the idea and be written down directly. Creation asks
 for identity, not readiness: a project and an objective. Acceptance criteria are what the
@@ -618,10 +628,11 @@ Below that sit the documents the new docs point into rather than replace:
 
 **Working today:** the whole dispatch pipeline (draft, publish, assign, claim, worktree, detached
 agent, verification gates, two-lens pre-PR review, pull request, closeout monitoring, merge
-observation); the task dependency graph with context routing along its edges; ideas and
-promotion; GitHub issue and Jira card adoption; per-project and per-owner settings; failed-task
-recovery; the attention pane; a pull request requesting the install's own GitHub login for review
-starting a `pr-review` task automatically.
+observation); the task dependency graph with context routing along its edges; ideas fanning out
+into any number of tasks, with promotion surviving as sugar over one-and-done; GitHub issue and
+Jira card adoption; per-project and per-owner settings; failed-task recovery; the attention pane;
+a pull request requesting the install's own GitHub login for review starting a `pr-review` task
+automatically.
 
 **Designed but not built:** the mid-run question loop (`h9k ask` / `h9k answer`, Slice 2: the
 events are on the stream and the commands are not, so an agent that needs a decision today makes
