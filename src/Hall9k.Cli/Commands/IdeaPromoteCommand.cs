@@ -118,7 +118,14 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         // The idea decides first: its refusals (already concluded, archived) teach better than
-        // the task decider's would, and nothing is appended when one fires.
+        // the task decider's would, and nothing is appended when one fires. The binding to
+        // destinationProjectId travels in the same batch as the cut and the conclusion — the
+        // retired IdeaPromoted event used to set ProjectId unconditionally on Apply, and a
+        // concluded idea is terminal, so an idea left unassigned here could never be assigned
+        // afterward (independent pre-PR review).
+        IdeaAssignedToProject? binding = destinationProjectId != idea.ProjectId
+            ? IdeaDecider.AssignToProject(idea, destinationProjectId, now, context.OwnerId)
+            : null;
         IdeaTaskCut cut = IdeaDecider.CutTask(idea, taskId, seed.Objective, now, context.OwnerId);
         IdeaConcluded concluded = IdeaDecider.Conclude(
             idea, $"Promoted into a single task: {seed.Objective}", now, context.OwnerId);
@@ -138,8 +145,9 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
             blockedBy: null,
             sourceIdeaId: idea.Id);
 
+        object[] ideaEvents = binding is null ? [cut, concluded] : [binding, cut, concluded];
         session.Events.StartStream<TaskAggregate>(taskId, added);
-        session.Events.Append(idea.Id, expectedVersion: fence.Version + 2, cut, concluded);
+        session.Events.Append(idea.Id, expectedVersion: fence.Version + ideaEvents.Length, ideaEvents);
         try
         {
             await session.SaveChangesAsync(cancellationToken);

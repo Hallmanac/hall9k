@@ -615,6 +615,60 @@ public sealed class StoreBackedRecordTests(PostgresFixture postgres) : IClassFix
     }
 
     /// <summary>
+    /// What <c>h9k idea promote --project</c> writes for an idea capture never assigned anywhere:
+    /// the binding, the cut, and the conclusion in one fenced append. The retired
+    /// <see cref="IdeaPromoted"/> event used to set <c>ProjectId</c> unconditionally on
+    /// <c>Apply</c>, so promote's own project always won even for an idea capture never assigned
+    /// — the composed door has to reproduce that, or an idea promoted with no prior project stays
+    /// unassigned forever once concluded makes it terminal (independent pre-PR review, adversarial
+    /// lens, medium).
+    /// </summary>
+    [Fact]
+    public async Task Promoting_an_unassigned_idea_into_a_named_project_binds_it_before_concluding()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid ideaId = DomainId.New();
+        Guid taskId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(
+                ideaId, ownerId, "Promote me into a project I never had", projectId: null,
+                PromotionNow, ProjectHome.None));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            StreamState fence = (await session.Events.FetchStreamStateAsync(ideaId, cts.Token))!;
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(
+                ideaId, version: fence.Version, token: cts.Token))!;
+
+            IdeaAssignedToProject assigned = IdeaDecider.AssignToProject(
+                idea, projectId, PromotionNow.AddHours(1), ownerId);
+            IdeaTaskCut cut = IdeaDecider.CutTask(
+                idea, taskId, "Promote me into a project I never had", PromotionNow.AddHours(1), ownerId);
+            IdeaConcluded concluded = IdeaDecider.Conclude(
+                idea, "Promoted into a single task", PromotionNow.AddHours(1), ownerId);
+
+            session.Events.Append(ideaId, expectedVersion: fence.Version + 3, assigned, cut, concluded);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession session = store.QuerySession())
+        {
+            IdeaDetails idea = (await session.LoadAsync<IdeaDetails>(ideaId, cts.Token))!;
+            idea.ProjectId.Should().Be(projectId, "promote's own project always wins, the way the retired event did");
+            idea.State.Should().Be(IdeaState.Concluded);
+            idea.CutTaskIds.Should().Equal(taskId);
+        }
+    }
+
+    /// <summary>
     /// What h9k task add --from-idea writes: the task's first event and the idea's own cut,
     /// unfenced — the same way every ordinary idea mutation is (h9k idea assign, h9k idea
     /// revise). Cutting has no "once" invariant to protect against racing itself, unlike
