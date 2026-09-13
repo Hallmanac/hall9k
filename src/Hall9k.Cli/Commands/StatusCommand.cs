@@ -82,10 +82,16 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         // already covers the "nothing is reachable" case, and this pane's whole job is to still
         // say something useful when part of the picture is missing.
         SpendPressure? spend = null;
+        // Hoisted out of the try below so the queued section's own heading (further down) can
+        // scope its period total to the identical window, rather than reparsing spend.Period a
+        // second time and risking the two ever reading a different period (task: h9k status
+        // reports throughput beside spend).
+        SpendPeriod? period = null;
         try
         {
             OperatingSettingsReport spendReport = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
             spend = await SpendPressure.ReadAsync(session, spendReport, now, cancellationToken);
+            period = SpendPeriod.FromInput(spend.Period);
             AnsiConsole.MarkupLineInterpolated($"[dim]{spend.SummaryLine}[/]");
             foreach (string line in spend.ByModelLines)
             {
@@ -102,15 +108,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         // can never name different windows. Skipped, not degraded to its own error line, when
         // spend itself could not be read — there is no period to scope it to, and the line above
         // already said the picture is incomplete.
-        if (spend is not null)
+        if (period is { } resolvedPeriod)
         {
             try
             {
-                SpendPeriod period = SpendPeriod.FromInput(spend.Period);
-                DateTimeOffset periodStart = period.StartOf(now);
+                DateTimeOffset periodStart = resolvedPeriod.StartOf(now);
                 ThroughputSummary throughput = await ThroughputQuery.ReadAsync(
                     session, periodStart, now, now, projectId: null, cancellationToken);
-                foreach (string line in ThroughputPane.ComposeLines(throughput, period.Value))
+                foreach (string line in ThroughputPane.ComposeLines(throughput, resolvedPeriod.Value))
                 {
                     AnsiConsole.MarkupLineInterpolated($"[dim]{line}[/]");
                 }
@@ -207,13 +212,11 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 .Distinct()
                 .Count();
 
-            // How long each queued row has actually waited, and the section's own total — the
-            // exact FoldQueued TaskPassageQuery.Compute already owns for the passage section's own
-            // Queued row (task: h9k status reports throughput beside spend), so this can never
-            // read a different wait for the same task than h9k task show does. Read for every row
-            // the section is holding, not only the ones it prints: the total belongs to the whole
-            // queue, and PerSection's own "… and N more" is a display cutoff, not a scope on what
-            // this figure counts.
+            // How long each queued row has actually waited right now — TaskPassageQuery's own
+            // current-segment fold (task: h9k status reports throughput beside spend), the same
+            // reading h9k task show would give this task's own current queue stay. Read for every
+            // row the section is holding, not only the ones it prints: PerSection's own "… and N
+            // more" is a display cutoff, not a scope on what this figure counts.
             IReadOnlyList<TaskStatusRow> queuedRows = SectionRows(rows, AttentionBucket.Queued, inServiceOrder: true);
             Dictionary<Guid, PassagePhase> queuedWaits = [];
             foreach (TaskStatusRow queuedRow in queuedRows)
@@ -222,10 +225,17 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                     session, queuedRow.TaskId, now, cancellationToken);
             }
 
-            TimeSpan totalQueueTime = queuedWaits.Values
-                .Select(phase => phase.Elapsed)
-                .OfType<TimeSpan>()
-                .Aggregate(TimeSpan.Zero, (sum, elapsed) => sum + elapsed);
+            // The heading's own total is a different figure from any one row's current wait: how
+            // much of this spend period every task actually spent queued, including a task that
+            // queued during the period and has since been claimed — QueuedPeriodTotal's own doc
+            // explains why that is not simply the sum of the waits just read above. Zero when the
+            // period itself could not be resolved (spend was unavailable this run): there is no
+            // window to scope the total to, the same "skip rather than guess" call the throughput
+            // block above already makes.
+            TimeSpan totalQueueTime = period is { } queuedPeriod
+                ? await QueuedPeriodTotal.ReadAsync(
+                    session, [.. queuedRows.Select(row => row.TaskId)], queuedPeriod.StartOf(now), now, cancellationToken)
+                : TimeSpan.Zero;
 
             IReadOnlyList<TaskStatusRow> rowsWithWait =
             [
@@ -339,13 +349,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// clause at all.
     /// </para>
     /// <para>
-    /// <paramref name="totalQueueTime"/> is the sum of every row's own current wait
-    /// (<see cref="TaskPassageQuery.ReadQueuedAsync"/>, the identical fold the passage section's
-    /// own Queued row uses) across every row this section is holding, not only the ones it prints
-    /// — the same total the throughput block would report if this backlog closed out today (task:
-    /// h9k status reports throughput beside spend). Zero renders nothing extra: a queue nothing
-    /// has waited in yet (every row just landed, or every row's own wait reads unknown) has
-    /// nothing worth adding to a heading already full of causes.
+    /// <paramref name="totalQueueTime"/> is the current spend period's own total queue time
+    /// (<see cref="QueuedPeriodTotal"/>) — every task that queued during the period, whether it is
+    /// still queued now or has since been claimed, clipped to the period window (task: h9k status
+    /// reports throughput beside spend). Not the sum of the rows below's own current waits: a
+    /// row's own wait can run back to well before this period started, and a task the period
+    /// caught mid-queue but which has since been claimed prints no row here at all. Zero renders
+    /// nothing extra: a period with nothing queued in it yet, or one this run could not resolve a
+    /// window for, has nothing worth adding to a heading already full of causes.
     /// </para>
     /// </summary>
     internal static string QueuedHeading(
@@ -440,13 +451,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     }
 
     /// <summary>
-    /// One queued row's own wait, appended to its fact line (task: h9k status reports throughput
-    /// beside spend): the row already says it is "waiting for a slot" or "held" — this says for
-    /// how long, off the identical fold <see cref="TaskPassageQuery.ReadQueuedAsync"/> shares with
-    /// the passage section's own Queued row, so the two can never disagree about the same task.
-    /// Unknown rather than a guessed zero for a stream whose own queued boundary could not be
-    /// found (<see cref="PassagePhase.IsUnknown"/>) — the same honesty <see cref="PassagePhase"/>'s
-    /// own doc asks of every other reader of this fold.
+    /// One queued row's own current wait, appended to its fact line (task: h9k status reports
+    /// throughput beside spend): the row already says it is "waiting for a slot" or "held" — this
+    /// says for how long it has waited in the segment it is queued in right now, off
+    /// <see cref="TaskPassageQuery.ReadQueuedAsync"/>'s own current-segment fold, not the lifetime
+    /// total across every lap this task has ever taken. Unknown rather than a guessed zero for a
+    /// stream whose own queued boundary could not be found (<see cref="PassagePhase.IsUnknown"/>)
+    /// — the same honesty <see cref="PassagePhase"/>'s own doc asks of every other reader of this
+    /// fold.
     /// </summary>
     private static string WaitedForSlotFact(PassagePhase queued) => queued.Elapsed is { } elapsed
         ? $"waited {DurationFormat.Short(elapsed)} for a slot"
