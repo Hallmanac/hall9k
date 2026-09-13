@@ -169,6 +169,75 @@ public sealed class ProjectAddCommandTests : IDisposable
         act.Should().NotThrow();
     }
 
+    [Fact]
+    public void Reactivate_archived_with_no_matching_project_at_all_is_refused()
+    {
+        ProjectAddCommand.Settings settings = new() { Name = "smoke", ReactivateArchived = true };
+
+        Action act = () => ProjectAddCommand.RequireArchivedCollisionTargetExists(existing: null, settings, "smoke");
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*--reactivate-archived*no project named 'smoke'*");
+    }
+
+    [Fact]
+    public void Rename_archived_to_with_no_matching_project_at_all_is_refused()
+    {
+        ProjectAddCommand.Settings settings = new() { Name = "smoke", RenameArchivedTo = "smoke-old" };
+
+        Action act = () => ProjectAddCommand.RequireArchivedCollisionTargetExists(existing: null, settings, "smoke");
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*--rename-archived-to*no project named 'smoke'*");
+    }
+
+    [Fact]
+    public void Neither_archived_collision_flag_with_no_matching_project_is_not_refused()
+    {
+        ProjectAddCommand.Settings settings = new() { Name = "smoke" };
+
+        Action act = () => ProjectAddCommand.RequireArchivedCollisionTargetExists(existing: null, settings, "smoke");
+
+        act.Should().NotThrow("with neither flag passed, no project named 'smoke' just means an ordinary registration");
+    }
+
+    [Fact]
+    public void An_archived_collision_flag_with_a_matching_project_is_not_refused()
+    {
+        ProjectDetails archived = RegisteredAt("smoke", ProjectHomePaths.DefaultFor("smoke"));
+        ProjectAddCommand.Settings settings = new() { Name = "smoke", ReactivateArchived = true };
+
+        Action act = () => ProjectAddCommand.RequireArchivedCollisionTargetExists(archived, settings, "smoke");
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Reactivation_with_no_registration_flags_discards_nothing()
+    {
+        ProjectAddCommand.Settings settings = new() { Name = "smoke", ReactivateArchived = true };
+
+        ProjectAddCommand.DiscardedRegistrationFlags(settings).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Reactivation_names_every_registration_flag_it_discards()
+    {
+        ProjectAddCommand.Settings settings = new()
+        {
+            Name = "smoke",
+            ReactivateArchived = true,
+            RepositoryUrl = "https://example.test/repo.git",
+            RepositoryPath = "/somewhere/repo",
+            Home = "/somewhere/home",
+            NoHome = true,
+            BaseBranch = "develop",
+        };
+
+        ProjectAddCommand.DiscardedRegistrationFlags(settings).Should().BeEquivalentTo(
+            ["--repo-url", "--repo", "--home", "--no-home", "--base-branch"],
+            "an operator who passed these alongside --reactivate-archived needs to be told none of "
+            + "them were recorded, not left to assume they were");
+    }
+
     private static ProjectDetails RegisteredAt(string name, string? homeDirectory)
     {
         ProjectDetailsProjection projection = new();
