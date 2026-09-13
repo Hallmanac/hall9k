@@ -9036,6 +9036,113 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// The realistic case <see cref="ReviewEngine.CaptureStrandedDeltaAsync"/>'s own <c>git cherry</c> switch
+    /// exists for (this project rebase-merges, docs/concepts.md): one branch commit already landed
+    /// on the base under a brand-new sha, sitting alongside a second commit the base never got at
+    /// all. A sha-based comparison would misread the rebase-landed commit as still stranded and
+    /// hand a re-land draft a patch that duplicates work already on main; this proves the patch-id
+    /// comparison tells the two apart and only the genuinely stranded commit is saved.
+    /// </summary>
+    [Fact]
+    public async Task A_rebase_landed_commit_is_never_reported_stranded_alongside_a_genuinely_stranded_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        string worktreePath = Path.Combine(_home, $"wt-{runId:N}");
+        Directory.CreateDirectory(_home);
+
+        // This test rewrites the origin's own main to simulate a rebase-merge, so — unlike the
+        // sibling stranded-commit tests above — it needs an origin of its own rather than the
+        // class's shared read-only template.
+        string originPath = OriginFor(runId, ownOrigin: true);
+        Git(_home, $"clone -q \"{originPath}\" \"{worktreePath}\"");
+        Git(worktreePath, "checkout -q -b task/review-me");
+        File.WriteAllText(Path.Combine(worktreePath, "Landed.cs"), "class Landed { }\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m landed");
+        string landedSha = GitOutput(worktreePath, "rev-parse HEAD");
+        File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { }\n");
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m widget");
+
+        // Simulates the rebase-merge: a second clone lands the same patch as "landed" onto main
+        // under a fresh sha (cherry-pick always mints a new commit object), then pushes it — the
+        // worktree above still carries its own original-sha copy of that same commit.
+        string landingClonePath = Path.Combine(_home, $"landing-{runId:N}");
+        Git(_home, $"clone -q \"{originPath}\" \"{landingClonePath}\"");
+        Git(landingClonePath, $"fetch -q \"{worktreePath}\" task/review-me");
+        Git(landingClonePath, $"-c user.name=Test -c user.email=test@test cherry-pick {landedSha}");
+        Git(landingClonePath, "push -q origin main");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"followup-{taskId:N}", worktreePath,
+            FollowUpRepositoryUrl, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(taskId, projectId, "Address the review feedback", ["reviewed"],
+                TaskType.Chore, null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        var firstClaim = TaskDecider.Claim(task, node.NodeId, node.OwnerId, firstRunId, Now);
+        task.Apply(firstClaim);
+        var completed = TaskDecider.Complete(task, firstRunId, FollowUpPullRequestUrl, Now);
+        task.Apply(completed);
+        var reopened = TaskDecider.Reopen(
+            task, firstRunId, "task/review-me", "A reviewer left feedback on the pull request.",
+            FollowUpKind.ReviewFeedback, automatic: true, Now, node.OwnerId);
+        task.Apply(reopened);
+        var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        task.Apply(claimed);
+        session.Events.StartStream<TaskAggregate>(
+            taskId, [.. lifecycle, firstClaim, completed, reopened, claimed]);
+        session.Store(new TaskLease
+        {
+            Id = taskId, NodeId = node.NodeId, LeaseGeneration = task.LeaseGeneration, HeartbeatAt = Now,
+        });
+
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, node.OwnerId, task.LeaseGeneration, DomainId.New(),
+                worktreePath, "task/review-me", ExecutorMode.Subscription, Now, IsFollowUp: true),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now));
+        await session.SaveChangesAsync(cts.Token);
+
+        ScriptedExecutor executor = new("Every acceptance criterion is met.\n\nVERDICT: merge-ready");
+        MergeReportingInspector inspector = new(mergedFromInspection: 1);
+
+        ReviewEngine engine = await NewMergeAwareEngineAsync(
+            store, executor, inspector, new RecordingWorktreeManager(), cts.Token);
+        bool mergeReady = await engine.ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse();
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReLandDraftTaskId.Should().NotBeNull(
+            "the widget commit never landed on main under any sha, so it is genuinely stranded");
+
+        string directory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+        string patchFile = Path.Combine(directory, $"re-land-{runId}.patch");
+        string commitListFile = Path.Combine(directory, $"re-land-{runId}-commits.txt");
+        string commitList = File.ReadAllText(commitListFile);
+        commitList.Should().Contain("widget", "the genuinely stranded commit is named");
+        commitList.Should().NotContain("landed",
+            "the rebase-landed commit already has an equivalent patch on main and must not be reported stranded");
+        File.ReadAllText(patchFile).Should().Contain("class Widget")
+            .And.NotContain("class Landed",
+                "the saved patch carries only the commit main never received");
+    }
+
+    /// <summary>
     /// The guard sits at the three dispatch boundaries and nowhere else, proven end-to-end rather
     /// than by reading the call sites: a merge that lands while a fix session is already running
     /// never reaches <c>AwaitFixSessionAsync</c>, so that session finishes and its resolution is
