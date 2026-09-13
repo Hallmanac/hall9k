@@ -187,6 +187,39 @@ public sealed class TaskPassageQueryTests
     }
 
     [Fact]
+    public void Queued_closes_on_task_completed_when_a_reopen_lands_blocked_and_is_never_claimed()
+    {
+        // TaskDecider.Complete deliberately admits a task in TaskState.Blocked: a reopen landed
+        // Blocked behind a still-open dependency, whose watched run then merged anyway, and
+        // CloseoutEngine.CompleteCloseoutAsync finalizes it to Done with no TaskClaimed ever
+        // following the reopen. Without a closer on TaskCompleted the queued segment this reopen
+        // opened stays open forever on a task that has already merged (independent pre-PR
+        // review, cycle 1, adversarial finding; cycle 1, conformance finding).
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid dependencyId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset reopenedAt = Now.AddHours(-2);
+        DateTimeOffset completedAt = Now.AddHours(-1);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskAssigned(taskId, ownerId, [dependencyId], reopenedAt.AddDays(-1), ownerId)),
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, runId, reopenedAt.AddDays(-1).AddMinutes(5))),
+            Ev(new TaskReopened(taskId, runId, "task/x", null, reopenedAt, ownerId)),
+            Ev(new TaskCompleted(taskId, runId, "https://github.com/o/r/pull/1", completedAt)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, [], taskConcluded: true);
+
+        // The dependency was never observed to clear, so the whole dangling window is deducted
+        // as blocked time rather than counted as queued — the elapsed figure was already correct
+        // before this fix (per the conformance finding); only the still-open suffix was wrong.
+        passage.Queued.StillOpen.Should().BeFalse();
+        passage.Queued.Elapsed.Should().Be(TimeSpan.Zero);
+    }
+
+    [Fact]
     public void Building_runs_from_dispatch_to_the_first_verification()
     {
         Guid runId = DomainId.New();
@@ -494,6 +527,47 @@ public sealed class TaskPassageQueryTests
         TaskPassage passage = Compute(taskEvents, [run], taskConcluded: true);
 
         passage.ClaimToMerge.Elapsed.Should().Be(TimeSpan.FromHours(5));
+    }
+
+    [Fact]
+    public void Claim_to_merge_is_not_applicable_when_the_task_concluded_without_ever_pushing_a_pull_request()
+    {
+        // A task claimed, run failed, owner walked away with h9k task abandon: no TaskCompleted
+        // ever named a pull request, so this merge boundary was never this task's to have —
+        // "not applicable", never "unknown" (independent pre-PR review, cycle 1, adversarial
+        // finding).
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset claimedAt = Now.AddHours(-3);
+        DateTimeOffset abandonedAt = Now.AddHours(-1);
+
+        List<IEvent> taskEvents =
+        [
+            Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, runId, claimedAt)),
+            Ev(new TaskAbandoned(taskId, "no longer needed", abandonedAt, ownerId)),
+        ];
+
+        TaskPassage passage = Compute(taskEvents, [], taskConcluded: true);
+
+        passage.ClaimToMerge.Applicable.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Claim_to_merge_stays_open_while_the_task_is_still_claimed_with_no_pull_request_pushed_yet()
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid runId = DomainId.New();
+        DateTimeOffset claimedAt = Now.AddHours(-2);
+
+        List<IEvent> taskEvents = [Ev(new TaskClaimed(taskId, ownerId, ownerId, 1, runId, claimedAt))];
+
+        TaskPassage passage = Compute(taskEvents, [], taskConcluded: false);
+
+        passage.ClaimToMerge.Applicable.Should().BeTrue();
+        passage.ClaimToMerge.StillOpen.Should().BeTrue();
+        passage.ClaimToMerge.Elapsed.Should().Be(TimeSpan.FromHours(2));
     }
 
     [Fact]

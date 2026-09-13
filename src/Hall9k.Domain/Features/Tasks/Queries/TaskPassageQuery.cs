@@ -135,7 +135,7 @@ public static class TaskPassageQuery
             : FoldMergeWait(completedWithPr, folds, taskConcluded, now);
         PassagePhase claimToMerge = taskType == TaskType.PrReview
             ? PassagePhase.NotApplicable
-            : FoldClaimToMerge(taskEvents, folds, taskConcluded, now);
+            : FoldClaimToMerge(taskEvents, completedWithPr, folds, taskConcluded, now);
 
         List<HumanWaitPassage> humanWaits = [];
         AddIfPresent(humanWaits, HumanWaitKind.ReviewPark, SumOpenIntervals(
@@ -286,6 +286,16 @@ public static class TaskPassageQuery
                     break;
                 case TaskReturnedToDraft returned:
                     Close(returned.ReturnedAt);
+                    break;
+                case TaskCompleted completed:
+                    // TaskDecider.Complete deliberately admits a task in TaskState.Blocked (a
+                    // reopen landed Blocked behind a still-open dependency, whose watched run then
+                    // merged anyway) — CloseoutEngine.CompleteCloseoutAsync finalizes that task to
+                    // Done with no TaskClaimed ever following the reopen, so this segment's own
+                    // switch would otherwise never close it and a merged, Done task would print
+                    // "queued ... so far" forever (independent pre-PR review, cycle 1, both
+                    // lenses).
+                    Close(completed.CompletedAt);
                     break;
             }
         }
@@ -725,13 +735,14 @@ public static class TaskPassageQuery
             return PassagePhase.NotApplicable;
         }
 
-        return FoldUntilMerged(taskCompletedWithPr.Max(), folds, taskConcluded, now);
+        return FoldUntilMerged(taskCompletedWithPr.Max(), folds, everHadPullRequest: true, taskConcluded, now);
     }
 
     // --- Claim to merge: the first TaskClaimed to PullRequestMerged ---
 
     private static PassagePhase FoldClaimToMerge(
-        IReadOnlyList<IEvent> taskEvents, IReadOnlyList<RunFold> folds, bool taskConcluded, DateTimeOffset now)
+        IReadOnlyList<IEvent> taskEvents, IReadOnlyList<DateTimeOffset> completedWithPr, IReadOnlyList<RunFold> folds,
+        bool taskConcluded, DateTimeOffset now)
     {
         List<DateTimeOffset> claims = [.. taskEvents.Select(recorded => recorded.Data).OfType<TaskClaimed>().Select(claimed => claimed.ClaimedAt)];
         if (claims.Count == 0)
@@ -739,7 +750,7 @@ public static class TaskPassageQuery
             return PassagePhase.NotApplicable;
         }
 
-        return FoldUntilMerged(claims.Min(), folds, taskConcluded, now);
+        return FoldUntilMerged(claims.Min(), folds, completedWithPr.Count > 0, taskConcluded, now);
     }
 
     /// <summary>
@@ -749,9 +760,21 @@ public static class TaskPassageQuery
     /// persist across every follow-up lap (<c>TaskReopened</c>'s own doc). Unknown rather than
     /// open once the task has concluded with no merge ever recorded: nothing further will ever
     /// close this interval, so leaving it "open" would grow forever on a task that is done.
+    /// <paramref name="everHadPullRequest"/> is <see langword="true"/> unconditionally for
+    /// <see cref="FoldMergeWait"/>'s own call (it never reaches here unless a
+    /// <see cref="TaskCompleted"/> already named a pull request) and is
+    /// <c>completedWithPr.Count &gt; 0</c> for <see cref="FoldClaimToMerge"/>'s: a task that
+    /// concludes (abandoned, or resolved with no <c>--pr</c>) without ever pushing a pull request
+    /// never had a merge boundary to observe in the first place, so that case reports
+    /// <see cref="PassagePhase.NotApplicable"/> rather than <see cref="PassagePhase.Unknown"/> —
+    /// the same "never happened" vs. "happened, but this stream does not say how long it took"
+    /// distinction <see cref="PassagePhase"/>'s own doc draws (independent pre-PR review, cycle 1,
+    /// adversarial finding: a claimed-then-abandoned task with no pull request ever printed "claim
+    /// to merge unknown", the label reserved for an observed-but-unmeasured boundary).
     /// </summary>
     private static PassagePhase FoldUntilMerged(
-        DateTimeOffset anchor, IReadOnlyList<RunFold> folds, bool taskConcluded, DateTimeOffset now)
+        DateTimeOffset anchor, IReadOnlyList<RunFold> folds, bool everHadPullRequest, bool taskConcluded,
+        DateTimeOffset now)
     {
         DateTimeOffset? merged = folds.Select(fold => fold.PullRequestMergedAt).FirstOrDefault(value => value is not null);
         if (merged is { } mergedAt)
@@ -770,7 +793,13 @@ public static class TaskPassageQuery
         // concluded regardless of the caller's own taskConcluded reading (independent pre-PR
         // review, cycle 3, conformance finding: a Delivered-composed row with a closed,
         // unmerged pull request read taskConcluded false and grew this figure forever).
-        bool neverWillMerge = taskConcluded || folds.Any(fold => fold.PullRequestClosedWithoutMerge);
+        bool pullRequestClosedWithoutMerge = folds.Any(fold => fold.PullRequestClosedWithoutMerge);
+        if (taskConcluded && !everHadPullRequest && !pullRequestClosedWithoutMerge)
+        {
+            return PassagePhase.NotApplicable;
+        }
+
+        bool neverWillMerge = taskConcluded || pullRequestClosedWithoutMerge;
         return neverWillMerge ? PassagePhase.Unknown() : PassagePhase.Open(Clamp(now - anchor));
     }
 
