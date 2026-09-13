@@ -1779,6 +1779,45 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         }
     }
 
+    /// <summary>
+    /// Archiving a project (task: a project can be archived, listed as archived, reactivated, and
+    /// renamed) stops this sweep from retrying an auth-stuck write against it, the same skip
+    /// CloseoutEngine and the render sweep already give an archived project — without it, an
+    /// auth-stuck write under an archived project kept retrying against a real Jira site
+    /// (independent pre-PR review, cycle 1, conformance lens; cycle 2 verify pass).
+    /// </summary>
+    [Fact]
+    public async Task An_auth_stuck_write_under_an_archived_project_is_left_pending_rather_than_retried()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        Guid taskId = await SeedTaskAsync(
+            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-987"), cts.Token, archiveProject: true);
+
+        RecordingJiraRequester rejecting = AuthRejected();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            JiraWriteAttemptResult submitted = await JiraWriteCoordinator.SubmitAsync(
+                session, taskId, JiraWriteOperation.Comment, issueKey: null,
+                new JiraWritePayload(null, null, "The pull request merged."), JiraProjectKey.None,
+                DomainId.New(), Executor(rejecting), cts.Token);
+
+            submitted.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
+        }
+
+        RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
+            _ => throw new InvalidOperationException("an archived project's write must never be retried"));
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, mustNotRun.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new JiraWriteRetrySweepResult(Retried: 0, Succeeded: 0), "the project is archived");
+        TaskAggregate? stillStuck = await LoadAsync(store, taskId, cts.Token);
+        stillStuck!.PendingJiraWriteIsAuthFailure.Should().BeTrue("the write stays pending until the project is reactivated");
+    }
+
     [Fact]
     public async Task A_failure_that_is_not_about_authentication_is_left_for_a_freshly_composed_write()
     {
@@ -1853,6 +1892,72 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         TaskAggregate? afterSecond = await LoadAsync(store, taskId, cts.Token);
         afterSecond!.HasQueuedJiraMergeNotice.Should().BeFalse("the retry sweep drained it exactly once");
         afterSecond.PendingJiraWriteId.Should().BeNull("the merge comment itself went through");
+    }
+
+    /// <summary>
+    /// Archiving a project (task: a project can be archived, listed as archived, reactivated, and
+    /// renamed) stops this sweep from draining a queued merge notice against it, the same skip
+    /// CloseoutEngine and the render sweep already give an archived project — without it, a queued
+    /// notice under an archived project drained to a real Jira write the moment nothing blocked it
+    /// any more (independent pre-PR review, cycle 1, conformance lens; cycle 2 verify pass).
+    /// </summary>
+    [Fact]
+    public async Task A_queued_merge_notice_under_an_archived_project_is_left_queued_rather_than_drained()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        Guid taskId = await SeedTaskAsync(
+            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-135"), cts.Token, archiveProject: true);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.QueueJiraMergeNotice(task, JiraWriteNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
+            _ => throw new InvalidOperationException("an archived project's queued notice must never drain"));
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        JiraWriteRetryEngine engine = new(store, node, mustNotRun.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(
+            new JiraWriteRetrySweepResult(Retried: 0, Succeeded: 0, MergeNoticesDrained: 0),
+            "the project is archived");
+        TaskAggregate? stillQueued = await LoadAsync(store, taskId, cts.Token);
+        stillQueued!.HasQueuedJiraMergeNotice.Should().BeTrue("the notice stays queued until the project is reactivated");
+    }
+
+    /// <summary>
+    /// <c>h9k pr resolve</c>'s own archived-project refusal (task: a project can be archived,
+    /// listed as archived, reactivated, and renamed), the same guard <c>TaskAssignCommand.AppendAsync</c>
+    /// gives h9k task assign — without it, this command reopened a Done task straight to Queued,
+    /// which <c>DispatchEngine.ReadQueueAsync</c> then filters out for an archived project,
+    /// stranding it invisibly rather than dispatching a follow-up (independent pre-PR review,
+    /// cycle 1, adversarial lens; cycle 2 verify pass). Exercised directly against
+    /// <see cref="PullRequestResolveCommand.RefuseIfArchivedAsync"/> rather than through the
+    /// command's own <c>ExecuteAsync</c>, which opens its own store against the install's real
+    /// database.
+    /// </summary>
+    [Fact]
+    public async Task A_pull_request_resolve_under_an_archived_project_is_refused_before_reopening()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        Guid taskId = await SeedTaskAsync(
+            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-246"), cts.Token, archiveProject: true);
+
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+
+        Func<Task> refuse = () => PullRequestResolveCommand.RefuseIfArchivedAsync(session, task.ProjectId, cts.Token);
+
+        DomainValidationException refusal = (await refuse.Should().ThrowAsync<DomainValidationException>()).Which;
+        refusal.Message.Should().Contain("is archived").And.Contain("h9k project reactivate");
     }
 
     /// <summary>
@@ -2302,7 +2407,8 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     }
 
     private static async Task<Guid> SeedTaskAsync(
-        IDocumentStore store, ExternalReference? externalReference, CancellationToken cancellationToken)
+        IDocumentStore store, ExternalReference? externalReference, CancellationToken cancellationToken,
+        bool archiveProject = false)
     {
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
@@ -2325,6 +2431,16 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             agentContext: null, constraints: null, externalReference, JiraWriteNow, ownerId));
 
         await session.SaveChangesAsync(cancellationToken);
+
+        if (archiveProject)
+        {
+            await using IDocumentSession archiveSession = store.LightweightSession();
+            ProjectAggregate project = (await archiveSession.Events
+                .AggregateStreamAsync<ProjectAggregate>(projectId, token: cancellationToken))!;
+            archiveSession.Events.Append(projectId, ProjectDecider.Archive(project, null, JiraWriteNow, ownerId));
+            await archiveSession.SaveChangesAsync(cancellationToken);
+        }
+
         return taskId;
     }
 
