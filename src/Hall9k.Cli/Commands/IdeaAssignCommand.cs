@@ -45,6 +45,19 @@ public sealed class IdeaAssignCommand : Hall9kAsyncCommand<IdeaAssignCommand.Set
 
         IdeaAggregate idea = await IdeaIdResolver.LoadAsync(session, settings.Id, cancellationToken);
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
+        if (project.PurgeAt is { } purgeDeadline)
+        {
+            // Same reasoning as h9k task/idea/epic add and h9k idea promote: the sweep re-queries
+            // ownership by ProjectId at fire time, so an idea assigned here after scheduling is
+            // destroyed along with everything else rather than orphaned — and unlike those, this
+            // idea already has its own history, so the loss is not even a freshly-created draft
+            // (independent pre-PR review, cycle 3, both lenses, high).
+            throw new DomainValidationException(
+                $"Project '{project.Name}' is scheduled for permanent deletion at "
+                + $"{purgeDeadline.ToLocalTime():g}, so it cannot take this idea. Cancel the purge "
+                + $"first: h9k project cancel-purge {project.Name}");
+        }
+
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
 
         IdeaAssignedToProject assigned = IdeaDecider.AssignToProject(
