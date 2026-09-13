@@ -3219,8 +3219,19 @@ public sealed class CloseoutEngine(
 
         if (observation.Verdict == StackedParentVerdict.ParentMerged)
         {
-            StackedRetargetOutcome retarget = await TryRetargetStackedChildAsync(
-                run, project, observation.ParentBranch, cancellationToken);
+            // The base GitHub reports is read before the retarget is attempted, and a pull request
+            // already on the project's own base is not moved again (Decisions Log
+            // #PLACEHOLDER-c9a3a6c8). Not for the provider call's sake — gh pr edit --base is
+            // idempotent — but for the record's: a run whose pull request GitHub retargeted itself,
+            // when it deleted the merged parent's head branch, must not carry an event claiming
+            // this platform moved it, which is the guessed provenance AGENTS.md's never-guess rule
+            // forbids. A null BaseRefName (a provider read predating that field) takes the retarget
+            // path exactly as before rather than assuming anything about where the base is.
+            StackedRetargetOutcome retarget =
+                snapshot.BaseRefName is { } observedBase && observedBase == project.BaseBranch
+                    ? StackedRetargetOutcome.AlreadyOnBase(observation.ParentBranch, project.BaseBranch)
+                    : await TryRetargetStackedChildAsync(
+                        run, project, observation.ParentBranch, cancellationToken);
             session.Events.Append(run.Id, new StackedPullRequestRetargeted(
                 run.Id, observation.ParentBranch, project.BaseBranch, observation.BoundaryCommit,
                 retarget.Succeeded, retarget.Detail, now));
@@ -3236,8 +3247,8 @@ public sealed class CloseoutEngine(
             }
 
             logger.LogInformation(
-                "Task {TaskId}: stacked pull request {Url} retargeted from {ParentBranch} onto {BaseBranch}",
-                task.Id, task.PullRequestUrl, observation.ParentBranch, project.BaseBranch);
+                "Task {TaskId}: stacked pull request {Url} is aimed at {BaseBranch} now — {Detail}",
+                task.Id, task.PullRequestUrl, project.BaseBranch, retarget.Detail);
         }
 
         await DispatchFollowUpOrParkAsync(
@@ -3264,7 +3275,28 @@ public sealed class CloseoutEngine(
     }
 
     /// <summary>What one retarget attempt did — the same shape as <see cref="MechanicalRebaseOutcome"/>, for the same reason.</summary>
-    private readonly record struct StackedRetargetOutcome(bool Succeeded, string Detail);
+    private readonly record struct StackedRetargetOutcome(bool Succeeded, string Detail)
+    {
+        /// <summary>
+        /// The outcome for a pull request whose base was already the project's own when this sweep
+        /// looked, so no retarget was attempted at all. Succeeded, because the base is where the
+        /// retarget would have put it and the replay behind it is owed either way — but the detail
+        /// says plainly that nothing here moved it, and names the two ways a base gets there without
+        /// this platform's help: GitHub's own retarget when it deletes a merged parent's head branch
+        /// (which is what a repository with automatic head-branch deletion does, Decisions Log
+        /// #PLACEHOLDER-c9a3a6c8), and a pull request opened straight against the base because the
+        /// parent's branch was already gone at open time
+        /// (<c>PullRequestOpener.ResolveOpenBaseAsync</c>). Which of the two it was is not something
+        /// this sweep observed, so neither is asserted.
+        /// </summary>
+        public static StackedRetargetOutcome AlreadyOnBase(string parentBranch, string baseBranch) =>
+            new(
+                true,
+                $"its base was already {baseBranch} rather than {parentBranch} when this sweep looked, so "
+                + "nothing here moved it: GitHub retargets an open stacked child itself when it deletes a "
+                + "merged parent's head branch, and a child whose parent merged while it was still building "
+                + "opens against the base branch directly for the same reason");
+    }
 
     /// <summary>
     /// Moves the child pull request's base from the parent's branch onto the project's own, through

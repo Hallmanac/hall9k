@@ -170,6 +170,22 @@ public sealed record StackedParentObservation(
 /// Every call is made under <see cref="IWorktreeManager.AcquireRepositoryLockAsync"/>, the same lock
 /// every other direct-git path in the daemon takes (Decisions Log #4).
 /// </para>
+/// <para>
+/// <strong>A child GitHub has already retargeted.</strong> Where the repository deletes head
+/// branches on merge, GitHub takes the parent's branch off origin at the merge and moves every open
+/// child's base onto the base branch itself, all of it before any sweep here has observed the merge
+/// (Decisions Log #PLACEHOLDER-c9a3a6c8). Such a child reaches exactly two verdicts, in this order,
+/// and never a dead end: <see cref="StackedParentVerdict.Aligned"/> while the parent's merge is
+/// still unrecorded — the parent's head resolves from the pull request's own ref, the child contains
+/// it, and nothing is owed — and then <see cref="StackedParentVerdict.ParentMerged"/> once the
+/// parent's own closeout records the merge, which is what dispatches the replay that drops the
+/// parent's now-duplicated commits. A merged parent is never read as dead on the way through:
+/// <c>TaskDependency.IsDelivered</c> turns on the parent's pull request not having been observed
+/// CLOSED, and a merge is not a close. The child's own base moving under it is therefore never the
+/// thing that ends its story; what used to end it was the platform's own raw
+/// <c>git push origin --delete</c> of the parent's branch, which closed the child outright, and
+/// closeout no longer makes that push where GitHub owns the deletion.
+/// </para>
 /// </summary>
 public sealed class StackedParentWatch(
     IWorktreeManager worktrees,
@@ -395,8 +411,12 @@ public sealed class StackedParentWatch(
             // The parent branch's current head, as a ref this repository can name. Origin's own
             // branch is preferred: after a rebase merge it still points at the parent's pre-merge
             // tip, which is exactly the boundary, and it costs one ordinary fetch. Only when that
-            // branch is gone from origin — the parent's closeout deletes it — is the pull request's
-            // own immutable head ref fetched instead, which GitHub keeps forever.
+            // branch is gone from origin — GitHub's own deletion at merge, or the parent's closeout
+            // — is the pull request's own immutable head ref fetched instead, which GitHub keeps
+            // forever. That fallback is the ordinary path now rather than the rare one: a repository
+            // with automatic head-branch deletion turned on deletes the parent's branch AT the
+            // merge, which is before any sweep on this platform has observed that merge (Decisions
+            // Log #PLACEHOLDER-c9a3a6c8).
             ParentHeadRead branchRead = await ReadRemoteBranchHeadAsync(
                 git, repositoryPath, parentBranch, cancellationToken);
             ParentHeadRead? pullRequestRead = null;
@@ -471,8 +491,34 @@ public sealed class StackedParentWatch(
             // aligned the two are — the pull request has to move off it.
             if (childHoldsParentHead && !parentMerged)
             {
-                return StackedParentObservation.Aligned(
-                    $"still built on {parentBranch}'s current head — nothing to replay");
+                // Where that head came from is part of the answer, not a detail of how it was read
+                // (Decisions Log #PLACEHOLDER-c9a3a6c8). A repository that deletes head branches on
+                // merge takes the parent's branch off origin at the merge itself, so the ordinary
+                // reading of a just-merged parent whose merge no sweep has recorded yet is "aligned
+                // with a head that now exists only as the pull request's own ref" — and a sentence
+                // claiming the child is still built on a branch origin no longer has would be a
+                // claim about a ref this look just established is gone.
+                // Which of the two the branch read actually was decides the sentence, because it
+                // lands in an audit field: a fetch that FAILED is not evidence origin has no such
+                // branch, so the deletion is asserted only where the branch read came back Missing
+                // (external review of this branch, 2026-09-13 — the same reading the
+                // ParentUnresolvable arm above already makes, and AGENTS.md's never-guess rule).
+                // The pull-request head is fetched on either read, so a failed branch fetch reaches
+                // here with a head and no observation of where the branch went.
+                string alignment = (pullRequestRead?.Commit, parentPullRequestNumber) switch
+                {
+                    (not null, { } resolvedFrom) when branchRead.Lookup == ParentHeadLookup.Missing =>
+                        $"still built on the head GitHub keeps for pull request #{resolvedFrom} — origin no "
+                        + $"longer has the branch {parentBranch} itself, and nothing on this platform's records "
+                        + "says that pull request has merged yet — so there is nothing to replay this look",
+                    (not null, { } resolvedFrom) =>
+                        $"still built on the head GitHub keeps for pull request #{resolvedFrom}, which was read "
+                        + $"because {branchRead.Detail} rather than because origin is known to have dropped the "
+                        + $"branch {parentBranch}, and nothing on this platform's records says that pull request "
+                        + "has merged yet — so there is nothing to replay this look",
+                    _ => $"still built on {parentBranch}'s current head — nothing to replay",
+                };
+                return StackedParentObservation.Aligned(alignment);
             }
 
             // The boundary. Directly observed wherever it can be: a child that CONTAINS the

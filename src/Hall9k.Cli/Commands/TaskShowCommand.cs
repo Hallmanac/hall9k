@@ -559,6 +559,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // of the story (task: a changes-requested pull-request review from a human becomes a
             // fix lap). Ordered by dispatch, which is the order the laps happened in.
             WriteChangesRequestedReviews([.. runs.Select(r => runDetailsById.GetValueOrDefault(r.Id)).OfType<RunDetails>()]);
+
+            // Selected across every run rather than from the newest, for the reason the mechanical
+            // rebase above it is: the retarget is recorded on the run that was watching the pull
+            // request, and the replay dispatched in the same sweep supersedes that run immediately.
+            RunDetails? stackedRetargetRun = runDetailsById.Values
+                .Where(r => r.LastStackedRetargetAt is not null)
+                .OrderByDescending(r => r.LastStackedRetargetAt)
+                .FirstOrDefault();
+            WriteStackedRetargetOutcome(stackedRetargetRun);
             WriteMechanicalRebaseOutcome(mechanicalRebaseRun);
             RunDetails? preFinalPassRebaseRun = runDetailsById.Values
                 .Where(r => r.LastPreFinalPassRebaseAt is not null)
@@ -1261,6 +1270,38 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 ? $"      [dim]proposed reply:[/] {ExternalText.OneLineMarkup(disagreement.ProposedReply)}"
                 : "      [dim]proposed reply: none drafted[/]";
         }
+    }
+
+    /// <summary>
+    /// Where a stacked child's pull request is aimed, and who last moved it there (task: a stacked
+    /// pull-request edge exists as an explicit opt-in dependency; Decisions Log
+    /// #PLACEHOLDER-c9a3a6c8). <c>StackedPullRequestRetargeted.Detail</c> has always promised to be
+    /// readable here and nothing read it until this section existed, which is why a child whose base
+    /// GitHub itself moved — what a repository with automatic head-branch deletion does the moment
+    /// the parent merges — had no surface saying so at all.
+    /// <para>
+    /// The most recent attempt across every one of the task's runs, selected by the caller the same
+    /// way it selects the mechanical rebase's own run and for the same reason: the retarget lands on
+    /// the run that was watching the pull request, and the replay dispatched alongside it supersedes
+    /// that run in the same sweep, so the newest run by dispatch order routinely carries none of
+    /// this.
+    /// </para>
+    /// </summary>
+    private static void WriteStackedRetargetOutcome(RunDetails? run)
+    {
+        if (run is not { LastStackedRetargetAt: not null })
+        {
+            return;
+        }
+
+        string detail = ExternalText.OneLineMarkup(run.LastStackedRetargetDetail ?? string.Empty);
+        string outcome = run.LastStackedRetargetSucceeded == true
+            ? $"[green]on the base branch[/] [dim]— {detail}[/]"
+            : $"[yellow]not moved[/] [dim]— {detail}; the next closeout sweep tries again[/]";
+
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Stacked retarget[/]  {outcome} "
+            + $"[dim]({run.LastStackedRetargetAt.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
     }
 
     /// <summary>
