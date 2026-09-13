@@ -761,7 +761,7 @@ accepts a project already archived, or archives one first in the same transactio
 a permanent hard delete of the project's database footprint — its own stream, every task, run,
 idea, and epic stream it owns, and their projection documents — 24 hours out. Linked tracker items,
 the repository, and the home directory on disk are outside its scope and are never touched; the
-confirmation names the scope in numbers (tasks, runs, ideas) and the deadline, and refuses under
+confirmation names the scope in numbers (tasks, runs, ideas, and epics) and the deadline, and refuses under
 the identical task-state predicate a plain archive refuses under. `h9k project cancel-purge
 <project>` ends a pending purge before it fires, leaving the project archived, never reactivated —
 reactivating a project with a purge still pending is refused, naming the cancel command, so a
