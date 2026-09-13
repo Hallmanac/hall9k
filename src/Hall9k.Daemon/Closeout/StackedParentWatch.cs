@@ -174,7 +174,7 @@ public sealed record StackedParentObservation(
 /// <strong>A child GitHub has already retargeted.</strong> Where the repository deletes head
 /// branches on merge, GitHub takes the parent's branch off origin at the merge and moves every open
 /// child's base onto the base branch itself, all of it before any sweep here has observed the merge
-/// (Decisions Log #PLACEHOLDER-c9a3a6c8). Such a child reaches exactly two verdicts, in this order,
+/// (Decisions Log #186). Such a child reaches exactly two verdicts, in this order,
 /// and never a dead end: <see cref="StackedParentVerdict.Aligned"/> while the parent's merge is
 /// still unrecorded — the parent's head resolves from the pull request's own ref, the child contains
 /// it, and nothing is owed — and then <see cref="StackedParentVerdict.ParentMerged"/> once the
@@ -416,7 +416,7 @@ public sealed class StackedParentWatch(
             // forever. That fallback is the ordinary path now rather than the rare one: a repository
             // with automatic head-branch deletion turned on deletes the parent's branch AT the
             // merge, which is before any sweep on this platform has observed that merge (Decisions
-            // Log #PLACEHOLDER-c9a3a6c8).
+            // Log #186).
             ParentHeadRead branchRead = await ReadRemoteBranchHeadAsync(
                 git, repositoryPath, parentBranch, cancellationToken);
             ParentHeadRead? pullRequestRead = null;
@@ -492,7 +492,7 @@ public sealed class StackedParentWatch(
             if (childHoldsParentHead && !parentMerged)
             {
                 // Where that head came from is part of the answer, not a detail of how it was read
-                // (Decisions Log #PLACEHOLDER-c9a3a6c8). A repository that deletes head branches on
+                // (Decisions Log #186). A repository that deletes head branches on
                 // merge takes the parent's branch off origin at the merge itself, so the ordinary
                 // reading of a just-merged parent whose merge no sweep has recorded yet is "aligned
                 // with a head that now exists only as the pull request's own ref" — and a sentence

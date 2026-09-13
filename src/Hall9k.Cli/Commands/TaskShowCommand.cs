@@ -1275,7 +1275,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// <summary>
     /// Where a stacked child's pull request is aimed, and who last moved it there (task: a stacked
     /// pull-request edge exists as an explicit opt-in dependency; Decisions Log
-    /// #PLACEHOLDER-c9a3a6c8). <c>StackedPullRequestRetargeted.Detail</c> has always promised to be
+    /// #186). <c>StackedPullRequestRetargeted.Detail</c> has always promised to be
     /// readable here and nothing read it until this section existed, which is why a child whose base
     /// GitHub itself moved — what a repository with automatic head-branch deletion does the moment
     /// the parent merges — had no surface saying so at all.

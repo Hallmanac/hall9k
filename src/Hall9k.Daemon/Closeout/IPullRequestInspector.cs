@@ -525,7 +525,7 @@ public interface IPullRequestInspector
     /// seam anyway because it answers a question only closeout asks, about the one thing closeout
     /// does to a branch after a merge: whether the remote deletion is this platform's to make at all
     /// (<see cref="Hall9k.Connectors.Worktrees.MergedBranchCleanup"/>, Decisions Log
-    /// #PLACEHOLDER-c9a3a6c8).
+    /// #186).
     /// <para>
     /// Throws on any failure, the same convention every other call on this seam uses. The caller
     /// treats a throw as "unread", which falls back to deleting the branch itself — an unread

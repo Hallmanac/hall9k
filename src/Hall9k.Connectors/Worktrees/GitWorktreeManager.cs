@@ -413,7 +413,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
     /// <summary>
     /// What the cleanup's own log line says about the remote half. "GitHub owns the deletion" is
     /// the line a human reads when a merged branch is still on origin after a closeout and wants
-    /// to know whether this platform decided not to touch it (Decisions Log #PLACEHOLDER-c9a3a6c8)
+    /// to know whether this platform decided not to touch it (Decisions Log #186)
     /// or simply failed to.
     /// <para>
     /// Every arm reports what this pass actually did, the owner included: "GitHub owns it" is said

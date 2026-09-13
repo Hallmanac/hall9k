@@ -7,7 +7,7 @@ namespace Hall9k.Daemon.Closeout;
 /// <summary>
 /// Who deletes a merged run's branch from origin, per repository, read once per closeout sweep
 /// (task: a stacked child's pull request survives its parent's merge; Decisions Log
-/// #PLACEHOLDER-c9a3a6c8). One read, cached, because a sweep that closes out four merged pull
+/// #186). One read, cached, because a sweep that closes out four merged pull
 /// requests in the same repository would otherwise spend four identical <c>gh</c> calls on a
 /// setting nobody changes mid-sweep.
 /// <para>
