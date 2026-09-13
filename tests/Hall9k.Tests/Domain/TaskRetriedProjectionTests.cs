@@ -85,6 +85,42 @@ public sealed class TaskRetriedProjectionTests
         view.State.Should().Be(TaskState.Queued, "the daemon's queue query picks the task up again");
         view.ClaimedByNodeId.Should().BeNull();
         view.CurrentRunId.Should().BeNull();
+        view.RetryPending.Should().BeTrue("a retry is pending until the next completion or resolution");
+        view.Rank.Should().Be(
+            TaskRank.RetryOrHandback, "a pending retry outranks a plain first claim in the ready queue");
+    }
+
+    /// <summary>
+    /// <see cref="Events.TaskRetried.Branch"/> is null when the failure predated any run record —
+    /// a clean-start retry, not a first claim. <see cref="TaskListItem.RetryBranch"/> mirrors that
+    /// null, so the ready-queue rank cannot be resolved from the branch alone without misreading
+    /// this task as a plain first claim (Copilot review, PR #346); <see cref="TaskListItem.RetryPending"/>
+    /// is the marker that keeps the two apart.
+    /// </summary>
+    [Fact]
+    public void A_clean_start_retry_with_no_surviving_branch_still_ranks_as_a_retry()
+    {
+        TaskListItemProjection projection = new();
+        Guid id = DomainId.New();
+        Guid failedRunId = DomainId.New();
+
+        TaskListItem view = projection.Create(new FakeEvent<TaskAdded>(new TaskAdded(
+            id, DomainId.New(), "Do the thing", ["it is done"], TaskType.Feature,
+            null, null, null, Now, DomainId.New())));
+
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(
+            id, DomainId.New(), DomainId.New(), 1, failedRunId, Now)), view);
+        projection.Apply(new FakeEvent<TaskFailed>(new TaskFailed(
+            id, failedRunId, FailureReason, Now.AddHours(1))), view);
+
+        projection.Apply(new FakeEvent<TaskRetried>(new TaskRetried(
+            id, failedRunId, null, RetryReason, Now.AddHours(2), DomainId.New())), view);
+
+        view.RetryBranch.Should().BeNull("the failure predated any run record, so there is no branch to resume");
+        view.RetryPending.Should().BeTrue("the retry is pending whether or not a branch survived it");
+        view.Rank.Should().Be(
+            TaskRank.RetryOrHandback,
+            "a clean-start retry still outranks a plain first claim; the branch alone cannot tell them apart");
     }
 
     [Fact]
