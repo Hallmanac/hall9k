@@ -222,8 +222,8 @@ finishes. Run h9k config set --max-concurrent-task-runs <n> and restart the
 daemon to run more at once
 81d8bca0  Published  hall9k  Brian Hall  The closeout sweep obse…    added 24m
 ago
-    ↳ assigned and ready; the dispatcher has not claimed it yet · waiting for a
-slot — node 1 of 1 running
+    ↳ assigned and ready as a first claim; the dispatcher has not claimed it yet
+· waiting for a slot — node 1 of 1 running
 ```
 
 Three things are worth reading off that:
