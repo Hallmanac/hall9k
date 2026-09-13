@@ -491,6 +491,24 @@ public sealed class CardPublicationEngine(
             return PublicationAttempt.Refused;
         }
 
+        // The same skip CloseoutEngine, the render sweep, and auto-pr-review already give an
+        // archived project (task: a project can be archived, listed as archived, reactivated, and
+        // renamed) — without it, an archived project's own Draft/Published task (both inert under
+        // ProjectRemoveCommand.IsInertUnderArchive on the strength of every sweep skipping them)
+        // still gets a live agent session spawned into its checkout and a real card written on
+        // somebody's board (independent pre-PR review, cycle 1, both lenses).
+        if (project.IsArchived)
+        {
+            await CompleteAsync(
+                task.Id,
+                false,
+                $"Project '{project.Name}' is archived, so no session was dispatched and nothing was put "
+                + "on a board: this install no longer maintains that repository. Reactivate it "
+                + $"(h9k project reactivate {project.Name}) to resume publication.",
+                cancellationToken: cancellationToken);
+            return PublicationAttempt.Refused;
+        }
+
         // The session reads this project's card-authoring skills, so it needs a working tree, and
         // a project with a home does not have one at its repository path: that path names the
         // bare clone inside repo/, which holds refs and objects and no files at all. repo/dev is
