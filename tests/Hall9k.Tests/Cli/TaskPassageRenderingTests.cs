@@ -19,7 +19,7 @@ public sealed class TaskPassageRenderingTests
     private static readonly TaskPassage Empty = new(
         PassagePhase.NotApplicable, PassagePhase.NotApplicable, PassagePhase.NotApplicable,
         new ReviewCyclePassage(0, TimeSpan.Zero, false, 0, TimeSpan.Zero, false),
-        PassagePhase.NotApplicable, PassagePhase.NotApplicable, [], PassagePhase.NotApplicable, [], 0);
+        PassagePhase.NotApplicable, PassagePhase.NotApplicable, [], PassagePhase.NotApplicable, [], 0, null);
 
     [Fact]
     public void A_passage_with_nothing_applicable_renders_no_lines() =>
