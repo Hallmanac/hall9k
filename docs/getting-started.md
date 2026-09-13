@@ -263,6 +263,6 @@ here repeats it.
 
 When a command here fails, start with `h9k status`: the attention pane names the cause underneath
 the row and the exact command that clears it. [docs/operations.md](operations.md#the-recovery-levers)
-is the fuller reference for the seven recovery levers and the two review-lap verdict commands, and
+is the fuller reference for the eight recovery levers and the two review-lap verdict commands, and
 [operations.md#what-needs-you-means](operations.md#what-needs-you-means) is what every cause line
 on the pane actually means.
