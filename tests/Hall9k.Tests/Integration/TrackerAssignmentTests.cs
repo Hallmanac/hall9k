@@ -720,7 +720,8 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         await using IDocumentSession session = store.LightweightSession();
         TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
             taskId, token: cancellationToken))!;
-        await TaskAssignCommand.AppendAsync(session, task, ownerId, ownerId, cancellationToken);
+        OwnerDetails owner = (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))!;
+        await TaskAssignCommand.AppendAsync(session, task, owner, ownerId, cancellationToken);
 
         (TrackerTake? taken, TrackerClaimDecision? _) = await TaskAssignCommand.TakeBeforeAssigningAsync(
             store, session, task, take, tracker.Taker(), offer, cancellationToken);

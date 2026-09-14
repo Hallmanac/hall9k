@@ -716,6 +716,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         Guid runId = DomainId.New();
         DateTimeOffset claimedAt = DateTimeOffset.UtcNow;
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, context.OwnerId, cancellationToken);
 
         // Commit the claim before touching the filesystem — mirrors the daemon's own dispatch
         // order (DispatchEngine.TryClaimAsync commits TaskClaimed first; RunLauncher only then
@@ -738,17 +740,20 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         if (dependencies is not null)
         {
             (assigned, claimed, unmet) = PrepareInteractiveClaimFromPublished(
-                task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies);
+                task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies,
+                ownerRootFingerprint);
         }
         else if (unmetAtEntry is not null)
         {
             (claimed, carriedForward) = PrepareInteractiveClaimFromBlocked(
-                task, context.OwnerId, unmetAtEntry, runId, claimedAt, acknowledgeUnmetDependencies);
+                task, context.OwnerId, unmetAtEntry, runId, claimedAt, acknowledgeUnmetDependencies,
+                ownerRootFingerprint: ownerRootFingerprint);
             unmet = unmetAtEntry;
         }
         else
         {
-            claimed = TaskDecider.ClaimInteractively(task, context.OwnerId, runId, claimedAt);
+            claimed = TaskDecider.ClaimInteractively(
+                task, context.OwnerId, runId, claimedAt, ownerRootFingerprint: ownerRootFingerprint);
         }
 
         // The gate's own evidence rides in the same Append call, ahead of the claim it justified,
@@ -931,9 +936,9 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// </summary>
     internal static (TaskAssigned Assigned, TaskClaimed Claimed, IReadOnlyList<TaskDependency> UnmetDependencies) PrepareInteractiveClaimFromPublished(
         TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> dependencies, Guid runId, DateTimeOffset now,
-        bool acknowledgeUnmetDependencies)
+        bool acknowledgeUnmetDependencies, string? ownerRootFingerprint = null)
     {
-        TaskAssigned assigned = TaskDecider.Assign(task, ownerId, dependencies, now, ownerId);
+        TaskAssigned assigned = TaskDecider.Assign(task, ownerId, dependencies, now, ownerId, ownerRootFingerprint);
         IReadOnlyList<TaskDependency> unmet =
             [.. dependencies.Where(dependency => assigned.UnmetDependencies.Contains(dependency.Id))];
 
@@ -967,7 +972,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         task.Apply(assigned);
         TaskClaimed claimed = TaskDecider.ClaimInteractively(
-            task, ownerId, runId, now, unmet.Count > 0 || task.AwaitsRemoteStackedParent);
+            task, ownerId, runId, now, unmet.Count > 0 || task.AwaitsRemoteStackedParent,
+            ownerRootFingerprint: ownerRootFingerprint);
         return (assigned, claimed, unmet);
     }
 
@@ -1038,7 +1044,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// </summary>
     internal static (TaskClaimed Claimed, bool CarriedForward) PrepareInteractiveClaimFromBlocked(
         TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> unmetDependencies, Guid runId, DateTimeOffset now,
-        bool acknowledgeUnmetDependencies)
+        bool acknowledgeUnmetDependencies, string? ownerRootFingerprint = null)
     {
         bool carriedForward = !acknowledgeUnmetDependencies && task.UnmetDependenciesAlreadyAcknowledged;
         // A remote stacked parent with no local blocker behind it: the ordinary refusal below would
@@ -1067,7 +1073,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         TaskClaimed claimed = TaskDecider.ClaimInteractively(
             task, ownerId, runId, now, dependencyOverrideAcknowledged: true,
-            dependencyOverrideCarriedForward: carriedForward);
+            dependencyOverrideCarriedForward: carriedForward, ownerRootFingerprint: ownerRootFingerprint);
         return (claimed, carriedForward);
     }
 

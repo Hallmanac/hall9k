@@ -3,6 +3,7 @@ using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.AutoPrReview;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -837,7 +838,10 @@ public sealed class AutoPrReviewEngine(
         task.Apply(published);
         events.Add(published);
 
-        TaskAssigned assigned = TaskDecider.Assign(task, node.OwnerId, dependencies: [], now, node.OwnerId);
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, node.OwnerId, cancellationToken);
+        TaskAssigned assigned = TaskDecider.Assign(
+            task, node.OwnerId, dependencies: [], now, node.OwnerId, ownerRootFingerprint);
         task.Apply(assigned);
         events.Add(assigned);
 
@@ -885,7 +889,8 @@ public sealed class AutoPrReviewEngine(
             // task's boundaries by hand, and PrReviewEngine has no boundary this flag could gate
             // anyway.
             TaskClaimed claimed = TaskDecider.ClaimDeliberately(
-                task, node.OwnerId, deliberateRunId.Value, now, dependencyOverrideAcknowledged: false);
+                task, node.OwnerId, deliberateRunId.Value, now, dependencyOverrideAcknowledged: false,
+                ownerRootFingerprint: ownerRootFingerprint);
             task.Apply(claimed);
             events.Add(claimed);
             deliberateLeaseGeneration = claimed.LeaseGeneration;
@@ -1531,7 +1536,10 @@ public sealed class AutoPrReviewEngine(
         // RunIds[0] is always that original review, because a pr-review task's very first dispatch
         // is always its adversarial-lens review (RunLauncher's own isPrReview branch).
         Guid? priorReviewRunId = task.RunIds.Count > 0 ? task.RunIds[0] : null;
-        TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(task, node.OwnerId, runId, now, reportParkedAwaitingWalk);
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, node.OwnerId, cancellationToken);
+        TaskClaimed claimed = TaskDecider.ClaimForMentionFollowUp(
+            task, node.OwnerId, runId, now, reportParkedAwaitingWalk, ownerRootFingerprint);
         session.Events.Append(existing.Id, expectedVersion: fence.Version + 2, observed, claimed);
         // This claim uses the ceiling-exempt sentinel (NodeId == Guid.Empty), exactly as a mint's
         // own deliberate claim does, and RunSupervisor.RefreshAdoptedLeaseAsync's own doc states
@@ -1664,7 +1672,10 @@ public sealed class AutoPrReviewEngine(
         task.Apply(published);
         events.Add(published);
 
-        TaskAssigned assigned = TaskDecider.Assign(task, node.OwnerId, dependencies: [], now, node.OwnerId);
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, node.OwnerId, cancellationToken);
+        TaskAssigned assigned = TaskDecider.Assign(
+            task, node.OwnerId, dependencies: [], now, node.OwnerId, ownerRootFingerprint);
         task.Apply(assigned);
         events.Add(assigned);
 
@@ -1702,7 +1713,8 @@ public sealed class AutoPrReviewEngine(
         {
             deliberateRunId = DomainId.New();
             TaskClaimed claimed = TaskDecider.ClaimDeliberately(
-                task, node.OwnerId, deliberateRunId.Value, now, dependencyOverrideAcknowledged: false);
+                task, node.OwnerId, deliberateRunId.Value, now, dependencyOverrideAcknowledged: false,
+                ownerRootFingerprint: ownerRootFingerprint);
             task.Apply(claimed);
             events.Add(claimed);
             deliberateLeaseGeneration = claimed.LeaseGeneration;

@@ -69,7 +69,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                     + "Name them: h9k task assign <id> <owner>");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        TaskAssigned assigned = await AppendAsync(session, task, owner.Id, context.OwnerId, cancellationToken);
+        TaskAssigned assigned = await AppendAsync(session, task, owner, context.OwnerId, cancellationToken);
 
         // Composed above, committed below, and the tracker written to in between — the order is the
         // whole of "one command moves the tracker and the board together". TaskDecider.Assign has
@@ -292,7 +292,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     internal static async Task<TaskAssigned> AppendAsync(
         IDocumentSession session,
         TaskAggregate task,
-        Guid assignedOwnerId,
+        OwnerDetails assignedOwner,
         Guid assignedByOwnerId,
         CancellationToken cancellationToken)
     {
@@ -312,7 +312,8 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         IReadOnlyList<TaskDependency> dependencies = await TaskDependencyQuery.LoadAsync(
             session, task.BlockedBy, cancellationToken);
         TaskAssigned assigned = TaskDecider.Assign(
-            task, assignedOwnerId, dependencies, DateTimeOffset.UtcNow, assignedByOwnerId);
+            task, assignedOwner.Id, dependencies, DateTimeOffset.UtcNow, assignedByOwnerId,
+            assignedOwner.RootFingerprint);
         session.Events.Append(task.Id, assigned);
         return assigned;
     }

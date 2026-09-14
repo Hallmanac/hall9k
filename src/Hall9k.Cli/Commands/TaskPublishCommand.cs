@@ -136,7 +136,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         OwnerDetails? assignee = await ChooseAssigneeAsync(session, settings, cancellationToken);
         TaskAssigned? assigned = assignee is null
             ? null
-            : await TaskAssignCommand.AppendAsync(session, task, assignee.Id, context.OwnerId, cancellationToken);
+            : await TaskAssignCommand.AppendAsync(session, task, assignee, context.OwnerId, cancellationToken);
 
         await session.SaveChangesAsync(cancellationToken);
 
