@@ -254,14 +254,19 @@ public sealed class TaskListItem
     /// (task: the dispatcher ranks the ready queue by lifecycle position before age) — set by
     /// <see cref="TaskReopened"/>, cleared by <see cref="TaskCompleted"/> and
     /// <see cref="TaskResolved"/> so it never survives past the lap it belongs to. This and
-    /// <see cref="RetryBranch"/> are what <see cref="Rank"/> resolves the dispatch order from; the
-    /// daemon's queue read widens for exactly this pair, not to grow this row's own display duties.
+    /// <see cref="RetryPending"/>, alongside <see cref="PullRequestUrl"/>, are what <see cref="Rank"/>
+    /// resolves the dispatch order from; the daemon's queue read widens for exactly this trio, not
+    /// to grow this row's own display duties.
     /// </summary>
     public string? FollowUpBranch { get; set; }
     /// <summary>
     /// The branch a pending retry or hand-back resumes, mirrored from <see cref="TaskAggregate.RetryBranch"/>
     /// — set by <see cref="TaskRetried"/> and <see cref="TaskHandedBack"/>, cleared by
-    /// <see cref="TaskCompleted"/> and <see cref="TaskResolved"/>. See <see cref="FollowUpBranch"/>.
+    /// <see cref="TaskCompleted"/> and <see cref="TaskResolved"/>. Carried for parity with
+    /// <see cref="TaskAggregate.RetryBranch"/> alone; unlike <see cref="FollowUpBranch"/>, nothing
+    /// reads this back off <see cref="TaskListItem"/> — <see cref="Rank"/> resolves a pending retry
+    /// or hand-back from <see cref="RetryPending"/> instead, since this field alone cannot tell a
+    /// clean-start retry (no run to resume, so the branch is null) from no retry pending at all.
     /// </summary>
     public string? RetryBranch { get; set; }
     /// <summary>
