@@ -3,6 +3,8 @@ using Hall9k.Cli.Diagnostics;
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Tests.Fakes;
+using JasperFx;
+using Marten;
 using Npgsql;
 using Xunit;
 
@@ -117,6 +119,70 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
             Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
         }
     }
+
+    /// <summary>
+    /// Question 3's second half (event stamping, idea 202383dc, PLAN.md §16 #191): a schema this
+    /// build no longer matches — not "not there at all", but present and stale — is exactly what
+    /// every install whose database predates <see cref="EventOriginStampingListener"/> looks like
+    /// the moment it upgrades, since <c>opts.Events.MetadataConfig.HeadersEnabled</c> is the first
+    /// schema change any build has ever made to a table <see cref="MartenConfiguration.ConfigureHall9k"/>
+    /// already created rather than only adding a new one, and <c>AutoCreate.CreateOnly</c> — every
+    /// ordinary store this platform opens with — refuses outright to alter an existing object.
+    /// Reproduces that shape directly: a schema built without headers enabled (an old build, in
+    /// effect), then the same <c>--yes</c> path <see cref="Assume_yes_creates_the_schema_without_asking"/>
+    /// exercises for the schema-missing half of this question.
+    /// </summary>
+    [Fact]
+    public async Task A_schema_that_predates_this_build_is_detected_and_updated_by_assume_yes()
+    {
+        string stale = await FreshDatabaseAsync(CancellationToken.None);
+
+        using (DocumentStore oldBuild = DocumentStore.For(opts =>
+        {
+            opts.Connection(stale);
+            opts.AutoCreateSchemaObjects = AutoCreate.All;
+        }))
+        {
+            await using IDocumentSession session = oldBuild.LightweightSession();
+            session.Events.StartStream(Guid.NewGuid(), new object[] { new OwnerRegisteredForTest() });
+            await session.SaveChangesAsync(CancellationToken.None);
+        }
+
+        (await DatabaseReachability.SchemaPresentAsync(stale, CancellationToken.None)).Should().BeTrue(
+            "the old build already created mt_streams — this is staleness, not absence");
+
+        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, stale);
+        try
+        {
+            RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
+
+            string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: true, runner.Runner, CancellationToken.None);
+
+            resolved.Should().Be(stale);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
+        }
+
+        // The proof that matters: this platform's own store, opened exactly as every ordinary
+        // command opens it (headers enabled, CreateOnly), now writes against the once-stale
+        // database without the SchemaMigrationException an unfixed one would still throw.
+        using (DocumentStore thisBuild = DocumentStore.For(opts =>
+        {
+            opts.Connection(stale);
+            opts.ConfigureHall9k(AutoCreate.CreateOnly);
+        }))
+        {
+            await using IDocumentSession session = thisBuild.LightweightSession();
+            session.Events.StartStream(Guid.NewGuid(), new object[] { new OwnerRegisteredForTest() });
+            await session.SaveChangesAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>A minimal stand-in event: this test only needs something to append, not a real aggregate.</summary>
+    private sealed record OwnerRegisteredForTest;
 
     /// <summary>
     /// A database of the caller's own on this fixture's container, so a question about what a
