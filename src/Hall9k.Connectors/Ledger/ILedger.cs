@@ -66,10 +66,12 @@ public sealed class LedgerPushRejectedException(string refName, int attempts, st
 /// Reads and writes small files at a path inside a named ref under <c>refs/hall9k/</c> in a
 /// project's bare repository, by git plumbing alone — never a worktree, never a merge, never
 /// anything visible in a hosting UI. Every ref a caller names here must already be registered in
-/// <see cref="LedgerRefRegistry"/>: that registry, not this interface, is the one place the fetch
-/// refspec reads, so an ordinary <c>git fetch origin</c> — the project's own
-/// <c>+refs/heads/*:refs/remotes/origin/*</c> — never brings a ledger ref down, and nothing this
-/// component was not handed a registered name for is ever fetched or pushed.
+/// <see cref="LedgerRefRegistry"/>: that registry is the one place a ref name is checked against
+/// before this component ever touches it, so an ordinary <c>git fetch origin</c> — the project's
+/// own <c>+refs/heads/*:refs/remotes/origin/*</c> — never brings a ledger ref down, and nothing
+/// this component was not handed a registered name for is ever fetched or pushed. The fetch and
+/// push refspec themselves are never read from the registry, though: each operation builds its
+/// own, an exact single-ref refspec from the caller's own <c>refName</c> argument.
 /// </summary>
 public interface ILedger
 {

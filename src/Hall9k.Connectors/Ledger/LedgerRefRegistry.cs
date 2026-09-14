@@ -44,11 +44,19 @@ public sealed record LedgerRefEntry(string RefspecSource, LedgerRefKind Kind)
 
 /// <summary>
 /// The one place every <c>refs/hall9k/</c> ref any caller uses is named. <see cref="GitLedger"/>
-/// refuses to touch a ref that is not registered here first, and an ordinary <c>git fetch
+/// refuses to touch a ref that is not registered here first — that gate is <see
+/// cref="IsRegistered"/>, not <see cref="FetchRefspecs"/> — and an ordinary <c>git fetch
 /// origin</c> — the project's own <c>+refs/heads/*:refs/remotes/origin/*</c> — never brings one
 /// down, because nothing in <see cref="GitLedger"/> ever relies on that configured refspec: every
-/// operation passes its own explicit refspec, built from an entry here, on the command line
-/// instead.
+/// operation builds its own explicit single-ref refspec from the exact ref name it was called
+/// with (<c>+refName:refName</c>) on the command line instead. That is deliberate even for a
+/// <see cref="LedgerRefKind.Prefix"/> entry such as <see cref="MessagesPrefix"/>: the wildcard
+/// <see cref="LedgerRefEntry.Refspec"/> below covers every ref under that prefix, but a single
+/// call only ever touches the one concrete ref name it was handed, never every node's outbox at
+/// once — so <see cref="GitLedger"/> never reads <see cref="FetchRefspecs"/> or
+/// <see cref="LedgerRefEntry.Refspec"/> itself; both exist for a caller that genuinely wants the
+/// whole-prefix shape (and for the tests below that assert it), not for <see cref="GitLedger"/>'s
+/// own per-call fetch or push.
 /// <para>
 /// Registration is idempotent by value (<see cref="LedgerRefEntry"/> is a record, so two calls
 /// naming the identical ref/prefix collapse to one entry) — this is process-wide static state
@@ -105,7 +113,12 @@ public static class LedgerRefRegistry
         return entry;
     }
 
-    /// <summary>Every refspec <see cref="GitLedger"/>'s own fetch/push ever uses, one per registered entry.</summary>
+    /// <summary>
+    /// The whole-prefix refspec each registered entry would use if something ever fetched or
+    /// pushed an entire prefix at once — one per registered entry. <see cref="GitLedger"/> itself
+    /// never reads this: its own per-call refspec is always the exact single ref name it was
+    /// invoked with, built independently of anything registered here.
+    /// </summary>
     public static IReadOnlyCollection<string> FetchRefspecs => Entries.Keys.Select(entry => entry.Refspec).ToList();
 
     /// <summary>Whether a ref name is covered by some registered exact name or prefix.</summary>
