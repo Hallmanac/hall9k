@@ -415,6 +415,39 @@ public sealed class AttentionSurfaceTests
     }
 
     [Fact]
+    public void Two_queue_first_marked_rows_list_in_assignment_order_never_by_rank()
+    {
+        // ProjectRotation.FirstQueueFirstMarked takes the oldest marked candidate outright and
+        // never consults rank once the marker alone has decided the winner (Decisions Log #188):
+        // a section that still sorted marked rows by rank would silently disagree with the
+        // daemon whenever two marked tasks carry different ranks (independent pre-PR review,
+        // adversarial lens).
+        const string FirstClaimAssignedFirst = "Marked first claim, assigned an hour ago";
+        const string RetryAssignedSecond = "Marked pending retry, assigned a minute ago";
+
+        TaskListItem firstClaim = StatusFixtures.Task(
+            TaskState.Queued, objective: FirstClaimAssignedFirst, assignedAt: Now.AddHours(-1));
+        firstClaim.QueuePriorityMarked = true;
+
+        TaskListItem retry = StatusFixtures.Task(
+            TaskState.Queued, objective: RetryAssignedSecond, assignedAt: Now.AddMinutes(-1));
+        retry.QueuePriorityMarked = true;
+        retry.RetryPending = true;
+
+        TaskStatusRow[] rows = [StatusFixtures.Compose(retry), StatusFixtures.Compose(firstClaim)];
+
+        rows.Should().OnlyContain(row => row.QueuePriorityMarked, "both rows carry the marker");
+        rows.First(row => row.Objective == RetryAssignedSecond).Rank.Should().Be(
+            TaskRank.RetryOrHandback, "the pending retry outranks a plain first claim on its own");
+
+        StatusCommand.SectionRows(rows, AttentionBucket.Queued, inServiceOrder: true)
+            .Select(row => row.Objective).Should().Equal([FirstClaimAssignedFirst, RetryAssignedSecond],
+                "the daemon's own marker path takes the oldest marked candidate outright and never "
+                + "consults rank, so the section must list marked rows in assignment order too, not "
+                + "the retry's better rank ahead of the older first claim");
+    }
+
+    [Fact]
     public void A_kill_and_an_unexplained_failure_read_as_the_different_things_they_are()
     {
         Guid killedRunId = DomainId.New();
