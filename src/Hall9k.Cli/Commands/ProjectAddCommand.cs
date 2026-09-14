@@ -377,14 +377,6 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         && ProjectHomePaths.SameDirectory(existing.HomeDirectory.Value, ProjectHomePaths.DefaultFor(newProjectName));
 
     /// <summary>
-    /// Refuses --reactivate-archived and --rename-archived-to together, before either mutates
-    /// anything: they answer the same archived-name collision two different ways, and the
-    /// interactive prompt only ever offers one at a time. Left
-    /// unchecked, ExecuteAsync's own ReactivateArchived branch runs first and silently discards
-    /// --rename-archived-to, leaving a non-interactive caller believing the rename it asked for
-    /// happened.
-    /// </summary>
-    /// <summary>
     /// A project needs a real, confirmed GitHub account to check push access on its repository
     /// (h9k project join) and to mirror repository roles (idea 202383dc, A2b, item 1) — never the
     /// <c>Environment.UserName</c> placeholder <c>NodeBootstrap.EnsureAsync</c> falls back to when
@@ -404,6 +396,14 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         }
     }
 
+    /// <summary>
+    /// Refuses --reactivate-archived and --rename-archived-to together, before either mutates
+    /// anything: they answer the same archived-name collision two different ways, and the
+    /// interactive prompt only ever offers one at a time. Left
+    /// unchecked, ExecuteAsync's own ReactivateArchived branch runs first and silently discards
+    /// --rename-archived-to, leaving a non-interactive caller believing the rename it asked for
+    /// happened.
+    /// </summary>
     internal static void RequireExclusiveArchivedCollisionFlags(Settings settings)
     {
         if (settings.ReactivateArchived && settings.RenameArchivedTo.IsNotBlank())
