@@ -101,6 +101,26 @@ if (!resolution.IsConfigured)
 
 string connectionString = resolution.Value;
 
+// h9k daemon start already runs this repair through DatabaseDoctor, interactively or via
+// --yes, before it ever spawns this process — but an OS autostart manager (a launchd
+// LaunchAgent's RunAtLoad, a Windows logon scheduled task) execs h9kd directly after a
+// reboot, bypassing that entirely, and AddMartenEventStore below opens with
+// AutoCreate.CreateOnly, which refuses outright to alter an object already there. Without
+// this, an install whose schema predates a change like enabling event metadata headers
+// (idea 202383dc) would crash raw on its first event append and keep crashing on every
+// autostart-driven restart until a human happened to run h9k doctor --yes by hand.
+try
+{
+    await EventStoreSchemaGuard.EnsureCurrentAsync(connectionString, CancellationToken.None);
+}
+catch (Exception exception) when (exception is not OperationCanceledException)
+{
+    Console.Error.WriteLine(
+        $"Could not confirm Hall9k's schema is current at startup ({exception.Message}). "
+        + "Run h9k doctor for the full diagnosis and the fix.");
+    return 1;
+}
+
 // DaemonOptionsBinding.ResolverOwnedKeys — MaxConcurrentTaskRuns, SessionCapPerRun,
 // MaxConcurrentAgentSessions, SpendBudgetTokens and SpendPeriod — are excluded from this generic
 // Bind() and resolved separately (DaemonOptionsBinding's own doc explains why an internal setter
