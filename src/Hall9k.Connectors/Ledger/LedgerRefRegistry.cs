@@ -82,6 +82,21 @@ public static class LedgerRefRegistry
     /// </summary>
     public static readonly LedgerRefEntry MessagesPrefix = RegisterPrefix("refs/hall9k/messages/");
 
+    /// <summary>
+    /// Every owner's root (A2a): <c>refs/hall9k/ledger/owners/&lt;fingerprint&gt;</c>, one ref per
+    /// fingerprint, holding that root's <c>root.yaml</c> and, once a self-created root turns out to
+    /// belong to another root, its own <c>retired.yaml</c>. Registered as a prefix because no
+    /// fingerprint exists for a literal name until a node's key does.
+    /// </summary>
+    public static readonly LedgerRefEntry OwnersPrefix = RegisterPrefix("refs/hall9k/ledger/owners/");
+
+    /// <summary>
+    /// Every node's own identity file (A2a): <c>refs/hall9k/ledger/nodes/&lt;node-id&gt;</c>, one
+    /// writer per node, the same reason <see cref="MessagesPrefix"/> is a prefix rather than an
+    /// exact name.
+    /// </summary>
+    public static readonly LedgerRefEntry NodesPrefix = RegisterPrefix("refs/hall9k/ledger/nodes/");
+
     public static LedgerRefEntry RegisterExact(string refName) => Register(refName, LedgerRefKind.Exact);
 
     public static LedgerRefEntry RegisterPrefix(string prefix) => Register(
