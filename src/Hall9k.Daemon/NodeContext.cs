@@ -23,10 +23,18 @@ public sealed class NodeContext
         _context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         await session.SaveChangesAsync(cancellationToken);
 
-        // Read again at every daemon start (idea 202383dc, A2b) — the machine's own gh session can
-        // change between restarts, and nothing else naturally triggers a fresh GitHub read for it.
-        await NodeBootstrap.RefreshGitHubIdentityAsync(session, _context.ConnectionId, cancellationToken);
-        await session.SaveChangesAsync(cancellationToken);
+        // A daemon-start GitHub identity refresh was tried here (idea 202383dc, A2b) and reverted:
+        // NodeBootstrap.RefreshGitHubIdentityAsync shells to the real gh with no ProcessRunner seam,
+        // so calling it unconditionally on every InitializeAsync ran the real gh and reached the real
+        // network on every one of NodeBootstrapSeed's ~280 integration-test call sites — the one path
+        // that seed exists specifically to keep off gh and the network (PLAN.md §16 #110) — and left
+        // this method's own callers (WaitForInitializationAsync) blocked on gh's unbounded read on
+        // every real daemon start too, not only the first (independent pre-PR review, cycle 1,
+        // conformance and adversarial lenses, both medium). h9k project add already refreshes this
+        // install's identity explicitly, right before it needs to know it is confirmed
+        // (ProjectAddCommand.RequireConfirmedGitHubAccount); a daemon-start refresh can return once
+        // NodeBootstrap's own gh calls carry a process-runner seam a test can pin instead of the real
+        // process.
         _initialized.TrySetResult();
     }
 

@@ -83,12 +83,14 @@ public static class NodeBootstrap
     /// <summary>
     /// Refreshes this install's own GitHub numeric id and login on the bootstrap connection's
     /// stream, appended only when something actually changed since the last observation
-    /// (<see cref="ConnectionDecider.ObserveGitHubIdentity"/>) — read again at every daemon start
-    /// and at <c>h9k project add</c>, the two moments nothing else naturally triggers a GitHub
-    /// read for the way Jira's own <c>TrackerClaimGate</c> reads lazily on first claim-gate check
-    /// (idea 202383dc, A2b). Best-effort: a <c>gh</c> that cannot answer (not installed, not
-    /// authenticated, offline) leaves the connection's already-recorded identity exactly as it
-    /// was, never guessed at (AGENTS.md).
+    /// (<see cref="ConnectionDecider.ObserveGitHubIdentity"/>) — read again at <c>h9k project add</c>,
+    /// the one moment nothing else naturally triggers a GitHub read for the way Jira's own
+    /// <c>TrackerClaimGate</c> reads lazily on first claim-gate check (idea 202383dc, A2b). A
+    /// daemon-start call was tried and reverted (<c>NodeContext.InitializeAsync</c>'s own comment on
+    /// the removal): it has no <c>ProcessRunner</c> seam, so calling it unconditionally there shelled
+    /// to the real <c>gh</c> on every integration test's bootstrap too. Best-effort: a <c>gh</c> that
+    /// cannot answer (not installed, not authenticated, offline) leaves the connection's
+    /// already-recorded identity exactly as it was, never guessed at (AGENTS.md).
     /// <para>
     /// Returns whether <c>gh</c> answered with a real identity just now, regardless of whether the
     /// connection stream could actually be aggregated: on a connection this same session's own
