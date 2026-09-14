@@ -84,6 +84,26 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
             : "default — falls back to default-model, then the platform fallback";
         table.AddRow("orchestrator-model", $"{orchestratorModel} ({orchestratorModelOrigin})".EscapeMarkup());
 
+        // Not part of the report above either: these four bind through the same generic
+        // ConfigurationBinder path as the four review-cycle caps (so an environment variable can
+        // in principle outrank the config file for them too), but shown here the same simpler way
+        // as interactive-claim-stale-after-days — config file, then the compiled default — rather
+        // than adding a fifth and sixth pair of env-var-aware ResolveInt call sites for a setting
+        // pair nobody sets outside h9k config set in practice.
+        int activeMin = configured.MessageActivePollMinSeconds ?? OperatingSettings.DefaultMessageActivePollMinSeconds;
+        int activeMax = configured.MessageActivePollMaxSeconds ?? OperatingSettings.DefaultMessageActivePollMaxSeconds;
+        string activeOrigin = configured.MessageActivePollMinSeconds is null && configured.MessageActivePollMaxSeconds is null
+            ? "default"
+            : "config file";
+        table.AddRow("message-poll-active-min/-max", $"{activeMin}s / {activeMax}s ({activeOrigin})".EscapeMarkup());
+
+        int idleMin = configured.MessageIdlePollMinSeconds ?? OperatingSettings.DefaultMessageIdlePollMinSeconds;
+        int idleMax = configured.MessageIdlePollMaxSeconds ?? OperatingSettings.DefaultMessageIdlePollMaxSeconds;
+        string idleOrigin = configured.MessageIdlePollMinSeconds is null && configured.MessageIdlePollMaxSeconds is null
+            ? "default"
+            : "config file";
+        table.AddRow("message-poll-idle-min/-max", $"{idleMin}s / {idleMax}s ({idleOrigin})".EscapeMarkup());
+
         AnsiConsole.Write(table);
 
         foreach (string line in await SpendLinesAsync(report, cancellationToken))

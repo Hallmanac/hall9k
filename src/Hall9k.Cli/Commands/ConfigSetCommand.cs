@@ -207,6 +207,33 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "silently dropped rather than refused, since there is no consequence to acknowledge there.")]
         public bool AcceptReducedReview { get; init; }
 
+        [CommandOption("--message-poll-active-min <SECONDS>")]
+        [Description(
+            "The message sweep's active-cadence floor in whole seconds (DaemonOptions.MessageActivePollMinSeconds, "
+            + "default 15, idea 202383dc M1b) — the fast end of the jittered range the sweep picks from whenever "
+            + "this node has an unflushed or unread envelope, or held work. Must stay at or below "
+            + "--message-poll-active-max.")]
+        public int? MessagePollActiveMin { get; init; }
+
+        [CommandOption("--message-poll-active-max <SECONDS>")]
+        [Description(
+            "The message sweep's active-cadence ceiling in whole seconds (DaemonOptions.MessageActivePollMaxSeconds, "
+            + "default 25). Must stay at or above --message-poll-active-min.")]
+        public int? MessagePollActiveMax { get; init; }
+
+        [CommandOption("--message-poll-idle-min <SECONDS>")]
+        [Description(
+            "The message sweep's idle-cadence floor in whole seconds (DaemonOptions.MessageIdlePollMinSeconds, "
+            + "default 30) — the range a jittered interval is picked from once this node has nothing unflushed or "
+            + "unread and no held work. Must stay at or below --message-poll-idle-max.")]
+        public int? MessagePollIdleMin { get; init; }
+
+        [CommandOption("--message-poll-idle-max <SECONDS>")]
+        [Description(
+            "The message sweep's idle-cadence ceiling in whole seconds (DaemonOptions.MessageIdlePollMaxSeconds, "
+            + "default 45). Must stay at or above --message-poll-idle-min.")]
+        public int? MessagePollIdleMax { get; init; }
+
         [CommandOption("--interactive-claim-stale-after-days <DAYS>")]
         [Description(
             "How many days an interactive claim (h9k task work) can sit untouched before h9k status nudges "
@@ -265,7 +292,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.ModelPublication is null && settings.MaxComplianceReviewCycles is null
             && settings.MaxAdversarialReviewCycles is null && settings.MaxFinalFullPassRounds is null
             && settings.LifetimeReviewCycleBudget is null && settings.SpendBudget is null
-            && settings.SpendPeriod is null && settings.ReviewStageComposition is null;
+            && settings.SpendPeriod is null && settings.ReviewStageComposition is null
+            && settings.MessagePollActiveMin is null && settings.MessagePollActiveMax is null
+            && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null;
 
         if (onlyInteractiveClaimStaleAfterDaysChanged)
         {
@@ -294,7 +323,9 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.MaxComplianceReviewCycles is null && settings.MaxAdversarialReviewCycles is null
             && settings.MaxFinalFullPassRounds is null && settings.LifetimeReviewCycleBudget is null
             && settings.SpendBudget is null && settings.SpendPeriod is null
-            && settings.ReviewStageComposition is null)
+            && settings.ReviewStageComposition is null
+            && settings.MessagePollActiveMin is null && settings.MessagePollActiveMax is null
+            && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass at least one setting, e.g. --max-concurrent-task-runs 2. "
@@ -373,6 +404,40 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 "--accept-reduced-review has nothing to acknowledge without --review-stage-composition.");
         }
 
+        if (settings.MessagePollActiveMin is { } activeMin && activeMin < 1)
+        {
+            throw new DomainValidationException("--message-poll-active-min must be at least 1 second.");
+        }
+
+        if (settings.MessagePollActiveMax is { } activeMax && activeMax < 1)
+        {
+            throw new DomainValidationException("--message-poll-active-max must be at least 1 second.");
+        }
+
+        if (settings.MessagePollActiveMin is { } activeMinPaired && settings.MessagePollActiveMax is { } activeMaxPaired
+            && activeMinPaired > activeMaxPaired)
+        {
+            throw new DomainValidationException(
+                "--message-poll-active-min must be at or below --message-poll-active-max.");
+        }
+
+        if (settings.MessagePollIdleMin is { } idleMin && idleMin < 1)
+        {
+            throw new DomainValidationException("--message-poll-idle-min must be at least 1 second.");
+        }
+
+        if (settings.MessagePollIdleMax is { } idleMax && idleMax < 1)
+        {
+            throw new DomainValidationException("--message-poll-idle-max must be at least 1 second.");
+        }
+
+        if (settings.MessagePollIdleMin is { } idleMinPaired && settings.MessagePollIdleMax is { } idleMaxPaired
+            && idleMinPaired > idleMaxPaired)
+        {
+            throw new DomainValidationException(
+                "--message-poll-idle-min must be at or below --message-poll-idle-max.");
+        }
+
         if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays && staleAfterDays < 1)
         {
             throw new DomainValidationException(
@@ -424,6 +489,30 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         ApplyModel("model (synthesis)", settings.ModelSynthesis, value => operating.ModelByRole.Synthesis = value, changed);
         ApplyModel("model (refinement)", settings.ModelRefinement, value => operating.ModelByRole.Refinement = value, changed);
         ApplyModel("model (publication)", settings.ModelPublication, value => operating.ModelByRole.Publication = value, changed);
+
+        if (settings.MessagePollActiveMin is { } activeMin)
+        {
+            operating.MessageActivePollMinSeconds = activeMin;
+            changed.Add($"message-poll-active-min = {activeMin}s");
+        }
+
+        if (settings.MessagePollActiveMax is { } activeMax)
+        {
+            operating.MessageActivePollMaxSeconds = activeMax;
+            changed.Add($"message-poll-active-max = {activeMax}s");
+        }
+
+        if (settings.MessagePollIdleMin is { } idleMin)
+        {
+            operating.MessageIdlePollMinSeconds = idleMin;
+            changed.Add($"message-poll-idle-min = {idleMin}s");
+        }
+
+        if (settings.MessagePollIdleMax is { } idleMax)
+        {
+            operating.MessageIdlePollMaxSeconds = idleMax;
+            changed.Add($"message-poll-idle-max = {idleMax}s");
+        }
 
         if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays)
         {
