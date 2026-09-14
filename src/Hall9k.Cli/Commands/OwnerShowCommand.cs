@@ -60,7 +60,7 @@ public sealed class OwnerShowCommand : Hall9kAsyncCommand<OwnerShowCommand.Setti
             .ToListAsync(cancellationToken);
         IReadOnlyList<ConnectionDetails> gitHub = [.. ownedConnections.Where(connection => connection.Provider == WorkItemProvider.GitHub)];
         table.AddRow("GitHub accounts", gitHub.Count == 0
-            ? "[dim]none confirmed yet — h9k project add runs gh auth login's own check[/]"
+            ? "[dim]none confirmed yet — run 'gh auth login', then h9k project add or h9k project join reads it[/]"
             : string.Join(", ", gitHub.Select(DescribeGitHubConnection)));
 
         string machineName = Environment.MachineName;
