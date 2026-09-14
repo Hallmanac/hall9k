@@ -12,7 +12,7 @@ namespace Hall9k.Tests.Integration;
 /// <see cref="EventStoreSchemaGuard"/> is the headless half of the same repair
 /// <c>DatabaseDoctorTests.A_schema_that_predates_this_build_is_detected_and_updated_by_assume_yes</c>
 /// already proves for <c>h9k doctor</c>/<c>h9k daemon start</c> (event stamping, idea 202383dc,
-/// PLAN.md §16 PLACEHOLDER-bfe95f6b, follow-up review finding on PR #370): <c>h9kd</c> launched
+/// PLAN.md §16 #192, follow-up review finding on PR #370): <c>h9kd</c> launched
 /// directly by an OS autostart manager after a reboot never goes through either of those, so this
 /// is what stands between that path and a raw <c>SchemaMigrationException</c> against a schema
 /// that predates event metadata headers.
