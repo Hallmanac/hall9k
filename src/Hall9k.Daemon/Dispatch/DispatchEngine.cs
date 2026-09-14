@@ -2,6 +2,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -1186,7 +1187,10 @@ public sealed class DispatchEngine(
         }
 
         Guid runId = DomainId.New();
-        TaskClaimed claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, DateTimeOffset.UtcNow);
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, node.OwnerId, cancellationToken);
+        TaskClaimed claimed = TaskDecider.Claim(
+            task, node.NodeId, node.OwnerId, runId, DateTimeOffset.UtcNow, ownerRootFingerprint);
 
         // The gate's own evidence rides ahead of the claim it justified, in the same transaction
         // and under the same expected version, so the stream reads in the order the two things

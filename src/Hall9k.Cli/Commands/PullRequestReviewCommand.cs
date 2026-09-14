@@ -6,6 +6,7 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -651,10 +652,14 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             task, TaskDependencyGraph.Empty, now, context.OwnerId, project.BacklogPolicy);
         task.Apply(published);
 
-        TaskAssigned assigned = TaskDecider.Assign(task, context.OwnerId, dependencies: [], now, context.OwnerId);
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, context.OwnerId, cancellationToken);
+        TaskAssigned assigned = TaskDecider.Assign(
+            task, context.OwnerId, dependencies: [], now, context.OwnerId, ownerRootFingerprint);
         task.Apply(assigned);
 
-        TaskClaimed claimed = TaskDecider.ClaimInteractively(task, context.OwnerId, runId, now);
+        TaskClaimed claimed = TaskDecider.ClaimInteractively(
+            task, context.OwnerId, runId, now, ownerRootFingerprint: ownerRootFingerprint);
         object[] lifecycle = [added, published, assigned, claimed];
         session.Events.StartStream<TaskAggregate>(taskId, lifecycle);
         await session.SaveChangesAsync(cancellationToken);
@@ -691,10 +696,13 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
 
         Guid runId = DomainId.New();
         DateTimeOffset now = DateTimeOffset.UtcNow;
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, context.OwnerId, cancellationToken);
         List<object> events = [];
         if (task.State == TaskState.Published)
         {
-            TaskAssigned assigned = TaskDecider.Assign(task, context.OwnerId, dependencies: [], now, context.OwnerId);
+            TaskAssigned assigned = TaskDecider.Assign(
+                task, context.OwnerId, dependencies: [], now, context.OwnerId, ownerRootFingerprint);
             task.Apply(assigned);
             events.Add(assigned);
         }
@@ -708,7 +716,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         if (followThrough)
         {
             TaskClaimed followThroughClaim = TaskDecider.ClaimForScopedReviewLap(
-                task, context.OwnerId, runId, now);
+                task, context.OwnerId, runId, now, ownerRootFingerprint);
             events.Add(followThroughClaim);
             return await CommitClaimAndCutAsync(
                 store, session, project, context, pullRequest, task, fence, events, followThroughClaim, runId,
@@ -724,7 +732,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             // acknowledge. Passed as already-acknowledged rather than exposing a flag for a state
             // that cannot occur: if one ever does, the honest answer is a claim that proceeds,
             // not a refusal pointing at an option this command deliberately does not have.
-            dependencyOverrideAcknowledged: task.State == TaskState.Blocked);
+            dependencyOverrideAcknowledged: task.State == TaskState.Blocked,
+            ownerRootFingerprint: ownerRootFingerprint);
         events.Add(claimed);
         return await CommitClaimAndCutAsync(
             store, session, project, context, pullRequest, task, fence, events, claimed, runId, noWorktree,

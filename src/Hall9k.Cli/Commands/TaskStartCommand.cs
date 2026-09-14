@@ -4,6 +4,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -393,6 +394,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         Guid runId = DomainId.New();
         DateTimeOffset claimedAt = DateTimeOffset.UtcNow;
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, context.OwnerId, cancellationToken);
 
         TaskAssigned? assigned = null;
         TaskClaimed claimed;
@@ -401,19 +404,21 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         if (dependencies is not null)
         {
             (assigned, claimed, unmet) = PrepareDeliberateClaimFromPublished(
-                task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies, interactiveMode);
+                task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies, interactiveMode,
+                ownerRootFingerprint);
         }
         else if (unmetAtEntry is not null)
         {
             (claimed, carriedForward) = PrepareDeliberateClaimFromBlocked(
-                task, context.OwnerId, unmetAtEntry, runId, claimedAt, acknowledgeUnmetDependencies, interactiveMode);
+                task, context.OwnerId, unmetAtEntry, runId, claimedAt, acknowledgeUnmetDependencies, interactiveMode,
+                ownerRootFingerprint);
             unmet = unmetAtEntry;
         }
         else
         {
             claimed = TaskDecider.ClaimDeliberately(
                 task, context.OwnerId, runId, claimedAt, dependencyOverrideAcknowledged: false,
-                interactiveMode: interactiveMode);
+                interactiveMode: interactiveMode, ownerRootFingerprint: ownerRootFingerprint);
         }
 
         // The gate's own evidence rides in the same Append call, ahead of the claim it justified,
@@ -605,9 +610,9 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// </summary>
     internal static (TaskAssigned Assigned, TaskClaimed Claimed, IReadOnlyList<TaskDependency> UnmetDependencies) PrepareDeliberateClaimFromPublished(
         TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> dependencies, Guid runId, DateTimeOffset now,
-        bool acknowledgeUnmetDependencies, bool interactiveMode = false)
+        bool acknowledgeUnmetDependencies, bool interactiveMode = false, string? ownerRootFingerprint = null)
     {
-        TaskAssigned assigned = TaskDecider.Assign(task, ownerId, dependencies, now, ownerId);
+        TaskAssigned assigned = TaskDecider.Assign(task, ownerId, dependencies, now, ownerId, ownerRootFingerprint);
         IReadOnlyList<TaskDependency> unmet =
             [.. dependencies.Where(dependency => assigned.UnmetDependencies.Contains(dependency.Id))];
 
@@ -645,7 +650,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         task.Apply(assigned);
         TaskClaimed claimed = TaskDecider.ClaimDeliberately(
             task, ownerId, runId, now, unmet.Count > 0 || task.AwaitsRemoteStackedParent,
-            dependencyOverrideCarriedForward: false, interactiveMode);
+            dependencyOverrideCarriedForward: false, interactiveMode, ownerRootFingerprint);
         return (assigned, claimed, unmet);
     }
 
@@ -668,7 +673,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
     /// </summary>
     internal static (TaskClaimed Claimed, bool CarriedForward) PrepareDeliberateClaimFromBlocked(
         TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> unmetDependencies, Guid runId, DateTimeOffset now,
-        bool acknowledgeUnmetDependencies, bool interactiveMode = false)
+        bool acknowledgeUnmetDependencies, bool interactiveMode = false, string? ownerRootFingerprint = null)
     {
         bool carriedForward = !acknowledgeUnmetDependencies && task.UnmetDependenciesAlreadyAcknowledged;
         // The remote-parent-only hold, for the reason its twin in
@@ -696,7 +701,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         TaskClaimed claimed = TaskDecider.ClaimDeliberately(
             task, ownerId, runId, now, dependencyOverrideAcknowledged: true,
-            dependencyOverrideCarriedForward: carriedForward, interactiveMode: interactiveMode);
+            dependencyOverrideCarriedForward: carriedForward, interactiveMode: interactiveMode,
+            ownerRootFingerprint: ownerRootFingerprint);
         return (claimed, carriedForward);
     }
 
