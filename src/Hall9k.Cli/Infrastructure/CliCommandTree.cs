@@ -1148,6 +1148,29 @@ public static class CliCommandTree
                 .WithExample("run", "kill", "28b19893")
                 .WithExample("run", "kill", "28b19893", "--reason", "\"Shedding load before a daemon reinstall\"");
         });
+
+        config.AddBranch("message", message =>
+        {
+            message.SetDescription(
+                "Node-to-node notes over the message transport (idea 202383dc, M1a/M1b) — the daemon's "
+                + "own sweep sends and receives on its own cadence; see h9k messages to read what "
+                + "arrived. Retires notes/node-mailbox.md's GitHub-issue workaround for node-to-node "
+                + "traffic.");
+            message.AddCommand<MessageSendCommand>("send")
+                .WithDescription(
+                    "Queue a note in this node's own store — never touches git directly; the daemon's "
+                    + "message sweep lands it in the outbox on its own cadence (fast, 15 to 25 s, while "
+                    + "there is something to send).")
+                .WithExample("message", "send", "--to", "node:0b8f8e2e-9e2b-4f2a-8c2e-2f8b8e2e9e2b", "\"Rebased onto main, pushing now\"")
+                .WithExample("message", "send", "--to", "project", "--about", "28b19893", "\"Picking this one up\"");
+            message.AddCommand<MessageHandleCommand>("handle")
+                .WithDescription("Mark a received message handled — an explicit act, never implied by h9k messages having printed it.")
+                .WithExample("message", "handle", "28b19893");
+        });
+        config.AddCommand<MessagesCommand>("messages")
+            .WithDescription("List this node's own received messages — unread by default; --all includes already-handled ones too.")
+            .WithExample("messages")
+            .WithExample("messages", "--all");
     }
 
     /// <summary>

@@ -1,5 +1,6 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Tasks;
@@ -62,6 +63,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await using IQuerySession session = store.QuerySession();
 
         await WriteIdentityLineAsync(session, cancellationToken);
+        await WriteMessagesLineAsync(session, cancellationToken);
 
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
             session, DateTimeOffset.UtcNow, cancellationToken);
@@ -314,6 +316,42 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]identity: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>
+    /// The message transport's own state (idea 202383dc, M1b): how many received messages are
+    /// still unhandled, and any sender this node's inbox has had to ignore because that sender's
+    /// node file does not vouch for their outbox (idea 202383dc's sender-verification rule).
+    /// Silent when there is nothing to say — no unread messages and no ignored sender — the same
+    /// "a quiet pane says nothing" posture the rest of this command already follows.
+    /// </summary>
+    private static async Task WriteMessagesLineAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            int unread = await session.Query<MessageDetails>()
+                .Where(message => message.ReceivedAt != null && message.HandledAt == null)
+                .CountAsync(cancellationToken);
+            IReadOnlyList<MessageInboxDetails> ignored = await session.Query<MessageInboxDetails>()
+                .Where(inbox => inbox.SenderIgnored)
+                .ToListAsync(cancellationToken);
+
+            if (unread > 0)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]{unread} unread message{(unread == 1 ? string.Empty : "s")} — see them:[/] h9k messages");
+            }
+
+            foreach (MessageInboxDetails sender in ignored)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]sender {DomainId.Short(sender.SenderNodeId)} ignored[/] — {sender.IgnoredReason}");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]messages: unavailable ({exception.Message})[/]");
         }
     }
 
