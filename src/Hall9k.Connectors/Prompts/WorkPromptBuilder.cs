@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Connectors.Prompts;
 
@@ -84,7 +85,8 @@ public static class WorkPromptBuilder
         string? delegationBaseCommit = null,
         string? baseBranch = null,
         string? baseCommit = null,
-        TimeSpan? commandTimeout = null)
+        TimeSpan? commandTimeout = null,
+        VoiceSkillName? voiceSkill = null)
     {
         // The branch this session's work sits on top of, resolved by the caller at dispatch
         // (RunDispatched.BaseBranch): the project's own for every ordinary run, a stacked child's
@@ -275,7 +277,7 @@ public static class WorkPromptBuilder
             AppendFragment(prompt, file, "delegated-contractor-intro", ("Deliver", DeliverWord));
             AppendDelegatedContractorCommitRules(
                 prompt, project, worktreePath, delegationBaseCommit, effectiveBaseBranch,
-                stackedForkPointCommit);
+                stackedForkPointCommit, voiceSkill);
             AppendSessionEndsAtFinalMessageRule(prompt, effectiveCommandTimeout);
         }
         else if (isDeliberateHeadlessStart)
@@ -295,14 +297,14 @@ public static class WorkPromptBuilder
             // fails (conformance and adversarial review, cycle 4).
             AppendFragment(prompt, file, "deliberate-headless-start-intro", ("Deliver", DeliverWord));
             AppendCheckpointCommitRules(
-                prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit);
+                prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit, voiceSkill);
             AppendSessionEndsAtFinalMessageRule(prompt, effectiveCommandTimeout);
         }
         else
         {
             AppendFragment(prompt, file, "headless-dispatch-line");
             AppendCheckpointCommitRules(
-                prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit);
+                prompt, project, worktreePath, effectiveBaseBranch, stackedForkPointCommit, voiceSkill);
             AppendSessionEndsAtFinalMessageRule(prompt, effectiveCommandTimeout);
         }
 
@@ -712,9 +714,14 @@ public static class WorkPromptBuilder
     /// <see cref="StackedForkPoint"/> for why a merge-base against a parent branch is the wrong
     /// answer. Null (every ordinary run) keeps the merge-base wording exactly as it was.
     /// </param>
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, passed straight through to the pull-request summary step this
+    /// protocol ends with (<see cref="AppendPullRequestSummaryStep"/>). Null for an owner who named
+    /// none, which is what keeps this whole section byte-identical to what it rendered before.
+    /// </param>
     public static void AppendCheckpointCommitRules(
         StringBuilder prompt, ProjectDetails project, string worktreePath, string? baseBranchOverride = null,
-        string? stackedForkPointCommit = null)
+        string? stackedForkPointCommit = null, VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/checkpoint-commit-rules.md";
         string baseBranch = baseBranchOverride ?? project.BaseBranch;
@@ -749,7 +756,7 @@ public static class WorkPromptBuilder
 
         AppendFragment(prompt, file, "step2");
         AppendFragment(prompt, file, "step3");
-        AppendPullRequestSummaryStep(prompt, project, asNumberedStep: true);
+        AppendPullRequestSummaryStep(prompt, project, asNumberedStep: true, voiceSkill);
         AppendFragment(prompt, file, "between-steps");
         AppendFragment(prompt, file, "final-clean-tree-rule");
     }
@@ -796,8 +803,14 @@ public static class WorkPromptBuilder
     /// message is captured exactly the same way), so it is worded as a rule of its own rather than
     /// dropped for want of a number.
     /// </param>
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, when they named one — rendered as one more line inside the
+    /// Whose voice bullet below, immediately after the skill-order sentences it qualifies
+    /// (PLACEHOLDER-ef2ba8b3). Null for an owner who named none, which renders this step exactly
+    /// as it rendered before the preference existed.
+    /// </param>
     private static void AppendPullRequestSummaryStep(
-        StringBuilder prompt, ProjectDetails project, bool asNumberedStep)
+        StringBuilder prompt, ProjectDetails project, bool asNumberedStep, VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/pull-request-summary-step.md";
         string indent = asNumberedStep ? "     " : "  ";
@@ -815,6 +828,10 @@ public static class WorkPromptBuilder
         {
             AppendFragment(prompt, file, "installs-at-default", ("Indent", indent));
         }
+
+        // Inside the Whose voice bullet, after the skill order it qualifies rather than before it:
+        // the repository's own rule is still what decides the structure, and the voice line says so.
+        AppendOwnerVoiceRule(prompt, $"{indent}  ", voiceSkill, CodeReviewVoiceContext);
         AppendFragment(prompt, file, "where-it-goes",
             ("Indent", indent), ("PrSummaryMarker", PrSummaryParser.Marker),
             ("HandoffMarker", HandoffParser.Marker), ("PrSummaryTitlePrefix", PrSummaryParser.TitlePrefix));
@@ -850,6 +867,58 @@ public static class WorkPromptBuilder
     }
 
     /// <summary>
+    /// The voice context a session loads when the text it is about to write POSTS to GitHub under
+    /// the owner's login — a pull request description, an in-thread reply, a commit message, a
+    /// top-level issue comment, a posted review finding.
+    /// </summary>
+    public const string CodeReviewVoiceContext = "contexts/code-review.md";
+
+    /// <summary>
+    /// The voice context for text that is DRAFTED for the owner to read and decide on rather than
+    /// posted by the session: a parked disagreement's proposed reply, a mention follow-up's
+    /// answer. It is the explainer's job — lay out a position for a person — which is why it is the
+    /// other context and not this one's own.
+    /// </summary>
+    public const string ExplainerVoiceContext = "contexts/explainer.md";
+
+    /// <summary>
+    /// One line naming the owner's own voice skill at a seam where this session is about to write
+    /// text a human will read as the owner's (PLACEHOLDER-ef2ba8b3). The daemon already makes the
+    /// owner's user-level skills visible to every session it launches, so the gap this closes is
+    /// only that no seam NAMED one: a session may or may not pick a skill up from its description
+    /// alone, and "load this, then write" is the one instruction that does not depend on it doing so.
+    /// <para>
+    /// The skill is named, never inlined. The voice text is personal and per account, so it stays in
+    /// the owner's own skill directory (<see cref="Hall9k.Domain.Infrastructure.Storage.VoiceSkillLocation"/>'s
+    /// two tiers) and this line is a pointer at it — which is also why structure authority is
+    /// restated here rather than left ambiguous: the repository's own PR-description rule and the
+    /// project's writing conventions still decide the shape, and the voice skill decides only the prose.
+    /// </para>
+    /// <para>
+    /// Renders nothing at all when the owner has named no skill (null or
+    /// <see cref="VoiceSkillName.None"/>), which is what keeps every seam byte-identical to what it
+    /// rendered before this existed.
+    /// </para>
+    /// </summary>
+    /// <param name="context">
+    /// Which of the skill's own contexts this seam's text belongs to:
+    /// <see cref="CodeReviewVoiceContext"/> for prose the session posts itself,
+    /// <see cref="ExplainerVoiceContext"/> for a draft a human reads and decides on.
+    /// </param>
+    public static void AppendOwnerVoiceRule(
+        StringBuilder prompt, string indent, VoiceSkillName? voiceSkill, string context)
+    {
+        if (voiceSkill is not { HasValue: true })
+        {
+            return;
+        }
+
+        AppendFragment(
+            prompt, $"{TemplateDirectory}/owner-voice.md", "line",
+            ("Indent", indent), ("VoiceSkill", voiceSkill.Value), ("VoiceContext", context));
+    }
+
+    /// <summary>
     /// The delegated-contractor counterpart of <see cref="AppendCheckpointCommitRules"/>
     /// (adversarial review, cycle 1, TaskDelegateCommand.cs:367). <c>h9k task delegate</c>'s own
     /// contractor reuses an interactive claim's own worktree exactly as it stands, so unlike a
@@ -876,7 +945,7 @@ public static class WorkPromptBuilder
     /// </summary>
     private static void AppendDelegatedContractorCommitRules(
         StringBuilder prompt, ProjectDetails project, string worktreePath, string? delegationBaseCommit,
-        string baseBranch, string? stackedForkPointCommit)
+        string baseBranch, string? stackedForkPointCommit, VoiceSkillName? voiceSkill)
     {
         const string file = $"{TemplateDirectory}/delegated-contractor-commit-rules.md";
         AppendFragment(prompt, $"{TemplateDirectory}/checkpoint-commit-rules.md", "commit-as-you-go");
@@ -893,7 +962,7 @@ public static class WorkPromptBuilder
             }
 
             AppendFragment(prompt, file, "no-base-reset-rule");
-            AppendPullRequestSummaryStep(prompt, project, asNumberedStep: false);
+            AppendPullRequestSummaryStep(prompt, project, asNumberedStep: false, voiceSkill);
             AppendFragment(prompt, file, "no-base-final-clean-tree-rule");
             return;
         }
@@ -910,7 +979,7 @@ public static class WorkPromptBuilder
             ("DelegationBaseCommit", delegationBaseCommit), ("BaseBranch", baseBranch));
         AppendFragment(prompt, file, "step2");
         AppendFragment(prompt, file, "step3");
-        AppendPullRequestSummaryStep(prompt, project, asNumberedStep: true);
+        AppendPullRequestSummaryStep(prompt, project, asNumberedStep: true, voiceSkill);
         AppendFragment(prompt, file, "between-steps");
         AppendFragment(prompt, file, "final-clean-tree-rule");
     }

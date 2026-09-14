@@ -121,11 +121,13 @@ public static class AgentPromptBuilder
         string? interactiveMilestoneAddress = null,
         string? baseBranch = null,
         string? baseCommit = null,
-        TimeSpan? commandTimeout = null) =>
+        TimeSpan? commandTimeout = null,
+        VoiceSkillName? voiceSkill = null) =>
         WorkPromptBuilder.Build(
             task, project, branch, worktreePath, resumesPreviousWork, blockerContext, task.RetryReason,
             isHandback: task.ResumesFromHandback, interactiveMilestoneAddress: interactiveMilestoneAddress,
-            baseBranch: baseBranch, baseCommit: baseCommit, commandTimeout: commandTimeout);
+            baseBranch: baseBranch, baseCommit: baseCommit, commandTimeout: commandTimeout,
+            voiceSkill: voiceSkill);
 
     /// <summary>
     /// The line a follow-up ends with when a review thread is a disagreement it cannot
@@ -158,10 +160,16 @@ public static class AgentPromptBuilder
     /// <see cref="BuildRebase"/> reads it — see <see cref="AppendCommitStyleRules"/>'s own
     /// parameter for why <c>origin/&lt;parent&gt;</c> cannot be named there on a stacked child.
     /// </param>
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, when they named one (PLACEHOLDER-ef2ba8b3): this lap writes
+    /// in-thread replies, a top-level comment answering a review body, a drafted reply for a
+    /// standing-review disagreement, and its own commit messages, all under the owner's login, so
+    /// all three of this prompt's text-writing seams name it. Null for an owner who named none.
+    /// </param>
     public static string BuildFollowUp(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
-        TimeSpan? commandTimeout = null)
+        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/follow-up.md";
@@ -200,8 +208,8 @@ public static class AgentPromptBuilder
 
         AppendReviewerAttributionRules(prompt);
         AppendThreadTriageRules(prompt, project.Name);
-        AppendThreadHandlingRules(prompt, project);
-        AppendThreadDisputeRules(prompt);
+        AppendThreadHandlingRules(prompt, project, voiceSkill);
+        AppendThreadDisputeRules(prompt, voiceSkill);
 
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
@@ -211,7 +219,7 @@ public static class AgentPromptBuilder
         AppendThreadTextBoundaryRule(prompt);
         AppendCommitStyleRules(
             prompt, commitStyle, effectiveBaseBranch,
-            ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
+            ResumedStackedFold(project, effectiveBaseBranch, baseCommit), voiceSkill);
         AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         AppendFragment(prompt, file, "closing-summary", ("ThreadDispositionSummaryMarker", ThreadDispositionSummaryMarker));
@@ -260,10 +268,14 @@ public static class AgentPromptBuilder
     /// This run's own recorded fork point, read for the narrative style's fixup-fold on the same
     /// terms <see cref="BuildFollowUp"/>'s own parameter states.
     /// </param>
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, when they named one, on the same terms
+    /// <see cref="BuildFollowUp"/>'s own parameter states.
+    /// </param>
     public static string BuildReviewRequestedChanges(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
-        TimeSpan? commandTimeout = null)
+        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/review-requested-changes.md";
@@ -302,7 +314,7 @@ public static class AgentPromptBuilder
 
         AppendProjectHome(prompt, project);
         AppendChangesRequestedFindings(prompt, task);
-        AppendChangesRequestedHandlingRules(prompt, project);
+        AppendChangesRequestedHandlingRules(prompt, project, voiceSkill);
         AppendChangesRequestedDisagreementRules(prompt);
 
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
@@ -314,7 +326,7 @@ public static class AgentPromptBuilder
         AppendThreadTextBoundaryRule(prompt);
         AppendCommitStyleRules(
             prompt, commitStyle, effectiveBaseBranch,
-            ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
+            ResumedStackedFold(project, effectiveBaseBranch, baseCommit), voiceSkill);
         AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         AppendFragment(prompt, file, "closing-summary");
@@ -419,7 +431,8 @@ public static class AgentPromptBuilder
     /// is known to be a person: there is no bot half to state, because a bot's review never reaches
     /// this prompt.
     /// </summary>
-    private static void AppendChangesRequestedHandlingRules(StringBuilder prompt, ProjectDetails project)
+    private static void AppendChangesRequestedHandlingRules(
+        StringBuilder prompt, ProjectDetails project, VoiceSkillName? voiceSkill)
     {
         const string file = $"{TemplateDirectory}/review-requested-changes.md";
         prompt.AppendLine(Fragment(file, "handling-heading"));
@@ -432,6 +445,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "handling-never-open-thread");
         AppendWritingConventions(
             prompt, string.Empty, project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
+        AppendOwnerVoiceRule(prompt, string.Empty, voiceSkill, CodeReviewVoiceContext);
         prompt.AppendLine();
         AppendFragment(prompt, file, "hides-comments");
         prompt.AppendLine();
@@ -499,7 +513,7 @@ public static class AgentPromptBuilder
     public static string BuildFixChecks(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? interactiveMilestoneAddress = null, string? baseBranch = null, string? baseCommit = null,
-        TimeSpan? commandTimeout = null)
+        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/fix-checks.md";
@@ -546,7 +560,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine(Fragment(file, "fix-and-rerun"));
         AppendCommitStyleRules(
             prompt, commitStyle, effectiveBaseBranch,
-            ResumedStackedFold(project, effectiveBaseBranch, baseCommit));
+            ResumedStackedFold(project, effectiveBaseBranch, baseCommit), voiceSkill);
         AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         AppendFragment(prompt, file, "closing-summary");
@@ -1026,7 +1040,8 @@ public static class AgentPromptBuilder
     public static string BuildSettlingGateRepair(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
         string? pullRequestUrl, string baseBranch, string rebasedFromCommit, string rebasedOntoCommit,
-        bool rebaseWasRecovered, string gateOutput, string? humanGuidance = null, TimeSpan? commandTimeout = null)
+        bool rebaseWasRecovered, string gateOutput, string? humanGuidance = null, TimeSpan? commandTimeout = null,
+        VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/settling-gate-repair.md";
         StringBuilder prompt = new();
@@ -1087,7 +1102,7 @@ public static class AgentPromptBuilder
             ? Fragment(file, "worktree-with-pr", ("Branch", branch))
             : Fragment(file, "worktree-without-pr", ("Branch", branch)));
         AppendFragment(prompt, file, "reproduce-and-fold");
-        AppendCommitStyleRules(prompt, commitStyle, baseBranch);
+        AppendCommitStyleRules(prompt, commitStyle, baseBranch, fold: null, voiceSkill);
         AppendFragment(prompt, file, "no-need-to-run-gate");
         if (pullRequestUrl.IsNotBlank())
         {
@@ -1330,7 +1345,8 @@ public static class AgentPromptBuilder
     /// reply and still stays open for them to resolve.
     /// </para>
     /// </summary>
-    private static void AppendThreadHandlingRules(StringBuilder prompt, ProjectDetails project)
+    private static void AppendThreadHandlingRules(
+        StringBuilder prompt, ProjectDetails project, VoiceSkillName? voiceSkill)
     {
         const string file = $"{TemplateDirectory}/thread-handling.md";
         prompt.AppendLine(Fragment(file, "heading"));
@@ -1355,6 +1371,9 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendWritingConventions(
             prompt, string.Empty, project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
+        // Beside the conventions rather than instead of them, and after them: the conventions are
+        // the project's rule about structure, the voice line is the owner's about prose.
+        AppendOwnerVoiceRule(prompt, string.Empty, voiceSkill, CodeReviewVoiceContext);
         prompt.AppendLine();
     }
 
@@ -1395,7 +1414,7 @@ public static class AgentPromptBuilder
     /// dispute file the park's reason points at, and they post it themselves.
     /// </para>
     /// </summary>
-    private static void AppendThreadDisputeRules(StringBuilder prompt)
+    private static void AppendThreadDisputeRules(StringBuilder prompt, VoiceSkillName? voiceSkill)
     {
         const string file = $"{TemplateDirectory}/thread-dispute.md";
         prompt.AppendLine(Fragment(file, "heading"));
@@ -1408,6 +1427,10 @@ public static class AgentPromptBuilder
             ("ThreadDispositionSummaryMarker", ThreadDispositionSummaryMarker),
             ("ProposedReplyMarker", ReviewResultParser.ProposedReplyMarker));
         AppendFragment(prompt, file, "platform-parks");
+        // The explainer context, not the code-review one: everything this section produces is
+        // DRAFTED for a human to read and decide on — both positions recorded, a proposed reply
+        // they send, edit, or drop — rather than posted by this session.
+        AppendOwnerVoiceRule(prompt, string.Empty, voiceSkill, ExplainerVoiceContext);
         prompt.AppendLine();
         AppendFragment(prompt, file, "resolved-line", ("ResolvedMarker", ResolvedMarker));
         prompt.AppendLine();
@@ -1436,13 +1459,21 @@ public static class AgentPromptBuilder
     /// prompt moves the branch, so the recorded fork point is still this branch's own boundary
     /// here, unlike in a rebase prompt. Null for every ordinary run.
     /// </param>
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, when they named one: a commit message is authored history read
+    /// under the owner's login exactly as a pull request body is, so this seam names the skill too
+    /// (PLACEHOLDER-ef2ba8b3). Rendered on both style arms, since both end in commit messages
+    /// somebody writes.
+    /// </param>
     private static void AppendCommitStyleRules(
-        StringBuilder prompt, CommitStyle commitStyle, string baseBranch, FoldBoundary? fold = null)
+        StringBuilder prompt, CommitStyle commitStyle, string baseBranch, FoldBoundary? fold = null,
+        VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/commit-style.md";
         if (commitStyle == CommitStyle.Append)
         {
             AppendFragment(prompt, file, "append-style");
+            AppendOwnerVoiceRule(prompt, string.Empty, voiceSkill, CodeReviewVoiceContext);
             return;
         }
 
@@ -1463,6 +1494,7 @@ public static class AgentPromptBuilder
         }
 
         AppendFragment(prompt, file, "tree-identity-and-push");
+        AppendOwnerVoiceRule(prompt, string.Empty, voiceSkill, CodeReviewVoiceContext);
     }
 
     /// <summary>
@@ -2994,7 +3026,8 @@ public static class AgentPromptBuilder
         bool? interactiveModeEnabledOverride = null,
         string? baseBranch = null,
         string? baseCommit = null,
-        TimeSpan? commandTimeout = null)
+        TimeSpan? commandTimeout = null,
+        VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/review-fix.md";
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
@@ -3037,6 +3070,13 @@ public static class AgentPromptBuilder
             ("PrSummaryMarker", PrSummaryParser.Marker), ("PrSummaryTitlePrefix", PrSummaryParser.TitlePrefix));
         AppendWritingConventions(
             prompt, "  ", project.WritingConventions, Fragment(file, "writing-conventions-lead-in"));
+        // The same artifact the build session's own pull-request summary step produces — a
+        // PR SUMMARY: block the platform puts verbatim into the pull request body — so it names
+        // the owner's voice skill on the same terms that seam does. Beyond the seams
+        // PLACEHOLDER-ef2ba8b3 enumerates, and included because a refreshed body written in a
+        // different voice than the one it replaces is exactly the inconsistency this feature
+        // exists to remove (self-review, blast-radius sweep).
+        AppendOwnerVoiceRule(prompt, "  ", voiceSkill, CodeReviewVoiceContext);
         AppendReviewFixSelfCheckPhaseRules(
             prompt, project, effectiveBaseBranch,
             commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout,

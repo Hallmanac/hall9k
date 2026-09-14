@@ -10,6 +10,7 @@ using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.ProjectHomes;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -2430,11 +2431,15 @@ public sealed class ReviewEngine(
             // mechanics key off that commit rather than origin/<parent>, which a force-pushed
             // parent moves out from under them (independent pre-PR review, cycle 2, adversarial
             // lens). Ignored for every ordinary run, whose prompt is unchanged.
+            // voiceSkill here too: this arm's own rebase verification rule asks an append-style
+            // project for an authored gate-fix commit message, which is owner-read history
+            // exactly as the fix arm's commit-style seam produces (follow-up review finding,
+            // PR #376).
             ? AgentPromptBuilder.BuildRebase(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
                 baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
-                commandTimeout: _options.VerifyGateTimeout)
+                commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill)
             : AgentPromptBuilder.BuildReviewFix(
                 context.Task, context.Project, context.Run.Branch, findings, cycle,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
@@ -2442,7 +2447,7 @@ public sealed class ReviewEngine(
                 // own-changes boundary from this range, and on a stacked child that boundary is
                 // the recorded fork point rather than origin/<parent> for the same reason.
                 baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
-                commandTimeout: _options.VerifyGateTimeout);
+                commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill);
         ExecutorMode mode = context.Run.ExecutorMode;
 
         // A retry of the very same round reuses whatever it already decided rather than asking
@@ -3829,10 +3834,13 @@ public sealed class ReviewEngine(
 
         Guid sessionId = DomainId.New();
         CommitStyle commitStyle = CommitStyle.Resolve(context.Project.CommitStyle, _options.DefaultCommitStyle);
+        // voiceSkill for the same reason the settling-gate repair lap below carries it (follow-up
+        // review finding, PR #376): this prompt's rebase verification rule asks an append-style
+        // project to land the gate fix as its own commit, with a message a human reads.
         string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
             context.Task, context.Project, context.Run.Branch, commitStyle, context.Task.PullRequestUrl,
             humanGuidance, rebaseStillInProgress, baseBranch: context.BaseBranch,
-            commandTimeout: _options.VerifyGateTimeout);
+            commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         string artifactName = RebaseRecoveryArtifactName(sessionId);
@@ -4174,7 +4182,7 @@ public sealed class ReviewEngine(
             run.LastPreFinalPassRebaseFromCommit ?? RunRebasedOntoBase.UnreadableCommit,
             run.LastPreFinalPassRebaseOntoCommit ?? RunRebasedOntoBase.UnreadableCommit,
             run.LastPreFinalPassRebaseRecovered, gateOutput, humanGuidance,
-            commandTimeout: _options.VerifyGateTimeout);
+            commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         string artifactName = SettlingGateRepairArtifactName(sessionId);
@@ -6267,9 +6275,14 @@ public sealed class ReviewEngine(
                 IReadOnlyList<BoundaryApprovalRecord> priorBoundaryApprovals,
                 IReadOnlyList<HumanFixRecord> priorHumanFixes) =
             await LoadPriorRulingsAndInteractionsAsync(query, taskId, cancellationToken);
+        // The owner's standing voice preference (PLACEHOLDER-ef2ba8b3), read here so a prompt this
+        // engine dispatches which asks a session to write text under the owner's login names the
+        // same skill the dispatching launcher would have. Null when the record is missing, which
+        // renders every seam exactly as it renders for an owner who named none.
+        OwnerDetails? owner = await query.LoadAsync<OwnerDetails>(run.OwnerId, cancellationToken);
         return new ReviewContext(
             runId, taskId, run, task, project, priorRulings, priorHumanDirectedInteractions, priorBoundaryApprovals,
-            priorHumanFixes);
+            priorHumanFixes, owner?.VoiceSkill);
     }
 
     /// <summary>
@@ -7423,12 +7436,18 @@ public sealed class ReviewEngine(
         ReviewLens Lens, ReviewFinding Finding, Guid? DraftTaskId, string? FailureReason,
         int? AlreadyRoutedInCycle = null, bool IsSweep = false);
 
+    /// <param name="VoiceSkill">
+    /// The owner's own voice skill, when they named one (PLACEHOLDER-ef2ba8b3) — read once with the
+    /// rest of this context because it is a standing preference, not something a session can change
+    /// mid-run. Null for an owner who named none, or whose record could not be read.
+    /// </param>
     private sealed record ReviewContext(
         Guid RunId, Guid TaskId, RunDetails Run, TaskDetails Task, ProjectDetails Project,
         IReadOnlyList<ReviewParkResolution> PriorRulings,
         IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions,
         IReadOnlyList<BoundaryApprovalRecord> PriorBoundaryApprovals,
-        IReadOnlyList<HumanFixRecord> PriorHumanFixes)
+        IReadOnlyList<HumanFixRecord> PriorHumanFixes,
+        VoiceSkillName? VoiceSkill = null)
     {
         /// <summary>
         /// The branch this run's work sits on top of, as resolved once at dispatch and recorded on

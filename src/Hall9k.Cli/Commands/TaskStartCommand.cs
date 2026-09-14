@@ -170,10 +170,14 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // `git merge-base origin/main HEAD` — the parent's own fork point — and recomposed the
         // parent's entire delta into fresh commits as this branch's authored history, which the
         // tree-identity check cannot see because a mixed reset never moves the tree.
+        // voiceSkill: this session closes with a pull request summary the platform posts under the
+        // owner's login, so it names the owner's own voice skill exactly as a dispatcher-launched
+        // build does (PLACEHOLDER-ef2ba8b3).
         string prompt = WorkPromptBuilder.Build(
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
             isInteractive: false, isDeliberateHeadlessStart: true, isHandback: taskDetails.ResumesFromHandback,
-            baseBranch: baseBranch, baseCommit: baseCommit);
+            baseBranch: baseBranch, baseCommit: baseCommit,
+            voiceSkill: (await session.LoadAsync<OwnerDetails>(context.OwnerId, cancellationToken))?.VoiceSkill);
 
         string resolvedRunDirectory = RunPaths.ResolveCurrentDirectory(runDirectory);
         Directory.CreateDirectory(resolvedRunDirectory);
