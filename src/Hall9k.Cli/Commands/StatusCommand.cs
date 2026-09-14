@@ -1,5 +1,6 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -536,25 +537,35 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// dispatcher will actually serve them in.
     /// </summary>
     /// <param name="inServiceOrder">
-    /// Marker first, then rank, then oldest assignment, ties broken by when the task was added
-    /// (Decisions Log #64, the queue-first marker, task 45136b29, idea fcaded0b's R7 ruling, and
-    /// the rank a follow-up lap, a retry or hand-back, and a first claim take relative to each
-    /// other, Decisions Log #188) — exactly what decides the winner once
-    /// <see cref="Hall9k.Daemon.Dispatch.ProjectRotation"/> has already picked a project, but not
-    /// exactly the claim query's own SQL, which orders by marker, then assignment, then added and
-    /// leaves rank to that later, in-process step. So this order is service order within one
-    /// project, and only the honest approximation of it across several: which project takes the
-    /// next free slot is the daemon's rotation (Decisions Log #141), whose memory is in-process and
-    /// so invisible to any CLI — <see cref="QueuedHeading"/> says so in the section's own words
-    /// rather than leaving the top row to imply otherwise — and rank itself never reaches across
-    /// projects either: the daemon applies it only inside the project the rotation already chose,
-    /// so a rank-ordered row from a different project than the rotation's own pick can still list
-    /// above the row the daemon actually serves next. The queue section tells a human that each of
-    /// its rows starts as a run finishes, so its top row has to be the one that starts next;
-    /// listed newest-first, the pane's default everywhere else, it showed the eight tasks that
-    /// run last and collapsed the imminent ones into "… and N more" (pre-PR review, 2026-08-22).
-    /// A row with nothing assigned cannot be in that section — the dispatcher cannot see an
-    /// unassigned task — but it sorts last rather than first if one ever is.
+    /// Marker first — and never re-ranked among themselves, matching
+    /// <c>Hall9k.Daemon.Dispatch.ProjectRotation.FirstQueueFirstMarked</c>, which takes the oldest
+    /// marked candidate outright and never consults rank once the marker alone has decided the
+    /// winner — then, among the unmarked rows, rank, then oldest assignment, ties broken by when
+    /// the task was added (Decisions Log #64, the queue-first marker, task 45136b29, idea
+    /// fcaded0b's R7 ruling, and the rank a follow-up lap, a retry or hand-back, and a first claim
+    /// take relative to each other, Decisions Log #188) — exactly what decides the winner once
+    /// <c>Hall9k.Daemon.Dispatch.ProjectRotation</c> has already picked a project, but not exactly
+    /// the claim query's own SQL, which orders by marker, then assignment, then added and leaves
+    /// rank to that later, in-process step. So this order is service order within one project, and
+    /// only the honest approximation of it across several: which project takes the next free slot
+    /// is the daemon's rotation (Decisions Log #141), whose memory is in-process and so invisible
+    /// to any CLI — <see cref="QueuedHeading"/> says so in the section's own words rather than
+    /// leaving the top row to imply otherwise — and rank itself never reaches across projects
+    /// either: the daemon applies it only inside the project the rotation already chose, so a
+    /// rank-ordered row from a different project than the rotation's own pick can still list above
+    /// the row the daemon actually serves next. A follow-up lap with an open pull request is a
+    /// further honest gap, not only a cross-project one: it reads Delivered, not Queued, while its
+    /// pull request is open (<see cref="AttentionBucket.Delivered"/>'s own doc: "an open pull
+    /// request being watched, and any follow-up run driving it"), so it never appears in this
+    /// section at all, and a project whose oldest queued row does list here can still lose its
+    /// slot to a follow-up lap this section cannot show; that lap's own rank is instead named on
+    /// its Delivered phase line (<see cref="TaskPhaseComposer"/>). The queue section tells a human
+    /// that each of its rows starts as a run finishes, so its top row has to be the one that starts
+    /// next among the rows this section can show; listed newest-first, the pane's default
+    /// everywhere else, it showed the eight tasks that run last and collapsed the imminent ones
+    /// into "… and N more" (pre-PR review, 2026-08-22). A row with nothing assigned cannot be in
+    /// that section — the dispatcher cannot see an unassigned task — but it sorts last rather than
+    /// first if one ever is.
     /// </param>
     internal static IReadOnlyList<TaskStatusRow> SectionRows(
         IReadOnlyList<TaskStatusRow> rows, AttentionBucket bucket, bool inServiceOrder)
@@ -563,7 +574,12 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         return [.. inServiceOrder
             ? inGroup
                 .OrderByDescending(row => row.QueuePriorityMarked)
-                .ThenBy(row => row.Rank)
+                // A marked row's own slot is decided by the marker alone (ProjectRotation.
+                // FirstQueueFirstMarked never consults rank once it has found one), so every marked
+                // row sorts here under the identical constant rank — leaving AssignedAt, next, to
+                // reproduce the daemon's own marker-then-assignment order instead of a rank order
+                // the dispatcher never applies to a marked task.
+                .ThenBy(row => row.QueuePriorityMarked ? TaskRank.FirstClaim : row.Rank)
                 .ThenBy(row => row.AssignedAt ?? DateTimeOffset.MaxValue)
                 .ThenBy(row => row.AddedAt)
             : inGroup
