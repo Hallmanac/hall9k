@@ -49,6 +49,7 @@ public sealed class OwnerShowCommand : Hall9kAsyncCommand<OwnerShowCommand.Setti
             ? "[dim]none registered to this owner yet[/]"
             : string.Join(", ", projects.Select(project => project.Name.EscapeMarkup()).Order(StringComparer.OrdinalIgnoreCase)));
         table.AddRow("Re-request review", DescribePolicy(owner.ReviewRerequest));
+        table.AddRow("Voice skill", VoiceSkillOption.Describe(owner.VoiceSkill));
 
         string machineName = Environment.MachineName;
         NodeDetails? node = (await session.Query<NodeDetails>()
