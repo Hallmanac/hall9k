@@ -623,7 +623,15 @@ h9k project set myproject --branch-template "{key}-{slug}"
 h9k project set myproject --writing-conventions "Plain sentences. No em dashes. No AI attribution."
 
 h9k owner set --rerequest-review on
+h9k owner set --voice-skill my-voice
 ```
+
+`h9k owner set --voice-skill <name>` names the skill the owner writes in, and every prompt seam
+where a session composes text a human reads as theirs (a pull request description, a review-thread
+reply, a commit message, a posted review finding, a drafted reply to a GitHub mention) then tells
+that session to load it and its matching context before writing. The skill is the owner's own,
+referenced by name and never copied anywhere, so it has to already exist in the owner's user skills
+(`~/.claude/skills/<name>`) or in a project home's `skills/`. `--clear-voice-skill` forgets it.
 
 `h9k project show <name>` prints every setting a project runs by, alongside how it is registered.
 Ask `h9k project set --help` for the current list and what each value means.

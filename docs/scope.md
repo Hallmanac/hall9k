@@ -660,7 +660,20 @@ project's own base branch, refusing the whole `project set` when a gate cannot p
 which also fails on clean base says so, rather than reporting a bare gate failure — agent model
 per role, parallelism, commit style, context links, skip-permissions, the Jira
 board binding, the backlog policy and its free-text routing guidance, the branch-name template a
-project's task branches are cut under, and the post-fix review re-request policy. The node has a
+project's task branches are cut under, and the post-fix review re-request policy. The owner's own
+two settings sit beside those: the post-fix review re-request policy again (a project setting
+outranks theirs), and the skill they write in — `h9k owner set --voice-skill <name>`, cleared with
+`--clear-voice-skill` and printed by `h9k owner show`. A named voice skill makes every prompt seam
+where a session composes text a human reads as the owner's — a pull request description, a
+review-thread reply, a commit message, a posted review finding, a drafted reply to a GitHub mention
+— tell that session to load the skill and its matching context first (`contexts/code-review.md` for
+prose the session posts, `contexts/explainer.md` for a draft the owner reads and decides on). The
+skill stays the owner's: it is referenced by name and never copied into a project, a prompt
+template, or the platform, and the name has to already be a skill directory in the owner's own user
+skills (`~/.claude/skills/<name>`) or in a project home's `skills/` — a name that is in neither is
+refused naming both paths. Structure authority does not move: the repository's own PR-description
+rule and the project's writing conventions still decide the shape, and the voice skill decides only
+the prose. The node has a
 ceiling the dispatcher respects, counted directly in task runs (Decisions Log #111) — the retired
 session-denominated setting still converts when the new one is absent, and a per-run session cap
 (global default, overridable per task even mid-run) governs how many agent sessions one run may

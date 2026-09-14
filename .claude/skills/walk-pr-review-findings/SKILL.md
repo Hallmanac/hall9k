@@ -52,6 +52,12 @@ so posting a review under their login as their review is exactly what this skill
      approve-anyway note)? A blocking comment joins the batched review below; a conversational
      remark becomes its own plain PR comment (step 4), never folded into the review body.
 
+   **Whose voice.** Everything you post here goes out under the owner's own login, so when the
+   owner has named a voice skill (`h9k owner set --voice-skill <name>`, shown by `h9k owner show`),
+   load that skill and its `contexts/code-review.md` context before you word a finding for posting.
+   It decides the prose only: what the comment has to say is the finding's, and what is posted at
+   all is the owner's, on their explicit go.
+
 3. **Collect the batch.** Every "post it on my behalf" review comment accumulates — do not post
    as you go. Once every finding has a directive, ask the owner for the review's overall verdict:
    **comment**, **request changes**, or **approve** (GitHub's three review events). Assemble the

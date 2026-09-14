@@ -549,6 +549,20 @@ on-closeout|never|when-all-tasks-close`, [below](#closing-a-linked-issue)), the 
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 
+`owner set` holds the two preferences that belong to the human rather than to a project: the review
+re-request policy (`--rerequest-review on|off|default`, which a project setting outranks) and the
+skill the owner writes in (`--voice-skill <name>`, forgotten with `--clear-voice-skill`, printed by
+`owner show`). A named voice skill makes every prompt seam where a session composes text a human
+reads as the owner's — a pull request description, a review-thread reply, a commit message, a posted
+review finding, a drafted reply to a GitHub mention — tell that session to load the skill and its
+matching context before writing: `contexts/code-review.md` for prose the session posts itself,
+`contexts/explainer.md` for a draft the owner reads and decides on. The skill stays the owner's own,
+referenced by name and never copied into a project, a prompt template, or the platform, so the name
+has to already be a skill directory in the owner's user skills (`~/.claude/skills/<name>`) or in a
+project home's `skills/`; a name in neither is refused naming both paths. It settles the prose only:
+the repository's own PR-description rule and the project's `--writing-conventions` still decide the
+structure.
+
 Which pre-PR review stages a run gets is itself a project-, task-, and node-level setting
 (`--review-stage-composition <full-pipeline|adversarial-only|conformance-only|skip-final-pass|none>`
 at `h9k config set`, `h9k project set`, and `h9k task add`/`revise`, Decisions Log #129): the full
