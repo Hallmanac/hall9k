@@ -1,0 +1,44 @@
+using FluentAssertions;
+using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Shared.Exceptions;
+using Xunit;
+
+namespace Hall9k.Tests.Domain;
+
+public sealed class MessageInboxDeciderTests
+{
+    private static readonly DateTimeOffset Now = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+    private static readonly Guid SenderNode = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+    [Fact]
+    public void AdvanceCursor_RefusesASeqBelowOne()
+    {
+        Action act = () => MessageInboxDecider.AdvanceCursor(SenderNode, 0, Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void AdvanceCursor_ThenIgnoreSender_ThenAdvanceCursorAgain_ClearsTheIgnoredMark()
+    {
+        MessageInboxAggregate inbox = new();
+        inbox.Apply(MessageInboxDecider.AdvanceCursor(SenderNode, 3, Now));
+        inbox.Apply(MessageInboxDecider.IgnoreSender(SenderNode, "no node file", Now.AddMinutes(1)));
+
+        inbox.SenderIgnored.Should().BeTrue();
+
+        inbox.Apply(MessageInboxDecider.AdvanceCursor(SenderNode, 4, Now.AddMinutes(2)));
+
+        inbox.HighestSeqReceived.Should().Be(4);
+        inbox.SenderIgnored.Should().BeFalse();
+        inbox.IgnoredReason.Should().BeNull();
+    }
+
+    [Fact]
+    public void IgnoreSender_RefusesABlankReason()
+    {
+        Action act = () => MessageInboxDecider.IgnoreSender(SenderNode, string.Empty, Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+}

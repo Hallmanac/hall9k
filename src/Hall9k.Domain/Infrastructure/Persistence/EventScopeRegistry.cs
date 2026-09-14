@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Events;
@@ -192,6 +193,19 @@ public static class EventScopeRegistry
         [typeof(NodeLaunchHoldRunHeld)] = EventScope.NodeScoped,
         [typeof(NodeOwnerClaimed)] = EventScope.NodeScoped,
         [typeof(NodeRegistered)] = EventScope.NodeScoped,
+
+        // Hall9k.Domain.Features.Message — idea 202383dc, M1a: messages are ephemeral, ruled
+        // 2026-09-13 ("read receipts and bookmark announcements are dead ... messages are
+        // ephemeral"). Every message and inbox event stays on the node that appended it; only
+        // project-scoped facts (the task or idea a message is about) ever travel, and never
+        // through a message itself.
+        [typeof(MessageSent)] = EventScope.NodeScoped,
+        [typeof(MessageSendFailed)] = EventScope.NodeScoped,
+        [typeof(MessageResent)] = EventScope.NodeScoped,
+        [typeof(MessageReceived)] = EventScope.NodeScoped,
+        [typeof(MessageHandled)] = EventScope.NodeScoped,
+        [typeof(InboxCursorAdvanced)] = EventScope.NodeScoped,
+        [typeof(InboxSenderIgnored)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Connection — a node's own registered credential; never
         // replicated (Guid tokens and gh CLI logins are inherently local to the machine).
