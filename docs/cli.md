@@ -493,11 +493,15 @@ reaches the reviewer.
 
 ### Projects, owners, connections
 
-`h9k project add | init | list | show | set | remove | cancel-purge | reactivate | rename` ·
+`h9k project add | init | join | list | show | set | remove | cancel-purge | reactivate | rename` ·
 `h9k owner show | set` · `h9k connection add jira | list`
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
-recipe for a project that has none yet, and the repair path for one that is incomplete. See
+recipe for a project that has none yet, and the repair path for one that is incomplete. `project
+join <name> [--owner <fingerprint>]` establishes or confirms this node's identity in a project's
+ledger: it generates this node's own signing key the first time any project is joined, and `project
+add` runs it automatically once the project's repository is reachable on disk, pushing a signed
+commit to the project's own remote. See
 [the project home](#the-project-home) below.
 
 `project remove` archives a project on this install: reversible, and nothing is deleted. The
