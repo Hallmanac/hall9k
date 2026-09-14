@@ -34,6 +34,12 @@ arx-platform's `.claude/commands/git/pr-description.md` is the known case, and a
 shape, and the title convention from there, and use this skill only for what that rule does not
 say. Only when the repository ships none is this skill's own "How it should read" the whole answer.
 
+**The owner's own voice wins for the prose.** When the owner has named a voice skill
+(`h9k owner set --voice-skill <name>`), the prompt that asked you for this block names it: load that
+skill and its `contexts/code-review.md` context before writing, and write in it. That settles the
+sentences, not the shape — the repository's own PR-description rule above still decides the
+structure, and the platform still adds the four things below around whatever you write.
+
 **The second use is replacing the body on an already-open PR**, or drafting one for a PR opened
 outside Hall9k's own dispatch entirely. For an already-open Hall9k PR, read the current body first
 (`gh pr view <number> --json body -q .body`), because it carries the real footer and, whenever the

@@ -82,6 +82,8 @@ Two consequences worth stating:
    ```
    Fix: acknowledge and state what was fixed. Decline: state the evidence — the scratch-repo output or the code path — not just the disagreement. Route: name the idea filed and why it sits outside this task. Concise and technical; never rude, even when the finding is wrong.
 
+   **Whose voice.** Every reply here posts under the owner's own login, so when the owner has named a voice skill (`h9k owner set --voice-skill <name>`) the prompt that dispatched you names it: load that skill and its `contexts/code-review.md` context before writing, and let it decide the prose while the rules in this step decide what the reply has to contain.
+
 8. **Answer a review BODY with a top-level comment.** A review's body text is not a thread and GitHub gives you nothing to reply inside. Use `gh pr comment "$PR_NUMBER" --body "…"`, naming the review it answers (its author and URL from step 2) and summarising what you did about each point. Never leave a review body unanswered, and never leave an unanchored comment the reviewer has to connect back themselves. (Origin: the PR #20 human review was answered only through the work itself, with no visible reply on the PR.)
 
 9. **Resolve the thread**, once its reply is posted, per its disposition and its author:
