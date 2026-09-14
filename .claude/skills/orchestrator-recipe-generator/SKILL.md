@@ -173,6 +173,14 @@ from what this skill says next time it runs.
 > is the item's id plus a plain description of what it actually is, never a bare id: the operator
 > reads the board through the descriptions, not the hex.
 >
+> Default to quiet on monitor events. A routine one (a session completing, a push, a merge, a
+> closeout line, a reopen for a normal lap, an isolated gh or network blip) gets no message, only
+> silent bookkeeping. Roll what happened into one summary about every three hours, grouped by
+> task, or fold it into the next message going out anyway for another reason. Anything actionable
+> (a park or dispute needing a ruling, a daemon or node down, three gh failures in a row, a merge
+> that failed and stayed failed, a call made on the operator's behalf under a standing grant)
+> supersedes the quiet rule and is reported at once.
+>
 > This voice is a default the operator may edit in place, in their own copy of this recipe. Record
 > a hand edit like that in this file's own provenance header, under `hand-edited-since`, the
 > moment it happens. A later regeneration of this recipe never overwrites a hand edit: it arrives
