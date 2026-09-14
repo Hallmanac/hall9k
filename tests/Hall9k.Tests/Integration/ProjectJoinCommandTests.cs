@@ -260,6 +260,65 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         owner.RootFingerprintVerified.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Root retirement runs in every project this owner is registered to, but it must never make
+    /// the join the user actually asked for fail over a project it has nothing to do with — an
+    /// archived project's deleted remote, or one behind a VPN that is down. The project being
+    /// joined is required to retire; every other one is best-effort (independent pre-PR review,
+    /// cycle 1, conformance and adversarial lenses, medium).
+    /// </summary>
+    [Fact]
+    public async Task An_unreachable_other_project_is_skipped_while_retirement_in_the_project_being_joined_still_succeeds()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails projectA = await SeedProjectAsync(cts.Token);
+        FakeLedger inner = new();
+        NodeKeyStore keyStore = new();
+        string realRootFingerprint = new string('c', 64);
+
+        await using (IDocumentSession first = _postgres.Store.LightweightSession())
+        {
+            await ProjectJoinCommand.RunAsync(first, projectA, claimedOwnerOverride: null, inner, keyStore, cts.Token);
+        }
+
+        Guid projectBId = DomainId.New();
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            seed.Events.StartStream<ProjectAggregate>(
+                projectBId,
+                ProjectDecider.Register(
+                    projectBId, projectA.OwnerId, DomainId.New(), "smoke-b",
+                    "/does/not/matter/on/a/fake/ledger/b", null, null, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession loadSession = _postgres.Store.LightweightSession();
+        ProjectDetails projectB = (await loadSession.LoadAsync<ProjectDetails>(projectBId, cts.Token))!;
+
+        await using (IDocumentSession second = _postgres.Store.LightweightSession())
+        {
+            // Joined the same self-created-root way projectA was, so it too ends up with its own
+            // local root.yaml — a candidate this owner's later retirement has to consider.
+            await ProjectJoinCommand.RunAsync(second, projectB, claimedOwnerOverride: null, inner, keyStore, cts.Token);
+        }
+
+        UnreachableRepositoryLedger unreachable = new(inner, projectB.RepositoryPath);
+
+        ProjectJoinCommand.JoinOutcome reclaim;
+        await using (IDocumentSession third = _postgres.Store.LightweightSession())
+        {
+            reclaim = await ProjectJoinCommand.RunAsync(third, projectA, realRootFingerprint, unreachable, keyStore, cts.Token);
+        }
+
+        reclaim.RetiredPreviousRoot.Should().BeTrue("the required retirement in the project being joined still succeeds");
+        inner.Writes.Should().Contain(
+            w => w.RepositoryPath == projectA.RepositoryPath && w.Path.EndsWith("retired.yaml"),
+            "the project being joined retires its own self-created root");
+        inner.Writes.Should().NotContain(
+            w => w.RepositoryPath == projectB.RepositoryPath && w.Path.EndsWith("retired.yaml"),
+            "the unreachable project's own retirement never lands, but does not fail the join either");
+    }
+
     [Fact]
     public async Task No_written_tree_ever_contains_the_private_key()
     {
@@ -459,5 +518,23 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
             return await inner.WriteAsync(request, cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Wraps another <see cref="ILedger"/> and fails every write targeting
+    /// <paramref name="unreachableRepositoryPath"/> with <see cref="LedgerPushRejectedException"/>,
+    /// simulating a project whose remote is gone or unreachable (an archived project's deleted
+    /// GitHub repository, or one behind a VPN that is down) — every other repository passes
+    /// straight through to <paramref name="inner"/>.
+    /// </summary>
+    private sealed class UnreachableRepositoryLedger(ILedger inner, string unreachableRepositoryPath) : ILedger
+    {
+        public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken) =>
+            inner.ReadAsync(repositoryPath, refName, path, cancellationToken);
+
+        public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken) =>
+            request.RepositoryPath == unreachableRepositoryPath
+                ? throw new LedgerPushRejectedException(request.RefName, attempts: 5, gitError: "could not read from remote repository")
+                : inner.WriteAsync(request, cancellationToken);
     }
 }
