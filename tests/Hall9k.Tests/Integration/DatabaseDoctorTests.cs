@@ -121,7 +121,7 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
-    /// Question 3's second half (event stamping, idea 202383dc, PLAN.md §16 #191): a schema this
+    /// Question 3's second half (event stamping, idea 202383dc, PLAN.md §16 PLACEHOLDER-bfe95f6b): a schema this
     /// build no longer matches — not "not there at all", but present and stale — is exactly what
     /// every install whose database predates <see cref="EventOriginStampingListener"/> looks like
     /// the moment it upgrades, since <c>opts.Events.MetadataConfig.HeadersEnabled</c> is the first
@@ -178,6 +178,50 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
             await using IDocumentSession session = thisBuild.LightweightSession();
             session.Events.StartStream(Guid.NewGuid(), new object[] { new OwnerRegisteredForTest() });
             await session.SaveChangesAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// The other half of the stale-schema question (cycle-1 pre-PR review, both lenses): when
+    /// nobody is there to confirm the update — no <c>--yes</c>, and this test process is never a
+    /// terminal — the old code still returned the connection string as though it were usable, so
+    /// <c>DaemonLifecycle.StartAsync</c> would spawn a daemon against a schema
+    /// <see cref="AutoCreate.CreateOnly"/> refuses to write through. A caller can only tell a
+    /// genuinely healthy connection string from one this check knows is still broken by getting
+    /// <see langword="null"/> back — the same signal the schema-missing branch keeps returning a
+    /// connection string for, since <c>CreateOnly</c> repairs that half on its own on the very
+    /// next write.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_schema_left_unfixed_reports_no_usable_connection_string()
+    {
+        string stale = await FreshDatabaseAsync(CancellationToken.None);
+
+        using (DocumentStore oldBuild = DocumentStore.For(opts =>
+        {
+            opts.Connection(stale);
+            opts.AutoCreateSchemaObjects = AutoCreate.All;
+        }))
+        {
+            await using IDocumentSession session = oldBuild.LightweightSession();
+            session.Events.StartStream(Guid.NewGuid(), new object[] { new OwnerRegisteredForTest() });
+            await session.SaveChangesAsync(CancellationToken.None);
+        }
+
+        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, stale);
+        try
+        {
+            RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
+
+            string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None);
+
+            resolved.Should().BeNull(
+                "nobody confirmed the update and CreateOnly cannot self-heal an Update-shaped difference the way it self-heals a missing table");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
         }
     }
 
