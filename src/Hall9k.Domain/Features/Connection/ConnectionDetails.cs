@@ -23,6 +23,16 @@ public sealed class ConnectionDetails
     public string? TrackerAccountId { get; set; }
     /// <summary>When <see cref="TrackerAccountId"/> was read from the tracker; null while it is unobserved.</summary>
     public DateTimeOffset? TrackerIdentityObservedAt { get; set; }
+    /// <summary>
+    /// GitHub's own numeric id for this connection's account, or null when it has never been
+    /// observed — see <see cref="ConnectionGitHubIdentityObserved"/>. Never set for a Jira
+    /// connection.
+    /// </summary>
+    public long? GitHubAccountId { get; set; }
+    /// <summary>The login GitHub reported alongside <see cref="GitHubAccountId"/> at the same observation.</summary>
+    public string? GitHubLogin { get; set; }
+    /// <summary>When <see cref="GitHubAccountId"/>/<see cref="GitHubLogin"/> were last read from GitHub; null while unobserved.</summary>
+    public DateTimeOffset? GitHubIdentityObservedAt { get; set; }
 }
 
 public sealed class ConnectionDetailsProjection : SingleStreamProjection<ConnectionDetails, Guid>
@@ -51,5 +61,12 @@ public sealed class ConnectionDetailsProjection : SingleStreamProjection<Connect
     {
         view.TrackerAccountId = @event.Data.TrackerAccountId;
         view.TrackerIdentityObservedAt = @event.Data.ObservedAt;
+    }
+
+    public void Apply(IEvent<ConnectionGitHubIdentityObserved> @event, ConnectionDetails view)
+    {
+        view.GitHubAccountId = @event.Data.GitHubAccountId;
+        view.GitHubLogin = @event.Data.GitHubLogin;
+        view.GitHubIdentityObservedAt = @event.Data.ObservedAt;
     }
 }

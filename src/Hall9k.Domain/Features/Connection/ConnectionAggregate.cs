@@ -18,6 +18,14 @@ public sealed class ConnectionAggregate
     /// email or a display name.
     /// </summary>
     public string? TrackerAccountId { get; private set; }
+    /// <summary>
+    /// GitHub's own numeric id for this connection's account, or null when it has never been
+    /// observed — see <see cref="ConnectionGitHubIdentityObserved"/>. Never set for a Jira
+    /// connection.
+    /// </summary>
+    public long? GitHubAccountId { get; private set; }
+    /// <summary>The login GitHub reported alongside <see cref="GitHubAccountId"/> at the same observation.</summary>
+    public string? GitHubLogin { get; private set; }
     public DateTimeOffset RegisteredAt { get; private set; }
 
     public void Apply(ConnectionRegistered @event)
@@ -42,4 +50,10 @@ public sealed class ConnectionAggregate
     }
 
     public void Apply(ConnectionTrackerIdentityObserved @event) => TrackerAccountId = @event.TrackerAccountId;
+
+    public void Apply(ConnectionGitHubIdentityObserved @event)
+    {
+        GitHubAccountId = @event.GitHubAccountId;
+        GitHubLogin = @event.GitHubLogin;
+    }
 }

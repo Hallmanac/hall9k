@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
@@ -51,6 +52,17 @@ public sealed class OwnerShowCommand : Hall9kAsyncCommand<OwnerShowCommand.Setti
         table.AddRow("Re-request review", DescribePolicy(owner.ReviewRerequest));
         table.AddRow("Voice skill", VoiceSkillOption.Describe(owner.VoiceSkill));
 
+        // The owner's linked accounts (idea 202383dc, A2b, item 1): an identity holds a list of
+        // accounts, not one — an owner authenticated as more than one GitHub login on this install
+        // shows every one of them here, not merely the first.
+        IReadOnlyList<ConnectionDetails> ownedConnections = await session.Query<ConnectionDetails>()
+            .Where(connection => connection.OwnerId == owner.Id)
+            .ToListAsync(cancellationToken);
+        IReadOnlyList<ConnectionDetails> gitHub = [.. ownedConnections.Where(connection => connection.Provider == WorkItemProvider.GitHub)];
+        table.AddRow("GitHub accounts", gitHub.Count == 0
+            ? "[dim]none confirmed yet — h9k project add runs gh auth login's own check[/]"
+            : string.Join(", ", gitHub.Select(DescribeGitHubConnection)));
+
         string machineName = Environment.MachineName;
         NodeDetails? node = (await session.Query<NodeDetails>()
             .Where(n => n.MachineName == machineName)
@@ -86,6 +98,11 @@ public sealed class OwnerShowCommand : Hall9kAsyncCommand<OwnerShowCommand.Setti
         _ when node.OwnerId != ownerId => "[dim]this machine's node belongs to a different owner[/]",
         _ => $"[dim]{node.KeyFingerprint} at {NodeKeyStore.PrivateKeyPathFor(node.Id).EscapeMarkup()}[/]",
     };
+
+    private static string DescribeGitHubConnection(ConnectionDetails connection) =>
+        connection.GitHubAccountId is { } id
+            ? $"{connection.ExternalAccountId.EscapeMarkup()} (#{id})"
+            : $"{connection.ExternalAccountId.EscapeMarkup()} [dim](unconfirmed)[/]";
 
     private static string DescribePolicy(ReviewRerequestPolicy policy) => ReviewRerequestOption.Describe(
         policy,

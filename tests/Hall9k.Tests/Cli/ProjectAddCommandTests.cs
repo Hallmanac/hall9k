@@ -238,6 +238,29 @@ public sealed class ProjectAddCommandTests : IDisposable
             + "them were recorded, not left to assume they were");
     }
 
+    /// <summary>
+    /// A project needs a confirmed GitHub account (idea 202383dc, A2b, item 1) — takes a plain
+    /// bool rather than a loaded <c>ConnectionDetails</c> specifically so the caller can OR a live
+    /// gh read in with whatever the connection already carries, since a live read is the only
+    /// signal available for a connection this same session just started and has not saved yet
+    /// (ProjectAddCommand.ExecuteAsync's own comment on the call site explains why).
+    /// </summary>
+    [Fact]
+    public void RequireConfirmedGitHubAccount_is_refused_when_nothing_confirmed_it()
+    {
+        Action act = () => ProjectAddCommand.RequireConfirmedGitHubAccount(confirmed: false);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*confirmed GitHub account*");
+    }
+
+    [Fact]
+    public void RequireConfirmedGitHubAccount_passes_once_something_confirmed_it()
+    {
+        Action act = () => ProjectAddCommand.RequireConfirmedGitHubAccount(confirmed: true);
+
+        act.Should().NotThrow();
+    }
+
     private static ProjectDetails RegisteredAt(string name, string? homeDirectory)
     {
         ProjectDetailsProjection projection = new();

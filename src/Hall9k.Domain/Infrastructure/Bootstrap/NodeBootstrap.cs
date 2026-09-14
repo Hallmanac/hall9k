@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
@@ -60,18 +61,109 @@ public static class NodeBootstrap
         Guid connectionId = connection?.Id ?? DomainId.New();
         if (connection is null)
         {
+            GitHubAccountIdentity? identity = ParseGhIdentity(GhUserJson());
             ConnectionRegistered registered = ConnectionDecider.Register(
                 connectionId, ownerId, WorkItemProvider.GitHub,
-                GhLogin() ?? Environment.UserName, CredentialReference.GhCli, now);
+                identity?.Login ?? Environment.UserName, CredentialReference.GhCli, now);
             session.Events.StartStream<ConnectionAggregate>(connectionId, registered);
+
+            // The one call this genesis bootstrap already makes to gh (to name the connection's
+            // account at all) already answers the numeric id too, so this is free: no second gh
+            // invocation, just a second fact kept from the one already made (idea 202383dc, A2b).
+            if (identity is { } observed)
+            {
+                session.Events.Append(
+                    connectionId, new ConnectionGitHubIdentityObserved(connectionId, observed.Id, observed.Login, now));
+            }
         }
 
         return new BootstrapContext(ownerId, nodeId, connectionId);
     }
 
+    /// <summary>
+    /// Refreshes this install's own GitHub numeric id and login on the bootstrap connection's
+    /// stream, appended only when something actually changed since the last observation
+    /// (<see cref="ConnectionDecider.ObserveGitHubIdentity"/>) — read again at every daemon start
+    /// and at <c>h9k project add</c>, the two moments nothing else naturally triggers a GitHub
+    /// read for the way Jira's own <c>TrackerClaimGate</c> reads lazily on first claim-gate check
+    /// (idea 202383dc, A2b). Best-effort: a <c>gh</c> that cannot answer (not installed, not
+    /// authenticated, offline) leaves the connection's already-recorded identity exactly as it
+    /// was, never guessed at (AGENTS.md).
+    /// <para>
+    /// Returns whether <c>gh</c> answered with a real identity just now, regardless of whether the
+    /// connection stream could actually be aggregated: on a connection this same session's own
+    /// <see cref="EnsureAsync"/> call just started, live aggregation reads the database, not this
+    /// session's own not-yet-saved pending events (the identical fact <c>ProjectJoinCommand.RunAsync</c>
+    /// flushes before aggregating for), so a caller gating on "is this install's GitHub account
+    /// confirmed" needs this return value rather than a re-read of the connection afterward —
+    /// otherwise a brand-new install's very first bootstrap would read as unconfirmed even with
+    /// <c>gh</c> fully authenticated, since nothing has reached the database yet.
+    /// </para>
+    /// </summary>
+    public static async Task<bool> RefreshGitHubIdentityAsync(
+        IDocumentSession session, Guid connectionId, CancellationToken cancellationToken)
+    {
+        if (ParseGhIdentity(GhUserJson()) is not { } observed)
+        {
+            return false;
+        }
+
+        ConnectionAggregate? connection = await session.Events.AggregateStreamAsync<ConnectionAggregate>(
+            connectionId, token: cancellationToken);
+        if (connection is not null
+            && connection.Provider == WorkItemProvider.GitHub
+            && ConnectionDecider.ObserveGitHubIdentity(connection, observed.Id, observed.Login, DateTimeOffset.UtcNow) is { } appended)
+        {
+            session.Events.Append(connectionId, appended);
+        }
+
+        return true;
+    }
+
     private static string? GitConfig(string key) => RunQuick("git", $"config {key}");
 
-    private static string? GhLogin() => RunQuick("gh", "api user -q .login");
+    internal sealed record GitHubAccountIdentity(long Id, string Login);
+
+    private static string? GhUserJson() => RunQuick("gh", "api user");
+
+    /// <summary>
+    /// Split from the raw gh call so it is unit-testable against recorded gh output without a
+    /// process in the loop, mirroring every other GitHub-JSON mapper in this codebase
+    /// (<c>GitHubReviewAssignments.ParseReviewRequested</c>, for one).
+    /// </summary>
+    internal static GitHubAccountIdentity? ParseGhIdentity(string? json)
+    {
+        if (json.IsBlank())
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(json);
+            JsonElement root = document.RootElement;
+            return root.ValueKind == JsonValueKind.Object
+                && root.TryGetProperty("id", out JsonElement idElement)
+                && idElement.ValueKind == JsonValueKind.Number
+                && idElement.TryGetInt64(out long id)
+                && root.TryGetProperty("login", out JsonElement loginElement)
+                && loginElement.ValueKind == JsonValueKind.String
+                && loginElement.GetString() is { } login
+                && login.IsNotBlank()
+                    ? new GitHubAccountIdentity(id, login)
+                    : null;
+        }
+        // gh answering with valid JSON that simply does not carry the shape expected (a proxy's
+        // own error body, a future gh version renaming a field) is exactly as unreadable as
+        // malformed JSON — TryGetInt64/GetString throw InvalidOperationException rather than
+        // returning false for a property of the wrong kind, so both exception types land here
+        // rather than only the JSON-syntax one (a defect this method shipped with, found and fixed
+        // in this same task's own self-review).
+        catch (Exception exception) when (exception is JsonException or InvalidOperationException)
+        {
+            return null;
+        }
+    }
 
     private static string? RunQuick(string fileName, string arguments)
     {

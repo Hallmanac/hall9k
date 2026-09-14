@@ -106,4 +106,31 @@ public static class ConnectionDecider
             vetted.Id, vetted.Provider, vetted.ExternalAccountId,
             vetted.CredentialReference, reregisteredAt, vetted.SiteUrl);
     }
+
+    /// <summary>
+    /// What GitHub just reported about this connection's own account, or null when nothing about
+    /// it changed since the last observation — the same "harmless to observe twice, so only record
+    /// a change" idiom <c>ProjectDecider</c>'s own GitHub access mirror uses (idea 202383dc, A2b).
+    /// Refused on a non-GitHub connection: nothing else in this platform ever asks GitHub who a
+    /// Jira account is.
+    /// </summary>
+    public static ConnectionGitHubIdentityObserved? ObserveGitHubIdentity(
+        ConnectionAggregate connection, long gitHubAccountId, string login, DateTimeOffset observedAt)
+    {
+        if (connection.Provider != WorkItemProvider.GitHub)
+        {
+            throw new DomainValidationException(
+                $"Connection {connection.Id} is a '{connection.Provider}' connection, and GitHub's own "
+                + "identity read only ever applies to a GitHub one.");
+        }
+
+        if (login.IsBlank())
+        {
+            throw new DomainValidationException("A GitHub identity observation requires the login GitHub reported.");
+        }
+
+        return connection.GitHubAccountId == gitHubAccountId && connection.GitHubLogin == login
+            ? null
+            : new ConnectionGitHubIdentityObserved(connection.Id, gitHubAccountId, login, observedAt);
+    }
 }

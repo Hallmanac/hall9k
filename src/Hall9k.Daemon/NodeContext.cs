@@ -22,6 +22,11 @@ public sealed class NodeContext
         await using IDocumentSession session = store.LightweightSession();
         _context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         await session.SaveChangesAsync(cancellationToken);
+
+        // Read again at every daemon start (idea 202383dc, A2b) — the machine's own gh session can
+        // change between restarts, and nothing else naturally triggers a fresh GitHub read for it.
+        await NodeBootstrap.RefreshGitHubIdentityAsync(session, _context.ConnectionId, cancellationToken);
+        await session.SaveChangesAsync(cancellationToken);
         _initialized.TrySetResult();
     }
 
