@@ -129,6 +129,44 @@ public sealed class DaemonOptions
     public TimeSpan AutoPrReviewPollBackoffMaxInterval { get; set; } = TimeSpan.FromMinutes(30);
 
     /// <summary>
+    /// The message sweep's own active-cadence floor, in whole seconds (idea 202383dc, M1b; Brian's
+    /// ruling 2026-09-13: 15 to 25 s active with jitter): the fast end of the range the sweep picks
+    /// a jittered interval from whenever this node has an unflushed or unread envelope, or held
+    /// work. Seconds rather than a <see cref="TimeSpan"/> deliberately — every other
+    /// <c>h9k config set</c>-backed number on this type (the four review-cycle caps, the
+    /// concurrency settings) binds through the identical plain-int
+    /// <see cref="Microsoft.Extensions.Configuration.ConfigurationBinder"/> path this uses, and
+    /// <c>TimeSpan.Parse("15")</c> reads 15 as DAYS, not seconds — a <see cref="TimeSpan"/>-typed
+    /// leaf here would silently mis-bind the very shape <c>h9k config set --message-poll-active-min
+    /// 15</c> writes.
+    /// </summary>
+    public int MessageActivePollMinSeconds { get; set; } = 15;
+
+    /// <summary>The active-cadence ceiling — see <see cref="MessageActivePollMinSeconds"/>'s own doc.</summary>
+    public int MessageActivePollMaxSeconds { get; set; } = 25;
+
+    /// <summary>
+    /// The message sweep's own idle-cadence floor (Brian's ruling 2026-09-13: 30 to 45 s idle with
+    /// jitter) — the range a jittered interval is picked from once this node has nothing unflushed
+    /// or unread and no held work. See <see cref="MessageActivePollMinSeconds"/>'s own doc for why
+    /// this is whole seconds rather than a <see cref="TimeSpan"/>.
+    /// </summary>
+    public int MessageIdlePollMinSeconds { get; set; } = 30;
+
+    /// <summary>The idle-cadence ceiling — see <see cref="MessageIdlePollMinSeconds"/>'s own doc.</summary>
+    public int MessageIdlePollMaxSeconds { get; set; } = 45;
+
+    /// <summary>
+    /// How long this node keeps its own already-sent envelopes in its outbox ref before the sweep
+    /// squashes them away (idea 202383dc, M1b's retention rule; Brian's ruling 2026-09-13: age-based,
+    /// 48 hours by default). Never another node's ref — a squash only ever rewrites the ref this
+    /// node is the sole writer of. A <see cref="TimeSpan"/>, unlike the four poll settings above:
+    /// this one is not exposed through <c>h9k config set</c>, so the "15" reads as "15 days" trap
+    /// those settings guard against never applies here.
+    /// </summary>
+    public TimeSpan MessageRetention { get; set; } = TimeSpan.FromHours(48);
+
+    /// <summary>
     /// The absolute lifetime ceiling of automatic closeout actions (reopen dispatches, plus
     /// errored-review re-requests) one task's pull request may spend, whatever obstruction
     /// each one answered — the true runaway backstop (log #11 spirit, backlog 45), separate

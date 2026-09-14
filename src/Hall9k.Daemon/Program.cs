@@ -1,5 +1,7 @@
 using Hall9k.Daemon;
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
@@ -7,6 +9,7 @@ using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.JiraWrites;
+using Hall9k.Daemon.Messaging;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Purge;
@@ -207,6 +210,12 @@ builder.Services.AddSingleton<CardPublicationEngine>();
 builder.Services.AddSingleton<JiraWriteRetryEngine>();
 builder.Services.AddSingleton<ProjectHomeRenderEngine>();
 builder.Services.AddSingleton<ProjectPurgeEngine>();
+builder.Services.AddSingleton<NodeKeyStore>();
+builder.Services.AddSingleton<IMessageTransport, GitLedgerMessageTransport>();
+builder.Services.AddSingleton<MessageOutbox>();
+builder.Services.AddSingleton<MessageInbox>();
+builder.Services.AddSingleton<MessageNodeIdentityResolver>();
+builder.Services.AddSingleton<MessageSweepEngine>();
 
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
     .IntegrateWithWolverine();
@@ -228,6 +237,7 @@ builder.Services.AddHostedService<CardPublicationLoop>();
 builder.Services.AddHostedService<JiraWriteRetryLoop>();
 builder.Services.AddHostedService<ProjectHomeRenderLoop>();
 builder.Services.AddHostedService<ProjectPurgeSweepLoop>();
+builder.Services.AddHostedService<MessageSweepLoop>();
 builder.Services.AddHostedService<LogRotationService>();
 
 // Windows has no SIGTERM h9k daemon stop can send to an arbitrary process (Decisions Log
