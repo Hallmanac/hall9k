@@ -1,9 +1,11 @@
 using System.Diagnostics;
+using System.Text;
 using System.Text.Json;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Marten.Linq.MatchesSql;
@@ -112,11 +114,24 @@ public static class NodeBootstrap
 
         ConnectionAggregate? connection = await session.Events.AggregateStreamAsync<ConnectionAggregate>(
             connectionId, token: cancellationToken);
-        if (connection is not null
-            && connection.Provider == WorkItemProvider.GitHub
-            && ConnectionDecider.ObserveGitHubIdentity(connection, observed.Id, observed.Login, DateTimeOffset.UtcNow) is { } appended)
+        if (connection is not null && connection.Provider == WorkItemProvider.GitHub)
         {
-            session.Events.Append(connectionId, appended);
+            try
+            {
+                if (ConnectionDecider.ObserveGitHubIdentity(connection, observed.Id, observed.Login, DateTimeOffset.UtcNow) is { } appended)
+                {
+                    session.Events.Append(connectionId, appended);
+                }
+            }
+            // gh's own active session answering as a different, already-confirmed account is not
+            // this install's connection silently rebinding to it (ConnectionDecider.ObserveGitHubIdentity's
+            // own refusal) — best-effort exactly like a gh that cannot answer at all: this call's
+            // own doc comment already promises the connection's already-recorded identity is left
+            // exactly as it was, never guessed at, and an unrelated `gh auth switch` must not break
+            // an ordinary h9k project add/join over it.
+            catch (DomainValidationException)
+            {
+            }
         }
 
         return true;
@@ -167,6 +182,14 @@ public static class NodeBootstrap
         }
     }
 
+    /// <summary>
+    /// The 3-second bound is real only because both streams are drained on background callbacks
+    /// rather than a blocking <c>ReadToEnd()</c> ahead of <c>WaitForExit</c> — that ordering waits
+    /// on end-of-file from the pipe, which a <c>gh</c> hung on network or credential state never
+    /// sends, so the nominal timeout below it was never reached (found in this same task's own
+    /// self-review). Reading both streams, not just stdout, also avoids the classic redirected-
+    /// process deadlock: an unread stderr pipe can fill and block the child from exiting at all.
+    /// </summary>
     private static string? RunQuick(string fileName, string arguments)
     {
         try
@@ -178,15 +201,50 @@ public static class NodeBootstrap
                 RedirectStandardError = true,
                 UseShellExecute = false,
             };
+
+            StringBuilder standardOutput = new();
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data is not null)
+                {
+                    standardOutput.AppendLine(e.Data);
+                }
+            };
+            process.ErrorDataReceived += (_, _) => { };
+
             process.Start();
-            string output = process.StandardOutput.ReadToEnd().Trim();
-            return process.WaitForExit(3000) && process.ExitCode == 0 && output.IsNotBlank()
-                ? output
-                : null;
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            if (!process.WaitForExit(3000))
+            {
+                TryKill(process);
+                return null;
+            }
+
+            // WaitForExit(int) can return before the async callbacks above have drained the last
+            // of the pipes; the parameterless overload blocks until they have, and returns
+            // immediately here since the process has already exited.
+            process.WaitForExit();
+
+            string output = standardOutput.ToString().Trim();
+            return process.ExitCode == 0 && output.IsNotBlank() ? output : null;
         }
         catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
             return null;
+        }
+    }
+
+    private static void TryKill(Process process)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+        }
+        catch (Exception)
+        {
+            // Nothing here is recoverable and nothing here is the caller's problem.
         }
     }
 }

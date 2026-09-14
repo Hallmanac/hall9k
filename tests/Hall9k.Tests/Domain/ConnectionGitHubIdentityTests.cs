@@ -65,6 +65,26 @@ public sealed class ConnectionGitHubIdentityTests
         renamed.GitHubLogin.Should().Be("brianhall");
     }
 
+    /// <summary>
+    /// A different numeric id under an already-confirmed connection is a genuinely different
+    /// GitHub account, not a rename — treating it the same as a rename would let an owner's
+    /// unrelated `gh auth switch` silently rebind this install's one GitHub connection, and every
+    /// project routed through it, to whichever account gh's active session happens to be the next
+    /// time anything refreshes it. Account switching as a first-class feature is parked, so a
+    /// genuine account change is refused rather than silently accepted (independent pre-PR review,
+    /// cycle 3, adversarial lens, medium).
+    /// </summary>
+    [Fact]
+    public void A_different_numeric_id_under_an_already_confirmed_connection_is_refused_rather_than_silently_rebound()
+    {
+        ConnectionAggregate connection = RegisterGitHub();
+        connection.Apply(ConnectionDecider.ObserveGitHubIdentity(connection, 4181388, "hallmanac", Now)!);
+
+        Action observe = () => ConnectionDecider.ObserveGitHubIdentity(connection, 999999, "someoneelse", Now.AddDays(1));
+
+        observe.Should().Throw<DomainValidationException>().WithMessage("*4181388*999999*");
+    }
+
     [Fact]
     public void A_jira_connection_is_refused_because_nothing_ever_asks_GitHub_who_a_Jira_account_is()
     {

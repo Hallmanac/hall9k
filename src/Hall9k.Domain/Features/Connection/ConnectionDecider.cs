@@ -129,6 +129,25 @@ public static class ConnectionDecider
             throw new DomainValidationException("A GitHub identity observation requires the login GitHub reported.");
         }
 
+        // The numeric id is what makes this an identity rather than a label — a login can be
+        // renamed by its own holder, but a different id names a genuinely different account.
+        // Treating a changed id the same as a renamed login would let an owner's unrelated `gh
+        // auth switch` (for other work, with the connection's own account still logged in)
+        // silently rebind this install's one GitHub connection, and every project routed through
+        // it, to whichever account gh's active session happens to be the next time anything
+        // refreshes it. Account switching as a first-class feature is deliberately parked (idea
+        // 202383dc, A2b's own reshape); until it exists, a genuine account change is refused
+        // rather than silently accepted (independent pre-PR review, cycle 3, adversarial lens,
+        // medium).
+        if (connection.GitHubAccountId is { } confirmedId && confirmedId != gitHubAccountId)
+        {
+            throw new DomainValidationException(
+                $"Connection {connection.Id}'s confirmed GitHub account is #{confirmedId} "
+                + $"({connection.GitHubLogin}); gh just reported a different account, #{gitHubAccountId} "
+                + $"({login}). Switching this connection to a different GitHub account is not supported "
+                + $"yet — run 'gh auth switch' back to {connection.GitHubLogin}, then retry.");
+        }
+
         return connection.GitHubAccountId == gitHubAccountId && connection.GitHubLogin == login
             ? null
             : new ConnectionGitHubIdentityObserved(connection.Id, gitHubAccountId, login, observedAt);
