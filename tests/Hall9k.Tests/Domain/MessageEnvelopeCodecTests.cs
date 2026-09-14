@@ -57,4 +57,115 @@ public sealed class MessageEnvelopeCodecTests
         result.Envelope!.Kind.IsRecognized.Should().BeFalse();
         result.Envelope.Kind.Value.Should().Be("bookmark");
     }
+
+    [Fact]
+    public void Decode_RefusesAnUnrecognizedAudience_WithoutThrowing()
+    {
+        string json = """{"version":1,"seq":1,"at":"2026-09-14T12:00:00Z","fromNode":"11111111-1111-1111-1111-111111111111","fromOwner":"fp","to":"team:x","about":null,"kind":"note","body":"hi"}""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+        result.Envelope.Should().BeNull();
+    }
+
+    [Fact]
+    public void Decode_RefusesAMissingAudience_WithoutThrowing()
+    {
+        string json = """{"version":1,"seq":1,"at":"2026-09-14T12:00:00Z","fromNode":"11111111-1111-1111-1111-111111111111","fromOwner":"fp","about":null,"kind":"note","body":"hi"}""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
+
+    [Fact]
+    public void Decode_RefusesAMissingSeq_WithoutThrowing()
+    {
+        string json = """{"version":1,"at":"2026-09-14T12:00:00Z","fromNode":"11111111-1111-1111-1111-111111111111","fromOwner":"fp","to":"project","about":null,"kind":"note","body":"hi"}""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
+
+    [Fact]
+    public void Decode_RefusesAMissingFromNode_WithoutThrowing()
+    {
+        string json = """{"version":1,"seq":1,"at":"2026-09-14T12:00:00Z","fromOwner":"fp","to":"project","about":null,"kind":"note","body":"hi"}""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
+
+    [Fact]
+    public void Decode_RefusesAMissingFromOwner_WithoutThrowing()
+    {
+        string json = """{"version":1,"seq":1,"at":"2026-09-14T12:00:00Z","fromNode":"11111111-1111-1111-1111-111111111111","to":"project","about":null,"kind":"note","body":"hi"}""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
+
+    [Fact]
+    public void Decode_RefusesAMissingKind_WithoutThrowing()
+    {
+        string json = """{"version":1,"seq":1,"at":"2026-09-14T12:00:00Z","fromNode":"11111111-1111-1111-1111-111111111111","fromOwner":"fp","to":"project","about":null,"body":"hi"}""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
+
+    [Fact]
+    public void Decode_RefusesAMissingBody_WithoutThrowing()
+    {
+        string json = """{"version":1,"seq":1,"at":"2026-09-14T12:00:00Z","fromNode":"11111111-1111-1111-1111-111111111111","fromOwner":"fp","to":"project","about":null,"kind":"note"}""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
+
+    [Fact]
+    public void Decode_RefusesASeqBelowOne_WithoutThrowing()
+    {
+        string json = """{"version":1,"seq":0,"at":"2026-09-14T12:00:00Z","fromNode":"11111111-1111-1111-1111-111111111111","fromOwner":"fp","to":"project","about":null,"kind":"note","body":"hi"}""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
+
+    [Fact]
+    public void Decode_RefusesANonIntegerVersion_WithoutThrowing()
+    {
+        string json = """{"version":1.5,"seq":1,"at":"2026-09-14T12:00:00Z","fromNode":"11111111-1111-1111-1111-111111111111","fromOwner":"fp","to":"project","about":null,"kind":"note","body":"hi"}""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
+
+    [Fact]
+    public void Decode_RefusesANonObjectRoot_WithoutThrowing()
+    {
+        string json = "\"just a string\"";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
+
+    [Fact]
+    public void Decode_RefusesTruncatedJson_WithoutThrowing()
+    {
+        string json = """{"version":1,"seq":1,"at":"2026-09-14T""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
 }
