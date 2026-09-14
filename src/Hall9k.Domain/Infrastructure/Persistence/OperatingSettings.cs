@@ -151,6 +151,33 @@ public sealed class OperatingSettings
     /// </summary>
     public int? LifetimeReviewCycleBudget { get; set; }
 
+    /// <summary>Mirrors <c>DaemonOptions.MessageActivePollMinSeconds</c>'s shipped default (idea 202383dc, M1b).</summary>
+    public const int DefaultMessageActivePollMinSeconds = 15;
+
+    /// <summary>Mirrors <c>DaemonOptions.MessageActivePollMaxSeconds</c>'s shipped default.</summary>
+    public const int DefaultMessageActivePollMaxSeconds = 25;
+
+    /// <summary>Mirrors <c>DaemonOptions.MessageIdlePollMinSeconds</c>'s shipped default.</summary>
+    public const int DefaultMessageIdlePollMinSeconds = 30;
+
+    /// <summary>Mirrors <c>DaemonOptions.MessageIdlePollMaxSeconds</c>'s shipped default.</summary>
+    public const int DefaultMessageIdlePollMaxSeconds = 45;
+
+    /// <summary>This node's override of the message sweep's active-cadence floor, in whole
+    /// seconds; null defers to <see cref="DefaultMessageActivePollMinSeconds"/>. See
+    /// <c>DaemonOptions.MessageActivePollMinSeconds</c>'s own doc for why this is an int rather
+    /// than a duration.</summary>
+    public int? MessageActivePollMinSeconds { get; set; }
+
+    /// <summary>This node's override of the message sweep's active-cadence ceiling; null defers to <see cref="DefaultMessageActivePollMaxSeconds"/>.</summary>
+    public int? MessageActivePollMaxSeconds { get; set; }
+
+    /// <summary>This node's override of the message sweep's idle-cadence floor; null defers to <see cref="DefaultMessageIdlePollMinSeconds"/>.</summary>
+    public int? MessageIdlePollMinSeconds { get; set; }
+
+    /// <summary>This node's override of the message sweep's idle-cadence ceiling; null defers to <see cref="DefaultMessageIdlePollMaxSeconds"/>.</summary>
+    public int? MessageIdlePollMaxSeconds { get; set; }
+
     /// <summary>
     /// This node's review stage composition (task: the review pipeline's stage composition
     /// becomes configuration recorded per run) — the config-file record <c>h9k config set
