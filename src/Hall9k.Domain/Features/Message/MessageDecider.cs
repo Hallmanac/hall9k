@@ -4,6 +4,18 @@ namespace Hall9k.Domain.Features.Message;
 
 public static class MessageDecider
 {
+    public static MessageQueued Queue(
+        Guid fromNodeId, long seq, string fromOwner, MessageAudience to, string? about, MessageKind kind,
+        string body, DateTimeOffset at)
+    {
+        if (seq < 1)
+        {
+            throw new DomainValidationException("A message's seq starts at 1 and only ever grows.");
+        }
+
+        return new MessageQueued(fromNodeId, seq, fromOwner, to.Value, about, kind.Value, body, at);
+    }
+
     public static MessageSent Send(Guid fromNodeId, long seq, DateTimeOffset at)
     {
         if (seq < 1)

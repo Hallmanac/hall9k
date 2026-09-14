@@ -11,6 +11,31 @@ public sealed class MessageDeciderTests
     private static readonly Guid FromNode = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
     [Fact]
+    public void Queue_ProducesAQueuedEventCarryingTheEnvelopesOwnContent()
+    {
+        MessageQueued @event = MessageDecider.Queue(
+            FromNode, 1, "fingerprint-1", MessageAudience.Project, "idea-9", MessageKind.Note, "hello", Now);
+
+        @event.FromNodeId.Should().Be(FromNode);
+        @event.Seq.Should().Be(1);
+        @event.FromOwner.Should().Be("fingerprint-1");
+        @event.To.Should().Be("project");
+        @event.About.Should().Be("idea-9");
+        @event.Kind.Should().Be("note");
+        @event.Body.Should().Be("hello");
+        @event.At.Should().Be(Now);
+    }
+
+    [Fact]
+    public void Queue_RefusesASeqBelowOne()
+    {
+        Action act = () => MessageDecider.Queue(
+            FromNode, 0, "fingerprint-1", MessageAudience.Project, null, MessageKind.Note, "hello", Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
     public void Send_ProducesASentEventCarryingTheNodeAndSeq()
     {
         MessageSent @event = MessageDecider.Send(FromNode, 1, Now);
