@@ -90,6 +90,18 @@ public static class CliCommandTree
                     "https://github.com/Hallmanac/hall9k", "--reactivate-archived")
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url",
                     "https://github.com/Hallmanac/hall9k", "--rename-archived-to", "hall9k-old");
+            project.AddCommand<ProjectJoinCommand>("join")
+                .WithDescription(
+                    "Establish or confirm this node's identity in a project's ledger (idea 202383dc, "
+                    + "A2a): generates this node's ed25519 signing key under ~/.hall9k/keys/<node-id> "
+                    + "the first time it runs anywhere, then writes its node file (nodes/<node-id>/"
+                    + "node.yaml) into this project's own ledger, signed with that key. A join naming no "
+                    + "--owner establishes this owner's root (owners/<fingerprint>/root.yaml) using this "
+                    + "node's own key, and that fingerprint becomes the owner id everywhere in Hall9k. "
+                    + "Re-runnable to change the claimed owner — h9k project add runs this automatically "
+                    + "once a project's repository is reachable.")
+                .WithExample("project", "join", "hall9k")
+                .WithExample("project", "join", "hall9k", "--owner", "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716");
             project.AddCommand<ProjectInitCommand>("init")
                 .WithDescription(
                     "Create (or repair) a registered project's home directory. The adopt path for a "
