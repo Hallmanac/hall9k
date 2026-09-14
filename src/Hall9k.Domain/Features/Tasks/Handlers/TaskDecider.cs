@@ -1010,7 +1010,8 @@ public static class TaskDecider
         Guid assignedOwnerId,
         IReadOnlyList<TaskDependency> dependencies,
         DateTimeOffset assignedAt,
-        Guid assignedByOwnerId)
+        Guid assignedByOwnerId,
+        string? assignedOwnerRootFingerprint = null)
     {
         if (task.State != TaskState.Published)
         {
@@ -1046,7 +1047,8 @@ public static class TaskDecider
                 .Where(dependency => StackedEdgeRules.Blocks(task, dependency))
                 .Select(dependency => dependency.Id)],
             assignedAt,
-            assignedByOwnerId);
+            assignedByOwnerId,
+            assignedOwnerRootFingerprint);
     }
 
     /// <summary>
@@ -1206,7 +1208,9 @@ public static class TaskDecider
     /// so both halves of "should this run, and on whose nodes" are answered before a node ever
     /// looks at the task.
     /// </summary>
-    public static TaskClaimed Claim(TaskAggregate task, Guid nodeId, Guid ownerId, Guid runId, DateTimeOffset claimedAt)
+    public static TaskClaimed Claim(
+        TaskAggregate task, Guid nodeId, Guid ownerId, Guid runId, DateTimeOffset claimedAt,
+        string? ownerRootFingerprint = null)
     {
         if (task.State != TaskState.Queued)
         {
@@ -1221,7 +1225,9 @@ public static class TaskDecider
                 $"not to this node's owner ({ownerId}) — a node claims only its own owner's work.");
         }
 
-        return new TaskClaimed(task.Id, nodeId, ownerId, task.LeaseGeneration + 1, runId, claimedAt);
+        return new TaskClaimed(
+            task.Id, nodeId, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
+            OwnerRootFingerprint: ownerRootFingerprint);
     }
 
     public static TaskRequeued Requeue(
@@ -1259,7 +1265,8 @@ public static class TaskDecider
     /// </summary>
     public static TaskClaimed ClaimInteractively(
         TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt,
-        bool dependencyOverrideAcknowledged = false, bool dependencyOverrideCarriedForward = false)
+        bool dependencyOverrideAcknowledged = false, bool dependencyOverrideCarriedForward = false,
+        string? ownerRootFingerprint = null)
     {
         if (task.State == TaskState.Blocked)
         {
@@ -1290,7 +1297,7 @@ public static class TaskDecider
         return new TaskClaimed(
             task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
             dependencyOverrideAcknowledged, dependencyOverrideAcknowledged && dependencyOverrideCarriedForward,
-            InteractiveMode: true);
+            InteractiveMode: true, OwnerRootFingerprint: ownerRootFingerprint);
     }
 
     /// <summary>
@@ -1329,7 +1336,8 @@ public static class TaskDecider
     /// </summary>
     public static TaskClaimed ClaimDeliberately(
         TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt, bool dependencyOverrideAcknowledged,
-        bool dependencyOverrideCarriedForward = false, bool interactiveMode = false)
+        bool dependencyOverrideCarriedForward = false, bool interactiveMode = false,
+        string? ownerRootFingerprint = null)
     {
         if (task.State == TaskState.Blocked)
         {
@@ -1355,7 +1363,8 @@ public static class TaskDecider
 
         return new TaskClaimed(
             task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt, dependencyOverrideAcknowledged,
-            dependencyOverrideAcknowledged && dependencyOverrideCarriedForward, interactiveMode);
+            dependencyOverrideAcknowledged && dependencyOverrideCarriedForward, interactiveMode,
+            OwnerRootFingerprint: ownerRootFingerprint);
     }
 
     /// <summary>
@@ -1662,7 +1671,8 @@ public static class TaskDecider
     /// </para>
     /// </summary>
     public static TaskClaimed ClaimForScopedReviewLap(
-        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt)
+        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt,
+        string? ownerRootFingerprint = null)
     {
         if (!AwaitsPrReviewFollowThrough(task))
         {
@@ -1685,7 +1695,7 @@ public static class TaskDecider
         return new TaskClaimed(
             task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
             DependencyOverrideAcknowledged: false, DependencyOverrideCarriedForward: false,
-            InteractiveMode: true);
+            InteractiveMode: true, OwnerRootFingerprint: ownerRootFingerprint);
     }
 
     private static void RefuseUnlessFollowingThrough(TaskAggregate task, string what)
@@ -1769,7 +1779,8 @@ public static class TaskDecider
     /// is always the sweep's own node owner, exactly as an auto-created mint already is.
     /// </summary>
     public static TaskClaimed ClaimForMentionFollowUp(
-        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt, bool reportParkedAwaitingWalk)
+        TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt, bool reportParkedAwaitingWalk,
+        string? ownerRootFingerprint = null)
     {
         if (!AwaitsPrReviewMentionFollowUp(task, reportParkedAwaitingWalk))
         {
@@ -1782,7 +1793,7 @@ public static class TaskDecider
         return new TaskClaimed(
             task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
             DependencyOverrideAcknowledged: false, DependencyOverrideCarriedForward: false,
-            InteractiveMode: false);
+            InteractiveMode: false, OwnerRootFingerprint: ownerRootFingerprint);
     }
 
     /// <summary>
