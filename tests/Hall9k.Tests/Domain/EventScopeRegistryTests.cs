@@ -13,46 +13,48 @@ namespace Hall9k.Tests.Domain;
 /// them has no entry there, so a new event type can never ship unclassified.
 /// <para>
 /// An event record lives either under a feature's own <c>.Events</c> sub-namespace (Tasks, Run,
-/// Project — unambiguous, since nothing but events lives there) or, for the five features with no
-/// separate <c>Events</c> folder (Owner, Node, Connection, Epic, Idea), directly in that feature's
-/// flat namespace alongside value objects. A record there is only an event when it is not one of
-/// <see cref="KnownNonEventValueTypesInFlatNamespaces"/> — a short, hand-verified exclusion list
-/// (<c>CredentialKind</c>/<c>CredentialReference</c> in Connection, <c>EpicState</c> in Epic,
-/// <c>IdeaSeed</c>/<c>IdeaState</c> in Idea, <c>NodeLaunchHoldEpisode</c>/<c>ProjectRunLoad</c> in
-/// Node), rather than a type this scan could tell apart from a real event on its own shape: both
-/// are <c>sealed record</c> types in the same namespace. Getting one of those five wrong fails
-/// safe either way — a real event missing from the list would surface here as "found but not
-/// classified", the same failure a genuinely new, unclassified event type produces; a value type
-/// wrongly left off the list would surface as "classify this", not as a silent gap.
+/// Project — unambiguous, since nothing but events lives there) or, for a feature with no separate
+/// <c>Events</c> folder (Owner, Node, Connection, Epic, Idea, and any tiny flat slice added later —
+/// AGENTS.md's own rule that a tiny slice stays flat), directly in that feature's flat namespace
+/// alongside value objects. Which features are flat is discovered from the assembly itself
+/// (<see cref="FlatFeatureNamespacesWithoutEvents"/>) rather than named by hand, so a brand new flat
+/// slice — or a new event added to one that already ships, like <c>AutoPrReview</c> — is scanned
+/// the same day it lands rather than needing this list edited first (cycle-1 conformance review
+/// finding: a hard-coded five-namespace list could not discover either one). A record in a flat
+/// namespace is only an event when it is not one of
+/// <see cref="KnownNonEventValueTypesInFlatNamespaces"/> — a short, hand-verified exclusion list,
+/// rather than a type this scan could tell apart from a real event on its own shape: both are
+/// <c>sealed record</c> types in the same namespace. Getting one of those wrong fails safe either
+/// way — a real event missing from the list would surface here as "found but not classified", the
+/// same failure a genuinely new, unclassified event type produces; a value type wrongly left off
+/// the list would surface as "classify this", not as a silent gap.
 /// </para>
 /// </summary>
 public sealed class EventScopeRegistryTests
 {
     private static readonly string[] EventsSubNamespaceSuffix = [".Events"];
 
-    private static readonly string[] FlatFeatureNamespacesWithEvents =
-    [
-        "Hall9k.Domain.Features.Owner",
-        "Hall9k.Domain.Features.Node",
-        "Hall9k.Domain.Features.Connection",
-        "Hall9k.Domain.Features.Epic",
-        "Hall9k.Domain.Features.Idea",
-    ];
-
     /// <summary>
-    /// Every non-event <c>sealed record</c> this scan would otherwise mistake for one, verified
-    /// by hand against the actual contents of the five flat namespaces above (event stamping,
-    /// idea 202383dc) — see this class's own doc comment for why the list is safe to get wrong.
+    /// Every non-event <c>sealed record</c> this scan would otherwise mistake for one, verified by
+    /// hand against the actual contents of every flat feature namespace this platform ships (event
+    /// stamping, idea 202383dc) — see this class's own doc comment for why the list is safe to get
+    /// wrong. Keyed by fully qualified name, not the bare simple name: a bare "EpicState" would
+    /// also exclude a same-named type in some other flat feature namespace this scan discovers
+    /// later, which would pass this completeness gate with no registry entry at all — the exact
+    /// silent gap this list exists to avoid (follow-up review finding, PR #370).
     /// </summary>
     private static readonly string[] KnownNonEventValueTypesInFlatNamespaces =
     [
-        "CredentialKind",
-        "CredentialReference",
-        "EpicState",
-        "IdeaSeed",
-        "IdeaState",
-        "NodeLaunchHoldEpisode",
-        "ProjectRunLoad",
+        "Hall9k.Domain.Features.Connection.CredentialKind",
+        "Hall9k.Domain.Features.Connection.CredentialReference",
+        "Hall9k.Domain.Features.Epic.EpicState",
+        "Hall9k.Domain.Features.Idea.IdeaSeed",
+        "Hall9k.Domain.Features.Idea.IdeaState",
+        "Hall9k.Domain.Features.Node.NodeLaunchHoldEpisode",
+        "Hall9k.Domain.Features.Node.ProjectRunLoad",
+        "Hall9k.Domain.Features.AutoPrReview.ReviewRequestOutcome",
+        "Hall9k.Domain.Features.AutoPrReview.ReviewMentionOutcome",
+        "Hall9k.Domain.Features.Orchestrator.LaunchText",
     ];
 
     [Fact]
@@ -104,15 +106,44 @@ public sealed class EventScopeRegistryTests
         }
     }
 
-    private static Type[] DiscoverCandidateEventTypes() =>
-        [.. typeof(EventScopeRegistry).Assembly.GetTypes()
+    private static Type[] DiscoverCandidateEventTypes()
+    {
+        Type[] featureRecordTypes = [.. typeof(EventScopeRegistry).Assembly.GetTypes()
             .Where(type => type.Namespace is not null
                 && type.Namespace.StartsWith("Hall9k.Domain.Features", StringComparison.Ordinal)
                 && !type.IsNested
-                && IsRecord(type)
-                && (EventsSubNamespaceSuffix.Any(suffix => type.Namespace.EndsWith(suffix, StringComparison.Ordinal))
-                    || (FlatFeatureNamespacesWithEvents.Contains(type.Namespace)
-                        && !KnownNonEventValueTypesInFlatNamespaces.Contains(type.Name))))];
+                && IsRecord(type))];
+
+        string[] flatFeatureNamespacesWithoutEvents = FlatFeatureNamespacesWithoutEvents(featureRecordTypes);
+
+        return [.. featureRecordTypes
+            .Where(type => EventsSubNamespaceSuffix.Any(suffix => type.Namespace!.EndsWith(suffix, StringComparison.Ordinal))
+                || (flatFeatureNamespacesWithoutEvents.Contains(type.Namespace)
+                    && !KnownNonEventValueTypesInFlatNamespaces.Contains(type.FullName)))];
+    }
+
+    /// <summary>
+    /// A "flat" feature namespace is exactly <c>Hall9k.Domain.Features.&lt;Feature&gt;</c> — one
+    /// segment past <c>Features</c>, no further nesting — and only counts here when that same
+    /// feature has no sibling <c>.Events</c> sub-namespace: Run, Tasks, and Project are flat too at
+    /// that first level (value objects sit beside their own <c>Events</c> folder there, the same
+    /// AGENTS.md layout every big slice uses), but their events already live under the discovered
+    /// <c>.Events</c> suffix, and their flat namespaces hold dozens of unrelated value objects this
+    /// scan has no business enumerating.
+    /// </summary>
+    private static string[] FlatFeatureNamespacesWithoutEvents(IReadOnlyCollection<Type> featureRecordTypes)
+    {
+        HashSet<string> featuresWithEventsSubNamespace = [.. featureRecordTypes
+            .Select(type => type.Namespace!)
+            .Where(ns => EventsSubNamespaceSuffix.Any(suffix => ns.EndsWith(suffix, StringComparison.Ordinal)))
+            .Select(ns => ns[..^".Events".Length])];
+
+        return [.. featureRecordTypes
+            .Select(type => type.Namespace!)
+            .Where(ns => ns.Count(c => c == '.') == 3)
+            .Distinct()
+            .Where(ns => !featuresWithEventsSubNamespace.Contains(ns))];
+    }
 
     /// <summary>
     /// A record type declares the compiler-synthesized <c>&lt;Clone&gt;$</c> method; a plain class
