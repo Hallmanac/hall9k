@@ -96,13 +96,19 @@ public static class DaemonLifecycle
         // during startup" with an Npgsql stack trace, because Postgres was not back up yet).
         // Interactive and unreachable-because-nothing-is-running offers to start it via
         // Docker (Decisions Log #73); non-interactive gets today's behavior, a named fix and
-        // a refusal to spawn.
+        // a refusal to spawn — except a stale-but-present schema, which staleSchemaRepairedByCaller
+        // tells the doctor not to refuse over: h9kd's own entry point runs
+        // EventStoreSchemaGuard.EnsureCurrentAsync unconditionally before it opens its own store,
+        // so it repairs that case on its own the moment it boots (cycle-1 pre-PR review,
+        // adversarial lens — refusing here regardless of that guard left a non-interactive restart
+        // unable to ever bring the daemon back after a schema-affecting upgrade).
         //
         // The resolved string, not just a yes/no, is what SpawnDetached needs: h9kd runs
         // with its working directory forced to RunPaths.Root, so if it re-resolved on its
         // own it could walk up for a project override file from the wrong place and land on
         // a different connection string than the one just proven reachable here.
-        if (await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, cancellationToken) is not { } connectionString)
+        if (await DatabaseDoctor.RunAsync(
+                offerFixes: true, assumeYes: false, cancellationToken, staleSchemaRepairedByCaller: true) is not { } connectionString)
         {
             return ExitCodes.Error;
         }

@@ -121,7 +121,7 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
-    /// Question 3's second half (event stamping, idea 202383dc, PLAN.md §16 PLACEHOLDER-bfe95f6b): a schema this
+    /// Question 3's second half (event stamping, idea 202383dc, PLAN.md §16 #192): a schema this
     /// build no longer matches — not "not there at all", but present and stale — is exactly what
     /// every install whose database predates <see cref="EventOriginStampingListener"/> looks like
     /// the moment it upgrades, since <c>opts.Events.MetadataConfig.HeadersEnabled</c> is the first
@@ -218,6 +218,96 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
 
             resolved.Should().BeNull(
                 "nobody confirmed the update and CreateOnly cannot self-heal an Update-shaped difference the way it self-heals a missing table");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
+        }
+    }
+
+    /// <summary>
+    /// The DaemonLifecycle.StartAsync half of the same question (cycle-1 pre-PR review,
+    /// adversarial lens): that caller passes <c>staleSchemaRepairedByCaller: true</c> because the
+    /// process it is about to spawn, h9kd, repairs this exact schema itself — unconditionally, no
+    /// prompt — before it ever opens its own <c>CreateOnly</c> store
+    /// (<see cref="EventStoreSchemaGuard.EnsureCurrentAsync"/>). Refusing to hand back a
+    /// connection string here, the way the plain non-interactive case above correctly does, would
+    /// leave a scripted or agent-driven <c>h9k daemon start</c> unable to ever bring the daemon
+    /// back up after a schema-affecting upgrade, even though launching it would have fixed the
+    /// schema on its own.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_schema_left_unfixed_still_resolves_for_a_caller_that_repairs_it_itself()
+    {
+        string stale = await FreshDatabaseAsync(CancellationToken.None);
+
+        using (DocumentStore oldBuild = DocumentStore.For(opts =>
+        {
+            opts.Connection(stale);
+            opts.AutoCreateSchemaObjects = AutoCreate.All;
+        }))
+        {
+            await using IDocumentSession session = oldBuild.LightweightSession();
+            session.Events.StartStream(Guid.NewGuid(), new object[] { new OwnerRegisteredForTest() });
+            await session.SaveChangesAsync(CancellationToken.None);
+        }
+
+        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, stale);
+        try
+        {
+            RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
+
+            string? resolved = await DatabaseDoctor.RunAsync(
+                offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None, staleSchemaRepairedByCaller: true);
+
+            resolved.Should().Be(
+                stale,
+                "the caller already promised to repair a stale schema itself before using this connection string");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
+        }
+    }
+
+    /// <summary>
+    /// Question 3's second half again, this time on a schema that is genuinely current (cycle-1
+    /// pre-PR review, conformance lens): <see cref="Running_the_full_check_against_a_healthy_server_reports_success"/>
+    /// runs against a database nothing has ever opened a session on, so it never leaves the
+    /// schema-missing branch and never reaches <c>SchemaCurrentAsync</c> at all. This one applies
+    /// every configured schema object first — the same call the doctor's own fix offer makes — so
+    /// the migration diff really is <c>SchemaPatchDifference.None</c>, and asserts the doctor
+    /// reports healthy rather than "predates this build": the defect this guards against is
+    /// <c>SchemaCurrentAsync</c> treating any non-<c>None</c> difference (including a lazily
+    /// created table such as <c>EpicDetails</c> that a healthy, current install just hasn't
+    /// touched yet) as stale.
+    /// </summary>
+    [Fact]
+    public async Task A_schema_that_is_genuinely_current_reports_healthy_not_stale()
+    {
+        string current = await FreshDatabaseAsync(CancellationToken.None);
+
+        using (DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(current);
+            opts.ConfigureHall9k(AutoCreate.CreateOrUpdate);
+        }))
+        {
+            await store.Storage.ApplyAllConfiguredChangesToDatabaseAsync();
+        }
+
+        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, current);
+        try
+        {
+            RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
+
+            string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None);
+
+            resolved.Should().Be(
+                current,
+                "every configured schema object was just applied, so there is nothing left for this build to call stale");
         }
         finally
         {
