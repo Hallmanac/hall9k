@@ -292,23 +292,71 @@ and budget.
 1. Read `journal.md` (at the project home's own root, beside `notes/`) — the open loop: what is in
    flight, what is expected to land, what to do first. Trust it over anything remembered.
 2. Read `sessions.md` (same root) — the registry of sessions this window has spawned.
-3. Arm a filtered attention monitor on `h9kd.log`, using whichever tail mechanism discovery found
-   for this machine (`tail -F`, or PowerShell's `Get-Content -Path <path> -Wait -Tail 0` where
-   there is no `tail` at all), filtered to
-   `parked|failed|error|merged|closeout complete|reopened|dispute|adopted|fatal|unhandled|\[2001\]|PR opened|pushed to existing PR`,
-   matched case-insensitively. The daemon's own log capitalizes freely (`Unhandled exception`,
-   `Failed to connect`, `outcome Disputed`), so a case-sensitive filter misses exactly the crash
-   and dispute lines this monitor exists to catch: pipe `tail -F` (or `Get-Content -Wait`) through
-   `grep -Ei --line-buffered '<filter>'` on POSIX, or `Select-String -Pattern '<filter>'` on
-   PowerShell (case-insensitive by default; do not add `-CaseSensitive`). `\[2001\]` is
-   `DaemonLogEvents.PullRequestOpened`'s own structural id (the default console
-   formatter prints it inline as `Category[2001]`); key on it, not only on the prose beside it,
-   because the prose is free to reword and only the bracketed id is guaranteed to survive that.
-   `needs you` is a `h9k status`/`h9k task show` board label, never a line the daemon itself
-   writes to `h9kd.log`, so it has no place in a filter matched against that log. `Monitor` is a
-   deferred tool in a session shaped like this one — fetch its schema by name with `ToolSearch`
-   before arming it. It dies with the session, so this is a start-up step every time, never
-   something to assume is still armed from before.
+3. Arm the attention monitor as a filtering pipeline, not a plain tail-and-grep: `h9kd.log` carries
+   far more routine lines (a session completing, a routine push, an ordinary merge) than actionable
+   ones, and a Monitor turns every line that reaches its stdout into an event in this thread with
+   nothing downstream able to suppress it afterward, so the filtering has to happen before that
+   point, not after. Read the log path from `h9k daemon status` (never hand-typed as
+   `~/.hall9k/h9kd.log`, which is only that command's own default) and whichever tail mechanism
+   discovery found for this machine (`tail -F`, or PowerShell's `Get-Content -Path <path> -Wait
+   -Tail 0` where there is no `tail` at all). Build four stages, every one before the final loop
+   `--line-buffered` (PowerShell's pipeline is already line-oriented and needs no equivalent flag),
+   so a line is never held back waiting on a buffer to fill:
+   1. The tail, piped through the same attention pattern named below, case-insensitive
+      (`grep -Ei --line-buffered '<pattern>'` on POSIX, `Select-String -Pattern '<pattern>'` on
+      PowerShell, case-insensitive by default): `parked|failed|error|merged|closeout
+      complete|reopened|dispute|needs you|adopted|fatal|unhandled|\[2001\]|PR opened|pushed to
+      existing PR|daemon (stopped|exiting)|orphaned run`. The daemon's own log capitalizes freely
+      (`Unhandled exception`, `Failed to connect`, `outcome Disputed`), so a case-sensitive match
+      misses exactly the crash and dispute lines this monitor exists to catch. `\[2001\]` is
+      `DaemonLogEvents.PullRequestOpened`'s own structural id (the default console formatter
+      prints it inline as `Category[2001]`); key on it, not only the prose beside it, since the
+      prose is free to reword and only the bracketed id is guaranteed to survive that. `needs you`
+      sits in this pattern because it is also part of the actionable test in stage 4 below, per
+      Brian's own armed command (2026-09-14); it is not otherwise a line the daemon writes to its
+      own log, so carrying it this far costs nothing even though it will rarely match. `daemon
+      (stopped|exiting)` and `orphaned run` are carried here too, not only in stage 4's own
+      actionable test: neither phrase shares a substring with any other term in this pattern (no
+      "failed", "error", or "fatal" alongside them is guaranteed), so without naming them here
+      explicitly a line that says only "daemon stopped" or "orphaned run" never survives this stage
+      to reach the actionable test at all, and the whole point of that test is exactly to catch
+      those two.
+   2. Drop the one known-noise shape this pattern otherwise lets through: any line containing
+      `error: False`, dropped case-sensitively (`grep -v --line-buffered 'error: False'`, or
+      PowerShell's `Where-Object { $_ -cnotmatch 'error: False' }`). A real failure line reads
+      `error: True`, never `error: False`, so this single drop clears the busiest false positive
+      without touching anything else.
+   3. In project mode, drop any line naming a project other than this one that shares the same node
+      (`grep -v -i --line-buffered -E '<pattern>'`, or a matching `-notmatch`): a pattern this
+      generator builds from `h9k project list`'s own output at generation time, one alternative per
+      sibling project's own name or home-directory slug, written out as real text before the
+      recipe is saved, never left as a literal placeholder token for a session to guess at. This
+      stage does not apply in node mode: a node orchestrator is not scoped to any single project,
+      so every registered project's own actionable signal belongs to it, and there is no "other
+      project" to exclude; the node recipe's own pipeline goes straight from stage 2 to stage 4.
+   4. A `while IFS= read -r line; do ... done` loop reading the piped stream (PowerShell: a
+      `foreach` over the same stream) that tests every surviving line against the actionable
+      pattern below and only then decides where it goes: a match is printed
+      (`printf '%s\n' "$line"`), the only lines this Monitor turns into an event in this thread;
+      anything else is appended to `notes/monitor-tally.log` (at this home's own root, beside
+      `notes/`, created by the append itself the first time a line lands there), silent bookkeeping
+      this window reads back at its next periodic summary (see *The periodic summary* below)
+      instead of reporting it now.
+      Actionable, matched case-insensitively unless noted: `dispute`, `fatal`, `unhandled`,
+      `needs you`, `parked for the human`, a merge that failed and stayed failed (`merge
+      failed|failed to merge|merge attempt failed \(3/3\)`), an unhandled exception (`Unhandled
+      exception`), the daemon stopping (`daemon (stopped|exiting)`), a session ending in error
+      (`error: True`), a task failed (`Task [0-9a-f-]{36}( |: )failed`), and an orphaned run
+      (`orphaned run`).
+   `Monitor` is a deferred tool in a session shaped like this one; fetch its schema by name with
+   `ToolSearch` before arming it. It dies with the session, so this whole pipeline is a start-up
+   step every time, never something to assume is still armed from before.
+
+   A recipe that already carries its own hand-edited step for polling something other than
+   `h9kd.log` (a mailbox, a channel, any outside source) keeps that step exactly as it is: this
+   filtering pipeline exists because most of a shared daemon log is routine noise, while a channel
+   built so that every entry posted to it is already a deliberate message has nothing routine to
+   filter out, and gains nothing from the same treatment.
 4. Run `h9k daemon status`, then `h9k status`. Ask the daemon directly rather than inferring its
    health from a quiet pane: a stopped daemon queues work silently and the pane says nothing about
    the daemon itself unless it is down.
@@ -316,6 +364,15 @@ and budget.
    them, and what this window will do next. If the journal was not enough to re-orient you and you
    had to ask the operator something the journal should have told you, add one line to the
    journal's re-orientation log so the next rewrite of this recipe can carry that field.
+
+**The periodic summary.** The voice block above rolls routine monitor activity into one summary
+about every three hours instead of a reply per event; this is the mechanical half of that rule. At
+each one: read `notes/monitor-tally.log` (everything appended there since the last summary), run
+`h9k status` alongside it, group what both show by task, and report that as the one summary the
+voice block describes. Then truncate the tally file (`: > notes/monitor-tally.log`, or
+PowerShell's `Clear-Content notes/monitor-tally.log`) so the next summary reads only what is new
+since this one. Folding the tally into a message already going out for another reason, per the
+voice block, truncates the file the same way once it has been read.
 
 **The journal (`journal.md`, at the project home's own root).** A rewritten state document, never
 an append-only log: rewrite it whenever a ruling is made, a walk finishes, a pull request merges,
@@ -437,6 +494,9 @@ Same shape as the project recipe above, with these differences:
   found registered on this node.
 - **Start-up sequence step 4** is `h9k daemon status`, `h9k config show`, and `h9k project list`
   instead of `h9k status` (there is no single project's board to check from here).
+- **The periodic summary** groups by project instead of task, reading `h9k project list` and
+  `h9k daemon status` alongside the tally rather than `h9k status`, since there is no single
+  project's board to group against at this scope.
 - **The node seam** is stated the other direction: nothing stops a node-scope command running
   here, and the node recipe never forwards anywhere — it is the destination a project window
   forwards to. If a project needs attention and no project orchestrator is up, name which

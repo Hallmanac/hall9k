@@ -356,7 +356,9 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 language, one idea per paragraph, a scenario before any criteria walk), which stays quiet on
 routine monitor events by default: no reply to a routine one, and what happened rolls into one
 summary about every three hours grouped by task, while anything actionable is still reported at
-once.
+once. The recipe's own monitor step arms this as a filtering pipeline rather than a plain
+tail-and-grep: routine daemon-log lines are dropped into `notes/monitor-tally.log` for that
+summary to read back, and only an actionable line ever reaches the session as a Monitor event.
 
 A task's directory moves into `tasks/_archive/` the moment it is terminal — true closeout (its
 pull request merged and the closeout monitor observed it, not merely `Done` with a pull request
