@@ -1,4 +1,5 @@
 using Hall9k.Daemon;
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
@@ -137,6 +138,7 @@ builder.Services.AddSingleton(new DaemonConnection(connectionString));
 builder.Services.AddSingleton<NodeContext>();
 builder.Services.AddSingleton(ProcessManagers.ForCurrentPlatform());
 builder.Services.AddSingleton<IWorktreeManager, GitWorktreeManager>();
+builder.Services.AddSingleton<ILedger, GitLedger>();
 builder.Services.AddSingleton(services => new TrackerClaimGate(
     services.GetRequiredService<ProcessRunner>(), services.GetRequiredService<JiraRequester>()));
 builder.Services.AddSingleton<DispatchEngine>();
