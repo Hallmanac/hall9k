@@ -42,6 +42,27 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         await using IDocumentSession session = store.LightweightSession();
 
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
+
+        // Refreshed here, before the join itself, the same live call h9k project add already makes
+        // right before it needs to know its own account is confirmed: an install whose GitHub
+        // connection predates this task's own identity read (or one bootstrapped while gh was
+        // unauthenticated) has no other path to ever gain a confirmed account, so without this every
+        // join on every project it already registered is refused forever below, even with gh fully
+        // authenticated right now — the refusal's own advice ("h9k project add", "h9k connection
+        // list") does not fix that either, since neither call reads gh (independent pre-PR review,
+        // cycle 3, conformance and adversarial lenses, both high). Kept in this untested live
+        // entry point rather than the internal RunAsync below: RunAsync's own doc comment is
+        // Brian's 2026-09-13 rule that it never touches a real gh/network call, and
+        // NodeBootstrap.RefreshGitHubIdentityAsync has no ProcessRunner seam yet
+        // (NodeContext.InitializeAsync's own comment on the identical constraint) — h9k project
+        // add's own auto-join (ProjectAddCommand.TryJoinAsync) calls RunAsync directly for the same
+        // reason and already gets this from ProjectAddCommand.ExecuteAsync's own earlier call, so
+        // this is only reached standalone. Best-effort: a gh that cannot answer leaves the
+        // connection's already-recorded identity exactly as it was.
+        BootstrapContext refreshContext = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await NodeBootstrap.RefreshGitHubIdentityAsync(session, refreshContext.ConnectionId, cancellationToken);
+        await session.SaveChangesAsync(cancellationToken);
+
         JoinOutcome outcome;
         try
         {

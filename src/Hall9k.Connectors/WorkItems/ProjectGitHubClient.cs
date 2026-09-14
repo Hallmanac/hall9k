@@ -71,9 +71,10 @@ public sealed class ProjectGitHubClient(EnvironmentProcessRunner? runner = null,
             && found.GitHubLogin.IsNotBlank()
                 ? new ProjectGitHubAccount(accountId, found.GitHubLogin)
                 : throw new DomainValidationException(
-                    $"Project '{project.Name}' has no confirmed GitHub account to act as (h9k connection "
-                    + "list shows what is registered). Run 'gh auth login', then h9k project add or h9k "
-                    + "connection list to confirm one, and retry.");
+                    $"Project '{project.Name}' has no confirmed GitHub account to act as — gh reported no "
+                    + "login for this install's own connection (h9k connection list shows what is "
+                    + "registered, but only ever what was already recorded; it never calls gh). Run 'gh "
+                    + "auth login' (gh auth status confirms it), then retry h9k project join.");
     }
 
     private async Task<string> TokenAsync(string login, string workingDirectory, CancellationToken cancellationToken)
