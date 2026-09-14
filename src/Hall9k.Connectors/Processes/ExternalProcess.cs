@@ -33,12 +33,32 @@ public delegate Task<ProcessResult> ProcessRunner(
     string workingDirectory,
     CancellationToken cancellationToken);
 
+/// <summary>
+/// The same seam as <see cref="ProcessRunner"/>, widened with a per-invocation environment
+/// override — for the one caller that needs to pin a value (a GitHub token for a specific
+/// account, never the machine's own <c>gh auth</c> selection) to a single command rather than the
+/// whole process. A new delegate rather than an optional parameter on <see cref="ProcessRunner"/>
+/// itself: every existing call site and every existing test fake is built against the narrower
+/// shape, and widening it in place would touch all of them for a need only one caller has.
+/// </summary>
+public delegate Task<ProcessResult> EnvironmentProcessRunner(
+    string fileName,
+    IReadOnlyList<string> arguments,
+    string workingDirectory,
+    IReadOnlyDictionary<string, string> environment,
+    CancellationToken cancellationToken);
+
 public static class ExternalProcess
 {
     /// <summary>The real one: spawn the tool and read both streams to exhaustion, giving it
     /// <see cref="Deadline"/> to answer.</summary>
     public static readonly ProcessRunner Runner = (fileName, arguments, workingDirectory, cancellationToken) =>
-        RunAsync(fileName, arguments, workingDirectory, Deadline, cancellationToken);
+        RunAsync(fileName, arguments, workingDirectory, Deadline, environment: null, cancellationToken);
+
+    /// <summary>The real <see cref="EnvironmentProcessRunner"/>: identical to <see cref="Runner"/>, with the caller's environment overrides applied to the spawned process alone.</summary>
+    public static readonly EnvironmentProcessRunner RunnerWithEnvironment =
+        (fileName, arguments, workingDirectory, environment, cancellationToken) =>
+            RunAsync(fileName, arguments, workingDirectory, Deadline, environment, cancellationToken);
 
     /// <summary>
     /// A <see cref="ProcessRunner"/> bound to a caller-supplied deadline instead of
@@ -49,7 +69,7 @@ public static class ExternalProcess
     /// </summary>
     public static ProcessRunner RunnerWithDeadline(TimeSpan deadline) =>
         (fileName, arguments, workingDirectory, cancellationToken) =>
-            RunAsync(fileName, arguments, workingDirectory, deadline, cancellationToken);
+            RunAsync(fileName, arguments, workingDirectory, deadline, environment: null, cancellationToken);
 
     /// <summary>
     /// How long a tool gets before Hall9k stops waiting for it. The caller's token is not enough
@@ -96,7 +116,8 @@ public static class ExternalProcess
     /// </para>
     /// </summary>
     internal static ProcessStartInfo StartInfoFor(
-        string fileName, IReadOnlyList<string> arguments, string workingDirectory)
+        string fileName, IReadOnlyList<string> arguments, string workingDirectory,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         ProcessStartInfo startInfo = new()
         {
@@ -114,6 +135,15 @@ public static class ExternalProcess
         }
 
         NonInteractiveGit.Apply(startInfo);
+
+        if (environment is not null)
+        {
+            foreach ((string key, string value) in environment)
+            {
+                startInfo.Environment[key] = value;
+            }
+        }
+
         return startInfo;
     }
 
@@ -122,6 +152,7 @@ public static class ExternalProcess
         IReadOnlyList<string> arguments,
         string workingDirectory,
         TimeSpan deadline,
+        IReadOnlyDictionary<string, string>? environment,
         CancellationToken cancellationToken)
     {
         using CancellationTokenSource deadlineSource = new(deadline);
@@ -129,7 +160,7 @@ public static class ExternalProcess
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadlineSource.Token);
 
         using Process process = new();
-        process.StartInfo = StartInfoFor(fileName, arguments, workingDirectory);
+        process.StartInfo = StartInfoFor(fileName, arguments, workingDirectory, environment);
         process.Start();
 
         // The reads get their own source, and it is linked to the caller's token alone rather
