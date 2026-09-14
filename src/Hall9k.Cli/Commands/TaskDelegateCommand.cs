@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -475,7 +476,11 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             resumeReason: null, isInteractive: false, isHandback: false, isDeliberateHeadlessStart: true,
             requiresSelfRegistration: false, isDelegatedContractor: true, delegationNote: note,
             delegationBaseCommit: delegationBaseCommit,
-            baseBranch: run.BaseBranchOr(project.BaseBranch), baseCommit: run.BaseCommit);
+            baseBranch: run.BaseBranchOr(project.BaseBranch), baseCommit: run.BaseCommit,
+            // The contractor closes with a pull request summary the platform posts under the
+            // owner's login, so it gets the owner's own voice skill exactly as a headless dispatch
+            // does (PLACEHOLDER-ef2ba8b3).
+            voiceSkill: (await session.LoadAsync<OwnerDetails>(context.OwnerId, cancellationToken))?.VoiceSkill);
 
         return new DelegationPlan(
             runId, run.WorktreePath, run.Branch, run.RunDirectory, resumesPreviousWork, model, prompt,

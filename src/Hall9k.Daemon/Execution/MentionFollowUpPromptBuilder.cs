@@ -3,6 +3,7 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -30,9 +31,15 @@ public static class MentionFollowUpPromptBuilder
     /// <summary>The package name this builder's own prose ships under in <c>.claude/templates</c> (and the canonical/release-payload equivalents).</summary>
     public const string TemplateDirectory = "mention-followup-prompt-builder";
 
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, when they named one (PLACEHOLDER-ef2ba8b3). Part 5 of what this
+    /// session produces is a drafted reply written first-person as the owner, which is exactly the
+    /// text that preference exists for — and it is a draft the owner reads and decides on rather
+    /// than anything this session posts, so it names the explainer context.
+    /// </param>
     public static string Build(
         string repository, int number, string worktreePath, string baseBranch,
-        PullRequestMentionComment comment, string? priorReport)
+        PullRequestMentionComment comment, string? priorReport, VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/build.md";
         StringBuilder prompt = new();
@@ -80,6 +87,10 @@ public static class MentionFollowUpPromptBuilder
         prompt.AppendLine(PromptTemplates.Load(file, "what-to-produce-heading"));
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(file, "what-to-produce-body"));
+        // Inside this section rather than under Rules: it qualifies how part 5 is written, and the
+        // rules below are all about what this session must not do.
+        WorkPromptBuilder.AppendOwnerVoiceRule(
+            prompt, string.Empty, voiceSkill, WorkPromptBuilder.ExplainerVoiceContext);
         prompt.AppendLine();
 
         prompt.AppendLine(PromptTemplates.Load(file, "rules-heading"));
@@ -99,9 +110,17 @@ public static class MentionFollowUpPromptBuilder
     /// already-reviewed pull request gets from <see cref="Build"/>, just delivered alongside a
     /// full review rather than in place of one.
     /// </summary>
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, on exactly the terms <see cref="Build"/>'s own parameter states
+    /// (PLACEHOLDER-ef2ba8b3): part 5 of the file this session writes is the identical drafted
+    /// reply, written first-person as the owner and read by them before anything is posted, so this
+    /// seam names the skill too. Covering one of these two methods and not the other would leave a
+    /// mint-time mention answered in the platform's voice and a follow-up mention answered in the
+    /// owner's (self-review, blast-radius sweep).
+    /// </param>
     public static string BuildMintAddendum(
         string commentAuthorLogin, DateTimeOffset commentCreatedAt, string commentBody, string? commentUrl,
-        string runDirectory)
+        string runDirectory, VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/mint-addendum.md";
         StringBuilder prompt = new();
@@ -126,6 +145,8 @@ public static class MentionFollowUpPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(
             file, "what-to-produce-body", Params(("MentionAnswerPath", Path.Combine(runDirectory, "mention-answer.md")))));
+        WorkPromptBuilder.AppendOwnerVoiceRule(
+            prompt, string.Empty, voiceSkill, WorkPromptBuilder.ExplainerVoiceContext);
 
         return prompt.ToString();
     }

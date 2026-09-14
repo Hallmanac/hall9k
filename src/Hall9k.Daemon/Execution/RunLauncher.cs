@@ -5,6 +5,7 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.AutoPrReview;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -411,6 +412,14 @@ public sealed class RunLauncher(
             // before the vocabulary existed) keeps the historic review-feedback meaning.
             // The commit style resolves project-over-platform (Decisions Log #26).
             CommitStyle commitStyle = CommitStyle.Resolve(project.CommitStyle, options.Value.DefaultCommitStyle);
+            // The owner's standing voice preference, read once so every prompt this method can
+            // assemble below names the same skill (PLACEHOLDER-ef2ba8b3). Inside the try, like every
+            // other read this dispatch makes, so a transient failure on it is recorded as a launch
+            // failure rather than thrown past the run this method just opened a stream for. Null
+            // when the owner record is not readable at all, which renders every seam exactly as it
+            // renders for an owner who never named one.
+            VoiceSkillName? voiceSkill =
+                (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill;
             string prompt;
             if (isPrReview)
             {
@@ -450,7 +459,7 @@ public sealed class RunLauncher(
                 {
                     prompt += "\n\n" + MentionFollowUpPromptBuilder.BuildMintAddendum(
                         mentionAuthorLogin, resolvedMentionCreatedAt, mentionBody ?? string.Empty,
-                        mentionUrl, runDirectory);
+                        mentionUrl, runDirectory, voiceSkill);
                 }
             }
             else if (followUp is { } review)
@@ -477,19 +486,25 @@ public sealed class RunLauncher(
                     ? AgentPromptBuilder.BuildFixChecks(
                         task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                         interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
-                        baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout)
+                        baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
+                        voiceSkill: voiceSkill)
                     : task.FollowUpKind == FollowUpKind.Rebase
+                        // voiceSkill on both of these too: each ends in the rebase verification
+                        // rule, whose gate-fix instruction asks an append-style project for an
+                        // authored commit message (follow-up review finding, PR #376).
                         ? AgentPromptBuilder.BuildRebase(
                             task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                             interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
-                            baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout)
+                            baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
+                            voiceSkill: voiceSkill)
                         : isStackReplay
                             ? AgentPromptBuilder.BuildStackReplay(
                                 task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                 runBaseBranch,
                                 task.StackReplayUpstreamCommit ?? string.Empty,
                                 task.StackReplayOntoCommit ?? string.Empty,
-                                commandTimeout: options.Value.VerifyGateTimeout)
+                                commandTimeout: options.Value.VerifyGateTimeout,
+                                voiceSkill: voiceSkill)
                             // A human's changes-requested review gets its own prompt rather than
                             // the thread one (task: a changes-requested pull-request review from a
                             // human becomes a fix lap): the findings are handed over, and a
@@ -498,11 +513,13 @@ public sealed class RunLauncher(
                                 ? AgentPromptBuilder.BuildReviewRequestedChanges(
                                     task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
-                                    baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout)
+                                    baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
+                                    voiceSkill: voiceSkill)
                                 : AgentPromptBuilder.BuildFollowUp(
                                     task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
-                                    baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout);
+                                    baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
+                                    voiceSkill: voiceSkill);
             }
             else
             {
@@ -531,7 +548,7 @@ public sealed class RunLauncher(
                 prompt = AgentPromptBuilder.Build(
                     task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
                     baseBranch: runBaseBranch, baseCommit: baseCommit,
-                    commandTimeout: options.Value.VerifyGateTimeout);
+                    commandTimeout: options.Value.VerifyGateTimeout, voiceSkill: voiceSkill);
             }
 
             // Re-checked here, immediately before the actual spawn, rather than trusting the
@@ -710,7 +727,10 @@ public sealed class RunLauncher(
                 : null;
             string prompt = MentionFollowUpPromptBuilder.Build(
                 facts.Repository, facts.Number, worktree.Path, baseBranch: baseBranch, comment: comment,
-                priorReport: priorReport);
+                priorReport: priorReport,
+                // The drafted reply this session produces is written first-person as the owner, so
+                // the seam names their own voice skill when they have one (PLACEHOLDER-ef2ba8b3).
+                voiceSkill: (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill);
 
             // Re-checked here, immediately before the actual spawn, rather than trusting the
             // fence read at the top of this method alone (independent pre-PR review, cycle 1,

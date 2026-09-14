@@ -188,6 +188,7 @@ public sealed class HomeEnvironmentIsolationTests
         "WorkPromptBuilder.AppendHandoffRules(",
         "WorkPromptBuilder.AppendSelfReviewPhaseRules(",
         "WorkPromptBuilder.AppendCheckpointCommitRules(",
+        "WorkPromptBuilder.AppendOwnerVoiceRule(",
         "WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule(",
         "WorkPromptBuilder.AppendForegroundGatesRule(",
         "WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(",
