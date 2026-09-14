@@ -315,7 +315,7 @@ public static class AgentPromptBuilder
         AppendProjectHome(prompt, project);
         AppendChangesRequestedFindings(prompt, task);
         AppendChangesRequestedHandlingRules(prompt, project, voiceSkill);
-        AppendChangesRequestedDisagreementRules(prompt);
+        AppendChangesRequestedDisagreementRules(prompt, voiceSkill);
 
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
@@ -463,7 +463,12 @@ public static class AgentPromptBuilder
     /// reinvented, with the structured block above it being what is new.
     /// </para>
     /// </summary>
-    private static void AppendChangesRequestedDisagreementRules(StringBuilder prompt)
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, when they named one, for the proposed reply this block asks
+    /// for — on the same terms <see cref="AppendThreadDisputeRules"/>'s own parameter states.
+    /// </param>
+    private static void AppendChangesRequestedDisagreementRules(
+        StringBuilder prompt, VoiceSkillName? voiceSkill)
     {
         const string file = $"{TemplateDirectory}/review-requested-changes.md";
         prompt.AppendLine(Fragment(file, "disagreement-heading"));
@@ -492,6 +497,20 @@ public static class AgentPromptBuilder
             ("AtTagKey", ReviewResultParser.AtTagKey),
             ("ThreadTagKey", ReviewResultParser.ThreadTagKey));
         prompt.AppendLine();
+        // The explainer context, on the identical terms AppendThreadDisputeRules states: the
+        // proposed reply above is DRAFTED for the implementer to send, edit or drop through
+        // `h9k review resolve`, and the moment they send it a reviewer reads it as theirs. The
+        // handling rules above already named the code-review context for the replies this session
+        // posts itself; without this, the one artifact a human hands a reviewer verbatim was the
+        // only unvoiced thing in the prompt (independent pre-PR review, cycle 1). The blank line
+        // is inside the guard so an owner who named no skill gets this section byte-for-byte as
+        // it rendered before the preference existed, paragraph spacing included.
+        if (voiceSkill is { HasValue: true })
+        {
+            AppendOwnerVoiceRule(prompt, string.Empty, voiceSkill, ExplainerVoiceContext);
+            prompt.AppendLine();
+        }
+
         AppendFragment(prompt, file, "park-platform");
         prompt.AppendLine();
         AppendFragment(prompt, file, "park-once");
@@ -619,11 +638,17 @@ public static class AgentPromptBuilder
     /// <see cref="AppendStackedRebaseRules"/> for why a plain merge-base rebase is the provably
     /// wrong operation there. Ignored for every ordinary run, whose prompt stays byte-identical.
     /// </param>
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, when they named one (#193), for the gate-fix commit this
+    /// prompt's own verification rule asks for — see
+    /// <see cref="AppendRebaseVerificationRule"/>'s own parameter. Null for an owner who named
+    /// none, which keeps this prompt byte-identical to what it rendered before.
+    /// </param>
     public static string BuildRebase(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl, CommitStyle commitStyle,
         string? humanResolution = null, string? interactiveMilestoneAddress = null,
         bool? interactiveModeEnabledOverride = null, string? baseBranch = null, string? baseCommit = null,
-        TimeSpan? commandTimeout = null)
+        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null)
     {
         bool interactiveModeEnabled = interactiveModeEnabledOverride ?? task.InteractiveModeEnabled;
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
@@ -715,7 +740,8 @@ public static class AgentPromptBuilder
                 ? null
                 : new FoldBoundary(
                     "<the commit you recorded before the replay>",
-                    FragmentLines(file, "inline-fold-reason", ("EffectiveBaseBranch", effectiveBaseBranch))));
+                    FragmentLines(file, "inline-fold-reason", ("EffectiveBaseBranch", effectiveBaseBranch))),
+            voiceSkill: voiceSkill);
         AppendFragment(prompt, file, "no-push");
         AppendRebaseDisputeRules(prompt);
         AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
@@ -840,9 +866,19 @@ public static class AgentPromptBuilder
     /// see <see cref="FoldBoundary"/>. Null for every ordinary run, whose instruction stays
     /// byte-identical.
     /// </param>
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, when they named one (#193): this rule is the one place a
+    /// rebase-family prompt asks for a commit message, and on the append arm it asks for an
+    /// authored one outright ("its own commit on top, with a clear message naming what the
+    /// rebase's combination broke"), which is owner-read authored history exactly as
+    /// <see cref="AppendCommitStyleRules"/>'s own is (follow-up review finding, PR #376: the
+    /// rebase, stack-replay and pre-final-pass-rebase laps all reached this rule with no seam
+    /// naming the owner's voice anywhere in their prompts). Rendered once, after both style arms,
+    /// and not at all on the no-gates path above, which asks for no commit.
+    /// </param>
     private static void AppendRebaseVerificationRule(
         StringBuilder prompt, ProjectDetails project, CommitStyle commitStyle, string baseBranch,
-        FoldBoundary? fold = null)
+        FoldBoundary? fold = null, VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/rebase.md";
         if (project.VerifyCommands.Count == 0)
@@ -873,6 +909,8 @@ public static class AgentPromptBuilder
 
             AppendFragment(prompt, file, "trailing-editor-note");
         }
+
+        AppendOwnerVoiceRule(prompt, string.Empty, voiceSkill, CodeReviewVoiceContext);
     }
 
     /// <summary>
@@ -918,10 +956,15 @@ public static class AgentPromptBuilder
     /// would describe an operation nothing dispatches.
     /// </para>
     /// </summary>
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, when they named one (#193), for the gate-fix commit this
+    /// prompt's own verification rule asks for — see
+    /// <see cref="AppendRebaseVerificationRule"/>'s own parameter.
+    /// </param>
     public static string BuildPreFinalPassRebase(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
         string? pullRequestUrl, string? humanResolution = null, bool rebaseStillInProgress = false,
-        string? baseBranch = null, TimeSpan? commandTimeout = null)
+        string? baseBranch = null, TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/pre-final-pass-rebase.md";
@@ -988,7 +1031,8 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "plain-rebase", ("BaseBranch", effectiveBaseBranch));
         AppendFragment(prompt, file, "replay-rules");
         AppendFragment(prompt, file, "no-markers");
-        AppendRebaseVerificationRule(prompt, project, commitStyle, effectiveBaseBranch);
+        AppendRebaseVerificationRule(
+            prompt, project, commitStyle, effectiveBaseBranch, voiceSkill: voiceSkill);
         if (pullRequestUrl.IsNotBlank())
         {
             AppendFragment(prompt, file, "no-push-with-pr");
@@ -1161,10 +1205,16 @@ public static class AgentPromptBuilder
     /// hard-code <c>Narrative</c> while <see cref="RunLauncher"/> held the resolved value at the
     /// call site).
     /// </param>
+    /// <param name="voiceSkill">
+    /// The owner's own voice skill, when they named one (#193), for the gate-fix commit this
+    /// prompt's own verification rule asks for — see
+    /// <see cref="AppendRebaseVerificationRule"/>'s own parameter. The replay itself authors
+    /// nothing: it carries the child's existing commit messages across unchanged.
+    /// </param>
     public static string BuildStackReplay(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl,
         CommitStyle commitStyle, string baseBranch, string upstreamCommit, string ontoCommit,
-        TimeSpan? commandTimeout = null)
+        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/stack-replay.md";
         StringBuilder prompt = new();
@@ -1216,7 +1266,8 @@ public static class AgentPromptBuilder
                 ? null
                 : new FoldBoundary(
                     ontoCommit,
-                    FragmentLines(file, "fold-reason", ("BaseBranch", baseBranch))));
+                    FragmentLines(file, "fold-reason", ("BaseBranch", baseBranch))),
+            voiceSkill: voiceSkill);
         AppendFragment(prompt, file, "no-push");
         AppendFragment(prompt, file, "stop-if-blocked");
         WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule(

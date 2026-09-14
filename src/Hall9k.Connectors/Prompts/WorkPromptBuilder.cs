@@ -805,9 +805,10 @@ public static class WorkPromptBuilder
     /// </param>
     /// <param name="voiceSkill">
     /// The owner's own voice skill, when they named one — rendered as one more line inside the
-    /// Whose voice bullet below, immediately after the skill-order sentences it qualifies
-    /// (PLACEHOLDER-ef2ba8b3). Null for an owner who named none, which renders this step exactly
-    /// as it rendered before the preference existed.
+    /// Whose voice bullet below, immediately after the skill-order sentences it qualifies, and
+    /// swapping that bullet's own prose-authority sentence for the voiced one so the two do not
+    /// contradict each other (PLACEHOLDER-ef2ba8b3). Null for an owner who named none, which
+    /// renders this step exactly as it rendered before the preference existed.
     /// </param>
     private static void AppendPullRequestSummaryStep(
         StringBuilder prompt, ProjectDetails project, bool asNumberedStep, VoiceSkillName? voiceSkill = null)
@@ -818,7 +819,15 @@ public static class WorkPromptBuilder
         AppendFragment(prompt, file, "made-line", ("Indent", indent));
         AppendFragment(prompt, 
             file, asNumberedStep ? "worktree-numbered" : "worktree-bulleted", ("Indent", indent));
-        AppendFragment(prompt, file, "whose-voice", ("Indent", indent));
+        // The bullet's own prose-authority sentence is the one thing the preference changes here.
+        // Unvoiced, the repository's PR-description rule wins for the prose, which is what this
+        // bullet has always said and what the goldens hold. Voiced, that rule keeps the structure
+        // and the voice line below takes the prose, which is what the pr-summary skill itself now
+        // says: rendering the unvoiced sentence and the voice line together told one session two
+        // different things about the same words (independent pre-PR review, cycle 1).
+        AppendFragment(
+            prompt, file, voiceSkill is { HasValue: true } ? "whose-voice-voiced" : "whose-voice",
+            ("Indent", indent));
         if (project.HomeDirectory.HasValue)
         {
             AppendFragment(prompt, file, "installs-at-home", ("Indent", indent), ("SkillPath",
@@ -830,7 +839,8 @@ public static class WorkPromptBuilder
         }
 
         // Inside the Whose voice bullet, after the skill order it qualifies rather than before it:
-        // the repository's own rule is still what decides the structure, and the voice line says so.
+        // the repository's own rule is still what decides the structure, and both the voiced
+        // sentence above and this line say so.
         AppendOwnerVoiceRule(prompt, $"{indent}  ", voiceSkill, CodeReviewVoiceContext);
         AppendFragment(prompt, file, "where-it-goes",
             ("Indent", indent), ("PrSummaryMarker", PrSummaryParser.Marker),
