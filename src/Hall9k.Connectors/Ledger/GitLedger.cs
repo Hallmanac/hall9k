@@ -56,21 +56,31 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
             }
 
             string commitId = await BuildCommitAsync(request, tip, cancellationToken);
-            await UpdateLocalRefAsync(request.RepositoryPath, request.RefName, commitId, tip, cancellationToken);
 
             if (BeforePushForTesting is { } beforePush)
             {
                 await beforePush(attempt, cancellationToken);
             }
 
+            // Pushed by commit id, never by ref name: what lands on origin is exactly the commit
+            // this attempt just built, regardless of what the local ref happens to point to at
+            // this instant (a concurrent ReadAsync/WriteAsync's own forced fetch can move it at
+            // any time). git still enforces the ordinary fast-forward check against origin's own
+            // current tip for refName, so a real race is still caught and rejected exactly as
+            // before — only the source of the push is no longer a shared mutable local ref.
             (int pushExit, _, string pushError) = await RunGitAsync(
                 request.RepositoryPath,
-                ["push", "origin", $"{request.RefName}:{request.RefName}"],
+                ["push", "origin", $"{commitId}:{request.RefName}"],
                 environment: null,
                 standardInput: null,
                 cancellationToken);
             if (pushExit == 0)
             {
+                // Only now, once origin genuinely holds this commit, is the local ref moved onto
+                // it — unconditionally, since the push itself was the compare-and-swap against
+                // origin's tip. Moving it any earlier is what let a lost race or a rejected push
+                // leave the local ref pointing at a commit that never left this machine.
+                await SetLocalRefAsync(request.RepositoryPath, request.RefName, commitId, cancellationToken);
                 return LedgerWriteOutcome.Written(commitId);
             }
 
@@ -79,9 +89,8 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                 "Push to {RefName} was rejected on attempt {Attempt}/{MaxAttempts} ({Error}); re-fetching to retry",
                 request.RefName, attempt, MaxPushAttempts, pushError.Trim());
 
-            // Force-refetch: our own local ref was just moved (above) to the rejected commit, so
-            // this is what reconciles it back to the remote's real tip before the loop's next
-            // iteration re-reads it.
+            // The local ref was never moved by this attempt, so this fetch only ever advances it
+            // toward origin's real tip — it cannot lose or corrupt anything this call itself owns.
             await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
         }
 
@@ -106,13 +115,26 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
             repositoryPath, ["fetch", "origin", $"+{refName}:{refName}"], null, null, cancellationToken);
         if (exitCode != 0)
         {
-            // Expected the first time anything writes to a ref nobody has pushed yet ("couldn't
-            // find remote ref") — logged rather than thrown so a genuine network problem is still
-            // visible, without treating the routine "nothing here yet" case as a failure.
-            logger.LogDebug(
-                "Fetch of {RefName} from origin in {Repository} found nothing to bring down ({Error}) "
-                + "— proceeding as though the ref does not exist there yet",
-                refName, repositoryPath, error.Trim());
+            // "Couldn't find remote ref" is expected the first time anything writes to a ref
+            // nobody has pushed yet, and is logged quietly. Anything else — a network problem, a
+            // credential failure — is logged at Warning instead, so it is still visible at
+            // default log levels rather than only when Debug logging happens to be enabled; a
+            // caller that keeps reading stale local data through a standing outage otherwise
+            // leaves no trace of why.
+            if (error.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
+            {
+                logger.LogDebug(
+                    "Fetch of {RefName} from origin in {Repository} found nothing to bring down ({Error}) "
+                    + "— proceeding as though the ref does not exist there yet",
+                    refName, repositoryPath, error.Trim());
+            }
+            else
+            {
+                logger.LogWarning(
+                    "Fetch of {RefName} from origin in {Repository} failed ({Error}) — proceeding "
+                    + "with whatever this node last had locally for that ref",
+                    refName, repositoryPath, error.Trim());
+            }
         }
     }
 
@@ -270,15 +292,17 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
     }
 
     /// <summary>
-    /// Compare-and-swap local update, the same create-only/expected-old-value shape
-    /// <c>GitWorktreeManager</c> already uses for a branch ref: an empty <paramref name="oldTip"/>
-    /// means "must not exist locally yet", matching a fresh ref's first commit.
+    /// Points the local ref at a commit <see cref="WriteAsync"/> just confirmed origin holds.
+    /// Unconditional — no old-value compare-and-swap — because the push that ran immediately
+    /// before this call already was the compare-and-swap, against origin's own current tip; by
+    /// the time this runs there is nothing left locally worth comparing against, only a local
+    /// cache pointer to bring into line with what origin now has.
     /// </summary>
-    private static async Task UpdateLocalRefAsync(
-        string repositoryPath, string refName, string newCommit, string? oldTip, CancellationToken cancellationToken)
+    private static async Task SetLocalRefAsync(
+        string repositoryPath, string refName, string newCommit, CancellationToken cancellationToken)
     {
         (int exitCode, _, string error) = await RunGitAsync(
-            repositoryPath, ["update-ref", refName, newCommit, oldTip ?? ""], null, null, cancellationToken);
+            repositoryPath, ["update-ref", refName, newCommit], null, null, cancellationToken);
         if (exitCode != 0)
         {
             throw new InvalidOperationException($"git update-ref {refName} failed in {repositoryPath}: {error.Trim()}");
