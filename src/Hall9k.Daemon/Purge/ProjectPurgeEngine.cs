@@ -267,6 +267,20 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         session.QueueSqlCommand("delete from mt_events where stream_id = ANY(?)", everyStreamId);
         session.QueueSqlCommand("delete from mt_streams where id = ANY(?)", everyStreamId);
         session.QueueSqlCommand("delete from mt_doc_projectdetails where id = ?", project.Id);
+        // ProjectGitHubMembers is keyed by the project's own id (idea 202383dc, A2b) but, like
+        // ProjectDetails, is never a stream in its own right, so the events/streams deletes above
+        // never reach it — left behind otherwise, keeping every observed collaborator's GitHub
+        // identity on file for a project id that no longer exists (independent pre-PR review,
+        // cycle 3, adversarial lens, medium). Marten's own typed delete, not another raw
+        // QueueSqlCommand: unlike mt_doc_projectdetails (guaranteed to exist — this very method
+        // already loaded a row from it), mt_doc_projectgithubmembers is created lazily, on this
+        // projection's first-ever write, the same way TaskLease and RunActivity are (this file's
+        // own doc comment on both) — an install that has never observed GitHub repository access
+        // for any project has no such table yet, and a raw DELETE naming it outright fails
+        // regardless of whether this project ever had a row. Routing through Marten's own document
+        // API instead of SQL lets its schema-on-demand handling create the table first rather than
+        // finding it missing.
+        session.Delete<ProjectGitHubMembers>(project.Id);
 
         if (taskIds.Length > 0)
         {
