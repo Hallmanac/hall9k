@@ -52,9 +52,11 @@ public sealed class OwnerShowCommand : Hall9kAsyncCommand<OwnerShowCommand.Setti
         NodeDetails? node = (await session.Query<NodeDetails>()
             .Where(n => n.MachineName == machineName)
             .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
-        table.AddRow("This node's key", node?.PublicKey is not null
-            ? $"[dim]{node.KeyFingerprint} at {NodeKeyStore.DirectoryFor(node.Id).EscapeMarkup()}[/]"
-            : "[dim]not generated yet — h9k project join <project>[/]");
+        table.AddRow("This node's key", DescribeThisNodesKey(node, owner.Id));
+        if (node is { PublicKey: { } publicKeyLine, OwnerId: var nodeOwnerId } && nodeOwnerId == owner.Id)
+        {
+            table.AddRow("This node's public key", $"[dim]{publicKeyLine.EscapeMarkup()}[/]");
+        }
 
         table.AddRow("Registered", $"[dim]{owner.RegisteredAt.ToLocalTime():g}[/]");
         table.AddRow("Settings changed", owner.SettingsChangedAt is { } changedAt
@@ -69,6 +71,18 @@ public sealed class OwnerShowCommand : Hall9kAsyncCommand<OwnerShowCommand.Setti
             $"\n[dim]Change a preference:[/] h9k owner set {named.EscapeMarkup()} --rerequest-review on");
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// This machine's own node key is only "this owner's" when this node is actually registered to
+    /// the owner being shown — reporting it next to a different owner's details would misattribute
+    /// whose key it is (independent pre-PR review, cycle 1, conformance lens, low).
+    /// </summary>
+    private static string DescribeThisNodesKey(NodeDetails? node, Guid ownerId) => node switch
+    {
+        null or { PublicKey: null } => "[dim]not generated yet — h9k project join <project>[/]",
+        _ when node.OwnerId != ownerId => "[dim]this machine's node belongs to a different owner[/]",
+        _ => $"[dim]{node.KeyFingerprint} at {NodeKeyStore.PrivateKeyPathFor(node.Id).EscapeMarkup()}[/]",
+    };
 
     private static string DescribePolicy(ReviewRerequestPolicy policy) => ReviewRerequestOption.Describe(
         policy,
