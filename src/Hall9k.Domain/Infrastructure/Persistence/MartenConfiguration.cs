@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
@@ -56,5 +57,7 @@ public static class MartenConfiguration
         opts.Projections.Add<TaskListItemProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<RunDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<RunListItemProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<MessageDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<MessageInboxDetailsProjection>(ProjectionLifecycle.Inline);
     }
 }
