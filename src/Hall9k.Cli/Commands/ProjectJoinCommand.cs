@@ -113,12 +113,22 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
                 + "h9k. Restore the original key files before joining again.");
         }
 
-        string claimedFingerprint = claimedOwnerOverride.IsNotBlank() ? claimedOwnerOverride! : key.Fingerprint;
-        bool establishingRoot = claimedFingerprint == key.Fingerprint;
+        // No --owner keeps whatever root this owner already claims (including one claimed on a
+        // different project's join) rather than falling back to this node's own key — falling back
+        // unconditionally would flip a real owner's claim back to a self-created root on every
+        // later plain join (independent pre-PR review, cycle 1, conformance and adversarial lenses,
+        // both high: h9k project add's own join call always passes no --owner).
+        string claimedFingerprint = claimedOwnerOverride.IsNotBlank()
+            ? claimedOwnerOverride
+            : owner.RootFingerprint ?? key.Fingerprint;
+        // An explicit --owner always stays an unverified claim, even when it happens to name this
+        // node's own fingerprint — establishing a root and marking it verified is reserved for the
+        // no-argument path that lets a node's own key become the root in the first place.
+        bool establishingRoot = claimedOwnerOverride.IsBlank() && claimedFingerprint == key.Fingerprint;
 
         LedgerCommitter committer = new(
             owner.Name.IsNotBlank() ? owner.Name : Environment.UserName,
-            owner.Email.IsNotBlank() ? owner.Email! : $"{context.NodeId}@hall9k.local");
+            owner.Email.IsNotBlank() ? owner.Email : $"{context.NodeId}@hall9k.local");
         LedgerSigningKey signingKey = new(key.PrivateKeyPath);
 
         bool retiredPreviousRoot = false;
@@ -126,10 +136,16 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
         {
             if (owner.RootFingerprintVerified && owner.RootFingerprint == key.Fingerprint)
             {
-                await RetireSelfRootAsync(
-                    ledger, project.RepositoryPath, owner.RootFingerprint!, claimedFingerprint,
+                // The owner's root claim is install-wide, but a self-created root.yaml may live in
+                // every project's own ledger this node joined before the real owner was known — not
+                // only the one project being joined right now, and not necessarily that one at all.
+                // Retiring only "here" either leaves a live self-created root in every other project
+                // (never retired), or writes a retired.yaml into a project that never had a root.yaml
+                // to begin with (independent pre-PR review, cycle 1, conformance and adversarial
+                // lenses, both medium).
+                retiredPreviousRoot = await RetireSelfRootEverywhereAsync(
+                    session, ledger, owner.Id, project, owner.RootFingerprint!, claimedFingerprint,
                     committer, signingKey, now, cancellationToken);
-                retiredPreviousRoot = true;
             }
 
             session.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(owner, claimedFingerprint, establishingRoot, now));
@@ -173,6 +189,47 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
         }
     }
 
+    /// <summary>
+    /// Retires <paramref name="retiredFingerprint"/>'s self-created root in every project this
+    /// owner is registered to, but only where a <c>root.yaml</c> for it actually exists — a project
+    /// this node never joined as itself never had one to retire. <paramref name="currentProject"/>
+    /// is checked even when this session's own project query has not yet observed it (a same-session
+    /// registration not yet visible to a fresh query).
+    /// </summary>
+    private static async Task<bool> RetireSelfRootEverywhereAsync(
+        IDocumentSession session, ILedger ledger, Guid ownerId, ProjectDetails currentProject,
+        string retiredFingerprint, string realRootFingerprint, LedgerCommitter committer,
+        LedgerSigningKey signingKey, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<ProjectDetails> ownedProjects = await session.Query<ProjectDetails>()
+            .Where(p => p.OwnerId == ownerId)
+            .ToListAsync(cancellationToken);
+
+        IEnumerable<ProjectDetails> candidates = ownedProjects.Any(p => p.Id == currentProject.Id)
+            ? ownedProjects
+            : [.. ownedProjects, currentProject];
+
+        string refName = $"refs/hall9k/ledger/owners/{retiredFingerprint}";
+        string path = $"owners/{retiredFingerprint}/root.yaml";
+
+        bool retiredAny = false;
+        foreach (ProjectDetails candidate in candidates)
+        {
+            LedgerFile existing = await ledger.ReadAsync(candidate.RepositoryPath, refName, path, cancellationToken);
+            if (!existing.Exists)
+            {
+                continue;
+            }
+
+            await RetireSelfRootAsync(
+                ledger, candidate.RepositoryPath, retiredFingerprint, realRootFingerprint,
+                committer, signingKey, now, cancellationToken);
+            retiredAny = true;
+        }
+
+        return retiredAny;
+    }
+
     private static async Task RetireSelfRootAsync(
         ILedger ledger, string repositoryPath, string retiredFingerprint, string realRootFingerprint,
         LedgerCommitter committer, LedgerSigningKey signingKey, DateTimeOffset now, CancellationToken cancellationToken)
@@ -183,17 +240,34 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
             ("retired_at", now.ToString("o", CultureInfo.InvariantCulture)),
             ("real_root", realRootFingerprint));
 
-        LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
-        if (current.Content == content)
+        // content depends only on this call's own arguments, so a Conflict here is always safe to
+        // retry against a fresh tip, the same reasoning WriteNodeFileAsync's own retry applies —
+        // the caller above saves the owner's new root claim on the strength of this retirement
+        // actually landing, so a Conflict silently discarded here would let that claim commit
+        // while retired.yaml either still held stale content or never recorded the retirement at
+        // all (Copilot review, PR #366).
+        for (int attempt = 1; attempt <= MaxConflictRetries; attempt++)
         {
-            return;
+            LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
+            if (current.Content == content)
+            {
+                return;
+            }
+
+            LedgerWriteOutcome outcome = await ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    repositoryPath, refName, path, content, current.BlobId,
+                    $"Retire root {retiredFingerprint} in favor of {realRootFingerprint}", committer, signingKey),
+                cancellationToken);
+            if (outcome.Verdict == LedgerWriteVerdict.Written)
+            {
+                return;
+            }
         }
 
-        await ledger.WriteAsync(
-            new LedgerWriteRequest(
-                repositoryPath, refName, path, content, current.BlobId,
-                $"Retire root {retiredFingerprint} in favor of {realRootFingerprint}", committer, signingKey),
-            cancellationToken);
+        throw new DomainConflictException(
+            $"{path} kept changing out from under this join after {MaxConflictRetries} attempts — "
+            + "something else is writing it at the same time. Re-run h9k project join once that settles.");
     }
 
     private static async Task EnsureRootFileAsync(
@@ -222,6 +296,9 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
         // the read above and this write — the root exists either way, which is what this call wanted.
     }
 
+    /// <summary>How many times a conflicting ledger write retries against a fresh read before giving up.</summary>
+    private const int MaxConflictRetries = 5;
+
     private static async Task<bool> WriteNodeFileAsync(
         ILedger ledger, string repositoryPath, Guid nodeId, NodeSigningKey key, string claimedOwnerFingerprint,
         string machineName, string operatingSystem, DateTimeOffset joinedAt,
@@ -240,18 +317,35 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
             ("joined_at", joinedAt.ToString("o", CultureInfo.InvariantCulture)),
             ("invite_proof", null));
 
-        LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
-        if (current.Content == content)
+        // content depends only on this call's own arguments, never on what is currently on disk,
+        // so a Conflict — something else wrote node.yaml between the read and the write — is
+        // always safe to retry against a fresh tip. The caller above saves the local identity
+        // events on the strength of this file actually landing, so a lost Conflict silently
+        // treated as "nothing to write" would let that claim commit while node.yaml still held
+        // the old facts.
+        for (int attempt = 1; attempt <= MaxConflictRetries; attempt++)
         {
-            return false;
+            LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
+            if (current.Content == content)
+            {
+                return false;
+            }
+
+            LedgerWriteOutcome outcome = await ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    repositoryPath, refName, path, content, current.BlobId,
+                    current.Exists ? "Update node facts" : "Join node", committer, signingKey),
+                cancellationToken);
+            if (outcome.Verdict == LedgerWriteVerdict.Written)
+            {
+                return true;
+            }
         }
 
-        LedgerWriteOutcome outcome = await ledger.WriteAsync(
-            new LedgerWriteRequest(
-                repositoryPath, refName, path, content, current.BlobId,
-                current.Exists ? "Update node facts" : "Join node", committer, signingKey),
-            cancellationToken);
-        return outcome.Verdict == LedgerWriteVerdict.Written;
+        throw new DomainConflictException(
+            $"node.yaml for node {nodeId} kept changing out from under this join after "
+            + $"{MaxConflictRetries} attempts — something else is writing it at the same time. "
+            + "Re-run h9k project join once that settles.");
     }
 
     /// <summary>
