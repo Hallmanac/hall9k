@@ -43,6 +43,13 @@ public sealed record TransportReadResult(
         new(true, envelopes, highestSeqInspected, rejectedSeqs ?? [], stalledAtSeq);
 }
 
+/// <summary>One outbox ref the messages prefix currently holds, and its current tip — what one
+/// <see cref="IMessageTransport.ProbeAsync"/> call finds with a single <c>ls-remote</c>, before
+/// anything is actually fetched (idea 202383dc, M1b). A tip is an opaque token: the real
+/// implementation's is a commit sha, the in-memory one's is a version counter, and neither is
+/// ever compared to anything but a prior call's own tip for the identical sender.</summary>
+public sealed record MessageOutboxTip(Guid SenderNodeId, string Tip);
+
 /// <summary>
 /// The one seam between the message store (<c>Hall9k.Domain.Features.Message</c>) and how an
 /// envelope actually travels between nodes (idea 202383dc, M1a). <see cref="GitLedgerMessageTransport"/>
@@ -56,13 +63,33 @@ public interface IMessageTransport
     /// Writes one envelope's content to <c>messages/&lt;seq&gt;.json</c> in the sender's own
     /// outbox ref. The real implementation's write goes through A1 (<see cref="ILedger.WriteAsync"/>),
     /// signed, one writer per node, never a batch — <paramref name="seq"/> is already allocated by
-    /// the caller from this node's own store before this is ever called.
+    /// the caller from this node's own store before this is ever called. Ordinary production sends
+    /// go through <see cref="FlushAsync"/> instead (M1b's queue-then-flush split); this stays for a
+    /// caller that genuinely wants one envelope landed on its own, and for a test that wants to
+    /// inject a single raw envelope directly.
     /// </summary>
     Task SendAsync(
         string repositoryPath,
         Guid fromNodeId,
         long seq,
         string content,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Writes every envelope in <paramref name="envelopes"/> to the sender's own outbox ref in ONE
+    /// commit (idea 202383dc, M1b's flush) — the daemon's flush sweep is the only production
+    /// caller, batching whatever this node queued since the last flush into a single push rather
+    /// than one per envelope. Throws the same way <see cref="SendAsync"/> does
+    /// (<see cref="LedgerPushRejectedException"/>) when the push cannot land after retrying; the
+    /// caller is responsible for recording a failure for every envelope in the batch, since a
+    /// single push either lands all of them or none.
+    /// </summary>
+    Task FlushAsync(
+        string repositoryPath,
+        Guid fromNodeId,
+        IReadOnlyList<TransportEnvelope> envelopes,
         LedgerCommitter committer,
         LedgerSigningKey signingKey,
         CancellationToken cancellationToken);
@@ -74,5 +101,30 @@ public interface IMessageTransport
         string repositoryPath,
         Guid senderNodeId,
         long sinceSeq,
+        CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Every outbox ref currently under the messages prefix, and each one's current tip, from a
+    /// single <c>ls-remote</c>-shaped call (idea 202383dc, M1b's probe) — no fetch, no read.
+    /// The daemon's sweep compares each tip against what it saw last time and only calls
+    /// <see cref="ReadSinceAsync"/> for a sender whose tip actually moved.
+    /// </summary>
+    Task<IReadOnlyList<MessageOutboxTip>> ProbeAsync(string repositoryPath, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Rewrites <paramref name="fromNodeId"/>'s own outbox ref to hold exactly
+    /// <paramref name="survivors"/> — a fresh single commit, not a fast-forward of the existing
+    /// history — dropping every envelope not named (idea 202383dc, M1b's squash). Only ever this
+    /// node's own ref, since a rewrite is only safe against a ref this node is the sole writer of;
+    /// nothing here ever touches another node's outbox. A reader's own cursor is untouched by this:
+    /// it tracks seq, never a commit, so a squash a reader has not seen yet is transparent to it —
+    /// it simply finds fewer old files than before, if it ever asks for them at all.
+    /// </summary>
+    Task SquashAsync(
+        string repositoryPath,
+        Guid fromNodeId,
+        IReadOnlyList<TransportEnvelope> survivors,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
         CancellationToken cancellationToken);
 }

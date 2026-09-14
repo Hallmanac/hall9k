@@ -4,81 +4,169 @@ using Marten;
 
 namespace Hall9k.Connectors.Messaging;
 
+/// <summary>How many envelopes one <see cref="MessageOutbox.FlushAsync"/> call actually landed —
+/// zero means there was nothing queued to flush, so the caller pushed no commit at all.</summary>
+public sealed record MessageFlushResult(int EnvelopesFlushed);
+
+/// <summary>How many envelopes <see cref="MessageOutbox.SquashAsync"/> kept — a squash never
+/// touches the local event store, only the outbox ref's own content, so there is nothing to
+/// report beyond the count that survived.</summary>
+public sealed record MessageSquashResult(int EnvelopesKept);
+
 /// <summary>
-/// The sending half of the message seam (idea 202383dc, M1a): allocates the next seq from this
-/// node's own store, writes the envelope through <see cref="IMessageTransport"/>, and records the
-/// outcome on the message's own stream (<see cref="MessageAggregate"/>, keyed by this node plus the
-/// seq it just used). Self-contained — it calls <see cref="IDocumentSession.SaveChangesAsync"/>
-/// itself — so the next call's own seq allocation always reads this one's committed result, never
-/// an uncommitted one still sitting in the same session.
+/// The sending half of the message seam (idea 202383dc, M1a; queue-then-flush split M1b):
+/// <see cref="QueueAsync"/> allocates the next seq from this node's own store and records the
+/// envelope as queued — no transport call, so it never waits on git or a network — and
+/// <see cref="FlushAsync"/> is what the daemon's own sweep calls to actually land every envelope
+/// queued since the last flush in one push. Both are self-contained — each calls
+/// <see cref="IDocumentSession.SaveChangesAsync"/> itself — so <see cref="QueueAsync"/>'s own seq
+/// allocation always reads a prior call's committed result, never an uncommitted one still sitting
+/// in the same session.
 /// </summary>
 public sealed class MessageOutbox(IMessageTransport transport)
 {
-    /// <summary>A push can land at the ledger and still never be reflected in this node's own
-    /// local store — the process dies, or the token is cancelled, between the two — so the very
-    /// next seq this store's own query allocates can already be occupied. Bounded rather than
-    /// infinite: a genuine allocation lag self-heals in one bump, and running past that many means
-    /// something else is wrong that retrying alone will not fix — <see cref="SendAsync"/> lets the
-    /// conflict propagate once this bound is hit rather than recording a failure against a seq
-    /// whose real content belongs to someone else entirely.</summary>
-    private const int MaxSeqAdvancesOnConflict = 5;
-
-    public async Task<MessageEnvelopeV1> SendAsync(
+    /// <summary>
+    /// Static, unlike every other method here: queueing never touches <see cref="IMessageTransport"/>
+    /// at all, so a caller with no transport to hand — <c>h9k message send</c>, which never waits on
+    /// git or a network — needs no <see cref="MessageOutbox"/> instance either.
+    /// </summary>
+    public static async Task<MessageEnvelopeV1> QueueAsync(
         IDocumentSession session,
-        string repositoryPath,
         Guid fromNodeId,
         string fromOwnerFingerprint,
         MessageAudience to,
         string? about,
         MessageKind kind,
         string body,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        long seq = await NextSeqAsync(session, fromNodeId, cancellationToken);
+        MessageEnvelopeV1 envelope = new(seq, now, fromNodeId, fromOwnerFingerprint, to, about, kind, body);
+        Guid streamId = MessageStreamId.ForMessage(fromNodeId, seq);
+
+        session.Events.StartStream<MessageAggregate>(
+            streamId, MessageDecider.Queue(fromNodeId, seq, fromOwnerFingerprint, to, about, kind, body, now));
+        await session.SaveChangesAsync(cancellationToken);
+        return envelope;
+    }
+
+    /// <summary>
+    /// Every envelope this node has queued but not yet landed (<c>SentAt is null</c> — true for a
+    /// fresh queue and for one whose last flush attempt failed alike) goes into ONE transport call,
+    /// which either lands all of them in a single commit or lands none: a push either reaches
+    /// origin or it does not, and there is no partial-batch outcome to record. A failed push
+    /// re-throws after marking every envelope in the batch failed, so the caller (the daemon's own
+    /// sweep) can log it and simply try again next tick — nothing here retries on its own.
+    /// </summary>
+    public async Task<MessageFlushResult> FlushAsync(
+        IDocumentSession session,
+        string repositoryPath,
+        Guid fromNodeId,
         LedgerCommitter committer,
         LedgerSigningKey signingKey,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        long seq = await NextSeqAsync(session, fromNodeId, cancellationToken);
-        for (int attempt = 0; ; attempt++)
+        IReadOnlyList<MessageDetails> pending = await session.Query<MessageDetails>()
+            .Where(message => message.FromNodeId == fromNodeId && message.SentAt == null)
+            .OrderBy(message => message.Seq)
+            .ToListAsync(cancellationToken);
+
+        if (pending.Count == 0)
         {
-            MessageEnvelopeV1 envelope = new(seq, now, fromNodeId, fromOwnerFingerprint, to, about, kind, body);
-            Guid streamId = MessageStreamId.ForMessage(fromNodeId, seq);
-
-            try
-            {
-                await transport.SendAsync(
-                    repositoryPath, fromNodeId, seq, MessageEnvelopeCodec.Encode(envelope), committer, signingKey, cancellationToken);
-            }
-            catch (MessageSeqAlreadyUsedException) when (attempt < MaxSeqAdvancesOnConflict)
-            {
-                // This node's own local store lagged an earlier push that already landed at this
-                // seq — the ledger already holds different, real content there, so recording this
-                // new message as a failure at that same seq would misattribute it. Move to the
-                // next seq instead; NextSeqAsync's own next call will see whichever of the two
-                // this session actually commits.
-                seq++;
-                continue;
-            }
-            // MessageSeqAlreadyUsedException is itself an InvalidOperationException, so it must be
-            // excluded here explicitly — once the catch above stops retrying (MaxSeqAdvancesOnConflict
-            // exhausted), a conflict at yet another seq must never fall through to this one: the
-            // ledger already holds different, real content at that seq, and recording *this*
-            // message's own content as a failure there would misattribute it exactly the same way
-            // the retry above exists to prevent. Nothing safe to record here — every seq this
-            // attempt ever tried belongs to someone else's real content — so it propagates instead.
-            catch (Exception exception)
-                when (exception is LedgerPushRejectedException
-                    || (exception is InvalidOperationException and not MessageSeqAlreadyUsedException))
-            {
-                session.Events.StartStream<MessageAggregate>(streamId, MessageDecider.FailSend(envelope, exception.Message, now));
-                await session.SaveChangesAsync(cancellationToken);
-                throw;
-            }
-
-            session.Events.StartStream<MessageAggregate>(streamId, MessageDecider.Send(fromNodeId, seq, now));
-            await session.SaveChangesAsync(cancellationToken);
-            return envelope;
+            return new MessageFlushResult(0);
         }
+
+        List<TransportEnvelope> batch = [.. pending.Select(
+            message => new TransportEnvelope(message.Seq, MessageEnvelopeCodec.Encode(ToEnvelope(message))))];
+
+        try
+        {
+            await transport.FlushAsync(repositoryPath, fromNodeId, batch, committer, signingKey, cancellationToken);
+        }
+        catch (Exception exception) when (exception is LedgerPushRejectedException or InvalidOperationException)
+        {
+            foreach (MessageDetails message in pending)
+            {
+                Guid failedStreamId = MessageStreamId.ForMessage(fromNodeId, message.Seq);
+                session.Events.Append(failedStreamId, MessageDecider.FailSend(ToEnvelope(message), exception.Message, now));
+            }
+
+            await session.SaveChangesAsync(cancellationToken);
+            throw;
+        }
+
+        foreach (MessageDetails message in pending)
+        {
+            Guid streamId = MessageStreamId.ForMessage(fromNodeId, message.Seq);
+            if (message.SendFailed)
+            {
+                MessageAggregate aggregate = await session.Events.AggregateStreamAsync<MessageAggregate>(
+                    streamId, token: cancellationToken)
+                    ?? throw new InvalidOperationException(
+                        $"Message {fromNodeId}/{message.Seq} has no stream to flush a resend onto.");
+                session.Events.Append(streamId, MessageDecider.Resend(aggregate, now));
+            }
+            else
+            {
+                session.Events.Append(streamId, MessageDecider.Send(fromNodeId, message.Seq, now));
+            }
+        }
+
+        await session.SaveChangesAsync(cancellationToken);
+        return new MessageFlushResult(pending.Count);
     }
+
+    /// <summary>
+    /// Squashes this node's own outbox to envelopes younger than <paramref name="retention"/>
+    /// (idea 202383dc, M1b's retention rule) — reads only <c>SentAt is not null</c> messages
+    /// (anything still pending a flush is not physically in the ref yet, so it is never a squash
+    /// candidate at all) and rewrites the transport's own copy to hold exactly the survivors.
+    /// Touches nothing in the local event store: a message's own history — sent, resent, received,
+    /// handled — is a fact this node already recorded, and squashing the outbox never un-happens
+    /// it, it only stops re-shipping old bytes over the wire.
+    /// </summary>
+    public async Task<MessageSquashResult> SquashAsync(
+        IDocumentSession session,
+        string repositoryPath,
+        Guid fromNodeId,
+        TimeSpan retention,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        DateTimeOffset cutoff = now - retention;
+        IReadOnlyList<MessageDetails> survivors = await session.Query<MessageDetails>()
+            .Where(message => message.FromNodeId == fromNodeId && message.SentAt != null && message.QueuedAt >= cutoff)
+            .OrderBy(message => message.Seq)
+            .ToListAsync(cancellationToken);
+
+        List<TransportEnvelope> batch = [.. survivors.Select(
+            message => new TransportEnvelope(message.Seq, MessageEnvelopeCodec.Encode(ToEnvelope(message))))];
+        await transport.SquashAsync(repositoryPath, fromNodeId, batch, committer, signingKey, cancellationToken);
+        return new MessageSquashResult(survivors.Count);
+    }
+
+    /// <summary>
+    /// Rebuilds the exact envelope <see cref="QueueAsync"/> originally queued, from
+    /// <see cref="MessageDetails"/>'s own stored fields — every one of them is set by
+    /// <see cref="MessageDecider.Queue"/>'s own <see cref="MessageQueued"/> before a candidate ever
+    /// reaches <see cref="FlushAsync"/>'s pending query, so a null here means the store itself is
+    /// broken, not a case this method should paper over.
+    /// </summary>
+    private static MessageEnvelopeV1 ToEnvelope(MessageDetails message) => new(
+        message.Seq, message.QueuedAt, message.FromNodeId,
+        message.FromOwnerFingerprint ?? throw new InvalidOperationException(
+            $"Message {message.FromNodeId}/{message.Seq} is pending flush but has no FromOwnerFingerprint."),
+        MessageAudience.Parse(message.To ?? throw new InvalidOperationException(
+            $"Message {message.FromNodeId}/{message.Seq} is pending flush but has no To.")),
+        message.About,
+        MessageKind.Parse(message.Kind ?? throw new InvalidOperationException(
+            $"Message {message.FromNodeId}/{message.Seq} is pending flush but has no Kind.")),
+        message.Body ?? throw new InvalidOperationException(
+            $"Message {message.FromNodeId}/{message.Seq} is pending flush but has no Body."));
 
     /// <summary>Seq is monotonic per node, from this node's own store — never from the ledger,
     /// never from any caller-supplied counter.</summary>
