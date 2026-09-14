@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Identity;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -39,6 +41,21 @@ public sealed class OwnerShowCommand : Hall9kAsyncCommand<OwnerShowCommand.Setti
             ? "[dim]none registered to this owner yet[/]"
             : string.Join(", ", projects.Select(project => project.Name.EscapeMarkup()).Order(StringComparer.OrdinalIgnoreCase)));
         table.AddRow("Re-request review", DescribePolicy(owner.ReviewRerequest));
+
+        // The cross-node identity (idea 202383dc, A2a): the fingerprint is the owner id everywhere
+        // in Hall9k once a node has joined a project, not just this install's own local Guid above.
+        table.AddRow("Root fingerprint", owner.RootFingerprint is { } fingerprint
+            ? $"{fingerprint} {(owner.RootFingerprintVerified ? "[dim](this owner's own root)[/]" : "[yellow](claimed, unverified)[/]")}"
+            : "[dim]not established yet — h9k project join <project>[/]");
+
+        string machineName = Environment.MachineName;
+        NodeDetails? node = (await session.Query<NodeDetails>()
+            .Where(n => n.MachineName == machineName)
+            .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
+        table.AddRow("This node's key", node?.PublicKey is not null
+            ? $"[dim]{node.KeyFingerprint} at {NodeKeyStore.DirectoryFor(node.Id).EscapeMarkup()}[/]"
+            : "[dim]not generated yet — h9k project join <project>[/]");
+
         table.AddRow("Registered", $"[dim]{owner.RegisteredAt.ToLocalTime():g}[/]");
         table.AddRow("Settings changed", owner.SettingsChangedAt is { } changedAt
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
