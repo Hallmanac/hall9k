@@ -235,24 +235,34 @@ public sealed class GitLedgerTests : IDisposable
         string node = _repo.CloneNode(hub);
 
         (string privateKeyPath, string publicKey) = GenerateSshKeypair();
-        LedgerSigningKey signingKey = new(privateKeyPath);
-
-        LedgerWriteOutcome outcome = await _ledger.WriteAsync(
-            new LedgerWriteRequest(node, refName, "a.yaml", "v1\n", null, "signed write", _committer, signingKey),
-            CancellationToken.None);
-
-        outcome.Verdict.Should().Be(LedgerWriteVerdict.Written);
-
-        string allowedSignersFile = Path.Combine(Path.GetTempPath(), $"h9k-ledger-allowed-signers-{Guid.NewGuid():N}");
         try
         {
-            File.WriteAllText(allowedSignersFile, $"{_committer.Email} {publicKey}\n");
-            (int verifyExit, _, string verifyError) = LedgerTestRepo.VerifyCommit(node, outcome.CommitId!, allowedSignersFile);
-            verifyExit.Should().Be(0, $"git verify-commit should confirm the signature: {verifyError}");
+            LedgerSigningKey signingKey = new(privateKeyPath);
+
+            LedgerWriteOutcome outcome = await _ledger.WriteAsync(
+                new LedgerWriteRequest(node, refName, "a.yaml", "v1\n", null, "signed write", _committer, signingKey),
+                CancellationToken.None);
+
+            outcome.Verdict.Should().Be(LedgerWriteVerdict.Written);
+
+            string allowedSignersFile = Path.Combine(Path.GetTempPath(), $"h9k-ledger-allowed-signers-{Guid.NewGuid():N}");
+            try
+            {
+                File.WriteAllText(allowedSignersFile, $"{_committer.Email} {publicKey}\n");
+                (int verifyExit, _, string verifyError) = LedgerTestRepo.VerifyCommit(node, outcome.CommitId!, allowedSignersFile);
+                verifyExit.Should().Be(0, $"git verify-commit should confirm the signature: {verifyError}");
+            }
+            finally
+            {
+                File.Delete(allowedSignersFile);
+            }
         }
         finally
         {
-            File.Delete(allowedSignersFile);
+            // The private key is an unencrypted throwaway signing key — deleted here rather than
+            // left behind in the system temp directory for every run of this test.
+            File.Delete(privateKeyPath);
+            File.Delete($"{privateKeyPath}.pub");
         }
     }
 
