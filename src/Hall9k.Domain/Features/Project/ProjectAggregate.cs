@@ -137,6 +137,21 @@ public sealed class ProjectAggregate
     /// </summary>
     public DateTimeOffset? PurgeAt { get; private set; }
 
+    /// <summary>This install's own last-observed GitHub role on the repository; Unknown while never observed (idea 202383dc, A2b).</summary>
+    public GitHubRepositoryRole GitHubOwnRole { get; private set; } = GitHubRepositoryRole.Unknown;
+    /// <summary>The account <see cref="GitHubOwnRole"/> was observed for.</summary>
+    public long? GitHubOwnAccountId { get; private set; }
+    /// <summary>The login <see cref="GitHubOwnAccountId"/> was observed under.</summary>
+    public string? GitHubOwnLogin { get; private set; }
+    /// <summary>When the own-role observation above was last made; null while never observed.</summary>
+    public DateTimeOffset? GitHubOwnRoleObservedAt { get; private set; }
+
+    private IReadOnlyList<GitHubCollaboratorRole> _gitHubCollaborators = [];
+    /// <summary>The repository's collaborator list as last observed, or empty while never observed or never readable.</summary>
+    public IReadOnlyList<GitHubCollaboratorRole> GitHubCollaborators => _gitHubCollaborators;
+    /// <summary>When <see cref="GitHubCollaborators"/> was last observed; null while never observed.</summary>
+    public DateTimeOffset? GitHubCollaboratorsObservedAt { get; private set; }
+
     private readonly List<VerifyCommand> _verifyCommands = [];
     public IReadOnlyList<VerifyCommand> VerifyCommands => _verifyCommands;
 
@@ -333,5 +348,19 @@ public sealed class ProjectAggregate
     public void Apply(ProjectPurgeCancelled @event)
     {
         PurgeAt = null;
+    }
+
+    public void Apply(ProjectGitHubAccessObserved @event)
+    {
+        GitHubOwnAccountId = @event.AccountId;
+        GitHubOwnLogin = @event.Login;
+        GitHubOwnRole = @event.Role;
+        GitHubOwnRoleObservedAt = @event.ObservedAt;
+    }
+
+    public void Apply(ProjectGitHubCollaboratorsObserved @event)
+    {
+        _gitHubCollaborators = @event.Collaborators;
+        GitHubCollaboratorsObservedAt = @event.ObservedAt;
     }
 }
