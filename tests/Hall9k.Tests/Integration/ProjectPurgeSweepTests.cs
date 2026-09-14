@@ -14,6 +14,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx.Events;
 using Marten;
@@ -53,6 +54,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid purgedRunId = await SeedRunAsync(store, purgedTaskIds[0], ownerId, cts.Token);
         Guid purgedIdeaId = await SeedIdeaAsync(store, purgedProjectId, ownerId, cts.Token);
         Guid purgedEpicId = await SeedEpicAsync(store, purgedProjectId, ownerId, cts.Token);
+        await SeedGitHubAccessAsync(store, purgedProjectId, cts.Token);
         await SchedulePastDuePurgeAsync(store, purgedProjectId, ownerId, cts.Token);
 
         // A sibling project, untouched by this sweep — the control that proves the purge is
@@ -62,6 +64,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid survivingRunId = await SeedRunAsync(store, survivingTaskIds[0], ownerId, cts.Token);
         Guid survivingIdeaId = await SeedIdeaAsync(store, survivingProjectId, ownerId, cts.Token);
         Guid survivingEpicId = await SeedEpicAsync(store, survivingProjectId, ownerId, cts.Token);
+        await SeedGitHubAccessAsync(store, survivingProjectId, cts.Token);
 
         ProjectPurgeEngine engine = new(store, NullLogger<ProjectPurgeEngine>.Instance);
         ProjectPurgeSweepResult result = await engine.SweepOnceAsync(cts.Token);
@@ -76,6 +79,10 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         await using (IQuerySession query = store.QuerySession())
         {
             (await query.LoadAsync<ProjectDetails>(purgedProjectId, cts.Token)).Should().BeNull();
+            (await query.LoadAsync<ProjectGitHubMembers>(purgedProjectId, cts.Token)).Should().BeNull(
+                "ProjectGitHubMembers is keyed by the project's own id but is never a stream of its "
+                + "own, so it needs its own delete alongside ProjectDetails rather than falling out "
+                + "of the events/streams deletes above");
             foreach (Guid taskId in purgedTaskIds)
             {
                 (await query.LoadAsync<TaskDetails>(taskId, cts.Token)).Should().BeNull();
@@ -97,6 +104,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
 
             // The survivor: every stream and projection row still exactly where it was.
             (await query.LoadAsync<ProjectDetails>(survivingProjectId, cts.Token)).Should().NotBeNull();
+            (await query.LoadAsync<ProjectGitHubMembers>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<TaskDetails>(survivingTaskIds[0], cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<RunDetails>(survivingRunId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<IdeaDetails>(survivingIdeaId, cts.Token)).Should().NotBeNull();
@@ -355,6 +363,19 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         session.Events.StartStream<ProjectAggregate>(id, registered);
         await session.SaveChangesAsync(cancellationToken);
         return id;
+    }
+
+    /// <summary>
+    /// Observes this install's own GitHub role onto the project's stream, the one call that
+    /// materialises <see cref="ProjectGitHubMembers"/> for it — a purge must delete that row too,
+    /// not only <c>ProjectDetails</c> (independent pre-PR review, cycle 3, adversarial lens, medium).
+    /// </summary>
+    private static async Task SeedGitHubAccessAsync(IDocumentStore store, Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(
+            projectId, new ProjectGitHubAccessObserved(projectId, 1, "octocat", GitHubRepositoryRole.Admin, Now));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private static async Task<Guid[]> SeedTasksAsync(
