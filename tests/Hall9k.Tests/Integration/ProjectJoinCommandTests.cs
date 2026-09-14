@@ -3,6 +3,9 @@ using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
+using Hall9k.Daemon;
+using Hall9k.Daemon.Dispatch;
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
@@ -16,6 +19,8 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Tests.Fakes;
 using Marten;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -140,6 +145,68 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         OwnerDetails owner = (await session.LoadAsync<OwnerDetails>(project.OwnerId, cts.Token))!;
         owner.RootFingerprint.Should().Be(claimedFingerprint);
         owner.RootFingerprintVerified.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Join_with_owner_naming_this_nodes_own_fingerprint_still_stays_unverified()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+
+        await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, cts.Token);
+        await bootstrapSession.SaveChangesAsync(cts.Token);
+
+        NodeKeyStore keyStore = new();
+        NodeSigningKey key = await keyStore.EnsureAsync(context.NodeId, cts.Token);
+
+        Guid projectId = DomainId.New();
+        await using IDocumentSession projectSession = _postgres.Store.LightweightSession();
+        projectSession.Events.StartStream<ProjectAggregate>(
+            projectId,
+            ProjectDecider.Register(
+                projectId, context.OwnerId, DomainId.New(), "smoke",
+                "/does/not/matter/on/a/fake/ledger", null, null, Now));
+        await projectSession.SaveChangesAsync(cts.Token);
+        ProjectDetails project = (await projectSession.LoadAsync<ProjectDetails>(projectId, cts.Token))!;
+
+        FakeLedger ledger = new();
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, key.Fingerprint, ledger, keyStore, cts.Token);
+
+        // An explicit --owner is a claim to be vouched for later, never a shortcut to
+        // self-establishing a verified root — even when the fingerprint named happens to be this
+        // node's own (independent pre-PR review finding, conformance lens).
+        outcome.EstablishedRoot.Should().BeFalse(
+            "an explicit --owner always stays an unverified claim, even when it names this node's own fingerprint");
+        ledger.Writes.Should().ContainSingle("only the node file is written — no root.yaml for an explicit, still-unverified claim");
+
+        OwnerDetails owner = (await session.LoadAsync<OwnerDetails>(project.OwnerId, cts.Token))!;
+        owner.RootFingerprintVerified.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_conflicting_node_file_write_retries_rather_than_silently_dropping_the_claim()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger inner = new();
+        ConflictOnceLedger ledger = new(inner, pathMustContain: "node.yaml");
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), cts.Token);
+
+        // A transient conflict on node.yaml — another writer touched it between the read and the
+        // write — must retry against a fresh tip, not silently report no write while the caller
+        // above still saves the local claim events as though it landed.
+        ledger.ConflictsInjected.Should().Be(1);
+        outcome.WroteNodeFile.Should().BeTrue("the retry must land the node file once the transient conflict clears");
+
+        LedgerFile nodeFile = await inner.ReadAsync(
+            project.RepositoryPath, $"refs/hall9k/ledger/nodes/{outcome.NodeId}", $"nodes/{outcome.NodeId}/node.yaml", cts.Token);
+        nodeFile.Content.Should().Contain(outcome.KeyFingerprint);
     }
 
     [Fact]
@@ -273,9 +340,10 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
             await seed.SaveChangesAsync(cts.Token);
         }
 
+        ProjectJoinCommand.JoinOutcome outcome;
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
-            await ProjectJoinCommand.RunAsync(session, project, claimedOwnerOverride: null, new FakeLedger(), new NodeKeyStore(), cts.Token);
+            outcome = await ProjectJoinCommand.RunAsync(session, project, claimedOwnerOverride: null, new FakeLedger(), new NodeKeyStore(), cts.Token);
         }
 
         await using IDocumentSession query = _postgres.Store.LightweightSession();
@@ -285,6 +353,28 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
         task.AssignedOwnerId.Should().Be(
             preExistingOwnerId, "the task's own Guid assignment is untouched by the fingerprint mapping, so a plain Guid dispatch comparison still matches");
+
+        NodeDetails node = (await query.LoadAsync<NodeDetails>(outcome.NodeId, cts.Token))!;
+        node.OwnerId.Should().Be(
+            preExistingOwnerId, "join must map this node onto the pre-existing owner's own Guid rather than minting a second owner");
+
+        // The migration criterion is that a task already assigned before the join keeps dispatching
+        // after it — proven here by actually running the daemon's own claim seam
+        // (DispatchEngine.ClaimEligibleAsync, which applies TryClaimAsync's queued-state,
+        // assigned-owner, project-archived, lease, and expected-version checks), not by calling
+        // TaskDecider.Claim directly: that bypasses every one of those and would pass even if the
+        // real dispatcher could no longer claim this task (Copilot review, PR #366).
+        NodeContext claimingNode = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        DispatchEngine engine = new(
+            _postgres.Store, claimingNode, new DaemonConnection(_postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(_postgres.Store, NullLogger<LaunchHoldEngine>.Instance),
+            Options.Create(new DaemonOptions { MaxConcurrentTaskRuns = 1, LeaseTimeout = TimeSpan.FromSeconds(60) }),
+            NullLogger<DispatchEngine>.Instance);
+
+        IReadOnlyList<ClaimedWork> claimed = await engine.ClaimEligibleAsync(cts.Token);
+
+        claimed.Select(work => work.TaskId).Should().Contain(
+            taskId, "the node this join just enrolled can still claim the pre-existing owner's already-assigned task");
     }
 
     /// <summary>
@@ -311,5 +401,36 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         await projectSession.SaveChangesAsync(cancellationToken);
 
         return (await projectSession.LoadAsync<ProjectDetails>(projectId, cancellationToken))!;
+    }
+
+    /// <summary>
+    /// Wraps another <see cref="ILedger"/> and returns <see cref="LedgerWriteOutcome.Conflict"/>
+    /// the first time a write's path contains <paramref name="pathMustContain"/>, without ever
+    /// touching the wrapped ledger's own store — simulating another writer that raced this call
+    /// and, by the time this call re-reads and retries, has already lost its own race too, the
+    /// same shape <see cref="GitLedger.WriteAsync"/>'s own retry loop resolves in practice. Every
+    /// other write passes straight through.
+    /// </summary>
+    private sealed class ConflictOnceLedger(ILedger inner, string pathMustContain) : ILedger
+    {
+        private bool _injected;
+
+        public int ConflictsInjected { get; private set; }
+
+        public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken) =>
+            inner.ReadAsync(repositoryPath, refName, path, cancellationToken);
+
+        public async Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken)
+        {
+            if (!_injected && request.Path.Contains(pathMustContain, StringComparison.Ordinal))
+            {
+                _injected = true;
+                ConflictsInjected++;
+                LedgerFile current = await inner.ReadAsync(request.RepositoryPath, request.RefName, request.Path, cancellationToken);
+                return LedgerWriteOutcome.Conflict(current);
+            }
+
+            return await inner.WriteAsync(request, cancellationToken);
+        }
     }
 }
