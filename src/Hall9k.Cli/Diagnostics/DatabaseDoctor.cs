@@ -4,6 +4,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx;
 using Marten;
 using Spectre.Console;
+using Weasel.Core;
 
 namespace Hall9k.Cli.Diagnostics;
 
@@ -233,6 +234,38 @@ public static class DatabaseDoctor
             else
             {
                 AnsiConsole.MarkupLine("[dim]It will be created automatically the next time a command touches the database.[/]");
+            }
+        }
+        else if (!await SchemaCurrentAsync(connectionString, cancellationToken))
+        {
+            // The schema exists but no longer matches what this build configures — the shape
+            // every schema change before event stamping (idea 202383dc) never produced, since
+            // each one only ever added a new table, and CreateOnly (every store this platform
+            // opens with ordinarily) happily creates what is missing. Adding metadata headers to
+            // the existing mt_events table is the first change that alters an object already
+            // there, which CreateOnly refuses outright — an install whose schema predates that
+            // change would otherwise crash raw on its very first write after updating, a
+            // directory this question exists to walk past instead.
+            AnsiConsole.MarkupLine(
+                $"[yellow]Connected to {reachability.Host.EscapeMarkup()}:{reachability.Port}/{reachability.Database.EscapeMarkup()}[/] "
+                + $"({resolution.Description.EscapeMarkup()}), but Hall9k's schema there predates this build.");
+            if (offerFixes && (assumeYes
+                || (AnsiConsole.Profile.Capabilities.Interactive && AnsiConsole.Confirm("Shall I update it now?", defaultValue: true))))
+            {
+                await ApplySchemaAsync(connectionString);
+                AnsiConsole.MarkupLine("[green]Schema updated.[/]");
+            }
+            else if (offerFixes && !AnsiConsole.Profile.Capabilities.Interactive)
+            {
+                AnsiConsole.MarkupLine(
+                    "[dim]Skipping — stdin is not a terminal, so there is nobody to confirm this. Re-run with "
+                    + "h9k doctor --yes to update it right now.[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLine(
+                    "[dim]Run h9k doctor --yes to update it — until then, the next command that touches the "
+                    + "database will fail.[/]");
             }
         }
         else
@@ -608,10 +641,31 @@ public static class DatabaseDoctor
     }
 
     /// <summary>
+    /// Whether the schema already there still matches what this build configures — question
+    /// 3's second half, asked only once <see cref="DatabaseReachability.SchemaPresentAsync"/>
+    /// has already answered yes to "is it there at all": that check is a bare table-existence
+    /// probe and stays one, so this is the one place a genuine column-level (or other object-
+    /// level) difference is actually detected, via the same migration diff
+    /// <see cref="ApplySchemaAsync"/> applies.
+    /// </summary>
+    private static async Task<bool> SchemaCurrentAsync(string connectionString, CancellationToken cancellationToken)
+    {
+        using DocumentStore store = DocumentStore.For(opts =>
+        {
+            opts.Connection(connectionString);
+            opts.ConfigureHall9k(AutoCreate.None);
+        });
+        SchemaMigration migration = await store.Storage.Database.CreateMigrationAsync();
+        return migration.Difference == SchemaPatchDifference.None;
+    }
+
+    /// <summary>
     /// The schema offer's action: Marten already creates its own tables on first real use
     /// (<c>AutoCreate.CreateOnly</c>, the mode every other store in this platform opens
     /// with) — this just makes that happen on the spot instead of on the next command, for
-    /// an operator who asked the doctor "shall I set that up?" and wants to see it done.
+    /// an operator who asked the doctor "shall I set that up?" and wants to see it done. Also
+    /// what <see cref="SchemaCurrentAsync"/> found stale: <c>CreateOrUpdate</c> both creates
+    /// what is missing and alters what has changed, in the one call.
     /// </summary>
     private static async Task ApplySchemaAsync(string connectionString)
     {
