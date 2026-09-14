@@ -13,6 +13,17 @@ public sealed class OwnerAggregate
     /// setting outranks it.
     /// </summary>
     public ReviewRerequestPolicy ReviewRerequest { get; private set; } = ReviewRerequestPolicy.Unknown;
+
+    /// <summary>
+    /// The skill this owner writes in, named by its directory name and never copied here
+    /// (PLACEHOLDER-ef2ba8b3). Every prompt seam where a session composes text a human will read
+    /// as this owner's — a pull request description, a review-thread reply, a commit message, a
+    /// drafted reply — tells the session to load it before writing.
+    /// <see cref="VoiceSkillName.None"/> until they name one, which renders every seam exactly as
+    /// it renders with no preference at all.
+    /// </summary>
+    public VoiceSkillName VoiceSkill { get; private set; } = VoiceSkillName.None;
+
     public DateTimeOffset RegisteredAt { get; private set; }
 
     /// <summary>
@@ -43,6 +54,11 @@ public sealed class OwnerAggregate
         if (@event.ReviewRerequest.HasValue)
         {
             ReviewRerequest = @event.ReviewRerequest.Value ?? ReviewRerequestPolicy.Unknown;
+        }
+
+        if (@event.VoiceSkill.HasValue)
+        {
+            VoiceSkill = @event.VoiceSkill.Value ?? VoiceSkillName.None;
         }
     }
 

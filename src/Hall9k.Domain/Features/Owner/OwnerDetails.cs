@@ -15,6 +15,11 @@ public sealed class OwnerDetails
     /// node default decides.
     /// </summary>
     public ReviewRerequestPolicy ReviewRerequest { get; set; } = ReviewRerequestPolicy.Unknown;
+
+    /// <summary>Mirrors <see cref="OwnerAggregate.VoiceSkill"/> — the read side every prompt
+    /// builder's caller reads the owner's voice preference from.</summary>
+    public VoiceSkillName VoiceSkill { get; set; } = VoiceSkillName.None;
+
     public DateTimeOffset RegisteredAt { get; set; }
     public DateTimeOffset? SettingsChangedAt { get; set; }
 
@@ -42,6 +47,11 @@ public sealed class OwnerDetailsProjection : SingleStreamProjection<OwnerDetails
         if (@event.Data.ReviewRerequest.HasValue)
         {
             view.ReviewRerequest = @event.Data.ReviewRerequest.Value ?? ReviewRerequestPolicy.Unknown;
+        }
+
+        if (@event.Data.VoiceSkill.HasValue)
+        {
+            view.VoiceSkill = @event.Data.VoiceSkill.Value ?? VoiceSkillName.None;
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
