@@ -240,6 +240,21 @@ public sealed class EventOriginStampingTests(PostgresFixture postgres) : IClassF
     /// (follow-up review finding, PR #370). The listener must resolve the owner through
     /// <see cref="NodeDetails.OwnerId"/>, not whichever <see cref="OwnerDetails"/> row a bare
     /// query happens to return first.
+    /// <para>
+    /// Both owners are registered by hand here rather than through
+    /// <see cref="NodeBootstrapSeed.NewNodeAsync"/> for the second one: <c>NodeBootstrap.EnsureAsync</c>
+    /// runs the exact same unfiltered <c>Take(1)</c> over <see cref="OwnerDetails"/> this test
+    /// exists to catch a regression of, but on the owner-selection question rather than the
+    /// stamping one, so bootstrapping "this node" through it after the other owner already exists
+    /// would attach this node to that same other owner instead of a genuinely distinct one —
+    /// collapsing the two-owner shape this test needs down to one and letting it pass even
+    /// against a listener that went back to an unfiltered query itself (cycle-1 pre-PR review,
+    /// conformance lens, on the version of this test that called
+    /// <see cref="NodeBootstrapSeed.NewNodeAsync"/> for "this node" second). This node's own node
+    /// row carries the real <see cref="Environment.MachineName"/>, the one thing the listener
+    /// itself keys its <see cref="NodeDetails"/> lookup on, so it — not the other machine's row —
+    /// is the one the listener actually finds.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task An_events_stamped_fingerprint_is_this_nodes_own_owner_even_when_another_owner_exists()
@@ -248,56 +263,92 @@ public sealed class EventOriginStampingTests(PostgresFixture postgres) : IClassF
         DocumentStore store = postgres.Store;
         await store.Advanced.ResetAllData(cts.Token);
 
-        // Registered, and its root claimed, before this machine's own node ever bootstraps — the
-        // shape that lets an unfiltered "first owner returned" resolve to the wrong one.
-        Guid otherOwnerId = DomainId.New();
-        await using (IDocumentSession session = store.LightweightSession())
+        // Reset again on the way out, not only on the way in: this is the one test in the class
+        // that leaves two genuinely separate owners behind, one of them keyed to the real
+        // Environment.MachineName every sibling test's own NodeBootstrapSeed.NewNodeAsync call
+        // resolves through too. Left in place, NodeBootstrap.EnsureAsync's own unfiltered
+        // Take(1) over OwnerDetails (a second, pre-existing inconsistency, not the one this test
+        // targets) can pick the other leftover owner while still reusing this leftover node,
+        // pointing a sibling test's own BootstrapContext.OwnerId at a stream that does not match
+        // what the listener itself resolves through NodeDetails.OwnerId — exactly the mismatch
+        // that broke Events_saved_in_the_same_batch_as_a_root_claim_carry_the_claimed_root the
+        // first time this test ran ahead of it in the same class (cycle-1 pre-PR review self-check).
+        try
         {
-            OwnerRegistered otherOwnerRegistered = OwnerDecider.Register(
-                otherOwnerId, "someone-elses-machine", null, DateTimeOffset.UtcNow);
-            session.Events.StartStream<OwnerAggregate>(otherOwnerId, otherOwnerRegistered);
-            NodeRegistered otherNodeRegistered = NodeDecider.Register(
-                DomainId.New(), otherOwnerId, "someone-elses-machine", "linux", DateTimeOffset.UtcNow);
-            session.Events.StartStream<NodeAggregate>(otherNodeRegistered.Id, otherNodeRegistered);
-            await session.SaveChangesAsync(cts.Token);
-        }
+            // Registered, and its root claimed, before this machine's own owner and node ever
+            // exist — the shape that lets an unfiltered "first owner returned" resolve to the
+            // wrong one.
+            Guid otherOwnerId = DomainId.New();
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                OwnerRegistered otherOwnerRegistered = OwnerDecider.Register(
+                    otherOwnerId, "someone-elses-machine", null, DateTimeOffset.UtcNow);
+                session.Events.StartStream<OwnerAggregate>(otherOwnerId, otherOwnerRegistered);
+                NodeRegistered otherNodeRegistered = NodeDecider.Register(
+                    DomainId.New(), otherOwnerId, "someone-elses-machine", "linux", DateTimeOffset.UtcNow);
+                session.Events.StartStream<NodeAggregate>(otherNodeRegistered.Id, otherNodeRegistered);
+                await session.SaveChangesAsync(cts.Token);
+            }
 
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            OwnerAggregate otherOwner = (await session.Events.AggregateStreamAsync<OwnerAggregate>(
-                otherOwnerId, token: cts.Token))!;
-            session.Events.Append(
-                otherOwnerId, OwnerDecider.ClaimRoot(otherOwner, "someone-elses-fingerprint", verified: true, DateTimeOffset.UtcNow));
-            await session.SaveChangesAsync(cts.Token);
-        }
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                OwnerAggregate otherOwner = (await session.Events.AggregateStreamAsync<OwnerAggregate>(
+                    otherOwnerId, token: cts.Token))!;
+                session.Events.Append(
+                    otherOwnerId, OwnerDecider.ClaimRoot(otherOwner, "someone-elses-fingerprint", verified: true, DateTimeOffset.UtcNow));
+                await session.SaveChangesAsync(cts.Token);
+            }
 
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
-        const string thisOwnersFingerprint = "this-nodes-own-fingerprint";
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            OwnerAggregate thisOwner = (await session.Events.AggregateStreamAsync<OwnerAggregate>(
-                node.OwnerId, token: cts.Token))!;
-            session.Events.Append(
-                node.OwnerId, OwnerDecider.ClaimRoot(thisOwner, thisOwnersFingerprint, verified: true, DateTimeOffset.UtcNow));
-            await session.SaveChangesAsync(cts.Token);
-        }
+            // This node's own owner, registered by hand — not through NodeBootstrap.EnsureAsync,
+            // which would find the other owner already on file and attach this node to it — so a
+            // genuinely second OwnerDetails row exists, and this node's own NodeDetails row
+            // (keyed to the real machine name, which the listener itself queries by) points at it
+            // rather than at the other owner registered above.
+            Guid thisOwnerId = DomainId.New();
+            Guid thisNodeId = DomainId.New();
+            string machineName = Environment.MachineName;
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                OwnerRegistered thisOwnerRegistered = OwnerDecider.Register(
+                    thisOwnerId, "this-machine", null, DateTimeOffset.UtcNow);
+                session.Events.StartStream<OwnerAggregate>(thisOwnerId, thisOwnerRegistered);
+                NodeRegistered thisNodeRegistered = NodeDecider.Register(
+                    thisNodeId, thisOwnerId, machineName, "linux", DateTimeOffset.UtcNow);
+                session.Events.StartStream<NodeAggregate>(thisNodeId, thisNodeRegistered);
+                await session.SaveChangesAsync(cts.Token);
+            }
 
-        Guid taskId = DomainId.New();
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            TaskAdded added = TaskDecider.Add(
-                taskId, DomainId.New(), "Prove the owner resolved is this node's own", acceptanceCriteria: [], TaskType.Feature,
-                agentContext: null, constraints: null, externalReference: null, DateTimeOffset.UtcNow, node.OwnerId);
-            session.Events.StartStream<TaskAggregate>(taskId, added);
-            await session.SaveChangesAsync(cts.Token);
-        }
+            const string thisOwnersFingerprint = "this-nodes-own-fingerprint";
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                OwnerAggregate thisOwner = (await session.Events.AggregateStreamAsync<OwnerAggregate>(
+                    thisOwnerId, token: cts.Token))!;
+                session.Events.Append(
+                    thisOwnerId, OwnerDecider.ClaimRoot(thisOwner, thisOwnersFingerprint, verified: true, DateTimeOffset.UtcNow));
+                await session.SaveChangesAsync(cts.Token);
+            }
 
-        await using (IQuerySession session = store.QuerySession())
+            Guid taskId = DomainId.New();
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                TaskAdded added = TaskDecider.Add(
+                    taskId, DomainId.New(), "Prove the owner resolved is this node's own", acceptanceCriteria: [], TaskType.Feature,
+                    agentContext: null, constraints: null, externalReference: null, DateTimeOffset.UtcNow, thisOwnerId);
+                session.Events.StartStream<TaskAggregate>(taskId, added);
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            await using (IQuerySession session = store.QuerySession())
+            {
+                IEvent taskAdded = (await session.Events.FetchStreamAsync(taskId, token: cts.Token)).Single();
+                taskAdded.Headers![EventOriginStampingListener.NodeIdHeader].Should().Be(thisNodeId.ToString());
+                taskAdded.Headers[EventOriginStampingListener.OwnerRootFingerprintHeader].Should().Be(
+                    thisOwnersFingerprint, "the event belongs to this node's own owner, never the other registered owner");
+            }
+        }
+        finally
         {
-            IEvent taskAdded = (await session.Events.FetchStreamAsync(taskId, token: cts.Token)).Single();
-            taskAdded.Headers![EventOriginStampingListener.NodeIdHeader].Should().Be(node.NodeId.ToString());
-            taskAdded.Headers[EventOriginStampingListener.OwnerRootFingerprintHeader].Should().Be(
-                thisOwnersFingerprint, "the event belongs to this node's own owner, never the other registered owner");
+            await store.Advanced.ResetAllData(cts.Token);
         }
     }
 }
