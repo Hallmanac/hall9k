@@ -651,6 +651,29 @@ answers to nobody until the next `h9k daemon start` adopts it. The run records *
 **Failed**, and the task lands Failed exactly as any other run failure leaves it, with `retry`,
 `resolve`, and `abandon` all open next.
 
+### Node-to-node messaging
+
+A note one node sends another, an owner, or the whole project — the first payload kind on the
+message transport (idea 202383dc, A2a/M1a/M1b), replacing `notes/node-mailbox.md`'s GitHub-issue
+workaround for that traffic, which is retired for node-to-node use as of this. `h9k message send
+--to <node:id|owner:fingerprint|project> [--about <task-or-idea-id>] "<text>"` only ever queues in
+this node's own local store — never git, never a network wait; a daemon `MessageSweepLoop` is what
+actually lands a queued envelope in the outbox, batching everything queued since the last flush
+into one commit, on a cadence that tightens the moment there is something to send or read (15 to
+25 seconds, jittered) and relaxes when idle (30 to 45 seconds, jittered), with an immediate
+re-probe the tick right after this node's own push. The same sweep periodically squashes this
+node's own outbox down to envelopes younger than a 48-hour retention window — never another node's
+ref. `h9k messages [--all]` and `h9k message handle <id>` read and act on what arrived; `h9k
+status` names the unread count and any sender this node's inbox has had to ignore because that
+sender's node file does not vouch for their outbox.
+
+Envelopes are one node's own signed statement — ephemeral by design (Brian's ruling, 2026-09-13):
+anything that must survive a node's absence is a file in the ledger, never only a message. Sender
+verification is per-node (that node's own key, named in its node file); owner-chain (cross-node,
+cross-human) verification is the team half, not yet built. Scoped to a single project's own
+repository today, not every registered project a node happens to manage — see
+"Multi-node and peer-to-peer" below for why.
+
 ### Configuration and policy
 
 Per-project and per-owner settings resolving most-specific-wins over a node default: verification
@@ -1018,10 +1041,13 @@ unique ids, no single-owner assumptions in streams or projections, and lease-bas
 works identically for one node or twenty. Identity core is built on top of that (idea 202383dc,
 piece A2a, Decisions Log #190): every node generates its own ed25519 signing key under
 `~/.hall9k/keys/<node-id>` (`h9k project join`), an owner is one root key across every node that
-claims it, and every ledger write from an enrolled node is signed. **Nothing beyond that is
-built.** No node discovery, no gossip, no replication, no cross-user trust — the team half
-(invites, vouches, revocation, chain verification) that would let a *second* human's node join
-an owner's root is still a later task, not this one.
+claims it, and every ledger write from an enrolled node is signed. Node-to-node messaging is built
+on top of identity core (see "Node-to-node messaging" above) — one node's own signed note to
+another, an owner, or the whole project, over the same signed-ledger-write foundation. **Nothing
+past that is built.** No node discovery, no gossip, no event replication (M2, the one thing a
+message is deliberately never trusted with), no cross-user trust — the team half (invites,
+vouches, revocation, chain verification) that would let a *second* human's node join an owner's
+root is still a later task, not this one.
 
 The peer-to-peer branch has a full design (identity as a two-tier key hierarchy, mDNS on the LAN,
 hole punching, a relay on 443, QUIC throughout) in

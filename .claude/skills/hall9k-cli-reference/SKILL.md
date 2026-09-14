@@ -15,7 +15,7 @@ h9k install                  # publish release binaries to ~/.hall9k/bin (no ser
 h9k update                   # refresh an already-installed machine from the latest GitHub release, no repo/SDK needed
 h9k uninstall [--purge-data] # take the platform off the machine; the database survives unless --purge-data (Decisions Log #83)
 h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31)
-h9k config show|set          # the daemon's durable operating settings: node ceiling (--max-concurrent-task-runs), the per-run session cap default (--session-cap-per-run), model-by-role, interactive-claim-stale-after-days, review-cycle caps, the review stage composition (--review-stage-composition, --accept-reduced-review to degrade it), a periodic token-spend budget (--spend-budget, --spend-period; backlog 59, Decisions Log #103, #111, #112, #120, #129)
+h9k config show|set          # the daemon's durable operating settings: node ceiling (--max-concurrent-task-runs), the per-run session cap default (--session-cap-per-run), model-by-role, interactive-claim-stale-after-days, review-cycle caps, the review stage composition (--review-stage-composition, --accept-reduced-review to degrade it), a periodic token-spend budget (--spend-budget, --spend-period; backlog 59, Decisions Log #103, #111, #112, #120, #129), the message sweep's active/idle poll ranges (--message-poll-active-min/-max, --message-poll-idle-min/-max, seconds; idea 202383dc M1b)
 h9k doctor [--yes]           # diagnose the database situation and what to do about it; --yes remediates non-interactively, for scripts and dispatched agents (Decisions Log #73, #74, #118)
 h9k project add --name <n> --repo-url <url>   # register a project and create its home directory; offers to reactivate or rename an archived project whose name it collides with (--reactivate-archived, --rename-archived-to <NAME>) (Decisions Log #182); also runs h9k project join once the repository is reachable on disk, reporting plainly if it could not (§16 #190)
 h9k project join <name> [--owner <fingerprint>]   # establish or confirm this node's identity in a project's ledger: generates this node's ed25519 key once under ~/.hall9k/keys/<node-id>, then writes its node file signed with it; the first join naming no --owner establishes this owner's root and that fingerprint becomes the owner id everywhere in Hall9k (h9k owner show <fingerprint>, h9k task assign --owner <fingerprint>), recorded on the Owner stream, and a later plain join keeps whatever root is already claimed; --owner <fingerprint> claims an existing root instead, unverified until the team half's vouch (not yet built); re-runnable to change the claim, retiring a self-created root (required in the project being joined, best-effort in every other reachable, non-archived project that holds it) when this node turns out to belong to another one (idea 202383dc, A2a, §16 #190)
@@ -39,7 +39,7 @@ h9k owner show [<owner>]     # one owner: identity (root fingerprint once establ
 h9k owner set [<owner>] --rerequest-review on|off|default   # whether closeout asks a pull request's reviewers for another pass once a fix follow-up pushed (Decisions Log #62). A project setting outranks this; the node default (DaemonOptions.DefaultReviewRerequest, off) sits under both
 h9k owner set [<owner>] --voice-skill <NAME> | --clear-voice-skill   # the skill this owner WRITES IN, by name. Every prompt seam where a session composes text a human reads as the owner's (a pull request description, a review-thread reply, a commit message, a posted review finding, a drafted reply to a GitHub mention) then tells that session to load the skill and its matching context first: contexts/code-review.md for prose the session posts, contexts/explainer.md for a draft the owner reads and decides on. The skill is the owner's own — referenced by name, never copied into a project, a prompt template, or the platform — so the name must already be a skill directory in the owner's user skills (~/.claude/skills/<NAME>) or in a project home's skills/; a name in neither is refused naming both paths. Structure authority does not move: the repository's own PR-description rule and the project's --writing-conventions still decide the shape, the voice skill decides only the prose. --clear-voice-skill forgets it, and every seam then renders as it does for an owner who never named one
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived, --epic)
-h9k status                   # the attention pane: state, phase, and attention on every row
+h9k status                   # the attention pane: state, phase, and attention on every row; also this node's own identity, unread message count, and any ignored message sender
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
 h9k epic add --project <name> --title "<name>"    # name a first-class grouping of tasks (Decisions Log #100)
 h9k connection list          # every external account this install can reach, and where its credential lives
@@ -111,10 +111,38 @@ the one place every ref this platform ever touches under that namespace is named
 `git fetch origin` never brings one down, and nothing uses a `refs/hall9k/` ref this registry does
 not already know about. A write is conditional on the
 blob the caller last read there (`Conflict` comes back rather than clobbering someone else's), and
-every commit is signed per invocation once a caller has a key. `refs/hall9k/ledger/records` and the
-`refs/hall9k/messages/` prefix are the first two registered refs; nothing reads or writes their
-content yet — that is later work in the same idea (task records, the holder lock, node-to-node
-messages) building on this same component rather than a second one.
+every commit is signed per invocation once a caller has a key. `refs/hall9k/ledger/records` (the
+task-record holder lock, not yet built) and the `refs/hall9k/messages/<node-id>` prefix are the
+first two registered refs; the messages prefix is the node-to-node message transport (idea
+202383dc, A2a/M1a/M1b), one outbox ref per node, each envelope a versioned JSON file signed by that
+node's own key.
+
+Node-to-node messages: a note one node sends another, an owner, or the whole project — the first
+payload kind, replacing `notes/node-mailbox.md`'s GitHub-issue workaround for that traffic (that
+file is retired for node-to-node use; whatever else, if anything, it still serves is noted there).
+`h9k message send` only ever queues in this node's own local store — it never touches git or waits
+on a network — and the daemon's own message sweep is what actually lands a queued envelope in the
+outbox, batching everything queued since the last flush into one commit, on a cadence that
+tightens the moment there is something to send or read (15 to 25 seconds, jittered) and relaxes
+when idle (30 to 45 seconds, jittered), with an immediate re-probe the tick right after this node's
+own push. The same sweep squashes this node's own outbox down to envelopes younger than
+`--message-poll-active-min`/`--message-poll-active-max`/`--message-poll-idle-min`/
+`--message-poll-idle-max`'s neighbor, `MessageRetention` (48 hours by default, not yet a `config
+set` flag) — never another node's ref, only the one this node is the sole writer of. Scoped to a
+single project's own repository today (the first non-archived registered one) — the message
+domain's own seq allocation and per-sender cursor are keyed by sender node alone, with no project
+scoping yet, so a node registered to several projects would need that schema extended before a
+second project's messages could be swept safely.
+
+```bash
+h9k message send --to node:<node-id> "<text>"           # queue a note to one specific node (h9k status prints this node's own id)
+h9k message send --to owner:<fingerprint> "<text>"       # queue a note to everything that owner's nodes read (h9k owner show prints a root fingerprint)
+h9k message send --to project "<text>"                   # queue a note to every node reading this project's messages
+h9k message send --to <AUDIENCE> --about <task-or-idea-id> "<text>"   # carries the id through as-is; h9k messages prints it back
+h9k messages                                             # this node's own received messages, unread (received, not yet handled) by default
+h9k messages --all                                       # include already-handled messages too
+h9k message handle <id>                                  # mark a received message handled — an explicit act, never implied by h9k messages having printed it
+```
 
 Ideas come before tasks (Decisions Log #35, redesigned by backlog 31). An idea undergoes
 **discovery** (what is this?); a draft task undergoes **refinement** (how does this become
