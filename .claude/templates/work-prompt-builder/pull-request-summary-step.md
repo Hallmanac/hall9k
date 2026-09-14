@@ -13,6 +13,13 @@
 {{Indent}}  ships one — `.claude/commands/git/pr-description.md`, or a PR-description or
 {{Indent}}  `pr-summary` skill under this worktree's own `.claude/skills/`. That rule wins for
 {{Indent}}  the prose. Only when the repository ships none, follow the `pr-summary` skill
+===whose-voice-voiced===
+{{Indent}}- **Whose voice.** Follow the target repository's own PR-description rule when it
+{{Indent}}  ships one — `.claude/commands/git/pr-description.md`, or a PR-description or
+{{Indent}}  `pr-summary` skill under this worktree's own `.claude/skills/`. That rule wins for
+{{Indent}}  the structure, the shape and the title convention; the owner's own voice below
+{{Indent}}  wins for the prose. Only when the repository ships none, follow the
+{{Indent}}  `pr-summary` skill
 ===installs-at-home===
 {{Indent}}  Hall9k installs at `{{SkillPath}}`.
 ===installs-at-default===

@@ -56,6 +56,28 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
     }
 
     /// <summary>
+    /// The same bullet, one level up: naming a voice skill also settles who owns the prose there.
+    /// The bullet has always ended "that rule wins for the prose", which is right for an owner who
+    /// named no skill and flatly contradicts the voice line for one who did — a session obeying the
+    /// first sentence writes the pull request body in the repository's voice and never loads the
+    /// skill, at the feature's most visible seam (independent pre-PR review, cycle 1). Voiced, the
+    /// repository's rule keeps the structure and the owner keeps the sentences, which is what the
+    /// pr-summary skill itself says.
+    /// </summary>
+    [Fact]
+    public void The_pull_request_summary_step_moves_prose_authority_to_the_voice_only_when_one_is_named()
+    {
+        string voiced = Flatten(CheckpointCommitRules(MyVoice));
+        string unvoiced = Flatten(CheckpointCommitRules(voiceSkill: null));
+
+        unvoiced.Should().Contain("That rule wins for the prose.");
+        voiced.Should().NotContain("That rule wins for the prose.")
+            .And.Contain(
+                "That rule wins for the structure, the shape and the title convention; "
+                + "the owner's own voice below wins for the prose.");
+    }
+
+    /// <summary>
     /// agent-prompt-builder's commit-style, on both arms: a commit message is authored history read
     /// under the owner's login exactly as a pull request body is.
     /// </summary>
@@ -101,9 +123,16 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
         without.Should().NotContain(VoiceLeadIn);
     }
 
-    /// <summary>agent-prompt-builder's review-requested-changes, plus its own commit-style seam.</summary>
+    /// <summary>
+    /// agent-prompt-builder's review-requested-changes: the replies it posts and its commit style
+    /// in the code-review context, and its drafted disagreement in the explainer one. The third is
+    /// the same artifact the follow-up lap's thread-dispute seam produces — a proposed reply the
+    /// implementer sends verbatim under their own login through <c>h9k review resolve</c> — so one
+    /// lap voicing it and the other not would answer the same reviewer two different ways
+    /// (independent pre-PR review, cycle 1).
+    /// </summary>
     [Fact]
-    public void The_changes_requested_lap_names_the_voice_skill_for_the_replies_it_posts()
+    public void The_changes_requested_lap_names_the_voice_skill_for_what_it_posts_and_what_it_drafts()
     {
         string withSkill = AgentPromptBuilder.BuildReviewRequestedChanges(
             ChangesRequestedTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7",
@@ -113,9 +142,12 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
             CommitStyle.Narrative);
 
         IReadOnlyList<string> lines = VoiceLines(withSkill);
-        lines.Should().HaveCount(2, "the handling rules and the commit style");
-        lines.Should().OnlyContain(
-            line => line.Contains(WorkPromptBuilder.CodeReviewVoiceContext, StringComparison.Ordinal));
+        lines.Should().HaveCount(3, "the handling rules, the disagreement draft, and the commit style");
+        lines.Where(line => line.Contains(WorkPromptBuilder.CodeReviewVoiceContext, StringComparison.Ordinal))
+            .Should().HaveCount(2, "the in-thread replies and the commit messages both post");
+        lines.Where(line => line.Contains(WorkPromptBuilder.ExplainerVoiceContext, StringComparison.Ordinal))
+            .Should().HaveCount(1, "the proposed reply is drafted for the implementer to send, not posted");
+        lines.Should().OnlyContain(line => line.Contains("`my-voice`", StringComparison.Ordinal));
         without.Should().NotContain(VoiceLeadIn);
     }
 
@@ -169,6 +201,45 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
 
         VoiceLines(withSkill).Should().HaveCount(1);
         without.Should().NotContain(VoiceLeadIn);
+    }
+
+    /// <summary>
+    /// The rebase family — the conflicting-base follow-up, the stacked replay, and the mid-run
+    /// pre-final-pass rebase recovery — all end in one rebase verification rule, and on a gated
+    /// project that rule asks for a gate fix to be committed. The append arm asks for an authored
+    /// message outright ("its own commit on top, with a clear message naming what the rebase's
+    /// combination broke"), which is owner-read history exactly as every other commit seam's is,
+    /// so the rule names the skill on the same terms (follow-up review finding, PR #376: all three
+    /// prompts reached it with no seam naming the owner's voice anywhere in them).
+    /// </summary>
+    [Theory]
+    [InlineData("Narrative")]
+    [InlineData("Append")]
+    public void The_rebase_family_names_the_voice_skill_at_its_gate_fix_commit_seam(string style)
+    {
+        CommitStyle commitStyle = CommitStyle.FromInput(style);
+        foreach (Func<VoiceSkillName?, string> build in RebaseFamily(commitStyle, GatedProject()))
+        {
+            IReadOnlyList<string> lines = VoiceLines(build(MyVoice));
+            lines.Should().HaveCount(1, "one line, at the one commit seam a rebase prompt has");
+            lines[0].Should().Contain("`my-voice`")
+                .And.Contain($"`{WorkPromptBuilder.CodeReviewVoiceContext}`");
+            build(null).Should().NotContain(VoiceLeadIn);
+        }
+    }
+
+    /// <summary>
+    /// The other half of that rule: a project configuring no verification gates is never told to
+    /// commit anything in a rebase prompt, so there is no authored message to voice and the seam
+    /// renders nothing at all rather than a line pointing at prose nobody writes.
+    /// </summary>
+    [Fact]
+    public void A_rebase_prompt_for_a_project_with_no_gates_names_no_voice_skill()
+    {
+        foreach (Func<VoiceSkillName?, string> build in RebaseFamily(CommitStyle.Narrative, SomeProject()))
+        {
+            build(MyVoice).Should().NotContain(VoiceLeadIn);
+        }
     }
 
     /// <summary>
@@ -272,11 +343,36 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
             "Is the limiter reset deliberate?", "https://github.com/acme/web/pull/7#issuecomment-1",
             _worktreePath, voiceSkill);
 
+    /// <summary>
+    /// The three prompts that share the rebase verification rule, each as a one-argument builder
+    /// so a seam assertion reads the same against all of them.
+    /// </summary>
+    private static IReadOnlyList<Func<VoiceSkillName?, string>> RebaseFamily(
+        CommitStyle commitStyle, ProjectDetails project) =>
+    [
+        voiceSkill => AgentPromptBuilder.BuildRebase(
+            SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", commitStyle,
+            voiceSkill: voiceSkill),
+        voiceSkill => AgentPromptBuilder.BuildStackReplay(
+            SomeTask(), project, "task/1-slug", "https://github.com/x/y/pull/7", commitStyle,
+            "task/0-parent", "aaaaaaaaaa1111111111", "bbbbbbbbbb2222222222", voiceSkill: voiceSkill),
+        voiceSkill => AgentPromptBuilder.BuildPreFinalPassRebase(
+            SomeTask(), project, "task/1-slug", commitStyle, "https://github.com/x/y/pull/7",
+            voiceSkill: voiceSkill),
+    ];
+
     private static string SettlingGateRepair(VoiceSkillName? voiceSkill) =>
         AgentPromptBuilder.BuildSettlingGateRepair(
             SomeTask(), SomeProject(), "task/1-slug", CommitStyle.Narrative,
             "https://github.com/x/y/pull/7", "main", "aaaaaaaaaa1111111111", "bbbbbbbbbb2222222222",
             rebaseWasRecovered: false, gateOutput: "dotnet test failed.", voiceSkill: voiceSkill);
+
+    /// <summary>
+    /// One line with single spaces, so an assertion about a sentence does not also assert where
+    /// the template happened to wrap it.
+    /// </summary>
+    private static string Flatten(string prompt) =>
+        string.Join(' ', prompt.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
     private static IReadOnlyList<string> VoiceLines(string prompt) =>
         [.. prompt.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n')
@@ -306,6 +402,17 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
         Name = "hall9k",
         BaseBranch = "main",
     };
+
+    /// <summary>
+    /// A project that configures verification gates, which is what makes a rebase prompt ask for a
+    /// gate fix to be committed at all.
+    /// </summary>
+    private static ProjectDetails GatedProject()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands = [new VerifyCommand("test", "dotnet test")];
+        return project;
+    }
 
     private static PullRequestMentionComment SomeMention() => new(
         "IC_abc", "teammate", "Is the limiter reset deliberate?",
