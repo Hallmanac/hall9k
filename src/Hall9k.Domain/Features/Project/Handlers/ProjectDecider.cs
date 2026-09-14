@@ -496,6 +496,48 @@ public static class ProjectDecider
     }
 
     /// <summary>
+    /// This install's own GitHub role on the project's repository, as just read from the
+    /// repository object itself — or null when nothing about it changed since the last
+    /// observation (idea 202383dc, A2b, item 3). Racing another door that observed the identical
+    /// role in the same instant is harmless, the same reasoning
+    /// <c>ConnectionDecider.ObserveGitHubIdentity</c> and <c>TrackerClaimGate</c>'s own Jira
+    /// identity append already rely on — the value is identical, the stream simply carries two
+    /// identical observations.
+    /// </summary>
+    public static ProjectGitHubAccessObserved? ObserveGitHubAccess(
+        ProjectAggregate project, long accountId, string login, GitHubRepositoryRole role, DateTimeOffset observedAt)
+    {
+        if (login.IsBlank())
+        {
+            throw new DomainValidationException("A GitHub access observation requires the login it was read as.");
+        }
+
+        return project.GitHubOwnAccountId == accountId && project.GitHubOwnLogin == login && project.GitHubOwnRole == role
+            ? null
+            : new ProjectGitHubAccessObserved(project.Id, accountId, login, role, observedAt);
+    }
+
+    /// <summary>
+    /// The project's GitHub collaborator list with roles, as just read — or null when the set of
+    /// (account, role) pairs is identical to the last observation, order ignored: GitHub's own
+    /// list order carries no meaning, and reordering the identical membership must never look like
+    /// a change. The aggregate's own unobserved default is also an empty list, so a genuinely
+    /// empty roster's first-ever observation is let through on <see cref="ProjectAggregate.GitHubCollaboratorsObservedAt"/>
+    /// alone — otherwise it would compare equal to the default and never append, leaving that
+    /// sentinel stuck at "never observed" for a repository that was, in fact, just read as having
+    /// no collaborators.
+    /// </summary>
+    public static ProjectGitHubCollaboratorsObserved? ObserveGitHubCollaborators(
+        ProjectAggregate project, IReadOnlyList<GitHubCollaboratorRole> collaborators, DateTimeOffset observedAt)
+    {
+        HashSet<GitHubCollaboratorRole> before = [.. project.GitHubCollaborators];
+        HashSet<GitHubCollaboratorRole> after = [.. collaborators];
+        return project.GitHubCollaboratorsObservedAt is not null && before.SetEquals(after)
+            ? null
+            : new ProjectGitHubCollaboratorsObserved(project.Id, collaborators, observedAt);
+    }
+
+    /// <summary>
     /// The repository path carries the same rule <see cref="ProjectHome"/> carries, and for the
     /// same reason: it is recorded once and read back by the daemon, which runs in no particular
     /// directory, so a relative path names a different repository for every process that resolves

@@ -51,6 +51,7 @@ public static class MartenConfiguration
         opts.Projections.Add<NodeDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<ConnectionDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<ProjectDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<ProjectGitHubMembersProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<IdeaDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<EpicDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<TaskDetailsProjection>(ProjectionLifecycle.Inline);

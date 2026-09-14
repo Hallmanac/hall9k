@@ -426,6 +426,102 @@ public sealed class ProjectDeciderTests
             changedAt: Now, changedByOwnerId: DomainId.New(),
             branchNameTemplate: Optional<BranchNameTemplate>.Of(template));
 
+    /// <summary>
+    /// This install's own role observed from the repository object itself (idea 202383dc, A2b,
+    /// item 3) — obtainable at every access level, unlike the collaborator list below.
+    /// </summary>
+    [Fact]
+    public void ObserveGitHubAccess_records_this_installs_own_role()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        ProjectGitHubAccessObserved? observed = ProjectDecider.ObserveGitHubAccess(
+            project, 4181388, "hallmanac", GitHubRepositoryRole.Write, Now);
+
+        observed.Should().NotBeNull();
+        observed!.AccountId.Should().Be(4181388);
+        observed.Login.Should().Be("hallmanac");
+        observed.Role.Should().Be(GitHubRepositoryRole.Write);
+    }
+
+    [Fact]
+    public void ObserveGitHubAccess_is_not_re_appended_when_nothing_changed()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(ProjectDecider.ObserveGitHubAccess(project, 4181388, "hallmanac", GitHubRepositoryRole.Write, Now)!);
+
+        ProjectDecider.ObserveGitHubAccess(project, 4181388, "hallmanac", GitHubRepositoryRole.Write, Now.AddDays(1))
+            .Should().BeNull("racing another door that observed the identical role is harmless, not a change");
+    }
+
+    [Fact]
+    public void ObserveGitHubAccess_re_appends_when_the_role_changed()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(ProjectDecider.ObserveGitHubAccess(project, 4181388, "hallmanac", GitHubRepositoryRole.Write, Now)!);
+
+        ProjectDecider.ObserveGitHubAccess(project, 4181388, "hallmanac", GitHubRepositoryRole.Admin, Now.AddDays(1))
+            .Should().NotBeNull("a role granted or revoked since the last observation is exactly the change worth recording");
+    }
+
+    /// <summary>
+    /// The role mirror records a read-only collaborator exactly (idea 202383dc, A2b's own test
+    /// list) — the one shape that most needs to survive the round trip untouched, since it is the
+    /// role a write-checking mistake would most easily promote.
+    /// </summary>
+    [Fact]
+    public void ObserveGitHubCollaborators_records_a_read_only_collaborator_exactly()
+    {
+        ProjectAggregate project = RegisteredProject();
+        GitHubCollaboratorRole readOnly = new(99, "outside-reviewer", GitHubRepositoryRole.Read);
+
+        ProjectGitHubCollaboratorsObserved? observed = ProjectDecider.ObserveGitHubCollaborators(project, [readOnly], Now);
+
+        observed.Should().NotBeNull();
+        observed!.Collaborators.Should().ContainSingle().Which.Should().Be(readOnly);
+        observed.Collaborators.Single().Role.HasPush.Should().BeFalse("read never carries push");
+    }
+
+    /// <summary>
+    /// A repository with genuinely no collaborators observes as an empty list, the same default
+    /// the aggregate already carries before anything was ever read — so the set comparison alone
+    /// would see "unchanged" and never append, leaving <c>GitHubCollaboratorsObservedAt</c> stuck
+    /// at null forever even though the roster was, in fact, just read.
+    /// </summary>
+    [Fact]
+    public void ObserveGitHubCollaborators_records_the_first_observation_even_when_the_roster_is_empty()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        ProjectDecider.ObserveGitHubCollaborators(project, [], Now)
+            .Should().NotBeNull("an empty roster's first observation is still an observation, and must set the observed-at sentinel");
+    }
+
+    [Fact]
+    public void ObserveGitHubCollaborators_is_not_re_appended_when_the_roster_is_unchanged()
+    {
+        ProjectAggregate project = RegisteredProject();
+        GitHubCollaboratorRole[] roster = [new(1, "brian", GitHubRepositoryRole.Admin), new(2, "alex", GitHubRepositoryRole.Write)];
+        project.Apply(ProjectDecider.ObserveGitHubCollaborators(project, roster, Now)!);
+
+        // Reordered, not merely repeated: GitHub's own list order carries no meaning, and a plain
+        // reorder of the identical membership must never read as a change.
+        ProjectDecider.ObserveGitHubCollaborators(project, [.. roster.Reverse()], Now.AddDays(1))
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void ObserveGitHubCollaborators_re_appends_when_a_role_changed()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.Apply(ProjectDecider.ObserveGitHubCollaborators(
+            project, [new GitHubCollaboratorRole(1, "brian", GitHubRepositoryRole.Write)], Now)!);
+
+        ProjectDecider.ObserveGitHubCollaborators(
+                project, [new GitHubCollaboratorRole(1, "brian", GitHubRepositoryRole.Admin)], Now.AddDays(1))
+            .Should().NotBeNull("a promoted or demoted collaborator is exactly the change worth recording");
+    }
+
     private static ProjectAggregate RegisteredProject()
     {
         ProjectAggregate project = new();
