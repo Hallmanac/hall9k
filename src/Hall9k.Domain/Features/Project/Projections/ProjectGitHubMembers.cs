@@ -22,9 +22,12 @@ public sealed record ProjectGitHubMemberView(long AccountId, string Login, GitHu
 /// <para>
 /// A member missing from a later, more current collaborator list is left exactly as last observed
 /// rather than removed: a revocation-aware mirror is a later piece (idea 202383dc, A2b's own list
-/// parks GitHub key registration and account switching the identical way), and a stale
-/// <see cref="ProjectGitHubMemberView.LastObservedAt"/> is itself the honest signal that this row
-/// has not been reconfirmed since that date.
+/// parks GitHub key registration and account switching the identical way). Both events are appended
+/// only when something about the member actually changed (<see cref="Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ObserveGitHubAccess"/>/
+/// <see cref="Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ObserveGitHubCollaborators"/>), so
+/// <see cref="ProjectGitHubMemberView.LastObservedAt"/> is the time of that member's last recorded
+/// change, not the time it was last read: a member re-read unchanged on every later sweep still
+/// shows the date of its first observation.
 /// </para>
 /// </summary>
 public sealed class ProjectGitHubMembers
