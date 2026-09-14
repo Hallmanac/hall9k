@@ -6275,7 +6275,7 @@ public sealed class ReviewEngine(
                 IReadOnlyList<BoundaryApprovalRecord> priorBoundaryApprovals,
                 IReadOnlyList<HumanFixRecord> priorHumanFixes) =
             await LoadPriorRulingsAndInteractionsAsync(query, taskId, cancellationToken);
-        // The owner's standing voice preference (PLACEHOLDER-ef2ba8b3), read here so a prompt this
+        // The owner's standing voice preference (#193), read here so a prompt this
         // engine dispatches which asks a session to write text under the owner's login names the
         // same skill the dispatching launcher would have. Null when the record is missing, which
         // renders every seam exactly as it renders for an owner who named none.
@@ -7437,7 +7437,7 @@ public sealed class ReviewEngine(
         int? AlreadyRoutedInCycle = null, bool IsSweep = false);
 
     /// <param name="VoiceSkill">
-    /// The owner's own voice skill, when they named one (PLACEHOLDER-ef2ba8b3) — read once with the
+    /// The owner's own voice skill, when they named one (#193) — read once with the
     /// rest of this context because it is a standing preference, not something a session can change
     /// mid-run. Null for an owner who named none, or whose record could not be read.
     /// </param>

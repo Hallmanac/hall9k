@@ -807,7 +807,7 @@ public static class WorkPromptBuilder
     /// The owner's own voice skill, when they named one — rendered as one more line inside the
     /// Whose voice bullet below, immediately after the skill-order sentences it qualifies, and
     /// swapping that bullet's own prose-authority sentence for the voiced one so the two do not
-    /// contradict each other (PLACEHOLDER-ef2ba8b3). Null for an owner who named none, which
+    /// contradict each other (#193). Null for an owner who named none, which
     /// renders this step exactly as it rendered before the preference existed.
     /// </param>
     private static void AppendPullRequestSummaryStep(
@@ -893,7 +893,7 @@ public static class WorkPromptBuilder
 
     /// <summary>
     /// One line naming the owner's own voice skill at a seam where this session is about to write
-    /// text a human will read as the owner's (PLACEHOLDER-ef2ba8b3). The daemon already makes the
+    /// text a human will read as the owner's (#193). The daemon already makes the
     /// owner's user-level skills visible to every session it launches, so the gap this closes is
     /// only that no seam NAMED one: a session may or may not pick a skill up from its description
     /// alone, and "load this, then write" is the one instruction that does not depend on it doing so.

@@ -161,7 +161,7 @@ public static class AgentPromptBuilder
     /// parameter for why <c>origin/&lt;parent&gt;</c> cannot be named there on a stacked child.
     /// </param>
     /// <param name="voiceSkill">
-    /// The owner's own voice skill, when they named one (PLACEHOLDER-ef2ba8b3): this lap writes
+    /// The owner's own voice skill, when they named one (#193): this lap writes
     /// in-thread replies, a top-level comment answering a review body, a drafted reply for a
     /// standing-review disagreement, and its own commit messages, all under the owner's login, so
     /// all three of this prompt's text-writing seams name it. Null for an owner who named none.
@@ -1513,7 +1513,7 @@ public static class AgentPromptBuilder
     /// <param name="voiceSkill">
     /// The owner's own voice skill, when they named one: a commit message is authored history read
     /// under the owner's login exactly as a pull request body is, so this seam names the skill too
-    /// (PLACEHOLDER-ef2ba8b3). Rendered on both style arms, since both end in commit messages
+    /// (#193). Rendered on both style arms, since both end in commit messages
     /// somebody writes.
     /// </param>
     private static void AppendCommitStyleRules(
@@ -3124,7 +3124,7 @@ public static class AgentPromptBuilder
         // The same artifact the build session's own pull-request summary step produces — a
         // PR SUMMARY: block the platform puts verbatim into the pull request body — so it names
         // the owner's voice skill on the same terms that seam does. Beyond the seams
-        // PLACEHOLDER-ef2ba8b3 enumerates, and included because a refreshed body written in a
+        // #193 enumerates, and included because a refreshed body written in a
         // different voice than the one it replaces is exactly the inconsistency this feature
         // exists to remove (self-review, blast-radius sweep).
         AppendOwnerVoiceRule(prompt, "  ", voiceSkill, CodeReviewVoiceContext);

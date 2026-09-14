@@ -16,7 +16,7 @@ public sealed class OwnerAggregate
 
     /// <summary>
     /// The skill this owner writes in, named by its directory name and never copied here
-    /// (PLACEHOLDER-ef2ba8b3). Every prompt seam where a session composes text a human will read
+    /// (#193). Every prompt seam where a session composes text a human will read
     /// as this owner's — a pull request description, a review-thread reply, a commit message, a
     /// drafted reply — tells the session to load it before writing.
     /// <see cref="VoiceSkillName.None"/> until they name one, which renders every seam exactly as

@@ -32,7 +32,7 @@ public static class MentionFollowUpPromptBuilder
     public const string TemplateDirectory = "mention-followup-prompt-builder";
 
     /// <param name="voiceSkill">
-    /// The owner's own voice skill, when they named one (PLACEHOLDER-ef2ba8b3). Part 5 of what this
+    /// The owner's own voice skill, when they named one (#193). Part 5 of what this
     /// session produces is a drafted reply written first-person as the owner, which is exactly the
     /// text that preference exists for — and it is a draft the owner reads and decides on rather
     /// than anything this session posts, so it names the explainer context.
@@ -112,7 +112,7 @@ public static class MentionFollowUpPromptBuilder
     /// </summary>
     /// <param name="voiceSkill">
     /// The owner's own voice skill, on exactly the terms <see cref="Build"/>'s own parameter states
-    /// (PLACEHOLDER-ef2ba8b3): part 5 of the file this session writes is the identical drafted
+    /// (#193): part 5 of the file this session writes is the identical drafted
     /// reply, written first-person as the owner and read by them before anything is posted, so this
     /// seam names the skill too. Covering one of these two methods and not the other would leave a
     /// mint-time mention answered in the platform's voice and a follow-up mention answered in the

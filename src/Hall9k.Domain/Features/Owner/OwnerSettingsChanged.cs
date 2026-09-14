@@ -10,7 +10,7 @@ namespace Hall9k.Domain.Features.Owner;
 /// </summary>
 /// <param name="VoiceSkill">
 /// The skill whose prose style every prompt seam that writes text a human reads as this owner's
-/// tells the session to load first, by name (PLACEHOLDER-ef2ba8b3). Appended after
+/// tells the session to load first, by name (#193). Appended after
 /// <paramref name="ChangedAt"/> rather than beside its sibling setting so an Owner stream written
 /// before this field deserializes into <see cref="Optional{T}.None"/> — "they never said" — rather
 /// than shifting a positional argument.
