@@ -101,7 +101,7 @@ public sealed class OwnerShowCommand : Hall9kAsyncCommand<OwnerShowCommand.Setti
 
     private static string DescribeGitHubConnection(ConnectionDetails connection) =>
         connection.GitHubAccountId is { } id
-            ? $"{connection.ExternalAccountId.EscapeMarkup()} (#{id})"
+            ? $"{(connection.GitHubLogin ?? connection.ExternalAccountId).EscapeMarkup()} (#{id})"
             : $"{connection.ExternalAccountId.EscapeMarkup()} [dim](unconfirmed)[/]";
 
     private static string DescribePolicy(ReviewRerequestPolicy policy) => ReviewRerequestOption.Describe(

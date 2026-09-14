@@ -13,8 +13,12 @@ public sealed record ProjectGitHubAccount(long Id, string Login);
 /// <summary>
 /// Runs <c>gh</c> as a specific project's own GitHub account — never whichever account the
 /// machine's <c>gh</c> happens to be logged into right now (idea 202383dc, A2b, item 4). The
-/// account is the project's registered GitHub connection (<see cref="ConnectionDetails.ExternalAccountId"/>);
-/// the token for it is read fresh, per call, with <c>gh auth token --user &lt;login&gt;</c> — live
+/// account is the project's registered GitHub connection's own confirmed identity
+/// (<see cref="ConnectionDetails.GitHubAccountId"/>/<see cref="ConnectionDetails.GitHubLogin"/>,
+/// observed together by the same GitHub read — never the registration-time
+/// <see cref="ConnectionDetails.ExternalAccountId"/> placeholder, which can go stale the moment
+/// the machine's <c>gh</c> logs into a different login than the one the connection first registered
+/// under); the token for it is read fresh, per call, with <c>gh auth token --user &lt;login&gt;</c> — live
 /// as of gh 2.100 (confirmed 2026-09-12): it hands out a named account's token without touching
 /// the machine's own <c>gh auth</c> selection — and passed to the wrapped command as the
 /// <c>GH_TOKEN</c> environment variable for that one invocation alone. Nothing here runs
@@ -63,9 +67,9 @@ public sealed class ProjectGitHubClient(EnvironmentProcessRunner? runner = null,
         ConnectionDetails? connection = await session.LoadAsync<ConnectionDetails>(project.ConnectionId, cancellationToken);
         return connection is { } found
             && found.Provider == WorkItemProvider.GitHub
-            && found.ExternalAccountId.IsNotBlank()
             && found.GitHubAccountId is { } accountId
-                ? new ProjectGitHubAccount(accountId, found.ExternalAccountId)
+            && found.GitHubLogin.IsNotBlank()
+                ? new ProjectGitHubAccount(accountId, found.GitHubLogin)
                 : throw new DomainValidationException(
                     $"Project '{project.Name}' has no confirmed GitHub account to act as (h9k connection "
                     + "list shows what is registered). Run 'gh auth login', then h9k project add or h9k "
