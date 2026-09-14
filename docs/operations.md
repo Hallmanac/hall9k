@@ -342,6 +342,12 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
     └── handoff.md              what this run hands down in turn
 ```
 
+`recipes/orchestrator.md` sets the orchestrator window's default operator voice (plain
+language, one idea per paragraph, a scenario before any criteria walk), which stays quiet on
+routine monitor events by default: no reply to a routine one, and what happened rolls into one
+summary about every three hours grouped by task, while anything actionable is still reported at
+once.
+
 A task's directory moves into `tasks/_archive/` the moment it is terminal — true closeout (its
 pull request merged and the closeout monitor observed it, not merely `Done` with a pull request
 still under review) or abandoned — and moves back out once it is reopened and its current run is
