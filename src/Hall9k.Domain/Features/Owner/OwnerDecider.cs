@@ -36,4 +36,14 @@ public static class OwnerDecider
 
         return new OwnerSettingsChanged(owner.Id, reviewRerequest, changedAt);
     }
+
+    public static OwnerRootClaimed ClaimRoot(OwnerAggregate owner, string rootFingerprint, bool verified, DateTimeOffset claimedAt)
+    {
+        if (rootFingerprint.IsBlank())
+        {
+            throw new DomainValidationException("An owner's root claim needs the fingerprint it is claiming.");
+        }
+
+        return new OwnerRootClaimed(owner.Id, rootFingerprint, verified, claimedAt);
+    }
 }
