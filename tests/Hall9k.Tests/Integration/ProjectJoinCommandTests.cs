@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Identity;
@@ -284,6 +285,32 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         ProcessRunner failingRunner = (_, _, _, _) =>
             Task.FromResult(new ProcessResult(1, string.Empty, "ssh-keygen: command not found"));
         NodeKeyStore brokenKeyStore = new(failingRunner);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        Func<Task> act = () => ProjectJoinCommand.RunAsync(session, project, claimedOwnerOverride: null, ledger, brokenKeyStore, cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*h9k project join*");
+        ledger.Writes.Should().BeEmpty("a node without a key never reaches a ledger write");
+    }
+
+    /// <summary>
+    /// A non-zero exit is not the only way ssh-keygen can fail this node: when it is not on PATH
+    /// at all, .NET's real process runner (ExternalProcess.RunAsync) throws Win32Exception before
+    /// a ProcessResult ever exists to check an exit code against — starting the process happens
+    /// outside any try block there. This drives NodeKeyStore through that exact failure mode
+    /// rather than the exit-code stand-in above, so a regression that lets Win32Exception escape
+    /// unhandled is caught here instead of surfacing as a raw crash in production (adversarial
+    /// review, cycle 1, medium).
+    /// </summary>
+    [Fact]
+    public async Task A_node_without_ssh_keygen_on_path_is_refused_naming_project_join_and_writes_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+        ProcessRunner missingToolRunner = (_, _, _, _) =>
+            throw new Win32Exception(2, "The system cannot find the file specified");
+        NodeKeyStore brokenKeyStore = new(missingToolRunner);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         Func<Task> act = () => ProjectJoinCommand.RunAsync(session, project, claimedOwnerOverride: null, ledger, brokenKeyStore, cts.Token);

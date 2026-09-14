@@ -122,8 +122,8 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         {
             throw new DomainValidationException(
                 "A ledger write needs the writing node's own signing key — signing is mandatory for "
-                + "every ledger commit, not optional. Pass a LedgerSigningKey for this node (see "
-                + "NodeKeyStore.EnsureAsync).");
+                + "every ledger commit, not optional. Pass a LedgerSigningKey for this node: "
+                + "h9k project join generates and registers one.");
         }
     }
 

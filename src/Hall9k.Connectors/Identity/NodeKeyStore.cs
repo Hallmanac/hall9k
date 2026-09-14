@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
@@ -23,7 +25,7 @@ public sealed record NodeSigningKey(string PrivateKeyPath, string PublicKeyLine,
 /// On Windows that has to be the <c>ssh-keygen.exe</c> Git for Windows ships with its own
 /// installation, since there is no guaranteed system OpenSSH otherwise.
 /// </summary>
-public sealed class NodeKeyStore(ProcessRunner? runner = null)
+public sealed partial class NodeKeyStore(ProcessRunner? runner = null)
 {
     private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
 
@@ -59,35 +61,31 @@ public sealed class NodeKeyStore(ProcessRunner? runner = null)
 
         if (!File.Exists(privateKeyPath))
         {
-            ProcessResult result = await runner(
-                "ssh-keygen",
+            ProcessResult result = await RunSshKeygenAsync(
                 ["-t", "ed25519", "-f", privateKeyPath, "-N", string.Empty, "-C", $"hall9k-node-{nodeId}"],
-                directory,
-                cancellationToken);
+                directory, cancellationToken);
             if (result.ExitCode != 0)
             {
                 throw new DomainValidationException(
                     "Could not generate this node's signing key with ssh-keygen "
                     + $"({result.StandardError.Trim()}). Signing is mandatory — every ledger commit is "
                     + "signed with this node's own key — so a node without one is refused: install "
-                    + "ssh-keygen (on Windows, Git for Windows puts it on PATH) and re-run h9k project "
-                    + "join named.");
+                    + "ssh-keygen (on Windows, Git for Windows puts it on PATH) and re-run h9k project join.");
             }
         }
         else
         {
-            // The private key already exists (from an earlier join, or from the branch above a
-            // moment ago). Its public half is always derived fresh from the private key here
-            // rather than trusted from whatever .pub already sits on disk — a stale or tampered
-            // .pub file would otherwise get registered and written to root.yaml/node.yaml while
-            // git actually signs commits with the different key underneath it, leaving the ledger
-            // unverifiable under its advertised identity. This also sidesteps ssh-keygen's own
-            // overwrite prompt a fresh -f generation would trigger against an existing private key
-            // — a prompt this runner's caller never sees (stdin is not redirected), so the command
-            // would hang until it times out, or silently regenerate the key if something did
-            // answer y (independent pre-PR review, cycle 1, conformance and adversarial lenses,
-            // medium).
-            ProcessResult result = await runner("ssh-keygen", ["-y", "-f", privateKeyPath], directory, cancellationToken);
+            // The private key already exists, from an earlier join. Its public half is always
+            // derived fresh from the private key here rather than trusted from whatever .pub
+            // already sits on disk — a stale or tampered .pub file would otherwise get registered
+            // and written to root.yaml/node.yaml while git actually signs commits with the
+            // different key underneath it, leaving the ledger unverifiable under its advertised
+            // identity. This also sidesteps ssh-keygen's own overwrite prompt a fresh -f
+            // generation would trigger against an existing private key — a prompt this runner's
+            // caller never sees (stdin is not redirected), so the command would hang until it
+            // times out, or silently regenerate the key if something did answer y (independent
+            // pre-PR review, cycle 1, conformance and adversarial lenses, medium).
+            ProcessResult result = await RunSshKeygenAsync(["-y", "-f", privateKeyPath], directory, cancellationToken);
             if (result.ExitCode != 0)
             {
                 throw new DomainValidationException(
@@ -114,6 +112,34 @@ public sealed class NodeKeyStore(ProcessRunner? runner = null)
 
         string publicKeyLine = (await File.ReadAllTextAsync(publicKeyPath, cancellationToken)).Trim();
         return new NodeSigningKey(privateKeyPath, publicKeyLine, Fingerprint(publicKeyLine));
+    }
+
+    /// <summary>
+    /// Runs ssh-keygen through <see cref="runner"/>, translating the tool being missing from
+    /// <c>PATH</c> entirely into the same kind of refusal a non-zero exit already gets, rather
+    /// than letting it escape as a raw, unhandled exception. The real <see cref="ProcessRunner"/>
+    /// (<c>ExternalProcess.RunAsync</c>) starts the child process outside any try block, so a
+    /// missing executable throws <see cref="Win32Exception"/> before ever producing a
+    /// <see cref="ProcessResult"/> to check an exit code against — a node without ssh-keygen on
+    /// PATH, or a minimal container image without openssh-client, would otherwise crash with a
+    /// stack trace instead of the "install ssh-keygen and re-run" guidance every other refusal
+    /// here gives (adversarial review, cycle 1, medium).
+    /// </summary>
+    private async Task<ProcessResult> RunSshKeygenAsync(
+        IReadOnlyList<string> arguments, string workingDirectory, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await runner("ssh-keygen", arguments, workingDirectory, cancellationToken);
+        }
+        catch (Win32Exception exception)
+        {
+            throw new DomainValidationException(
+                "Could not run ssh-keygen — it is not on PATH "
+                + $"({exception.Message}). Signing is mandatory — every ledger commit is signed with "
+                + "this node's own key — so a node without one is refused: install ssh-keygen (on "
+                + "Windows, Git for Windows puts it on PATH) and re-run h9k project join.");
+        }
     }
 
     /// <summary>
@@ -160,4 +186,16 @@ public sealed class NodeKeyStore(ProcessRunner? runner = null)
         byte[] hash = SHA256.HashData(blob);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
+
+    /// <summary>
+    /// Whether <paramref name="value"/> has the shape <see cref="Fingerprint"/> produces: exactly
+    /// 64 lowercase hex characters. The one place this repo needs to tell a fingerprint apart from
+    /// a name, an email fragment, or an owner's internal Guid — <c>h9k owner show</c>,
+    /// <c>h9k task assign</c>, and every other place an owner is named by a human now that the
+    /// fingerprint is the owner id everywhere a human or another node reads one (Decisions Log #190).
+    /// </summary>
+    public static bool IsFingerprint(string value) => FingerprintPattern().IsMatch(value);
+
+    [GeneratedRegex(@"\A[0-9a-f]{64}\z")]
+    private static partial Regex FingerprintPattern();
 }
