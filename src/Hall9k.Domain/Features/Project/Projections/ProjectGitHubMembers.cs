@@ -23,11 +23,14 @@ public sealed record ProjectGitHubMemberView(long AccountId, string Login, GitHu
 /// A member missing from a later, more current collaborator list is left exactly as last observed
 /// rather than removed: a revocation-aware mirror is a later piece (idea 202383dc, A2b's own list
 /// parks GitHub key registration and account switching the identical way). Both events are appended
-/// only when something about the member actually changed (<see cref="Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ObserveGitHubAccess"/>/
-/// <see cref="Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ObserveGitHubCollaborators"/>), so
-/// <see cref="ProjectGitHubMemberView.LastObservedAt"/> is the time of that member's last recorded
-/// change, not the time it was last read: a member re-read unchanged on every later sweep still
-/// shows the date of its first observation.
+/// only when something changed since the last observation
+/// (<see cref="Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ObserveGitHubAccess"/>/
+/// <see cref="Hall9k.Domain.Features.Project.Handlers.ProjectDecider.ObserveGitHubCollaborators"/>),
+/// but that comparison is per event, not per member: the own-role event carries one member and so
+/// stamps only that one, while the collaborator event carries the whole roster and is compared (and
+/// appended) as one (account, role) set — so a roster reread that changes even a single entry
+/// stamps <see cref="ProjectGitHubMemberView.LastObservedAt"/> to that read's own time for every
+/// member the roster lists, not only the one that actually changed.
 /// </para>
 /// </summary>
 public sealed class ProjectGitHubMembers
