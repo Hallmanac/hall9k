@@ -15,9 +15,12 @@ namespace Hall9k.Domain.Features.Connection;
 /// </para>
 /// <para>
 /// Read at bootstrap (<see cref="Hall9k.Domain.Infrastructure.Bootstrap.NodeBootstrap"/>, the
-/// first time this install's GitHub connection is created) and at every daemon start
-/// (<c>NodeContext.InitializeAsync</c>) — the two moments nothing else already triggers a GitHub
-/// read for, unlike Jira's <c>TrackerClaimGate</c>, which reads lazily on first claim-gate check.
+/// first time this install's GitHub connection is created) and again at <c>h9k project add</c>
+/// (<c>NodeBootstrap.RefreshGitHubIdentityAsync</c>) — the one other moment nothing else already
+/// triggers a GitHub read for, unlike Jira's <c>TrackerClaimGate</c>, which reads lazily on first
+/// claim-gate check. A daemon-start refresh was tried and reverted (<c>NodeContext.cs</c>'s own
+/// comment on the removal): it shelled to the real <c>gh</c> on every call with no seam a test
+/// could pin instead, which broke every integration test's isolation from the real network.
 /// </para>
 /// </summary>
 public sealed record ConnectionGitHubIdentityObserved(
