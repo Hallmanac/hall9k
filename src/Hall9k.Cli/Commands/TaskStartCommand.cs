@@ -172,7 +172,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // tree-identity check cannot see because a mixed reset never moves the tree.
         // voiceSkill: this session closes with a pull request summary the platform posts under the
         // owner's login, so it names the owner's own voice skill exactly as a dispatcher-launched
-        // build does (PLACEHOLDER-ef2ba8b3).
+        // build does (#193).
         string prompt = WorkPromptBuilder.Build(
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
             isInteractive: false, isDeliberateHeadlessStart: true, isHandback: taskDetails.ResumesFromHandback,

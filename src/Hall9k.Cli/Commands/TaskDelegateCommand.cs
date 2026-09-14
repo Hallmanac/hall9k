@@ -479,7 +479,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             baseBranch: run.BaseBranchOr(project.BaseBranch), baseCommit: run.BaseCommit,
             // The contractor closes with a pull request summary the platform posts under the
             // owner's login, so it gets the owner's own voice skill exactly as a headless dispatch
-            // does (PLACEHOLDER-ef2ba8b3).
+            // does (#193).
             voiceSkill: (await session.LoadAsync<OwnerDetails>(context.OwnerId, cancellationToken))?.VoiceSkill);
 
         return new DelegationPlan(

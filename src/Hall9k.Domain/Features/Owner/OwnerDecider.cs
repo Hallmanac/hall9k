@@ -17,7 +17,7 @@ public static class OwnerDecider
 
     /// <param name="voiceSkill">
     /// The skill name every prompt seam that writes text a human reads as this owner's tells the
-    /// session to load (PLACEHOLDER-ef2ba8b3). <see cref="VoiceSkillName.None"/> is a legal
+    /// session to load (#193). <see cref="VoiceSkillName.None"/> is a legal
     /// explicit value on the same terms Unknown is above: it clears the preference, which is what
     /// <c>--clear-voice-skill</c> records. Whether the name resolves to a skill on THIS machine is
     /// deliberately not checked here — that is a filesystem question the CLI answers where the

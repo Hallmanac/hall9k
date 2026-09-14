@@ -413,7 +413,7 @@ public sealed class RunLauncher(
             // The commit style resolves project-over-platform (Decisions Log #26).
             CommitStyle commitStyle = CommitStyle.Resolve(project.CommitStyle, options.Value.DefaultCommitStyle);
             // The owner's standing voice preference, read once so every prompt this method can
-            // assemble below names the same skill (PLACEHOLDER-ef2ba8b3). Inside the try, like every
+            // assemble below names the same skill (#193). Inside the try, like every
             // other read this dispatch makes, so a transient failure on it is recorded as a launch
             // failure rather than thrown past the run this method just opened a stream for. Null
             // when the owner record is not readable at all, which renders every seam exactly as it
@@ -729,7 +729,7 @@ public sealed class RunLauncher(
                 facts.Repository, facts.Number, worktree.Path, baseBranch: baseBranch, comment: comment,
                 priorReport: priorReport,
                 // The drafted reply this session produces is written first-person as the owner, so
-                // the seam names their own voice skill when they have one (PLACEHOLDER-ef2ba8b3).
+                // the seam names their own voice skill when they have one (#193).
                 voiceSkill: (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill);
 
             // Re-checked here, immediately before the actual spawn, rather than trusting the
