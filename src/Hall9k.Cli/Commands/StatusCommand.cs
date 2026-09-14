@@ -1,7 +1,10 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -57,6 +60,8 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
 
         using var store = CliStore.Open();
         await using IQuerySession session = store.QuerySession();
+
+        await WriteIdentityLineAsync(session, cancellationToken);
 
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
             session, DateTimeOffset.UtcNow, cancellationToken);
@@ -271,6 +276,45 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             "\n[dim]Browse it all:[/] h9k task list --include-archived "
             + "[dim](--project <name>, --state <state>) · per project:[/] h9k project list");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// This machine's own node identity (idea 202383dc, A2a): its key fingerprint, once
+    /// h9k project join has generated one, and the owner root that fingerprint currently claims.
+    /// Degraded rather than fatal on a database hiccup, exactly as the other panes below are.
+    /// </summary>
+    private static async Task WriteIdentityLineAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string machineName = Environment.MachineName;
+            NodeDetails? node = (await session.Query<NodeDetails>()
+                .Where(n => n.MachineName == machineName)
+                .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
+            if (node is null)
+            {
+                return;
+            }
+
+            OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(node.OwnerId, cancellationToken);
+            string key = node.KeyFingerprint ?? "not generated — h9k project join";
+            string root = owner?.RootFingerprint is { } fingerprint
+                ? fingerprint + (owner.RootFingerprintVerified ? string.Empty : " (unverified)")
+                : "not claimed — h9k project join";
+            if (node.PublicKey is { } publicKeyLine)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]node {DomainId.Short(node.Id)} · key {key} · public key {publicKeyLine} · owner root {root}[/]");
+            }
+            else
+            {
+                AnsiConsole.MarkupLineInterpolated($"[dim]node {DomainId.Short(node.Id)} · key {key} · owner root {root}[/]");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]identity: unavailable ({exception.Message})[/]");
+        }
     }
 
     /// <summary>
