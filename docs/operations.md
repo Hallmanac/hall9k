@@ -189,8 +189,18 @@ Then, four questions, answered in order, stopping at the first one that fails (D
 1. **Is a connection string configured at all?** If not, that is the entire answer.
 2. **Is it reachable?** "Nothing is listening" and "reached it, credentials rejected" are named
    separately — completely different fixes.
-3. **Is the schema there?** Marten creates its own tables on first use, so this is mostly an
-   offer: *shall I set that up now?*
+3. **Is the schema there, and is it current?** Marten creates missing tables on first use, so a
+   schema not there yet is mostly an offer: *shall I set that up now?* A schema that is there but
+   predates this build (event stamping, PLAN.md §16 #192, the first schema change to alter an
+   existing table rather than only add one) is a different answer: `AutoCreate.CreateOnly` — every
+   ordinary store this platform opens with — refuses outright to alter an object already there, so
+   an upgraded install whose schema predates that change fails every database-touching command
+   with `SchemaMigrationException` until the schema is brought current, pointing at `h9k doctor
+   --yes`. `h9kd` itself also repairs its own schema unconditionally, no prompt, the moment it
+   starts — the path an OS autostart manager takes after a reboot, bypassing the doctor check
+   entirely — so restarting the daemon (`h9k daemon start`, or `h9k update`/`h9k install`'s own
+   restart offer) fixes a stale schema as a side effect even without running `h9k doctor --yes`
+   first.
 4. **Only if nothing was configured** — what is available: a running container runtime, a native
    Postgres already on 5432, a **stopped** `hall9k-postgres` container from a previous session
    ("your database exists, it is just not running"), or — the nicest possible finding — a

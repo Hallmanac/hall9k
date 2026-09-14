@@ -33,18 +33,26 @@ public static class DatabaseDoctor
     /// <paramref name="assumeYes"/> is set (<c>h9k doctor --yes</c>) — without asking at
     /// all, the shape a script or a dispatched agent needs. A session that is neither
     /// interactive nor carrying <paramref name="assumeYes"/> gets a named reason for the
-    /// skip and the flag to re-run with, never a silent fall-through to advice. Returns the
-    /// connection string this process resolved and proved reachable, or <see langword="null"/>
-    /// if it could not. A caller like <c>h9k daemon start</c> needs the string itself, not
-    /// just a yes/no: the process it spawns runs from a different working directory
-    /// (<c>RunPaths.Root</c>), so re-resolving there could walk up for a project override
-    /// file from the wrong place and land on a different answer than the one just checked.
+    /// skip and the flag to re-run with, never a silent fall-through to advice — unless
+    /// <paramref name="staleSchemaRepairedByCaller"/> says the connection string is headed
+    /// somewhere that repairs a stale schema itself before using it (<c>h9kd</c>'s own
+    /// <see cref="EventStoreSchemaGuard.EnsureCurrentAsync"/>, which runs unconditionally
+    /// before the daemon opens its own <c>CreateOnly</c> store): there, a stale-but-present
+    /// schema is treated the same as the always-self-healing missing-schema case below it.
+    /// Returns the connection string this process resolved and proved reachable, or
+    /// <see langword="null"/> if it could not. A caller like <c>h9k daemon start</c> needs the
+    /// string itself, not just a yes/no: the process it spawns runs from a different working
+    /// directory (<c>RunPaths.Root</c>), so re-resolving there could walk up for a project
+    /// override file from the wrong place and land on a different answer than the one just
+    /// checked.
     /// </summary>
-    public static Task<string?> RunAsync(bool offerFixes, bool assumeYes, CancellationToken cancellationToken) =>
-        RunAsync(offerFixes, assumeYes, ExternalProcess.Runner, cancellationToken);
+    public static Task<string?> RunAsync(
+        bool offerFixes, bool assumeYes, CancellationToken cancellationToken, bool staleSchemaRepairedByCaller = false) =>
+        RunAsync(offerFixes, assumeYes, ExternalProcess.Runner, cancellationToken, staleSchemaRepairedByCaller);
 
     internal static async Task<string?> RunAsync(
-        bool offerFixes, bool assumeYes, ProcessRunner runner, CancellationToken cancellationToken)
+        bool offerFixes, bool assumeYes, ProcessRunner runner, CancellationToken cancellationToken,
+        bool staleSchemaRepairedByCaller = false)
     {
         ConnectionStringResolution resolution = Hall9kDatabase.Resolve();
         if (resolution.Origin == ConnectionStringOrigin.PlatformConfigFileMalformed)
@@ -77,10 +85,12 @@ public static class DatabaseDoctor
                 return null;
             }
 
-            return await CheckReachabilityAndSchemaAsync(configured, resolution, offerFixes, assumeYes, runner, cancellationToken);
+            return await CheckReachabilityAndSchemaAsync(
+                configured, resolution, offerFixes, assumeYes, runner, cancellationToken, staleSchemaRepairedByCaller);
         }
 
-        return await CheckReachabilityAndSchemaAsync(resolution.Value, resolution, offerFixes, assumeYes, runner, cancellationToken);
+        return await CheckReachabilityAndSchemaAsync(
+            resolution.Value, resolution, offerFixes, assumeYes, runner, cancellationToken, staleSchemaRepairedByCaller);
     }
 
     private static Task<ReachabilityReport> ProbeDefaultConnectionStringAsync(CancellationToken cancellationToken) =>
@@ -146,7 +156,8 @@ public static class DatabaseDoctor
         bool offerFixes,
         bool assumeYes,
         ProcessRunner runner,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool staleSchemaRepairedByCaller)
     {
         ReachabilityReport reachability = await DatabaseReachability.ProbeAsync(connectionString, cancellationToken);
         switch (reachability.Status)
@@ -255,14 +266,30 @@ public static class DatabaseDoctor
                 await ApplySchemaAsync(connectionString);
                 AnsiConsole.MarkupLine("[green]Schema updated.[/]");
             }
+            else if (offerFixes && !AnsiConsole.Profile.Capabilities.Interactive && staleSchemaRepairedByCaller)
+            {
+                // DaemonLifecycle.StartAsync passes true here: the process it is about to spawn
+                // is h9kd itself, and h9kd's own entry point runs
+                // EventStoreSchemaGuard.EnsureCurrentAsync unconditionally, with no prompt, before
+                // it ever opens its own CreateOnly store — so an Update-shaped difference left
+                // unfixed here is not fatal to that caller the way it is to one (h9k doctor,
+                // an ordinary command's own CreateOnly store) that will use the connection string
+                // directly (cycle-1 pre-PR review, adversarial lens: refusing here regardless of
+                // caller left a non-interactive h9k daemon start / h9k update --restart unable to
+                // ever bring the daemon back up after an upgrade, even though launching it would
+                // have fixed the schema on its own).
+                AnsiConsole.MarkupLine(
+                    "[dim]Stdin is not a terminal, so there is nobody to confirm this — but the process this "
+                    + "connection string is headed to repairs its own schema at startup, so this is not fatal "
+                    + "here.[/]");
+            }
             else if (offerFixes && !AnsiConsole.Profile.Capabilities.Interactive)
             {
                 // Unlike the schema-missing branch above, CreateOnly does not fall through to
                 // fixing this on the next command that touches the database — it throws outright
-                // for an Update-shaped difference — so a caller like DaemonLifecycle.StartAsync
-                // that needs a usable connection string, not just a printed warning, must be told
-                // this one is not usable rather than have it returned as though it were (cycle-1
-                // pre-PR review, both lenses).
+                // for an Update-shaped difference — so a caller like h9k doctor itself, which hands
+                // this string to nothing that repairs it downstream, must be told this one is not
+                // usable rather than have it returned as though it were.
                 AnsiConsole.MarkupLine(
                     "[dim]Skipping — stdin is not a terminal, so there is nobody to confirm this. Re-run with "
                     + "h9k doctor --yes to update it right now.[/]");
@@ -649,12 +676,21 @@ public static class DatabaseDoctor
     }
 
     /// <summary>
-    /// Whether the schema already there still matches what this build configures — question
-    /// 3's second half, asked only once <see cref="DatabaseReachability.SchemaPresentAsync"/>
-    /// has already answered yes to "is it there at all": that check is a bare table-existence
-    /// probe and stays one, so this is the one place a genuine column-level (or other object-
-    /// level) difference is actually detected, via the same migration diff
-    /// <see cref="ApplySchemaAsync"/> applies.
+    /// Whether the schema already there is one <c>AutoCreate.CreateOnly</c> — every ordinary
+    /// store this platform opens with — can use as-is, question 3's second half, asked only
+    /// once <see cref="DatabaseReachability.SchemaPresentAsync"/> has already answered yes to
+    /// "is it there at all": that check is a bare table-existence probe and stays one, so this
+    /// is the one place a genuine column-level (or other object-level) difference is actually
+    /// detected, via the same migration diff <see cref="ApplySchemaAsync"/> applies.
+    /// <see cref="SchemaPatchDifference.Create"/> — configured objects missing, nothing existing
+    /// altered — is current enough: <c>CreateOnly</c> creates a missing table lazily on its own
+    /// first use, the same as the schema-entirely-missing branch above this method's own caller
+    /// already treats as self-healing. Only <see cref="SchemaPatchDifference.Update"/> (an
+    /// existing object needs altering) or <see cref="SchemaPatchDifference.Invalid"/> is
+    /// genuinely stale: those are exactly what <c>CreateOnly</c> refuses outright (cycle-1
+    /// pre-PR review, conformance lens — the previous version of this method treated a young
+    /// install with one lazily-created table not yet touched, such as <c>EpicDetails</c>, as
+    /// stale for no reason).
     /// </summary>
     private static async Task<bool> SchemaCurrentAsync(string connectionString, CancellationToken cancellationToken)
     {
@@ -664,7 +700,7 @@ public static class DatabaseDoctor
             opts.ConfigureHall9k(AutoCreate.None);
         });
         SchemaMigration migration = await store.Storage.Database.CreateMigrationAsync(cancellationToken);
-        return migration.Difference == SchemaPatchDifference.None;
+        return migration.Difference is SchemaPatchDifference.None or SchemaPatchDifference.Create;
     }
 
     /// <summary>
