@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Ledger;
+using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Tests.Fakes;
 
@@ -31,6 +32,7 @@ internal sealed class FakeLedger : ILedger
     public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken)
     {
         RequireRegistered(request.RefName);
+        RequireSigningKey(request.SigningKey);
         (string RepositoryPath, string RefName, string Path) key = (request.RepositoryPath, request.RefName, request.Path);
         string? currentBlobId = _files.TryGetValue(key, out StoredFile? existing) ? existing.BlobId : null;
 
@@ -54,6 +56,16 @@ internal sealed class FakeLedger : ILedger
                 $"{refName} is not registered in {nameof(LedgerRefRegistry)} — this fake enforces the "
                 + "same gate the real GitLedger does.",
                 nameof(refName));
+        }
+    }
+
+    private static void RequireSigningKey(LedgerSigningKey? signingKey)
+    {
+        if (signingKey is null)
+        {
+            throw new DomainValidationException(
+                "A ledger write needs the writing node's own signing key — this fake enforces the "
+                + "same mandatory-signing gate the real GitLedger does.");
         }
     }
 }
