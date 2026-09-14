@@ -199,6 +199,7 @@ public static class EventScopeRegistry
         // ephemeral"). Every message and inbox event stays on the node that appended it; only
         // project-scoped facts (the task or idea a message is about) ever travel, and never
         // through a message itself.
+        [typeof(MessageQueued)] = EventScope.NodeScoped,
         [typeof(MessageSent)] = EventScope.NodeScoped,
         [typeof(MessageSendFailed)] = EventScope.NodeScoped,
         [typeof(MessageResent)] = EventScope.NodeScoped,

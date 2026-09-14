@@ -15,6 +15,18 @@ public sealed class MessageAggregate
     public Guid FromNodeId { get; private set; }
     public long Seq { get; private set; }
 
+    /// <summary>
+    /// The envelope's own timestamp — set once, at <see cref="Apply(MessageQueued)"/>, and never
+    /// moved by a later flush attempt or retry: the wire content a flush re-encodes must stay
+    /// byte-for-byte identical across retries, and the sweep's own squash-by-age filter
+    /// (idea 202383dc, M1b) reads this rather than <see cref="SentAt"/> for the same reason —
+    /// how long this envelope has actually existed, not when this node last tried to land it.
+    /// </summary>
+    public DateTimeOffset QueuedAt { get; private set; }
+
+    /// <summary>Null until a flush lands this envelope in the outbox transport — the flush
+    /// sweep's own "still needs flushing" query is exactly <c>SentAt is null</c>, which is true
+    /// both for a freshly queued envelope and for one whose last flush attempt failed.</summary>
     public DateTimeOffset? SentAt { get; private set; }
     public bool SendFailed { get; private set; }
     public string? SendFailureReason { get; private set; }
@@ -28,6 +40,19 @@ public sealed class MessageAggregate
     public string? Body { get; private set; }
 
     public DateTimeOffset? HandledAt { get; private set; }
+
+    public void Apply(MessageQueued @event)
+    {
+        Id = MessageStreamId.ForMessage(@event.FromNodeId, @event.Seq);
+        FromNodeId = @event.FromNodeId;
+        Seq = @event.Seq;
+        QueuedAt = @event.At;
+        FromOwnerFingerprint = @event.FromOwner;
+        To = @event.To;
+        About = @event.About;
+        Kind = @event.Kind;
+        Body = @event.Body;
+    }
 
     public void Apply(MessageSent @event)
     {
