@@ -24,11 +24,14 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
     /// Reads from an explicit position instead of this node's own persisted cursor for the sender —
     /// a re-fetch (a manual re-sync, a lower bound forced after some outage) rather than this
     /// sweep's ordinary incremental read. The persisted cursor itself only ever advances, never
-    /// retreats, and only to a seq this sweep actually saw the transport return: an override below
-    /// the cursor can re-deliver an envelope already stored, and the per-message duplicate check
-    /// below is exactly what keeps that re-delivery from double-recording it; an override above the
-    /// cursor that happens to find nothing new leaves the cursor exactly where it was, rather than
-    /// silently skipping ahead over whatever real envelopes might sit between the two.
+    /// retreats, and only to a seq this sweep actually saw the transport return: an override at or
+    /// below the cursor can re-deliver an envelope already stored, and the per-message duplicate
+    /// check below is exactly what keeps that re-delivery from double-recording it, while the cursor
+    /// still advances normally to whatever this sweep actually saw. An override above the cursor
+    /// deliberately skips whatever sits between the two without this sweep ever asking the transport
+    /// for it, so that gap must never be abandoned: whether the sweep finds nothing past the override
+    /// or finds real envelopes beyond it, the cursor is left exactly where it was, rather than
+    /// silently skipping ahead over content this sweep never looked at.
     /// </param>
     public async Task<MessageInboxSweepResult> ReadFromAsync(
         IDocumentSession session,
@@ -37,8 +40,8 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         Guid myNodeId,
         string myOwnerFingerprint,
         DateTimeOffset now,
-        CancellationToken cancellationToken,
-        long? sinceSeqOverride = null)
+        long? sinceSeqOverride = null,
+        CancellationToken cancellationToken = default)
     {
         Guid inboxStreamId = MessageStreamId.ForInbox(senderNodeId);
         MessageInboxAggregate? inbox =
@@ -52,18 +55,36 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
             logger?.LogWarning(
                 "Sender {SenderNodeId}'s outbox could not be vouched for by that node's own node file — ignored",
                 senderNodeId);
-            AppendInboxEvent(
-                session, inboxStreamId, inbox is not null,
-                MessageInboxDecider.IgnoreSender(senderNodeId, "no node file vouches for this sender's outbox", now));
-            await session.SaveChangesAsync(cancellationToken);
+            if (inbox is null || !inbox.SenderIgnored)
+            {
+                AppendInboxEvent(
+                    session, inboxStreamId, inbox is not null,
+                    MessageInboxDecider.IgnoreSender(senderNodeId, "no node file vouches for this sender's outbox", now));
+                await session.SaveChangesAsync(cancellationToken);
+            }
+
             return new MessageInboxSweepResult(senderNodeId, SenderIgnored: true, EnvelopesConsidered: 0, EnvelopesStored: 0);
         }
 
+        // An override above the persisted cursor deliberately skips whatever sits between the two
+        // without ever asking the transport for it — this sweep must never mistake "found nothing"
+        // or "found something past the gap" for permission to drag the cursor across that
+        // unexamined range, or the skipped envelopes are lost for good the moment this sweep
+        // returns. Only an ordinary sweep (no override, or an override at or below the persisted
+        // cursor — a genuine re-fetch) is ever allowed to move the cursor forward.
+        bool overrideSkipsAhead = sinceSeqOverride is not null && sinceSeqOverride > persistedCursor;
+
+        foreach (long rejectedSeq in read.RejectedSeqs)
+        {
+            logger?.LogWarning(
+                "Envelope {Seq} from sender {SenderNodeId} failed sender verification — refused",
+                rejectedSeq, senderNodeId);
+        }
+
         int stored = 0;
-        // Starts at the persisted cursor, never at readFrom: an override above the persisted
-        // cursor that happens to find nothing new must never drag the cursor forward with it — that
-        // would silently skip every real envelope between the old cursor and the override, forever.
-        // The cursor only ever advances to a seq this sweep actually saw the transport return.
+        // Starts at the persisted cursor, never at readFrom: the cursor only ever advances to a
+        // seq this sweep actually saw the transport return, and only when this sweep was not an
+        // override that skipped ahead over content it never looked at.
         long highestSeqConsidered = persistedCursor;
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
@@ -73,12 +94,21 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
             if (decoded.Outcome != MessageEnvelopeCodec.DecodeOutcome.Parsed)
             {
                 logger?.LogWarning(
-                    "Envelope {Seq} from sender {SenderNodeId} carries an unsupported version {Version} — refused",
-                    raw.Seq, senderNodeId, decoded.Version);
+                    "Envelope {Seq} from sender {SenderNodeId} was refused: {Outcome} (version {Version})",
+                    raw.Seq, senderNodeId, decoded.Outcome, decoded.Version);
                 continue;
             }
 
             MessageEnvelopeV1 envelope = decoded.Envelope!;
+            if (envelope.Seq != raw.Seq || envelope.FromNode != senderNodeId)
+            {
+                logger?.LogWarning(
+                    "Envelope at transport position {Seq} from sender {SenderNodeId} claims a mismatched "
+                    + "identity (seq {ClaimedSeq}, sender {ClaimedSender}) — refused",
+                    raw.Seq, senderNodeId, envelope.Seq, envelope.FromNode);
+                continue;
+            }
+
             if (!envelope.To.Matches(myNodeId, myOwnerFingerprint))
             {
                 continue;
@@ -107,15 +137,30 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
             stored++;
         }
 
-        if (highestSeqConsidered > persistedCursor)
+        // A rejected candidate (a bad signature, a missing introducing commit) was still
+        // inspected, so it counts toward the cursor the same as a stored or skipped one — never
+        // just the highest seq that happened to parse and route, or a rejected candidate at the
+        // tail gets re-inspected on every sweep forever.
+        highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
+
+        bool cursorAdvanced = highestSeqConsidered > persistedCursor && !overrideSkipsAhead;
+        if (cursorAdvanced)
         {
             AppendInboxEvent(
                 session, inboxStreamId, inbox is not null,
                 MessageInboxDecider.AdvanceCursor(senderNodeId, highestSeqConsidered, now));
         }
+        else if (inbox is not null && inbox.SenderIgnored)
+        {
+            // This sweep read the sender's outbox successfully but found nothing new to advance
+            // the cursor to — without this, a prior ignored mark would never clear on its own,
+            // even though the sender is vouched again right now.
+            AppendInboxEvent(session, inboxStreamId, streamExists: true, MessageInboxDecider.ConfirmVouched(senderNodeId, now));
+        }
 
         await session.SaveChangesAsync(cancellationToken);
-        return new MessageInboxSweepResult(senderNodeId, SenderIgnored: false, read.Envelopes.Count, stored);
+        return new MessageInboxSweepResult(
+            senderNodeId, SenderIgnored: false, read.Envelopes.Count + read.RejectedSeqs.Count, stored);
     }
 
     private static void AppendInboxEvent(IDocumentSession session, Guid streamId, bool streamExists, object @event)
