@@ -39,7 +39,7 @@ public sealed class MessageOutbox(IMessageTransport transport)
         }
         catch (Exception exception) when (exception is LedgerPushRejectedException or InvalidOperationException)
         {
-            session.Events.StartStream<MessageAggregate>(streamId, MessageDecider.FailSend(fromNodeId, seq, exception.Message, now));
+            session.Events.StartStream<MessageAggregate>(streamId, MessageDecider.FailSend(envelope, exception.Message, now));
             await session.SaveChangesAsync(cancellationToken);
             throw;
         }

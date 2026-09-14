@@ -46,6 +46,11 @@ public sealed class MessageAggregate
         Seq = @event.Seq;
         SendFailed = true;
         SendFailureReason = @event.Reason;
+        FromOwnerFingerprint = @event.FromOwner;
+        To = @event.To;
+        About = @event.About;
+        Kind = @event.Kind;
+        Body = @event.Body;
     }
 
     public void Apply(MessageResent @event)

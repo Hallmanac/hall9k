@@ -14,14 +14,16 @@ public static class MessageDecider
         return new MessageSent(fromNodeId, seq, at);
     }
 
-    public static MessageSendFailed FailSend(Guid fromNodeId, long seq, string reason, DateTimeOffset at)
+    public static MessageSendFailed FailSend(MessageEnvelopeV1 envelope, string reason, DateTimeOffset at)
     {
         if (reason.IsBlank())
         {
             throw new DomainValidationException("A failed send needs the reason it failed.");
         }
 
-        return new MessageSendFailed(fromNodeId, seq, reason, at);
+        return new MessageSendFailed(
+            envelope.FromNode, envelope.Seq, envelope.FromOwner, envelope.To.Value, envelope.About,
+            envelope.Kind.Value, envelope.Body, reason, at);
     }
 
     public static MessageResent Resend(MessageAggregate message, DateTimeOffset at)
