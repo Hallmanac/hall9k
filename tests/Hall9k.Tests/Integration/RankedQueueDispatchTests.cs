@@ -18,7 +18,7 @@ namespace Hall9k.Tests.Integration;
 
 /// <summary>
 /// The widened queue read, end to end (Decisions Log #188):
-/// <see cref="TaskListItem.FollowUpBranch"/> and <see cref="TaskListItem.RetryBranch"/>, set by
+/// <see cref="TaskListItem.FollowUpBranch"/> and <see cref="TaskListItem.RetryPending"/>, set by
 /// real events on a real stream and selected straight off <c>DispatchEngine.ReadQueueAsync</c>'s
 /// own six-column projection, reach <see cref="ProjectRotation.NextSlot"/> as a
 /// <see cref="TaskRank"/> and decide the claim. This is the one integration test the ranking

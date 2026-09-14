@@ -67,8 +67,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         [Description(
             "Which tier this project's ready work competes in for a FREE dispatch slot (Decisions Log "
             + "#141). Default 'normal', and a single-project node never needs it: free slots rotate — "
-            + "whichever eligible project has gone longest without a dispatch takes the next one, oldest "
-            + "task first within it — which is starvation-proof with no setting at all. 'high' is FOCUS: it "
+            + "whichever eligible project has gone longest without a dispatch takes the next one, which of "
+            + "its own tasks takes it decided by rank then oldest assignment (Decisions Log #188) — "
+            + "starvation-proof with no setting at all. 'high' is FOCUS: it "
             + "wins every free slot over every lower tier while it has ready work, and RELEASES ITSELF the "
             + "moment its queue drains, so the other projects resume with nothing for you to remember. That "
             + "is the whole difference from --max-parallel-tasks 0, which is a deliberate, sticky pause "
