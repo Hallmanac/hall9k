@@ -96,6 +96,21 @@ workspace. The hall9k project's own move into its default home landed as that cu
 (backlog 52): the project home at `~/.hall9k/projects/hall9k` is canonical, and this repository is
 worked from its `repo/dev` worktree.
 
+**The same bare repo also carries a hidden ledger** (Decisions Log PLACEHOLDER-5b1f57cd, idea
+202383dc), a set of
+git refs under `refs/hall9k/` that GitHub never shows and branch protection never sees (both match
+`refs/heads/*`/`refs/tags/*` only): small files, one writer per path, history nobody merges into
+anything. `ILedger`/`GitLedger` (`Hall9k.Connectors.Ledger`) read and write a file at a path in a
+named ref by git plumbing alone — no worktree, no hand edits — fetching and pushing with an
+explicit refspec built from `LedgerRefRegistry`, the one place every ref this platform ever touches
+under that namespace is named; an ordinary `git fetch origin` never brings one down, and nothing
+uses a `refs/hall9k/` ref this registry does not already know about. A write is conditional on the
+blob the caller last read there (`Conflict` comes back rather than clobbering someone else's), and
+every commit is signed per invocation once a caller has a key. `refs/hall9k/ledger/records` and the
+`refs/hall9k/messages/` prefix are the first two registered refs; nothing reads or writes their
+content yet — that is later work in the same idea (task records, the holder lock, node-to-node
+messages) building on this same component rather than a second one.
+
 Ideas come before tasks (Decisions Log #35, redesigned by backlog 31). An idea undergoes
 **discovery** (what is this?); a draft task undergoes **refinement** (how does this become
 executable?). A task is an idea with intent, and there is no single graduation ceremony: an idea
