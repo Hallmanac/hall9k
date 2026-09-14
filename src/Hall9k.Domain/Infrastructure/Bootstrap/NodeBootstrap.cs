@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Marten.Linq.MatchesSql;
@@ -64,6 +65,20 @@ public static class NodeBootstrap
                 connectionId, ownerId, WorkItemProvider.GitHub,
                 GhLogin() ?? Environment.UserName, CredentialReference.GhCli, now);
             session.Events.StartStream<ConnectionAggregate>(connectionId, registered);
+        }
+
+        // The one place this process's own origin becomes known to EventOriginStampingListener:
+        // found on the session's own store rather than passed in, so every one of this method's
+        // ~48 call sites needs no change of its own to keep every event this process appends,
+        // from here on, stamped with the right node id and owner root fingerprint. IDocumentStore
+        // only exposes a read-only view of the store's options; the concrete DocumentStore behind
+        // it — every store this platform builds, through MartenConfiguration — exposes the same
+        // Listeners list mutably, which is what registered this listener in the first place.
+        if (session.DocumentStore is DocumentStore { Options.Listeners: { } listeners }
+            && listeners.OfType<EventOriginStampingListener>().FirstOrDefault() is { } origin)
+        {
+            origin.NodeId = nodeId;
+            origin.OwnerRootFingerprint = owner?.RootFingerprint;
         }
 
         return new BootstrapContext(ownerId, nodeId, connectionId);

@@ -40,6 +40,12 @@ public static class MartenConfiguration
         opts.UseSystemTextJsonForSerialization(enumStorage: EnumStorage.AsString, casing: Casing.CamelCase);
         opts.AutoCreateSchemaObjects = autoCreate;
 
+        // Idea 202383dc, ruled 2026-09-12: every event carries its origin (owner root
+        // fingerprint, node id) as event metadata, stamped by this one listener — see
+        // EventOriginStampingListener for how it learns its own node's identity.
+        opts.Events.MetadataConfig.HeadersEnabled = true;
+        opts.Listeners.Add(new EventOriginStampingListener());
+
         opts.Projections.Add<OwnerDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<NodeDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<ConnectionDetailsProjection>(ProjectionLifecycle.Inline);
