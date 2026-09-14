@@ -8,6 +8,20 @@ public sealed class NodeAggregate
     public string OperatingSystem { get; private set; } = string.Empty;
     public DateTimeOffset RegisteredAt { get; private set; }
 
+    /// <summary>This node's own public key line, once <c>h9k project join</c> has generated it.</summary>
+    public string? PublicKey { get; private set; }
+
+    /// <summary>The ed25519 fingerprint of <see cref="PublicKey"/>.</summary>
+    public string? KeyFingerprint { get; private set; }
+
+    /// <summary>When this node's key was generated — also this node's own "joined at" (idea 202383dc, A2a).</summary>
+    public DateTimeOffset? KeyRegisteredAt { get; private set; }
+
+    /// <summary>The owner fingerprint this node currently claims (self or <c>--owner</c>); see <see cref="NodeOwnerClaimed"/>.</summary>
+    public string? ClaimedOwnerFingerprint { get; private set; }
+
+    public DateTimeOffset? ClaimedOwnerAt { get; private set; }
+
     /// <summary>
     /// Whether this node currently cannot launch working agent sessions (task: a session that
     /// exits at once with no work done is treated as the node failing to launch sessions) — the
@@ -78,5 +92,18 @@ public sealed class NodeAggregate
         LaunchHoldActive = false;
         LaunchHoldCauseText = string.Empty;
         LaunchHoldRaisedAt = null;
+    }
+
+    public void Apply(NodeKeyRegistered @event)
+    {
+        PublicKey = @event.PublicKey;
+        KeyFingerprint = @event.KeyFingerprint;
+        KeyRegisteredAt = @event.RegisteredAt;
+    }
+
+    public void Apply(NodeOwnerClaimed @event)
+    {
+        ClaimedOwnerFingerprint = @event.OwnerFingerprint;
+        ClaimedOwnerAt = @event.ClaimedAt;
     }
 }

@@ -11,6 +11,19 @@ public sealed class NodeDetails
     public string OperatingSystem { get; set; } = string.Empty;
     public DateTimeOffset RegisteredAt { get; set; }
 
+    /// <summary>Mirrors <see cref="NodeAggregate.PublicKey"/>.</summary>
+    public string? PublicKey { get; set; }
+
+    /// <summary>Mirrors <see cref="NodeAggregate.KeyFingerprint"/>.</summary>
+    public string? KeyFingerprint { get; set; }
+
+    public DateTimeOffset? KeyRegisteredAt { get; set; }
+
+    /// <summary>Mirrors <see cref="NodeAggregate.ClaimedOwnerFingerprint"/>.</summary>
+    public string? ClaimedOwnerFingerprint { get; set; }
+
+    public DateTimeOffset? ClaimedOwnerAt { get; set; }
+
     /// <summary>
     /// Mirrors <see cref="NodeAggregate.LaunchHoldActive"/> (task: a session that exits at once
     /// with no work done is treated as the node failing to launch sessions) — read by the
@@ -87,5 +100,18 @@ public sealed class NodeDetailsProjection : SingleStreamProjection<NodeDetails, 
         view.LaunchHoldCauseText = string.Empty;
         view.LaunchHoldRaisedAt = null;
         view.LaunchHoldLastProbedRunId = null;
+    }
+
+    public void Apply(IEvent<NodeKeyRegistered> @event, NodeDetails view)
+    {
+        view.PublicKey = @event.Data.PublicKey;
+        view.KeyFingerprint = @event.Data.KeyFingerprint;
+        view.KeyRegisteredAt = @event.Data.RegisteredAt;
+    }
+
+    public void Apply(IEvent<NodeOwnerClaimed> @event, NodeDetails view)
+    {
+        view.ClaimedOwnerFingerprint = @event.Data.OwnerFingerprint;
+        view.ClaimedOwnerAt = @event.Data.ClaimedAt;
     }
 }

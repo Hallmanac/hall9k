@@ -17,6 +17,14 @@ public sealed class OwnerDetails
     public ReviewRerequestPolicy ReviewRerequest { get; set; } = ReviewRerequestPolicy.Unknown;
     public DateTimeOffset RegisteredAt { get; set; }
     public DateTimeOffset? SettingsChangedAt { get; set; }
+
+    /// <summary>Mirrors <see cref="OwnerAggregate.RootFingerprint"/>.</summary>
+    public string? RootFingerprint { get; set; }
+
+    /// <summary>Mirrors <see cref="OwnerAggregate.RootFingerprintVerified"/>.</summary>
+    public bool RootFingerprintVerified { get; set; }
+
+    public DateTimeOffset? RootClaimedAt { get; set; }
 }
 
 public sealed class OwnerDetailsProjection : SingleStreamProjection<OwnerDetails, Guid>
@@ -37,5 +45,12 @@ public sealed class OwnerDetailsProjection : SingleStreamProjection<OwnerDetails
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
+    }
+
+    public void Apply(IEvent<OwnerRootClaimed> @event, OwnerDetails view)
+    {
+        view.RootFingerprint = @event.Data.RootFingerprint;
+        view.RootFingerprintVerified = @event.Data.Verified;
+        view.RootClaimedAt = @event.Data.ClaimedAt;
     }
 }
