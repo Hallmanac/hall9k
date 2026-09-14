@@ -257,15 +257,23 @@ public static class DatabaseDoctor
             }
             else if (offerFixes && !AnsiConsole.Profile.Capabilities.Interactive)
             {
+                // Unlike the schema-missing branch above, CreateOnly does not fall through to
+                // fixing this on the next command that touches the database — it throws outright
+                // for an Update-shaped difference — so a caller like DaemonLifecycle.StartAsync
+                // that needs a usable connection string, not just a printed warning, must be told
+                // this one is not usable rather than have it returned as though it were (cycle-1
+                // pre-PR review, both lenses).
                 AnsiConsole.MarkupLine(
                     "[dim]Skipping — stdin is not a terminal, so there is nobody to confirm this. Re-run with "
                     + "h9k doctor --yes to update it right now.[/]");
+                return null;
             }
             else
             {
                 AnsiConsole.MarkupLine(
                     "[dim]Run h9k doctor --yes to update it — until then, the next command that touches the "
                     + "database will fail.[/]");
+                return null;
             }
         }
         else
@@ -655,7 +663,7 @@ public static class DatabaseDoctor
             opts.Connection(connectionString);
             opts.ConfigureHall9k(AutoCreate.None);
         });
-        SchemaMigration migration = await store.Storage.Database.CreateMigrationAsync();
+        SchemaMigration migration = await store.Storage.Database.CreateMigrationAsync(cancellationToken);
         return migration.Difference == SchemaPatchDifference.None;
     }
 

@@ -130,8 +130,9 @@ catch (NpgsqlException)
 }
 catch (Weasel.Core.SchemaMigrationException)
 {
-    // A schema this build no longer matches (event stamping, idea 202383dc, PLAN.md §16 #191,
-    // the first change to alter an existing table rather than only add a new one) throws here
+    // A schema this build no longer matches (event stamping, idea 202383dc, PLAN.md §16
+    // PLACEHOLDER-bfe95f6b, the first change to alter an existing table rather than only add a
+    // new one) throws here
     // rather than as an NpgsqlException — the same doctor check, which now also asks whether
     // the schema is current rather than only whether it is present, names the fix: h9k doctor
     // --yes.
