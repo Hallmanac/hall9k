@@ -52,4 +52,11 @@ public sealed class MessageInboxDetailsProjection : SingleStreamProjection<Messa
         view.IgnoredReason = @event.Data.Reason;
         view.IgnoredAt = @event.Data.At;
     }
+
+    public void Apply(IEvent<InboxSenderVouched> @event, MessageInboxDetails view)
+    {
+        view.SenderIgnored = false;
+        view.IgnoredReason = null;
+        view.IgnoredAt = null;
+    }
 }

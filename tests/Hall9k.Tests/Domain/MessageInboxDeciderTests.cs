@@ -41,4 +41,19 @@ public sealed class MessageInboxDeciderTests
 
         act.Should().Throw<DomainValidationException>();
     }
+
+    [Fact]
+    public void ConfirmVouched_ClearsAnIgnoredMarkWithoutTouchingTheCursor()
+    {
+        MessageInboxAggregate inbox = new();
+        inbox.Apply(MessageInboxDecider.IgnoreSender(SenderNode, "no node file", Now));
+
+        inbox.SenderIgnored.Should().BeTrue();
+
+        inbox.Apply(MessageInboxDecider.ConfirmVouched(SenderNode, Now.AddMinutes(1)));
+
+        inbox.SenderIgnored.Should().BeFalse();
+        inbox.IgnoredReason.Should().BeNull();
+        inbox.HighestSeqReceived.Should().Be(0, "a vouch confirmation is not a cursor advance");
+    }
 }

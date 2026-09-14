@@ -206,6 +206,7 @@ public static class EventScopeRegistry
         [typeof(MessageHandled)] = EventScope.NodeScoped,
         [typeof(InboxCursorAdvanced)] = EventScope.NodeScoped,
         [typeof(InboxSenderIgnored)] = EventScope.NodeScoped,
+        [typeof(InboxSenderVouched)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Connection — a node's own registered credential; never
         // replicated (Guid tokens and gh CLI logins are inherently local to the machine).
