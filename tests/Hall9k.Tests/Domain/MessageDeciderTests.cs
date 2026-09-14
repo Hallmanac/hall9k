@@ -31,9 +31,30 @@ public sealed class MessageDeciderTests
     [Fact]
     public void FailSend_RefusesABlankReason()
     {
-        Action act = () => MessageDecider.FailSend(FromNode, 1, string.Empty, Now);
+        MessageEnvelopeV1 envelope = new(1, Now, FromNode, "fp", MessageAudience.Project, null, MessageKind.Note, "hi");
+
+        Action act = () => MessageDecider.FailSend(envelope, string.Empty, Now);
 
         act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void FailSend_CarriesTheEnvelopesOwnContentSoAResendCanRebuildIt()
+    {
+        MessageEnvelopeV1 envelope = new(
+            Seq: 1, At: Now, FromNode: FromNode, FromOwner: "fingerprint-1",
+            To: MessageAudience.Project, About: "idea-9", Kind: MessageKind.Note, Body: "hello");
+
+        MessageSendFailed @event = MessageDecider.FailSend(envelope, "push rejected", Now);
+
+        @event.FromNodeId.Should().Be(FromNode);
+        @event.Seq.Should().Be(1);
+        @event.FromOwner.Should().Be("fingerprint-1");
+        @event.To.Should().Be("project");
+        @event.About.Should().Be("idea-9");
+        @event.Kind.Should().Be("note");
+        @event.Body.Should().Be("hello");
+        @event.Reason.Should().Be("push rejected");
     }
 
     [Fact]
@@ -50,8 +71,9 @@ public sealed class MessageDeciderTests
     [Fact]
     public void Resend_ClearsTheFailureAndCountsTheAttempt()
     {
+        MessageEnvelopeV1 envelope = new(1, Now, FromNode, "fp", MessageAudience.Project, null, MessageKind.Note, "hi");
         MessageAggregate message = new();
-        message.Apply(MessageDecider.FailSend(FromNode, 1, "push rejected", Now));
+        message.Apply(MessageDecider.FailSend(envelope, "push rejected", Now));
 
         message.Apply(MessageDecider.Resend(message, Now.AddMinutes(1)));
 

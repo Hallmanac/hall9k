@@ -53,6 +53,11 @@ public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDet
         Seq = @event.Data.Seq,
         SendFailed = true,
         SendFailureReason = @event.Data.Reason,
+        FromOwnerFingerprint = @event.Data.FromOwner,
+        To = @event.Data.To,
+        About = @event.Data.About,
+        Kind = @event.Data.Kind,
+        Body = @event.Data.Body,
     };
 
     public MessageDetails Create(IEvent<MessageReceived> @event) => new()
@@ -73,6 +78,11 @@ public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDet
     {
         view.SendFailed = true;
         view.SendFailureReason = @event.Data.Reason;
+        view.FromOwnerFingerprint = @event.Data.FromOwner;
+        view.To = @event.Data.To;
+        view.About = @event.Data.About;
+        view.Kind = @event.Data.Kind;
+        view.Body = @event.Data.Body;
     }
 
     public void Apply(IEvent<MessageResent> @event, MessageDetails view)
