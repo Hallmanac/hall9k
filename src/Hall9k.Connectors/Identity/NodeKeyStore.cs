@@ -32,6 +32,9 @@ public sealed class NodeKeyStore(ProcessRunner? runner = null)
 
     public static string DirectoryFor(Guid nodeId) => Path.Combine(Root, nodeId.ToString());
 
+    /// <summary>The private key file itself, inside <see cref="DirectoryFor"/>.</summary>
+    public static string PrivateKeyPathFor(Guid nodeId) => Path.Combine(DirectoryFor(nodeId), "id_ed25519");
+
     /// <summary>
     /// The private key file mode 0600 requires: readable and writable by this node's own account
     /// alone, never the ledger, a project home, or an event (the acceptance criterion this whole
@@ -42,10 +45,19 @@ public sealed class NodeKeyStore(ProcessRunner? runner = null)
     {
         string directory = DirectoryFor(nodeId);
         Directory.CreateDirectory(directory);
-        string privateKeyPath = Path.Combine(directory, "id_ed25519");
+        string privateKeyPath = PrivateKeyPathFor(nodeId);
         string publicKeyPath = $"{privateKeyPath}.pub";
 
-        if (!File.Exists(privateKeyPath) || !File.Exists(publicKeyPath))
+        // Two h9k processes on the same node (h9k project add's own join, run alongside a second,
+        // manually invoked h9k project join) can both reach this method for the same node id at
+        // once. Held for the whole check-and-generate/derive sequence below — the same
+        // FileShare.None advisory-lock idiom SingleInstanceGuard and GitWorktreeManager's own
+        // cross-process lock already use — this serializes them, so the second process never runs
+        // ssh-keygen against a private key file the first is still creating, which can prompt to
+        // overwrite and hang (this runner never redirects stdin).
+        await using FileStream keyLock = await AcquireLockAsync(directory, cancellationToken);
+
+        if (!File.Exists(privateKeyPath))
         {
             ProcessResult result = await runner(
                 "ssh-keygen",
@@ -62,6 +74,38 @@ public sealed class NodeKeyStore(ProcessRunner? runner = null)
                     + "join named.");
             }
         }
+        else
+        {
+            // The private key already exists (from an earlier join, or from the branch above a
+            // moment ago). Its public half is always derived fresh from the private key here
+            // rather than trusted from whatever .pub already sits on disk — a stale or tampered
+            // .pub file would otherwise get registered and written to root.yaml/node.yaml while
+            // git actually signs commits with the different key underneath it, leaving the ledger
+            // unverifiable under its advertised identity. This also sidesteps ssh-keygen's own
+            // overwrite prompt a fresh -f generation would trigger against an existing private key
+            // — a prompt this runner's caller never sees (stdin is not redirected), so the command
+            // would hang until it times out, or silently regenerate the key if something did
+            // answer y (independent pre-PR review, cycle 1, conformance and adversarial lenses,
+            // medium).
+            ProcessResult result = await runner("ssh-keygen", ["-y", "-f", privateKeyPath], directory, cancellationToken);
+            if (result.ExitCode != 0)
+            {
+                throw new DomainValidationException(
+                    "This node's private key exists, but its public half could not be derived from "
+                    + $"it with ssh-keygen ({result.StandardError.Trim()}). Restore the original "
+                    + $"{publicKeyPath} or remove {privateKeyPath} entirely and re-run h9k project "
+                    + "join to generate a fresh keypair.");
+            }
+
+            // ssh-keygen -y already carries the comment recorded in the private key's own metadata
+            // at generation time (-C hall9k-node-<id>), so nothing further is appended here.
+            string derivedPublicKeyLine = $"{result.StandardOutput.Trim()}\n";
+            string? onDisk = File.Exists(publicKeyPath) ? await File.ReadAllTextAsync(publicKeyPath, cancellationToken) : null;
+            if (onDisk != derivedPublicKeyLine)
+            {
+                await File.WriteAllTextAsync(publicKeyPath, derivedPublicKeyLine, cancellationToken);
+            }
+        }
 
         if (!OperatingSystem.IsWindows())
         {
@@ -70,6 +114,31 @@ public sealed class NodeKeyStore(ProcessRunner? runner = null)
 
         string publicKeyLine = (await File.ReadAllTextAsync(publicKeyPath, cancellationToken)).Trim();
         return new NodeSigningKey(privateKeyPath, publicKeyLine, Fingerprint(publicKeyLine));
+    }
+
+    /// <summary>
+    /// FileShare.None maps to an exclusive advisory lock on Unix and a real exclusive lock on
+    /// Windows: whichever process's FileStream opens it first holds it until disposed, so a second
+    /// process racing the same node id's key waits here instead of losing ssh-keygen to a file the
+    /// first process is still writing. Unbounded on purpose, same as GitWorktreeManager's own
+    /// cross-process lock: a holder finishes key generation in well under a second, and there is
+    /// no safe value to time this out to.
+    /// </summary>
+    private static async Task<FileStream> AcquireLockAsync(string directory, CancellationToken cancellationToken)
+    {
+        string lockFilePath = Path.Combine(directory, ".h9k-node-key.lock");
+        while (true)
+        {
+            try
+            {
+                return new FileStream(lockFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            }
+            catch (IOException)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                await Task.Delay(50, cancellationToken);
+            }
+        }
     }
 
     /// <summary>

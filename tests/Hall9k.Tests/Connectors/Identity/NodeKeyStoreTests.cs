@@ -80,4 +80,60 @@ public sealed class NodeKeyStoreTests : IDisposable
 
         second.Should().Be(first);
     }
+
+    [Fact]
+    public async Task EnsureAsync_with_the_public_half_missing_derives_it_rather_than_regenerating_the_private_key()
+    {
+        Guid nodeId = DomainId.New();
+        NodeKeyStore store = new();
+        NodeSigningKey original = await store.EnsureAsync(nodeId, CancellationToken.None);
+        string privateKeyText = await File.ReadAllTextAsync(original.PrivateKeyPath);
+
+        File.Delete($"{original.PrivateKeyPath}.pub");
+
+        NodeSigningKey recovered = await store.EnsureAsync(nodeId, CancellationToken.None);
+
+        // The private key on disk is byte-for-byte unchanged — a regenerated key would have a
+        // different private half, and the recovered public key would then no longer match what
+        // ProjectJoinCommand already recorded on the Node stream (independent pre-PR review,
+        // cycle 1, conformance and adversarial lenses, medium).
+        (await File.ReadAllTextAsync(original.PrivateKeyPath)).Should().Be(privateKeyText);
+        recovered.PublicKeyLine.Should().Be(original.PublicKeyLine);
+        recovered.Fingerprint.Should().Be(original.Fingerprint);
+    }
+
+    [Fact]
+    public async Task EnsureAsync_with_a_stale_public_key_file_corrects_it_from_the_private_key()
+    {
+        Guid nodeId = DomainId.New();
+        NodeKeyStore store = new();
+        NodeSigningKey original = await store.EnsureAsync(nodeId, CancellationToken.None);
+
+        // A stale or tampered .pub — never what the private half actually derives to — must
+        // never be trusted and registered as-is: the ledger would then advertise a public key
+        // that git's own signature (made with the real private key) can never verify against.
+        await File.WriteAllTextAsync($"{original.PrivateKeyPath}.pub", "ssh-ed25519 AAAAstaleAAAA== stale-comment\n");
+
+        NodeSigningKey corrected = await store.EnsureAsync(nodeId, CancellationToken.None);
+
+        corrected.PublicKeyLine.Should().Be(original.PublicKeyLine);
+        corrected.Fingerprint.Should().Be(original.Fingerprint);
+        (await File.ReadAllTextAsync($"{original.PrivateKeyPath}.pub")).Should().Be($"{original.PublicKeyLine}\n");
+    }
+
+    [Fact]
+    public async Task EnsureAsync_called_concurrently_for_the_same_node_never_races_ssh_keygen()
+    {
+        Guid nodeId = DomainId.New();
+        NodeKeyStore store = new();
+
+        // Two h9k processes reaching the same node id at once (h9k project add's own join
+        // alongside a second, manually invoked h9k project join) must serialize rather than both
+        // finding no private key and racing ssh-keygen against the same output file.
+        NodeSigningKey[] results = await Task.WhenAll(
+            store.EnsureAsync(nodeId, CancellationToken.None),
+            store.EnsureAsync(nodeId, CancellationToken.None));
+
+        results[0].Should().Be(results[1]);
+    }
 }
