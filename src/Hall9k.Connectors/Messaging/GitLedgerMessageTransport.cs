@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Globalization;
+using System.Text;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
 
@@ -24,6 +26,13 @@ namespace Hall9k.Connectors.Messaging;
 /// </summary>
 public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? runner = null) : IMessageTransport
 {
+    /// <summary>Same bound as <c>GitLedger.MaxPushAttempts</c>, for the identical reason: two
+    /// writers racing converge within a round or two, and this ref has exactly one writer besides
+    /// (this node), so a push still losing after this many is fighting something else entirely.</summary>
+    private const int MaxPushAttempts = 5;
+
+    private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
+
     private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
 
     public async Task SendAsync(
@@ -50,6 +59,136 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
                 $"{path} already exists in {refName} — seq {seq} was already used, which should never "
                 + "happen since this node's own store allocates it once and this ref has exactly one writer.");
         }
+    }
+
+    /// <summary>
+    /// Builds one commit carrying every envelope in <paramref name="envelopes"/> on top of the
+    /// outbox ref's current tip (never an orphan the way <see cref="SquashAsync"/> is — a flush
+    /// only ever adds), signs it, and pushes it by commit id with the same fetch-rebuild-retry loop
+    /// <c>GitLedger.WriteAsync</c> uses for a single path. A rejected push after
+    /// <see cref="MaxPushAttempts"/> throws <see cref="LedgerPushRejectedException"/>, matching
+    /// <see cref="SendAsync"/>'s own failure shape so <c>MessageOutbox.FlushAsync</c> catches both
+    /// identically.
+    /// </summary>
+    public async Task FlushAsync(
+        string repositoryPath,
+        Guid fromNodeId,
+        IReadOnlyList<TransportEnvelope> envelopes,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
+        CancellationToken cancellationToken)
+    {
+        string refName = OutboxRef(fromNodeId);
+        if (!await FetchRefAsync(repositoryPath, refName, cancellationToken))
+        {
+            throw new InvalidOperationException(
+                $"Could not fetch {refName} from origin — refusing to flush against a local tip "
+                + "that might be stale; the queued envelopes stay pending for the next sweep.");
+        }
+
+        string lastError = string.Empty;
+        for (int attempt = 1; attempt <= MaxPushAttempts; attempt++)
+        {
+            string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+            string commitId = await BuildEnvelopeCommitAsync(
+                repositoryPath, envelopes, seedFromTip: tip, parentTip: tip, "Flush messages", committer, signingKey,
+                cancellationToken);
+
+            (int pushExit, _, string pushError) = await RunGitRawAsync(
+                repositoryPath, ["push", "origin", $"{commitId}:{refName}"], environment: null, standardInput: null,
+                cancellationToken);
+            if (pushExit == 0)
+            {
+                await SetLocalRefAsync(repositoryPath, refName, commitId, cancellationToken);
+                return;
+            }
+
+            lastError = pushError;
+            if (!await FetchRefAsync(repositoryPath, refName, cancellationToken))
+            {
+                throw new InvalidOperationException(
+                    $"Could not fetch {refName} from origin after a rejected push — refusing to "
+                    + "retry against a local tip that might be stale; the queued envelopes stay "
+                    + "pending for the next sweep.");
+            }
+        }
+
+        throw new LedgerPushRejectedException(refName, MaxPushAttempts, lastError);
+    }
+
+    public Task<IReadOnlyList<MessageOutboxTip>> ProbeAsync(string repositoryPath, CancellationToken cancellationToken) =>
+        ProbeCoreAsync(repositoryPath, cancellationToken);
+
+    private async Task<IReadOnlyList<MessageOutboxTip>> ProbeCoreAsync(string repositoryPath, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner(
+            "git", ["ls-remote", "origin", "refs/hall9k/messages/*"], repositoryPath, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            return [];
+        }
+
+        List<MessageOutboxTip> tips = [];
+        foreach (string line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string[] parts = line.Split('\t', 2);
+            if (parts.Length != 2)
+            {
+                continue;
+            }
+
+            string sha = parts[0].Trim();
+            string refName = parts[1].Trim();
+            const string prefix = "refs/hall9k/messages/";
+            if (!refName.StartsWith(prefix, StringComparison.Ordinal)
+                || !Guid.TryParse(refName[prefix.Length..], out Guid senderNodeId))
+            {
+                continue;
+            }
+
+            tips.Add(new MessageOutboxTip(senderNodeId, sha));
+        }
+
+        return tips;
+    }
+
+    /// <summary>
+    /// Rewrites this node's own outbox ref to an ORPHAN commit — no parent at all, unlike
+    /// <see cref="FlushAsync"/> — holding exactly <paramref name="survivors"/>: the whole point of
+    /// a squash is that everything dropped becomes genuinely unreachable, not merely absent from
+    /// the tip's own tree while still hanging off a parent chain a fast-forward push would keep
+    /// alive. Force-pushed (<c>+commit:ref</c>) since an orphan commit is never a fast-forward of
+    /// whatever the ref held before.
+    /// </summary>
+    public async Task SquashAsync(
+        string repositoryPath,
+        Guid fromNodeId,
+        IReadOnlyList<TransportEnvelope> survivors,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
+        CancellationToken cancellationToken)
+    {
+        string refName = OutboxRef(fromNodeId);
+        if (!await FetchRefAsync(repositoryPath, refName, cancellationToken))
+        {
+            throw new InvalidOperationException(
+                $"Could not fetch {refName} from origin — refusing to squash against a local tip "
+                + "that might be stale, which could overwrite newer remote envelopes.");
+        }
+
+        string commitId = await BuildEnvelopeCommitAsync(
+            repositoryPath, survivors, seedFromTip: null, parentTip: null, "Squash outbox", committer, signingKey,
+            cancellationToken);
+
+        (int pushExit, _, string pushError) = await RunGitRawAsync(
+            repositoryPath, ["push", "origin", $"+{commitId}:{refName}"], environment: null, standardInput: null,
+            cancellationToken);
+        if (pushExit != 0)
+        {
+            throw new LedgerPushRejectedException(refName, 1, pushError);
+        }
+
+        await SetLocalRefAsync(repositoryPath, refName, commitId, cancellationToken);
     }
 
     public async Task<TransportReadResult> ReadSinceAsync(
@@ -314,5 +453,213 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
         }
 
         return null;
+    }
+
+    private async Task<string?> ResolveTipAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
+    {
+        string? tip = (await RunGitCaptureAsync(
+            repositoryPath, ["rev-parse", "--verify", "--quiet", $"{refName}^{{commit}}"], cancellationToken))?.Trim();
+        return tip.IsBlank() ? null : tip;
+    }
+
+    private static async Task SetLocalRefAsync(
+        string repositoryPath, string refName, string newCommit, CancellationToken cancellationToken)
+    {
+        (int exitCode, _, string error) = await RunGitRawAsync(
+            repositoryPath, ["update-ref", refName, newCommit], environment: null, standardInput: null, cancellationToken);
+        if (exitCode != 0)
+        {
+            throw new InvalidOperationException($"git update-ref {refName} failed in {repositoryPath}: {error.Trim()}");
+        }
+    }
+
+    /// <summary>
+    /// Builds one signed commit holding every envelope in <paramref name="envelopes"/>, through a
+    /// private <c>GIT_INDEX_FILE</c> this call owns start to finish — the identical isolation
+    /// <c>GitLedger.BuildTreeAsync</c> uses for a single path, here looped over N. Seeding from
+    /// <paramref name="seedFromTip"/> (<c>git read-tree</c>) is what makes <see cref="FlushAsync"/>
+    /// an ordinary append: every path outside <c>messages/</c> — there is none today, but nothing
+    /// here assumes that — and every envelope not in this batch survives into the new tree
+    /// unchanged. <see cref="SquashAsync"/> passes <see langword="null"/> for both
+    /// <paramref name="seedFromTip"/> and <paramref name="parentTip"/>, building a tree from
+    /// nothing but <paramref name="envelopes"/> and a commit with no parent at all.
+    /// </summary>
+    private static async Task<string> BuildEnvelopeCommitAsync(
+        string repositoryPath,
+        IReadOnlyList<TransportEnvelope> envelopes,
+        string? seedFromTip,
+        string? parentTip,
+        string commitMessage,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
+        CancellationToken cancellationToken)
+    {
+        string tempIndex = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"h9k-message-index-{Guid.NewGuid():N}");
+        Dictionary<string, string> indexEnvironment = new() { ["GIT_INDEX_FILE"] = tempIndex };
+        try
+        {
+            (int readExit, _, string readError) = seedFromTip is not null
+                ? await RunGitRawAsync(
+                    repositoryPath, ["read-tree", seedFromTip], indexEnvironment, standardInput: null, cancellationToken)
+                : await RunGitRawAsync(
+                    repositoryPath, ["read-tree", "--empty"], indexEnvironment, standardInput: null, cancellationToken);
+            if (readExit != 0)
+            {
+                throw new InvalidOperationException(
+                    $"git read-tree {seedFromTip ?? "--empty"} failed in {repositoryPath}: {readError.Trim()}");
+            }
+
+            foreach (TransportEnvelope envelope in envelopes)
+            {
+                (int hashExit, string blobOutput, string hashError) = await RunGitRawAsync(
+                    repositoryPath, ["hash-object", "-w", "--stdin"], environment: null, envelope.Content, cancellationToken);
+                if (hashExit != 0)
+                {
+                    throw new InvalidOperationException($"git hash-object failed in {repositoryPath}: {hashError.Trim()}");
+                }
+
+                string blobId = blobOutput.Trim();
+                string path = PathFor(envelope.Seq);
+                (int addExit, _, string addError) = await RunGitRawAsync(
+                    repositoryPath, ["update-index", "--add", "--cacheinfo", $"100644,{blobId},{path}"],
+                    indexEnvironment, standardInput: null, cancellationToken);
+                if (addExit != 0)
+                {
+                    throw new InvalidOperationException($"git update-index failed in {repositoryPath}: {addError.Trim()}");
+                }
+            }
+
+            (int writeExit, string treeOutput, string writeError) = await RunGitRawAsync(
+                repositoryPath, ["write-tree"], indexEnvironment, standardInput: null, cancellationToken);
+            if (writeExit != 0)
+            {
+                throw new InvalidOperationException($"git write-tree failed in {repositoryPath}: {writeError.Trim()}");
+            }
+
+            string treeId = treeOutput.Trim();
+
+            List<string> commitArguments =
+            [
+                "-c", $"user.name={committer.Name}",
+                "-c", $"user.email={committer.Email}",
+                "-c", "gpg.format=ssh",
+                "-c", $"user.signingkey={signingKey.PrivateKeyPath}",
+                "commit-tree", treeId,
+            ];
+            if (parentTip is not null)
+            {
+                commitArguments.Add("-p");
+                commitArguments.Add(parentTip);
+            }
+
+            commitArguments.Add("-S");
+            commitArguments.Add("-m");
+            commitArguments.Add(commitMessage);
+
+            (int commitExit, string commitOutput, string commitError) = await RunGitRawAsync(
+                repositoryPath, commitArguments, environment: null, standardInput: null, cancellationToken);
+            if (commitExit != 0)
+            {
+                throw new InvalidOperationException($"git commit-tree failed in {repositoryPath}: {commitError.Trim()}");
+            }
+
+            return commitOutput.Trim();
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(tempIndex);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Best-effort cleanup of a temp file; nothing downstream reads it again.
+            }
+        }
+    }
+
+    /// <summary>
+    /// The one place this class spawns git with an environment override or stdin — everything
+    /// else goes through the injected <see cref="runner"/> field, which supports neither and is
+    /// what every read-side call above (and every test double) actually exercises. Mirrors
+    /// <c>GitLedger</c>'s own private process runner rather than sharing it: that type is a
+    /// different class in a different concern (the ledger's single-path write), and duplicating
+    /// this narrow, already-proven shape is cheaper than widening the shared
+    /// <see cref="ProcessRunner"/> delegate — used by connectors that need neither — just for this
+    /// one caller.
+    /// </summary>
+    private static async Task<(int ExitCode, string StandardOutput, string StandardError)> RunGitRawAsync(
+        string repositoryPath,
+        IReadOnlyList<string> arguments,
+        IReadOnlyDictionary<string, string>? environment,
+        string? standardInput,
+        CancellationToken cancellationToken)
+    {
+        using Process process = new();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = standardInput is not null,
+            StandardOutputEncoding = Utf8NoBom,
+            StandardErrorEncoding = Utf8NoBom,
+            StandardInputEncoding = standardInput is not null ? Utf8NoBom : null,
+            UseShellExecute = false,
+        };
+        process.StartInfo.ArgumentList.Add("-C");
+        process.StartInfo.ArgumentList.Add(repositoryPath);
+        foreach (string argument in arguments)
+        {
+            process.StartInfo.ArgumentList.Add(argument);
+        }
+
+        NonInteractiveGit.Apply(process.StartInfo);
+        if (environment is not null)
+        {
+            foreach ((string key, string value) in environment)
+            {
+                process.StartInfo.Environment[key] = value;
+            }
+        }
+
+        process.Start();
+        if (standardInput is not null)
+        {
+            await process.StandardInput.WriteAsync(standardInput);
+            process.StandardInput.Close();
+        }
+
+        try
+        {
+            Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
+            Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
+            await process.WaitForExitAsync(cancellationToken);
+
+            return (process.ExitCode, await standardOutput, await standardError);
+        }
+        catch
+        {
+            // Cancelling the wait above only stops Hall9k waiting: git is a real operating-system
+            // process and keeps running past it, so a cancelled push or tree build could otherwise
+            // still land on origin or hold the temp index file open after this method has already
+            // returned to a caller that believes it was cancelled.
+            await TerminateAsync(process);
+            throw;
+        }
+    }
+
+    private static async Task TerminateAsync(Process process)
+    {
+        try
+        {
+            process.Kill(entireProcessTree: true);
+            using CancellationTokenSource grace = new(TimeSpan.FromSeconds(5));
+            await process.WaitForExitAsync(grace.Token);
+        }
+        catch (Exception)
+        {
+            // Nothing here is recoverable and nothing here is the caller's problem.
+        }
     }
 }

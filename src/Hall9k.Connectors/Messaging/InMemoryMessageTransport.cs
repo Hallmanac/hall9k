@@ -1,3 +1,4 @@
+using System.Globalization;
 using Hall9k.Connectors.Ledger;
 
 namespace Hall9k.Connectors.Messaging;
@@ -14,6 +15,12 @@ namespace Hall9k.Connectors.Messaging;
 public sealed class InMemoryMessageTransport(ILedger ledger) : IMessageTransport
 {
     private readonly Dictionary<(string RepositoryPath, Guid NodeId), SortedList<long, string>> outboxes = [];
+
+    /// <summary>Stands in for a real commit sha: bumped every time <see cref="SendAsync"/>,
+    /// <see cref="FlushAsync"/>, or <see cref="SquashAsync"/> changes a given outbox, so
+    /// <see cref="ProbeAsync"/> can tell "moved since last time" the same way a real ls-remote
+    /// tip comparison does, without ever touching git.</summary>
+    private readonly Dictionary<(string RepositoryPath, Guid NodeId), int> versions = [];
 
     public Task SendAsync(
         string repositoryPath,
@@ -42,8 +49,72 @@ public sealed class InMemoryMessageTransport(ILedger ledger) : IMessageTransport
         }
 
         envelopes.Add(seq, content);
+        BumpVersion(key);
         return Task.CompletedTask;
     }
+
+    public Task FlushAsync(
+        string repositoryPath,
+        Guid fromNodeId,
+        IReadOnlyList<TransportEnvelope> envelopes,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(signingKey);
+
+        (string repositoryPath, Guid fromNodeId) key = (repositoryPath, fromNodeId);
+        if (!outboxes.TryGetValue(key, out SortedList<long, string>? existing))
+        {
+            existing = [];
+            outboxes[key] = existing;
+        }
+
+        // Upsert, never a duplicate-seq refusal the way SendAsync gives: a retried flush after a
+        // push that actually landed but crashed before this node recorded it is expected to see
+        // its own already-there seqs again, with byte-for-byte identical content since a queued
+        // envelope's wire bytes never change between attempts.
+        foreach (TransportEnvelope envelope in envelopes)
+        {
+            existing[envelope.Seq] = envelope.Content;
+        }
+
+        BumpVersion(key);
+        return Task.CompletedTask;
+    }
+
+    public Task<IReadOnlyList<MessageOutboxTip>> ProbeAsync(string repositoryPath, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<MessageOutboxTip> tips = [.. versions
+            .Where(pair => pair.Key.RepositoryPath == repositoryPath)
+            .Select(pair => new MessageOutboxTip(pair.Key.NodeId, pair.Value.ToString(CultureInfo.InvariantCulture)))];
+        return Task.FromResult(tips);
+    }
+
+    public Task SquashAsync(
+        string repositoryPath,
+        Guid fromNodeId,
+        IReadOnlyList<TransportEnvelope> survivors,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(signingKey);
+
+        (string repositoryPath, Guid fromNodeId) key = (repositoryPath, fromNodeId);
+        SortedList<long, string> replacement = [];
+        foreach (TransportEnvelope envelope in survivors)
+        {
+            replacement[envelope.Seq] = envelope.Content;
+        }
+
+        outboxes[key] = replacement;
+        BumpVersion(key);
+        return Task.CompletedTask;
+    }
+
+    private void BumpVersion((string RepositoryPath, Guid NodeId) key) =>
+        versions[key] = versions.GetValueOrDefault(key) + 1;
 
     public async Task<TransportReadResult> ReadSinceAsync(
         string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken)
