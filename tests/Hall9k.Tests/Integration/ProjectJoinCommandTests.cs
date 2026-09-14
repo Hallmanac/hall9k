@@ -18,6 +18,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -81,7 +82,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
-            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), cts.Token);
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
 
         outcome.EstablishedRoot.Should().BeTrue();
         outcome.ClaimedOwnerFingerprint.Should().Be(outcome.KeyFingerprint);
@@ -113,14 +114,16 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         await using (IDocumentSession first = _postgres.Store.LightweightSession())
         {
-            await ProjectJoinCommand.RunAsync(first, project, claimedOwnerOverride: null, ledger, keyStore, cts.Token);
+            await ProjectJoinCommand.RunAsync(
+                first, project, claimedOwnerOverride: null, ledger, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
         }
 
         int writesAfterFirstJoin = ledger.Writes.Count;
 
         await using (IDocumentSession second = _postgres.Store.LightweightSession())
         {
-            await ProjectJoinCommand.RunAsync(second, project, claimedOwnerOverride: null, ledger, keyStore, cts.Token);
+            await ProjectJoinCommand.RunAsync(
+                second, project, claimedOwnerOverride: null, ledger, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
         }
 
         ledger.Writes.Should().HaveCount(writesAfterFirstJoin, "nothing about this node's facts changed the second time");
@@ -136,7 +139,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
-            session, project, claimedFingerprint, ledger, new NodeKeyStore(), cts.Token);
+            session, project, claimedFingerprint, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
 
         outcome.EstablishedRoot.Should().BeFalse();
         outcome.ClaimedOwnerFingerprint.Should().Be(claimedFingerprint);
@@ -152,7 +155,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
     public async Task Join_with_owner_naming_this_nodes_own_fingerprint_still_stays_unverified()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
-        await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+        Guid connectionId = await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
 
         await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
         BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, cts.Token);
@@ -166,7 +169,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         projectSession.Events.StartStream<ProjectAggregate>(
             projectId,
             ProjectDecider.Register(
-                projectId, context.OwnerId, DomainId.New(), "smoke",
+                projectId, context.OwnerId, connectionId, "smoke",
                 "/does/not/matter/on/a/fake/ledger", null, null, Now));
         await projectSession.SaveChangesAsync(cts.Token);
         ProjectDetails project = (await projectSession.LoadAsync<ProjectDetails>(projectId, cts.Token))!;
@@ -174,7 +177,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         FakeLedger ledger = new();
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
-            session, project, key.Fingerprint, ledger, keyStore, cts.Token);
+            session, project, key.Fingerprint, ledger, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
 
         // An explicit --owner is a claim to be vouched for later, never a shortcut to
         // self-establishing a verified root — even when the fingerprint named happens to be this
@@ -197,7 +200,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
-            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), cts.Token);
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
 
         // A transient conflict on node.yaml — another writer touched it between the read and the
         // write — must retry against a fresh tip, not silently report no write while the caller
@@ -219,7 +222,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         Func<Task> act = () => ProjectJoinCommand.RunAsync(
-            session, project, "not-a-real-fingerprint", ledger, new NodeKeyStore(), cts.Token);
+            session, project, "not-a-real-fingerprint", ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
 
         await act.Should().ThrowAsync<DomainValidationException>();
         ledger.Writes.Should().BeEmpty("a malformed claim is refused before anything touches the ledger");
@@ -237,13 +240,15 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         ProjectJoinCommand.JoinOutcome genesis;
         await using (IDocumentSession first = _postgres.Store.LightweightSession())
         {
-            genesis = await ProjectJoinCommand.RunAsync(first, project, claimedOwnerOverride: null, ledger, keyStore, cts.Token);
+            genesis = await ProjectJoinCommand.RunAsync(
+                first, project, claimedOwnerOverride: null, ledger, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
         }
 
         ProjectJoinCommand.JoinOutcome reclaim;
         await using (IDocumentSession second = _postgres.Store.LightweightSession())
         {
-            reclaim = await ProjectJoinCommand.RunAsync(second, project, realRootFingerprint, ledger, keyStore, cts.Token);
+            reclaim = await ProjectJoinCommand.RunAsync(
+                second, project, realRootFingerprint, ledger, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
         }
 
         reclaim.RetiredPreviousRoot.Should().BeTrue();
@@ -278,16 +283,18 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         await using (IDocumentSession first = _postgres.Store.LightweightSession())
         {
-            await ProjectJoinCommand.RunAsync(first, projectA, claimedOwnerOverride: null, inner, keyStore, cts.Token);
+            await ProjectJoinCommand.RunAsync(
+                first, projectA, claimedOwnerOverride: null, inner, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
         }
 
         Guid projectBId = DomainId.New();
+        Guid connectionId = await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
         await using (IDocumentSession seed = _postgres.Store.LightweightSession())
         {
             seed.Events.StartStream<ProjectAggregate>(
                 projectBId,
                 ProjectDecider.Register(
-                    projectBId, projectA.OwnerId, DomainId.New(), "smoke-b",
+                    projectBId, projectA.OwnerId, connectionId, "smoke-b",
                     "/does/not/matter/on/a/fake/ledger/b", null, null, Now));
             await seed.SaveChangesAsync(cts.Token);
         }
@@ -299,7 +306,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         {
             // Joined the same self-created-root way projectA was, so it too ends up with its own
             // local root.yaml — a candidate this owner's later retirement has to consider.
-            await ProjectJoinCommand.RunAsync(second, projectB, claimedOwnerOverride: null, inner, keyStore, cts.Token);
+            await ProjectJoinCommand.RunAsync(
+                second, projectB, claimedOwnerOverride: null, inner, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
         }
 
         UnreachableRepositoryLedger unreachable = new(inner, projectB.RepositoryPath);
@@ -307,7 +315,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         ProjectJoinCommand.JoinOutcome reclaim;
         await using (IDocumentSession third = _postgres.Store.LightweightSession())
         {
-            reclaim = await ProjectJoinCommand.RunAsync(third, projectA, realRootFingerprint, unreachable, keyStore, cts.Token);
+            reclaim = await ProjectJoinCommand.RunAsync(
+                third, projectA, realRootFingerprint, unreachable, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
         }
 
         reclaim.RetiredPreviousRoot.Should().BeTrue("the required retirement in the project being joined still succeeds");
@@ -328,7 +337,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
-            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), cts.Token);
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
 
         string privateKeyText = await File.ReadAllTextAsync(outcome.PrivateKeyPath, cts.Token);
         ledger.Writes.Should().OnlyContain(write => !write.Content.Contains(privateKeyText));
@@ -346,7 +355,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         NodeKeyStore brokenKeyStore = new(failingRunner);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
-        Func<Task> act = () => ProjectJoinCommand.RunAsync(session, project, claimedOwnerOverride: null, ledger, brokenKeyStore, cts.Token);
+        Func<Task> act = () => ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, brokenKeyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
 
         (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*h9k project join*");
         ledger.Writes.Should().BeEmpty("a node without a key never reaches a ledger write");
@@ -372,10 +382,56 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         NodeKeyStore brokenKeyStore = new(missingToolRunner);
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
-        Func<Task> act = () => ProjectJoinCommand.RunAsync(session, project, claimedOwnerOverride: null, ledger, brokenKeyStore, cts.Token);
+        Func<Task> act = () => ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, brokenKeyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
 
         (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*h9k project join*");
         ledger.Writes.Should().BeEmpty("a node without a key never reaches a ledger write");
+    }
+
+    /// <summary>
+    /// Join is refused when the project's account lacks push on the repository, with the
+    /// repository and the rule named (idea 202383dc, A2b, item 2) — before any key is generated
+    /// and before any ledger byte is written.
+    /// </summary>
+    [Fact]
+    public async Task Join_without_push_is_refused_naming_the_repository_and_the_rule()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        Func<Task> act = () => ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(),
+            GitHubAccessFakes.DenyingPush("acme/widgets", "READ"), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>())
+            .WithMessage("*acme/widgets*").WithMessage("*push*");
+        ledger.Writes.Should().BeEmpty("a node without push never reaches a ledger write");
+    }
+
+    /// <summary>
+    /// Access is observed per project on the project stream even on an ordinary, successful join
+    /// (idea 202383dc, A2b, item 3): this install's own role always, and the collaborator list
+    /// (with roles) when this install's own account already has push.
+    /// </summary>
+    [Fact]
+    public async Task A_successful_join_observes_this_installs_own_role_and_the_readable_collaborator_list()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        string collaborators = """[{"id":42,"login":"teammate","role_name":"write"}]""";
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, new FakeLedger(), new NodeKeyStore(),
+            GitHubAccessFakes.GrantingPush("acme/widgets", "ADMIN", collaborators), cts.Token);
+
+        await using IDocumentSession query = _postgres.Store.LightweightSession();
+        ProjectGitHubMembers? members = await query.LoadAsync<ProjectGitHubMembers>(project.Id, cts.Token);
+        members.Should().NotBeNull();
+        members!.Members.Values.Should().Contain(member => member.Login == "teammate" && member.Role == GitHubRepositoryRole.Write);
     }
 
     /// <summary>
@@ -389,7 +445,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
     public async Task A_pre_existing_local_owner_keeps_dispatching_the_same_task_after_it_claims_a_root()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
-        await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+        Guid connectionId = await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
 
         Guid preExistingOwnerId = DomainId.New();
         await using (IDocumentSession seed = _postgres.Store.LightweightSession())
@@ -405,7 +461,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
             seed.Events.StartStream<ProjectAggregate>(
                 projectId,
                 ProjectDecider.Register(
-                    projectId, preExistingOwnerId, DomainId.New(), "smoke", "/does/not/matter/on/a/fake/ledger",
+                    projectId, preExistingOwnerId, connectionId, "smoke", "/does/not/matter/on/a/fake/ledger",
                     null, null, Now));
             await seed.SaveChangesAsync(cts.Token);
         }
@@ -429,7 +485,9 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         ProjectJoinCommand.JoinOutcome outcome;
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
-            outcome = await ProjectJoinCommand.RunAsync(session, project, claimedOwnerOverride: null, new FakeLedger(), new NodeKeyStore(), cts.Token);
+            outcome = await ProjectJoinCommand.RunAsync(
+                session, project, claimedOwnerOverride: null, new FakeLedger(), new NodeKeyStore(),
+                GitHubAccessFakes.GrantingPush(), cts.Token);
         }
 
         await using IDocumentSession query = _postgres.Store.LightweightSession();
@@ -482,7 +540,7 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         projectSession.Events.StartStream<ProjectAggregate>(
             projectId,
             ProjectDecider.Register(
-                projectId, context.OwnerId, DomainId.New(), "smoke",
+                projectId, context.OwnerId, context.ConnectionId, "smoke",
                 "/does/not/matter/on/a/fake/ledger", null, null, Now));
         await projectSession.SaveChangesAsync(cancellationToken);
 

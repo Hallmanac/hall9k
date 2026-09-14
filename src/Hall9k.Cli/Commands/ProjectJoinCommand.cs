@@ -4,11 +4,13 @@ using System.Text;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -77,12 +79,14 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         IDocumentSession session, ProjectDetails project, string? claimedOwnerOverride, CancellationToken cancellationToken) =>
         RunAsync(
             session, project, claimedOwnerOverride,
-            new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(), cancellationToken);
+            new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(),
+            new ProjectGitHubAccessMirror(), cancellationToken);
 
     /// <summary>
-    /// The whole join flow, seamed on <see cref="ILedger"/> and <see cref="NodeKeyStore"/> so a
-    /// test drives it against the in-memory ledger fake and a stubbed key generator rather than a
-    /// real repository or a real ssh-keygen invocation (Brian's 2026-09-13 testing rule).
+    /// The whole join flow, seamed on <see cref="ILedger"/>, <see cref="NodeKeyStore"/>, and
+    /// <see cref="ProjectGitHubAccessMirror"/> so a test drives it against the in-memory ledger
+    /// fake, a stubbed key generator, and a fake gh transport rather than a real repository, a real
+    /// ssh-keygen invocation, or a real gh/network call (Brian's 2026-09-13 testing rule).
     /// </summary>
     internal static async Task<JoinOutcome> RunAsync(
         IDocumentSession session,
@@ -90,6 +94,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         string? claimedOwnerOverride,
         ILedger ledger,
         NodeKeyStore keyStore,
+        ProjectGitHubAccessMirror githubAccess,
         CancellationToken cancellationToken)
     {
         if (claimedOwnerOverride.IsNotBlank() && !NodeKeyStore.IsFingerprint(claimedOwnerOverride))
@@ -106,6 +111,23 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         // Flushed before aggregating: on a brand-new install this is the same call that just
         // started the Owner and Node streams, and live aggregation reads the database, not this
         // session's own not-yet-saved pending events.
+        await session.SaveChangesAsync(cancellationToken);
+
+        // Refused before any key is generated or any ledger byte is written: a node cannot write
+        // this project's ledger at all without push on the repository it lives in, so there is
+        // nothing to be gained by getting further before finding that out (idea 202383dc, A2b,
+        // item 2). The same gh round trip also observes this install's own role, and the
+        // collaborator list when it is readable, onto the project's own stream (item 3).
+        ProjectGitHubAccessResult access = await githubAccess.ObserveAsync(session, project, now, cancellationToken);
+        if (!access.OwnRole.HasPush)
+        {
+            throw new DomainValidationException(
+                $"This install's GitHub account has no push on {access.Repository} (role: "
+                + $"{(access.OwnRole == GitHubRepositoryRole.Unknown ? "none observed" : access.OwnRole.Value)}). "
+                + "A node cannot write this project's ledger without push on its own repository — ask an "
+                + $"admin on {access.Repository} to grant it, then retry h9k project join.");
+        }
+
         await session.SaveChangesAsync(cancellationToken);
 
         NodeAggregate node = await session.Events.AggregateStreamAsync<NodeAggregate>(context.NodeId, token: cancellationToken)
