@@ -3,6 +3,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -133,6 +134,20 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         }
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+
+        // Read again right here rather than trusting whatever this connection carried from an
+        // earlier bootstrap: an install that only just ran 'gh auth login' since its genesis
+        // bootstrap should not stay refused forever over a stale unconfirmed identity (idea
+        // 202383dc, A2b, item 1). The live read's own return value is what actually gates below,
+        // not a re-read of the connection afterward — on a brand-new install this is the very same
+        // call that just started the connection's stream a moment ago, unsaved, and a re-read would
+        // find nothing there yet (the identical reason ProjectJoinCommand.RunAsync flushes before
+        // aggregating), which would misread a fully-authenticated gh as unconfirmed. Falling back
+        // to whatever the connection already carries covers the opposite case: gh being briefly
+        // unreachable must not un-confirm an install that already has a real account on file.
+        bool confirmedLive = await NodeBootstrap.RefreshGitHubIdentityAsync(session, context.ConnectionId, cancellationToken);
+        ConnectionDetails? githubConnection = await session.LoadAsync<ConnectionDetails>(context.ConnectionId, cancellationToken);
+        RequireConfirmedGitHubAccount(confirmedLive || githubConnection?.GitHubAccountId is not null);
 
         // The home is resolved before registration because the repository path may come out of
         // it: with a remote and no --repo, the repository the daemon cuts worktrees from IS the
@@ -369,6 +384,26 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
     /// --rename-archived-to, leaving a non-interactive caller believing the rename it asked for
     /// happened.
     /// </summary>
+    /// <summary>
+    /// A project needs a real, confirmed GitHub account to check push access on its repository
+    /// (h9k project join) and to mirror repository roles (idea 202383dc, A2b, item 1) — never the
+    /// <c>Environment.UserName</c> placeholder <c>NodeBootstrap.EnsureAsync</c> falls back to when
+    /// <c>gh</c> could not answer at genesis bootstrap. An install with only Jira connected is
+    /// exactly this case in practice, hence the rule's own name for it.
+    /// </summary>
+    internal static void RequireConfirmedGitHubAccount(bool confirmed)
+    {
+        if (!confirmed)
+        {
+            throw new DomainValidationException(
+                "A project needs a confirmed GitHub account to check push access on its repository and "
+                + "mirror repository roles (idea 202383dc); this install's GitHub connection has none "
+                + "confirmed — gh reported no login. Run 'gh auth login', then retry h9k project add. "
+                + "A Jira connection alone (h9k connection add jira) tracks cards, not repository access, "
+                + "so it is not enough on its own.");
+        }
+    }
+
     internal static void RequireExclusiveArchivedCollisionFlags(Settings settings)
     {
         if (settings.ReactivateArchived && settings.RenameArchivedTo.IsNotBlank())

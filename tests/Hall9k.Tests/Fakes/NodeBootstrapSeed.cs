@@ -10,10 +10,11 @@ namespace Hall9k.Tests.Fakes;
 
 /// <summary>
 /// Registers a GitHub connection before <see cref="NodeContext.InitializeAsync"/> runs, so
-/// <c>NodeBootstrap.EnsureAsync</c> finds one already on file and never falls through to
-/// <c>NodeBootstrap.GhLogin</c> — the one path bootstrap takes that shells to the real `gh` and
-/// reaches the real network, with no <c>ProcessRunner</c> seam a test could pin instead of it
-/// (PLAN.md §16 #110, correcting #109's audit of this same path). A fresh
+/// <c>NodeBootstrap.EnsureAsync</c> finds one already on file and never falls through to its own
+/// gh identity read (<c>GhLogin</c> when this doc comment was first written; idea 202383dc, A2b
+/// widened the same call into a numeric-id-and-login read) — the one path bootstrap takes that
+/// shells to the real `gh` and reaches the real network, with no <c>ProcessRunner</c> seam a test
+/// could pin instead of it (PLAN.md §16 #110, correcting #109's audit of this same path). A fresh
 /// <see cref="PostgresFixture"/> database carries no connection at all, so every integration test
 /// that bootstraps a node goes through here rather than calling
 /// <see cref="NodeContext.InitializeAsync"/> directly, or it seeds through
@@ -50,7 +51,7 @@ internal static class NodeBootstrapSeed
     /// observation rather than the honest "not yet known" it actually is.
     /// </para>
     /// </summary>
-    public static async Task SeedGitHubConnectionAsync(IDocumentStore store, CancellationToken cancellationToken)
+    public static async Task<Guid> SeedGitHubConnectionAsync(IDocumentStore store, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
 
@@ -59,13 +60,21 @@ internal static class NodeBootstrapSeed
             .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
         if (existing is not null)
         {
-            return;
+            return existing.Id;
         }
 
         ConnectionRegistered registered = ConnectionDecider.Register(
             DomainId.New(), Guid.Empty, WorkItemProvider.GitHub,
             "test-user", CredentialReference.GhCli, DateTimeOffset.UtcNow);
         session.Events.StartStream<ConnectionAggregate>(registered.Id, registered);
+
+        // Every caller of this seed gets a confirmed GitHub identity, not merely a placeholder
+        // login (idea 202383dc, A2b, item 1) — a test that needs join or the access mirror to
+        // actually run its own gh calls needs an account id to resolve in the first place, and one
+        // that does not care about identity at all is unaffected either way.
+        session.Events.Append(
+            registered.Id, new ConnectionGitHubIdentityObserved(registered.Id, 1, "test-user", DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
+        return registered.Id;
     }
 }
