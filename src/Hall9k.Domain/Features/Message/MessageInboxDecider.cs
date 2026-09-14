@@ -23,4 +23,9 @@ public static class MessageInboxDecider
 
         return new InboxSenderIgnored(senderNodeId, reason, at);
     }
+
+    /// <summary>A sweep read this sender's outbox successfully but found nothing new to advance the
+    /// cursor to — the only way a prior <see cref="InboxSenderIgnored"/> mark still clears.</summary>
+    public static InboxSenderVouched ConfirmVouched(Guid senderNodeId, DateTimeOffset at) =>
+        new(senderNodeId, at);
 }

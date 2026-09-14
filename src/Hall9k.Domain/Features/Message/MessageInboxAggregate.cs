@@ -34,4 +34,13 @@ public sealed class MessageInboxAggregate
         IgnoredReason = @event.Reason;
         IgnoredAt = @event.At;
     }
+
+    public void Apply(InboxSenderVouched @event)
+    {
+        Id = MessageStreamId.ForInbox(@event.SenderNodeId);
+        SenderNodeId = @event.SenderNodeId;
+        SenderIgnored = false;
+        IgnoredReason = null;
+        IgnoredAt = null;
+    }
 }
