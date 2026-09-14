@@ -8,6 +8,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Tests.Fakes;
 using JasperFx.Events;
 using Marten;
+using Npgsql;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -59,6 +60,23 @@ public sealed class TaskOwnerFingerprintReplayTests(PostgresFixture postgres) : 
 
             session.Events.StartStream<TaskAggregate>(taskId, added, assigned, claimed);
             await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Constructing TaskAssigned/TaskClaimed with the trailing fingerprint parameter omitted
+        // still serializes an explicit JSON null for it (TaskLifecycleProjectionBackfill.cs's own
+        // shape) — a real pre-existing event has no key at all. Stripping the keys here, directly
+        // against the stored row, is what actually exercises System.Text.Json's missing-key
+        // fallback to the constructor default rather than its explicit-null path (cycle-1
+        // conformance review finding on this test).
+        await using (NpgsqlConnection connection = new(postgres.ConnectionString))
+        {
+            await connection.OpenAsync(cts.Token);
+            await using NpgsqlCommand stripKeys = new(
+                "update public.mt_events set data = (data - 'assignedOwnerRootFingerprint') - 'ownerRootFingerprint' "
+                + "where stream_id = @streamId",
+                connection);
+            stripKeys.Parameters.AddWithValue("streamId", taskId);
+            await stripKeys.ExecuteNonQueryAsync(cts.Token);
         }
 
         await using (IQuerySession session = store.QuerySession())
