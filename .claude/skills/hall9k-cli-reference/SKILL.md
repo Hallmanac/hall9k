@@ -102,9 +102,10 @@ git refs under `refs/hall9k/` that GitHub never shows and branch protection neve
 `refs/heads/*`/`refs/tags/*` only): small files, one writer per path, history nobody merges into
 anything. `ILedger`/`GitLedger` (`Hall9k.Connectors.Ledger`) read and write a file at a path in a
 named ref by git plumbing alone — no worktree, no hand edits — fetching and pushing with an
-explicit refspec built from `LedgerRefRegistry`, the one place every ref this platform ever touches
-under that namespace is named; an ordinary `git fetch origin` never brings one down, and nothing
-uses a `refs/hall9k/` ref this registry does not already know about. A write is conditional on the
+explicit, single-ref refspec built from the caller's own ref name, gated by `LedgerRefRegistry`,
+the one place every ref this platform ever touches under that namespace is named; an ordinary
+`git fetch origin` never brings one down, and nothing uses a `refs/hall9k/` ref this registry does
+not already know about. A write is conditional on the
 blob the caller last read there (`Conflict` comes back rather than clobbering someone else's), and
 every commit is signed per invocation once a caller has a key. `refs/hall9k/ledger/records` and the
 `refs/hall9k/messages/` prefix are the first two registered refs; nothing reads or writes their
