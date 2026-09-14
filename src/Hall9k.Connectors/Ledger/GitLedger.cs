@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text;
 using Hall9k.Connectors.Processes;
+using Hall9k.Domain.Shared.Exceptions;
 using Microsoft.Extensions.Logging;
 
 namespace Hall9k.Connectors.Ledger;
@@ -43,6 +44,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
     public async Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken)
     {
         RequireRegistered(request.RefName);
+        RequireSigningKey(request.SigningKey);
         await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
 
         string lastError = string.Empty;
@@ -106,6 +108,22 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                 + "uses must be registered there first, so an ordinary fetch never brings it down "
                 + "and nothing else ever touches it.",
                 nameof(refName));
+        }
+    }
+
+    /// <summary>
+    /// Signing is mandatory, not merely supported: every node has its own key by the time it can
+    /// reach a ledger write at all (idea 202383dc, A2a), so a caller with none is refused here
+    /// rather than landing an unsigned commit nothing downstream can attribute to a node.
+    /// </summary>
+    private static void RequireSigningKey(LedgerSigningKey? signingKey)
+    {
+        if (signingKey is null)
+        {
+            throw new DomainValidationException(
+                "A ledger write needs the writing node's own signing key — signing is mandatory for "
+                + "every ledger commit, not optional. Pass a LedgerSigningKey for this node (see "
+                + "NodeKeyStore.EnsureAsync).");
         }
     }
 

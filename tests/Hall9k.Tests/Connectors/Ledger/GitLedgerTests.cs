@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Domain.Shared.Exceptions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -17,8 +18,21 @@ public sealed class GitLedgerTests : IDisposable
     private readonly LedgerTestRepo _repo = new();
     private readonly GitLedger _ledger = new(NullLogger<GitLedger>.Instance);
     private readonly LedgerCommitter _committer = new("Ledger Test", "ledger-test@hall9k.local");
+    private readonly string _signingKeyPath;
+    private readonly LedgerSigningKey _signingKey;
 
-    public void Dispose() => _repo.Dispose();
+    public GitLedgerTests()
+    {
+        (_signingKeyPath, _) = GenerateSshKeypair();
+        _signingKey = new LedgerSigningKey(_signingKeyPath);
+    }
+
+    public void Dispose()
+    {
+        _repo.Dispose();
+        File.Delete(_signingKeyPath);
+        File.Delete($"{_signingKeyPath}.pub");
+    }
 
     [Fact]
     public async Task WriteAsync_ThenAFreshClone_CanReadTheWriteBackThroughGitLedger()
@@ -28,7 +42,7 @@ public sealed class GitLedgerTests : IDisposable
         string writer = _repo.CloneNode(hub);
 
         LedgerWriteOutcome outcome = await _ledger.WriteAsync(
-            new LedgerWriteRequest(writer, refName, "a.yaml", "content: v1\n", null, "write a", _committer),
+            new LedgerWriteRequest(writer, refName, "a.yaml", "content: v1\n", null, "write a", _committer, _signingKey),
             CancellationToken.None);
 
         outcome.Verdict.Should().Be(LedgerWriteVerdict.Written);
@@ -50,10 +64,10 @@ public sealed class GitLedgerTests : IDisposable
         string node = _repo.CloneNode(hub);
 
         LedgerWriteOutcome first = await _ledger.WriteAsync(
-            new LedgerWriteRequest(node, firstRef, "first.yaml", "first caller\n", null, "first", _committer),
+            new LedgerWriteRequest(node, firstRef, "first.yaml", "first caller\n", null, "first", _committer, _signingKey),
             CancellationToken.None);
         LedgerWriteOutcome second = await _ledger.WriteAsync(
-            new LedgerWriteRequest(node, secondRef, "second.yaml", "second caller\n", null, "second", _committer),
+            new LedgerWriteRequest(node, secondRef, "second.yaml", "second caller\n", null, "second", _committer, _signingKey),
             CancellationToken.None);
 
         first.Verdict.Should().Be(LedgerWriteVerdict.Written);
@@ -78,7 +92,7 @@ public sealed class GitLedgerTests : IDisposable
 
         Func<Task> read = () => _ledger.ReadAsync(node, unregistered, "x.yaml", CancellationToken.None);
         Func<Task> write = () => _ledger.WriteAsync(
-            new LedgerWriteRequest(node, unregistered, "x.yaml", "x\n", null, "x", _committer), CancellationToken.None);
+            new LedgerWriteRequest(node, unregistered, "x.yaml", "x\n", null, "x", _committer, _signingKey), CancellationToken.None);
 
         await read.Should().ThrowAsync<ArgumentException>();
         await write.Should().ThrowAsync<ArgumentException>();
@@ -92,11 +106,11 @@ public sealed class GitLedgerTests : IDisposable
         string node = _repo.CloneNode(hub);
 
         await _ledger.WriteAsync(
-            new LedgerWriteRequest(node, refName, "holder.yaml", "node-a\n", null, "claim", _committer),
+            new LedgerWriteRequest(node, refName, "holder.yaml", "node-a\n", null, "claim", _committer, _signingKey),
             CancellationToken.None);
 
         LedgerWriteOutcome secondClaim = await _ledger.WriteAsync(
-            new LedgerWriteRequest(node, refName, "holder.yaml", "node-b\n", null, "claim", _committer),
+            new LedgerWriteRequest(node, refName, "holder.yaml", "node-b\n", null, "claim", _committer, _signingKey),
             CancellationToken.None);
 
         secondClaim.Verdict.Should().Be(LedgerWriteVerdict.Conflict);
@@ -115,10 +129,10 @@ public sealed class GitLedgerTests : IDisposable
         GitLedger ledgerB = new(NullLogger<GitLedger>.Instance);
 
         Task<LedgerWriteOutcome> writeA = ledgerA.WriteAsync(
-            new LedgerWriteRequest(nodeA, refName, "a.yaml", "from node a\n", null, "claim a", _committer),
+            new LedgerWriteRequest(nodeA, refName, "a.yaml", "from node a\n", null, "claim a", _committer, _signingKey),
             CancellationToken.None);
         Task<LedgerWriteOutcome> writeB = ledgerB.WriteAsync(
-            new LedgerWriteRequest(nodeB, refName, "b.yaml", "from node b\n", null, "claim b", _committer),
+            new LedgerWriteRequest(nodeB, refName, "b.yaml", "from node b\n", null, "claim b", _committer, _signingKey),
             CancellationToken.None);
         LedgerWriteOutcome[] outcomes = await Task.WhenAll(writeA, writeB);
 
@@ -138,7 +152,7 @@ public sealed class GitLedgerTests : IDisposable
         string nodeA = _repo.CloneNode(hub);
         string nodeC = _repo.CloneNode(hub);
 
-        LedgerFile baseline = await _ledger.WriteFirstAndReRead(nodeA, refName, "a.yaml", "v1\n", _committer);
+        LedgerFile baseline = await _ledger.WriteFirstAndReRead(nodeA, refName, "a.yaml", "v1\n", _committer, _signingKey);
 
         GitLedger racing = new(NullLogger<GitLedger>.Instance)
         {
@@ -150,14 +164,14 @@ public sealed class GitLedgerTests : IDisposable
                 if (attempt == 1)
                 {
                     await new GitLedger(NullLogger<GitLedger>.Instance).WriteAsync(
-                        new LedgerWriteRequest(nodeC, refName, "b.yaml", "other\n", null, "claim b", _committer),
+                        new LedgerWriteRequest(nodeC, refName, "b.yaml", "other\n", null, "claim b", _committer, _signingKey),
                         cancellationToken);
                 }
             },
         };
 
         LedgerWriteOutcome outcome = await racing.WriteAsync(
-            new LedgerWriteRequest(nodeA, refName, "a.yaml", "v2\n", baseline.BlobId, "update a", _committer),
+            new LedgerWriteRequest(nodeA, refName, "a.yaml", "v2\n", baseline.BlobId, "update a", _committer, _signingKey),
             CancellationToken.None);
 
         outcome.Verdict.Should().Be(LedgerWriteVerdict.Written);
@@ -175,7 +189,7 @@ public sealed class GitLedgerTests : IDisposable
         string nodeA = _repo.CloneNode(hub);
         string nodeC = _repo.CloneNode(hub);
 
-        LedgerFile baseline = await _ledger.WriteFirstAndReRead(nodeA, refName, "a.yaml", "v1\n", _committer);
+        LedgerFile baseline = await _ledger.WriteFirstAndReRead(nodeA, refName, "a.yaml", "v1\n", _committer, _signingKey);
 
         GitLedger racing = new(NullLogger<GitLedger>.Instance)
         {
@@ -186,14 +200,14 @@ public sealed class GitLedgerTests : IDisposable
                     // Lands a competing write to the SAME path this attempt is about to push,
                     // right before it pushes.
                     await new GitLedger(NullLogger<GitLedger>.Instance).WriteAsync(
-                        new LedgerWriteRequest(nodeC, refName, "a.yaml", "from-c\n", baseline.BlobId, "claim a from c", _committer),
+                        new LedgerWriteRequest(nodeC, refName, "a.yaml", "from-c\n", baseline.BlobId, "claim a from c", _committer, _signingKey),
                         cancellationToken);
                 }
             },
         };
 
         LedgerWriteOutcome outcome = await racing.WriteAsync(
-            new LedgerWriteRequest(nodeA, refName, "a.yaml", "v2-from-a\n", baseline.BlobId, "update a", _committer),
+            new LedgerWriteRequest(nodeA, refName, "a.yaml", "v2-from-a\n", baseline.BlobId, "update a", _committer, _signingKey),
             CancellationToken.None);
 
         outcome.Verdict.Should().Be(LedgerWriteVerdict.Conflict);
@@ -209,7 +223,7 @@ public sealed class GitLedgerTests : IDisposable
         string writer = _repo.CloneNode(hub);
 
         LedgerWriteOutcome written = await _ledger.WriteAsync(
-            new LedgerWriteRequest(writer, refName, "a.yaml", "v1\n", null, "write a", _committer),
+            new LedgerWriteRequest(writer, refName, "a.yaml", "v1\n", null, "write a", _committer, _signingKey),
             CancellationToken.None);
         written.Verdict.Should().Be(LedgerWriteVerdict.Written);
 
@@ -266,6 +280,20 @@ public sealed class GitLedgerTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task WriteAsync_WithNoSigningKey_IsRefused()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+
+        Func<Task> write = () => _ledger.WriteAsync(
+            new LedgerWriteRequest(node, refName, "a.yaml", "v1\n", null, "write a", _committer),
+            CancellationToken.None);
+
+        await write.Should().ThrowAsync<DomainValidationException>();
+    }
+
     private static string UniqueTestRef() => LedgerRefRegistry.RegisterExact($"refs/hall9k/ledger/test-{Guid.NewGuid():N}").RefspecSource;
 
     private static (string PrivateKeyPath, string PublicKey) GenerateSshKeypair()
@@ -305,10 +333,11 @@ file static class GitLedgerTestExtensions
     /// <summary>Seeds a path with an initial write, then reads it back for the blob id a
     /// conflict/re-apply test needs as its baseline ExpectedBlobId.</summary>
     public static async Task<LedgerFile> WriteFirstAndReRead(
-        this GitLedger ledger, string repositoryPath, string refName, string path, string content, LedgerCommitter committer)
+        this GitLedger ledger, string repositoryPath, string refName, string path, string content,
+        LedgerCommitter committer, LedgerSigningKey signingKey)
     {
         await ledger.WriteAsync(
-            new LedgerWriteRequest(repositoryPath, refName, path, content, null, "seed", committer),
+            new LedgerWriteRequest(repositoryPath, refName, path, content, null, "seed", committer, signingKey),
             CancellationToken.None);
         return await ledger.ReadAsync(repositoryPath, refName, path, CancellationToken.None);
     }
