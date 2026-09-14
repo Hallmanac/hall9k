@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Identity;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
@@ -5,10 +6,12 @@ using Marten;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Names an owner the way <see cref="ProjectResolver"/> names a project: the full id, the
-/// exact name, or an unambiguous fragment of the name or email. Assignment is the one place
-/// a human says whose nodes may run a task (Decisions Log #34), so guessing at an ambiguous
-/// name is exactly the wrong thing to do — every failure names the candidates instead.
+/// Names an owner the way <see cref="ProjectResolver"/> names a project: the full id, a root
+/// fingerprint (Decisions Log #190 — the owner id everywhere a human or another node reads one,
+/// once a root is established), the exact name, or an unambiguous fragment of the name or email.
+/// Assignment is the one place a human says whose nodes may run a task (Decisions Log #34), so
+/// guessing at an ambiguous name is exactly the wrong thing to do — every failure names the
+/// candidates instead.
 /// </summary>
 internal static class OwnerResolver
 {
@@ -19,6 +22,14 @@ internal static class OwnerResolver
         {
             return await session.LoadAsync<OwnerDetails>(id, cancellationToken)
                 ?? throw new DomainNotFoundException($"No owner with id {id}.");
+        }
+
+        if (NodeKeyStore.IsFingerprint(nameOrFragment))
+        {
+            return await session.Query<OwnerDetails>()
+                    .Where(owner => owner.RootFingerprint == nameOrFragment)
+                    .FirstOrDefaultAsync(cancellationToken)
+                ?? throw new DomainNotFoundException($"No owner with root fingerprint {nameOrFragment}.");
         }
 
         IReadOnlyList<OwnerDetails> owners = await session.Query<OwnerDetails>().ToListAsync(cancellationToken);

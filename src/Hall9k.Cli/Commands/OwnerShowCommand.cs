@@ -35,18 +35,20 @@ public sealed class OwnerShowCommand : Hall9kAsyncCommand<OwnerShowCommand.Setti
         Table table = new Table().Border(TableBorder.None).HideHeaders();
         table.AddColumns("k", "v");
         table.AddRow("[bold]Owner[/]", $"[bold]{owner.Name.EscapeMarkup()}[/]");
-        table.AddRow("Id", $"[dim]{owner.Id}[/]");
+        // The cross-node identity (idea 202383dc, A2a, Decisions Log #190): the root fingerprint
+        // is the owner id everywhere a human or another node reads one, once a root is
+        // established — h9k owner show <fingerprint> and h9k task assign --owner <fingerprint>
+        // both resolve it. Before that, the id shown is this install's own local Guid, since no
+        // fingerprint has been claimed yet to show instead (independent pre-PR review, cycle 1,
+        // conformance lens, medium).
+        table.AddRow("Id", owner.RootFingerprint is { } fingerprint
+            ? $"{fingerprint} {(owner.RootFingerprintVerified ? "[dim](this owner's own root)[/]" : "[yellow](claimed, unverified)[/]")}"
+            : $"[dim]{owner.Id} — no root established yet, h9k project join <project>[/]");
         table.AddRow("Email", owner.Email.IsNotBlank() ? owner.Email!.EscapeMarkup() : "[dim]none recorded[/]");
         table.AddRow("Projects", projects.Count == 0
             ? "[dim]none registered to this owner yet[/]"
             : string.Join(", ", projects.Select(project => project.Name.EscapeMarkup()).Order(StringComparer.OrdinalIgnoreCase)));
         table.AddRow("Re-request review", DescribePolicy(owner.ReviewRerequest));
-
-        // The cross-node identity (idea 202383dc, A2a): the fingerprint is the owner id everywhere
-        // in Hall9k once a node has joined a project, not just this install's own local Guid above.
-        table.AddRow("Root fingerprint", owner.RootFingerprint is { } fingerprint
-            ? $"{fingerprint} {(owner.RootFingerprintVerified ? "[dim](this owner's own root)[/]" : "[yellow](claimed, unverified)[/]")}"
-            : "[dim]not established yet — h9k project join <project>[/]");
 
         string machineName = Environment.MachineName;
         NodeDetails? node = (await session.Query<NodeDetails>()
