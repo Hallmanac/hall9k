@@ -643,8 +643,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         }
         else if (task.AssignedOwnerId != context.OwnerId)
         {
+            // Names the owner the way every other owner reference in Hall9k does — the raw Guid
+            // this refusal used to print is an internal id nobody outside the database recognizes
+            // (independent pre-PR review, cycle 1, conformance lens, medium).
+            OwnerDetails? assignedOwner = task.AssignedOwnerId is { } assignedOwnerId
+                ? await session.LoadAsync<OwnerDetails>(assignedOwnerId, cancellationToken)
+                : null;
             throw new DomainConflictException(
-                $"Task {task.Id} is assigned to {task.AssignedOwnerId} — an operator claims only their own owner's work.");
+                $"Task {task.Id} is assigned to {assignedOwner?.Name ?? task.AssignedOwnerId?.ToString() ?? "an unknown owner"} "
+                + "— an operator claims only their own owner's work.");
         }
         else if (task.State == TaskState.Blocked)
         {
