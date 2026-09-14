@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using System.Globalization;
 using System.Text;
-using System.Text.RegularExpressions;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
@@ -16,7 +15,7 @@ using Spectre.Console.Cli;
 
 namespace Hall9k.Cli.Commands;
 
-public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.Settings>
+public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.Settings>
 {
     public sealed class Settings : CommandSettings
     {
@@ -41,7 +40,24 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
         await using IDocumentSession session = store.LightweightSession();
 
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
-        JoinOutcome outcome = await RunAsync(session, project, settings.Owner, cancellationToken);
+        JoinOutcome outcome;
+        try
+        {
+            outcome = await RunAsync(session, project, settings.Owner, cancellationToken);
+        }
+        // A1's own git plumbing throws these as plain, undecorated exceptions rather than a
+        // Domain*Exception — fine for h9k project add's own TryJoinAsync, which already wraps
+        // every exception broadly and reports it as best-effort, but this standalone command has
+        // no such wrapper, so either one previously escaped as an unhandled crash with a stack
+        // trace instead of the "why" on stderr AGENTS.md's CLI standard requires (adversarial
+        // review, cycle 1, low).
+        catch (Exception exception) when (exception is LedgerPushRejectedException or InvalidOperationException)
+        {
+            throw new DomainValidationException(
+                $"h9k project join could not finish against '{project.Name}'s own ledger: "
+                + $"{exception.Message} Re-run h9k project join {project.Name} once that settles.");
+        }
+
         Report(project, outcome);
         return ExitCodes.Ok;
     }
@@ -54,7 +70,8 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
         string ClaimedOwnerFingerprint,
         bool EstablishedRoot,
         bool RetiredPreviousRoot,
-        bool WroteNodeFile);
+        bool WroteNodeFile,
+        bool OwnerClaimChanged);
 
     internal static Task<JoinOutcome> RunAsync(
         IDocumentSession session, ProjectDetails project, string? claimedOwnerOverride, CancellationToken cancellationToken) =>
@@ -75,7 +92,7 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
         NodeKeyStore keyStore,
         CancellationToken cancellationToken)
     {
-        if (claimedOwnerOverride.IsNotBlank() && !FingerprintPattern().IsMatch(claimedOwnerOverride))
+        if (claimedOwnerOverride.IsNotBlank() && !NodeKeyStore.IsFingerprint(claimedOwnerOverride))
         {
             throw new DomainValidationException(
                 $"'{claimedOwnerOverride}' is not a fingerprint h9k project join can claim — a fingerprint "
@@ -163,6 +180,13 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
             node.MachineName, node.OperatingSystem, node.KeyRegisteredAt ?? now,
             committer, signingKey, cancellationToken);
 
+        // A node's own claim is install-wide (the Node stream), but node.yaml is only ever
+        // rewritten in the project being joined right now, above — unlike root retirement, which
+        // deliberately runs in every project this owner is registered to. A node.yaml already
+        // written into some other, earlier-joined project under the old claim is left stale, so a
+        // prior non-null claim that actually changes here is reported rather than left silent
+        // (independent pre-PR review, cycle 1, conformance lens, low).
+        bool ownerClaimChanged = node.ClaimedOwnerFingerprint is not null && node.ClaimedOwnerFingerprint != claimedFingerprint;
         if (node.ClaimedOwnerFingerprint != claimedFingerprint)
         {
             session.Events.Append(context.NodeId, NodeDecider.ClaimOwner(node, claimedFingerprint, now));
@@ -172,7 +196,7 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
 
         return new JoinOutcome(
             context.NodeId, key.Fingerprint, key.PrivateKeyPath, claimedFingerprint,
-            establishingRoot, retiredPreviousRoot, wroteNodeFile);
+            establishingRoot, retiredPreviousRoot, wroteNodeFile, ownerClaimChanged);
     }
 
     internal static void Report(ProjectDetails project, JoinOutcome outcome)
@@ -187,6 +211,13 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
         {
             AnsiConsole.MarkupLine("[yellow]This node's own previously self-created root was retired in favor of the claimed owner.[/]");
         }
+
+        if (outcome.OwnerClaimChanged)
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]This node's claimed owner changed. Any other project this node already joined still "
+                + "has the old claim in its own node.yaml until h9k project join <project> runs there too.[/]");
+        }
     }
 
     /// <summary>
@@ -196,6 +227,15 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
     /// is checked even when this session's own project query has not yet observed it (a same-session
     /// registration not yet visible to a fresh query).
     /// </summary>
+    /// <remarks>
+    /// Retiring in <paramref name="currentProject"/> is required — a failure there fails this join,
+    /// the same as every other write it makes. Retiring in every <em>other</em> registered project
+    /// is best-effort: an archived project is skipped outright, and an unreachable one (its remote
+    /// deleted, or behind a VPN that is down) is reported and skipped rather than blocking the join
+    /// the user actually asked for. A forgotten <c>--owner</c> is supposed to cost one rerun, not a
+    /// detour through an unrelated project's own remote (independent pre-PR review, cycle 1,
+    /// conformance and adversarial lenses, medium).
+    /// </remarks>
     private static async Task<bool> RetireSelfRootEverywhereAsync(
         IDocumentSession session, ILedger ledger, Guid ownerId, ProjectDetails currentProject,
         string retiredFingerprint, string realRootFingerprint, LedgerCommitter committer,
@@ -205,29 +245,50 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
             .Where(p => p.OwnerId == ownerId)
             .ToListAsync(cancellationToken);
 
-        IEnumerable<ProjectDetails> candidates = ownedProjects.Any(p => p.Id == currentProject.Id)
-            ? ownedProjects
-            : [.. ownedProjects, currentProject];
-
         string refName = $"refs/hall9k/ledger/owners/{retiredFingerprint}";
         string path = $"owners/{retiredFingerprint}/root.yaml";
 
-        bool retiredAny = false;
-        foreach (ProjectDetails candidate in candidates)
-        {
-            LedgerFile existing = await ledger.ReadAsync(candidate.RepositoryPath, refName, path, cancellationToken);
-            if (!existing.Exists)
-            {
-                continue;
-            }
+        bool retiredAny = await RetireIfPresentAsync(
+            ledger, currentProject, refName, path, retiredFingerprint, realRootFingerprint,
+            committer, signingKey, now, cancellationToken);
 
-            await RetireSelfRootAsync(
-                ledger, candidate.RepositoryPath, retiredFingerprint, realRootFingerprint,
-                committer, signingKey, now, cancellationToken);
-            retiredAny = true;
+        IEnumerable<ProjectDetails> otherProjects = ownedProjects
+            .Where(p => p.Id != currentProject.Id && !p.IsArchived);
+        foreach (ProjectDetails other in otherProjects)
+        {
+            try
+            {
+                retiredAny |= await RetireIfPresentAsync(
+                    ledger, other, refName, path, retiredFingerprint, realRootFingerprint,
+                    committer, signingKey, now, cancellationToken);
+            }
+            catch (Exception exception) when (exception is LedgerPushRejectedException or DomainConflictException or InvalidOperationException)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Could not retire the previous root in '{other.Name.EscapeMarkup()}' "
+                    + $"({exception.Message.EscapeMarkup()}) — skipped. Re-run h9k project join {other.Name.EscapeMarkup()} "
+                    + "once that project is reachable again.[/]");
+            }
         }
 
         return retiredAny;
+    }
+
+    private static async Task<bool> RetireIfPresentAsync(
+        ILedger ledger, ProjectDetails project, string refName, string path,
+        string retiredFingerprint, string realRootFingerprint, LedgerCommitter committer,
+        LedgerSigningKey signingKey, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        LedgerFile existing = await ledger.ReadAsync(project.RepositoryPath, refName, path, cancellationToken);
+        if (!existing.Exists)
+        {
+            return false;
+        }
+
+        await RetireSelfRootAsync(
+            ledger, project.RepositoryPath, retiredFingerprint, realRootFingerprint,
+            committer, signingKey, now, cancellationToken);
+        return true;
     }
 
     private static async Task RetireSelfRootAsync(
@@ -368,14 +429,4 @@ public sealed partial class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinC
 
     private static string QuoteYaml(string value) =>
         $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"";
-
-    /// <summary>
-    /// Hall9k's own fingerprint shape (see <c>NodeKeyStore.Fingerprint</c>): exactly 64 lowercase
-    /// hex characters. <c>\A</c>/<c>\z</c> rather than <c>^</c>/<c>$</c>: unanchored to line
-    /// boundaries, <c>$</c> alone still matches immediately before a single trailing newline,
-    /// which would let one slip through into a value this validation exists to keep out of a git
-    /// ref name.
-    /// </summary>
-    [GeneratedRegex(@"\A[0-9a-f]{64}\z")]
-    private static partial Regex FingerprintPattern();
 }
