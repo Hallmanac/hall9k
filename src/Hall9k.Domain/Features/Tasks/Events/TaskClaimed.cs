@@ -29,6 +29,15 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// flag, never turns it back off; only <c>h9k task handback</c> (design ruling R9) and a default
 /// <c>h9k task release</c> (design ruling R6, amended 2026-09-05) do that.
 /// </param>
+/// <param name="OwnerRootFingerprint">
+/// The claiming owner's cross-node root fingerprint beside <see cref="OwnerId"/>'s local Guid
+/// (idea 202383dc, event stamping, criterion 4) — an added field, never a retyping of
+/// <see cref="OwnerId"/>: Owner and Node stream keys stay Guids (the identity core's own shape).
+/// Absent on every event this platform wrote before that task landed; a reader resolves it from
+/// there through the identity core's own Guid-to-fingerprint mapping
+/// (<see cref="Owner.OwnerRootFingerprintResolver"/>) rather than treating a null here as "no
+/// fingerprint exists".
+/// </param>
 public sealed record TaskClaimed(
     Guid Id,
     Guid NodeId,
@@ -38,4 +47,5 @@ public sealed record TaskClaimed(
     DateTimeOffset ClaimedAt,
     bool DependencyOverrideAcknowledged = false,
     bool DependencyOverrideCarriedForward = false,
-    bool InteractiveMode = false);
+    bool InteractiveMode = false,
+    string? OwnerRootFingerprint = null);
