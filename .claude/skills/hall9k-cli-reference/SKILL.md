@@ -17,8 +17,8 @@ h9k uninstall [--purge-data] # take the platform off the machine; the database s
 h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31)
 h9k config show|set          # the daemon's durable operating settings: node ceiling (--max-concurrent-task-runs), the per-run session cap default (--session-cap-per-run), model-by-role, interactive-claim-stale-after-days, review-cycle caps, the review stage composition (--review-stage-composition, --accept-reduced-review to degrade it), a periodic token-spend budget (--spend-budget, --spend-period; backlog 59, Decisions Log #103, #111, #112, #120, #129), the message sweep's active/idle poll ranges (--message-poll-active-min/-max, --message-poll-idle-min/-max, seconds; idea 202383dc M1b)
 h9k doctor [--yes]           # diagnose the database situation and what to do about it; --yes remediates non-interactively, for scripts and dispatched agents (Decisions Log #73, #74, #118)
-h9k project add --name <n> --repo-url <url>   # register a project and create its home directory; offers to reactivate or rename an archived project whose name it collides with (--reactivate-archived, --rename-archived-to <NAME>) (Decisions Log #182); also runs h9k project join once the repository is reachable on disk, reporting plainly if it could not (§16 #190)
-h9k project join <name> [--owner <fingerprint>]   # establish or confirm this node's identity in a project's ledger: generates this node's ed25519 key once under ~/.hall9k/keys/<node-id>, then writes its node file signed with it; the first join naming no --owner establishes this owner's root and that fingerprint becomes the owner id everywhere in Hall9k (h9k owner show <fingerprint>, h9k task assign --owner <fingerprint>), recorded on the Owner stream, and a later plain join keeps whatever root is already claimed; --owner <fingerprint> claims an existing root instead, unverified until the team half's vouch (not yet built); re-runnable to change the claim, retiring a self-created root (required in the project being joined, best-effort in every other reachable, non-archived project that holds it) when this node turns out to belong to another one (idea 202383dc, A2a, §16 #190)
+h9k project add --name <n> --repo-url <url>   # register a project and create its home directory; offers to reactivate or rename an archived project whose name it collides with (--reactivate-archived, --rename-archived-to <NAME>) (Decisions Log #182); also runs h9k project join once the repository is reachable on disk, reporting plainly if it could not (§16 #190); refused up front when this install has no confirmed GitHub account (gh reported no login) — a Jira connection alone tracks cards, not repository access, so it is not enough on its own (idea 202383dc, A2b, §16 PLACEHOLDER-450b9d84)
+h9k project join <name> [--owner <fingerprint>]   # establish or confirm this node's identity in a project's ledger: generates this node's ed25519 key once under ~/.hall9k/keys/<node-id>, then writes its node file signed with it; the first join naming no --owner establishes this owner's root and that fingerprint becomes the owner id everywhere in Hall9k (h9k owner show <fingerprint>, h9k task assign --owner <fingerprint>), recorded on the Owner stream, and a later plain join keeps whatever root is already claimed; --owner <fingerprint> claims an existing root instead, unverified until the team half's vouch (not yet built); re-runnable to change the claim, retiring a self-created root (required in the project being joined, best-effort in every other reachable, non-archived project that holds it) when this node turns out to belong to another one (idea 202383dc, A2a, §16 #190); refused before any key is generated or any ledger byte is written when the project's own GitHub account has no push on the repository, naming the repository and the rule (idea 202383dc, A2b, §16 PLACEHOLDER-450b9d84)
 h9k project init <name>      # create, repair or refresh a project's home; idempotent
 h9k project list [--include-archived]   # every project with its tasks counted by attention bucket; archived ones are hidden unless asked for (Decisions Log #182)
 h9k project show <name>      # one project: home, registration, settings, rollup, newest tasks
@@ -43,6 +43,7 @@ h9k status                   # the attention pane: state, phase, and attention o
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
 h9k epic add --project <name> --title "<name>"    # name a first-class grouping of tasks (Decisions Log #100)
 h9k connection list          # every external account this install can reach, and where its credential lives
+h9k owner show [<owner>]     # this owner's own record, including its linked accounts as its GitHub connections (login and GitHub's own numeric id, or 'unconfirmed' when gh has never answered for it) — an identity holds a list of accounts, so more than one shows if more than one is registered (idea 202383dc, A2b, §16 PLACEHOLDER-450b9d84)
 ```
 
 The board answers four questions with three surfaces (Decisions Log #66). **State** is the
@@ -514,6 +515,28 @@ credential whenever a project's backlog policy is `jira`, distinguishing no conn
 from a rejected credential and teaching `h9k connection add jira` as the fix for the latter — the
 Atlassian CLI (`twg`) this write path used before #114 is no longer required for any `h9k` or
 `h9kd` operation.
+
+**GitHub's own identity and repository access are observed, never assigned** (idea 202383dc, A2b).
+The GitHub numeric id and login behind the machine's `gh` login are read at bootstrap (the first
+time this install's GitHub connection is created) and at every daemon start, and appended to the
+connection's own stream beside the Jira `accountId` observation above — `h9k owner show` lists
+every confirmed account. Every project's own repository access is mirrored the same read-only way,
+observed at `h9k project join`: this install's own role, read from the repository object itself
+(`gh repo view --json viewerPermission`) and so available at any access level; the full
+collaborator list with roles, read only when this install's own account already has push, since
+GitHub itself refuses to list collaborators to anyone who does not. Both land on the project's own
+stream, appended only when something actually changed since the last observation — Hall9k never
+writes a permission, only ever records what GitHub already decided. `h9k project join` is refused
+outright when the project's account has no push on the repository, before any key is generated or
+any ledger byte is written, naming the repository and the rule. Every gh call this feature makes
+goes through one helper (`Hall9k.Connectors.WorkItems.ProjectGitHubClient`) that runs as the
+project's own registered account rather than whichever account the machine's `gh` happens to be
+logged into, pinning that account's token to the one invocation (`gh auth token --user <login>`,
+live as of gh 2.100) as `GH_TOKEN` rather than switching the machine's own `gh auth` selection. The
+platform's other 17 direct `gh` call sites across 11 files are left exactly as they are — migrating
+them onto this helper is its own, later, unstacked task. GitHub signing-key registration and
+account switching as first-class features are both parked (triggers: "a team wants automatic
+admission from the collaborator list", "first owner needing two accounts on one machine").
 
 **Every published task is tracked automatically**, per a project setting (backlog: track every
 published task), and GitHub gets a write path of its own — unlike Jira, an issue's shape (title,
