@@ -518,14 +518,14 @@ Atlassian CLI (`twg`) this write path used before #114 is no longer required for
 
 **GitHub's own identity and repository access are observed, never assigned** (idea 202383dc, A2b).
 The GitHub numeric id and login behind the machine's `gh` login are read at bootstrap (the first
-time this install's GitHub connection is created) and at every daemon start, and appended to the
-connection's own stream beside the Jira `accountId` observation above — `h9k owner show` lists
+time this install's GitHub connection is created) and again at `h9k project add`, and appended to
+the connection's own stream beside the Jira `accountId` observation above; `h9k owner show` lists
 every confirmed account. Every project's own repository access is mirrored the same read-only way,
 observed at `h9k project join`: this install's own role, read from the repository object itself
 (`gh repo view --json viewerPermission`) and so available at any access level; the full
 collaborator list with roles, read only when this install's own account already has push, since
 GitHub itself refuses to list collaborators to anyone who does not. Both land on the project's own
-stream, appended only when something actually changed since the last observation — Hall9k never
+stream, appended only when something actually changed since the last observation; Hall9k never
 writes a permission, only ever records what GitHub already decided. `h9k project join` is refused
 outright when the project's account has no push on the repository, before any key is generated or
 any ledger byte is written, naming the repository and the rule. Every gh call this feature makes
@@ -533,7 +533,7 @@ goes through one helper (`Hall9k.Connectors.WorkItems.ProjectGitHubClient`) that
 project's own registered account rather than whichever account the machine's `gh` happens to be
 logged into, pinning that account's token to the one invocation (`gh auth token --user <login>`,
 live as of gh 2.100) as `GH_TOKEN` rather than switching the machine's own `gh auth` selection. The
-platform's other 17 direct `gh` call sites across 11 files are left exactly as they are — migrating
+platform's other 17 direct `gh` call sites across 11 files are left exactly as they are; migrating
 them onto this helper is its own, later, unstacked task. GitHub signing-key registration and
 account switching as first-class features are both parked (triggers: "a team wants automatic
 admission from the collaborator list", "first owner needing two accounts on one machine").
