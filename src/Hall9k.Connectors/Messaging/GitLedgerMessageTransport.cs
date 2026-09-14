@@ -7,11 +7,13 @@ namespace Hall9k.Connectors.Messaging;
 /// <summary>
 /// The real <see cref="IMessageTransport"/>: a write goes through A1 (<see cref="ILedger.WriteAsync"/>),
 /// signed, one writer per node's own outbox ref. A read walks the outbox ref directly by git
-/// plumbing — listing <c>messages/*.json</c> at the ref's tip and checking the tip commit was
-/// actually signed by the key in that sender's own node file (idea 202383dc's sender-verification
-/// rule) — because <see cref="ILedger"/>'s own contract is a single-path read, never an enumeration
-/// or a signature check, and this is the one place in the whole platform that reads a message ref
-/// at all; nothing else ever touches <c>refs/hall9k/messages/*</c>.
+/// plumbing — listing <c>messages/*.json</c> at the ref's tip and, for each candidate envelope,
+/// checking the commit that actually introduced its path was signed by the key in that sender's own
+/// node file (idea 202383dc's sender-verification rule), never trusting the tip commit's own
+/// signature for the whole tree beneath it — because <see cref="ILedger"/>'s own contract is a
+/// single-path read, never an enumeration or a signature check, and this is the one place in the
+/// whole platform that reads a message ref at all; nothing else ever touches
+/// <c>refs/hall9k/messages/*</c>.
 /// <para>
 /// Never covered by this task's own tests: Brian's 2026-09-13 testing rule reserves a real
 /// repository for <c>GitLedgerTests</c> and the chain reader's own tests, and every message-seam
@@ -67,13 +69,18 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
         }
 
         string refName = OutboxRef(senderNodeId);
-        await FetchRefAsync(repositoryPath, refName, cancellationToken);
-
-        string? tip = await RunGitCaptureAsync(
-            repositoryPath, ["rev-parse", "--verify", "--quiet", $"{refName}^{{commit}}"], cancellationToken);
-        if (tip is null)
+        if (!await FetchRefAsync(repositoryPath, refName, cancellationToken))
         {
-            return TransportReadResult.Ok([]);
+            throw new InvalidOperationException(
+                $"Could not fetch {refName} from origin for sender {senderNodeId} — refusing to read "
+                + "whatever local copy of that outbox happens to remain, since it could be stale.");
+        }
+
+        string? tip = (await RunGitCaptureAsync(
+            repositoryPath, ["rev-parse", "--verify", "--quiet", $"{refName}^{{commit}}"], cancellationToken))?.Trim();
+        if (tip.IsBlank())
+        {
+            return TransportReadResult.Ok([], sinceSeq);
         }
 
         string? treeListing = await RunGitCaptureAsync(
@@ -82,30 +89,64 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(ParseSeqFromPath)
             .Where(seq => seq is not null && seq > sinceSeq)
-            .Select(seq => seq!.Value)
+            .Select(seq => seq.GetValueOrDefault())
             .OrderBy(seq => seq)];
 
         if (candidateSeqs.Count == 0)
         {
-            return TransportReadResult.Ok([]);
+            return TransportReadResult.Ok([], sinceSeq);
         }
 
-        if (!await IsSignedByRegisteredKeyAsync(repositoryPath, tip, publicKeyLine, cancellationToken))
-        {
-            return TransportReadResult.SenderNotVouched;
-        }
-
+        // Every candidate path above the cursor is verified against the commit that actually
+        // introduced it — never just the ref's own tip. M1a never batches (one commit per
+        // envelope), but the tip's tree is still whatever the tip commit's own ancestry put there,
+        // and anyone with push access to origin can insert an earlier commit onto this ref that the
+        // sender's own next legitimate, correctly signed send then carries forward as a parent.
+        // Trusting the tip's signature alone would trust that inserted commit's content too.
+        Dictionary<string, bool> verifiedCommits = [];
         List<TransportEnvelope> envelopes = [];
+        List<long> rejectedSeqs = [];
         foreach (long seq in candidateSeqs)
         {
-            string? content = await RunGitCaptureAsync(repositoryPath, ["show", $"{tip}:{PathFor(seq)}"], cancellationToken);
+            string path = PathFor(seq);
+            string? introducingCommit = await RunGitCaptureAsync(
+                repositoryPath, ["log", "--format=%H", "-n", "1", tip, "--", path], cancellationToken);
+            introducingCommit = introducingCommit?.Trim();
+            if (introducingCommit.IsBlank())
+            {
+                rejectedSeqs.Add(seq);
+                continue;
+            }
+
+            if (!verifiedCommits.TryGetValue(introducingCommit, out bool isVerified))
+            {
+                isVerified = await IsSignedByRegisteredKeyAsync(repositoryPath, introducingCommit, publicKeyLine, cancellationToken);
+                verifiedCommits[introducingCommit] = isVerified;
+            }
+
+            if (!isVerified)
+            {
+                rejectedSeqs.Add(seq);
+                continue;
+            }
+
+            string? content = await RunGitCaptureAsync(repositoryPath, ["show", $"{introducingCommit}:{path}"], cancellationToken);
             if (content is not null)
             {
                 envelopes.Add(new TransportEnvelope(seq, content));
             }
+            else
+            {
+                rejectedSeqs.Add(seq);
+            }
         }
 
-        return TransportReadResult.Ok(envelopes);
+        // Every candidate at or below this point was inspected — verified and returned, or
+        // rejected and recorded in rejectedSeqs — so the highest one this call ever looked at is
+        // always the highest candidate, never just the highest one that happened to verify: a
+        // reader's cursor must advance past a rejected candidate too, or it re-inspects the
+        // identical rejection forever.
+        return TransportReadResult.Ok(envelopes, candidateSeqs[^1], rejectedSeqs);
     }
 
     private static string OutboxRef(Guid nodeId) => $"refs/hall9k/messages/{nodeId}";
@@ -118,19 +159,28 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
         return long.TryParse(fileName, NumberStyles.Integer, CultureInfo.InvariantCulture, out long seq) ? seq : null;
     }
 
-    private async Task FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken) =>
-        await runner("git", ["fetch", "origin", $"+{refName}:{refName}"], repositoryPath, cancellationToken);
-
-    /// <summary>
-    /// Verifies the outbox ref's own tip commit — not every commit in its history, since M1a never
-    /// batches (one commit per envelope) and a chain whose latest link is genuinely the registered
-    /// key is enough to trust everything this sweep is about to read; a compromised earlier link
-    /// would already have failed a previous sweep's own check.
+    /// <summary>Fetches the sender's own outbox ref fresh from origin. A missing remote ref (the
+    /// sender has never sent anything yet) is not a failure — git's own exit code for it is
+    /// indistinguishable from a genuine one, so the distinction is read from git's own message
+    /// rather than the exit code alone. Any other non-zero exit — a network drop, a credential
+    /// failure — is a real failure the caller must never treat as "nothing new": the local ref, if
+    /// one exists from an earlier successful fetch, would otherwise be read as if it were current.
     /// </summary>
-    private async Task<bool> IsSignedByRegisteredKeyAsync(
-        string repositoryPath, string tip, string publicKeyLine, CancellationToken cancellationToken)
+    private async Task<bool> FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
     {
-        string? committerEmail = await RunGitCaptureAsync(repositoryPath, ["log", "-1", "--format=%ce", tip], cancellationToken);
+        ProcessResult result = await runner("git", ["fetch", "origin", $"+{refName}:{refName}"], repositoryPath, cancellationToken);
+        return result.ExitCode == 0
+            || result.StandardError.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Verifies one specific commit — the commit that introduced the envelope path being
+    /// read, never assumed from the ref's own tip alone — was actually signed by the key the
+    /// sender's own node file names.</summary>
+    private async Task<bool> IsSignedByRegisteredKeyAsync(
+        string repositoryPath, string commitSha, string publicKeyLine, CancellationToken cancellationToken)
+    {
+        string? committerEmail = (await RunGitCaptureAsync(
+            repositoryPath, ["log", "-1", "--format=%ce", commitSha], cancellationToken))?.Trim();
         if (committerEmail.IsBlank())
         {
             return false;
@@ -143,7 +193,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
             await File.WriteAllTextAsync(allowedSignersFile, $"{committerEmail} {publicKeyLine}\n", cancellationToken);
             ProcessResult result = await runner(
                 "git",
-                ["-c", "gpg.format=ssh", "-c", $"gpg.ssh.allowedSignersFile={allowedSignersFile}", "verify-commit", tip],
+                ["-c", "gpg.format=ssh", "-c", $"gpg.ssh.allowedSignersFile={allowedSignersFile}", "verify-commit", commitSha],
                 repositoryPath,
                 cancellationToken);
             return result.ExitCode == 0;
