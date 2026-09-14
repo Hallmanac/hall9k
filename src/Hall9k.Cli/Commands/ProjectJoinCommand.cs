@@ -119,6 +119,14 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         // item 2). The same gh round trip also observes this install's own role, and the
         // collaborator list when it is readable, onto the project's own stream (item 3).
         ProjectGitHubAccessResult access = await githubAccess.ObserveAsync(session, project, now, cancellationToken);
+
+        // Saved before the push refusal below can throw: this install's own role is the one fact
+        // every install gets regardless of its own role (ProjectGitHubMembers's own doc comment), so
+        // an install stuck below push must still have it recorded rather than lose the observation
+        // to an exception thrown before anything reached the database (independent pre-PR review,
+        // cycle 1, conformance and adversarial lenses, both medium).
+        await session.SaveChangesAsync(cancellationToken);
+
         if (!access.OwnRole.HasPush)
         {
             throw new DomainValidationException(
@@ -127,8 +135,6 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
                 + "A node cannot write this project's ledger without push on its own repository — ask an "
                 + $"admin on {access.Repository} to grant it, then retry h9k project join.");
         }
-
-        await session.SaveChangesAsync(cancellationToken);
 
         NodeAggregate node = await session.Events.AggregateStreamAsync<NodeAggregate>(context.NodeId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No node {context.NodeId}.");

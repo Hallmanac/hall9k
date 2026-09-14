@@ -4,9 +4,11 @@ using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
@@ -392,7 +394,11 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
     /// <summary>
     /// Join is refused when the project's account lacks push on the repository, with the
     /// repository and the rule named (idea 202383dc, A2b, item 2) — before any key is generated
-    /// and before any ledger byte is written.
+    /// and before any ledger byte is written. This install's own role is still recorded on
+    /// <see cref="ProjectGitHubMembers"/> despite the refusal: it is the one fact every install
+    /// gets regardless of its own role (that projection's own doc comment), and it was previously
+    /// lost with the refusal's own exception, thrown before the observation had ever been saved
+    /// (independent pre-PR review, cycle 1, conformance and adversarial lenses, both medium).
     /// </summary>
     [Fact]
     public async Task Join_without_push_is_refused_naming_the_repository_and_the_rule()
@@ -409,6 +415,11 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         (await act.Should().ThrowAsync<DomainValidationException>())
             .WithMessage("*acme/widgets*").WithMessage("*push*");
         ledger.Writes.Should().BeEmpty("a node without push never reaches a ledger write");
+
+        await using IDocumentSession query = _postgres.Store.LightweightSession();
+        ProjectGitHubMembers? members = await query.LoadAsync<ProjectGitHubMembers>(project.Id, cts.Token);
+        members.Should().NotBeNull("this install's own role is saved before the push refusal can throw");
+        members!.Members.Values.Should().Contain(member => member.Login == "test-user" && member.Role == GitHubRepositoryRole.Read);
     }
 
     /// <summary>
@@ -432,6 +443,58 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         ProjectGitHubMembers? members = await query.LoadAsync<ProjectGitHubMembers>(project.Id, cts.Token);
         members.Should().NotBeNull();
         members!.Members.Values.Should().Contain(member => member.Login == "teammate" && member.Role == GitHubRepositoryRole.Write);
+    }
+
+    /// <summary>
+    /// The account join runs gh as pairs GitHub's own numeric id with the login observed alongside
+    /// it at the same identity read, never the registration-time placeholder login a connection was
+    /// first registered under — a mismatch this same task's own fix pass found and closed
+    /// (independent pre-PR review, cycle 1, conformance and adversarial lenses, both high): the
+    /// recovery case is exactly an install whose genesis bootstrap ran with <c>gh</c>
+    /// unauthenticated (registered under the <c>Environment.UserName</c> placeholder) and only later
+    /// ran <c>gh auth login</c> as its real account, observed here onto the same connection.
+    /// </summary>
+    [Fact]
+    public async Task Join_runs_gh_as_the_login_confirmed_alongside_the_confirmed_id_not_the_registration_placeholder()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+
+        Guid connectionId = DomainId.New();
+        await using IDocumentSession seedSession = _postgres.Store.LightweightSession();
+        ConnectionRegistered registered = ConnectionDecider.Register(
+            connectionId, Guid.Empty, WorkItemProvider.GitHub, "brianhallmanac", CredentialReference.GhCli, Now);
+        seedSession.Events.StartStream<ConnectionAggregate>(connectionId, registered);
+        seedSession.Events.Append(connectionId, new ConnectionGitHubIdentityObserved(connectionId, 4181388, "hallmanac", Now));
+        await seedSession.SaveChangesAsync(cts.Token);
+
+        await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, cts.Token);
+        await bootstrapSession.SaveChangesAsync(cts.Token);
+
+        Guid projectId = DomainId.New();
+        await using IDocumentSession projectSession = _postgres.Store.LightweightSession();
+        projectSession.Events.StartStream<ProjectAggregate>(
+            projectId,
+            ProjectDecider.Register(
+                projectId, context.OwnerId, connectionId, "smoke",
+                "/does/not/matter/on/a/fake/ledger", null, null, Now));
+        await projectSession.SaveChangesAsync(cts.Token);
+        ProjectDetails project = (await projectSession.LoadAsync<ProjectDetails>(projectId, cts.Token))!;
+
+        RecordingProcessRunner tokenRunner = RecordingProcessRunner.Succeeding("gh-token-for-test\n");
+        RecordingEnvironmentProcessRunner ghRunner = RecordingEnvironmentProcessRunner.Succeeding(
+            """{"viewerPermission":"ADMIN","nameWithOwner":"acme/widgets"}""");
+        ProjectGitHubAccessMirror access = new(new ProjectGitHubClient(ghRunner.Runner, tokenRunner.Runner));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, new FakeLedger(), new NodeKeyStore(), access, cts.Token);
+
+        tokenRunner.Calls.Should().Contain(
+            call => call.Arguments.Contains("hallmanac"),
+            "the token read must run as the login GitHub confirmed alongside the confirmed id, "
+            + "not the registration-time placeholder");
+        tokenRunner.Calls.Should().NotContain(call => call.Arguments.Contains("brianhallmanac"));
     }
 
     /// <summary>
