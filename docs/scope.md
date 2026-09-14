@@ -1002,8 +1002,13 @@ See [PLAN.md §3 and §7](../PLAN.md).
 
 Everything needed to keep the door open is paid for: owner as a first-class entity, globally
 unique ids, no single-owner assumptions in streams or projections, and lease-based claiming that
-works identically for one node or twenty. **Nothing beyond that is built.** No node discovery, no
-gossip, no replication, no cross-user trust.
+works identically for one node or twenty. Identity core is built on top of that (idea 202383dc,
+piece A2a, Decisions Log #190): every node generates its own ed25519 signing key under
+`~/.hall9k/keys/<node-id>` (`h9k project join`), an owner is one root key across every node that
+claims it, and every ledger write from an enrolled node is signed. **Nothing beyond that is
+built.** No node discovery, no gossip, no replication, no cross-user trust — the team half
+(invites, vouches, revocation, chain verification) that would let a *second* human's node join
+an owner's root is still a later task, not this one.
 
 The peer-to-peer branch has a full design (identity as a two-tier key hierarchy, mDNS on the LAN,
 hole punching, a relay on 443, QUIC throughout) in
