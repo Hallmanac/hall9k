@@ -72,7 +72,12 @@ namespace Marten.Generated.EventStore
             var tenantId = reader.GetFieldValue<string>(8);
             e.TenantId = tenantId;
             }
-            var isArchived = reader.GetFieldValue<bool>(9);
+            if (!reader.IsDBNull(9))
+            {
+            var headers = _options.Serializer().FromJson<System.Collections.Generic.Dictionary<string, object>>(reader, 9);
+            e.Headers = headers;
+            }
+            var isArchived = reader.GetFieldValue<bool>(10);
             e.IsArchived = isArchived;
         }
 
@@ -106,7 +111,12 @@ namespace Marten.Generated.EventStore
             var tenantId = await reader.GetFieldValueAsync<string>(8, token).ConfigureAwait(false);
             e.TenantId = tenantId;
             }
-            var isArchived = await reader.GetFieldValueAsync<bool>(9, token).ConfigureAwait(false);
+            if (!(await reader.IsDBNullAsync(9, token).ConfigureAwait(false)))
+            {
+            var headers = await _options.Serializer().FromJsonAsync<System.Collections.Generic.Dictionary<string, object>>(reader, 9, token).ConfigureAwait(false);
+            e.Headers = headers;
+            }
+            var isArchived = await reader.GetFieldValueAsync<bool>(10, token).ConfigureAwait(false);
             e.IsArchived = isArchived;
         }
 
@@ -144,7 +154,7 @@ namespace Marten.Generated.EventStore
 
         public override void ConfigureCommand(Weasel.Postgresql.ICommandBuilder builder, Marten.Internal.IMartenSession session)
         {
-            builder.Append("insert into public.mt_events (data, type, mt_dotnet_type, id, stream_id, version, timestamp, tenant_id, seq_id) values (");
+            builder.Append("insert into public.mt_events (data, type, mt_dotnet_type, id, stream_id, version, timestamp, tenant_id, headers, seq_id) values (");
             var parameterBuilder = builder.CreateGroupedParameterBuilder(',');
             var parameter0 = parameterBuilder.AppendParameter(session.Serializer.ToJson(Event.Data));
             parameter0.NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Jsonb;
@@ -162,8 +172,10 @@ namespace Marten.Generated.EventStore
             parameter6.NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.TimestampTz;
             var parameter7 = Stream.TenantId != null ? parameterBuilder.AppendParameter(Stream.TenantId) : parameterBuilder.AppendParameter<object>(System.DBNull.Value);
             parameter7.NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text;
-            var parameter8 = parameterBuilder.AppendParameter(Event.Sequence);
-            parameter8.NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Bigint;
+            var parameter8 = parameterBuilder.AppendParameter(session.Serializer.ToJson(Event.Headers));
+            parameter8.NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Jsonb;
+            var parameter9 = parameterBuilder.AppendParameter(Event.Sequence);
+            parameter9.NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Bigint;
             builder.Append(')');
         }
 
@@ -189,7 +201,7 @@ namespace Marten.Generated.EventStore
 
         public override void ConfigureCommand(Weasel.Postgresql.ICommandBuilder builder, Marten.Internal.IMartenSession session)
         {
-            builder.Append("insert into public.mt_events (data, type, mt_dotnet_type, id, stream_id, version, timestamp, tenant_id, seq_id) values (");
+            builder.Append("insert into public.mt_events (data, type, mt_dotnet_type, id, stream_id, version, timestamp, tenant_id, headers, seq_id) values (");
             var parameterBuilder = builder.CreateGroupedParameterBuilder(',');
             var parameter0 = parameterBuilder.AppendParameter(session.Serializer.ToJson(Event.Data));
             parameter0.NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Jsonb;
@@ -207,6 +219,8 @@ namespace Marten.Generated.EventStore
             parameter6.NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.TimestampTz;
             var parameter7 = Stream.TenantId != null ? parameterBuilder.AppendParameter(Stream.TenantId) : parameterBuilder.AppendParameter<object>(System.DBNull.Value);
             parameter7.NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Text;
+            var parameter8 = parameterBuilder.AppendParameter(session.Serializer.ToJson(Event.Headers));
+            parameter8.NpgsqlDbType = NpgsqlTypes.NpgsqlDbType.Jsonb;
             builder.Append(",nextval('public.mt_events_sequence')");
             builder.Append(')');
         }
@@ -235,6 +249,7 @@ namespace Marten.Generated.EventStore
             var parameterBuilder = builder.CreateGroupedParameterBuilder(',');
             writeId(parameterBuilder);
             writeBasicParameters(parameterBuilder, session);
+            writeHeaders(parameterBuilder, session);
             builder.Append(')');
         }
 
