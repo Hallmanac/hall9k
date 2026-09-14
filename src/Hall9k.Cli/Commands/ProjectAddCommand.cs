@@ -201,6 +201,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         {
             AnsiConsole.MarkupLine(
                 $"[dim]No home created (--no-home). Give it one later:[/] h9k project init {name.EscapeMarkup()}");
+            await TryJoinAsync(session, projectId, name, repositoryPath, cancellationToken);
             return ExitCodes.Ok;
         }
 
@@ -217,9 +218,45 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             home.Value, project, cancellationToken, materialiseRepository: settings.RepositoryPath.IsBlank());
         bool ok = ProjectHomeRecipe.Report(steps);
 
+        await TryJoinAsync(session, projectId, name, repositoryPath, cancellationToken);
+
         AnsiConsole.MarkupLine(OrchestratorPointer.ForProject(name));
 
         return ok ? ExitCodes.Ok : ExitCodes.Error;
+    }
+
+    /// <summary>
+    /// Runs h9k project join on the freshly registered project, once its repository actually
+    /// exists locally for A1 to fetch and push against (idea 202383dc, A2a: "project add runs join
+    /// when the repository is reachable and says so when it could not"). Best-effort and never
+    /// fatal to this command: the project registration above already committed, and a join that
+    /// fails here (ssh-keygen unavailable, the repository not yet pushable) is exactly the
+    /// "says so when it could not" case, not a reason to report the whole registration as failed.
+    /// </summary>
+    private static async Task TryJoinAsync(
+        IDocumentSession session, Guid projectId, string name, string repositoryPath, CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(repositoryPath))
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]Not joined yet — {repositoryPath.EscapeMarkup()} is not reachable. Once it is: "
+                + $"h9k project join {name.EscapeMarkup()}[/]");
+            return;
+        }
+
+        try
+        {
+            ProjectDetails project = (await session.LoadAsync<ProjectDetails>(projectId, cancellationToken))!;
+            ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+                session, project, claimedOwnerOverride: null, cancellationToken);
+            ProjectJoinCommand.Report(project, outcome);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Registered, but could not join yet:[/] {exception.Message.EscapeMarkup()} Retry with: "
+                + $"h9k project join {name.EscapeMarkup()}");
+        }
     }
 
     /// <summary>
