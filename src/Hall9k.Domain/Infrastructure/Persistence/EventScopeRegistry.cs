@@ -179,6 +179,15 @@ public static class EventScopeRegistry
         [typeof(ProjectRenamed)] = EventScope.ProjectScoped,
         [typeof(ProjectSettingsChanged)] = EventScope.NodeScoped,
 
+        // GitHub access observed through this install's own connected account (idea 202383dc,
+        // A2b): both are what THIS node's own gh call saw, through THIS node's own registered
+        // credential, never a canonical team fact another node's differently-connected account
+        // would reproduce identically — the same reasoning that keeps every Connection event
+        // below node-scoped, applied to the project-stream events that ride on the identical gh
+        // round trip.
+        [typeof(ProjectGitHubAccessObserved)] = EventScope.NodeScoped,
+        [typeof(ProjectGitHubCollaboratorsObserved)] = EventScope.NodeScoped,
+
         // Hall9k.Domain.Features.Owner — an owner's own cross-node identity.
         [typeof(OwnerRegistered)] = EventScope.OwnerScoped,
         [typeof(OwnerRootClaimed)] = EventScope.OwnerScoped,
@@ -214,6 +223,7 @@ public static class EventScopeRegistry
         [typeof(ConnectionRegistered)] = EventScope.NodeScoped,
         [typeof(ConnectionReregistered)] = EventScope.NodeScoped,
         [typeof(ConnectionTrackerIdentityObserved)] = EventScope.NodeScoped,
+        [typeof(ConnectionGitHubIdentityObserved)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Epic — a work-organization concept over tasks; team-visible.
         [typeof(EpicAdded)] = EventScope.ProjectScoped,
