@@ -117,31 +117,31 @@ first two registered refs; the messages prefix is the node-to-node message trans
 202383dc, A2a/M1a/M1b), one outbox ref per node, each envelope a versioned JSON file signed by that
 node's own key.
 
-Node-to-node messages: a note one node sends another, an owner, or the whole project — the first
+Node-to-node messages: a note one node sends another, an owner, or the whole project, the first
 payload kind, replacing `notes/node-mailbox.md`'s GitHub-issue workaround for that traffic (that
 file is retired for node-to-node use; whatever else, if anything, it still serves is noted there).
-`h9k message send` only ever queues in this node's own local store — it never touches git or waits
-on a network — and the daemon's own message sweep is what actually lands a queued envelope in the
+`h9k message send` only ever queues in this node's own local store (it never touches git or waits
+on a network) and the daemon's own message sweep is what actually lands a queued envelope in the
 outbox, batching everything queued since the last flush into one commit, on a cadence that
 tightens the moment there is something to send or read (15 to 25 seconds, jittered) and relaxes
 when idle (30 to 45 seconds, jittered), with an immediate re-probe the tick right after this node's
 own push. The same sweep squashes this node's own outbox down to envelopes younger than
-`--message-poll-active-min`/`--message-poll-active-max`/`--message-poll-idle-min`/
-`--message-poll-idle-max`'s neighbor, `MessageRetention` (48 hours by default, not yet a `config
-set` flag) — never another node's ref, only the one this node is the sole writer of. Scoped to a
-single project's own repository today (the first non-archived registered one) — the message
+`MessageRetention` (48 hours by default; a separate `DaemonOptions` value, not yet a `config set`
+flag, and unrelated to the `--message-poll-*` cadence flags above), and never another node's ref,
+only the one this node is the sole writer of. Scoped to a
+single project's own repository today (the first non-archived registered one); the message
 domain's own seq allocation and per-sender cursor are keyed by sender node alone, with no project
 scoping yet, so a node registered to several projects would need that schema extended before a
 second project's messages could be swept safely.
 
 ```bash
-h9k message send --to node:<node-id> "<text>"           # queue a note to one specific node (h9k status prints this node's own id)
+h9k message send --to node:<node-id> "<text>"           # queue a note to one specific node (needs the full id: h9k status shows only its short form; h9k project join prints the full id)
 h9k message send --to owner:<fingerprint> "<text>"       # queue a note to everything that owner's nodes read (h9k owner show prints a root fingerprint)
 h9k message send --to project "<text>"                   # queue a note to every node reading this project's messages
 h9k message send --to <AUDIENCE> --about <task-or-idea-id> "<text>"   # carries the id through as-is; h9k messages prints it back
 h9k messages                                             # this node's own received messages, unread (received, not yet handled) by default
 h9k messages --all                                       # include already-handled messages too
-h9k message handle <id>                                  # mark a received message handled — an explicit act, never implied by h9k messages having printed it
+h9k message handle <id>                                  # mark a received message handled: an explicit act, never implied by h9k messages having printed it
 ```
 
 Ideas come before tasks (Decisions Log #35, redesigned by backlog 31). An idea undergoes
