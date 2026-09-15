@@ -145,6 +145,46 @@ public sealed class GitLedgerTests : IDisposable
     }
 
     [Fact]
+    public async Task WriteAsync_RequireEmptyPrefix_RefusesWhenARivalWriteLandedUnderTheSamePrefixFirst()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string nodeA = _repo.CloneNode(hub);
+        string nodeB = _repo.CloneNode(hub);
+
+        GitLedger racing = new(NullLogger<GitLedger>.Instance)
+        {
+            // A genesis-style write only ever checks HasAnyAsync once, up front — this lands a real
+            // rival's own genesis file under the SAME prefix, but a DIFFERENT path, right before
+            // this attempt's own push, so ExpectedBlobId alone (which only guards this write's own
+            // path) would never catch it. RequireEmptyPrefix is what has to.
+            BeforePushForTesting = async (attempt, cancellationToken) =>
+            {
+                if (attempt == 1)
+                {
+                    await new GitLedger(NullLogger<GitLedger>.Instance).WriteAsync(
+                        new LedgerWriteRequest(
+                            nodeB, refName, "members/b.yaml", "root_fingerprint: \"b\"\n", null, "genesis b", _committer, _signingKey,
+                            RequireEmptyPrefix: "members/"),
+                        cancellationToken);
+                }
+            },
+        };
+
+        LedgerWriteOutcome outcome = await racing.WriteAsync(
+            new LedgerWriteRequest(
+                nodeA, refName, "members/a.yaml", "root_fingerprint: \"a\"\n", null, "genesis a", _committer, _signingKey,
+                RequireEmptyPrefix: "members/"),
+            CancellationToken.None);
+
+        outcome.Verdict.Should().Be(LedgerWriteVerdict.Conflict);
+
+        string reader = _repo.CloneNode(hub);
+        (await _ledger.ReadAsync(reader, refName, "members/a.yaml", CancellationToken.None)).Exists.Should().BeFalse();
+        (await _ledger.ReadAsync(reader, refName, "members/b.yaml", CancellationToken.None)).Exists.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task WriteAsync_RejectedPushOnAnUntouchedPath_ReFetchesAndReapplies()
     {
         string refName = UniqueTestRef();
@@ -278,6 +318,59 @@ public sealed class GitLedgerTests : IDisposable
             File.Delete(privateKeyPath);
             File.Delete($"{privateKeyPath}.pub");
         }
+    }
+
+    [Fact]
+    public async Task DeleteAsync_RemovesThePathAsAFreshCommit_AndAFreshCloneNeverSeesItAgain()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string writer = _repo.CloneNode(hub);
+
+        LedgerFile seeded = await _ledger.WriteFirstAndReRead(writer, refName, "a.yaml", "v1\n", _committer, _signingKey);
+
+        LedgerWriteOutcome outcome = await _ledger.DeleteAsync(
+            new LedgerDeleteRequest(writer, refName, "a.yaml", seeded.BlobId, "delete a", _committer, _signingKey),
+            CancellationToken.None);
+
+        outcome.Verdict.Should().Be(LedgerWriteVerdict.Written);
+
+        string reader = _repo.CloneNode(hub);
+        LedgerFile read = await _ledger.ReadAsync(reader, refName, "a.yaml", CancellationToken.None);
+        read.Exists.Should().BeFalse("a member removal deletes the file outright, never a tombstone");
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WhenThePathAlreadyChanged_ReportsTheConflictInstead()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string writer = _repo.CloneNode(hub);
+
+        LedgerFile seeded = await _ledger.WriteFirstAndReRead(writer, refName, "a.yaml", "v1\n", _committer, _signingKey);
+        await _ledger.WriteAsync(
+            new LedgerWriteRequest(writer, refName, "a.yaml", "v2\n", seeded.BlobId, "update a", _committer, _signingKey),
+            CancellationToken.None);
+
+        LedgerWriteOutcome outcome = await _ledger.DeleteAsync(
+            new LedgerDeleteRequest(writer, refName, "a.yaml", seeded.BlobId, "delete stale a", _committer, _signingKey),
+            CancellationToken.None);
+
+        outcome.Verdict.Should().Be(LedgerWriteVerdict.Conflict);
+        outcome.Current!.Content.Should().Be("v2\n");
+    }
+
+    [Fact]
+    public async Task DeleteAsync_WithNoSigningKey_IsRefused()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+
+        Func<Task> delete = () => _ledger.DeleteAsync(
+            new LedgerDeleteRequest(node, refName, "a.yaml", null, "delete a", _committer), CancellationToken.None);
+
+        await delete.Should().ThrowAsync<DomainValidationException>();
     }
 
     [Fact]
