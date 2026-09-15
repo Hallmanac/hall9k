@@ -113,8 +113,8 @@ public enum StackedParentVerdict
 /// same check gives. Blank on every verdict but <see cref="StackedParentVerdict.ParentMerged"/>,
 /// <see cref="StackedParentVerdict.ParentMoved"/> and
 /// <see cref="StackedParentVerdict.ParentMergedAligned"/> — the last of these carries the base
-/// branch's own tip, or a later commit of it this branch already contains, rather than a replay's
-/// upstream, since nothing there is replayed, only retargeted. <see cref="StackedParentVerdict.Aligned"/>,
+/// branch's own freshly fetched tip exactly, rather than a replay's upstream, since nothing there
+/// is replayed, only retargeted. <see cref="StackedParentVerdict.Aligned"/>,
 /// <see cref="StackedParentVerdict.Unobservable"/>,
 /// <see cref="StackedParentVerdict.ParentMergedElsewhere"/>,
 /// <see cref="StackedParentVerdict.ParentDead"/> and
@@ -712,6 +712,56 @@ public sealed class StackedParentWatch(
                         if (recordedOnBase.ExitCode == 0)
                         {
                             advanceAnchor = childRun.BaseCommit;
+                        }
+                    }
+                }
+
+                // Neither shape above vouched for anything — the commonest reason being that
+                // childRun.BaseCommit is stale rather than genuinely absent: nothing updates it when
+                // a fix session or a human rebases this branch onto a rebase-merged parent's base tip
+                // by hand, so a further base move before the next sweep looks leaves the record naming
+                // a commit the branch may no longer contain (independent pre-PR review, cycle 1,
+                // conformance lens — the 2026-09-14 shape one step further on: without this, the
+                // sweep falls straight through to the stale-record boundary below, fails the
+                // boundary-held check, and reads Unobservable forever, so the retarget this shape
+                // still owes is never dispatched and no park ever tells a human either).
+                //
+                // The child's own history still answers this without any record: the point where the
+                // PARENT's own (pre-rewrite) branch forked from the base is exactly the unsafe
+                // fallback line 655 above warns about — merge-base against the base tip walking back
+                // to before the parent's commits even existed. A point the child holds that is
+                // strictly PAST that fork point can only have been reached by an actual rebase onto
+                // (some point of) the base's own line, so it is just as safe to trust as the two
+                // recorded shapes above, without needing either of them to have fired.
+                //
+                // Restricted to a child that does NOT hold the parent's own (pre-rewrite) head at
+                // all (independent review, PR #380): childHoldsParentHead is exactly the "neither
+                // shape holds" case line 655 already promises falls through to the parent's own head
+                // below, and without this guard this block runs there too — a child still sitting
+                // untouched on its parent's branch that ALSO happens to contain some unrelated later
+                // base commit (a merge, a cherry-pick, anything landing a base commit without a real
+                // rebase) reads that unrelated commit as liveCandidate and advances the boundary past
+                // it, even though nothing here rebased the child past the parent's own work at all.
+                if (advanceAnchor is null && !childHoldsParentHead)
+                {
+                    ProcessResult originalForkPointResult = await git(
+                        "git", ["merge-base", parentHead, mergedBaseTip], repositoryPath, cancellationToken);
+                    if (originalForkPointResult.ExitCode == 0 && originalForkPointResult.StandardOutput.Trim() is
+                        { } originalForkPoint && originalForkPoint.IsNotBlank())
+                    {
+                        ProcessResult liveCandidateResult = await git(
+                            "git", ["merge-base", mergedBaseTip, $"refs/heads/{childRun.Branch}"], repositoryPath,
+                            cancellationToken);
+                        if (liveCandidateResult.ExitCode == 0 && liveCandidateResult.StandardOutput.Trim() is
+                            { } liveCandidate && liveCandidate.IsNotBlank() && liveCandidate != originalForkPoint)
+                        {
+                            ProcessResult advancedPastFork = await git(
+                                "git", ["merge-base", "--is-ancestor", originalForkPoint, liveCandidate],
+                                repositoryPath, cancellationToken);
+                            if (advancedPastFork.ExitCode == 0)
+                            {
+                                advanceAnchor = liveCandidate;
+                            }
                         }
                     }
                 }
