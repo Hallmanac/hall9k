@@ -82,6 +82,49 @@ public sealed class ProjectGitHubClient(
     }
 
     /// <summary>
+    /// This client's <see cref="RunAsync"/>, closed over <paramref name="account"/>, in the plain
+    /// <see cref="ProcessRunner"/> shape every existing GitHub connector class in the platform
+    /// already takes (<c>GitHubReviewAssignments</c>, <c>GitHubWorkItemProvider</c>, and the rest)
+    /// — so a caller that has already resolved an account can hand it to any of them unchanged,
+    /// rather than each one growing its own account-shaped constructor. <paramref name="fileName"/>
+    /// is asserted rather than silently ignored: every existing call site only ever passes "gh"
+    /// through this seam, and a caller that somehow passed anything else would otherwise have that
+    /// tool's invocation silently redirected to gh.
+    /// </summary>
+    public ProcessRunner AsProcessRunner(ProjectGitHubAccount account) =>
+        (fileName, arguments, workingDirectory, cancellationToken) =>
+            string.Equals(fileName, "gh", StringComparison.Ordinal)
+                ? RunAsync(account, workingDirectory, arguments, cancellationToken)
+                : throw new ArgumentOutOfRangeException(
+                    nameof(fileName), fileName, "This runner only ever spawns gh.");
+
+    /// <summary>
+    /// Runs <c>gh</c> with no account pinned — whatever gh's own ambient auth resolves to, the
+    /// exact behaviour every call site had before this migration. The deliberate exception for a
+    /// gh call that is not "act as this project's account" at all, because there is no project to
+    /// act as: <c>UpdateCommand</c>'s release download reads Hall9k's own public release
+    /// repository, never a registered project's, and could run before any project — or any
+    /// database — exists on a fresh install. Still funnelled through this class, so the platform
+    /// has exactly one place that ever spawns <c>gh</c>, even for the one call with no account to
+    /// choose.
+    /// </summary>
+    public Task<ProcessResult> RunAmbientAsync(
+        string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken) =>
+        runner("gh", arguments, workingDirectory, new Dictionary<string, string>(StringComparer.Ordinal), cancellationToken);
+
+    /// <summary>
+    /// <see cref="RunAmbientAsync"/> in the same plain <see cref="ProcessRunner"/> shape
+    /// <see cref="AsProcessRunner"/> hands back for a resolved account — for the one caller
+    /// (<c>UpdateCommand</c>) that needs the ambient, no-account path in that shape instead.
+    /// </summary>
+    public ProcessRunner AmbientProcessRunner =>
+        (fileName, arguments, workingDirectory, cancellationToken) =>
+            string.Equals(fileName, "gh", StringComparison.Ordinal)
+                ? RunAmbientAsync(workingDirectory, arguments, cancellationToken)
+                : throw new ArgumentOutOfRangeException(
+                    nameof(fileName), fileName, "This runner only ever spawns gh.");
+
+    /// <summary>
     /// The account this project's own repository access runs as — its registered GitHub
     /// connection's account, confirmed by a real GitHub identity read (never the
     /// <c>Environment.UserName</c> placeholder <c>NodeBootstrap</c> falls back to when <c>gh</c>
