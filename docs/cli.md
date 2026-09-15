@@ -515,10 +515,17 @@ reaches the reviewer.
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
 recipe for a project that has none yet, and the repair path for one that is incomplete. `project
-join <name> [--owner <fingerprint>]` establishes or confirms this node's identity in a project's
-ledger: it generates this node's own signing key the first time any project is joined, and `project
-add` runs it automatically once the project's repository is reachable on disk, pushing a signed
-commit to the project's own remote. See
+add` refuses up front when this install has no confirmed GitHub account — a Jira connection alone
+(`connection add jira`) tracks cards, not repository access, so it is not enough on its own (run
+`gh auth login`, then retry). `project join <name> [--owner <fingerprint>]` establishes or confirms
+this node's identity in a project's ledger: it generates this node's own signing key the first time
+any project is joined, and `project add` runs it automatically once the project's repository is
+reachable on disk, pushing a signed commit to the project's own remote. Both commands read this
+install's GitHub identity fresh from `gh` right before they need it (also refreshed once at every
+daemon start), and `join` additionally refuses before any key is generated or any ledger byte is
+written when the resolved GitHub account has no push on the repository, naming the repository and
+the rule. `owner show` lists every confirmed GitHub account linked to the owner (login and GitHub's
+own numeric id, or "unconfirmed" when `gh` has never answered for it). See
 [the project home](#the-project-home) below.
 
 `project remove` archives a project on this install: reversible, and nothing is deleted. The

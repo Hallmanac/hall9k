@@ -7,7 +7,7 @@ Hall9k has been building Hall9k since the pipeline first ran end to end. Anythin
 but unbuilt" names the file that holds the design, so you can read it rather than take this
 page's word for it.
 
-Last reconciled against the tree on 2026-09-11.
+Last reconciled against the tree on 2026-09-15.
 
 ---
 
@@ -561,6 +561,23 @@ uses, GitHub gets
 automation may react to the assignment. Without the flag an interactive assign offers the same
 take (defaulting to no) and a non-interactive one warns and proceeds, never writing silently.
 Releasing a task leaves the tracker assignment where it is; the reverse write is not built.
+
+### GitHub identity and repository access
+
+GitHub is a second attested account on the identity core's own connection stream, never a second
+identity (idea 202383dc, A2b): this install's numeric GitHub id and login are observed on the
+bootstrap connection — at genesis bootstrap, again at every daemon start, and again right before
+`h9k project add` and `h9k project join` need to know the account is confirmed, since nothing else
+naturally triggers a fresh gh read the way the claim gate above does for Jira. `project add`
+refuses outright when no GitHub account has ever confirmed (a Jira-only install is exactly this
+case); `project join` additionally resolves the project's own repository role through `gh repo
+view` and refuses before any key is generated or any ledger byte is written when that role carries
+no push. The same round trip mirrors this install's own role, and — only when that role has push —
+the repository's full collaborator list, onto the project's own stream, read-only: Hall9k never
+calls a GitHub endpoint that would write a permission. `h9k owner show` lists every linked GitHub
+account. GitHub signing-key registration and multi-account switching are both parked (idea
+202383dc, A2b), triggered respectively by a team wanting automatic admission from the collaborator
+list, and a first owner needing two accounts on one machine.
 
 ### Outside-interaction logging
 
