@@ -285,6 +285,32 @@ Three things make that default safe to leave on:
   both point at gets a row each, printed once where they agree and twice, each with its own
   project's lever, only where they genuinely disagree.
 
+### Replying in a review thread
+
+`h9k pr reply <task> --thread <node-id> --disposition fix|decline|route --body "<text>"` ·
+`h9k pr reply-guard`
+
+The platform's own posting path, and the only route a dispatched follow-up has into a review
+thread on its own pull request. It exists so exactly one question can be asked before words leave
+the machine: whose thread is this? A **decline** or a **route** into a thread a *person* opened is
+refused outright and recorded on the run — telling a colleague their point does not hold is the
+owner's to send, so the lap drafts the reply and parks it, and `h9k review resolve` sends it,
+edits it, or drops it. A **bot's** thread and a **fix**'s reply into anyone's thread post exactly
+as they always have.
+
+Whose thread it is comes from the platform's own read of the pull request at the moment the lap
+was dispatched, not from the session's say-so; the disposition is the session's word, so every
+accepted reply records the claim and the daemon compares it against that thread's own closing
+triage block, putting a contradiction in the run log. The park is enforced off that same triage
+rather than off the session's closing verdict, so a lap that declined a person's thread and then
+closed as though it were finished parks anyway, with a blank draft for you to fill in or drop.
+`h9k pr reply-guard` is not a command you
+type: it is the PreToolUse hook a follow-up session launches with, refusing the `gh` routes into a
+review thread — on either shell tool the session has — so the sanctioned one is the only one left.
+`gh pr comment` is deliberately not
+refused, because a review's own *body* is unthreadable and a top-level comment is the only answer
+it can have.
+
 ### The claim gate
 
 Every teammate runs their own install against their own database, so a Jira card or a GitHub
@@ -503,10 +529,10 @@ is the newest — you did the fix yourself, in your own worktree, and the review
 way they would check a fix session's. It applies at the review-verdict-to-fix boundary only (on
 either side of the pull request), refuses over an uncommitted worktree, and refuses an unmoved
 branch tip unless `--no-change "<why>"` says why. `review resolve` also carries the one lever whose
-effect another person sees: on a park where a fix lap disagreed with a human reviewer's
-changes-requested finding, it takes `--post-reply-as-written`, `--post-reply "<text>"`, or
-`--post-nothing` alongside your verdict, and that choice is the only way a disagreement ever
-reaches the reviewer.
+effect another person sees: on a park where a lap deliberately said nothing to a human reviewer —
+a disagreement with their changes-requested finding, or a decline or route of a thread they
+opened — it takes `--post-reply-as-written`, `--post-reply "<text>"`, or `--post-nothing`
+alongside your verdict, and that choice is the only way those words ever reach the reviewer.
 
 ### Projects, owners, connections
 

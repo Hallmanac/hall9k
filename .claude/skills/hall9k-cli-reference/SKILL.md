@@ -825,3 +825,57 @@ so nothing is posted until every line is one it accepts.
 `h9k review resolve <id> --merge-ready` still closes a pr-review task out when the report was
 walked and nothing needs posting (the `walk-pr-review-findings` path); `h9k pr approve` /
 `h9k pr request-changes` are what replace that ceremony for somebody who actually reviewed.
+
+**One reply inside a review thread goes through the platform, and a decline to a person parks**
+(Decisions Log #62, #159, and the review-feedback reply park). `h9k pr reply` is the posting path
+for a single in-thread reply on a task's own pull request, and the only route a dispatched
+follow-up has into a thread at all.
+
+```bash
+h9k pr reply <task> --thread PRRT_kwDO --disposition fix --body "Fixed above: the sentinel is reused now."
+h9k pr reply <task> --thread PRRT_kwDO --disposition decline --body "…"   # refused when a PERSON opened it
+h9k pr reply-guard                     # not for you: the PreToolUse hook, payload on stdin
+```
+
+It exists so exactly one question is asked before words leave the machine: whose thread is this?
+A **decline** or a **route** into a thread a *person* opened is refused outright, posts nothing,
+and records the attempt on the run (`ReviewThreadReplyRefused`, rendered by `h9k task show`) —
+telling a colleague their point does not hold is the owner's to send, so the lap drafts the reply,
+closes with the `DISAGREEMENT:` block and `RESOLUTION: disputed`, and parks; `h9k review resolve`
+then takes `--post-reply-as-written`, `--post-reply "<text>"`, or `--post-nothing` alongside the
+verdict. A **bot's** thread, on any disposition, and a **fix**'s reply into anyone's thread post
+exactly as they always have.
+
+Whose thread it is comes from the platform's own read of the pull request when the lap was
+dispatched (`TaskReopened.HumanReviewThreads`, the provider's own actor type), never the session's
+say-so; a thread this install never read as human-authored posts, because an unobserved fact is not
+an observed bot and a thread opened after the dispatch read is the ordinary case. The
+**disposition** is the session's own word, which is the one soft spot — so every accepted reply
+records the claim (`ReviewThreadReplyPosted`) and `RunSupervisor` compares it against that thread's
+own `THREAD DISPOSITION:` block at completion, putting a reply that claimed fix and was really a
+decline in the run log rather than nowhere.
+
+The park is not optional either. A lap that records `disposition=decline` or `route` for a person's
+thread and then closes `RESOLUTION: resolved` still parks: `RunSupervisor` reads the
+`THREAD DISPOSITION:` triage as a second source and parks with a draft carrying no proposed reply,
+so the owner writes the answer (`--post-reply "<text>"`) or drops it (`--post-nothing`). Writing
+the `DISAGREEMENT:` block is what gets your drafted words in front of them instead of a blank.
+
+`h9k pr reply-guard` is not a command an operator types: it is the `PreToolUse` hook written into
+every follow-up run's settings file, refusing the shell routes that write inside a review thread so
+the sanctioned one is the only one left. It is registered in the tree rather than hidden so the
+same check can be run by hand — pipe Claude Code's hook payload in on stdin — when a session
+reports a refusal you did not expect. A refusal takes both halves: the command has to name a
+thread-writing route (the REST replies endpoint, the inline-comment or review endpoints carrying
+`in_reply_to` / `commit_id` / `event=` / `body=`, each only where a value is actually assigned to
+it, so filtering a read on `.in_reply_to_id` stays a read, every `addPullRequestReview…` mutation
+matched on the shared prefix, `gh pr review`) **and** be able to reach GitHub's API (`gh api`, `curl`,
+`wget`, a spelled `api.github.com`) — because every one of those identifiers is also source text in
+this repository, and matching the route alone refused a `git grep` for what it never sent. It is
+attached to both shell tools a session may have (`Bash|PowerShell`), since the same `gh` line runs
+in either and a Windows node hands a session both. The hook
+fails **open** everywhere (missing binary, unparseable payload, a tool that is neither shell): blocking
+every command in every follow-up on a mis-parse is a worse failure than the one it prevents.
+`gh pr comment` is deliberately not refused, and is named as a hole rather than papered over — a
+review's own *body* is unthreadable, so a top-level comment is the only answer it can have, and
+writing one has been an instruction since #62.
