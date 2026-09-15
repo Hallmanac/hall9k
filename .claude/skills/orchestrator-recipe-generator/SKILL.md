@@ -60,16 +60,15 @@ facts" applies to what you write here exactly as it does to the platform's own a
   makes — on Windows and everywhere else alike, not a Windows-only trait — so a recipe's start-up
   sequence should say to read a task's own rendered `tasks/<id>/task.md` (or widen with `h9k task
   show`) rather than trust wrapped CLI text for anything long.
-- Whether `tail -F` exists and behaves: decide from the operator's actual shell, not from probing
-  `tail` itself. BSD tail (macOS) and GNU coreutils tail (Linux, and Git Bash on Windows) both
-  support `-F`; only a shell with no `tail` at all — PowerShell — needs the substitute,
-  `Get-Content -Path <path> -Wait -Tail 0`. A Windows machine still gets the PowerShell substitute
-  even on the rare chance `tail -F` would technically work in a Git Bash window nobody uses to run
-  `h9k`. Do not run `tail --help` to confirm this: BSD tail (macOS) has no `--help` and exits
-  non-zero on it, which proves nothing either way, and do not fall back further to running bare
-  `tail -F` against an existing, unchanging file as a substitute probe — on both BSD and GNU tail
-  that blocks forever waiting for the file to grow, with nothing to timeout, background, or kill
-  it, and the fact two sentences up already answers the question that probe was trying to ask.
+- How this machine reads a file's current byte size, for the background waiter's own byte-offset
+  polling (*Start-up sequence* step 3 below): BSD `stat -f %z <path>` (macOS), GNU `stat -c %s
+  <path>` (Linux), or PowerShell's `(Get-Item <path>).Length` (Windows). No recipe this skill
+  writes arms `tail -F` or the `Monitor` tool for any watch, on this machine or any other. Brian's
+  ruling, 2026-09-15: Monitor expires every thirty minutes and wakes the window on every expiry and
+  every re-arm, and routine monitor events, expiries, and re-arms are never surfaced to the
+  operator (see *Talking to the operator* below and step 3's own contract). Decide which
+  file-size command this machine actually has rather than probing `tail` for a capability nothing
+  here uses.
 - Where `h9kd.log` lives: `h9k daemon status` prints the path. Confirm the timestamps it writes
   are local time and which zone, by reading the newest line and comparing it to `date` run in the
   same breath — do not assume the log's zone matches the operator's; compare, do not infer.
@@ -173,14 +172,17 @@ from what this skill says next time it runs.
 > is the item's id plus a plain description of what it actually is, never a bare id: the operator
 > reads the board through the descriptions, not the hex.
 >
-> Default to quiet on monitor events. A routine one (a session completing, a push, a merge, a
-> closeout line, a reopen for a normal lap, an isolated gh or network blip) gets no message, only
-> silent bookkeeping. Roll what happened into one summary about every three hours, grouped by
-> whatever this window is scoped to (a task for a project orchestrator, a project for a node
-> orchestrator), or fold it into the next message going out anyway for another reason. Anything actionable
-> (a park or dispute needing a ruling, a daemon or node down, three gh failures in a row, a merge
-> that failed and stayed failed, a call made on the operator's behalf under a standing grant)
-> supersedes the quiet rule and is reported at once.
+> Routine monitor events are never surfaced to the operator, full stop, not merely deprioritized: a
+> session completing, a push, a merge, a closeout line, a reopen for a normal lap, an isolated gh or
+> network blip, or a background waiter's own routine match all get no message, only silent
+> bookkeeping. Roll what happened into one summary about every three hours, grouped by whatever this
+> window is scoped to (a task for a project orchestrator, a project for a node orchestrator), or
+> fold it into the next message going out anyway for another reason. Routine background events are
+> covered by the identical rule, whichever waiter produced them: never surfaced on their own, their
+> summary arriving only on this three-hourly cadence or folded into the next outbound message.
+> Anything actionable (a park or dispute needing a ruling, a daemon or node down, three gh failures
+> in a row, a merge that failed and stayed failed, a call made on the operator's behalf under a
+> standing grant) supersedes the quiet rule and is reported at once.
 >
 > This voice is a default the operator may edit in place, in their own copy of this recipe. Record
 > a hand edit like that in this file's own provenance header, under `hand-edited-since`, the
@@ -293,180 +295,135 @@ and budget.
 1. Read `journal.md` (at the project home's own root, beside `notes/`) — the open loop: what is in
    flight, what is expected to land, what to do first. Trust it over anything remembered.
 2. Read `sessions.md` (same root) — the registry of sessions this window has spawned.
-3. Arm the attention monitor as a filtering pipeline, not a plain tail-and-grep: `h9kd.log` carries
-   far more routine lines (a session completing, a routine push, an ordinary merge) than actionable
-   ones, and a Monitor turns every line that reaches its stdout into an event in this thread with
-   nothing downstream able to suppress it afterward, so the filtering has to happen before that
-   point, not after. Read the log path from `h9k daemon status` (never hand-typed as
-   `~/.hall9k/h9kd.log`, which is only that command's own default) and whichever tail mechanism
-   discovery found for this machine (`tail -F -n 0`: the `-n 0` starts it at end-of-file rather
-   than replaying the file's last ten lines as though they had just happened, which would replay
-   an old actionable line as a fresh event every time a new orchestrator starts; the same reason
-   the PowerShell branch below starts at `-Tail 0`, or PowerShell's `Get-Content -Path <path> -Wait
-   -Tail 0` where there is no `tail` at all). Every POSIX stage below runs its match through
-   `command grep`, never bare `grep`: a session's own shell snapshot can install a `grep` shell
-   function pointed at a different program (this harness's own shell resolves bare `grep` to
-   ugrep, which rejects a backreference stage 4 below depends on), and `command` bypasses a shell
-   function or alias to reach the real binary on `PATH`. Build four stages, every one before the
-   final loop `--line-buffered` (PowerShell's pipeline is already line-oriented and needs no
-   equivalent flag), so a line is never held back waiting on a buffer to fill:
-   1. The tail, piped through the same attention pattern named below, case-insensitive
-      (`command grep -Ei --line-buffered '<pattern>'` on POSIX, `Select-String -Pattern
-      '<pattern>'` on PowerShell, case-insensitive by default): `parked|failed|error|merged|closeout
-      complete|reopened|dispute|needs you|adopted|fatal|unhandled|\[2001\]|PR opened|pushed to
-      existing PR|Application is shutting down|orphaned run|gh failure|crashed|held for a human|poll
-      interval reset`. The daemon's own log
-      capitalizes freely (`Unhandled exception`, `Failed to connect`, `outcome Disputed`), so a
-      case-sensitive match misses exactly the crash and dispute lines this monitor exists to
-      catch. `\[2001\]` is `DaemonLogEvents.PullRequestOpened`'s own structural id (the default
-      console formatter prints it inline as `Category[2001]`); key on it, not only the prose
-      beside it, since the prose is free to reword and only the bracketed id is guaranteed to
-      survive that. `needs you` sits in this pattern because it is also part of the actionable
-      test in stage 4 below: `PrReviewFollowThroughEngine` logs it directly (`Task {TaskId} needs
-      you: {Summary} (addressed to {Session})`), so carrying it this far catches that daemon line
-      too, not only the board-status wording of the same phrase. `Application is shutting down` is
-      the daemon host's own real shutdown line (the default `Microsoft.Hosting.Lifetime` logger),
-      not `daemon (stopped|exiting)`, which matches nothing the daemon ever actually writes.
-      `orphaned run`, `gh failure`, `crashed`, and `held for a human` are carried here too, not
-      only in stage 4's own actionable test: none of these phrases is guaranteed to share a
-      substring with any other term in this pattern (a `gh failure` line, for one, contains none
-      of "failed", "error", or "fatal"; the four crash shapes stage 4 lists below — `Review loop
-      crashed for run …`, `Pr-review loop crashed for run …`, `Monitor for run … crashed`,
-      `Resumed pipeline for run … crashed` — are written with `LogError` but their message text
-      carries none of "failed", "error", "fatal", or "unhandled" either, only the bare word
-      "crashed"; and `DispatchEngine.cs`'s own dependency-hold line, `Task {TaskId} is held for a
-      human rather than unblocked: {Reason}`, carries none of them and does not read `parked for
-      the human`), so without naming them here explicitly a line reporting only one of them never
-      survives this stage to reach the actionable test at all, and the whole point of that test is
-      exactly to catch them. `poll interval reset` is carried here for a different reason: it
-      names no actionable shape of its own (`... sweep succeeded; poll interval reset to
-      {Interval}` is routine recovery, not something to report), but the gh-failure streak counter
-      in stage 4 below can only reset itself on a surviving line, and a recovery line dropped here
-      before ever reaching that counter leaves isolated, already-healed blips hours apart counted
-      as though they were consecutive.
-   2. Drop the one known-noise shape this pattern otherwise lets through: any line containing
-      `error: False`, dropped case-sensitively (`command grep -v --line-buffered 'error: False'`,
-      or PowerShell's `Where-Object { $_ -cnotmatch 'error: False' }`). A real failure line reads
-      `error: True`, never `error: False`, so this single drop clears the busiest false positive
-      without touching anything else.
-   3. In project mode, drop any line naming a project other than this one that shares the same node
-      (`command grep -v -i --line-buffered -E '<pattern>'`, or a matching `-notmatch`): a pattern
-      this generator builds at generation time from each sibling's own resolved facts, not from
-      `h9k project list`'s output alone; that command names every sibling but prints none of their
-      home paths (`ProjectListCommand` renders only a name and its task rollup table). Resolve each
-      sibling the same way the discovery section above already does, `h9k project show <name>` for
-      every other name `h9k project list` prints, and take two alternatives per sibling anchored to
-      the log's own structural shapes: `project <name>;` and the sibling's own `Home` row from that
-      `show` with a trailing path separator appended (`/` on POSIX, the observed separator on
-      Windows), escaped for the target shell and regex (`<name>` the sibling's own project name),
-      never a bare name, a slug alternation, or a guessed `/<slug>/repo` shape: a custom home, a
-      renamed home whose old path still appears in old log lines, or a Windows backslash path all
-      make a guessed shape wrong where the observed `Home` row is not. The trailing separator on
-      the `Home` alternative matters as much as the observed path itself: `ProjectShowCommand`
-      prints `Home` with no trailing separator, and a raw `Home` value is a string prefix of any
-      sibling whose own home nests under it (`~/.hall9k/projects/smoke` is a prefix of
-      `~/.hall9k/projects/smoke2`), so without the separator this project's own lines are dropped
-      whenever a sibling's project name happens to be a prefix of this one's. The daemon's log
-      carries every line under a
-      `Hall9k.Daemon.*` logger category and many under this node's own `~/.hall9k/...` home path,
-      so a bare alternative turns the exclusion into a filter that drops this project's own
-      traffic too whenever a sibling's name is a common log word, or whenever one sibling's name
-      is a prefix of another's (`smoke` inside `smoke2`); anchoring to these two shapes is what
-      keeps the exclusion scoped to an actual other-project mention for the log lines that carry
-      a `project {Project};` or home-path prefix at all. The daemon also names a project in a few
-      other shapes this exclusion does not reach (`project {Project} (task …)`, `project
-      '{Name}'`, `for project {Project}`, `in project {Project} —`); a sibling line in one of those
-      shapes survives into this project's own tally instead of being dropped, which misattributes
-      a routine sibling line rather than losing an actionable one of this project's own. Write the
-      resolved pattern out as real text before the recipe is saved, never left as a literal
-      placeholder token for a session to guess at. This stage is left out of the pipeline entirely,
-      going straight from stage 2 to stage 4, whenever discovery finds no sibling project sharing
-      this node (an alternation built from zero siblings is an empty pattern, and `command grep -v
-      -E ''` drops every line) or in node mode: a node orchestrator is not scoped to any single
-      project, so every registered project's own actionable signal belongs to it, and there is no
-      "other project" to exclude.
-   4. A `while IFS= read -r line; do ... done` loop reading the piped stream (PowerShell: a
-      streaming `ForEach-Object` in the same pipeline, never the `foreach ($line in ...)`
-      statement, which collects its entire input before iterating and would never run its body
-      against an unbounded `-Wait` stream) that tests every surviving line against the actionable
-      pattern below (`printf '%s\n' "$line" | command grep -qEi '<actionable pattern>'` on POSIX;
-      `command` matters here as much as anywhere in this pipeline, since the actionable pattern
-      below depends on a backreference bare `grep` may not support) and only then decides where it
-      goes: a match is printed (`printf '%s\n' "$line"`), the only lines this Monitor turns into an
-      event in this thread; anything else is appended to `notes/monitor-tally.log` (inside this
-      home's own `notes/` directory, created by the append itself the first time a line lands
-      there), silent bookkeeping this window reads back at its next periodic summary (see *The
-      periodic summary* below) instead of reporting it now.
-      Actionable, matched case-insensitively unless noted: `dispute`, `fatal`, `unhandled`,
-      `needs you`, `parked for the human`, a task held for a human (`held for a human`:
-      `DispatchEngine.cs`'s own dependency-hold line, `Task {TaskId} is held for a human rather
-      than unblocked: {Reason}`, a park a dependency's own failure or abandonment forces that
-      needs the same human ruling the voice block calls actionable, worded differently from
-      `parked for the human` and not covered by it), a merge that failed and stayed failed (`merge attempt
-      failed \(([0-9]+)/\1\)`, a captured, repeated group, not a literal `\(3/3\)`:
-      `MaxMechanicalResolutionAttempts` (`src/Hall9k.Daemon/DaemonOptions.cs`) is configurable and
-      defaults to 3, not fixed at it, so a node set to 2 or 4 logs its own final attempt as `(2/2)`
-      or `(4/4)`, and a literal `(3/3)` would treat that node's real final failure as routine
-      instead of reporting it. Backreferences in an extended pattern are a long-standing GNU and
-      BSD grep extension beyond strict POSIX ERE, and .NET regex (`Select-String`'s own engine)
-      supports them natively, so the pattern itself is portable across both branches; what is not
-      portable is a `grep` resolved to a program that only implements POSIX ERE (this harness's own
-      shell resolves bare `grep` to one such program), which is exactly why this test runs through
-      `command grep` rather than bare `grep`. `merge failed` and `failed to merge` are left out of
-      this alternative entirely because the daemon never logs either phrase; the only line it
-      writes for this event is `Run {RunId}: pre-approved merge attempt failed ({Spent}/{Max}):
-      {Reason}` (`CloseoutEngine.cs`), which the backreference alternative already matches), an
-      unhandled exception (`Unhandled exception`), the daemon stopping (`Application is shutting
-      down`, the same real shutdown line named in stage 1 above), a session ending in error
-      (`error: True`), and a run failed. Cover every shape the daemon logs a run failure under,
-      since each one names the failure with different words around the run's guid: `Run
-      [0-9a-f-]{36} failed` and `Run [0-9a-f-]{36} pr-review failed` (the guid directly followed by
-      "failed", covering `failed:`, `failed before the gates:`, and `failed in the review loop:`
-      alike); `Launch failed for run [0-9a-f-]{36}` (`RunLauncher.cs`) and `PR opening failed for
-      run [0-9a-f-]{36}` (`PullRequestOpener.cs`) and `Run [0-9a-f-]{36} verification failed at
-      gate` (`VerificationRunner.cs`, both the first attempt and the after-retry line, which share
-      this same prefix) and `Run [0-9a-f-]{36}: error-result retry spawn failed`
-      (`RunSupervisor.cs`), which each put other words between "failed" and the guid; and `Review
-      loop crashed for run [0-9a-f-]{36}|Pr-review loop crashed for run [0-9a-f-]{36}|Monitor for
-      run [0-9a-f-]{36} crashed|Resumed pipeline for run [0-9a-f-]{36} crashed` (`ReviewEngine.cs`,
-      `PrReviewEngine.cs`, `RunSupervisor.cs`), the shapes where the run fails without the word
-      "failed" appearing next to the guid at all, spelled as plain alternation, not a grouped form,
-      since POSIX ERE has no non-capturing group syntax and this whole alternative already has to
-      stay portable to strict POSIX ERE the way the backreference alternative above does not. None
-      of these shapes uses the word "task". Left out as redundant: `RunLauncher.cs`'s own "Failed
-      to record launch failure for run {RunId}" fires only in the same catch block right after
-      "Launch failed for run {RunId}" already logged and already matched, so the operator is
-      already alerted by the time this second line would need to be. Finally, an orphaned
-      run that actually happened,
-      not the routine zero-count case every catch-up line reports on every daemon start regardless
-      of whether anything was orphaned (`failed [1-9][0-9]* orphaned run`, not the bare `orphaned
-      run` that matches that routine case too).
+3. Arm a silent background waiter for `h9kd.log`, never the `Monitor` tool, for this watch or any
+   other. Brian's ruling, 2026-09-15: `Monitor` expires every thirty minutes and wakes this window
+   on every expiry and every re-arm, and routine monitor events, expiries, and re-arms are never
+   surfaced to the operator (see *Talking to the operator* above). `h9kd.log` carries far more
+   routine lines (a session completing, a routine push, an ordinary merge) than actionable ones, so
+   the filtering has to happen inside the waiter itself, before anything reaches this thread, not
+   after. Start it with the Bash tool's `run_in_background: true`, once at start-up and again,
+   silently, every time it exits or is found dead: a self-contained loop, with no foreground timeout
+   and no follow pipeline left running between polls, that polls the log by byte offset on an
+   interval (15 seconds is a reasonable default; there is nothing here to tune around an expiry,
+   because nothing here expires), appends every routine match to
+   `notes/monitor-tally.log`, and prints and exits only on an actionable line. A waiter exiting means
+   exactly two things happen, in order, and neither is ever mentioned to the operator as it happens:
+   act on what the waiter printed, then re-arm it. A waiter killed outright (low memory, a session
+   restart) is re-armed exactly as silently as one that exited on its own; the operator sees only
+   what an actionable line itself says, or the rolled-up three-hourly summary below: never the
+   exit, the kill, the polling gap, or the re-arm.
 
-      A `gh failure` line is tracked rather than tested outright: the voice block above calls
-      three of them in a row actionable while one isolated blip is routine noise, and a
-      single-line test can't tell those apart. Keep a counter alongside the loop (`gh_streak=0`
-      set once before it starts; PowerShell: the same counter kept beside the `ForEach-Object`).
-      The daemon always logs a companion warning immediately before a `gh failure` line itself
-      (`... failed ...; will retry next sweep`, or `... sweep failed; will retry next tick`), so a
-      reset test that fires on any surviving line that is not itself a `gh failure` line never
-      lets the counter reach `3`: the companion line arrives first every time and resets it back to
-      `0` before the `gh failure` line on the same tick can increment it past `1`. On every
-      surviving line: if it matches `gh failure`, increment the counter; if it matches `will
-      retry`, leave the counter unchanged (this is the companion warning for the `gh failure` line
-      that follows it, not a sign the streak broke); on any other line, reset it to `0`. Every `gh
-      failure` line still gets appended to the tally as usual regardless of the counter, but when
-      incrementing brings the counter to `3`, also print that line so it reaches the thread as an
-      event, then reset the counter to `0`, so one blip or a pair stays quiet, three in a row is
-      reported once, and a longer run re-alerts every third line rather than firing continuously.
-   `Monitor` is a deferred tool in a session shaped like this one; fetch its schema by name with
-   `ToolSearch` before arming it. It dies with the session, so this whole pipeline is a start-up
-   step every time, never something to assume is still armed from before.
+   Build the waiter script (POSIX shell on macOS/Linux; PowerShell 7 on Windows) once, at
+   generation time, with these facts resolved for this machine rather than left as placeholders:
 
-   A recipe that already carries its own hand-edited step for polling something other than
-   `h9kd.log` (a mailbox, a channel, any outside source) keeps that step exactly as it is: this
-   filtering pipeline exists because most of a shared daemon log is routine noise, while a channel
-   built so that every entry posted to it is already a deliberate message has nothing routine to
-   filter out, and gains nothing from the same treatment.
+   - The log path from `h9k daemon status` (never hand-typed as `~/.hall9k/h9kd.log`, which is only
+     that command's own default) and the file-size command discovery found above (`stat -f %z` on
+     BSD/macOS, `stat -c %s` on GNU/Linux, `(Get-Item <path>).Length` on PowerShell).
+   - An offset file beside the waiter (for example `notes/waiters/log-waiter.offset`): read on each
+     poll, and initialized to the log's current end-of-file the first time the waiter ever runs, so
+     a fresh window never replays the log's entire history as though it had just happened. If the
+     log's size is smaller than the stored offset on a later poll (a daemon restart truncated or
+     recreated the file), reset the offset to zero rather than reading a negative-length slice.
+   - Each poll: if the log has grown past the stored offset, read only the new bytes (POSIX:
+     `tail -c +$((off+1)) <path> | head -c $((size-off))`; PowerShell: a stream read starting at the
+     stored offset), then advance the stored offset to the new size before testing anything, so a
+     byte range this poll already consumed can never be re-tested by the next one.
+   - Two patterns, named and built separately, never merged into one, and tested independently of
+     each other rather than one gated behind the other: a line the actionable pattern names is never
+     required to also match the routine pattern first. An earlier version of this pipeline chained
+     them (routine, then actionable-if-routine-matched) to save a second `grep` pass; running that
+     exact chain against a `held for a human` line, a `crashed` line, and the daemon's own
+     `Application is shutting down` line shows why that chaining is wrong, not merely inefficient:
+     none of those three actionable shapes shares a single word with the routine pattern below, so
+     under a routine-gated test every one of them is silently dropped before the actionable test
+     ever sees it, the opposite of what this waiter exists to do. Test both patterns against every
+     surviving line, independently, in this order: actionable first (a match is printed and ends the
+     loop right there, before the routine pattern is even consulted), then, only for a line
+     actionable did not match, routine (a match is appended to the tally; no match to either pattern
+     means the line is genuinely uninteresting and is dropped, untallied). An **actionable** pattern,
+     matched case-insensitively, naming every shape that ends the wait: `dispute`, `fatal`,
+     `unhandled`, `needs you`, `parked for the human`, a task held for a human (`held for a human`:
+     `DispatchEngine.cs`'s own dependency-hold line, `Task {TaskId} is held for a human rather than
+     unblocked: {Reason}`, a park a dependency's own failure or abandonment forces, worded
+     differently from `parked for the human` and not covered by it), a merge that failed and stayed
+     failed (`merge attempt failed \(([0-9]+)/\1\)`, a captured, repeated group, not a literal
+     `\(3/3\)`: `MaxMechanicalResolutionAttempts` (`src/Hall9k.Daemon/DaemonOptions.cs`) is
+     configurable and defaults to 3, not fixed at it, so a node set to 2 or 4 logs its own final
+     attempt as `(2/2)` or `(4/4)`), an unhandled exception (`Unhandled exception`), the daemon
+     stopping (`Application is shutting down`, the daemon host's own real shutdown line, the default
+     `Microsoft.Hosting.Lifetime` logger, not an invented `daemon (stopped|exiting)` the daemon never
+     actually writes), a session ending in error (`error: True`), and a run failed, covering every
+     shape the daemon logs a run failure under since each one puts different words around the run's
+     guid: `Run [0-9a-f-]{36} failed` and `Run [0-9a-f-]{36} pr-review failed` (the guid directly
+     followed by "failed", covering `failed:`, `failed before the gates:`, and `failed in the review
+     loop:` alike); `Launch failed for run [0-9a-f-]{36}` (`RunLauncher.cs`) and `PR opening failed
+     for run [0-9a-f-]{36}` (`PullRequestOpener.cs`) and `Run [0-9a-f-]{36} verification failed at
+     gate` (`VerificationRunner.cs`) and `Run [0-9a-f-]{36}: error-result retry spawn failed`
+     (`RunSupervisor.cs`); and the four shapes where a run fails without the word "failed" ever
+     appearing next to its guid at all: `Review loop crashed for run [0-9a-f-]{36}|Pr-review loop
+     crashed for run [0-9a-f-]{36}|Monitor for run [0-9a-f-]{36} crashed|Resumed pipeline for run
+     [0-9a-f-]{36} crashed` (`ReviewEngine.cs`, `PrReviewEngine.cs`, `RunSupervisor.cs`). Finally, an
+     orphaned run that actually happened, not the routine zero-count line every daemon start logs
+     regardless of whether anything was orphaned (`failed [1-9][0-9]* orphaned run`, not the bare
+     `orphaned run` that also matches that routine case). A **routine** pattern, matched
+     case-insensitively, naming every shape worth tallying once actionable has already ruled a line
+     out: `parked|failed|error|merged|closeout complete|reopened|dispute|needs you|adopted|fatal|
+     unhandled|PR opened|pushed to existing PR|gh failure|crashed`. `held for a human` and
+     `Application is shutting down` are left out of this list on purpose, not an oversight: both are
+     exact substrings of an actionable alternative already, so any line either one matches is always
+     claimed by the actionable test first and would never actually reach this one. The daemon's own
+     log capitalizes freely (`Unhandled exception`, `Failed to connect`, `outcome Disputed`), so a
+     case-sensitive match on either pattern misses exactly the crash and dispute lines this waiter
+     exists to catch. Never widen either pattern with a routine word like "merged" or "completed" on
+     its own. On POSIX, test both patterns through `command
+     grep`, never bare `grep`: a session's own shell snapshot can install a `grep` shell function
+     pointed at a different program (this harness's own shell resolves bare `grep` to ugrep, which
+     rejects the backreference the merge-attempt alternative above depends on), and `command`
+     bypasses a shell function or alias to reach the real binary on `PATH`.
+   - Drop the one known false-positive the routine pattern otherwise lets through, before testing
+     either pattern: a line containing `error: False`, dropped case-sensitively. A real failure line
+     reads `error: True`, never `error: False`, so this single drop clears the busiest false
+     positive without touching anything else.
+   - In project mode, drop any line naming a sibling project sharing this node before testing either
+     pattern, the same exclusion an earlier version of this pipeline used: build it at generation
+     time from each sibling's own resolved facts (`h9k project show <name>` for every other name
+     `h9k project list` prints, never a guessed slug or a bare name alternation), two alternatives
+     per sibling anchored to the log's own structural shapes (`project <name>;` and the sibling's own
+     `Home` row from that `show` with a trailing path separator appended, so a project whose name
+     prefixes another's, or whose home path prefixes a sibling's, is never dropped or over-dropped by
+     accident). Write the resolved pattern out as real text before the recipe is saved, never left as
+     a literal placeholder token. Leave this stage out entirely whenever discovery finds no sibling
+     project sharing this node, or in node mode: a node orchestrator is not scoped to any single
+     project, so every registered project's own actionable signal belongs to it and there is nothing
+     to exclude.
+   - Every actionable survivor is printed to stdout and ends the loop right there: this is the only
+     text that ever reaches the operator through this waiter, for the calling window to act on and
+     then re-arm. Every routine survivor that actionable did not already claim is appended to
+     `notes/monitor-tally.log` (inside this home's own `notes/` directory, created by the append
+     itself the first time a line lands there), silent bookkeeping this window reads back at its next
+     periodic summary (see *The periodic summary* below), never reported now.
+
+   **Windows notes.** PowerShell has no `$HOME`; every path the waiter script, its offset file, and
+   `notes/monitor-tally.log` use on a Windows machine is written out literal and full, exactly as
+   discovery observed it, never a `$HOME`-relative shorthand. This waiter runs no `tail -F` and no
+   other pipeline that keeps a child process alive between polls: each poll opens the log, reads
+   what is new, and closes it again, so there is nothing left running to orphan, on Windows or
+   anywhere else. A node window that used to periodically sweep for a `tail` process that an
+   expired Monitor pipeline had left orphaned has nothing left to sweep for, and that practice is
+   unnecessary once every window on that node runs this waiter instead of arming Monitor.
+
+   A recipe that already carries its own step for polling something other than `h9kd.log` (a
+   mailbox, a channel, any outside source) gets this same background-waiter shape, not whatever
+   shape it may have been hand-written in before this ruling: a one-shot Bash `run_in_background`
+   loop that polls its own source by cursor rather than by byte offset (for a GitHub-issue-based
+   channel, the `created_at` of the newest comment already read), drops what this window itself
+   posted, and exits only on a comment or message from someone else, printing it for the window to
+   act on and re-arm exactly as the log waiter above does. Where the source is reached through a CLI
+   that can itself fail transiently (`gh`, for one), a single failure is not actionable on its own:
+   track a streak alongside the loop instead, reset it the moment a call succeeds, and surface it
+   only once three failures land in a row (matching the actionable list's own "three gh failures in
+   a row"); log every single failure to a drops file the same shape as the routine tally, so an
+   isolated blip stays quiet but is still visible on request rather than lost.
 4. Run `h9k daemon status`, then `h9k status`. Ask the daemon directly rather than inferring its
    health from a quiet pane: a stopped daemon queues work silently and the pane says nothing about
    the daemon itself unless it is down.
