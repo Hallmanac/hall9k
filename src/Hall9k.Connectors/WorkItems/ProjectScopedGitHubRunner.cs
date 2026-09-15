@@ -1,5 +1,6 @@
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 
@@ -25,10 +26,27 @@ namespace Hall9k.Connectors.WorkItems;
 /// </para>
 /// </summary>
 public sealed class ProjectScopedGitHubRunner(
-    IDocumentStore store, ProjectGitHubClient? client = null, ProcessRunner? passthrough = null)
+    IDocumentStore store, ProjectGitHubClient? client = null, ProcessRunner? passthrough = null, TimeProvider? clock = null,
+    Func<string, GhIdentityReader>? identityReaderFactory = null)
 {
+    /// <summary>
+    /// How long a resolved account is reused for the same working directory before this runner
+    /// re-queries the project and re-resolves its account — short enough that a project's account
+    /// changing (a re-registered connection, a different login) is picked up quickly, long enough
+    /// that a closeout sweep touching several pull requests for the same project opens the Postgres
+    /// query session once rather than once per gh call (independent pre-PR review, cycle 1,
+    /// conformance lens).
+    /// </summary>
+    private static readonly TimeSpan AccountCacheTtl = TimeSpan.FromMinutes(2);
+
     private readonly ProjectGitHubClient client = client ?? new ProjectGitHubClient();
     private readonly ProcessRunner passthrough = passthrough ?? ExternalProcess.Runner;
+    private readonly TimeProvider clock = clock ?? TimeProvider.System;
+    private readonly Func<string, GhIdentityReader> identityReaderFactory =
+        identityReaderFactory ?? (workingDirectory => ProjectGitHubClient.AmbientIdentityReader(workingDirectory));
+    private readonly object accountCacheGate = new();
+    private readonly Dictionary<string, (ProjectGitHubAccount Account, DateTimeOffset ExpiresAt)> accountCache =
+        new(StringComparer.Ordinal);
 
     public ProcessRunner Runner => RunAsync;
 
@@ -40,14 +58,76 @@ public sealed class ProjectScopedGitHubRunner(
             return await passthrough(fileName, arguments, workingDirectory, cancellationToken);
         }
 
-        await using IQuerySession session = store.QuerySession();
-        ProjectDetails project = await session.Query<ProjectDetails>()
-            .FirstOrDefaultAsync(candidate => candidate.RepositoryPath == workingDirectory, cancellationToken)
-            ?? throw new DomainNotFoundException(
-                $"No registered project has its repository at {workingDirectory}, so there is no project "
-                + "account to run gh as.");
-
-        ProjectGitHubAccount account = await ProjectGitHubClient.ResolveAccountAsync(session, project, cancellationToken);
+        ProjectGitHubAccount account = await ResolveCachedAccountAsync(workingDirectory, cancellationToken);
         return await client.RunAsync(account, workingDirectory, arguments, cancellationToken);
+    }
+
+    private async Task<ProjectGitHubAccount> ResolveCachedAccountAsync(
+        string workingDirectory, CancellationToken cancellationToken)
+    {
+        DateTimeOffset now = clock.GetUtcNow();
+        lock (accountCacheGate)
+        {
+            if (accountCache.TryGetValue(workingDirectory, out (ProjectGitHubAccount Account, DateTimeOffset ExpiresAt) cached)
+                && cached.ExpiresAt > now)
+            {
+                return cached.Account;
+            }
+        }
+
+        ProjectDetails project;
+        await using (IQuerySession session = store.QuerySession())
+        {
+            project = await session.Query<ProjectDetails>()
+                .FirstOrDefaultAsync(candidate => candidate.RepositoryPath == workingDirectory, cancellationToken)
+                ?? throw new DomainNotFoundException(
+                    $"No registered project has its repository at {workingDirectory}, so there is no project "
+                    + "account to run gh as.");
+        }
+
+        ProjectGitHubAccount account = await ResolveAccountRefreshingIfUnconfirmedAsync(project, workingDirectory, cancellationToken);
+
+        lock (accountCacheGate)
+        {
+            accountCache[workingDirectory] = (account, now + AccountCacheTtl);
+        }
+
+        return account;
+    }
+
+    /// <summary>
+    /// Resolves the project's account, and on the one confirmable gap — this install's connection
+    /// was registered before its GitHub identity was ever observed, which happens only at
+    /// <c>h9k project add</c>, <c>h9k project join</c>, and daemon start — refreshes that identity
+    /// live and resolves once more before giving up. Without this, an install upgraded onto this
+    /// migration whose daemon has not yet restarted would have every one of these ordinary CLI
+    /// commands start refusing with "no confirmed GitHub account" where the exact same command
+    /// worked a moment ago against ambient <c>gh</c> (independent pre-PR review, Copilot,
+    /// PR #399). Best-effort exactly like <see cref="NodeBootstrap.RefreshGitHubIdentityAsync"/>
+    /// itself: a gh that still cannot answer leaves the original refusal to propagate unchanged.
+    /// </summary>
+    private async Task<ProjectGitHubAccount> ResolveAccountRefreshingIfUnconfirmedAsync(
+        ProjectDetails project, string workingDirectory, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IQuerySession session = store.QuerySession();
+            return await ProjectGitHubClient.ResolveAccountAsync(session, project, cancellationToken);
+        }
+        catch (DomainValidationException)
+        {
+            GhIdentityReader ghIdentityReader = identityReaderFactory(workingDirectory);
+            await using IDocumentSession refreshSession = store.LightweightSession();
+            if (!await NodeBootstrap.RefreshGitHubIdentityAsync(
+                refreshSession, project.ConnectionId, cancellationToken, ghIdentityReader))
+            {
+                throw;
+            }
+
+            await refreshSession.SaveChangesAsync(cancellationToken);
+
+            await using IQuerySession retrySession = store.QuerySession();
+            return await ProjectGitHubClient.ResolveAccountAsync(retrySession, project, cancellationToken);
+        }
     }
 }

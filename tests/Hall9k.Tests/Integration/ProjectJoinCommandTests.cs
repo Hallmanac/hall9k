@@ -392,6 +392,36 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
     }
 
     /// <summary>
+    /// <see cref="ProjectGitHubClient.RunAsync"/> itself no longer translates a hung gh's
+    /// <see cref="TimeoutException"/> — every other caller reaches it through
+    /// <c>ProjectScopedGitHubRunner</c> and already has its own richer handling for that
+    /// (independent pre-PR review, cycle 1, adversarial lens) — so <see cref="ProjectGitHubAccessMirror.ObserveAsync"/>'s
+    /// own <c>repo view</c> read, the one caller with no handling of its own, carries the
+    /// translation itself now. This drives that path end to end through <c>h9k project join</c>
+    /// rather than only unit-testing the mirror in isolation, so a regression that let the raw
+    /// exception escape past both layers would be caught here.
+    /// </summary>
+    [Fact]
+    public async Task A_hung_gh_repo_view_during_join_is_refused_naming_that_gh_did_not_answer()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+        ProjectGitHubClient hungClient = new(
+            (_, _, _, _, _) => throw new TimeoutException(
+                "gh did not answer within 120 seconds, so Hall9k stopped waiting and ended it."),
+            (_, _, _, _) => Task.FromResult(new ProcessResult(0, "gh-token-for-test", string.Empty)));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        Func<Task> act = () => ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(),
+            new ProjectGitHubAccessMirror(hungClient), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*did not answer*");
+        ledger.Writes.Should().BeEmpty("a join that never confirmed this install's own access never reaches a ledger write");
+    }
+
+    /// <summary>
     /// Join is refused when the project's account lacks push on the repository, with the
     /// repository and the rule named (idea 202383dc, A2b, item 2) — before any key is generated
     /// and before any ledger byte is written. This install's own role is still recorded on
