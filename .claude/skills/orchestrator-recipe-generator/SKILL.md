@@ -377,10 +377,10 @@ and budget.
       streaming `ForEach-Object` in the same pipeline, never the `foreach ($line in ...)`
       statement, which collects its entire input before iterating and would never run its body
       against an unbounded `-Wait` stream) that tests every surviving line against the actionable
-      pattern below and only then decides where it goes: a match is printed
-      (`printf '%s\n' "$line" | command grep -qEi '<actionable pattern>'` on POSIX; `command`
-      matters here as much as anywhere in this pipeline, since the actionable pattern below depends
-      on a backreference bare `grep` may not support), the only lines this Monitor turns into an
+      pattern below (`printf '%s\n' "$line" | command grep -qEi '<actionable pattern>'` on POSIX;
+      `command` matters here as much as anywhere in this pipeline, since the actionable pattern
+      below depends on a backreference bare `grep` may not support) and only then decides where it
+      goes: a match is printed (`printf '%s\n' "$line"`), the only lines this Monitor turns into an
       event in this thread; anything else is appended to `notes/monitor-tally.log` (inside this
       home's own `notes/` directory, created by the append itself the first time a line lands
       there), silent bookkeeping this window reads back at its next periodic summary (see *The
