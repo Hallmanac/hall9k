@@ -139,7 +139,7 @@ public sealed class PullRequestOpener(
                 ? (existingUrl, PullRequestUrls.ParseNumber(existingUrl))
                 : openBase is not null
                     ? await CreatePullRequestAsync(
-                        run, task, openBase, project.WritingConventions, cancellationToken)
+                        run, task, openBase, project.RepositoryPath, project.WritingConventions, cancellationToken)
                     : (null, 0);
 
             // The run's own already-recorded fact stands when this open resolves no fresh base of
@@ -548,13 +548,22 @@ public sealed class PullRequestOpener(
         openBase != recordedBase ? openBase : null;
 
     private async Task<(string Url, int Number)> CreatePullRequestAsync(
-        RunDetails run, TaskDetails task, string baseBranch, WritingConventions conventions,
+        RunDetails run, TaskDetails task, string baseBranch, string repositoryPath, WritingConventions conventions,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<string> arguments = await CreateArgumentsAsync(
             logger, run, task, TryReadAgentSummary(run), await SourceUrlAsync(task, cancellationToken), baseBranch,
             conventions, cancellationToken);
-        ProcessResult result = await processRunner("gh", arguments, run.WorktreePath, cancellationToken);
+        // The project's own repository path, not run.WorktreePath: ProjectScopedGitHubRunner (the
+        // daemon's shared ProcessRunner) only pins a gh call to a project's account when the
+        // working directory it is given equals that project's registered RepositoryPath exactly —
+        // a worktree is always a sibling directory, never that path — so gh pr create from the
+        // worktree threw DomainNotFoundException on every fresh delivery (independent pre-PR
+        // review, cycle 1, both lenses). gh reads the target repository from the directory's own
+        // git remote, not from what is checked out there, and a worktree and its project share the
+        // same origin remote, so pointing this call at the project's repository instead changes
+        // nothing about which repository or branches gh acts on.
+        ProcessResult result = await processRunner("gh", arguments, repositoryPath, cancellationToken);
         string output = result.ExitCode == 0
             ? result.StandardOutput.Trim() + result.StandardError.Trim()
             : throw new InvalidOperationException(

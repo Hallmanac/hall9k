@@ -116,6 +116,91 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     }
 
     /// <summary>
+    /// <c>gh pr create</c> must run from the project's own registered repository path, never
+    /// <c>run.WorktreePath</c>: the daemon's real <c>ProcessRunner</c> is
+    /// <c>ProjectScopedGitHubRunner</c>, which resolves the account to run gh as by matching its
+    /// working directory back to a project's <c>RepositoryPath</c> exactly, and a worktree is
+    /// always a sibling directory that never equals it. Every other test in this class runs
+    /// against a local (non-GitHub) origin, where <c>CreatePullRequestAsync</c> is never reached
+    /// at all, so this is the one place that path is exercised end to end (independent pre-PR
+    /// review, cycle 1, both lenses — the defect this test was added to close).
+    /// </summary>
+    [Fact]
+    public async Task Creating_a_pull_request_runs_gh_from_the_projects_repository_path_not_the_worktree()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        Directory.CreateDirectory(_root);
+        // "github.com" only needs to appear in the remote URL IsGitHubOriginAsync reads back —
+        // a real GitHub push is neither needed nor wanted for this test.
+        string originPath = Path.Combine(_root, "github.com-origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# working directory test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, runId, "Open a PR from the right directory", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
+        worktree.Path.Should().NotBe(repoPath, "a worktree is always a sibling directory of the project's own repository");
+
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Open a PR from the right directory", ["gh runs from the project's repository"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = claimed.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(runId, taskId, claimed.NodeId, ownerId, 1, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(runId, Now),
+                new VerificationPassed(runId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The opener writes pr-body.md into the run's own directory before calling gh — the same
+        // directory a real dispatch creates at launch, which this test's bare event-seeded run
+        // never does on its own.
+        Directory.CreateDirectory(RunPaths.GlobalDirectory(runId));
+
+        RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("https://github.com/x/y/pull/42\n");
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance, inspector: null, processRunner: gh.Runner);
+        await opener.OpenAsync(runId, taskId, cts.Token);
+
+        gh.Calls.Should().ContainSingle(call => call.FileName == "gh")
+            .Which.WorkingDirectory.Should().Be(
+                repoPath, "ProjectScopedGitHubRunner only pins an account when the working directory "
+                + "it is given equals a registered project's RepositoryPath exactly — the worktree "
+                + "path never does");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task2.State.Value.Should().Be("Done");
+        task2.PullRequestUrl.Should().Be("https://github.com/x/y/pull/42");
+    }
+
+    /// <summary>
     /// The generation fence (backlog 39): a requeue-and-reclaim moved the task on to
     /// generation 2 under a fresh run while this run — still generation 1 — reached the
     /// push step. The origin incident's exact shape: a stale lane's push must not complete
