@@ -151,9 +151,20 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
             }
 
             TrustChain trustChain = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
-            if (fingerprint is null || !trustChain.IsAllowedSigner(fingerprint))
+            if (fingerprint is null)
             {
                 return TransportReadResult.SenderNotVouched;
+            }
+
+            // Bound to senderNodeId, not merely "allowed somewhere" — the identical node-id check
+            // GitLedgerMessageTransport now enforces (independent pre-PR review, cycle 1,
+            // conformance and adversarial lenses, medium), so a test driving this fake against a
+            // real FakeLedgerChainReader exercises the same rule production does.
+            if (!trustChain.IsAllowedSigner(fingerprint, senderNodeId))
+            {
+                return TransportReadResult.NotVouched(
+                    "this sender's own node file exists, but its key is not currently vouched into any "
+                    + "project member's own trust chain for this node id");
             }
         }
 
