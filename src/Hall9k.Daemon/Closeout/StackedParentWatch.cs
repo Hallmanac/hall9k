@@ -429,17 +429,31 @@ public sealed class StackedParentWatch(
         // child onto the project's base from there would drop work that branch does not have. An
         // OBSERVED mismatch only — a read that reported no base at all reads as unknown rather than
         // as a different one, exactly as the local arm treats a run that recorded none.
-        // <c>RemoteBaseBranch</c> is itself a GitHub read, but a possibly-stale one: whatever the
-        // closeout sweep's own last look happened to see (RemoteStackedParentSweep's own cadence),
-        // which can predate a retarget GitHub made afterward the same way it retargets a stacked
-        // child's own pull request (Decisions Log #186). A mismatch here is therefore a SUSPICION,
-        // not a verdict, exactly as the local arm treats one — ResolveActualMergedIntoAsync settles
-        // it with a fresh look before this child parks on a stale snapshot.
+        // <c>RemoteBaseBranch</c> is itself a GitHub read, and — unlike the local arm's own recorded
+        // base, which only ever names where a pull request OPENED — it cannot be stale here: the
+        // sweep appends state and base together from one <c>gh pr view</c>
+        // (<c>RemoteStackedParentSweep</c>, <c>TaskAggregate.Apply(RemoteStackedParentObserved)</c>),
+        // so by the time <c>parentMerged</c> reads true the recorded base already came from that same
+        // post-merge read, and a merged pull request's base does not move again once it is closed.
+        // The fresh look below is not settling a stale snapshot, then; it exists so this arm reads
+        // the parent's base through the identical, single code path the local arm does — the one
+        // place a genuinely stale LOCAL record (<c>OpenedAgainstBaseBranch</c>) gets corrected by a
+        // live read — rather than trusting this already-definitive remote observation without ever
+        // routing it through the same check.
         if (parentMerged && parent.RemoteBaseBranch.IsNotBlank()
             && parent.RemoteBaseBranch != project.BaseBranch)
         {
+            // parent.RemoteBaseBranch itself, not null, fills ResolveActualMergedIntoAsync's own
+            // locallyKnownActualBase slot: the sweep's read is already the definitive fact this
+            // doc's own paragraph above argues it is, so a transient failure of the fresh re-read
+            // one line below must fall back to that known-good answer rather than sliding past it
+            // to the git ancestor check, which cannot even prove a rebase or squash merge landed
+            // (Copilot review, PR #388 — that tier can only prove containment IN, never OUT, per
+            // ResolveActualMergedIntoAsync's own doc, so letting a network blip here reach it risks
+            // exactly the false ParentMergedElsewhere this whole method exists to rule out).
             string actualMergedInto = await ResolveActualMergedIntoAsync(
-                project, parentBranch, parentNumber, parent.RemoteBaseBranch, null, cancellationToken);
+                project, parentBranch, parentNumber, parent.RemoteBaseBranch, parent.RemoteBaseBranch,
+                cancellationToken);
             if (actualMergedInto != project.BaseBranch)
             {
                 return StackedParentObservation.ParentMergedElsewhere(
@@ -466,25 +480,46 @@ public sealed class StackedParentWatch(
     /// actually answer it, in order, and the recorded base is reached only when none of them can:
     /// <list type="number">
     /// <item>
-    /// <paramref name="locallyKnownActualBase"/> — this platform's own record of the identical
-    /// fallback, set on the parent's own run when THIS install opened its pull request
-    /// (<see cref="Hall9k.Domain.Features.Run.Projections.RunDetails.OpenedAgainstBaseBranch"/>).
-    /// Free: no provider call, no git call. Blank for a remote parent (no local run to read) and for
-    /// a local parent whose own opener never hit that fallback.
-    /// </item>
-    /// <item>
     /// A fresh read of the parent's own pull request through <paramref name="parentPullRequestNumber"/>
     /// — its base ref exactly as GitHub reports it. A merged pull request's base does not move again
     /// once it is closed, so this is as good an answer as the moment of the merge itself gave, not
-    /// only "as of now".
+    /// only "as of now" — the definitive fact, tried first, ahead of this platform's own record of
+    /// where the pull request merely OPENED: a pull request's base can be edited any time before it
+    /// merges, and a human can hand-merge one whose base a platform fallback recorded weeks earlier
+    /// naming somewhere the pull request was later retargeted away from — trusting the stale
+    /// open-time record over this live read would drop the true parent's work exactly the way a
+    /// genuinely merged-elsewhere parent's own park exists to prevent (independent pre-PR review,
+    /// cycle 1, adversarial lens: this ordering used to be reversed. The scenario is a grandparent
+    /// not yet pushed when the parent's own pull request opened
+    /// (<c>--acknowledge-unmet-dependencies</c>), so the opener's fallback records "main"; the
+    /// grandparent later pushes, and a human retargets and hand-merges the parent onto it without
+    /// ever going through this platform's own merge bar, which only ever merges a pull request still
+    /// aimed at its recorded base).
+    /// </item>
+    /// <item>
+    /// <paramref name="locallyKnownActualBase"/> — for a local parent, this platform's own record of
+    /// the identical fallback, set on the parent's own run when THIS install opened its pull request
+    /// (<see cref="Hall9k.Domain.Features.Run.Projections.RunDetails.OpenedAgainstBaseBranch"/>); for
+    /// a remote parent, <c>RemoteStackedParentSweep</c>'s own already-observed base
+    /// (<c>parent.RemoteBaseBranch</c>), which the remote arm's own caller passes here rather than
+    /// leaving blank — that observation is the identical fact the live read above would answer with,
+    /// captured in the same <c>gh pr view</c> that established the merge itself (the remote arm's own
+    /// doc). Free either way: no provider call, no git call. Blank only for a local parent whose own
+    /// opener never hit that fallback. Reached only when the live read above could not be made — no
+    /// pull request number to ask, or the call itself failed — never as a corroboration of it, since
+    /// the live read is already the definitive fact once it answers.
     /// </item>
     /// <item>
     /// The parent's own head commit's reachability from the project's base branch's current tip: if
     /// the base branch already contains that commit, the parent's work is on the base's own line
-    /// regardless of what any record says, and if it plainly does not, it is not. Reached only when
-    /// the read above could not be made at all — no pull request number to ask, or the call itself
-    /// failed — never as a corroboration of the read, since a merged pull request's own base ref is
-    /// already the definitive fact once it is known.
+    /// regardless of what any record says. The reverse does NOT hold under this platform's own
+    /// rebase-and-merge method (<c>GitHubPullRequestInspector.cs</c>): a rebase merge gives the
+    /// parent's commits new SHAs on the base, so the parent's own PRE-rebase head is never reachable
+    /// from the base even when the parent's work is genuinely there. This check can only ever prove
+    /// the base IN — never prove it out — so a miss here falls through to
+    /// <paramref name="recordedMergedInto"/> exactly as a failed call would, rather than asserting the
+    /// parent merged elsewhere on evidence that cannot show that (independent pre-PR review, cycle
+    /// 1, conformance lens). Reached only when neither source above could answer at all.
     /// </item>
     /// </list>
     /// Every one of those calls is best-effort: a failure at any step falls through to the next, and
@@ -500,11 +535,6 @@ public sealed class StackedParentWatch(
         string? locallyKnownActualBase,
         CancellationToken cancellationToken)
     {
-        if (locallyKnownActualBase.IsNotBlank())
-        {
-            return locallyKnownActualBase;
-        }
-
         if (parentPullRequestNumber is > 0)
         {
             RemoteParentRead read = await remoteParents.ReadAsync(
@@ -513,6 +543,11 @@ public sealed class StackedParentWatch(
             {
                 return read.BaseBranch;
             }
+        }
+
+        if (locallyKnownActualBase.IsNotBlank())
+        {
+            return locallyKnownActualBase;
         }
 
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
