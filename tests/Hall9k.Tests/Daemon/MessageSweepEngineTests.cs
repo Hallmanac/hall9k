@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Daemon.Messaging;
+using Hall9k.Domain.Features.Node;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -74,5 +75,37 @@ public sealed class MessageSweepEngineTests
             MessageSweepEngine.SendersToRead(tips, MyNodeId, RepositoryPath, lastKnownTips);
 
         toRead.Should().ContainSingle("the known tip belongs to a different repository entirely");
+    }
+
+    [Fact]
+    public void A_registered_node_with_no_hold_standing_and_nothing_pending_is_idle()
+    {
+        // LaunchHoldEngine.CurrentHoldAsync returns the node's own NodeDetails once it has ever
+        // registered, whether or not a hold is standing — testing that result for non-null alone
+        // used to make every registered node read as active forever (independent pre-PR review,
+        // cycle 1, both lenses).
+        NodeDetails registeredNoHold = new() { LaunchHoldActive = false };
+
+        bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: false, registeredNoHold);
+
+        activeCadence.Should().BeFalse("a registered node with nothing pending and no standing hold is idle");
+    }
+
+    [Fact]
+    public void A_standing_launch_hold_forces_the_active_cadence_even_with_nothing_pending()
+    {
+        NodeDetails withHold = new() { LaunchHoldActive = true };
+
+        bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: false, withHold);
+
+        activeCadence.Should().BeTrue("a node-wide launch hold is held work, even with nothing unflushed or unread");
+    }
+
+    [Fact]
+    public void Unflushed_or_unread_work_forces_the_active_cadence_with_no_hold_at_all()
+    {
+        bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: true, currentHold: null);
+
+        activeCadence.Should().BeTrue();
     }
 }
