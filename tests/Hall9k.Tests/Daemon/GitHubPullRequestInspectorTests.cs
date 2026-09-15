@@ -140,6 +140,32 @@ public sealed class GitHubPullRequestInspectorTests
     }
 
     /// <summary>
+    /// A body the payload does not carry is unknown, not blank. Coalescing the two handed
+    /// <c>AdvisoryReviewThreads</c> an empty string, which reads as asking nothing, so a thread
+    /// nobody could read classified as an FYI and suppressed the follow-up lap against this
+    /// path's own documented fail-safe (Copilot, PR #397).
+    /// </summary>
+    [Fact]
+    public void A_thread_whose_opening_body_the_payload_omits_is_read_as_unknown_not_blank()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"),
+            "cafe1",
+            string.Join(",",
+                Thread(resolved: false, Actor("teammate", "User"), "thread-unreadable"),
+                Thread(resolved: false, Actor("teammate", "User"), "thread-empty", body: "")),
+            "");
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.UnresolvedHumanThreadDetails.Should().HaveCount(2);
+        observation.UnresolvedHumanThreadDetails[0].OpeningComment.Should().BeNull(
+            "the provider reported no body for this thread's opener, and unobserved is unknown");
+        observation.UnresolvedHumanThreadDetails[1].OpeningComment.Should().Be(
+            "", "a body the provider DID report as empty is a different fact, and stays one");
+    }
+
+    /// <summary>
     /// GitHub's own 100-thread page cap can leave real threads unread — the "0 unresolved" this
     /// read reports is not the same claim as "every thread is resolved" when the provider itself
     /// says there is a next page (independent pre-PR review, cycle 1, adversarial finding).
