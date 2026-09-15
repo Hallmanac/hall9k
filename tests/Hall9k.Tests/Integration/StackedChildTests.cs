@@ -528,11 +528,14 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
     /// lens): GitHub has already retargeted this pull request for itself — it deletes the merged
     /// parent's head branch, which moves every open child's base onto the project's base before any
     /// sweep here observes the merge (Decisions Log #186) — so there is no provider
-    /// write left for a spent rebase budget to gate. Parking it anyway would send a human to rebase
-    /// and retarget a pull request that already sits exactly where it belongs.
+    /// write left for a spent rebase budget to gate. This sweep still parks, though (independent
+    /// pre-PR review, cycle 1, conformance and adversarial lenses): once the run stops reading as a
+    /// stacked child, nothing else ever prompts the h9k pr resolve that renumbers this task's own
+    /// Decisions Log placeholder, so the park is what tells a human to grant that lap rather than
+    /// letting the run sit unrenumbered with no attention flag.
     /// </summary>
     [Fact]
-    public async Task A_child_past_its_rebase_budget_but_already_retargeted_by_github_is_not_parked()
+    public async Task A_child_past_its_rebase_budget_and_already_retargeted_by_github_still_parks_for_the_placeholder()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         StackedFixture fixture = await SeedAsync(cts.Token, priorStackReplays: 2);
@@ -561,9 +564,13 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
 
         await using IQuerySession query = fixture.Store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
-        run.State.Should().NotBe(RunState.CloseoutParked,
-            "a spent rebase budget gates a write this sweep would make, not one it would not — this pull "
-            + "request is already on the project's base, so there is nothing left to park over");
+        run.State.Should().Be(RunState.CloseoutParked,
+            "the retarget already landed and nothing else will ever prompt the h9k pr resolve that renumbers "
+            + "this task's own Decisions Log placeholder, so this sweep parks to ask for it directly");
+        run.ParkedReason.Should().Contain("rebase budget is spent")
+            .And.Contain("2/2")
+            .And.Contain("h9k pr resolve")
+            .And.Contain("retargeted");
         run.LastStackedRetargetSucceeded.Should().BeTrue(
             "the record still needs to say the base moved off the parent's branch, even though the provider "
             + "was not called again to do it");
