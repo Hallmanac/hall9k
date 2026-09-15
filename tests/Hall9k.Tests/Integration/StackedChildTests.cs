@@ -635,6 +635,53 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The sibling shape to the test just above, with the live source actually answering rather than
+    /// staying silent: <c>gh pr view</c> positively reports the parent's own pull request merged into
+    /// the grandparent's branch, not the project's base. This is the test the conformance lens's own
+    /// coverage finding named (independent pre-PR review, cycle 1): every other merged-elsewhere test
+    /// on this branch used <see cref="NoOpRemoteParentReader"/>, so nothing exercised a local parent's
+    /// live read actually confirming a genuine mismatch — only the read failing and the git fallback
+    /// picking it up. It also exercises <c>StackedParentWatch.ResolveActualMergedIntoAsync</c>'s own
+    /// reordering (the same review's adversarial-lens finding): the live read is tried FIRST now, ahead of any
+    /// locally recorded base, and this fixture's parent never hit
+    /// <c>PullRequestOpener.ResolveOpenBaseAsync</c>'s fallback, so there is no local record to race it
+    /// — the live read alone has to be what reaches the park.
+    /// </summary>
+    [Fact]
+    public async Task A_live_read_that_positively_confirms_the_parents_own_branch_still_parks_the_child()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token, parentBaseBranch: "task/grandparent-slice");
+        await MergeTheParentAsync(fixture, cts.Token);
+
+        FakeStackedInspector inspector = new();
+        FakeRemoteParentReader remoteParents = new(new RemoteParentRead(
+            RemoteParentState.Merged, fixture.ParentBranch, fixture.ParentHeadCommit, "task/grandparent-slice",
+            "https://github.com/x/y/pull/7", null,
+            "gh pr view reports the parent's own pull request merged into task/grandparent-slice, not the "
+            + "project's own main — a genuine mid-stack merge, not a stale local record"));
+        await NewEngine(fixture, inspector, remoteParents: remoteParents).PollOnceAsync(cts.Token);
+
+        remoteParents.Reads.Should().Contain(FakeStackedInspector.ParentNumber,
+            "the recorded base names something other than the project's own, so the checkpoint asks "
+            + "a live source about the parent's own pull request before trusting that mismatch");
+        inspector.Retargets.Should().BeEmpty(
+            "there is no base this child can be moved onto mechanically without dropping work");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.StackedOnBranch.Should().Be(fixture.ParentBranch,
+            "nothing was moved, so the record still names the stack the human inherits");
+        run.ParkedReason.Should().Contain("task/grandparent-slice")
+            .And.Contain("h9k pr resolve");
+
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        child.StackReplaysDispatched.Should().Be(0, "no replay was dispatched, so no budget was spent");
+    }
+
+    /// <summary>
     /// The 2026-09-15 07:01 shape (task eec9096d, PR #379): a parent stacked on a grandparent whose
     /// branch is already gone from origin records the grandparent's branch as its own base, and
     /// nothing rewrites that record when the parent later merges — but GitHub retargeted the
