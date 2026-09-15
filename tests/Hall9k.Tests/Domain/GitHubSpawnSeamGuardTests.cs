@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Xunit;
 
@@ -53,6 +54,17 @@ public sealed class GitHubSpawnSeamGuardTests
         "FileName = \"gh\"",
         "new ProcessStartInfo(\"gh\"",
         "ProcessStartInfo(fileName: \"gh\"",
+        // A direct ExternalProcess call naming gh bypasses ProjectScopedGitHubRunner/
+        // ProjectGitHubClient exactly as thoroughly as a raw ProcessStartInfo would — every real
+        // call site reaches gh only through an injected ProcessRunner parameter (never
+        // ExternalProcess's own static entry points named directly), so this shape reappearing is
+        // the identical regression class the two markers above already catch (independent pre-PR
+        // review, cycle 1, both lenses). Only the literal, filename-first call shape is matched:
+        // ExternalProcess.RunnerWithDeadline/RunnerWithEnvironment are legitimately called this way
+        // for git (CloseoutEngine, ReviewEngine, PullRequestOpener's own push), assigned to a local
+        // and invoked with "gh" or "git" several lines later — a shape no marker here, or in any
+        // other source-scanning guard in this file, attempts to trace through a variable.
+        "ExternalProcess.Runner(\"gh\"",
     ];
 
     [Fact]
@@ -92,21 +104,42 @@ public sealed class GitHubSpawnSeamGuardTests
         const string syntheticOffender = "process.StartInfo = new ProcessStartInfo(\"gh\") { };";
         RawSpawnMarkers.Any(marker => syntheticOffender.Contains(marker, StringComparison.Ordinal))
             .Should().BeTrue("the marker list must still catch the exact raw-spawn shape this task removed");
+
+        const string syntheticDirectCallOffender = "await ExternalProcess.Runner(\"gh\", arguments, path, ct);";
+        RawSpawnMarkers.Any(marker => syntheticDirectCallOffender.Contains(marker, StringComparison.Ordinal))
+            .Should().BeTrue(
+                "the marker list must still catch a direct ExternalProcess.Runner(\"gh\", ...) call that "
+                + "bypasses the injected ProcessRunner seam entirely");
     }
 
-    private static readonly string[] BareConstructionMarkers =
+    private static readonly string[] BareConnectorTypeNames =
     [
-        "new GitHubWorkItemProvider()",
-        "new GitHubPullRequestProvider()",
-        "new GitHubPullRequestSurface()",
-        "new GitHubReviewAssignments()",
-        "new GitHubReviewReplies()",
-        "new GitHubReviewThreads()",
-        "new GitHubPullRequestInspector()",
-        "new GitHubRemoteParentReader()",
-        "new TrackerClaimGate()",
-        "new TrackerAssignmentTake()",
+        "GitHubWorkItemProvider",
+        "GitHubPullRequestProvider",
+        "GitHubPullRequestSurface",
+        "GitHubReviewAssignments",
+        "GitHubReviewReplies",
+        "GitHubReviewThreads",
+        "GitHubPullRequestInspector",
+        "GitHubRemoteParentReader",
+        "TrackerClaimGate",
+        "TrackerAssignmentTake",
     ];
+
+    private static readonly string[] BareConstructionMarkers =
+        [.. BareConnectorTypeNames.Select(name => $"new {name}()")];
+
+    /// <summary>
+    /// Catches the target-typed spelling of the same bare construction (<c>GitHubWorkItemProvider
+    /// provider = new();</c>) that <see cref="BareConstructionMarkers"/>' literal <c>new
+    /// TypeName()</c> text can't see — the exact shape <c>TaskPublishCommand.cs</c>'s own GitHub
+    /// issue provider regressed to (independent pre-PR review, cycle 1, both lenses): a declared
+    /// variable of one of these connector types initialized with an argument-free <c>new()</c>.
+    /// </summary>
+    private static readonly Regex TargetTypedBareConstructionPattern = new(
+        string.Join('|', BareConnectorTypeNames.Select(name =>
+            $@"\b{Regex.Escape(name)}\??\s+[A-Za-z_][A-Za-z0-9_]*\s*=\s*new\(\)")),
+        RegexOptions.Compiled);
 
     /// <summary>
     /// Both named sites build the connector purely to call its synchronous, gh-free
@@ -147,7 +180,8 @@ public sealed class GitHubSpawnSeamGuardTests
                 continue;
             }
 
-            if (BareConstructionMarkers.Any(marker => code.Contains(marker, StringComparison.Ordinal)))
+            if (BareConstructionMarkers.Any(marker => code.Contains(marker, StringComparison.Ordinal))
+                || TargetTypedBareConstructionPattern.IsMatch(code))
             {
                 offenders.Add(relativePath);
             }
@@ -156,9 +190,9 @@ public sealed class GitHubSpawnSeamGuardTests
         offenders.Should().BeEmpty(
             "every GitHub or tracker connector is constructed with an explicit ProcessRunner "
             + "(ProjectScopedGitHubRunner in production) at the one place it is built for real — a "
-            + "bare, zero-argument construction defaults back to ExternalProcess.Runner, spawning "
-            + "gh under whichever account the machine happens to be logged into instead of the "
-            + "project's own");
+            + "bare, zero-argument construction (either 'new TypeName()' or the target-typed "
+            + "'TypeName x = new();') defaults back to ExternalProcess.Runner, spawning gh under "
+            + "whichever account the machine happens to be logged into instead of the project's own");
 
         // Positive control: the two allowed sites really do construct their connector bare, so a
         // regression in StripCommentsAndStrings or a stale marker (a connector renamed, its
@@ -175,5 +209,13 @@ public sealed class GitHubSpawnSeamGuardTests
                 $"{allowedRelativePath} does construct a connector bare (for its own WebUrl-only "
                 + "use), so this scan must still be able to detect one there");
         }
+
+        // Positive control for the target-typed spelling specifically: proven against a synthetic
+        // snippet, since every real site in the tree is now migrated and neither literal marker nor
+        // pattern should be exercising against a live regression.
+        const string syntheticTargetTypedOffender = "GitHubWorkItemProvider provider = new();";
+        TargetTypedBareConstructionPattern.IsMatch(syntheticTargetTypedOffender).Should().BeTrue(
+            "the pattern must still catch a target-typed bare construction like TaskPublishCommand's "
+            + "own former regression");
     }
 }
