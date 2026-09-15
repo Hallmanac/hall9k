@@ -686,9 +686,12 @@ sender's node file does not vouch for their outbox.
 
 Envelopes are one node's own signed statement, ephemeral by design (Brian's ruling, 2026-09-13):
 anything that must survive a node's absence is a file in the ledger, never only a message. Sender
-verification is per-node (that node's own key, named in its node file); owner-chain (cross-node,
-cross-human) verification is the team half, not yet built. Scoped to a single project's own
-repository today, not every registered project a node happens to manage; see
+verification is chain-level (idea 202383dc, T1): a candidate key is still read from the sender's
+own node file, but it also has to be currently allowed by the project's own ledger chain — a
+project-member owner's own key, or a node vouched into one and not revoked, recomputed fresh on
+every read — before its commit signature is ever checked; a sender whose key does not chain to a
+project member is ignored the same way an unvouched one always was. Scoped to a single project's
+own repository today, not every registered project a node happens to manage — see
 "Multi-node and peer-to-peer" below for why.
 
 ### Configuration and policy
@@ -1061,12 +1064,22 @@ works identically for one node or twenty. Identity core is built on top of that 
 piece A2a, Decisions Log #190): every node generates its own ed25519 signing key under
 `~/.hall9k/keys/<node-id>` (`h9k project join`), an owner is one root key across every node that
 claims it, and every ledger write from an enrolled node is signed. Node-to-node messaging is built
-on top of identity core (see "Node-to-node messaging" above): one node's own signed note to
-another, an owner, or the whole project, over the same signed-ledger-write foundation. **Nothing
-past that is built.** No node discovery, no gossip, no event replication (M2, the one thing a
-message is deliberately never trusted with), no cross-user trust; the team half (invites,
-vouches, revocation, chain verification) that would let a *second* human's node join an owner's
-root is still a later task, not this one.
+on top of identity core (see "Node-to-node messaging" above) — one node's own signed note to
+another, an owner, or the whole project, over the same signed-ledger-write foundation. The team
+half of identity is built too (idea 202383dc, T1): vouches and revocations
+(`owners/<root>/nodes/<node-id>.yaml`, `owners/<root>/revoked/<node-id>.yaml`) let one owner's
+already-enrolled node admit another of that owner's own nodes into the fleet, `h9k node
+vouch`/`revoke`; project membership (`refs/hall9k/ledger/members`) is its own ledger ref, one
+`members/<root>.yaml` per member, genesis self-written by the first join, `h9k project
+members`/`member remove`; and `GitLedgerChainReader` recomputes, on every read of every ledger and
+messages ref, exactly which signers a project's own chain currently trusts — a stranger's own
+self-consistent root and node file are ignored everywhere they were never made a member. **Still
+not built**: no node discovery, no gossip, no event replication (M2, the one thing a message is
+deliberately never trusted with), and no invite flow yet — a *second* human's node joining an
+owner's root today still needs a hand-run `h9k node vouch` from an already-enrolled node (T2, the
+invite mint-and-sweep round trip, is the next piece in the ruled chain). A force-push over a
+ledger ref still rewrites trust history along with everything else in it; a node's own store
+detects the rewrite, but nothing prevents it before the later relay replaces git as the carrier.
 
 The peer-to-peer branch has a full design (identity as a two-tier key hierarchy, mDNS on the LAN,
 hole punching, a relay on 443, QUIC throughout) in
