@@ -74,12 +74,86 @@ public static class ClaudeSettingsFile
     /// <c>BASH_DEFAULT_TIMEOUT_MS</c> to <paramref name="commandTimeout"/> and
     /// <c>BASH_MAX_TIMEOUT_MS</c> to double that.
     /// </summary>
-    public static string Build(TimeSpan commandTimeout)
+    /// <param name="guardReviewThreadReplies">
+    /// Whether to install the in-thread reply guard (task: a review-feedback follow-up never
+    /// answers a human reviewer in the owner's name on its own) — see
+    /// <see cref="ReviewThreadReplyGuardHook"/>. Set for a follow-up run, which is the only kind
+    /// of session that works an open pull request's threads; false everywhere else, so a fresh
+    /// build session's settings are byte-for-byte what they were.
+    /// </param>
+    public static string Build(TimeSpan commandTimeout, bool guardReviewThreadReplies = false)
     {
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
-        return $$$"""{"includeCoAuthoredBy": false, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}}""";
+        string hooks = guardReviewThreadReplies ? $", {ReviewThreadReplyGuardHook}" : string.Empty;
+        return $$$"""{"includeCoAuthoredBy": false, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}{{{hooks}}}}""";
     }
+
+    /// <summary>
+    /// The command a session's shell must reach an in-thread reply through, once the guard below
+    /// is installed. Public so the prompt that teaches it and the guard that enforces it are one
+    /// string rather than two that can drift.
+    /// </summary>
+    public const string ReviewThreadReplyCommand = "h9k pr reply";
+
+    /// <summary>
+    /// The <c>PreToolUse</c> hook that makes the reply park enforcement rather than instruction
+    /// (task: a review-feedback follow-up never answers a human reviewer in the owner's name on
+    /// its own). It refuses the shell routes that put a comment inside somebody's review thread,
+    /// so the only way a follow-up reaches one is <see cref="ReviewThreadReplyCommand"/> — which
+    /// knows, from closeout's own provider read, whose thread it is, and refuses a decline or a
+    /// route into a person's.
+    /// <para>
+    /// <b>Why a hook and not a <c>permissions.deny</c> entry.</b> The review lap's guard is a
+    /// deny list (<see cref="ReviewLapDeniedTools"/>) and could not be one here. A deny matches
+    /// the command as it is spelled, and the reply route is routinely spelled with the path in
+    /// quotes (<c>gh api "repos/$SLUG/pulls/$N/comments/$ID/replies"</c> — the exact line the
+    /// resolve-review-threads skill teaches), which no prefix rule matches. Worse, every
+    /// dispatched session this platform spawns may carry
+    /// <c>--dangerously-skip-permissions</c>, and that flag voids the permission engine outright
+    /// while leaving hooks running. A deny would have been a rule that looked like enforcement
+    /// and was not.
+    /// </para>
+    /// <para>
+    /// <b>Every shell the session has, not just Bash.</b> The matcher names both shell tools
+    /// Claude Code exposes, because on this platform's own primary host a dispatched session is
+    /// handed a <c>PowerShell</c> tool beside its <c>Bash</c> one — and the same
+    /// <c>gh api …/replies</c> line runs in either. A Bash-only matcher was therefore a guard with
+    /// the ordinary Windows shell left open beside it (independent pre-PR review, cycle 1,
+    /// conformance and adversarial lenses). The routes are recognized from the command text
+    /// (<see cref="ReviewThreadReplyRoutes"/>), which is shell-agnostic, so one hook body covers
+    /// both.
+    /// </para>
+    /// <para>
+    /// <b>What it does not stop, stated plainly.</b> A session can still answer a person at the
+    /// top level with <c>gh pr comment</c>, which is deliberately left alone because it is the
+    /// only way to answer a review BODY (GitHub makes one unthreadable) and that path is not what
+    /// the two origin incidents were. A session that reaches GitHub's API through a client library
+    /// of its own, spelling neither a route this recognizes nor a host, is outside what any of
+    /// this sees. This refuses the routes a session
+    /// actually reaches for, which is the same honest claim <see cref="ReviewLapDeniedTools"/>
+    /// makes for its own list; the long-term answer is still node-signed authorship in the P2P
+    /// identity layer (PLAN.md §16 #38-#58).
+    /// </para>
+    /// <para>
+    /// The guard fails OPEN: <c>h9k</c> missing from the session's PATH, a crash, or a malformed
+    /// answer all leave the tool call to run. A guard that failed closed would block every shell
+    /// call in every follow-up the first time it mis-parsed something, which is a worse failure
+    /// than the one it prevents.
+    /// </para>
+    /// </summary>
+    public const string ReviewThreadReplyGuardHook =
+        "\"hooks\": {\"PreToolUse\": [{\"matcher\": \"" + ReviewThreadReplyGuardMatcher + "\", \"hooks\": "
+        + "[{\"type\": \"command\", \"command\": \"h9k pr reply-guard\"}]}]}";
+
+    /// <summary>
+    /// The tool names the guard above is attached to — a <c>PreToolUse</c> matcher, which Claude
+    /// Code reads as a regex, so the two shells are one alternation. Public so the hook that is
+    /// registered and the command that decides (<c>PullRequestReplyGuardCommand.Denies</c>) read
+    /// the same list rather than two that can drift: a tool name in the matcher and not in the
+    /// command is a hook that fires and always allows.
+    /// </summary>
+    public const string ReviewThreadReplyGuardMatcher = "Bash|PowerShell";
 
     /// <summary>
     /// A review lap's own settings (<c>h9k pr review</c>, Decisions Log #149): everything
