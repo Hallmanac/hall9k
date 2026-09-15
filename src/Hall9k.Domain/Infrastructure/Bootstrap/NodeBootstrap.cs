@@ -15,13 +15,32 @@ namespace Hall9k.Domain.Infrastructure.Bootstrap;
 public sealed record BootstrapContext(Guid OwnerId, Guid NodeId, Guid ConnectionId);
 
 /// <summary>
+/// How <see cref="NodeBootstrap"/> reads gh's own identity — a delegate rather than a direct call
+/// to the private, real <c>GhUserJson</c>, so a caller can pin a fake instead of the real process.
+/// <see cref="EnsureAsync"/> and <see cref="RefreshGitHubIdentityAsync"/> both default an omitted
+/// reader to the real one (<c>ghIdentityReader ?? GhUserJson</c>), unchanged from before this seam
+/// existed — <c>h9k project add</c> and <c>h9k project join</c> still get the live call without
+/// passing anything. <see cref="Hall9k.Daemon.NodeContext.InitializeAsync"/> is the one caller with
+/// the opposite default: its own <c>ghIdentityReader</c> parameter decides whether it calls
+/// <see cref="RefreshGitHubIdentityAsync"/> at all, defaulting to skipping it entirely, so every one
+/// of <c>NodeBootstrapSeed</c>'s roughly 280 integration-test call sites (which never pass one) never
+/// refreshes and never reaches the real gh — only <c>DispatchLoop</c>, the one place bootstrap
+/// actually happens on a real daemon start, passes <see cref="RealGhIdentityReader"/> and opts in.
+/// </summary>
+public delegate string? GhIdentityReader();
+
+/// <summary>
 /// First-use registration of Owner, Node, and the default GitHub connection (PLAN.md §6.2:
 /// an owner record exists even when there's exactly one). Idempotent — subsequent calls
 /// find the existing records. h9kd install performs the same bootstrap (S1-12).
 /// </summary>
 public static class NodeBootstrap
 {
-    public static async Task<BootstrapContext> EnsureAsync(IDocumentSession session, CancellationToken cancellationToken)
+    /// <summary>The genuine gh call, for the one production caller that wants it (<c>DispatchLoop</c>).</summary>
+    public static readonly GhIdentityReader RealGhIdentityReader = GhUserJson;
+
+    public static async Task<BootstrapContext> EnsureAsync(
+        IDocumentSession session, CancellationToken cancellationToken, GhIdentityReader? ghIdentityReader = null)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -63,7 +82,7 @@ public static class NodeBootstrap
         Guid connectionId = connection?.Id ?? DomainId.New();
         if (connection is null)
         {
-            GitHubAccountIdentity? identity = ParseGhIdentity(GhUserJson());
+            GitHubAccountIdentity? identity = ParseGhIdentity((ghIdentityReader ?? GhUserJson)());
             ConnectionRegistered registered = ConnectionDecider.Register(
                 connectionId, ownerId, WorkItemProvider.GitHub,
                 identity?.Login ?? Environment.UserName, CredentialReference.GhCli, now);
@@ -85,14 +104,14 @@ public static class NodeBootstrap
     /// <summary>
     /// Refreshes this install's own GitHub numeric id and login on the bootstrap connection's
     /// stream, appended only when something actually changed since the last observation
-    /// (<see cref="ConnectionDecider.ObserveGitHubIdentity"/>) — read again at <c>h9k project add</c>,
-    /// the one moment nothing else naturally triggers a GitHub read for the way Jira's own
-    /// <c>TrackerClaimGate</c> reads lazily on first claim-gate check (idea 202383dc, A2b). A
-    /// daemon-start call was tried and reverted (<c>NodeContext.InitializeAsync</c>'s own comment on
-    /// the removal): it has no <c>ProcessRunner</c> seam, so calling it unconditionally there shelled
-    /// to the real <c>gh</c> on every integration test's bootstrap too. Best-effort: a <c>gh</c> that
-    /// cannot answer (not installed, not authenticated, offline) leaves the connection's
-    /// already-recorded identity exactly as it was, never guessed at (AGENTS.md).
+    /// (<see cref="ConnectionDecider.ObserveGitHubIdentity"/>) — read again at daemon start
+    /// (<c>DispatchLoop.ExecuteAsync</c>, through <c>NodeContext.InitializeAsync</c>'s
+    /// <see cref="GhIdentityReader"/> parameter), at <c>h9k project add</c>, and at
+    /// <c>h9k project join</c>: none of <see cref="EnsureAsync"/>'s roughly forty other call sites
+    /// naturally trigger a GitHub read the way Jira's own <c>TrackerClaimGate</c> does lazily on
+    /// first claim-gate check (idea 202383dc, A2b), so each of those three moments asks explicitly.
+    /// Best-effort: a <c>gh</c> that cannot answer (not installed, not authenticated, offline) leaves
+    /// the connection's already-recorded identity exactly as it was, never guessed at (AGENTS.md).
     /// <para>
     /// Returns whether <c>gh</c> answered with a real identity just now, regardless of whether the
     /// connection stream could actually be aggregated: on a connection this same session's own
@@ -105,9 +124,9 @@ public static class NodeBootstrap
     /// </para>
     /// </summary>
     public static async Task<bool> RefreshGitHubIdentityAsync(
-        IDocumentSession session, Guid connectionId, CancellationToken cancellationToken)
+        IDocumentSession session, Guid connectionId, CancellationToken cancellationToken, GhIdentityReader? ghIdentityReader = null)
     {
-        if (ParseGhIdentity(GhUserJson()) is not { } observed)
+        if (ParseGhIdentity((ghIdentityReader ?? GhUserJson)()) is not { } observed)
         {
             return false;
         }

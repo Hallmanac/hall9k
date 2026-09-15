@@ -103,6 +103,12 @@ public sealed class NodeBootstrapConventionGuardTests
             // guard exists to keep away from the real gh. The already-merged tests, which do run a
             // real closeout, take their node from NodeBootstrapSeed like everything else.
             [Path.Combine("tests", "Hall9k.Tests", "Integration", "ReviewEngineTests.cs")] = 1,
+            // NodeContextGhIdentityRefreshTests proves NodeContext.InitializeAsync's own
+            // ghIdentityReader seam actually refreshes the connection when a caller pins one — it
+            // needs a bare NodeContext to call InitializeAsync directly with that fake reader,
+            // seeded ahead of time with SeedGitHubConnectionAsync the same gh-safe way the other
+            // exemptions above are, in each of its two test methods.
+            [Path.Combine("tests", "Hall9k.Tests", "Integration", "NodeContextGhIdentityRefreshTests.cs")] = 2,
         };
 
         string[] files =

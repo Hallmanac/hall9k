@@ -15,12 +15,15 @@ namespace Hall9k.Domain.Features.Connection;
 /// </para>
 /// <para>
 /// Read at bootstrap (<see cref="Hall9k.Domain.Infrastructure.Bootstrap.NodeBootstrap"/>, the
-/// first time this install's GitHub connection is created) and again at <c>h9k project add</c>
-/// (<c>NodeBootstrap.RefreshGitHubIdentityAsync</c>) — the one other moment nothing else already
-/// triggers a GitHub read for, unlike Jira's <c>TrackerClaimGate</c>, which reads lazily on first
-/// claim-gate check. A daemon-start refresh was tried and reverted (<c>NodeContext.cs</c>'s own
-/// comment on the removal): it shelled to the real <c>gh</c> on every call with no seam a test
-/// could pin instead, which broke every integration test's isolation from the real network.
+/// first time this install's GitHub connection is created), again at every daemon start
+/// (<c>DispatchLoop.ExecuteAsync</c>, through <c>NodeContext.InitializeAsync</c>'s
+/// <c>NodeBootstrap.GhIdentityReader</c> seam), and again at <c>h9k project add</c> and
+/// <c>h9k project join</c> (both through <c>NodeBootstrap.RefreshGitHubIdentityAsync</c>) —
+/// nothing else already triggers a GitHub read the way Jira's own <c>TrackerClaimGate</c> does
+/// lazily on first claim-gate check, so each of those moments asks explicitly. A daemon-start
+/// refresh with no seam was tried first and reverted, then restored once
+/// <c>NodeBootstrap.GhIdentityReader</c> gave every integration test a fake to pin instead of the
+/// real <c>gh</c> (<c>NodeContext.InitializeAsync</c>'s own doc comment has the detail).
 /// </para>
 /// </summary>
 public sealed record ConnectionGitHubIdentityObserved(

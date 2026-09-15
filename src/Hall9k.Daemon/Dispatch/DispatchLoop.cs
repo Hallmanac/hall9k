@@ -2,6 +2,7 @@ using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Marten;
@@ -35,7 +36,7 @@ public sealed class DispatchLoop(
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await WaitForPostgresAsync(stoppingToken);
-        await node.InitializeAsync(store, stoppingToken);
+        await node.InitializeAsync(store, stoppingToken, NodeBootstrap.RealGhIdentityReader);
         logger.LogInformation("Node {NodeId} (owner {OwnerId}) starting", node.NodeId, node.OwnerId);
 
         // The ceiling is stated up front because it is the answer to "why is my queue not
