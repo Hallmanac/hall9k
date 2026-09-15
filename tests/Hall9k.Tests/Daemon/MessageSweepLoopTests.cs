@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Messaging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -10,13 +11,15 @@ namespace Hall9k.Tests.Daemon;
 /// pick behind it, unit-testable without a running loop.</summary>
 public sealed class MessageSweepLoopTests
 {
+    private static readonly NullLogger<MessageSweepLoop> Logger = NullLogger<MessageSweepLoop>.Instance;
+
     [Fact]
     public void Active_cadence_stays_within_the_configured_range()
     {
         DaemonOptions options = new();
         for (int i = 0; i < 200; i++)
         {
-            TimeSpan interval = MessageSweepLoop.JitteredInterval(activeCadence: true, options);
+            TimeSpan interval = MessageSweepLoop.JitteredInterval(activeCadence: true, options, Logger);
             interval.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(options.MessageActivePollMinSeconds));
             interval.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(options.MessageActivePollMaxSeconds));
         }
@@ -28,7 +31,7 @@ public sealed class MessageSweepLoopTests
         DaemonOptions options = new();
         for (int i = 0; i < 200; i++)
         {
-            TimeSpan interval = MessageSweepLoop.JitteredInterval(activeCadence: false, options);
+            TimeSpan interval = MessageSweepLoop.JitteredInterval(activeCadence: false, options, Logger);
             interval.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(options.MessageIdlePollMinSeconds));
             interval.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(options.MessageIdlePollMaxSeconds));
         }
@@ -39,7 +42,7 @@ public sealed class MessageSweepLoopTests
     {
         DaemonOptions options = new() { MessageActivePollMinSeconds = 50, MessageActivePollMaxSeconds = 10 };
 
-        TimeSpan interval = MessageSweepLoop.JitteredInterval(activeCadence: true, options);
+        TimeSpan interval = MessageSweepLoop.JitteredInterval(activeCadence: true, options, Logger);
 
         interval.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(15));
         interval.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(25));
@@ -50,9 +53,30 @@ public sealed class MessageSweepLoopTests
     {
         DaemonOptions options = new() { MessageIdlePollMinSeconds = 0, MessageIdlePollMaxSeconds = 45 };
 
-        TimeSpan interval = MessageSweepLoop.JitteredInterval(activeCadence: false, options);
+        TimeSpan interval = MessageSweepLoop.JitteredInterval(activeCadence: false, options, Logger);
 
         interval.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(30));
         interval.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(45));
+    }
+
+    [Fact]
+    public void A_max_beyond_what_task_delay_accepts_is_clamped_rather_than_thrown()
+    {
+        DaemonOptions options = new() { MessageIdlePollMinSeconds = 30, MessageIdlePollMaxSeconds = int.MaxValue };
+
+        TimeSpan interval = MessageSweepLoop.JitteredInterval(activeCadence: false, options, Logger);
+
+        interval.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(30));
+        interval.Should().BeLessThanOrEqualTo(MessageSweepLoop.MaxSupportedInterval);
+    }
+
+    [Fact]
+    public void A_min_and_max_both_beyond_what_task_delay_accepts_are_clamped_rather_than_thrown()
+    {
+        DaemonOptions options = new() { MessageIdlePollMinSeconds = 5_000_000, MessageIdlePollMaxSeconds = 5_000_000 };
+
+        TimeSpan interval = MessageSweepLoop.JitteredInterval(activeCadence: false, options, Logger);
+
+        interval.Should().BeLessThanOrEqualTo(MessageSweepLoop.MaxSupportedInterval);
     }
 }
