@@ -167,6 +167,18 @@ public sealed class DaemonOptions
     public TimeSpan MessageRetention { get; set; } = TimeSpan.FromHours(48);
 
     /// <summary>
+    /// How often the minting node's own invite sweep looks for a proof matching one of its own
+    /// outstanding invites (idea 202383dc, T2: "the minting node's own daemon sweep vouches it
+    /// without a prompt"). A plain fixed interval, unlike the message sweep's own jittered
+    /// active/idle cadence — invites are rare (a human mints one, hands off a secret, and waits),
+    /// so there is no "unread backlog" signal worth widening or narrowing a range over; twenty
+    /// seconds keeps the promised "no further prompt needed" experience prompt without polling
+    /// every project's own node refs so often it competes meaningfully with the message sweep's
+    /// own fast cadence for git round trips.
+    /// </summary>
+    public TimeSpan InviteSweepPollInterval { get; set; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>
     /// The absolute lifetime ceiling of automatic closeout actions (reopen dispatches, plus
     /// errored-review re-requests) one task's pull request may spend, whatever obstruction
     /// each one answered — the true runaway backstop (log #11 spirit, backlog 45), separate
