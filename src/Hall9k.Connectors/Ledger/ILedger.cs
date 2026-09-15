@@ -5,6 +5,15 @@ namespace Hall9k.Connectors.Ledger;
 /// there (null when the caller never read one — a write-only-if-absent request, the shape a
 /// holder lock needs), who to attribute the commit to, and the signing key to sign it with, when
 /// one exists (optional through A1; A2a makes it mandatory once every node has one).
+/// <see cref="RequireEmptyPrefix"/> is the additional, ref-wide compare-and-swap a "genesis, only
+/// once, ever" write needs: <see cref="ExpectedBlobId"/> alone only ever guards this one write's
+/// own path, so two callers racing to establish a genesis file under two different paths (two
+/// different fingerprints, say) would each see their own path absent and both land — this option
+/// is checked against the ref's own freshly-fetched tip inside the same retry attempt that builds
+/// and pushes the commit, so a rival's genesis write that lands in the gap is caught by this
+/// write's own next retry, not merely by whichever caller happened to observe an empty prefix
+/// first (independent review finding: the prior check-then-write across two separate calls left
+/// exactly that gap open).
 /// </summary>
 public sealed record LedgerWriteRequest(
     string RepositoryPath,
@@ -14,7 +23,8 @@ public sealed record LedgerWriteRequest(
     string? ExpectedBlobId,
     string CommitMessage,
     LedgerCommitter Committer,
-    LedgerSigningKey? SigningKey = null);
+    LedgerSigningKey? SigningKey = null,
+    string? RequireEmptyPrefix = null);
 
 public enum LedgerWriteVerdict
 {
@@ -103,4 +113,16 @@ public interface ILedger
     /// retry loop otherwise.
     /// </summary>
     Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Fetches <paramref name="refName"/> fresh, then whether any path under
+    /// <paramref name="pathPrefix"/> currently exists in its tree — <see langword="false"/> both
+    /// when the ref does not exist yet and when it exists but nothing under the prefix does. What a
+    /// genesis-style "only when the folder is empty" write checks before writing: <see cref="ReadAsync"/>'s
+    /// own single-path, write-if-absent shape only ever answers about the one path a caller already
+    /// knows the name of, never "has anything at all ever landed here" (independent pre-PR review,
+    /// cycle 1, conformance and adversarial lenses, medium: a per-fingerprint absence check let a
+    /// second, later joiner self-claim ownership in a project that already had one).
+    /// </summary>
+    Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken);
 }
