@@ -10,6 +10,7 @@ using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Tests.Fakes;
 using Marten;
@@ -119,6 +120,83 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         transport.ProbeCount.Should().Be(2, "the second sweep still probes every tick");
         transport.ReadCount.Should().Be(
             1, "node A's tip has not moved since the first sweep cached it, so the second sweep must skip the read");
+    }
+
+    /// <summary>
+    /// The bounded fix for the human resolution ruled 2026-09-15: this sweep already computes the
+    /// trust chain once per tick (commit bab68199) — this proves a dropped, unverifiable vouch that
+    /// chain read observes is actually persisted (<see cref="MessageSweepEngine"/>'s own
+    /// <c>PersistUnverifiedWritesAsync</c>) as the standing record <c>h9k status</c> reads instead
+    /// of ever walking the ledger itself.
+    /// </summary>
+    [Fact]
+    public async Task A_sweep_persists_a_dropped_unverifiable_vouch_its_trust_chain_observed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox senderOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = (
+            new LedgerCommitter("node-a", "node-a@hall9k.local"), new LedgerSigningKey("/dev/null/node-a"));
+
+        // Node A queues and flushes one project-broadcast envelope directly against the shared
+        // transport — the same standing needed to move the tip node B's own probe sees, so this
+        // sweep actually computes a trust chain at all (ProbeAndReadAsync only bothers when at
+        // least one sender's tip moved).
+        await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Project, about: null, MessageKind.Note,
+                "only once", Now, cts.Token);
+            await senderOutbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+        }
+
+        NodeContext nodeB = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession claimSession = _postgres.Store.LightweightSession())
+        {
+            OwnerAggregate owner =
+                (await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(nodeB.OwnerId, token: cts.Token))!;
+            claimSession.Events.Append(
+                nodeB.OwnerId, OwnerDecider.ClaimRoot(owner, "owner-b-root-fingerprint", verified: true, Now));
+
+            claimSession.Events.StartStream<ProjectAggregate>(
+                projectId,
+                ProjectDecider.Register(
+                    projectId, nodeB.OwnerId, DomainId.New(), "smoke-unverified", RepositoryPath, null, null, Now));
+            await claimSession.SaveChangesAsync(cts.Token);
+        }
+
+        // Stands in for a chain read that found node A's own vouch signed by nobody this project
+        // currently trusts — the exact shape GitLedgerChainReader.ComputeAsync itself would return
+        // for a stranger's self-consistent, but unverifiable, node file (Hall9k.Connectors.Trust
+        // .UnverifiedLedgerWrite's own doc: "recorded here rather than silently dropped").
+        UnverifiedLedgerWrite droppedVouch = new(
+            "vouch", nodeA.ToString(), "owner-a-fingerprint",
+            "commit deadbeef is not signed by root owner-a-fingerprint or any node currently enrolled in it");
+        TrustChain chainWithDroppedVouch = new(new Dictionary<string, TrustedOwner>(), [], [droppedVouch]);
+
+        MessageSweepEngine engine = new(
+            _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            new FakeLedgerChainReader(chainWithDroppedVouch), new MessageNodeIdentityResolver(new NodeKeyStore()),
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        await using (IDocumentSession verifySession = _postgres.Store.LightweightSession())
+        {
+            IReadOnlyList<UnverifiedLedgerWriteDetails> observed =
+                await verifySession.Query<UnverifiedLedgerWriteDetails>().ToListAsync(cts.Token);
+            observed.Should().ContainSingle(write =>
+                write.ProjectId == projectId
+                && write.Kind == "vouch"
+                && write.Identifier == nodeA.ToString()
+                && write.RootFingerprint == "owner-a-fingerprint"
+                && write.Reason == droppedVouch.Reason);
+        }
     }
 
     private static async Task SeedNodeFileAsync(FakeLedger ledger, Guid nodeId, CancellationToken cancellationToken)
