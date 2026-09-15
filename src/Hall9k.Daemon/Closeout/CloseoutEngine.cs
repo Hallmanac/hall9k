@@ -3049,14 +3049,17 @@ public sealed class CloseoutEngine(
     }
 
     /// <summary>
-    /// Parks a stacked child whose rebase budget is spent and still has a provider write owed —
-    /// either the replay proper, or (for a child already sitting on its merged parent's base tip)
-    /// only the retarget, distinguished by <paramref name="rebaseOwed"/> so the park's own wording
-    /// never tells a human to rebase by hand when nothing here would have rebased at all
-    /// (independent pre-PR review, cycle 1, adversarial lens). Never reached when a child already
-    /// on the base needs no write to begin with — <see cref="TryReplayStackedChildAsync"/>'s own
-    /// <c>ParentMergedAligned</c> arm checks that first, ahead of the budget, so this park stays
-    /// reserved for a write this sweep would actually have made if the budget allowed it.
+    /// Parks a stacked child whose rebase budget is spent and still has something owed — either the
+    /// replay proper, or (for a child already sitting on its merged parent's base tip) only the
+    /// retarget and the no-op follow-up dispatch that earns its Decisions Log placeholder its real
+    /// number, distinguished by <paramref name="rebaseOwed"/> so the park's own wording never tells
+    /// a human to rebase by hand when nothing here would have rebased at all (independent pre-PR
+    /// review, cycle 1, adversarial lens). Reached even when the child already sits on the base and
+    /// the retarget itself is a no-op write — <see cref="TryReplayStackedChildAsync"/>'s own
+    /// <c>ParentMergedAligned</c> arm checks the budget regardless, because the follow-up dispatch
+    /// past the retarget is itself an automatic action spent on the parent's churn (independent
+    /// pre-PR review, cycle 1, adversarial lens — the follow-up used to not exist at all here, so
+    /// this park was never reached on that path).
     /// </summary>
     private async Task ParkForSpentRebaseBudgetAsync(
         IDocumentSession session,
@@ -3097,8 +3100,12 @@ public sealed class CloseoutEngine(
     /// <c>--onto</c>, which is why they share one follow-up kind and one budget. A merged parent
     /// whose child already sits on the base's own tip is the retarget half of the first trigger with
     /// no replay behind it — <see cref="StackedParentVerdict.ParentMergedAligned"/>, handled in its
-    /// own early return below this comment rather than folded into the replay path further down,
-    /// since it dispatches nothing and spends no budget.
+    /// own early return below this comment rather than folded into the replay path further down. It
+    /// still dispatches and still spends budget, though (independent pre-PR review, cycle 1,
+    /// adversarial lens): a no-op follow-up, upstream and onto both the base tip already held, is
+    /// the only path that ever earns this task's own Decisions Log placeholder its real number once
+    /// the retarget lands, the same "later call" <c>ReviewEngine.EnsureRebasedBeforeFinalPassAsync</c>
+    /// defers to — leaving this arm to only retarget and return let that call never come.
     /// </para>
     /// <para>
     /// Two budgets bound this path, deliberately asymmetrically. The rebase budget below is the
@@ -3208,35 +3215,61 @@ public sealed class CloseoutEngine(
         if (observation.Verdict == StackedParentVerdict.ParentMergedAligned)
         {
             // The one verdict that is neither "nothing to do" nor "a replay is owed", but still
-            // owes a provider write: the parent merged and this child already sits on the base
-            // branch's own tip, so there is nothing left to REPLAY — but the pull request's base
-            // still names the parent's branch, which is going away, and nothing else moves it
-            // (independent pre-PR review, cycle 1, conformance and adversarial lenses: the earlier
-            // fix answered this state with plain Aligned, which this method returns false on above,
-            // and the retarget it still owed was never dispatched). DecideFollowUpAsync's own
-            // dispatch checks do not apply here, because there is no follow-up to dispatch — only
-            // the retarget, the same idempotent write ParentMerged below makes, done here directly
-            // since that branch is one this verdict never reaches.
+            // owes two things: the parent merged and this child already sits on the base branch's
+            // own tip, so there is nothing left to REPLAY — but the pull request's base still names
+            // the parent's branch, which is going away, and nothing else moves it (independent
+            // pre-PR review, cycle 1, conformance and adversarial lenses: the earlier fix answered
+            // this state with plain Aligned, which this method returns false on above, and the
+            // retarget it still owed was never dispatched).
             //
-            // The rebase budget still gates it, though (conformance review, cycle 2): a child
-            // already past its cap has exhausted the platform's automatic say over its pull request
-            // for this parent's churn, and moving the base is not free of consequence just because
-            // nothing replays behind it — it hands the child a new base with no automatic replay
-            // ever coming to reconcile it further, once the human's own manual fix runs out too.
-            // Parking with the base untouched, the same park the replay path below reaches, leaves
-            // a coherent stack for them to finish by hand.
+            // The retarget alone is not enough, though (independent pre-PR review, cycle 1,
+            // adversarial lens): renumbering this task's own Decisions Log placeholder only ever
+            // happens inside a run's own pre-final-pass check, once that run reads itself as no
+            // longer a stacked child (ReviewEngine.EnsureRebasedBeforeFinalPassAsync's own "a later
+            // call here" doc) — and nothing else ever dispatches this task a follow-up run again
+            // once this sweep returns without one. A no-op StackReplay dispatch is exactly what the
+            // ParentMerged path below already relies on for the identical reason, so this arm ends
+            // the same way when it can afford to: upstream and onto both name the base tip this
+            // child already holds, so the dispatched run's own checkpoint finds nothing left to
+            // replay and proceeds straight through to the pass that assigns the real number.
             //
-            // Checked AFTER confirming whether the pull request is already on the project's base,
-            // though, not before (independent pre-PR review, cycle 1, adversarial lens): a child
-            // GitHub has already retargeted for itself (Decisions Log #186) needs no
-            // provider write at all here, so there is nothing left for a spent budget to gate —
-            // parking it anyway would tell a human to rebase and retarget a pull request that is
-            // already exactly where it belongs, over a write this sweep was never going to make.
-            bool alreadyOnBase = snapshot.BaseRefName is { } observedBase0 && observedBase0 == project.BaseBranch;
+            // The rebase budget still gates the retarget write exactly as it did before (conformance
+            // review, cycle 2) — checked ahead of it, not after, and skipped only when the pull
+            // request already sits on the project's base and no write is needed for it (independent
+            // pre-PR review, cycle 1, adversarial lens: a spent budget gates a write this sweep would
+            // make, not one it would not, and the sibling test for that exact shape — GitHub having
+            // already retargeted this pull request itself past a spent budget — depends on this
+            // sweep making no write and spending nothing further here). The follow-up dispatch below
+            // is gated separately, immediately before it is attempted, for the identical reason: it
+            // is itself an automatic action spent on the parent's churn, so a child already past its
+            // cap does not get a further one just because this one dispatches nothing to replay.
+            bool alreadyOnBase = snapshot.BaseRefName is { } observedBase && observedBase == project.BaseBranch;
             if (!alreadyOnBase && task.StackReplaysDispatched >= _options.MaxStackReplayRuns)
             {
                 await ParkForSpentRebaseBudgetAsync(
                     session, task, run, observation, rebaseOwed: false, now, cancellationToken);
+                return true;
+            }
+
+            string alignedReason =
+                $"This is a stacked pull request and {observation.Detail}. The replay is mechanical — the "
+                + "same commits onto a new base, no new intent — so it runs the gates and no review cycle.";
+
+            // Asked here, ahead of the retarget, for the same reason DecideFollowUpAsync's own doc
+            // gives TryReplayStackedChildAsync below: the dispatch this arm ends with is subject to
+            // three more park verdicts — an unmet dependency, the lifetime automatic-closeout
+            // ceiling, the per-obstruction cap — and every one of them used to land AFTER the retarget
+            // had already moved this pull request off a parent branch that is going away, leaving a
+            // human a pull request aimed at the project's base with no follow-up dispatched to assign
+            // this task's own Decisions Log number (independent review, PR #380 — the ordering this
+            // arm's sibling, the ParentMerged/ParentMoved path below, already enforces for its own
+            // retarget). The same decision is handed to the dispatch below rather than re-asked.
+            FollowUpDecision alignedDecision = await DecideFollowUpAsync(
+                session, task, run, FollowUpKind.StackReplay,
+                [observation.BoundaryCommit], snapshot, alignedReason, cancellationToken);
+            if (alignedDecision.ParkReason is { } alignedParkReason)
+            {
+                await ParkAsync(session, run, alignedParkReason, now, cancellationToken);
                 return true;
             }
 
@@ -3247,22 +3280,47 @@ public sealed class CloseoutEngine(
             session.Events.Append(run.Id, new StackedPullRequestRetargeted(
                 run.Id, observation.ParentBranch, project.BaseBranch, observation.BoundaryCommit,
                 retarget.Succeeded, retarget.Detail, now));
-            await session.SaveChangesAsync(cancellationToken);
 
             if (!retarget.Succeeded)
             {
+                await session.SaveChangesAsync(cancellationToken);
                 logger.LogWarning(
                     "Task {TaskId}: could not retarget stacked pull request {Url} from {ParentBranch} onto "
-                    + "{BaseBranch} — {Detail}; no replay is owed, and the next sweep tries the retarget again",
+                    + "{BaseBranch} — {Detail}; no follow-up dispatched, the next sweep tries the retarget "
+                    + "again",
                     task.Id, task.PullRequestUrl, observation.ParentBranch, project.BaseBranch, retarget.Detail);
-            }
-            else
-            {
-                logger.LogInformation(
-                    "Task {TaskId}: stacked pull request {Url} is aimed at {BaseBranch} now — {Detail}",
-                    task.Id, task.PullRequestUrl, project.BaseBranch, retarget.Detail);
+                return true;
             }
 
+            logger.LogInformation(
+                "Task {TaskId}: stacked pull request {Url} is aimed at {BaseBranch} now — {Detail}",
+                task.Id, task.PullRequestUrl, project.BaseBranch, retarget.Detail);
+
+            // A child already past its rebase budget when the retarget above needed no write of its
+            // own (alreadyOnBase) still gets no further automatic action here: the follow-up below
+            // would be the one write this whole sweep makes, and it is gated by the same budget the
+            // park above already enforces for every other shape — just asked here instead, since
+            // alreadyOnBase is what let this sweep skip that park a moment ago. Left unrenumbered in
+            // this one narrow corner (both conditions at once) rather than overspending the cap this
+            // sweep already decided not to park over; a human's own h9k pr resolve grants the lap
+            // that would pick it up.
+            if (task.StackReplaysDispatched >= _options.MaxStackReplayRuns)
+            {
+                await session.SaveChangesAsync(cancellationToken);
+                return true;
+            }
+
+            await DispatchFollowUpOrParkAsync(
+                session, task, run, fenceVersion,
+                FollowUpKind.StackReplay,
+                [observation.BoundaryCommit],
+                snapshot,
+                alignedReason,
+                now, pullRequestHeadSha: null,
+                stackReplayUpstreamCommit: observation.BoundaryCommit,
+                stackReplayOntoCommit: observation.BoundaryCommit,
+                predecided: alignedDecision, changesRequestedReviews: null,
+                cancellationToken);
             return true;
         }
 
