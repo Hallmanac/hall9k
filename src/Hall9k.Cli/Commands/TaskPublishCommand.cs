@@ -454,7 +454,9 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             NodeDetails? node = await session.LoadAsync<NodeDetails>(context.NodeId, cancellationToken);
             TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
                 session, task, project, context.NodeId, node?.MachineName ?? Environment.MachineName,
-                DateTimeOffset.UtcNow, criteriaChanged, cancellationToken: cancellationToken);
+                DateTimeOffset.UtcNow, criteriaChanged,
+                provider: new GitHubWorkItemProvider(new ProjectScopedGitHubRunner(store).Runner),
+                cancellationToken: cancellationToken);
             if (outcome == TaskRecordPublication.WriteOutcome.Written && task.ExternalReference is { } issue)
             {
                 AnsiConsole.MarkupLine(

@@ -68,7 +68,8 @@ public sealed class TaskResolveCommand : Hall9kAsyncCommand<TaskResolveCommand.S
         // that out and avoids paying for the subprocess twice. Gated on the URL being present at
         // all, so a resolve with no --pr still never shells out to gh.
         Uri? projectRepositoryUrl = await ResolveProjectRepositoryUrlAsync(
-            session, task, settings.PullRequestUrl, cancellationToken);
+            session, task, settings.PullRequestUrl, cancellationToken,
+            processRunner: new ProjectScopedGitHubRunner(store).Runner);
 
         RunStreamPullRequestOutcome runStreamOutcome = await RecordPullRequestOnRunStreamAsync(
             session, task, settings.PullRequestUrl, resolvedAt, projectRepositoryUrl, cancellationToken);

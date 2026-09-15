@@ -65,7 +65,7 @@ public sealed class TaskLinkIssueCommand : Hall9kAsyncCommand<TaskLinkIssueComma
         // Read before deciding, the link-jira order: gh is asked before the task is fenced, so an
         // issue that does not resolve costs nothing and teaches something, whatever state the task
         // happens to be in.
-        ImportedWorkItem issue = await new GitHubWorkItemProvider().ImportAsync(
+        ImportedWorkItem issue = await new GitHubWorkItemProvider(new ProjectScopedGitHubRunner(store).Runner).ImportAsync(
             new WorkItemImportRequest(WorkItemProvider.GitHub, settings.Issue, project.RepositoryPath),
             cancellationToken);
 

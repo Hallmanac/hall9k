@@ -50,6 +50,6 @@ public sealed class PullRequestApproveCommand : Hall9kAsyncCommand<PullRequestAp
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
         return await PullRequestReviewVerdict.DeliverAsync(
             session, taskId, ReviewerVerdict.Approved, settings.Note!.Trim(), findings: [],
-            new GitHubPullRequestSurface(), cancellationToken);
+            new GitHubPullRequestSurface(new ProjectScopedGitHubRunner(store).Runner), cancellationToken);
     }
 }

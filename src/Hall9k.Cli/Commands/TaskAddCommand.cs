@@ -423,7 +423,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         Adoption? adopted = adoption is null
             ? null
-            : await AdoptAsync(session, projectDetails, adoption, settings.Again, cancellationToken);
+            : await AdoptAsync(store, session, projectDetails, adoption, settings.Again, cancellationToken);
         // A pull request this node already reviewed, or is still following a posted review through
         // on: named rather than minted a second time (task: a pr-review task stays open while the
         // pull request's review threads are unresolved). Returned rather than thrown, and exiting
@@ -488,7 +488,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         {
             objective = ChooseObjective(objective, imported, adoption);
             string? linkedContext = adoptingPullRequest
-                ? await LinkedWorkItemImport.TryImportContextAsync(session, projectDetails, imported, cancellationToken)
+                ? await LinkedWorkItemImport.TryImportContextAsync(
+                    session, projectDetails, imported, cancellationToken,
+                    processRunner: new ProjectScopedGitHubRunner(store).Runner)
                 : null;
             string? additional = linkedContext.IsNotBlank() && agentContext.IsNotBlank()
                 ? $"{linkedContext}\n\n{agentContext}"
@@ -910,10 +912,11 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     private sealed record Adoption(ImportedWorkItem Imported, TaskListItem? ExistingPrReviewTask);
 
     private static async Task<Adoption> AdoptAsync(
-        IQuerySession session, ProjectDetails project, AdoptionSource source, bool again,
+        IDocumentStore store, IQuerySession session, ProjectDetails project, AdoptionSource source, bool again,
         CancellationToken cancellationToken)
     {
-        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken);
+        WorkItemImporter importer = await WorkItemConnections.ImporterAsync(
+            session, cancellationToken, processRunner: new ProjectScopedGitHubRunner(store).Runner);
         ImportedWorkItem imported = await importer.ImportAsync(
             new WorkItemImportRequest(source.Provider, source.Reference, project.RepositoryPath),
             cancellationToken);

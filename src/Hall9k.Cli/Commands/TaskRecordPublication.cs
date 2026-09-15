@@ -69,7 +69,7 @@ internal static class TaskRecordPublication
         string nodeName,
         DateTimeOffset now,
         bool criteriaChanged,
-        GitHubWorkItemProvider? provider = null,
+        GitHubWorkItemProvider provider,
         CancellationToken cancellationToken = default)
     {
         if (task.ExternalReference is not { } reference || reference.Provider != WorkItemProvider.GitHub
@@ -79,8 +79,7 @@ internal static class TaskRecordPublication
             return WriteOutcome.NotTracked;
         }
 
-        GitHubWorkItemProvider github = provider ?? new GitHubWorkItemProvider();
-        ImportedWorkItem issue = await github.ImportAsync(
+        ImportedWorkItem issue = await provider.ImportAsync(
             new WorkItemImportRequest(WorkItemProvider.GitHub, reference.Reference, project.RepositoryPath),
             cancellationToken);
 
@@ -91,7 +90,7 @@ internal static class TaskRecordPublication
             ? GitHubIssueBody.WithCriteriaChecklist(issue.Body, task.AcceptanceCriteria)
             : issue.Body ?? string.Empty;
 
-        await github.UpdateBodyAsync(
+        await provider.UpdateBodyAsync(
             reference, GitHubIssueBody.WithRecord(body, record), project.RepositoryPath, cancellationToken);
         return WriteOutcome.Written;
     }
