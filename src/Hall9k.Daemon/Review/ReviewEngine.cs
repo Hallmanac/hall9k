@@ -3238,6 +3238,7 @@ public sealed class ReviewEngine(
         }
 
         string parentBranch;
+        string currentBaseCommit;
         StackedParentObservation observation;
         int rebasesSpent;
         try
@@ -3268,6 +3269,7 @@ public sealed class ReviewEngine(
             }
 
             parentBranch = current.BaseBranch;
+            currentBaseCommit = current.BaseCommit;
 
             TaskAggregate? task = await query.Events.AggregateStreamAsync<TaskAggregate>(
                 context.TaskId, token: cancellationToken);
@@ -3323,8 +3325,30 @@ public sealed class ReviewEngine(
         // record that says it in placeholders (AGENTS.md's never-guess rule), and it sidesteps the
         // trailing-no-op-clobbers-the-real-rebase hazard that guard in
         // RunDetailsProjection.Apply(RunRebasedOntoBase) exists for.
+        //
+        // ParentMergedAligned is the one Proceed observation that DOES name a real, freshly
+        // observed commit — its own BoundaryCommit is the base branch's own tip, not a blank or a
+        // sentinel — so it is recorded rather than only logged (independent pre-PR review, cycle 1,
+        // conformance lens): leaving this run's recorded fork point at whatever it was before
+        // (the parent's original head, or a stale checkpoint replay's own onto) means every range a
+        // later reviewer reads — including the mandatory final pass — still opens at that stale
+        // point and carries the base's own later commits, gained after the parent merged, as if
+        // they were this task's own work. No rebase actually ran — the branch already sat on the
+        // observed tip — so nothing here spends the rebase budget; only the fork point moves.
         if (verdict.Action == StackedCheckpointAction.Proceed)
         {
+            if (observation.Verdict == StackedParentVerdict.ParentMergedAligned)
+            {
+                await RecordRebaseOutcomeAsync(
+                    context.RunId, currentBaseCommit, observation.BoundaryCommit, wasNoOp: false,
+                    recoveredByAgentSession: false,
+                    $"No rebase owed before {checkpoint.Describe()}: {observation.Detail} — this run's own "
+                    + $"recorded fork point moves to {ShortSha(observation.BoundaryCommit)} so later ranges, "
+                    + "including the mandatory final pass, read only this task's own commits.",
+                    checkpointSpend: null, decisionsLogRenumbered: false, cancellationToken);
+                return RebaseGateOutcome.Proceed;
+            }
+
             logger.LogInformation(
                 "Run {RunId}: stacked checkpoint {Checkpoint} owes no rebase onto {ParentBranch} — {Detail}",
                 context.RunId, checkpoint.Value, parentBranch, verdict.Reason);

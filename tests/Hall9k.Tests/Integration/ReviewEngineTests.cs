@@ -2653,8 +2653,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
 
         // The parent merges as a fast-forward — the shape that preserves its head's exact commit
-        // identity on the base, so the base's own later history can still reach it directly (the
-        // same shape GitHub's own "rebase and merge" produces when the branch is already current).
+        // identity on the base, so the base's own later history can still reach it directly. Unlike
+        // GitHub's own "rebase and merge", the platform's actual merge method
+        // (GitHubPullRequestInspector.cs), which always gives the parent's commits new SHAs — a
+        // separate test below covers that shape, where the parent's own head never lands on the
+        // base at all.
         string mergeClone = Path.Combine(_home, $"merge-{Guid.NewGuid():N}");
         Git(_home, $"clone -q \"{fixture.OriginPath}\" \"{mergeClone}\"");
         Git(mergeClone, "checkout -q main");
@@ -2755,6 +2758,22 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         finalRunEvents.OfType<ReviewParked>().Should().ContainSingle(
             "one park at most across the whole resolution — the fix is followed by a push, not a second, "
             + "identical park");
+
+        // The checkpoint's own ParentMergedAligned observation names a real commit — the base's own
+        // tip — so it is recorded rather than only logged (independent pre-PR review, cycle 1,
+        // conformance lens): a run whose recorded fork point stayed at the parent's original head
+        // would hand the mandatory final pass a range still carrying every commit the base gained
+        // after the parent merged as if it were this task's own work.
+        finalRunEvents.OfType<RunRebasedOntoBase>().Should().ContainSingle(
+                e => e.RebasedOntoCommit == baseTip,
+                "the checkpoint's ParentMergedAligned observation moves this run's recorded fork point to the "
+                + "base's own tip even though nothing here was rebased")
+            .Which.WasNoOp.Should().BeFalse(
+                "the recorded fork point genuinely moved from the parent's stale original head, even though "
+                + "no git rebase ran for this particular observation");
+        RunDetails runAfterResolution = (await finalQuery.LoadAsync<RunDetails>(fixture.RunId, cts.Token))!;
+        runAfterResolution.BaseCommit.Should().Be(baseTip,
+            "later ranges, including the mandatory final pass, must read only this task's own commits");
     }
 
     /// <summary>
