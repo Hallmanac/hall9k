@@ -59,4 +59,29 @@ public static class OwnerDecider
 
         return new OwnerRootClaimed(owner.Id, rootFingerprint, verified, claimedAt);
     }
+
+    public static NodeVouched VouchNode(OwnerAggregate owner, Guid nodeId, string nodeFingerprint, DateTimeOffset issuedAt)
+    {
+        if (nodeId == Guid.Empty)
+        {
+            throw new DomainValidationException("A node vouch needs the node's own id.");
+        }
+
+        if (nodeFingerprint.IsBlank())
+        {
+            throw new DomainValidationException("A node vouch needs the node's own key fingerprint.");
+        }
+
+        return new NodeVouched(owner.Id, nodeId, nodeFingerprint, issuedAt);
+    }
+
+    public static NodeRevoked RevokeNode(OwnerAggregate owner, Guid nodeId, DateTimeOffset revokedAt)
+    {
+        if (nodeId == Guid.Empty)
+        {
+            throw new DomainValidationException("A node revocation needs the node's own id.");
+        }
+
+        return new NodeRevoked(owner.Id, nodeId, revokedAt);
+    }
 }

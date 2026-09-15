@@ -143,6 +143,10 @@ public sealed class ProjectDetails
     /// passed.
     /// </summary>
     public DateTimeOffset? PurgeAt { get; set; }
+
+    /// <summary>Mirrors <see cref="ProjectAggregate.Members"/>: this node's own audit trail, never
+    /// what a membership read actually trusts.</summary>
+    public Dictionary<string, ProjectMemberRole> Members { get; set; } = [];
 }
 
 public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDetails, Guid>
@@ -331,4 +335,10 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
     {
         view.PurgeAt = null;
     }
+
+    public void Apply(IEvent<MemberVouched> @event, ProjectDetails view) =>
+        view.Members[@event.Data.RootFingerprint] = @event.Data.Role;
+
+    public void Apply(IEvent<MemberRemoved> @event, ProjectDetails view) =>
+        view.Members.Remove(@event.Data.RootFingerprint);
 }
