@@ -3138,7 +3138,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             store, node, new DaemonConnection("unused"), reviewInspector,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             new Hall9k.Daemon.Closeout.StackedParentWatch(
-                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), new NoOpRemoteParentReader(),
                 NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
             RecordingProcessRunner.NeverInvoked(), FakeJiraRequester.NeverInvoked(),
             resolvedOptions, NullLogger<CloseoutEngine>.Instance);
@@ -3147,7 +3147,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             resolvedOptions, NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             new Hall9k.Daemon.Closeout.StackedParentWatch(
-                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), new NoOpRemoteParentReader(),
                 NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
             launchHold, reviewInspector, unusedCloseout);
         PrReviewEngine prReview = new(

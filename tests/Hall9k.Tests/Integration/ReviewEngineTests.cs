@@ -9756,7 +9756,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             new CloseoutEngine(
                 store, node, new DaemonConnection(postgres.ConnectionString), inspector,
                 closeoutWorktrees,
-                new StackedParentWatch(closeoutWorktrees, NullLogger<StackedParentWatch>.Instance),
+                new StackedParentWatch(closeoutWorktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
                 RecordingProcessRunner.NeverInvoked(), FakeJiraRequester.NeverInvoked(),
                 Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance));
     }
@@ -9925,7 +9925,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// records no base branch byte-for-byte unaffected by its presence.
     /// </summary>
     private static StackedParentWatch NewStackedParentWatch() => new(
-        new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+        new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), new NoOpRemoteParentReader(),
         NullLogger<StackedParentWatch>.Instance);
 
     /// <summary>

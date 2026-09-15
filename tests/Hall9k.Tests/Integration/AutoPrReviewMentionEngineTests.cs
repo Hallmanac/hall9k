@@ -321,7 +321,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         RefusingInspector reviewInspector = new();
         CloseoutEngine unusedCloseout = new(
             store, node, new DaemonConnection("unused"), reviewInspector, new RefusingWorktreeManager(),
-            new StackedParentWatch(new RefusingWorktreeManager(), NullLogger<StackedParentWatch>.Instance),
+            new StackedParentWatch(new RefusingWorktreeManager(), new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
             RecordingProcessRunner.NeverInvoked(), FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         ReviewEngine review = new(
@@ -329,7 +329,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             new StackedParentWatch(
-                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), new NoOpRemoteParentReader(),
                 NullLogger<StackedParentWatch>.Instance),
             launchHold, reviewInspector, unusedCloseout);
         PrReviewEngine prReview = new(
@@ -354,7 +354,7 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
         RefusingInspector inspector = new();
         CloseoutEngine closeout = new(
             store, node, new DaemonConnection(postgres.ConnectionString), inspector, new RefusingWorktreeManager(),
-            new StackedParentWatch(new RefusingWorktreeManager(), NullLogger<StackedParentWatch>.Instance),
+            new StackedParentWatch(new RefusingWorktreeManager(), new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
             RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         BlockerContextAssembler blockerContext = new(
