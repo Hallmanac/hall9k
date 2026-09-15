@@ -93,9 +93,13 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
             }
             // Same reasoning as NodeVouchCommand's identical catch: each project's own copy of the
             // owner chain is independent, so a refusal in one project must skip that project alone,
-            // never abort a revocation that already landed in an earlier one.
+            // never abort a revocation that already landed in an earlier one. DomainConflictException
+            // — RevokeInProjectAsync's own retries exhausted — belongs in this same set for the
+            // identical reason (independent pre-PR review, cycle 1, conformance and adversarial
+            // lenses, low).
             catch (Exception exception)
-                when (exception is LedgerPushRejectedException or InvalidOperationException or DomainValidationException)
+                when (exception is LedgerPushRejectedException or InvalidOperationException
+                    or DomainValidationException or DomainConflictException)
             {
                 AnsiConsole.MarkupLine(
                     $"[yellow]Could not revoke in '{project.Name.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}) — skipped.[/]");

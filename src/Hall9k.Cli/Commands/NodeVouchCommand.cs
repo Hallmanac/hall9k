@@ -105,8 +105,13 @@ public sealed class NodeVouchCommand : Hall9kAsyncCommand<NodeVouchCommand.Setti
             // DomainValidationException left uncaught here would otherwise throw partway through
             // the loop, leaving an already-successful write unreported and its own
             // OwnerDecider.VouchNode event never appended (blast-radius sweep finding).
+            // DomainConflictException — VouchInProjectAsync's own retries exhausted — belongs in
+            // this same set for the identical reason: it is thrown by that per-project call, not
+            // this loop, so letting it escape here would abort every later project's own vouch too
+            // (independent pre-PR review, cycle 1, conformance and adversarial lenses, low).
             catch (Exception exception)
-                when (exception is LedgerPushRejectedException or InvalidOperationException or DomainValidationException)
+                when (exception is LedgerPushRejectedException or InvalidOperationException
+                    or DomainValidationException or DomainConflictException)
             {
                 AnsiConsole.MarkupLine(
                     $"[yellow]Could not vouch in '{project.Name.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}) — skipped.[/]");
