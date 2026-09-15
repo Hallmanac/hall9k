@@ -74,6 +74,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         sweepAtB.SenderIgnored.Should().BeFalse();
         sweepAtB.EnvelopesStored.Should().Be(1);
+        sweepAtB.SenderNotVouched.Should().BeFalse("this sender is vouched and this read actually inspected its content");
 
         await using (IDocumentSession assertSession = _postgres.Store.LightweightSession())
         {
@@ -667,6 +668,10 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         sweep.SenderIgnored.Should().BeTrue();
         sweep.EnvelopesStored.Should().Be(0);
+        sweep.SenderNotVouched.Should().BeTrue(
+            "MessageSweepEngine reads this to decide whether the probed tip is worth caching — a not-vouched "
+            + "read never actually looked at the sender's content, so caching the tip here would silently skip "
+            + "this sender until it next pushes or the process restarts");
 
         MessageInboxDetails? inboxDoc = await session.LoadAsync<MessageInboxDetails>(
             MessageStreamId.ForInbox(nodeA), cts.Token);

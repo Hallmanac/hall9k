@@ -158,10 +158,21 @@ public sealed class MessageSweepEngine(
                 // own read call means a failure here throws its session away, pending appends and
                 // all, and costs this sender nothing but a retry next sweep.
                 await using IDocumentSession session = store.LightweightSession();
-                await inbox.ReadFromAsync(
+                MessageInboxSweepResult read = await inbox.ReadFromAsync(
                     session, project.RepositoryPath, tip.SenderNodeId, nodeId, identity.OwnerRootFingerprint, now,
                     cancellationToken: cancellationToken);
-                _lastKnownTips[(project.RepositoryPath, tip.SenderNodeId)] = tip.Tip;
+
+                // Never recorded on a read that came back not vouched or stalled: neither one
+                // actually looked at the sender's content, so caching the tip here would make this
+                // sweep skip the sender on every later tick until it pushes again or this process
+                // restarts, even though a plain re-read next sweep would succeed — the sender
+                // joining the project after already sending, or a transient git failure, are both
+                // read.StalledAtSeq's own doc promises a retry for (independent pre-PR review,
+                // cycle 1, both lenses).
+                if (read is { SenderNotVouched: false, StalledAtSeq: null })
+                {
+                    _lastKnownTips[(project.RepositoryPath, tip.SenderNodeId)] = tip.Tip;
+                }
             }
             catch (Exception exception)
             {
