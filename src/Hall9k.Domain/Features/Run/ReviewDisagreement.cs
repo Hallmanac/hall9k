@@ -38,10 +38,28 @@ namespace Hall9k.Domain.Features.Run;
 /// a lap can carry more than one reviewer's review, and attributing a disagreement to whichever
 /// one happened to be first would be a guess written into an audit field (AGENTS.md).
 /// </param>
+/// <param name="Disposition">
+/// The triage disposition that produced this draft, on the one park that has one: a
+/// review-feedback lap's own <see cref="ReviewThreadDisposition.Decline"/> or
+/// <see cref="ReviewThreadDisposition.Route"/> of a thread a PERSON opened (task: a
+/// review-feedback follow-up never answers a human reviewer in the owner's name on its own).
+/// Null on a changes-requested disagreement, which answers a standing review rather than a
+/// triaged thread and so has no disposition to name, and null wherever the session stated none —
+/// an unobserved fact, never a filled-in Fix.
+/// </param>
+/// <param name="ThreadUrl">
+/// The link the operator opens to read the thread this draft answers, matched by
+/// <see cref="ThreadId"/> against what closeout itself observed
+/// (<see cref="ReviewThreadReference"/>) rather than taken from the session's own summary. Null
+/// when no observed thread carried that id — which is worth showing as a gap, since the operator
+/// is then being asked to approve a reply to a thread this install cannot link them to.
+/// </param>
 public sealed record ReviewDisagreement(
     string Finding,
     string Reasoning,
     string ProposedReply,
     string? Location = null,
     string? ThreadId = null,
-    string? ReviewUrl = null);
+    string? ReviewUrl = null,
+    ReviewThreadDisposition? Disposition = null,
+    string? ThreadUrl = null);

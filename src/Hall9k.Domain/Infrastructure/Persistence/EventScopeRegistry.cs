@@ -93,6 +93,7 @@ public static class EventScopeRegistry
 
         // Hall9k.Domain.Features.Run.Events — facts about the work (project-scoped) vs machine
         // mechanics (node-scoped), per the 2026-09-13 ruling.
+        [typeof(AdvisoryReviewThreadsObserved)] = EventScope.ProjectScoped,
         [typeof(AgentSessionCompleted)] = EventScope.NodeScoped,
         [typeof(ChangesRequestedReviewerRerequested)] = EventScope.ProjectScoped,
         [typeof(CloseoutBudgetGranted)] = EventScope.ProjectScoped,
@@ -102,6 +103,7 @@ public static class EventScopeRegistry
         [typeof(ExternalInteractionLogged)] = EventScope.ProjectScoped,
         [typeof(ExternalReviewObserved)] = EventScope.ProjectScoped,
         [typeof(GateRetried)] = EventScope.NodeScoped,
+        [typeof(HumanThreadReplyParked)] = EventScope.ProjectScoped,
         [typeof(InteractiveSessionEnded)] = EventScope.NodeScoped,
         [typeof(InteractiveSessionStarted)] = EventScope.NodeScoped,
         [typeof(PreFinalPassRebaseRecoveryCompleted)] = EventScope.NodeScoped,
@@ -137,6 +139,8 @@ public static class EventScopeRegistry
         [typeof(ReviewRerequested)] = EventScope.ProjectScoped,
         [typeof(ReviewRerequestedAfterFixes)] = EventScope.ProjectScoped,
         [typeof(ReviewSettled)] = EventScope.ProjectScoped,
+        [typeof(ReviewThreadReplyPosted)] = EventScope.ProjectScoped,
+        [typeof(ReviewThreadReplyRefused)] = EventScope.ProjectScoped,
         [typeof(ReviewThreadsTriaged)] = EventScope.ProjectScoped,
         [typeof(ReviewTrackConcluded)] = EventScope.ProjectScoped,
         [typeof(ReviewTrackReactivated)] = EventScope.ProjectScoped,
