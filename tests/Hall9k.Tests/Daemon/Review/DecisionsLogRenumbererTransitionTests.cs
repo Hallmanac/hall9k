@@ -69,6 +69,144 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
     }
 
     /// <summary>
+    /// The 2026-09-15 shape (task 450b9d84, PR #382): this branch's own mechanical step had
+    /// already, independently, assigned #3 to its own placeholder in an earlier, local-only run.
+    /// That run's commit was never pushed until the branch's own gate passed, so main's own
+    /// free-number count never saw it; main then independently assigned #3 to an unrelated task's
+    /// own placeholder and merged it first. On retry, this branch is genuinely rebased onto main's
+    /// own true current tip — which the mechanical pre-final-pass rebase step hands to this method
+    /// as BOTH the fork point and the base tip, because a rebase collapses them (independent
+    /// pre-PR review, cycle 1, both lenses: an earlier version of this test passed a fork point
+    /// from before either #3 existed, which no genuinely-rebased retry ever reaches — the number
+    /// this method is actually handed already contains main's own #3, exactly like the "already
+    /// taken at the fork point" shape this class's own decline test covers). What tells the two
+    /// apart is this branch's own tail entry still carrying its own placement note from the
+    /// earlier, local mechanical run (<c>PLACEHOLDER-450b9d84</c>) — proof, by construction, that
+    /// the collision is two independent additions, not a hand-numbering mistake
+    /// (<see cref="Hall9k.Daemon.Execution.StackReplayOntoResolver"/> is the other half of the
+    /// origin incident's fix: reading main's true current tip in the first place, rather than a
+    /// stale recorded commit, so a retry actually reaches this shape).
+    /// </summary>
+    [Fact]
+    public async Task A_branchs_own_earlier_mechanical_assignment_colliding_with_mains_independent_assignment_is_renumbered_on_retry()
+    {
+        // Main's own true current tip once this branch is genuinely rebased onto it: main
+        // independently numbered its own, unrelated placeholder to #3 after this branch's own
+        // earlier attempt had already numbered its own placeholder to #3 too, but before that
+        // attempt's commit ever reached main. This is what the rebase step hands this method as
+        // BOTH forkPointSha and baseTipSha — a rebase collapses fork point and base tip to the
+        // same commit.
+        string mainsCurrentTip = await CommitPlanAsync("main's own current tip",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Another task's own decision.** Numbered by main, independently, after this branch's own attempt.",
+        ]);
+
+        // This branch's own tail entry, replayed on top by the retry's rebase: numbered #3 by this
+        // branch's own mechanical step in an earlier, local-only run, whose placement note
+        // survives the rebase untouched (RewriteHeadingPreservingBody's own doc).
+        await CommitPlanAsync("as if retried and rebased onto main's true current tip",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Another task's own decision.** Numbered by main, independently, after this branch's own attempt.",
+            "3. **This branch's own decision.** Numbered by this branch's own mechanical step, before main numbered its own placeholder.",
+            "",
+            "> Renumbering placement note: this entry was appended under placeholder",
+            "> `PLACEHOLDER-450b9d84` and assigned **#3** by the mechanical pre-final-pass",
+            "> rebase step — the log's next free number once this branch was rebased onto its base.",
+            "> Every citation of the placeholder elsewhere in this repository was rewritten to",
+            "> `#3` in the same commit.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, mainsCurrentTip, mainsCurrentTip, "450b9d84", CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered,
+            "this branch's own placement note proves its #3 was an independent assignment, whatever the fork point now contains");
+        result.OldToken.Should().Be("3");
+        result.NewNumber.Should().Be(4);
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(_repoPath, "PLAN.md"));
+        plan.Should().Contain(
+            "3. **Another task's own decision.**", "main's own #3 is untouched — only this branch's own tail entry moves");
+        plan.Should().Contain("4. **This branch's own decision.**");
+        plan.Should().NotContain("3. **This branch's own decision.**");
+
+        AssertNumberingGuardPasses(plan);
+    }
+
+    /// <summary>
+    /// The same collision shape, but this branch's own tail entry was hand-numbered rather than
+    /// carrying this task's own placement note — a genuine hand-numbering mistake, not this
+    /// task's own earlier mechanical assignment, so the new placement-note recognition must not
+    /// swallow it: it stays declined exactly as <see cref="A_tail_number_that_already_existed_at_the_fork_point_is_left_for_the_guard"/>
+    /// covers for the simpler case.
+    /// </summary>
+    [Fact]
+    public async Task A_hand_numbered_collision_at_mains_current_tip_with_no_own_placement_note_is_left_for_the_guard()
+    {
+        string mainsCurrentTip = await CommitPlanAsync("main's own current tip",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Another task's own decision.** Numbered by main, independently.",
+        ]);
+
+        await CommitPlanAsync("as if rebased onto main's current tip",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Another task's own decision.** Numbered by main, independently.",
+            "3. **A hand-numbering mistake.** Chosen by hand, never went through the mechanical step.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, mainsCurrentTip, mainsCurrentTip, "450b9d84", CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.NoActionNeeded,
+            "no placement note names this task's own placeholder, so there is no proof this is anything but a hand-numbering mistake");
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(_repoPath, "PLAN.md"));
+        plan.Should().Contain("3. **A hand-numbering mistake.**", "left exactly as written for the guard to catch");
+    }
+
+    /// <summary>
+    /// The numbering guard's own core invariant (<c>DecisionsLogNumberingGuardTests</c>): every
+    /// real entry number in the Decisions Log section is unique. Reimplemented narrowly here
+    /// rather than reused, since that guard's own scan is private to its own test class — this
+    /// mirrors only the one fact this test needs to prove the mechanical step's output would
+    /// actually pass it.
+    /// </summary>
+    private static void AssertNumberingGuardPasses(string planMarkdown)
+    {
+        string[] lines = planMarkdown.Replace("\r\n", "\n").Split('\n');
+        int sectionStart = Array.FindIndex(lines, line => line.StartsWith("## 16.", StringComparison.Ordinal));
+        int sectionEnd = Array.FindIndex(
+            lines, sectionStart + 1, line => line.StartsWith("## 17.", StringComparison.Ordinal));
+
+        var seen = new HashSet<int>();
+        var duplicates = new List<int>();
+        for (int i = sectionStart + 1; i < sectionEnd; i++)
+        {
+            Match match = Regex.Match(lines[i], @"^(\d+)\. \*\*");
+            if (!match.Success)
+            {
+                continue;
+            }
+
+            int number = int.Parse(match.Groups[1].Value);
+            if (!seen.Add(number))
+            {
+                duplicates.Add(number);
+            }
+        }
+
+        duplicates.Should().BeEmpty("the numbering guard fails the build on any duplicate real entry number");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 1, conformance lens: ownership of a citation line must be
     /// decided against the base's own tip once this branch is current with it, never against the
     /// fork point — content the base added between the fork point and now is equally absent from
@@ -270,6 +408,89 @@ public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
 
         result.Outcome.Should().Be(DecisionsLogRenumberOutcome.Renumbered);
         result.NewNumber.Should().Be(2);
+    }
+
+    /// <summary>
+    /// The placement-note retry shape reads baseTipSha too — RewriteCitationsAsync's
+    /// non-placeholder sweep hands it to git as a literal revision exactly like the hand-numbered
+    /// shape does — so an unreadable base tip must be caught before either shape writes anything,
+    /// not only the hand-numbered one (PR #396 review, Copilot: this shape had no guard of its
+    /// own and could leave PLAN.md's heading rewritten to disk before the citation sweep threw).
+    /// </summary>
+    [Fact]
+    public async Task A_placement_note_retry_shape_with_an_unreadable_base_tip_is_skipped_before_any_write()
+    {
+        string forkPointSha = await CommitPlanAsync("fork point",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+        ]);
+
+        await CommitPlanAsync("as if retried and rebased onto main's true current tip",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Another task's own decision.** Numbered by main, independently.",
+            "3. **This branch's own decision.** Numbered by this branch's own mechanical step, before main numbered its own placeholder.",
+            "",
+            "> Renumbering placement note: this entry was appended under placeholder",
+            "> `PLACEHOLDER-450b9d84` and assigned **#3** by the mechanical pre-final-pass",
+            "> rebase step — the log's next free number once this branch was rebased onto its base.",
+            "> Every citation of the placeholder elsewhere in this repository was rewritten to",
+            "> `#3` in the same commit.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, forkPointSha, RunRebasedOntoBase.UnreadableCommit, "450b9d84",
+            CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.NoActionNeeded,
+            "an unresolved base tip must never be handed to git as a literal revision, even for this task's own retry shape");
+        (await RunGitCapturingAsync(["status", "--porcelain"])).Should().BeEmpty("no half-applied rewrite is ever left on disk");
+    }
+
+    /// <summary>
+    /// Reproduces PLAN.md #162's own hand-authored note verbatim in shape: it carries this task's
+    /// own placeholder marker but honestly says the number was assigned by hand, "in the same
+    /// shape the mechanical pre-final-pass rebase step writes" — deliberately readable as this
+    /// convention's own output. A marker-only match would misread that honest disclosure as proof
+    /// of this task's own mechanical assignment and renumber straight past the fork-point check
+    /// that should catch it instead (PR #396 review, Copilot).
+    /// </summary>
+    [Fact]
+    public async Task A_hand_authored_note_reusing_the_marker_text_is_not_mistaken_for_this_tasks_own_mechanical_assignment()
+    {
+        string mainsCurrentTip = await CommitPlanAsync("main's own current tip",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Another task's own decision.** Numbered by main, independently.",
+        ]);
+
+        await CommitPlanAsync("as if rebased onto main's current tip",
+        [
+            "1. **First.** Baseline.",
+            "2. **Second.** Baseline.",
+            "3. **Another task's own decision.** Numbered by main, independently.",
+            "3. **A hand-numbered entry predating the convention.** Chosen by hand, never went through the mechanical step.",
+            "",
+            "> Renumbering placement note: this entry was appended under placeholder",
+            "> `PLACEHOLDER-450b9d84` and assigned **#3** by hand, in the same shape the mechanical",
+            "> pre-final-pass rebase step writes, because the daemon that carried this branch to its",
+            "> merge predates that step; the log's next free number once this branch was rebased",
+            "> onto main after #2. Every citation of the placeholder elsewhere in this repository was",
+            "> rewritten to `#3` in the same commit.",
+        ]);
+
+        DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
+            ExternalProcess.Runner, _repoPath, mainsCurrentTip, mainsCurrentTip, "450b9d84", CancellationToken.None);
+
+        result.Outcome.Should().Be(DecisionsLogRenumberOutcome.NoActionNeeded,
+            "a hand-authored note that honestly says 'by hand' is not proof of this task's own mechanical assignment, whatever marker it reuses");
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(_repoPath, "PLAN.md"));
+        plan.Should().Contain(
+            "3. **A hand-numbered entry predating the convention.**", "left exactly as written for the guard to catch");
     }
 
     /// <summary>
