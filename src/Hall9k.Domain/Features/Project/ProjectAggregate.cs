@@ -363,4 +363,18 @@ public sealed class ProjectAggregate
         _gitHubCollaborators = @event.Collaborators;
         GitHubCollaboratorsObservedAt = @event.ObservedAt;
     }
+
+    /// <summary>
+    /// This node's own audit trail of who it vouched or removed as a project member, keyed by
+    /// root fingerprint (idea 202383dc, T1). The ledger's own <c>members/&lt;root&gt;.yaml</c>
+    /// files, chain-verified fresh on every read, are what actually decides membership; nothing
+    /// here is consulted for that.
+    /// </summary>
+    public IReadOnlyDictionary<string, ProjectMemberRole> Members => _members;
+
+    private readonly Dictionary<string, ProjectMemberRole> _members = [];
+
+    public void Apply(MemberVouched @event) => _members[@event.RootFingerprint] = @event.Role;
+
+    public void Apply(MemberRemoved @event) => _members.Remove(@event.RootFingerprint);
 }

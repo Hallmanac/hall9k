@@ -1021,4 +1021,59 @@ public sealed class ProjectDeciderTests
         Action sameName = () => ProjectDecider.Rename(project, "hall9k", Now, DomainId.New());
         sameName.Should().Throw<DomainValidationException>();
     }
+
+    [Fact]
+    public void VouchMember_produces_an_event_carrying_the_fingerprint_and_role()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        MemberVouched vouched = ProjectDecider.VouchMember(project.Id, "root-fingerprint", ProjectMemberRole.Owner, Now);
+
+        vouched.ProjectId.Should().Be(project.Id);
+        vouched.RootFingerprint.Should().Be("root-fingerprint");
+        vouched.Role.Should().Be(ProjectMemberRole.Owner);
+        vouched.IssuedAt.Should().Be(Now);
+    }
+
+    [Fact]
+    public void VouchMember_refuses_a_blank_fingerprint()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ProjectDecider.VouchMember(project.Id, "  ", ProjectMemberRole.Owner, Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void VouchMember_refuses_an_unknown_role()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ProjectDecider.VouchMember(project.Id, "root-fingerprint", ProjectMemberRole.Unknown, Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void RemoveMember_refuses_a_blank_fingerprint()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ProjectDecider.RemoveMember(project.Id, "  ", Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void ProjectAggregate_tracks_a_vouched_member_and_forgets_it_once_removed()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        project.Apply(ProjectDecider.VouchMember(project.Id, "root-fingerprint", ProjectMemberRole.Owner, Now));
+        project.Members.Should().ContainKey("root-fingerprint");
+
+        project.Apply(ProjectDecider.RemoveMember(project.Id, "root-fingerprint", Now.AddMinutes(5)));
+        project.Members.Should().NotContainKey("root-fingerprint");
+    }
 }
