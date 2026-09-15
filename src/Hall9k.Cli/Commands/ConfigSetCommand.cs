@@ -245,7 +245,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
-        Validate(settings);
+        OperatingSettings current = await PlatformConfigFile.ReadOperatingSettingsAsync(cancellationToken);
+        Validate(settings, current);
 
         List<string> changed = [];
         OperatingSettings? mutated = null;
@@ -310,8 +311,13 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         return ExitCodes.Ok;
     }
 
-    /// <summary>Refuses a no-op call, and a ceiling that would dispatch nothing.</summary>
-    internal static void Validate(Settings settings)
+    /// <summary>
+    /// Refuses a no-op call, and a ceiling that would dispatch nothing. <paramref name="current"/>
+    /// is the file's own effective settings before this call's changes apply — defaults to the
+    /// compiled defaults (as if nothing were ever configured) when omitted, which is what every
+    /// call site outside <see cref="ExecuteAsync"/> gets today.
+    /// </summary>
+    internal static void Validate(Settings settings, OperatingSettings? current = null)
     {
         if (settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
@@ -414,13 +420,6 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             throw new DomainValidationException("--message-poll-active-max must be at least 1 second.");
         }
 
-        if (settings.MessagePollActiveMin is { } activeMinPaired && settings.MessagePollActiveMax is { } activeMaxPaired
-            && activeMinPaired > activeMaxPaired)
-        {
-            throw new DomainValidationException(
-                "--message-poll-active-min must be at or below --message-poll-active-max.");
-        }
-
         if (settings.MessagePollIdleMin is { } idleMin && idleMin < 1)
         {
             throw new DomainValidationException("--message-poll-idle-min must be at least 1 second.");
@@ -431,12 +430,17 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             throw new DomainValidationException("--message-poll-idle-max must be at least 1 second.");
         }
 
-        if (settings.MessagePollIdleMin is { } idleMinPaired && settings.MessagePollIdleMax is { } idleMaxPaired
-            && idleMinPaired > idleMaxPaired)
-        {
-            throw new DomainValidationException(
-                "--message-poll-idle-min must be at or below --message-poll-idle-max.");
-        }
+        OperatingSettings effectiveCurrent = current ?? new OperatingSettings();
+        ValidateMessagePollPair(
+            settings.MessagePollActiveMin, settings.MessagePollActiveMax,
+            effectiveCurrent.MessageActivePollMinSeconds ?? OperatingSettings.DefaultMessageActivePollMinSeconds,
+            effectiveCurrent.MessageActivePollMaxSeconds ?? OperatingSettings.DefaultMessageActivePollMaxSeconds,
+            "--message-poll-active-min", "--message-poll-active-max");
+        ValidateMessagePollPair(
+            settings.MessagePollIdleMin, settings.MessagePollIdleMax,
+            effectiveCurrent.MessageIdlePollMinSeconds ?? OperatingSettings.DefaultMessageIdlePollMinSeconds,
+            effectiveCurrent.MessageIdlePollMaxSeconds ?? OperatingSettings.DefaultMessageIdlePollMaxSeconds,
+            "--message-poll-idle-min", "--message-poll-idle-max");
 
         if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays && staleAfterDays < 1)
         {
@@ -453,6 +457,38 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 + "when it nudges a stale claim, so writing one here would confirm a setting the board would not "
                 + "actually honour.");
         }
+    }
+
+    /// <summary>
+    /// Refuses an inverted min/max pair using whichever bound this call did not just set — the
+    /// file's own currently effective value, or that range's compiled default when nothing is
+    /// configured — rather than only checking when both flags arrive in the same call. Setting
+    /// just <c>--message-poll-idle-min</c> above an idle max left at its default used to be
+    /// accepted and printed back as changed, while the daemon's own <c>JitteredInterval</c> saw
+    /// the resulting <c>max &lt; min</c> and silently fell back to the shipped default range with
+    /// no log line at all (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    private static void ValidateMessagePollPair(
+        int? newMin, int? newMax, int effectiveCurrentMin, int effectiveCurrentMax, string minFlag, string maxFlag)
+    {
+        if (newMin is null && newMax is null)
+        {
+            return;
+        }
+
+        int effectiveMin = newMin ?? effectiveCurrentMin;
+        int effectiveMax = newMax ?? effectiveCurrentMax;
+        if (effectiveMin <= effectiveMax)
+        {
+            return;
+        }
+
+        string otherBoundNote = newMax is null
+            ? $"{maxFlag} is currently {effectiveMax}s — pass it too if you mean to raise it as well"
+            : $"{minFlag} is currently {effectiveMin}s — pass it too if you mean to lower it as well";
+        throw new DomainValidationException(
+            $"{minFlag} ({effectiveMin}s) must be at or below {maxFlag} ({effectiveMax}s) once this change applies "
+            + $"— {otherBoundNote}.");
     }
 
     /// <summary>The mutation <see cref="PlatformConfigFile.WriteOperatingSettingsAsync"/> runs, isolated for direct testing.</summary>
