@@ -1409,22 +1409,27 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     // the loop re-entered Settling after the recovery completed).
     public void Apply(IEvent<RunRebasedOntoBase> @event, RunDetails view)
     {
-        if (@event.Data.WasNoOp && view.LastPreFinalPassRebaseAt is not null && view.LastPreFinalPassRebaseWasNoOp == false)
+        // BaseCommit's own update below is deliberately outside this guard, mirroring
+        // RunAggregate.Apply(RunRebasedOntoBase): a trailing no-op after a real rebase carries no
+        // new information for the Last* display fields, but a ParentMergedAligned no-op
+        // (ForkPointAdvanced true) still has to move the recorded fork point even when it happens
+        // to land right after one — the two guards diverging here would leave this read model
+        // stuck on a stale BaseCommit the aggregate itself already moved past.
+        if (!(@event.Data.WasNoOp && view.LastPreFinalPassRebaseAt is not null && view.LastPreFinalPassRebaseWasNoOp == false))
         {
-            return;
+            view.LastPreFinalPassRebaseWasNoOp = @event.Data.WasNoOp;
+            view.LastPreFinalPassRebaseRecovered = @event.Data.RecoveredByAgentSession;
+            view.LastPreFinalPassRebaseFromCommit = @event.Data.RebasedFromCommit;
+            view.LastPreFinalPassRebaseOntoCommit = @event.Data.RebasedOntoCommit;
+            view.LastPreFinalPassRebaseDetail = @event.Data.Detail;
+            view.LastPreFinalPassRebaseAt = @event.Data.RebasedAt;
         }
-
-        view.LastPreFinalPassRebaseWasNoOp = @event.Data.WasNoOp;
-        view.LastPreFinalPassRebaseRecovered = @event.Data.RecoveredByAgentSession;
-        view.LastPreFinalPassRebaseFromCommit = @event.Data.RebasedFromCommit;
-        view.LastPreFinalPassRebaseOntoCommit = @event.Data.RebasedOntoCommit;
-        view.LastPreFinalPassRebaseDetail = @event.Data.Detail;
-        view.LastPreFinalPassRebaseAt = @event.Data.RebasedAt;
 
         // See RunAggregate.Apply(RunRebasedOntoBase): a real rebase moves this branch's fork point,
         // so the recorded one has to move with it or a later replay reads an upstream the branch may
-        // no longer contain.
-        if (!@event.Data.WasNoOp && @event.Data.OntoCommitObserved)
+        // no longer contain — and so does a ParentMergedAligned no-op (ForkPointAdvanced true), whose
+        // own WasNoOp stays true because nothing here moved HEAD, only the recorded fork point.
+        if ((!@event.Data.WasNoOp || @event.Data.ForkPointAdvanced) && @event.Data.OntoCommitObserved)
         {
             view.BaseCommit = @event.Data.RebasedOntoCommit;
         }

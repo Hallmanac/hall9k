@@ -2839,7 +2839,8 @@ public sealed class ReviewEngine(
                             ? $"origin/{baseBranch} has not moved since this branch's own merge base, but the Decisions " +
                               "Log's tail entry still needed the mechanical rebase step's own renumbering commit."
                             : $"origin/{baseBranch} has not moved since this branch's own merge base — nothing to rebase.",
-                        checkpointSpend: null, decisionsLogRenumbered: renumberCommitted, cancellationToken);
+                        checkpointSpend: null, decisionsLogRenumbered: renumberCommitted, forkPointAdvanced: false,
+                        cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -2850,7 +2851,8 @@ public sealed class ReviewEngine(
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, originTip, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased cleanly onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(originTip)}).",
-                        checkpointSpend: null, decisionsLogRenumbered: false, cancellationToken);
+                        checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: false,
+                        cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -2882,7 +2884,8 @@ public sealed class ReviewEngine(
                         context.RunId, mergeBase, observedOntoCommit, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(observedOntoCommit)}) — "
                         + "the rebase itself exited 0 before a background process's stuck output pipe timed the call out.",
-                        checkpointSpend: null, decisionsLogRenumbered: false, cancellationToken);
+                        checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: false,
+                        cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -3335,17 +3338,25 @@ public sealed class ReviewEngine(
         // point and carries the base's own later commits, gained after the parent merged, as if
         // they were this task's own work. No rebase actually ran — the branch already sat on the
         // observed tip — so nothing here spends the rebase budget; only the fork point moves.
+        //
+        // wasNoOp stays true — that is the honest fact, git never ran — and forkPointAdvanced is
+        // what carries the fork-point move instead (independent pre-PR review, cycle 1, both
+        // lenses: a false wasNoOp here used to also raise PreFinalPassRebaseAwaitingGate and its
+        // FromRealRebase sibling, which forced a second, fail-hard full gate over the exact tip an
+        // earlier gate had already passed, and made every Settling entry re-append this same event
+        // and become newly eligible for the rebase repair lap over a fix session's own ordinary
+        // commit).
         if (verdict.Action == StackedCheckpointAction.Proceed)
         {
             if (observation.Verdict == StackedParentVerdict.ParentMergedAligned)
             {
                 await RecordRebaseOutcomeAsync(
-                    context.RunId, currentBaseCommit, observation.BoundaryCommit, wasNoOp: false,
+                    context.RunId, currentBaseCommit, observation.BoundaryCommit, wasNoOp: true,
                     recoveredByAgentSession: false,
                     $"No rebase owed before {checkpoint.Describe()}: {observation.Detail} — this run's own "
                     + $"recorded fork point moves to {ShortSha(observation.BoundaryCommit)} so later ranges, "
                     + "including the mandatory final pass, read only this task's own commits.",
-                    checkpointSpend: null, decisionsLogRenumbered: false, cancellationToken);
+                    checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: true, cancellationToken);
                 return RebaseGateOutcome.Proceed;
             }
 
@@ -3489,6 +3500,7 @@ public sealed class ReviewEngine(
                 context.TaskId, context.RunId, checkpoint, parentBranch, verdict.UpstreamCommit,
                 verdict.OntoCommit, DateTimeOffset.UtcNow),
             decisionsLogRenumbered: false,
+            forkPointAdvanced: false,
             cancellationToken);
 
     /// <summary>
@@ -3656,15 +3668,22 @@ public sealed class ReviewEngine(
     /// Decisions Log" audit flag, only the one gap wasNoOp itself can't cover (independent pre-PR
     /// review, cycle 1, conformance lens).
     /// </param>
+    /// <param name="forkPointAdvanced">
+    /// See <see cref="RunRebasedOntoBase.ForkPointAdvanced"/>. True only on the stacked checkpoint's
+    /// own <c>ParentMergedAligned</c> call site: the branch already held the observed base tip, so
+    /// <paramref name="wasNoOp"/> stays true, but the recorded fork point still has to move. Passed
+    /// explicitly, not defaulted, for the identical reason <paramref name="checkpointSpend"/>'s own
+    /// doc gives — the cancellation token stays this method's last parameter (AGENTS.md).
+    /// </param>
     private async Task RecordRebaseOutcomeAsync(
         Guid runId, string rebasedFromCommit, string rebasedOntoCommit, bool wasNoOp, bool recoveredByAgentSession,
         string detail, StackedCheckpointRebased? checkpointSpend, bool decisionsLogRenumbered,
-        CancellationToken cancellationToken)
+        bool forkPointAdvanced, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunRebasedOntoBase(
             runId, rebasedFromCommit, rebasedOntoCommit, wasNoOp, recoveredByAgentSession, detail,
-            DateTimeOffset.UtcNow, decisionsLogRenumbered));
+            DateTimeOffset.UtcNow, decisionsLogRenumbered, forkPointAdvanced));
         if (checkpointSpend is not null)
         {
             // No expectedVersion fence: this is a counter, not a state change (the shape

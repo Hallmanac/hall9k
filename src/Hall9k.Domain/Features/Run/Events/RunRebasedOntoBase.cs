@@ -52,6 +52,19 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// (independent pre-PR review, cycle 5, adversarial lens). Defaults to false so every call site
 /// that never renumbers — which is most of them — is unaffected.
 /// </param>
+/// <param name="ForkPointAdvanced">
+/// True for a stacked checkpoint's own <c>ParentMergedAligned</c> observation: this branch already
+/// contained the parent base's freshly observed tip, so <paramref name="WasNoOp"/> stays true (git
+/// did nothing — an honest fact, the same reasoning <paramref name="DecisionsLogRenumbered"/>'s own
+/// doc gives for keeping that field's one meaning), but the recorded fork point still has to move to
+/// that tip or a later replay — including the mandatory final pass — reads a stale upstream and
+/// carries commits the base gained after the parent merged as if they were this task's own work.
+/// Deliberately kept out of the <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> condition
+/// <paramref name="DecisionsLogRenumbered"/> feeds: nothing here moved this branch's own HEAD, so the
+/// tip is exactly what an earlier gate already covered, and forcing a second fail-hard full gate over
+/// it would be re-verifying work already proven (independent pre-PR review, cycle 1, both lenses).
+/// Defaults to false so every call site that never observes this shape is unaffected.
+/// </param>
 public sealed record RunRebasedOntoBase(
     Guid Id,
     string RebasedFromCommit,
@@ -60,7 +73,8 @@ public sealed record RunRebasedOntoBase(
     bool RecoveredByAgentSession,
     string Detail,
     DateTimeOffset RebasedAt,
-    bool DecisionsLogRenumbered = false)
+    bool DecisionsLogRenumbered = false,
+    bool ForkPointAdvanced = false)
 {
     /// <summary>
     /// What <see cref="RebasedFromCommit"/> and <see cref="RebasedOntoCommit"/> carry when the read
