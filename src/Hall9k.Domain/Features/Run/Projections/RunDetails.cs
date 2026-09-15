@@ -91,6 +91,23 @@ public sealed class RunDetails : IJsonOnDeserialized
     public string? PullRequestUrl { get; set; }
     public int? PullRequestNumber { get; set; }
     /// <summary>
+    /// The base this run's pull request actually opened against, when that differs from
+    /// <see cref="BaseBranch"/> — set only by <c>PullRequestOpener.ResolveOpenBaseAsync</c>'s own
+    /// fallback: the parent branch this run recorded was already gone from origin at open time, so
+    /// the pull request opened against the project's own base branch instead
+    /// (<c>DaemonLogEvents.StackedParentBranchGoneAtPullRequestOpen</c>, the 2003 warning that
+    /// fires alongside it). <see cref="BaseBranch"/> is left exactly as recorded either way — it is
+    /// a declaration of what this branch was built on, not of where its pull request opened, and
+    /// the replay that drops the parent's commits still reads it to know the parent's branch is the
+    /// one going away. This field exists so a grandchild's own stacked checkpoint, reading this run
+    /// as ITS parent's, can tell a genuinely merged-elsewhere parent from one GitHub already
+    /// retargeted this same way — without needing a live GitHub call to learn it
+    /// (<c>StackedParentWatch</c>'s own doc has the full account; task eec9096d, 2026-09-15). Blank
+    /// on every ordinary run, and blank here even for an ordinary stacked child whose own retarget
+    /// happens through the ordinary closeout path rather than this fallback.
+    /// </summary>
+    public string? OpenedAgainstBaseBranch { get; set; }
+    /// <summary>
     /// When this run's own pull request was opened or, for a follow-up run, when its own push
     /// landed — from <see cref="Events.PullRequestOpened.OpenedAt"/> / <see cref="Events.PullRequestUpdated.UpdatedAt"/>.
     /// Not refreshed by a mechanical rebase's own force-push (<see cref="LastMechanicalRebaseAt"/>
@@ -1275,6 +1292,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.PullRequestUrl = @event.Data.PullRequestUrl;
         view.PullRequestNumber = @event.Data.PullRequestNumber;
         view.PullRequestPushedAt = @event.Data.OpenedAt;
+        view.OpenedAgainstBaseBranch = @event.Data.OpenedAgainstBaseBranch;
         EndSessions(view);
         view.State = RunState.AwaitingReview;
     }

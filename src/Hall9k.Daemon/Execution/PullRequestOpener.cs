@@ -119,20 +119,29 @@ public sealed class PullRequestOpener(
                 : [];
             await PushBranchAsync(run.WorktreePath, run.Branch, recordedPushedTips, cancellationToken);
             await RecordBranchPushedAsync(taskId, run.Branch, run.WorktreePath, cancellationToken);
+
+            // The base this run recorded at dispatch, not the project's own: a stacked child's
+            // pull request targets its parent's branch, which is what forms the stack on GitHub
+            // (task: a stacked pull-request edge exists as an explicit opt-in dependency).
+            // ResolveOpenBaseAsync reads that recorded base and, for a stacked child only, checks
+            // the branch is still on origin at all before aiming a pull request at it. Every
+            // unstacked pull request opens exactly as it always has, without a single extra call.
+            // Resolved once, here, and kept — rather than folded straight into the ternary below —
+            // so the fallback case (the recorded parent branch was already gone) can be told apart
+            // from the ordinary one afterward, for the event appended below.
+            string? openBase = task.PullRequestUrl is null && await IsGitHubOriginAsync(run.WorktreePath, cancellationToken)
+                ? await ResolveOpenBaseAsync(run, project, cancellationToken)
+                : null;
             (string? pullRequestUrl, int pullRequestNumber) = task.PullRequestUrl is { } existingUrl
                 ? (existingUrl, PullRequestUrls.ParseNumber(existingUrl))
-                : await IsGitHubOriginAsync(run.WorktreePath, cancellationToken)
-                    // The base this run recorded at dispatch, not the project's own: a stacked
-                    // child's pull request targets its parent's branch, which is what forms the
-                    // stack on GitHub (task: a stacked pull-request edge exists as an explicit
-                    // opt-in dependency). ResolveOpenBaseAsync reads that recorded base and, for a
-                    // stacked child only, checks the branch is still on origin at all before aiming
-                    // a pull request at it. Every unstacked pull request opens exactly as it always
-                    // has, without a single extra call.
+                : openBase is not null
                     ? await CreatePullRequestAsync(
-                        run, task, await ResolveOpenBaseAsync(run, project, cancellationToken),
-                        project.WritingConventions, cancellationToken)
+                        run, task, openBase, project.WritingConventions, cancellationToken)
                     : (null, 0);
+
+            string? openedAgainstBaseBranch = openBase is null
+                ? null
+                : OpenedAgainstBaseBranchFor(openBase, run.BaseBranchOr(project.BaseBranch));
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
             await using IDocumentSession session = store.LightweightSession();
@@ -140,7 +149,7 @@ public sealed class PullRequestOpener(
             {
                 session.Events.Append(runId, followUp
                     ? new PullRequestUpdated(runId, pullRequestUrl, pullRequestNumber, now)
-                    : new PullRequestOpened(runId, pullRequestUrl, pullRequestNumber, now));
+                    : new PullRequestOpened(runId, pullRequestUrl, pullRequestNumber, now, openedAgainstBaseBranch));
             }
 
             // LoadFencedAsync's read must happen before the AllowsAsync identity check below —
@@ -374,12 +383,19 @@ public sealed class PullRequestOpener(
     /// <para>
     /// Opening against the project's own base is what recovers it, and it is exactly where the
     /// retarget would have put this pull request anyway. What deliberately does NOT happen here is
-    /// touching the run's recorded base: the branch still physically carries the parent's commits,
-    /// so the replay that drops them is still owed, and the record is what
-    /// <c>StackedParentWatch.IsStackedChild</c> and the merge-bar guard read to know that. Left
-    /// alone, the next closeout sweep observes the merged parent, records the retarget over a
+    /// touching the run's own <see cref="RunDetails.BaseBranch"/>: the branch still physically
+    /// carries the parent's commits, so the replay that drops them is still owed, and that record
+    /// is what <c>StackedParentWatch.IsStackedChild</c> and the merge-bar guard read to know that.
+    /// Left alone, the next closeout sweep observes the merged parent, records the retarget over a
     /// pull request already on the right base (<c>gh pr edit --base</c> is idempotent), and
-    /// dispatches the replay — the ordinary path, arriving at the ordinary place.
+    /// dispatches the replay — the ordinary path, arriving at the ordinary place. What DOES get
+    /// recorded is the base actually used, on the second, narrower
+    /// <see cref="RunDetails.OpenedAgainstBaseBranch"/> — this run's own <c>BaseBranch</c> is a
+    /// declaration of what this branch was built on, and a mid-stack task can be the parent this
+    /// exact fallback fires for one level up: a grandchild's own checkpoint reads this run as ITS
+    /// parent's run, and needs to tell "genuinely merged elsewhere" from "GitHub already retargeted
+    /// this same way" without assuming a live GitHub read is always affordable or even possible
+    /// (task eec9096d, 2026-09-15 — StackedParentWatch's own doc has the full account).
     /// </para>
     /// <para>
     /// A branch origin could not be READ about is not a branch that is gone (AGENTS.md's never-guess
@@ -469,6 +485,13 @@ public sealed class PullRequestOpener(
     /// the branch, probed origin, and failed identically — reinstating the permanent-failure loop the
     /// fallback exists to end (independent pre-PR review, cycle 8, both lenses).
     /// </para>
+    /// <para>
+    /// Names <see cref="RunDetails.OpenedAgainstBaseBranch"/> rather than leaving "the run still records
+    /// the old base" unexplained: that field is what OpenAsync appends alongside this very warning, and it
+    /// is the reason a grandchild's own checkpoint can learn where this pull request actually opened
+    /// without a live GitHub call of its own (StackedParentWatch's own doc on the mid-stack shape this
+    /// fallback produces — task eec9096d, 2026-09-15).
+    /// </para>
     /// </summary>
     internal static void LogStackedParentBranchGone(
         ILogger logger, Guid runId, string parentBranch, string projectBaseBranch) =>
@@ -476,8 +499,10 @@ public sealed class PullRequestOpener(
             DaemonLogEvents.StackedParentBranchGoneAtPullRequestOpen,
             "Run {RunId}: the stacked parent branch {ParentBranch} is not on origin — merged and deleted while "
             + "this branch was still building, or never pushed at all — so this pull request opens against "
-            + "{BaseBranch} instead. The run still records {ParentBranch} as its base, because this branch still "
-            + "carries the parent's commits and closeout's replay onto {BaseBranch} is still owed",
+            + "{BaseBranch} instead, recorded on this run's own OpenedAgainstBaseBranch so a later reader does "
+            + "not need GitHub to learn it. The run still declares {ParentBranch} as its stacked-on base, "
+            + "because this branch still carries the parent's commits and closeout's replay onto {BaseBranch} "
+            + "is still owed",
             runId, parentBranch, projectBaseBranch, parentBranch, projectBaseBranch);
 
     /// <summary>
@@ -491,6 +516,18 @@ public sealed class PullRequestOpener(
     /// </summary>
     internal static string OpenBaseFor(string recordedBase, string projectBaseBranch, int lsRemoteExitCode) =>
         lsRemoteExitCode == 2 ? projectBaseBranch : recordedBase;
+
+    /// <summary>
+    /// What <see cref="Events.PullRequestOpened.OpenedAgainstBaseBranch"/> carries for this open —
+    /// split out from <see cref="OpenAsync"/> for the same reason <see cref="OpenBaseFor"/> is:
+    /// exercised without a store or a remote. Non-null exactly when <paramref name="openBase"/>,
+    /// what <see cref="ResolveOpenBaseAsync"/> actually resolved to open against, differs from
+    /// <paramref name="recordedBase"/>, this run's own <see cref="RunDetails.BaseBranch"/> — the one
+    /// shape being <see cref="OpenBaseFor"/>'s own fallback (exit code 2), since every other path
+    /// through <see cref="ResolveOpenBaseAsync"/> returns the recorded base unchanged.
+    /// </summary>
+    internal static string? OpenedAgainstBaseBranchFor(string openBase, string recordedBase) =>
+        openBase != recordedBase ? openBase : null;
 
     private async Task<(string Url, int Number)> CreatePullRequestAsync(
         RunDetails run, TaskDetails task, string baseBranch, WritingConventions conventions,
