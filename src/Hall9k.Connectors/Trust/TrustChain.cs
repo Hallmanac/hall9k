@@ -25,6 +25,19 @@ public sealed record TrustedOwner(string RootFingerprint, string RootPublicKeyLi
     /// <summary>Whether <paramref name="fingerprint"/> is this root's own key or a currently vouched node's.</summary>
     public bool Contains(string fingerprint) =>
         RootFingerprint == fingerprint || Nodes.Any(node => node.Fingerprint == fingerprint);
+
+    /// <summary>
+    /// Whether <paramref name="fingerprint"/> is currently vouched specifically for
+    /// <paramref name="nodeId"/> — the root's own key always qualifies regardless of
+    /// <paramref name="nodeId"/> (the root has no separate vouched-node entry of its own to bind
+    /// to), but a vouched node's key only counts here when it is bound to the exact node id it was
+    /// vouched under. Reusing one vouched node's key to speak for a different node id is refused
+    /// (independent pre-PR review, cycle 1, conformance and adversarial lenses, medium): a member
+    /// who overwrites another node's own self-announced <c>node.yaml</c> to carry their own key
+    /// must never let that key answer as if it were the original node.
+    /// </summary>
+    public bool ContainsForNode(string fingerprint, string nodeId) =>
+        RootFingerprint == fingerprint || Nodes.Any(node => node.Fingerprint == fingerprint && node.NodeId == nodeId);
 }
 
 /// <summary>One project member, chain-validated: the write that established or last changed this
@@ -33,26 +46,57 @@ public sealed record TrustedOwner(string RootFingerprint, string RootPublicKeyLi
 public sealed record ProjectMember(string RootFingerprint, MembershipRole Role, DateTimeOffset IssuedAt);
 
 /// <summary>
+/// A vouch, revocation, or membership write the chain read found but could not verify — its signer
+/// traced back to no currently trusted key, so the file or event it names was never applied to
+/// <see cref="TrustChain.OwnerChains"/> or <see cref="TrustChain.Members"/>. Named here rather than
+/// silently dropped (independent pre-PR review, cycle 1, conformance lens, medium: "an unverifiable
+/// writer's files and envelopes are ignored and the writer is named").
+/// </summary>
+public sealed record UnverifiedLedgerWrite(string Kind, string Identifier, string RootFingerprint, string Reason);
+
+/// <summary>
 /// The result of walking a project's ledger — every owner root's own chain, and current project
 /// membership derived from replaying <c>refs/hall9k/ledger/members</c> against those chains (idea
 /// 202383dc, T1). Recomputed fresh on every read (<see cref="ILedgerChainReader.ComputeAsync"/>),
 /// never cached across calls: a revocation or a removal takes effect the moment the next read walks
 /// the ledger again.
 /// </summary>
-public sealed record TrustChain(IReadOnlyDictionary<string, TrustedOwner> OwnerChains, IReadOnlyList<ProjectMember> Members)
+public sealed record TrustChain(
+    IReadOnlyDictionary<string, TrustedOwner> OwnerChains,
+    IReadOnlyList<ProjectMember> Members,
+    IReadOnlyList<UnverifiedLedgerWrite>? UnverifiedWrites = null)
 {
+    /// <summary>Never null, whatever a caller passed the primary constructor: a two-argument
+    /// construction (every call site that predates this field) gets an empty list rather than a
+    /// null every reader would otherwise have to guard against.</summary>
+    public IReadOnlyList<UnverifiedLedgerWrite> UnverifiedWrites { get; init; } = UnverifiedWrites ?? [];
+
     public static readonly TrustChain Empty = new(new Dictionary<string, TrustedOwner>(), []);
 
     /// <summary>
-    /// Whether <paramref name="fingerprint"/> is currently allowed to write or sign a ledger or
-    /// messages ref for this project: it belongs to some owner's chain, and that owner is itself a
-    /// current project member — a stranger's own self-certified root and vouched nodes are always
-    /// excluded here, however internally consistent their own owner ref is, because they were never
-    /// added to <see cref="Members"/>.
+    /// Whether <paramref name="fingerprint"/> is currently allowed to write or sign a ledger ref
+    /// for this project: it belongs to some owner's chain, and that owner is itself a current
+    /// project member — a stranger's own self-certified root and vouched nodes are always excluded
+    /// here, however internally consistent their own owner ref is, because they were never added
+    /// to <see cref="Members"/>.
     /// </summary>
     public bool IsAllowedSigner(string fingerprint) =>
         Members.Any(member =>
             OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner) && owner.Contains(fingerprint));
+
+    /// <summary>
+    /// The messages-ref overload: <paramref name="fingerprint"/> must not only trace back to a
+    /// current project member's own chain, it must be the exact key that chain vouched for
+    /// <paramref name="nodeId"/> specifically (<see cref="TrustedOwner.ContainsForNode"/>) — never
+    /// merely some other node's key the same owner happens to have vouched. Without this, a member
+    /// could overwrite <paramref name="nodeId"/>'s own self-announced node file with their own key
+    /// and have their messages accepted as if they were that node (independent pre-PR review,
+    /// cycle 1, conformance and adversarial lenses, medium).
+    /// </summary>
+    public bool IsAllowedSigner(string fingerprint, Guid nodeId) =>
+        Members.Any(member =>
+            OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
+            && owner.ContainsForNode(fingerprint, nodeId.ToString()));
 
     /// <summary>
     /// Whether <paramref name="fingerprint"/> is already enrolled in <paramref name="root"/>'s own
