@@ -186,7 +186,17 @@ public static class StackedBaseResolver
     /// <param name="ForkPointCommit">
     /// That run's own <c>RunDispatched.BaseCommit</c>, or blank when it recorded none.
     /// </param>
-    public sealed record ResumedBase(string BaseBranch, string ForkPointCommit);
+    /// <param name="OpenedAgainstBaseBranch">
+    /// That run's own <see cref="Hall9k.Domain.Features.Run.Projections.RunDetails.OpenedAgainstBaseBranch"/>,
+    /// carried forward for the identical reason <see cref="ForkPointCommit"/> is: resuming a branch
+    /// moves neither fact, and the field lives only on the run whose own
+    /// <c>PullRequestOpener.ResolveOpenBaseAsync</c> actually hit the fallback — without carrying it
+    /// forward, a follow-up run's own copy starts blank regardless of what its predecessor recorded,
+    /// which silently drops the free, no-GitHub-call answer a grandchild's own checkpoint reads it
+    /// for the moment the parent gets so much as one follow-up (independent pre-PR review, cycle 1,
+    /// conformance lens).
+    /// </param>
+    public sealed record ResumedBase(string BaseBranch, string ForkPointCommit, string? OpenedAgainstBaseBranch = null);
 
     /// <summary>
     /// Where <paramref name="task"/>'s existing branch already sits, for a run that resumes it
@@ -233,6 +243,7 @@ public static class StackedBaseResolver
         RunDetails? previous = await query.LoadAsync<RunDetails>(previousRunId, cancellationToken);
         return previous is null
             ? null
-            : new ResumedBase(previous.BaseBranchOr(project.BaseBranch), previous.BaseCommit);
+            : new ResumedBase(
+                previous.BaseBranchOr(project.BaseBranch), previous.BaseCommit, previous.OpenedAgainstBaseBranch);
     }
 }

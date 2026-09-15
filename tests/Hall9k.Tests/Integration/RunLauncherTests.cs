@@ -1312,6 +1312,99 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// The same carry-forward, one field over: <c>RunDetails.OpenedAgainstBaseBranch</c>, the record
+    /// of where a stacked child's pull request actually opened when its parent branch was already
+    /// gone from origin at open time (<c>PullRequestOpener.ResolveOpenBaseAsync</c>'s own fallback).
+    /// That field lives only on the run whose own <c>PullRequestOpened</c> appended it — before this
+    /// carry-forward existed, a follow-up run's own copy started blank regardless of what the run
+    /// before it recorded, silently dropping the free, no-GitHub-call answer a grandchild's own
+    /// checkpoint reads it for (independent pre-PR review, cycle 1, conformance lens:
+    /// <c>StackedParentWatch</c>'s local arm reads this off <c>parentTask.CurrentRunId</c>, which
+    /// after any follow-up names a run this field never reached).
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_on_a_stacked_child_carries_the_recorded_opened_against_base_branch_forward()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid followUpRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string parentBranch = "task/parent-slice-one";
+        const string childBranch = "task/child-slice-two";
+        const string forkPoint = "abc1234def5678";
+        const string openedAgainstBaseBranch = "main";
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"carry-forward-{taskId:N}",
+                "/tmp/carry-forward-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Child slice", ["it works"], TaskType.Feature,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, firstRunId, Now);
+            aggregate.Apply(claimed);
+            Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+                TaskDecider.Complete(aggregate, firstRunId, PullRequestUrl, Now);
+            aggregate.Apply(completed);
+
+            Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+                aggregate, firstRunId, childBranch, "review feedback", FollowUpKind.ReviewFeedback,
+                automatic: true, Now, node.OwnerId);
+            aggregate.Apply(reopened);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed reclaimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, followUpRunId, Now);
+
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, claimed, completed, reopened, reclaimed]);
+
+            // The first run's own pull request hit ResolveOpenBaseAsync's fallback: the parent
+            // branch it recorded (BaseBranch) was already gone from origin, so it opened against the
+            // project's base instead, recorded here rather than on BaseBranch.
+            session.Events.StartStream<RunAggregate>(firstRunId,
+                new RunDispatched(firstRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    "/tmp/child-wt", childBranch, ExecutorMode.Subscription, Now,
+                    BaseBranch: parentBranch, BaseCommit: forkPoint),
+                new AgentSessionCompleted(firstRunId, Now),
+                new VerificationPassed(firstRunId, Now),
+                new PullRequestOpened(
+                    firstRunId, PullRequestUrl, 11, Now, OpenedAgainstBaseBranch: openedAgainstBaseBranch),
+                new RunSuperseded(firstRunId, 2, Now));
+
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = 2, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        RequestCapturingWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: true),
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails followUp = (await query.LoadAsync<RunDetails>(followUpRunId, cts.Token))!;
+        followUp.OpenedAgainstBaseBranch.Should().Be(openedAgainstBaseBranch,
+            "resuming a branch does not move where its pull request actually opened, and the field "
+            + "lives only on the run that recorded it — a follow-up that dropped it would silently "
+            + "leave a grandchild's own checkpoint unable to learn this fact without a live GitHub call");
+    }
+
+    /// <summary>
     /// The other half of that fact, and the harder one (adversarial review, cycle 6): a recorded
     /// fork point is carried forward only while the branch actually SITS on it. A stacked replay
     /// records <c>RunDispatched.BaseCommit</c> as the commit it was dispatched to land on — a

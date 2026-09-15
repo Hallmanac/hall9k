@@ -542,7 +542,11 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 // (RunDispatched.IsDeliberateHeadlessStart's own doc) — h9k task work's own
                 // interactive claim, and every ordinary daemon dispatch, leave it at its default
                 // false.
-                IsDeliberateHeadlessStart: true));
+                IsDeliberateHeadlessStart: true,
+                // Carried forward from the resumed branch's own previous run, exactly as BaseBranch
+                // and BaseCommit are just above (StackedBaseResolver.ResumedBase's own doc) — null
+                // for a fresh cut, which is every ordinary claim.
+                OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

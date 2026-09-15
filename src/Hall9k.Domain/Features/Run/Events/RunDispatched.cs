@@ -101,6 +101,17 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// ordinary daemon dispatch, so <see cref="Hall9k.Daemon.Execution.RunSupervisor"/>'s own
 /// unattended-exit sweep - the one reader of this field - never widens past the two commands this
 /// exists for.
+/// OpenedAgainstBaseBranch carries the PREVIOUS run's own
+/// <see cref="Hall9k.Domain.Features.Run.Projections.RunDetails.OpenedAgainstBaseBranch"/> forward
+/// onto a run that resumes an existing branch, exactly as <see cref="BaseBranch"/> and
+/// <see cref="BaseCommit"/> already are (<c>StackedBaseResolver.ResumedBase</c>). Without this a
+/// follow-up run's own field started blank regardless of what its predecessor recorded — the field
+/// lives on <c>PullRequestOpened</c> alone, which only the run that actually hit
+/// <c>PullRequestOpener.ResolveOpenBaseAsync</c>'s fallback ever appends, so the free, no-GitHub-call
+/// answer that field exists to give a grandchild's own checkpoint disappeared the moment the parent
+/// got so much as one follow-up (independent pre-PR review, cycle 1, conformance lens). Null for a
+/// fresh (non-resumed) dispatch and for a stream written before this field existed, same as the
+/// field it carries forward.
 /// </summary>
 public sealed record RunDispatched(
     Guid Id,
@@ -124,4 +135,5 @@ public sealed record RunDispatched(
     string BaseBranch = "",
     string BaseCommit = "",
     bool IsDeliberateHeadlessStart = false,
-    string? PrReviewMentionCommentId = null);
+    string? PrReviewMentionCommentId = null,
+    string? OpenedAgainstBaseBranch = null);
