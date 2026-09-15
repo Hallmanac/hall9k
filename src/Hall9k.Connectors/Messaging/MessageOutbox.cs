@@ -29,13 +29,21 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// The survivor seqs <see cref="SquashAsync"/> actually pushed last time it ran for a given
     /// outbox, so a later sweep whose own aged-out check still reads true — which it does forever
     /// once anything has ever aged out, since a squash never touches the local event store, only
-    /// the transport's own copy (this class's own doc) — can tell "nothing has changed since that
+    /// the transport's own copy (this class's own doc) — can tell "nothing new aged out since that
     /// push" from "something new aged out" and skip the push instead of force-pushing an identical
     /// orphan commit under a fresh timestamp every tick (independent pre-PR review, cycle 1, both
-    /// lenses). In-memory and per-process, the same as <c>MessageSweepEngine._lastKnownTips</c>: a
-    /// restart costs at most one redundant squash, never a forever-repeating one.
+    /// lenses). The comparison below is deliberately one-directional — every seq that survived last
+    /// time still surviving now, never whole-set equality — because an ordinary new send changes the
+    /// survivor set too (one more seq now counts as "sent"): comparing full-set equality re-triggered
+    /// a squash on every later flush once retention was first reached, since a freshly sent envelope
+    /// is never equal to the empty or smaller set the last squash actually pushed, even though
+    /// nothing has actually aged out that the last squash's own push does not already reflect
+    /// (independent pre-PR review, cycle 1, adversarial lens). A push is only worth the ref rewrite
+    /// when something that survived last time no longer does. In-memory and per-process, the same as
+    /// <c>MessageSweepEngine._lastKnownTips</c>: a restart costs at most one redundant squash, never
+    /// a forever-repeating one.
     /// </summary>
-    private readonly Dictionary<(string RepositoryPath, Guid FromNodeId), IReadOnlyList<long>> _lastSquashedSurvivorSeqs = [];
+    private readonly Dictionary<(string RepositoryPath, Guid FromNodeId), IReadOnlySet<long>> _lastSquashedSurvivorSeqs = [];
 
     /// <summary>
     /// Static, unlike every other method here: queueing never touches <see cref="IMessageTransport"/>
@@ -166,8 +174,8 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// this query reads (this method's own doc, and <see cref="_lastSquashedSurvivorSeqs"/>'s) — so
     /// that first check alone stays true forever after the first real drop, and would otherwise
     /// force-push an identical orphan commit, unchanged survivors and all, on every later sweep for
-    /// the rest of the node's life. Skipping again once the survivor set itself stops changing is
-    /// what actually stops that (independent pre-PR review, cycle 1, both lenses).
+    /// the rest of the node's life. Skipping again once nothing that survived the last real push has
+    /// since aged out is what actually stops that (independent pre-PR review, cycle 1, both lenses).
     /// </para>
     /// </summary>
     public async Task<MessageSquashResult> SquashAsync(
@@ -192,10 +200,10 @@ public sealed class MessageOutbox(IMessageTransport transport)
         }
 
         List<MessageDetails> survivors = [.. sent.Where(message => message.SentAt >= cutoff)];
-        List<long> survivorSeqs = [.. survivors.Select(message => message.Seq)];
+        HashSet<long> survivorSeqs = [.. survivors.Select(message => message.Seq)];
         (string RepositoryPath, Guid FromNodeId) key = (repositoryPath, fromNodeId);
-        if (_lastSquashedSurvivorSeqs.TryGetValue(key, out IReadOnlyList<long>? previousSurvivorSeqs)
-            && previousSurvivorSeqs.SequenceEqual(survivorSeqs))
+        if (_lastSquashedSurvivorSeqs.TryGetValue(key, out IReadOnlySet<long>? previousSurvivorSeqs)
+            && previousSurvivorSeqs.IsSubsetOf(survivorSeqs))
         {
             return new MessageSquashResult(survivors.Count);
         }
