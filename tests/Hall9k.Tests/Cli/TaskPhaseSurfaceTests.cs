@@ -953,6 +953,47 @@ public sealed class TaskPhaseSurfaceTests
         row.Phase.Detail.Should().Be("no external review activity observed; last triage: 1 decline, 1 route");
     }
 
+    /// <summary>
+    /// A thread a person opened that asked nothing buys no lap (task: a review-feedback follow-up
+    /// never answers a human reviewer in the owner's name on its own), so the run rests here with
+    /// an unanswered-looking human thread on the pull request and no activity beside it. Without
+    /// this clause the board reads as the machinery having missed a person, which is exactly the
+    /// impression the FYI exception must not create.
+    /// </summary>
+    [Fact]
+    public void An_advisory_human_thread_is_named_on_the_phase_line_of_a_watched_pull_request()
+    {
+        Guid runId = DomainId.New();
+        RunDetails awaitingReview = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        awaitingReview.ExternalReviewState = ExternalReviewState.None;
+        awaitingReview.AdvisoryHumanReviewThreadIds = ["PRRT_fyi"];
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"), awaitingReview);
+
+        row.Phase.Detail.Should().Be(
+            "no external review activity observed (1 human thread asks nothing, not dispatched)");
+    }
+
+    /// <summary>The same clause on the other arm, where a lap's own unresolved-thread count is what the line names.</summary>
+    [Fact]
+    public void An_advisory_human_thread_is_named_beside_the_unresolved_thread_count()
+    {
+        Guid runId = DomainId.New();
+        RunDetails reviewPending = StatusFixtures.Run(
+            runId, RunState.ReviewPending, sessionProcessId: null, pullRequestNumber: 24);
+        reviewPending.UnresolvedReviewThreads = 2;
+        reviewPending.UnresolvedHumanReviewThreads = 2;
+        reviewPending.AdvisoryHumanReviewThreadIds = ["PRRT_fyi", "PRRT_nice"];
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, "https://github.com/x/y/pull/24"), reviewPending);
+
+        row.Phase.Detail.Should().Be(
+            "2 unresolved review thread(s), 2 from a human (2 human threads ask nothing, not dispatched)");
+    }
+
     [Fact]
     public void Gates_claim_no_session_because_they_run_in_the_daemon()
     {

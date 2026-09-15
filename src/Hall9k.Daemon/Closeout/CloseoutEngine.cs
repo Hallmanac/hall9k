@@ -1002,6 +1002,12 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
+        // The threads a person opened that ask nothing, recorded before anything reads them
+        // (task: a review-feedback follow-up never answers a human reviewer in the owner's name
+        // on its own) — every branch from here on can return, and an observation only some paths
+        // commit would be worse than none.
+        await RecordAdvisoryThreadsAsync(session, run, snapshot, now, cancellationToken);
+
         // Review feedback is detected ahead of every CI read below, and the pending-checks
         // short-circuit that used to precede it now yields to it (Brian's ruling, 2026-09-09
         // 09:25 EDT, Decisions Log #164): a broken CI may be what the review
@@ -1462,6 +1468,35 @@ public sealed class CloseoutEngine(
     }
 
     /// <summary>
+    /// Records the unresolved threads a person opened that this sweep read as asking nothing
+    /// (task: a review-feedback follow-up never answers a human reviewer in the owner's name on
+    /// its own), so <c>h9k status</c> and <c>h9k task show</c> can say a remark was seen and
+    /// deliberately not acted on. Without it, a thread that buys no lap is indistinguishable on
+    /// the board from a machine ignoring a person.
+    /// <para>
+    /// Saved in its own transaction, the same shape <see cref="RecordExternalReviewObservationAsync"/>
+    /// takes and for the same reason: the sweep can return at any of several short-circuits below
+    /// without reaching another save, and an observation only some paths commit is worse than
+    /// none. Written only when the set changed, so the three-minute poll does not restate one
+    /// unchanged fact forever. Compared against the run's own last record, which — like the
+    /// external-review dedupe above it — is the value read at the top of this sweep.
+    /// </para>
+    /// </summary>
+    private static async Task RecordAdvisoryThreadsAsync(
+        IDocumentSession session, RunDetails run, PullRequestSnapshot snapshot, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<string> advisory = AdvisoryReviewThreads.Advisory(snapshot);
+        if (advisory.SequenceEqual(run.AdvisoryHumanReviewThreadIds, StringComparer.Ordinal))
+        {
+            return;
+        }
+
+        session.Events.Append(run.Id, new AdvisoryReviewThreadsObserved(run.Id, advisory, now));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
     /// The unresolved review threads a follow-up could actually act on: every one this sweep
     /// observed, less the human-authored ones this exact run already declined or routed.
     /// <para>
@@ -1488,7 +1523,20 @@ public sealed class CloseoutEngine(
     /// own <c>kind=</c>/<c>IsHuman</c> self-report instead would trust the agent's own tag for a
     /// decision it was never meant to gate (see <c>ReviewThreadOutcome.IsHuman</c>'s own doc); this
     /// reads the provider's own actor-type classification instead, the same one the sweep already
-    /// trusts for <c>UnresolvedHumanThreadCount</c>. A bot thread whose <c>resolveReviewThread</c>
+    /// trusts for <c>UnresolvedHumanThreadCount</c>.
+    /// </para>
+    /// <para>
+    /// The second exclusion is the advisory one (task: a review-feedback follow-up never answers
+    /// a human reviewer in the owner's name on its own): an unresolved thread a person opened
+    /// that asks nothing, beside a review from that same person requesting no change, buys no lap
+    /// either — see <see cref="AdvisoryReviewThreads"/> for the test and which way it errs. It
+    /// shapes the DISPATCH decision only, exactly as the exclusion above does: the thread stays
+    /// counted in <c>snapshot.UnresolvedReviewThreadCount</c>, so it still holds a pre-approved
+    /// merge, and a later comment in it that does ask something is a fresh read on the next
+    /// sweep, which dispatches as it always has.
+    /// </para>
+    /// <para>
+    /// A bot thread whose <c>resolveReviewThread</c>
     /// mutation never landed therefore stays outstanding here, so it keeps buying a follow-up (and
     /// eventually the per-obstruction cap's own park) instead of stalling this run forever with no
     /// dispatch, no park, and — since the thread branch returns ahead of TryAutoMergeAsync — no
@@ -1503,7 +1551,9 @@ public sealed class CloseoutEngine(
                     || outcome.Disposition == ReviewThreadDisposition.Route)
                 && snapshot.HumanThreadIds.Contains(outcome.ThreadId))
             .Select(outcome => outcome.ThreadId)];
-        return [.. snapshot.ThreadIds.Except(alreadyAnsweredThreadIds)];
+        return [.. snapshot.ThreadIds
+            .Except(alreadyAnsweredThreadIds)
+            .Except(AdvisoryReviewThreads.Advisory(snapshot))];
     }
 
     /// <summary>
@@ -2907,7 +2957,14 @@ public sealed class CloseoutEngine(
             // ExternalReviewObserved append has not been projected back into `run` yet.
             checksPendingSince: snapshot.HasPendingChecks
                 ? run.ExternalReviewChecksPendingSince ?? now
-                : null));
+                : null,
+            // The same threads knownHumanReviewThreadIds names, with who opened each one and its
+            // link (task: a review-feedback follow-up never answers a human reviewer in the
+            // owner's name on its own). Carried on every kind of automatic reopen rather than
+            // only the review-feedback one: the posting path refuses on this list whatever lap is
+            // live, and a CI-fix lap that wanders into a person's thread is exactly as much the
+            // thing being prevented.
+            humanReviewThreads: [.. snapshot.HumanThreads.Select(thread => thread.Reference)]));
 
         // The reopen hands the pull request to a successor, so this run's watch ends
         // with it — retire it in the same transaction (TASK-MODEL.md §2.2). A lost race
