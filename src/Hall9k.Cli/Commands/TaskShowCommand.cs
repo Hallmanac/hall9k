@@ -558,7 +558,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // dispatched to answer it, so a reader who only saw the newest run would see one half
             // of the story (task: a changes-requested pull-request review from a human becomes a
             // fix lap). Ordered by dispatch, which is the order the laps happened in.
-            WriteChangesRequestedReviews([.. runs.Select(r => runDetailsById.GetValueOrDefault(r.Id)).OfType<RunDetails>()]);
+            RunDetails[] everyRun = [.. runs.Select(r => runDetailsById.GetValueOrDefault(r.Id)).OfType<RunDetails>()];
+            WriteChangesRequestedReviews(everyRun);
+            // Its own block, across every run for the same reason: a thread lap's park is the one
+            // place the drafted words live, and the run that drafted them is not the run watching
+            // the pull request (task: a review-feedback follow-up never answers a human reviewer
+            // in the owner's name on its own).
+            foreach (string line in ComposeHumanThreadReplyDrafts(everyRun))
+            {
+                AnsiConsole.MarkupLine(line);
+            }
 
             // Selected across every run rather than from the newest, for the reason the mechanical
             // rebase above it is: the retarget is recorded on the run that was watching the pull
@@ -1245,6 +1254,91 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         static string Findings(int count) => count == 1 ? "1 finding" : $"{count} findings";
 
         static string Sweeps(int count) => count == 1 ? "1 later sweep" : $"{count} later sweeps";
+    }
+
+    /// <summary>
+    /// The replies a review-feedback lap drafted for threads a person opened and parked rather
+    /// than posting (task: a review-feedback follow-up never answers a human reviewer in the
+    /// owner's name on its own), with everything the decision needs: which thread, as a link the
+    /// operator can open; what the lap decided about it; what the reviewer asked; why the lap
+    /// disagreed; and the drafted words, WHOLE — this is the surface the park reason's own
+    /// one-line excerpt points at, so truncating here would leave the full text nowhere.
+    /// <para>
+    /// Its own block rather than a row under "Changes-requested reviews", because these answer no
+    /// such review — there was none — and filing them there would say one existed. Empty, and so
+    /// absent entirely, for a task no thread lap ever parked.
+    /// </para>
+    /// <para>
+    /// Every outside string goes through <see cref="ExternalText.OneLineMarkup"/>, same as the
+    /// block above: a reviewer's stray bracket is not Spectre markup.
+    /// </para>
+    /// </summary>
+    internal static IReadOnlyList<string> ComposeHumanThreadReplyDrafts(IReadOnlyList<RunDetails> runs)
+    {
+        List<ReviewDisagreement> drafts = [.. runs.SelectMany(run => run.HumanThreadReplyDrafts)];
+        List<RefusedThreadReplyRecord> refusals = [.. runs.SelectMany(run => run.RefusedHumanThreadReplies)];
+        // A refusal shows even with no draft beside it, and that shape is the interesting one: a
+        // session that was turned down and then did NOT park is exactly the run an operator needs
+        // to know about, and gating the block on the drafts would be the one case it hid
+        // (self-review, this task).
+        if (drafts.Count == 0 && refusals.Count == 0)
+        {
+            return [];
+        }
+
+        List<string> lines = ["\n[bold]Replies drafted for a human reviewer's thread, not posted[/]"];
+        if (drafts.Count > 0)
+        {
+            lines.Add(
+                "  [dim]nothing below has reached the reviewer. Send, edit, or drop each one with "
+                + "h9k review resolve --post-reply-as-written / --post-reply \"<text>\" / --post-nothing, "
+                + "alongside your ordinary verdict.[/]");
+        }
+
+        foreach (ReviewDisagreement draft in drafts)
+        {
+            string where = draft.ThreadUrl.IsNotBlank()
+                ? ExternalText.OneLineMarkup(draft.ThreadUrl)
+                : draft.ThreadId.IsNotBlank()
+                    ? $"thread {ExternalText.OneLineMarkup(draft.ThreadId)} (no link observed)"
+                    : "no thread identified";
+            string disposition = draft.Disposition is { } value && value.Value.IsNotBlank()
+                ? value.Value.ToLowerInvariant()
+                : "no disposition stated";
+            lines.Add($"  [yellow]{disposition}[/] [link]{where}[/]");
+            if (draft.Location.IsNotBlank())
+            {
+                lines.Add($"    [dim]at {ExternalText.OneLineMarkup(draft.Location)}[/]");
+            }
+
+            if (draft.Finding.IsNotBlank())
+            {
+                lines.Add($"    [dim]reviewer asked:[/] {ExternalText.OneLineMarkup(draft.Finding)}");
+            }
+
+            if (draft.Reasoning.IsNotBlank())
+            {
+                lines.Add($"    [dim]session's reasoning:[/] {ExternalText.OneLineMarkup(draft.Reasoning)}");
+            }
+
+            lines.Add(draft.ProposedReply.IsNotBlank()
+                ? $"    [dim]drafted reply:[/] {ExternalText.OneLineMarkup(draft.ProposedReply)}"
+                : "    [dim]drafted reply: none drafted[/]");
+        }
+
+        // Named after the drafts rather than before them: an attempt the platform refused is a
+        // fact about the session, not about what the operator has to decide, and burying the
+        // decision under it would put the wrong thing first. Absent when there was none, which is
+        // every well-behaved lap.
+        foreach (RefusedThreadReplyRecord refused in refusals)
+        {
+            lines.Add(
+                $"  [red]refused:[/] [dim]a session tried to post a {refused.Disposition.Value.ToLowerInvariant()} "
+                + $"into {ExternalText.OneLineMarkup(refused.ThreadId)} and was stopped "
+                + $"({refused.RefusedAt.ToLocalTime():g}); nothing was sent[/]");
+        }
+
+        return lines;
     }
 
     /// <summary>One review's parked disagreements — the reviewer's point, the session's position, and the draft nobody has sent.</summary>

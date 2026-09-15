@@ -227,10 +227,11 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         if (settings.ReplyChoiceCount > 0 && !run.ParkedOnReviewDisagreement)
         {
             throw new DomainValidationException(
-                $"Task {taskId}'s park is not a changes-requested disagreement, so there is no drafted "
-                + "reply to post, edit, or withhold. The reply choices (--post-reply-as-written, "
-                + "--post-reply, --post-nothing) apply only to a park where a fix lap disagreed with a "
-                + "human reviewer's finding and deliberately said nothing about it.");
+                $"Task {taskId}'s park carries no drafted reply, so there is nothing to post, edit, or "
+                + "withhold. The reply choices (--post-reply-as-written, --post-reply, --post-nothing) "
+                + "apply only to a park where a lap deliberately said nothing to a human reviewer: a "
+                + "disagreement with a finding in their changes-requested review, or a decline or route "
+                + "of a thread they opened.");
         }
 
         if (task.Type == TaskType.PrReview)
@@ -241,11 +242,12 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         if (run.ParkedOnReviewDisagreement && settings.ReplyChoiceCount == 0)
         {
             throw new DomainValidationException(
-                $"Task {taskId} is parked because a fix lap disagreed with a reviewer's finding and posted "
-                + "nothing — that reply is yours to send, so say what the reviewer hears before the run "
-                + "continues: --post-reply-as-written (send the drafted reply verbatim), --post-reply "
-                + "\"<your text>\" (send yours instead), or --post-nothing. Read the draft first: "
-                + "h9k task show names the file it was saved to.");
+                $"Task {taskId} is parked because a lap answered a human reviewer and posted nothing — "
+                + "either it disagreed with a finding in their changes-requested review, or it declined "
+                + "or routed a thread they opened. That reply is yours to send, so say what the reviewer "
+                + "hears before the run continues: --post-reply-as-written (send the drafted reply "
+                + "verbatim), --post-reply \"<your text>\" (send yours instead), or --post-nothing. Read "
+                + "the draft first: h9k task show prints it whole and names the file it was saved to.");
         }
 
         // !run.ParkedIsInteractiveGate excludes interactive mode's own routine boundary park
@@ -537,6 +539,19 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         IReadOnlyList<ChangesRequestedFinding> reviewed =
             [.. task.ChangesRequestedReviews.SelectMany(review => review.Findings)];
 
+        // The other provider-observed source of a legitimate target, and the one a review-feedback
+        // lap's park draws on (task: a review-feedback follow-up never answers a human reviewer in
+        // the owner's name on its own): the human-authored threads closeout read when it dispatched
+        // this lap. Same provenance as the findings above — the provider's own read, not the
+        // session's summary — so the check keeps meaning the same thing on both parks. Without it
+        // every reply this new park drafts would be refused as pointing at a thread nobody read,
+        // since a thread lap carries no changes-requested review to match against at all.
+        string[] observedThreadIds =
+        [
+            .. reviewed.Select(finding => finding.ThreadId).OfType<string>(),
+            .. task.KnownHumanReviewThreads.Select(thread => thread.ThreadId),
+        ];
+
         // Every body resolved and vetted before the first write, per this method's own contract.
         ReviewDisagreementReplyChoice choice = settings.PostReply.IsNotBlank()
             ? ReviewDisagreementReplyChoice.Edited
@@ -560,16 +575,16 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
             // Ordinal: a GraphQL node id is opaque and case-significant, so a near-match is a
             // different thread rather than the same one spelled differently.
             if (disagreement.ThreadId.IsNotBlank()
-                && !reviewed.Any(finding =>
-                    string.Equals(finding.ThreadId, disagreement.ThreadId, StringComparison.Ordinal)))
+                && !observedThreadIds.Any(id =>
+                    string.Equals(id, disagreement.ThreadId, StringComparison.Ordinal)))
             {
-                string[] known = [.. reviewed.Select(finding => finding.ThreadId).OfType<string>()];
                 throw new DomainConflictException(
-                    $"Task {task.Id}'s parked disagreement names review thread {disagreement.ThreadId}, "
-                    + "which is not one of the threads the reviewer opened on this pull request — the fix "
+                    $"Task {task.Id}'s parked reply names review thread {disagreement.ThreadId}, "
+                    + "which is not one of the threads the reviewer opened on this pull request — the "
                     + "session stated it, and closeout never read it, so posting there would send your "
-                    + "reply somewhere the disputed finding is not. Nothing has been posted. The threads "
-                    + $"this task's review actually left: {(known.Length > 0 ? string.Join(", ", known) : "none")}. "
+                    + "reply somewhere the point it answers is not. Nothing has been posted. The threads "
+                    + "closeout actually read on this pull request: "
+                    + $"{(observedThreadIds.Length > 0 ? string.Join(", ", observedThreadIds) : "none")}. "
                     + "Reply by hand in the right thread, then resolve with --post-nothing — which is also "
                     + "the answer when you can see the thread is genuinely the reviewer's: closeout's own "
                     + "thread read is capped at the pull request's first 100 threads, so a real thread past "
