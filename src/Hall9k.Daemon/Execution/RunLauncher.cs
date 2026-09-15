@@ -358,11 +358,25 @@ public sealed class RunLauncher(
             // shown can go stale. FollowUpKind.Rebase carries no equivalent hazard: its own onto
             // target is always `origin/<base>`, a ref BuildRebase's own prompt fetches fresh at
             // session run time, never a commit frozen at dispatch time.
-            StackReplayOntoResolver.Resolution stackReplayOnto = isStackReplay
-                ? await StackReplayOntoResolver.ResolveAsync(
+            StackReplayOntoResolver.Resolution stackReplayOnto = default;
+            if (isStackReplay)
+            {
+                // Serialized under the project's own repository lock (Decisions Log #4: "Daemon
+                // serializes git ops per-repo, mutex not retry loops") only when a retry actually
+                // needs the fetch below — an ordinary first dispatch returns its recorded commit
+                // without touching git at all, so it has nothing to serialize. Without this lock, a
+                // retried replay's fetch of origin/<base> can race a closeout sweep's or another
+                // run's own fetch into the same shared repository, fail with a lock error, and fall
+                // back to the stale recorded commit — exactly the incident this resolver exists to
+                // close, surfaced only as a warning log (independent pre-PR review, cycle 1, both
+                // lenses).
+                await using IAsyncDisposable? repositoryLock = task.RetryPending
+                    ? await worktrees.AcquireRepositoryLockAsync(project.RepositoryPath, cancellationToken)
+                    : null;
+                stackReplayOnto = await StackReplayOntoResolver.ResolveAsync(
                     processRunner, worktree.Path, runBaseBranch, task.StackReplayOntoCommit ?? string.Empty,
-                    task.RetryPending, cancellationToken)
-                : default;
+                    task.RetryPending, cancellationToken);
+            }
             if (isStackReplay && task.RetryPending && !stackReplayOnto.ResolvedFromCurrentBaseTip)
             {
                 logger.LogWarning(
@@ -538,7 +552,8 @@ public sealed class RunLauncher(
                                 baseCommit,
                                 commandTimeout: options.Value.VerifyGateTimeout,
                                 voiceSkill: voiceSkill,
-                                ontoCommitResolvedFromCurrentBaseTip: stackReplayOnto.ResolvedFromCurrentBaseTip)
+                                ontoCommitResolvedFromCurrentBaseTip: stackReplayOnto.ResolvedFromCurrentBaseTip,
+                                recordedOntoCommit: task.StackReplayOntoCommit)
                             // A human's changes-requested review gets its own prompt rather than
                             // the thread one (task: a changes-requested pull-request review from a
                             // human becomes a fix lap): the findings are handed over, and a

@@ -41,12 +41,16 @@ Why this follow-up was dispatched: {{Reason}}
     since; if the base has moved, the platform's own machinery brings the branch
     current afterwards, exactly as it does for any other run.
 ===retry-fresh-onto-note===
-    This follow-up already failed once. `{{OntoCommit}}` above is `{{BaseBranch}}`'s
-    own current tip, read fresh for this retry — NOT the commit this follow-up was
-    originally dispatched onto, which this task also has on record. That recorded
-    commit is stale by now (the base has moved since the earlier attempt); land on
-    `{{OntoCommit}}` above, never on the older one, even if you find it elsewhere in
-    this task's own history.
+    This follow-up is a retry. `{{OntoCommit}}` above is `{{BaseBranch}}`'s own
+    current tip, read fresh for this retry.
+===retry-fresh-onto-note-moved===
+    That is NOT `{{RecordedOntoCommit}}`, the commit this follow-up was originally
+    dispatched onto, which this task also has on record —
+    the base has moved since that recording. Land on `{{OntoCommit}}` above,
+    never on the older one, even if you find it elsewhere in this task's own history.
+===retry-fresh-onto-note-unmoved===
+    That matches the commit this follow-up was originally dispatched onto —
+    the base has not moved since that recording.
 ===resolve-conflicts===
   - Resolve any conflict by reading both sides' intent — keep both changes when
     both are still wanted, take the side that is still correct when one supersedes
