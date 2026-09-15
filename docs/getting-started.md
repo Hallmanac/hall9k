@@ -206,14 +206,18 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
 
 - **PowerShell 7, never Git Bash, for every `h9k` command.** Git Bash's console codepage mangles
   the box-drawing output; `git`, `gh`, and ordinary shell tools are fine under either.
-- **There is no `tail`.** Use PowerShell's own equivalent:
+- **There is no `tail`.** For a human following the log by hand, use PowerShell's own equivalent:
 
   ```powershell
   Get-Content -Path 'C:\Users\<you>\.hall9k\h9kd.log' -Wait -Tail 0
   ```
 
-  Use a literal path, not `$HOME`: a monitor armed from a Git Bash shell expands `$HOME` to a
-  `/c/...`-style path that `pwsh` cannot open, and it dies at once.
+  The orchestrator recipe itself never tails the log at all: its own start-up step arms a silent
+  background waiter (`recipes/orchestrator.md`'s own contract) that polls the log's byte size
+  instead, so there is no follow pipeline for a Windows session to leave running or orphaned.
+  Use a literal path, not `$HOME`, for either one: PowerShell has no `$HOME` by default, and a
+  path composed under Git Bash's own `$HOME` expands to a `/c/...`-style path that `pwsh` cannot
+  open, and dies at once.
 - **The log-handoff warning at restart is expected.** A freshly restarted `h9kd` can fail to open
   its own append-only handle onto `h9kd.log`; when that happens it prints why to the inherited
   handle and keeps logging to the same `h9kd.log` through it, just without the rotation-safe

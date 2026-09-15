@@ -551,8 +551,9 @@ correctly once the skill is loaded; the gap is purely in whether the slash comma
 from there in the first place. Wherever it runs from, the orchestrator window this recipe
 launches always runs from the project home itself, never the worktree, because that is
 the directory the platform's own launch line `cd`s into. It discovers the machine (operating
-system, your shell, whether the log tail is `tail -F` or PowerShell's `Get-Content -Wait`, where
-`h9kd.log` is and what time zone it prints, which agent CLIs are on `PATH`) and, for a project,
+system, your shell, which file-size command reads a byte offset for the recipe's own background
+log waiter (`stat -f %z`, `stat -c %s`, or PowerShell's `(Get-Item).Length`), where `h9kd.log` is
+and what time zone it prints, which agent CLIs are on `PATH`) and, for a project,
 the project's own facts from `h9k project show` (its home, whether its code lives in the home
 directory or a `repo/dev` worktree, its verify gates, base branch, commit style, linked trackers,
 and the other projects sharing this node's ceiling). From that it writes
