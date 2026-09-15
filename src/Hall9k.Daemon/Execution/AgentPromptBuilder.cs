@@ -208,7 +208,7 @@ public static class AgentPromptBuilder
 
         AppendReviewerAttributionRules(prompt);
         AppendThreadTriageRules(prompt, project.Name);
-        AppendThreadHandlingRules(prompt, project, voiceSkill);
+        AppendThreadHandlingRules(prompt, project, task.Id, voiceSkill);
         AppendThreadDisputeRules(prompt, voiceSkill);
 
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
@@ -1371,40 +1371,57 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
-    /// How a triage disposition becomes a reply and a resolve decision (Decisions Log #62, #159).
-    /// A fix invites no argument and is replied and resolved the same way regardless of who
-    /// started the thread; a decline or a route is different — the evidence or the routing note
-    /// still goes in the thread, but only a bot-authored thread may be resolved afterward. A
-    /// human-authored one stays open: posting evidence answers the reviewer, closing their thread
-    /// for them does not (task: every review thread on a pull request gets a triage disposition
-    /// before any fix work — "agents never close a human's thread" is the acceptance bar this
-    /// asymmetry exists to meet). Bounded on purpose: one honest attempt per thread per follow-up,
-    /// the never-loop rule the review park already runs on.
+    /// How a triage disposition becomes a reply and a resolve decision (Decisions Log #62, #159,
+    /// #152, and the review-feedback reply park). A fix invites no argument and is replied and
+    /// resolved the same way regardless of who started the thread; a decline or a route is
+    /// different, and the difference is now about who opened the thread rather than only about
+    /// who may close it.
     /// <para>
-    /// One thread is not answered here at all (Decisions Log #152, and the identical carve-out at
-    /// the top of the resolve-review-threads skill): a human reviewer whose own
-    /// <c>CHANGES_REQUESTED</c> verdict still stands. A disagreement with a standing review is
-    /// never posted by an agent — it is drafted, parked, and sent, edited or dropped by the
-    /// implementer. This lap reaches such a thread whenever the changes-requested fix lap
-    /// (<see cref="BuildReviewRequestedChanges"/>) already pushed and left the disputed thread
-    /// unresolved, and the next closeout sweep dispatched an ordinary <c>ReviewFeedback</c>
-    /// follow-up over it: without the carve-out stated HERE, this prompt's own decline rule told
-    /// that session to post its evidence into the thread of the person the implementer may have
-    /// deliberately left unanswered, which is the one act #152 exists to prevent. The skill states
-    /// it too, but a skill is a load away and the prompt is the last word (routed finding, run
-    /// 01a07d98, adversarial lens, cycle 3). #159 is untouched: a human's plain thread comment,
-    /// with no standing changes-requested verdict behind it, still gets the evidence-based decline
-    /// reply and still stays open for them to resolve.
+    /// <b>A bot's thread is untouched.</b> Evidence goes in, the thread is resolved, nobody is
+    /// waiting — Copilot's findings stay on the automated path they have always been on.
+    /// </para>
+    /// <para>
+    /// <b>A person's thread gets nothing posted on a decline or a route.</b> Not the reply, not
+    /// the resolve. Until 2026-09-15 this prompt carved that out only for a reviewer whose
+    /// <c>CHANGES_REQUESTED</c> verdict still stood (#152) and told a session to post its
+    /// evidence into every other human thread — which is exactly what happened twice on
+    /// arx-platform, PR #2021 on 2026-09-09 and PR #2042 on 2026-09-15, both times beside an
+    /// APPROVAL and both times accurate. Accuracy was never the problem: a person addressed the
+    /// owner and something else answered as him. So the carve-out is now the rule, and the
+    /// verdict-reading instructions it used to depend on are gone with it, since the answer no
+    /// longer turns on the verdict. The drafted reply parks
+    /// (<see cref="AppendThreadDisputeRules"/>) and <c>h9k review resolve</c> sends it, edits it,
+    /// or drops it.
+    /// </para>
+    /// <para>
+    /// The prompt is not the only thing holding this. Every in-thread reply routes through
+    /// <c>h9k pr reply</c> — the posting route this section teaches, with the shell's own routes
+    /// refused by the session's <c>PreToolUse</c> guard
+    /// (<see cref="ClaudeSettingsFile.ReviewThreadReplyGuardHook"/>) — and that command turns
+    /// down a decline or a route into a thread the platform itself observed a person opening.
+    /// The rule is stated here anyway, and stated as a rule rather than as a mechanism, because
+    /// a session that understands why writes a better draft than one that merely hits a wall.
+    /// </para>
+    /// <para>
+    /// Bounded on purpose: one honest attempt per thread per follow-up, the never-loop rule the
+    /// review park already runs on.
     /// </para>
     /// </summary>
     private static void AppendThreadHandlingRules(
-        StringBuilder prompt, ProjectDetails project, VoiceSkillName? voiceSkill)
+        StringBuilder prompt, ProjectDetails project, Guid taskId, VoiceSkillName? voiceSkill)
     {
         const string file = $"{TemplateDirectory}/thread-handling.md";
         prompt.AppendLine(Fragment(file, "heading"));
         prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "posting-route",
+            ("ReplyCommand", ClaudeSettingsFile.ReviewThreadReplyCommand),
+            ("TaskId", taskId.ToString()));
+        prompt.AppendLine();
         AppendFragment(prompt, file, "fix-rule");
-        AppendFragment(prompt, file, "decline-rule-lead");
+        AppendFragment(
+            prompt, file, "decline-rule-lead",
+            ("ReplyCommand", ClaudeSettingsFile.ReviewThreadReplyCommand));
         AppendFragment(
             prompt, file, "decline-rule-markers",
             ("DisagreementMarker", ReviewResultParser.DisagreementMarker),
@@ -1414,7 +1431,8 @@ public static class AgentPromptBuilder
             ("AtTagKey", ReviewResultParser.AtTagKey),
             ("ThreadTagKey", ReviewResultParser.ThreadTagKey),
             ("DispositionTagKey", ReviewResultParser.DispositionTagKey));
-        AppendFragment(prompt, file, "route-rule");
+        AppendFragment(
+            prompt, file, "route-rule", ("DispositionTagKey", ReviewResultParser.DispositionTagKey));
         AppendFragment(prompt, file, "question-rule");
         AppendFragment(prompt, file, "never-resolve-without-reply");
         AppendFragment(prompt, file, "one-attempt");
@@ -1455,15 +1473,20 @@ public static class AgentPromptBuilder
     /// to a human with both positions recorded. RunSupervisor reads the marker this section
     /// asks for and parks the run rather than pushing.
     /// <para>
-    /// It is also where <see cref="AppendThreadHandlingRules"/>'s standing-review carve-out lands
-    /// (Decisions Log #152), which is why the gate below is not "undecidable" alone: that
-    /// disagreement may be one the session could answer with evidence, and it is withheld anyway
-    /// because sending it is the implementer's act. The park itself is the ordinary thread-dispute
-    /// park — <c>RunSupervisor</c> appends <c>ReviewDisagreementParked</c>, and with it the three
-    /// <c>h9k review resolve</c> posting choices, only for a
-    /// <see cref="FollowUpKind.ReviewRequestedChanges"/> lap — so this prompt names no posting flag
-    /// a human running <c>h9k review resolve</c> here would be refused: the drafted reply is in the
-    /// dispute file the park's reason points at, and they post it themselves.
+    /// It is also where <see cref="AppendThreadHandlingRules"/>'s human-thread carve-out lands,
+    /// which is why the gate below is not "undecidable" alone: such a decline may be one the
+    /// session could answer outright with evidence, and it is withheld anyway because sending it
+    /// is the owner's act.
+    /// </para>
+    /// <para>
+    /// Which park the summary buys depends on what the block says. A block naming
+    /// <c>disposition=decline</c> or <c>route</c> on a thread closeout itself observed a person
+    /// opening buys <c>HumanThreadReplyParked</c> (<c>RunSupervisor.HumanThreadReplyDrafts</c>),
+    /// and with it the three <c>h9k review resolve</c> posting choices, so the drafted words
+    /// reach the reviewer only if the owner says they should. A block that names no disposition
+    /// is the older undecidable-design-call dispute (Decisions Log #62) and takes the ordinary
+    /// park, which asks the human for a verdict rather than for words to send. Both are
+    /// <see cref="ReviewParked"/> underneath, both surface as NeedsHuman, and both hold the push.
     /// </para>
     /// </summary>
     private static void AppendThreadDisputeRules(StringBuilder prompt, VoiceSkillName? voiceSkill)

@@ -1736,12 +1736,47 @@ public sealed class RunSupervisor(
 
         session.Events.Append(runId, new ReviewThreadsTriaged(runId, outcomes, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
+        WarnOnContradictedReplyClaims(run, outcomes);
         logger.LogInformation(
             "Run {RunId}: triaged {Count} review thread(s) ({Fix} fix, {Decline} decline, {Route} route)",
             runId, outcomes.Count,
             outcomes.Count(outcome => outcome.Disposition == ReviewThreadDisposition.Fix),
             outcomes.Count(outcome => outcome.Disposition == ReviewThreadDisposition.Decline),
             outcomes.Count(outcome => outcome.Disposition == ReviewThreadDisposition.Route));
+    }
+
+    /// <summary>
+    /// The one check that makes the posting path's self-reported half observable (task: a
+    /// review-feedback follow-up never answers a human reviewer in the owner's name on its own).
+    /// <c>h9k pr reply</c> refuses a human-authored thread on a decline or a route, so a session
+    /// set on answering one anyway has to claim <c>--disposition fix</c> — and then, minutes
+    /// later, write the honest <c>THREAD DISPOSITION:</c> block for the same thread. Comparing
+    /// the two is what turns that into something a person can find.
+    /// <para>
+    /// A warning and nothing more, deliberately. The reply has already reached GitHub by the time
+    /// this runs, so there is nothing left to refuse; failing the run would punish the pull
+    /// request for what the session did and would still not unsay the words. What this buys is
+    /// that the contradiction is in the run log with the thread id in it, rather than nowhere.
+    /// </para>
+    /// </summary>
+    private void WarnOnContradictedReplyClaims(RunDetails run, IReadOnlyList<ReviewThreadOutcome> outcomes)
+    {
+        foreach (ReviewThreadReplyRecord posted in run.ReviewThreadRepliesPosted.Where(
+            reply => reply.ThreadIsHumanAuthored && reply.Disposition == ReviewThreadDisposition.Fix))
+        {
+            ReviewThreadOutcome? triaged = outcomes.FirstOrDefault(outcome =>
+                string.Equals(outcome.ThreadId, posted.ThreadId, StringComparison.Ordinal));
+            if (triaged is not null
+                && (triaged.Disposition == ReviewThreadDisposition.Decline
+                    || triaged.Disposition == ReviewThreadDisposition.Route))
+            {
+                logger.LogWarning(
+                    "Run {RunId}: a reply posted into human-authored thread {ThreadId} claimed disposition "
+                    + "fix, and the session's own closing triage recorded it as {Disposition} — a reply that "
+                    + "should have been drafted and parked reached the reviewer under the owner's login",
+                    run.Id, posted.ThreadId, triaged.Disposition.Value);
+            }
+        }
     }
 
     /// <summary>
@@ -1809,6 +1844,14 @@ public sealed class RunSupervisor(
         // drafted reply nobody has sent and h9k review resolve is what sends, edits, or drops it.
         bool isChangesRequestedDisagreement = task.FollowUpKind == FollowUpKind.ReviewRequestedChanges;
 
+        // The fourth question, and the one this park exists for since 2026-09-15 (task: a
+        // review-feedback follow-up never answers a human reviewer in the owner's name on its
+        // own): an ordinary thread lap disposed a thread a PERSON opened as decline or route and
+        // drafted its answer. Not "which side is right" — the session may well be right, and both
+        // origin incidents were — but "who says it". A colleague addressed the owner, so the owner
+        // sends the reply, edits it, or drops it.
+        IReadOnlyList<ReviewDisagreement> humanThreadDrafts = HumanThreadReplyDrafts(task, result.Summary);
+
         if (!await GenerationFence.AllowsAsync(
             session, logger, taskId, runId, run.LeaseGeneration, nameof(ReviewParked), cancellationToken,
             refuseAbandonedTask: true))
@@ -1855,6 +1898,17 @@ public sealed class RunSupervisor(
             session.Events.Append(runId, new ReviewDisagreementParked(
                 runId, ReviewResultParser.ParseDisagreements(result.Summary), DateTimeOffset.UtcNow));
         }
+        else if (humanThreadDrafts.Count > 0)
+        {
+            // Same position ahead of the ReviewParked, same reason: the drafts are on the stream
+            // before anything reads the parked run. Appended only when at least one draft names a
+            // thread closeout ITSELF observed as human-authored — a session's own claim about
+            // whose thread it is never reaches here, so a dispute over a bot's thread, or over a
+            // thread nobody observed, still takes the ordinary #62 park below with no reply
+            // choices attached to it.
+            session.Events.Append(runId, new HumanThreadReplyParked(
+                runId, humanThreadDrafts, DateTimeOffset.UtcNow));
+        }
 
         string reason = isChangesRequestedDisagreement
             ? "A changes-requested fix lap disagreed with one of the reviewer's findings and posted "
@@ -1862,6 +1916,8 @@ public sealed class RunSupervisor(
               + "Resolve with h9k review resolve, which offers to post the drafted reply as written "
               + "(--post-reply-as-written), post your own text instead (--post-reply \"<text>\"), or post "
               + "nothing (--post-nothing). Nothing has been pushed, and the reviewer has heard nothing."
+            : humanThreadDrafts.Count > 0
+            ? HumanThreadParkReason(humanThreadDrafts, parkedDisputeFilePath)
             : isRebaseDispute
             ? "A follow-up could not honestly resolve a rebase conflict — both sides changed the same "
               + $"behavior, not just the same lines. Conflicting files and both positions: {parkedDisputeFilePath}. "
@@ -1876,11 +1932,121 @@ public sealed class RunSupervisor(
         logger.LogWarning(
             isChangesRequestedDisagreement
                 ? "Run {RunId}: disagreed with a reviewer's finding and posted nothing about it — parked for the human. {Reason}"
-                : isRebaseDispute
-                    ? "Run {RunId}: rebase conflict disputed — parked for the human. {Reason}"
-                    : "Run {RunId}: review thread disputed — parked for the human. {Reason}",
+                : humanThreadDrafts.Count > 0
+                    ? "Run {RunId}: drafted a reply to a human reviewer's thread and posted nothing — parked for the human. {Reason}"
+                    : isRebaseDispute
+                        ? "Run {RunId}: rebase conflict disputed — parked for the human. {Reason}"
+                        : "Run {RunId}: review thread disputed — parked for the human. {Reason}",
             runId, reason);
         return ThreadDisputeOutcome.Parked;
+    }
+
+    /// <summary>
+    /// The drafts a review-feedback lap owes a human reviewer, read off its closing summary
+    /// (task: a review-feedback follow-up never answers a human reviewer in the owner's name on
+    /// its own). Three filters, and each one is what keeps this park from claiming more than the
+    /// platform actually knows:
+    /// <list type="bullet">
+    /// <item>the lap has to be an ordinary thread lap — the kinds <c>RunLauncher</c> routes to
+    /// <c>BuildFollowUp</c>, which is the only prompt that teaches the disposition tag, read as
+    /// an allow-list for the reason <see cref="RecordThreadTriageAsync"/>'s own doc gives;</item>
+    /// <item>the block has to name <c>disposition=decline</c> or <c>route</c>, since a block with
+    /// no disposition is the older undecidable-design-call dispute (Decisions Log #62) and keeps
+    /// its own park, which asks for a verdict rather than for words to send;</item>
+    /// <item>the thread has to be one CLOSEOUT observed as human-authored
+    /// (<c>TaskDetails.HumanReviewThreads</c>, off the provider's own actor type). The session's
+    /// own <c>kind=</c> self-report decides nothing here — <see cref="ReviewThreadOutcome.IsHuman"/>'s
+    /// doc says why that tag is a record and not a gate — so a session cannot park a run, or
+    /// avoid parking one, by mislabelling whose thread it answered.</item>
+    /// </list>
+    /// The thread's url comes from the same observation, matched by id, so the operator opens the
+    /// thread this platform read rather than a link the session composed.
+    /// </summary>
+    private static IReadOnlyList<ReviewDisagreement> HumanThreadReplyDrafts(TaskDetails task, string? summary)
+    {
+        if (task.FollowUpKind != FollowUpKind.ReviewFeedback && task.FollowUpKind != FollowUpKind.Unknown)
+        {
+            return [];
+        }
+
+        List<ReviewDisagreement> drafts = [];
+        foreach (ReviewDisagreement disagreement in ReviewResultParser.ParseDisagreements(summary))
+        {
+            if (disagreement.Disposition != ReviewThreadDisposition.Decline
+                && disagreement.Disposition != ReviewThreadDisposition.Route)
+            {
+                continue;
+            }
+
+            // Ordinal: a GraphQL node id is opaque and case-significant, so a near-match names a
+            // different thread rather than the same one spelled differently — the same comparison
+            // ReviewResolveCommand's own vet of this id uses.
+            ReviewThreadReference? observed = task.HumanReviewThreads.Find(thread =>
+                string.Equals(thread.ThreadId, disagreement.ThreadId, StringComparison.Ordinal));
+            if (observed is null)
+            {
+                continue;
+            }
+
+            drafts.Add(disagreement with { ThreadUrl = observed.Url.IsNotBlank() ? observed.Url : null });
+        }
+
+        return drafts;
+    }
+
+    /// <summary>
+    /// What the operator reads on the board when a lap parks with a reply nobody has sent. It
+    /// names all three things the decision needs — which thread, what the lap decided, and the
+    /// exact words it would send — because the alternative is a park that says "go and look",
+    /// which is the friction that makes an operator wave a reply through unread.
+    /// <para>
+    /// The drafted text is quoted up to <see cref="DraftedReplyExcerpt"/> characters and then
+    /// cut, with the cut said out loud: this string is one line on the attention pane
+    /// (<c>TaskAttention.Markup</c> collapses it), and the five-paragraph reply of the second
+    /// origin incident would make that row unreadable. <c>h9k task show</c> prints every draft
+    /// whole, and the sentence says so rather than leaving the reader to wonder what was cut.
+    /// </para>
+    /// </summary>
+    private const int DraftedReplyExcerpt = 400;
+
+    private static string HumanThreadParkReason(
+        IReadOnlyList<ReviewDisagreement> drafts, string disputeFilePath)
+    {
+        string lead = drafts.Count == 1
+            ? "A review-feedback follow-up answered a thread a person opened and posted nothing: "
+            : $"A review-feedback follow-up answered {drafts.Count} threads people opened and posted nothing: ";
+        string threads = string.Join(" ", drafts.Select(draft =>
+            $"[{draft.ThreadUrl ?? draft.ThreadId ?? "thread not identified"} — "
+            + $"{(draft.Disposition?.Value ?? "no disposition stated").ToLowerInvariant()}] "
+            + $"drafted reply: {Excerpt(draft.ProposedReply)}"));
+        return lead
+            + "telling a colleague their point does not hold is yours to send, not an agent's. "
+            + threads
+            + $" Both positions in full: {disputeFilePath}. Resolve with h9k review resolve, which offers to "
+            + "post each drafted reply as written (--post-reply-as-written), post your own text instead "
+            + "(--post-reply \"<text>\"), or post nothing (--post-nothing). Nothing has been pushed, and the "
+            + "reviewer has heard nothing.";
+
+        static string Excerpt(string reply)
+        {
+            if (reply.IsBlank())
+            {
+                return "none drafted";
+            }
+
+            if (reply.Length <= DraftedReplyExcerpt)
+            {
+                return $"\"{reply}\"";
+            }
+
+            // Backed off one char when the cut would land between a surrogate pair's halves — an
+            // emoji or any astral character in a reviewer's own words — which would otherwise put
+            // a lone surrogate on the stream for every later reader to serialize and render.
+            int cut = char.IsHighSurrogate(reply[DraftedReplyExcerpt - 1])
+                ? DraftedReplyExcerpt - 1
+                : DraftedReplyExcerpt;
+            return $"\"{reply[..cut]}\" … (cut here; h9k task show prints it whole)";
+        }
     }
 
     /// <summary>

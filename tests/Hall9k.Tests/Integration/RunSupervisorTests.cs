@@ -2668,6 +2668,95 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ReviewThreadOutcomes.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// The reply park (task: a review-feedback follow-up never answers a human reviewer in the
+    /// owner's name on its own). The lap declined a thread a person opened, drafted the answer,
+    /// and stopped: nothing was posted, nothing was pushed, and what the owner reads on the board
+    /// is the thread's link, the disposition, and the words themselves.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_that_declines_a_human_thread_parks_with_the_drafted_reply()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.ReviewFeedback,
+            humanReviewThreads:
+            [
+                new ReviewThreadReference(
+                    "PRRT_human", "jsmotherman", "https://github.com/x/y/pull/1#discussion_r9"),
+            ]);
+
+        const string summary =
+            "THREAD DISPOSITION: thread=PRRT_human; disposition=decline; kind=human; author=jsmotherman\n"
+            + "The sentinel is load-bearing elsewhere; the canary is deliberately distinct.\n"
+            + "SUMMARY:\n"
+            + "DISAGREEMENT: thread=PRRT_human; disposition=decline; at=src/Limiter.cs:42\n"
+            + "REVIEWER ASKED: why a canary value rather than reusing the sentinel\n"
+            + "MY REASONING: the sentinel already means 'unset' in this projection\n"
+            + "PROPOSED REPLY: The sentinel already means unset here, so a distinct canary is what "
+            + "keeps the two apart.\n"
+            + "RESOLUTION: disputed";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(
+            runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        details.ParkedOnReviewDisagreement.Should().BeTrue(
+            "the park takes the same three posting choices the changes-requested one does");
+        ReviewDisagreement draft = details.HumanThreadReplyDrafts.Should().ContainSingle().Subject;
+        draft.ThreadId.Should().Be("PRRT_human");
+        draft.Disposition.Should().Be(ReviewThreadDisposition.Decline);
+        draft.ThreadUrl.Should().Be(
+            "https://github.com/x/y/pull/1#discussion_r9",
+            "the url comes from closeout's own observation, matched by id, not from the session's summary");
+        draft.ProposedReply.Should().Contain("a distinct canary is what keeps the two apart");
+        details.ChangesRequestedDisagreements.Should().BeEmpty(
+            "these answer no changes-requested review, and filing them under one would say a review existed");
+
+        details.ParkedReason.Should().Contain("https://github.com/x/y/pull/1#discussion_r9");
+        details.ParkedReason.Should().Contain("decline");
+        details.ParkedReason.Should().Contain("a distinct canary is what keeps the two apart");
+        details.ParkedReason.Should().Contain("h9k review resolve");
+        details.ParkedReason.Should().Contain("--post-nothing");
+    }
+
+    /// <summary>
+    /// The park is keyed on what the PLATFORM observed, never on the session's own <c>kind=</c>
+    /// tag: a block naming a thread closeout never read as human-authored takes the ordinary
+    /// undecidable-dispute park (Decisions Log #62) with no posting choices attached, because
+    /// there is nobody this install can say is waiting on those words.
+    /// </summary>
+    [Fact]
+    public async Task A_disagreement_naming_an_unobserved_thread_takes_the_ordinary_dispute_park()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(
+            store, cts.Token, asFollowUp: true, followUpKind: FollowUpKind.ReviewFeedback,
+            humanReviewThreads: [new ReviewThreadReference("PRRT_real", "jsmotherman", "https://x/1")]);
+
+        const string summary =
+            "SUMMARY:\n"
+            + "DISAGREEMENT: thread=PRRT_invented; disposition=decline\n"
+            + "MY REASONING: the claim does not hold\n"
+            + "PROPOSED REPLY: It already handles that case.\n"
+            + "RESOLUTION: disputed";
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(DisputedResultLine(summary)));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        NewSupervisor(store, node).StartMonitoring(
+            runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "ReviewParked", cts.Token);
+        details.HumanThreadReplyDrafts.Should().BeEmpty();
+        details.ParkedOnReviewDisagreement.Should().BeFalse(
+            "a reply park asks the owner to send words to a person, and this install cannot say who");
+        details.ParkedReason.Should().Contain("disputed a review thread");
+    }
+
     private static string DisputedResultLine(string summary) =>
         JsonSerializer.Serialize(new
         {
@@ -2679,9 +2768,17 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         });
 
 
+    /// <param name="humanReviewThreads">
+    /// The human-authored threads closeout observed when it dispatched this follow-up (task: a
+    /// review-feedback follow-up never answers a human reviewer in the owner's name on its own).
+    /// Only a reopen carries them, so this is ignored without <paramref name="followUpKind"/> —
+    /// which is itself the point: a lap with no observation behind it parks nothing on the
+    /// strength of a session's own claim about whose thread it answered.
+    /// </param>
     private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedTaskAsync(
         DocumentStore store, CancellationToken cancellationToken,
-        bool asFollowUp = false, FollowUpKind? followUpKind = null)
+        bool asFollowUp = false, FollowUpKind? followUpKind = null,
+        IReadOnlyList<ReviewThreadReference>? humanReviewThreads = null)
     {
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
@@ -2707,7 +2804,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
                 task, DomainId.New(), "task/test", "CI checks failing on the pull request.",
                 followUpKind, automatic: true, Now, node.OwnerId,
                 stackReplayUpstreamCommit: followUpKind == FollowUpKind.StackReplay ? "0000000000000000000000000000000000000a" : null,
-                stackReplayOntoCommit: followUpKind == FollowUpKind.StackReplay ? "0000000000000000000000000000000000000b" : null);
+                stackReplayOntoCommit: followUpKind == FollowUpKind.StackReplay ? "0000000000000000000000000000000000000b" : null,
+                humanReviewThreads: humanReviewThreads);
             task.Apply(reopened);
             reopen = [firstClaim, completed, reopened];
         }

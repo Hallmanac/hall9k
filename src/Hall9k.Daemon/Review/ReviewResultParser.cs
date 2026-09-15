@@ -263,7 +263,15 @@ public static class ReviewResultParser
             finding, reasoning, reply,
             Location: location.IsBlank() ? null : location,
             ThreadId: Tag(header, ThreadTagKey),
-            ReviewUrl: Tag(header, ReviewTagKey)));
+            ReviewUrl: Tag(header, ReviewTagKey),
+            // Read only where the session wrote one, and left null otherwise rather than defaulted
+            // to Unknown (task: a review-feedback follow-up never answers a human reviewer in the
+            // owner's name on its own). A changes-requested lap is never taught this tag and so
+            // never states it; the null is what tells that park from a review-feedback lap's own
+            // decline-or-route park, and RunSupervisor branches on exactly that difference.
+            Disposition: Tag(header, DispositionTagKey) is { } disposition
+                ? ReviewThreadDisposition.Parse(disposition)
+                : null));
     }
 
     /// <summary>
