@@ -104,6 +104,15 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         (await query.LoadAsync<TaskLease>(taskId, cts.Token)).Should().BeNull();
         Directory.Exists(worktree.Path).Should().BeTrue(
             "the worktree is retained through closeout — it IS the follow-up workspace (log #21)");
+
+        // RecordBranchPushedAsync runs unconditionally, ahead of the GitHub-only PR creation
+        // branch, so even this non-GitHub flow proves the opener's own push+record path really
+        // appends TaskBranchPushed (independent pre-PR review, cycle 1 follow-up: nothing
+        // previously proved this outside a unit test that hands the recorded set in directly).
+        (_, string localTip) = TryGit(worktree.Path, "rev-parse HEAD");
+        TaskDetails taskDetails = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        taskDetails.LastPushedBranch.Should().Be(worktree.Branch);
+        taskDetails.LastPushedBranchTip.Should().Be(localTip.Trim());
     }
 
     /// <summary>
@@ -183,6 +192,119 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
 
         logger.Lines.Should().Contain(line =>
             line.Contains("run at generation 1") && line.Contains("at generation 2 - rejected"));
+    }
+
+    /// <summary>
+    /// Closes a gap an independent pre-PR review named (cycle 1 follow-up on the recorded-tip
+    /// door): <c>ForceWithLeasePusherTests</c> proves the guard's own logic by handing
+    /// <c>recordedPushedTips</c> in directly, so nothing proved <see cref="PullRequestOpener"/>
+    /// itself both appends <c>TaskBranchPushed</c> after a real push and reads it back before a
+    /// later one. The stale generation's push above (sibling test) is the real production
+    /// push+record path; this test carries that same shape one step further — the live
+    /// generation's own follow-up run rewrites local history and wipes the branch's own reflog
+    /// (the origin incident's exact mechanism, 2026-09-15) before its own push, so only the tip
+    /// <see cref="TaskDetails"/> recorded for the stale run can still call origin's tip safe.
+    /// </summary>
+    [Fact]
+    public async Task A_later_generations_push_recognizes_the_earlier_generations_own_recorded_tip()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# recorded tip test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid staleRunId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, staleRunId, "Recorded tip carries to the live generation", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "stale run output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid liveNodeId = DomainId.New();
+        Guid liveRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Recorded tip carries to the live generation", ["a later generation still lands after a reflog wipe"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var staleClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, staleRunId, Now);
+            task.Apply(staleClaim);
+            // A requeue-and-reclaim moved the task on to generation 2 while the stale run's own
+            // push was already in flight — the identical double-booking shape the sibling test
+            // above sets up, carried one generation further here.
+            var requeued = TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
+            task.Apply(requeued);
+            var liveClaim = TaskDecider.Claim(task, liveNodeId, ownerId, liveRunId, Now);
+            task.Apply(liveClaim);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, staleClaim, requeued, liveClaim]);
+            session.Store(new TaskLease { Id = taskId, NodeId = liveNodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(staleRunId,
+                new RunDispatched(staleRunId, taskId, staleClaim.NodeId, ownerId, 1, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(staleRunId, Now),
+                new VerificationPassed(staleRunId, Now));
+
+            session.Events.StartStream<RunAggregate>(liveRunId,
+                new RunDispatched(liveRunId, taskId, liveNodeId, ownerId, 2, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now, IsFollowUp: true),
+                new AgentSessionCompleted(liveRunId, Now),
+                new VerificationPassed(liveRunId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance);
+        await opener.OpenAsync(staleRunId, taskId, cts.Token);
+
+        (_, string staleTip) = TryGit(worktree.Path, "rev-parse HEAD");
+
+        await using (IQuerySession query1 = store.QuerySession())
+        {
+            TaskDetails afterStalePush = (await query1.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            afterStalePush.LastPushedBranch.Should().Be(worktree.Branch,
+                "the stale generation's own push still records the branch through the real production path");
+            afterStalePush.LastPushedBranchTip.Should().Be(staleTip.Trim(),
+                "the stale generation's own push still records the tip it landed at, ahead of the live generation's own run");
+        }
+
+        // The live generation's own follow-up rewrites local history (the narrative-history fold
+        // a real follow-up performs) and then wipes the branch's own reflog — the origin
+        // incident's exact mechanism — so neither the ancestor nor the reflog door can call the
+        // stale tip safe on its own; only the record just asserted above can.
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "stale run output, absorbed\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -q --amend -m \"Add WORK.md, absorbed\"");
+        Git(worktree.Path, "reflog expire --expire=now --all");
+        Git(worktree.Path, "gc --prune=now --quiet");
+
+        await opener.OpenAsync(liveRunId, taskId, cts.Token);
+
+        (int exitCode, string remoteMessage) = TryGit(originPath, $"log -1 --format=%s {worktree.Branch}");
+        exitCode.Should().Be(0);
+        remoteMessage.Trim().Should().Be("Add WORK.md, absorbed",
+            "the live generation's rewritten tip must have landed via the recorded-tip door");
+
+        await using IQuerySession query2 = store.QuerySession();
+        TaskListItem taskView = (await query2.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        taskView.State.Value.Should().Be("Done", "the live generation's push completes the task normally");
     }
 
     [Fact]
