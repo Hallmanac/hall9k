@@ -2138,7 +2138,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     private CloseoutEngine NewCloseoutEngine(
         DocumentStore store, NodeContext node, IPullRequestInspector inspector, IWorktreeManager worktrees) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
-            new StackedParentWatch(worktrees, NullLogger<StackedParentWatch>.Instance),
+            new StackedParentWatch(worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
             RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
 
@@ -2156,7 +2156,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             new StackedParentWatch(
-                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), new NoOpRemoteParentReader(),
                 NullLogger<StackedParentWatch>.Instance),
             launchHold, reviewInspector,
             NewCloseoutEngine(store, node, reviewInspector, new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance)));

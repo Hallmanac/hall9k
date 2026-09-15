@@ -207,7 +207,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         RefusingWorktreeManager closeoutWorktrees = new();
         CloseoutEngine closeout = new(
             store, node, new DaemonConnection(postgres.ConnectionString), inspector, closeoutWorktrees,
-            new StackedParentWatch(closeoutWorktrees, NullLogger<StackedParentWatch>.Instance),
+            new StackedParentWatch(closeoutWorktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
             RecordingProcessRunner.Succeeding(string.Empty).Runner, FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         ReviewEngine review = new(
@@ -215,7 +215,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             new StackedParentWatch(
-                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), new NoOpRemoteParentReader(),
                 NullLogger<StackedParentWatch>.Instance),
             launchHold, inspector, closeout);
         PrReviewEngine prReview = new(
@@ -2512,7 +2512,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         CloseoutEngine unusedCloseout = new(
             store, node, new DaemonConnection("unused"), reviewInspector, closeoutWorktrees,
             new Hall9k.Daemon.Closeout.StackedParentWatch(
-                closeoutWorktrees, NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
+                closeoutWorktrees, new NoOpRemoteParentReader(), NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
             RecordingProcessRunner.NeverInvoked(), FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions()), NullLogger<CloseoutEngine>.Instance);
         ReviewEngine review = new(
@@ -2520,7 +2520,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
             new Hall9k.Daemon.Closeout.StackedParentWatch(
-                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
+                new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), new NoOpRemoteParentReader(),
                 NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),
             launchHold, reviewInspector, unusedCloseout);
         PrReviewEngine prReview = new(

@@ -331,7 +331,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
             (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
 
         StackedParentObservation observation = await new StackedParentWatch(
-                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+                fixture.Worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance)
             .ObserveAsync(query, project, StackedParentDeclaration.From(child), predicted, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.Unobservable,
@@ -359,7 +359,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
 
         StackedParentObservation observation = await new StackedParentWatch(
-                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+                fixture.Worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance)
             .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.ParentMoved);
@@ -393,7 +393,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
 
         StackedParentObservation observation = await new StackedParentWatch(
-                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+                fixture.Worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance)
             .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.Unobservable,
@@ -428,7 +428,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
 
         StackedParentObservation observation = await new StackedParentWatch(
-                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+                fixture.Worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance)
             .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.ParentUnresolvable,
@@ -590,6 +590,17 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
     /// nothing automatic produced this state and nothing automatic answers it: the child parks with
     /// its stack intact (independent pre-PR review, 2026-09-07, adversarial lens; ordering across
     /// three or more levels is out of this slice by design, docs/scope.md).
+    /// <para>
+    /// A recorded mismatch alone no longer reaches this park directly (task eec9096d, 2026-09-15) —
+    /// <c>StackedParentWatch</c> asks a live source before trusting it. This is the proof that a
+    /// GENUINE mismatch still reaches the same park with the same message once that source is asked
+    /// and honestly answers "nowhere else": the reader here observes nothing (<see cref="NoOpRemoteParentReader"/>),
+    /// and the parent's own branch on origin still points at its real, un-rewritten head — a commit
+    /// that plainly is not on the project's base's own line, since only a cherry-picked COPY of it
+    /// landed there — so the git-reachability fallback answers honestly too, and the recorded base
+    /// stands. See <see cref="A_parent_githubs_own_retarget_already_moved_onto_the_base_retargets_and_replays_rather_than_parking"/>
+    /// for the sibling shape where a live answer corrects the same recorded mismatch instead.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_parent_that_merged_into_its_own_parents_branch_parks_the_child_untouched()
@@ -599,8 +610,14 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         await MergeTheParentAsync(fixture, cts.Token);
 
         FakeStackedInspector inspector = new();
-        await NewEngine(fixture, inspector).PollOnceAsync(cts.Token);
+        NoOpRemoteParentReader remoteParents = new();
+        await NewEngine(fixture, inspector, remoteParents: remoteParents).PollOnceAsync(cts.Token);
 
+        remoteParents.Reads.Should().Contain(FakeStackedInspector.ParentNumber,
+            "the recorded base names something other than the project's own, so the checkpoint asks "
+            + "a live source about the parent's own pull request before trusting that mismatch — this "
+            + "fake simply has nothing to answer with, which is what proves the fallback below still "
+            + "reaches the same honest park");
         inspector.Retargets.Should().BeEmpty(
             "there is no base this child can be moved onto mechanically without dropping work");
 
@@ -615,6 +632,67 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         TaskAggregate child =
             (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
         child.StackReplaysDispatched.Should().Be(0, "no replay was dispatched, so no budget was spent");
+    }
+
+    /// <summary>
+    /// The 2026-09-15 07:01 shape (task eec9096d, PR #379): a parent stacked on a grandparent whose
+    /// branch is already gone from origin records the grandparent's branch as its own base, and
+    /// nothing rewrites that record when the parent later merges — but GitHub retargeted the
+    /// parent's OWN pull request onto the project's base the moment the grandparent's branch was
+    /// deleted (Decisions Log #186, one level up the stack from the shape that log entry names), and
+    /// it merged there. Reading the recorded field alone — what this method's own git operations
+    /// simulate by cherry-picking the parent's head onto the base, exactly as
+    /// <see cref="A_parent_that_merged_into_its_own_parents_branch_parks_the_child_untouched"/> does —
+    /// used to reach <see cref="StackedParentVerdict.ParentMergedElsewhere"/> regardless of what
+    /// actually happened, which is the defect this fix answers. Told, through the same
+    /// <see cref="IRemoteParentReader"/> seam a remote parent's own sweep already uses, that the
+    /// parent's pull request itself reports the project's own base, the checkpoint retargets and
+    /// replays instead of parking.
+    /// </summary>
+    [Fact]
+    public async Task A_parent_githubs_own_retarget_already_moved_onto_the_base_retargets_and_replays_rather_than_parking()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token, parentBaseBranch: "task/grandparent-slice");
+        await MergeTheParentAsync(fixture, cts.Token);
+
+        FakeRemoteParentReader remoteParents = new(new RemoteParentRead(
+            RemoteParentState.Merged, fixture.ParentBranch, fixture.ParentHeadCommit, "main",
+            "https://github.com/x/y/pull/7", null,
+            "gh pr view reports the parent's own pull request merged into main, the project's base — "
+            + "GitHub's own retarget once the grandparent's branch left origin, not this run's stale "
+            + "record of the grandparent's own branch"));
+
+        await using (IQuerySession directQuery = fixture.Store.QuerySession())
+        {
+            ProjectDetails directProject = (await directQuery.LoadAsync<ProjectDetails>(fixture.ProjectId, cts.Token))!;
+            TaskAggregate directChild = (await directQuery.Events.AggregateStreamAsync<TaskAggregate>(
+                fixture.ChildTaskId, token: cts.Token))!;
+            RunDetails directRun = (await directQuery.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+
+            StackedParentObservation observation = await new StackedParentWatch(
+                    fixture.Worktrees, remoteParents, NullLogger<StackedParentWatch>.Instance)
+                .ObserveAsync(directQuery, directProject, StackedParentDeclaration.From(directChild), directRun, cts.Token);
+
+            observation.Verdict.Should().NotBe(StackedParentVerdict.ParentMergedElsewhere,
+                "the parent's own pull request reports it actually merged into the project's base, so the "
+                + "stale recorded mismatch alone must not park this child");
+            observation.Verdict.Should().Be(StackedParentVerdict.ParentMerged,
+                "the child still holds the parent's real, un-rewritten head, so a replay is owed exactly as "
+                + "the ordinary ParentMerged path already covers");
+        }
+
+        FakeStackedInspector inspector = new();
+        await NewEngine(fixture, inspector, remoteParents: remoteParents).PollOnceAsync(cts.Token);
+
+        inspector.Retargets.Should().Equal(["main"],
+            "the parent's pull request actually merged into the project's own base, so this child's own "
+            + "pull request retargets onto it rather than parking");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+        run.State.Should().NotBe(RunState.CloseoutParked,
+            "the live read resolved the stale mismatch, so nothing here parks for a human");
     }
 
     /// <summary>
@@ -773,7 +851,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
 
         StackedParentObservation observation = await new StackedParentWatch(
-                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+                fixture.Worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance)
             .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.ParentMergedAligned,
@@ -871,7 +949,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
 
         StackedParentObservation observation = await new StackedParentWatch(
-                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+                fixture.Worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance)
             .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.ParentMerged,
@@ -959,7 +1037,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         run.BaseCommit.Should().Be(firstBaseTip, "the setup above recorded the landed replay's own onto commit");
 
         StackedParentObservation observation = await new StackedParentWatch(
-                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+                fixture.Worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance)
             .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.ParentMerged,
@@ -1040,7 +1118,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
 
         StackedParentObservation observation = await new StackedParentWatch(
-                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+                fixture.Worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance)
             .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
 
         observation.Verdict.Should().Be(StackedParentVerdict.ParentMerged,
@@ -1141,10 +1219,11 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
 
     private CloseoutEngine NewEngine(
         StackedFixture fixture, FakeStackedInspector inspector, int maxStackReplayRuns = 12,
-        int maxAutomaticCloseoutRuns = 6) =>
+        int maxAutomaticCloseoutRuns = 6, IRemoteParentReader? remoteParents = null) =>
         new(fixture.Store, fixture.Node, new DaemonConnection(postgres.ConnectionString), inspector,
             fixture.Worktrees,
-            new StackedParentWatch(fixture.Worktrees, NullLogger<StackedParentWatch>.Instance),
+            new StackedParentWatch(
+                fixture.Worktrees, remoteParents ?? new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
             RecordingProcessRunner.Succeeding(string.Empty).Runner,
             FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions
@@ -1898,7 +1977,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         RemoteFixture fixture, IPullRequestInspector inspector, int maxStackReplayRuns = 3) =>
         new(fixture.Store, fixture.Node, new DaemonConnection(postgres.ConnectionString), inspector,
             fixture.Worktrees,
-            new StackedParentWatch(fixture.Worktrees, NullLogger<StackedParentWatch>.Instance),
+            new StackedParentWatch(fixture.Worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
             RecordingProcessRunner.Succeeding(string.Empty).Runner,
             FakeJiraRequester.NeverInvoked(),
             Options.Create(new DaemonOptions { MaxStackReplayRuns = maxStackReplayRuns }),

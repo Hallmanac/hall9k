@@ -5210,7 +5210,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         TimeSpan? checksRegistrationSettleWindow = null,
         ILogger<CloseoutEngine>? logger = null) =>
         new(store, node, new DaemonConnection(postgres.ConnectionString), inspector, worktrees,
-            new StackedParentWatch(worktrees, NullLogger<StackedParentWatch>.Instance),
+            new StackedParentWatch(worktrees, new NoOpRemoteParentReader(), NullLogger<StackedParentWatch>.Instance),
             (github ?? RecordingProcessRunner.Succeeding(string.Empty)).Runner,
             (jira ?? RecordingJiraRequester.Succeeding(200, "{}")).Requester,
             Options.Create(new DaemonOptions
