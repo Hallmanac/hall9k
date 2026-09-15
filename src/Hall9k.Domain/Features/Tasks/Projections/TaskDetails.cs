@@ -270,6 +270,15 @@ public sealed class TaskDetails
     public Guid? FailedRunId { get; set; }
     /// <summary>The failed run's branch while a human-requested retry is pending: the launcher resumes it when it survives (Decisions Log #25).</summary>
     public string? RetryBranch { get; set; }
+    /// <summary>
+    /// The branch this node most recently force-with-lease pushed for this task — the durable
+    /// record <c>ForceWithLeasePusher</c> checks before refusing a push whose reflog was wiped by
+    /// an unrelated session's history surgery in the shared repository (origin incident, 2026-09-15;
+    /// see <see cref="Events.TaskBranchPushed"/>'s own doc). Null before this task's first push.
+    /// </summary>
+    public string? LastPushedBranch { get; set; }
+    /// <summary>See <see cref="LastPushedBranch"/> — the commit that push landed at.</summary>
+    public string? LastPushedBranchTip { get; set; }
     public string? RetryReason { get; set; }
     /// <summary>
     /// Whether <see cref="RetryReason"/> was last set by <see cref="Events.TaskHandedBack"/>
@@ -681,6 +690,14 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         {
             view.State = TaskState.Blocked;
         }
+    }
+
+    // The projection twin of TaskAggregate.Apply(TaskBranchPushed) — overwritten on every push,
+    // never accumulated, since only the most recent tip is ever relevant to the guard.
+    public void Apply(IEvent<TaskBranchPushed> @event, TaskDetails view)
+    {
+        view.LastPushedBranch = @event.Data.Branch;
+        view.LastPushedBranchTip = @event.Data.Tip;
     }
 
     // The task stays Blocked; the recorded reason is what makes h9k status read it as

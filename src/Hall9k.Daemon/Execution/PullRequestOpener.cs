@@ -107,7 +107,18 @@ public sealed class PullRequestOpener(
             // incident (2026-08-17): the first two automatic follow-up runs rebased per the
             // authored-history rule and a then-plain push rejected both, stranding completed,
             // gated work in the worktrees.
-            await PushBranchAsync(run.WorktreePath, run.Branch, cancellationToken);
+            //
+            // recordedPushedTips carries the third door the guard's own doc comment describes: the
+            // tip a PRIOR run of this same task pushed, read from the task's own durable record
+            // rather than this run's — a run's stream ends with that run, so only the task survives
+            // long enough to answer for a follow-up dispatched after this one (origin incident,
+            // 2026-09-15).
+            HashSet<string> recordedPushedTips = task.LastPushedBranch == run.Branch
+                && task.LastPushedBranchTip is { } recordedTip
+                ? [recordedTip]
+                : [];
+            await PushBranchAsync(run.WorktreePath, run.Branch, recordedPushedTips, cancellationToken);
+            await RecordBranchPushedAsync(taskId, run.Branch, run.WorktreePath, cancellationToken);
             (string? pullRequestUrl, int pullRequestNumber) = task.PullRequestUrl is { } existingUrl
                 ? (existingUrl, PullRequestUrls.ParseNumber(existingUrl))
                 : await IsGitHubOriginAsync(run.WorktreePath, cancellationToken)
@@ -644,12 +655,14 @@ public sealed class PullRequestOpener(
     /// lives in <see cref="ForceWithLeasePusher"/>, shared with the closeout engine's mechanical
     /// rebase fast path — only the recovery lever named in a refusal differs per caller.
     /// </summary>
-    private static async Task PushBranchAsync(string worktreePath, string branch, CancellationToken cancellationToken)
+    private static async Task PushBranchAsync(
+        string worktreePath, string branch, IReadOnlySet<string> recordedPushedTips,
+        CancellationToken cancellationToken)
     {
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(PushDeadline);
         try
         {
-            await ForceWithLeasePusher.PushAsync(git, worktreePath, branch, cancellationToken);
+            await ForceWithLeasePusher.PushAsync(git, worktreePath, branch, recordedPushedTips, cancellationToken);
         }
         catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
         {
@@ -690,6 +703,36 @@ public sealed class PullRequestOpener(
             throw new InvalidOperationException(
                 $"{exception.Message} This fails the run, so h9k task retry is the way to requeue "
                 + "once the branch or the remote are sorted out.");
+        }
+    }
+
+    /// <summary>
+    /// Records the tip a push just landed at, on the task's own durable stream — the fact
+    /// <see cref="ForceWithLeasePusher"/>'s own recorded-tip door reads back before this task's next
+    /// push (<see cref="Events.TaskBranchPushed"/>'s own doc; origin incident, 2026-09-15).
+    /// <para>
+    /// Best-effort by construction and never allowed to fail this run: the push it describes has
+    /// already landed on origin by the time this runs, so a failure here costs only this node's own
+    /// defense against a future reflog wipe, not the delivery itself — the ancestor and reflog
+    /// checks still cover the ordinary case. Nothing here can throw.
+    /// </para>
+    /// </summary>
+    private async Task RecordBranchPushedAsync(
+        Guid taskId, string branch, string worktreePath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            string tip = (await RunInWorktreeAsync(worktreePath, "git", ["rev-parse", "HEAD"], cancellationToken)).Trim();
+            await using IDocumentSession session = store.LightweightSession();
+            session.Events.Append(taskId, new TaskBranchPushed(taskId, branch, tip, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Task {TaskId}: pushed {Branch} but could not record the pushed tip for the force-with-lease "
+                + "guard's own recorded-tip check — the ancestor and reflog checks still cover the ordinary case",
+                taskId, branch);
         }
     }
 

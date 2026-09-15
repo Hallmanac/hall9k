@@ -3665,7 +3665,11 @@ public sealed class CloseoutEngine(
 
             try
             {
-                await ForceWithLeasePusher.PushAsync(git, worktreePath, run.Branch, cancellationToken);
+                // No recorded-pushed-tips set to hand the guard here: this mechanical fast path
+                // reads only the run and the project, not the task's own TaskDetails, so it falls
+                // back to the guard's ancestor-or-reflog doors alone, exactly as before this fix.
+                await ForceWithLeasePusher.PushAsync(
+                    git, worktreePath, run.Branch, new HashSet<string>(), cancellationToken);
             }
             catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
             {
