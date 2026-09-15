@@ -90,6 +90,16 @@ internal sealed class FakeLedger : ILedger
         return Task.FromResult(any);
     }
 
+    public Task<IReadOnlyList<string>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken)
+    {
+        RequireRegistered(refPrefix);
+        IReadOnlyList<string> refs = [.. _files.Keys
+            .Where(key => key.Repository == repositoryPath && key.RefName.StartsWith(refPrefix, StringComparison.Ordinal))
+            .Select(key => key.RefName)
+            .Distinct()];
+        return Task.FromResult(refs);
+    }
+
     private static void RequireRegistered(string refName)
     {
         if (!LedgerRefRegistry.IsRegistered(refName))

@@ -125,4 +125,19 @@ public interface ILedger
     /// second, later joiner self-claim ownership in a project that already had one).
     /// </summary>
     Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Every ref name currently on origin that starts with <paramref name="refPrefix"/> — the
+    /// "list refs", not "list paths inside one ref", primitive: a caller enumerating a prefix
+    /// registered as <see cref="LedgerRefKind.Prefix"/> (one ref per node id, one per owner root)
+    /// has no other way to discover which concrete ref names exist at all, unlike
+    /// <see cref="HasAnyAsync"/>, which only ever answers about paths inside a single, already-known
+    /// ref (idea 202383dc, T2's invite sweep: which node refs carry a candidate proof to check).
+    /// Mirrors <c>GitLedgerChainReader.DiscoverOwnerRootsAsync</c>'s own private
+    /// <c>git ls-remote</c> technique, duplicated onto this seam rather than shared across it: that
+    /// class deliberately bypasses <see cref="ILedger"/> entirely for its own reasons (its own doc
+    /// comment), so this is the first caller that actually needs the "list refs" shape through the
+    /// ordinary seam every fake and every other caller already uses.
+    /// </summary>
+    Task<IReadOnlyList<string>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken);
 }
