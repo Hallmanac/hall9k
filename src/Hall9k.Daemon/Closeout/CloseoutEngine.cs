@@ -1498,7 +1498,8 @@ public sealed class CloseoutEngine(
 
     /// <summary>
     /// The unresolved review threads a follow-up could actually act on: every one this sweep
-    /// observed, less the human-authored ones this exact run already declined or routed.
+    /// observed, less the human-authored ones this exact run already declined or routed AND
+    /// actually answered or parked for the owner (<see cref="WasAnsweredOrParked"/>).
     /// <para>
     /// A human-authored thread this run already declined or routed stays unresolved by design
     /// (Decisions Log #159: "a human-authored one stays open" — closing it is not the agent's to
@@ -1549,12 +1550,41 @@ public sealed class CloseoutEngine(
         IReadOnlyList<string> alreadyAnsweredThreadIds = [.. run.LastReviewThreadOutcomes
             .Where(outcome => (outcome.Disposition == ReviewThreadDisposition.Decline
                     || outcome.Disposition == ReviewThreadDisposition.Route)
-                && snapshot.HumanThreadIds.Contains(outcome.ThreadId))
+                && snapshot.HumanThreadIds.Contains(outcome.ThreadId)
+                && WasAnsweredOrParked(run, outcome.ThreadId))
             .Select(outcome => outcome.ThreadId)];
         return [.. snapshot.ThreadIds
             .Except(alreadyAnsweredThreadIds)
             .Except(AdvisoryReviewThreads.Advisory(snapshot))];
     }
+
+    /// <summary>
+    /// Whether this run actually discharged what it owed the person whose thread it declined or
+    /// routed: it either put a reply into the thread through the one path that records one
+    /// (<c>h9k pr reply</c>, <see cref="RunDetails.ReviewThreadRepliesPosted"/>), or it drafted a
+    /// reply and parked for the owner to send, edit, or drop
+    /// (<see cref="RunDetails.HumanThreadReplyDrafts"/>) — the operator's own <c>--post-nothing</c>
+    /// counts, because they took the decision.
+    /// <para>
+    /// The exclusion above needs this because a decline no longer implies an answer (task: a
+    /// review-feedback follow-up never answers a human reviewer in the owner's name on its own).
+    /// It used to: a lap declined a person's thread, posted its evidence, and the thread was left
+    /// open for them to close, so skipping it on the next sweep was skipping something already
+    /// said. Now that reply is forbidden outright, and a lap that declined without parking has
+    /// said nothing at all — so excluding on the disposition alone would drop the thread from
+    /// every later dispatch decision and leave the person answered by nobody, with nothing on the
+    /// board saying a reply was owed (independent pre-PR review, cycle 1, conformance lens). With
+    /// neither record the thread stays outstanding, which keeps buying a follow-up and eventually
+    /// the per-obstruction cap's own park — exactly the fallback this method's own doc already
+    /// describes for a bot thread whose resolve mutation never landed, and the direction every
+    /// judgment on this seam errs.
+    /// </para>
+    /// </summary>
+    private static bool WasAnsweredOrParked(RunDetails run, string threadId) =>
+        run.ReviewThreadRepliesPosted.Any(reply =>
+            string.Equals(reply.ThreadId, threadId, StringComparison.Ordinal))
+        || run.HumanThreadReplyDrafts.Any(draft =>
+            string.Equals(draft.ThreadId, threadId, StringComparison.Ordinal));
 
     /// <summary>
     /// Why a review follow-up was dispatched, in the words the agent's prompt will carry.
