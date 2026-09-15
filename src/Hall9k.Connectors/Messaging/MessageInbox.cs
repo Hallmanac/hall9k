@@ -57,9 +57,9 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 senderNodeId);
             if (inbox is null || !inbox.SenderIgnored)
             {
-                AppendInboxEvent(
+                AppendInboxEvents(
                     session, inboxStreamId, inbox is not null,
-                    MessageInboxDecider.IgnoreSender(senderNodeId, "no node file vouches for this sender's outbox", now));
+                    [MessageInboxDecider.IgnoreSender(senderNodeId, "no node file vouches for this sender's outbox", now)]);
                 await session.SaveChangesAsync(cancellationToken);
             }
 
@@ -144,34 +144,52 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
 
         bool cursorAdvanced = highestSeqConsidered > persistedCursor && !overrideSkipsAhead;
+        bool envelopeVerificationFailed = read.RejectedSeqs.Count > 0;
+
+        List<object> inboxEvents = [];
         if (cursorAdvanced)
         {
-            AppendInboxEvent(
-                session, inboxStreamId, inbox is not null,
-                MessageInboxDecider.AdvanceCursor(senderNodeId, highestSeqConsidered, now));
+            inboxEvents.Add(MessageInboxDecider.AdvanceCursor(senderNodeId, highestSeqConsidered, now));
+        }
+
+        if (envelopeVerificationFailed)
+        {
+            // Appended after any cursor advance above, in the same batch, so its own Apply always
+            // wins: a rejected envelope must be named for h9k status even in a sweep whose other,
+            // genuinely verified envelopes moved the cursor forward — a cursor advance on its own
+            // must never be read as "this sender is fine".
+            string reason = read.RejectedSeqs.Count == 1
+                ? $"envelope verification failed for seq {read.RejectedSeqs[0]}"
+                : $"envelope verification failed for seqs {string.Join(", ", read.RejectedSeqs)}";
+            inboxEvents.Add(MessageInboxDecider.IgnoreSender(senderNodeId, reason, now));
         }
         else if (inbox is not null && inbox.SenderIgnored)
         {
             // This sweep read the sender's outbox successfully but found nothing new to advance
             // the cursor to — without this, a prior ignored mark would never clear on its own,
             // even though the sender is vouched again right now.
-            AppendInboxEvent(session, inboxStreamId, streamExists: true, MessageInboxDecider.ConfirmVouched(senderNodeId, now));
+            inboxEvents.Add(MessageInboxDecider.ConfirmVouched(senderNodeId, now));
+        }
+
+        if (inboxEvents.Count > 0)
+        {
+            AppendInboxEvents(session, inboxStreamId, inbox is not null, inboxEvents);
         }
 
         await session.SaveChangesAsync(cancellationToken);
         return new MessageInboxSweepResult(
-            senderNodeId, SenderIgnored: false, read.Envelopes.Count + read.RejectedSeqs.Count, stored);
+            senderNodeId, envelopeVerificationFailed, read.Envelopes.Count + read.RejectedSeqs.Count, stored);
     }
 
-    private static void AppendInboxEvent(IDocumentSession session, Guid streamId, bool streamExists, object @event)
+    private static void AppendInboxEvents(IDocumentSession session, Guid streamId, bool streamExists, IReadOnlyList<object> events)
     {
         if (streamExists)
         {
-            session.Events.Append(streamId, @event);
+            session.Events.Append(streamId, [.. events]);
         }
         else
         {
-            session.Events.StartStream<MessageInboxAggregate>(streamId, @event);
+            session.Events.StartStream<MessageInboxAggregate>(streamId, [.. events]);
         }
     }
 }
