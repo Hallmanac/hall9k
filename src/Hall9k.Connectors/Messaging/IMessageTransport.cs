@@ -15,25 +15,32 @@ public sealed record TransportEnvelope(long Seq, string Content);
 /// not it ended up in <see cref="Envelopes"/>: a candidate the transport rejected on its own terms
 /// (an invalid signature) still counts, so a reader's cursor can advance past it instead of
 /// re-inspecting the identical rejected candidate on every sweep. It never counts a candidate the
-/// transport could not even inspect — a gap in an otherwise-contiguous seq sequence, or a
-/// tool-level failure reading the commit that should have introduced it — since a genuine sender
-/// never leaves a gap (seq is always this node's own highest-plus-one, and a resend reuses its own
-/// seq rather than skipping ahead), and neither case is a verdict on the envelope itself.
+/// transport could not even inspect — a numeric gap in the sender's own seq sequence, or a
+/// tool-level failure reading the commit that should have introduced it — since neither case is a
+/// verdict on an envelope that was actually looked at, and stopping is the only safe choice: the
+/// transport cannot tell a forged or corrupted ref apart from this same sender's own earlier failed
+/// send that has not been resent yet (seq allocation is this node's own highest-plus-one, but a
+/// failed push leaves that seq's slot empty on the ref until something explicitly resends it).
 /// <see cref="RejectedSeqs"/> names exactly which candidates were the former — rejected, not merely
 /// uninspected — so the reader can log the sender-verification failure rather than the rejection
-/// passing through silently.
+/// passing through silently. <see cref="StalledAtSeq"/> names the first seq this call could not
+/// even inspect, so the caller can log the stall too rather than reading an empty
+/// <see cref="Envelopes"/> as "the sender genuinely has nothing new" when it may instead mean
+/// "there is more, but this call could not safely reach it yet".
 /// </summary>
 public sealed record TransportReadResult(
     bool SenderVouched,
     IReadOnlyList<TransportEnvelope> Envelopes,
     long HighestSeqInspected,
-    IReadOnlyList<long> RejectedSeqs)
+    IReadOnlyList<long> RejectedSeqs,
+    long? StalledAtSeq = null)
 {
     public static readonly TransportReadResult SenderNotVouched = new(false, [], 0, []);
 
     public static TransportReadResult Ok(
-        IReadOnlyList<TransportEnvelope> envelopes, long highestSeqInspected, IReadOnlyList<long>? rejectedSeqs = null) =>
-        new(true, envelopes, highestSeqInspected, rejectedSeqs ?? []);
+        IReadOnlyList<TransportEnvelope> envelopes, long highestSeqInspected, IReadOnlyList<long>? rejectedSeqs = null,
+        long? stalledAtSeq = null) =>
+        new(true, envelopes, highestSeqInspected, rejectedSeqs ?? [], stalledAtSeq);
 }
 
 /// <summary>

@@ -61,11 +61,32 @@ public sealed class InMemoryMessageTransport(ILedger ledger) : IMessageTransport
             return TransportReadResult.Ok([], sinceSeq);
         }
 
-        List<TransportEnvelope> result = [.. envelopes
+        List<TransportEnvelope> candidates = [.. envelopes
             .Where(pair => pair.Key > sinceSeq)
             .OrderBy(pair => pair.Key)
             .Select(pair => new TransportEnvelope(pair.Key, pair.Value))];
-        long highestSeqInspected = result.Count > 0 ? result[^1].Seq : sinceSeq;
-        return TransportReadResult.Ok(result, highestSeqInspected);
+
+        // Mirrors GitLedgerMessageTransport's own gap-stop rule (Brian's 2026-09-13 testing rule
+        // reserves a real repository for that transport's own tests, so this is the one place a
+        // test can actually exercise the rule): a numeric gap in the sender's own seq sequence — a
+        // failed send with no resend yet, most often, since this fake never fabricates forgery or
+        // corruption — is never trusted as "inspected". The cursor stops short of it and
+        // stalledAtSeq tells the caller there is unreached content rather than genuinely nothing new.
+        List<TransportEnvelope> result = [];
+        long highestSeqInspected = sinceSeq;
+        long? stalledAtSeq = null;
+        foreach (TransportEnvelope candidate in candidates)
+        {
+            if (candidate.Seq != highestSeqInspected + 1)
+            {
+                stalledAtSeq = candidate.Seq;
+                break;
+            }
+
+            result.Add(candidate);
+            highestSeqInspected = candidate.Seq;
+        }
+
+        return TransportReadResult.Ok(result, highestSeqInspected, stalledAtSeq: stalledAtSeq);
     }
 }
