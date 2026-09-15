@@ -258,6 +258,8 @@ public sealed class TaskDetails
     public string? StackReplayOntoCommit { get; set; }
     /// <summary>See <see cref="TaskReopened.ChangesRequestedReviews"/>'s own doc — mirrors <see cref="TaskAggregate.ChangesRequestedReviews"/>.</summary>
     public List<ChangesRequestedReview> ChangesRequestedReviews { get; set; } = [];
+    /// <summary>See <see cref="TaskReopened.HumanReviewThreads"/>'s own doc — mirrors <see cref="TaskAggregate.KnownHumanReviewThreads"/>.</summary>
+    public List<ReviewThreadReference> HumanReviewThreads { get; set; } = [];
     public string? FollowUpReason { get; set; }
     public string? FailureReason { get; set; }
     /// <summary>
@@ -829,6 +831,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.StackReplayUpstreamCommit = null;
         view.StackReplayOntoCommit = null;
         view.ChangesRequestedReviews = [];
+        view.HumanReviewThreads = [];
         view.FollowUpReason = null;
         view.RetryBranch = null;
         view.RetryPending = false;
@@ -856,6 +859,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.StackReplayUpstreamCommit = @event.Data.StackReplayUpstreamCommit;
         view.StackReplayOntoCommit = @event.Data.StackReplayOntoCommit;
         view.ChangesRequestedReviews = [.. @event.Data.ChangesRequestedReviews ?? []];
+        view.HumanReviewThreads = [.. @event.Data.HumanReviewThreads ?? []];
         view.FollowUpReason = @event.Data.Reason;
         view.ClaimedByNodeId = null;
         view.DependencyOverrideAcknowledged = false;
@@ -941,6 +945,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.StackReplayUpstreamCommit = null;
         view.StackReplayOntoCommit = null;
         view.ChangesRequestedReviews = [];
+        view.HumanReviewThreads = [];
         view.FollowUpReason = null;
         view.RetryBranch = null;
         view.RetryPending = false;
@@ -963,6 +968,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.StackReplayUpstreamCommit = null;
         view.StackReplayOntoCommit = null;
         view.ChangesRequestedReviews = [];
+        view.HumanReviewThreads = [];
         view.FollowUpReason = null;
         view.RetryBranch = null;
         view.RetryPending = false;

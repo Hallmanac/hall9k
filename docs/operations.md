@@ -775,6 +775,7 @@ it:
 | the pre-PR review loop's own park reason | The loop spent its automatic fixes, a fix session disputed a finding, or the task's lifetime review-cycle budget is spent (a park that can fire on a run that converged cleanly, spending no fix budget at all) | `h9k review resolve` |
 | "Interactive mode is on for this task: …" | The task's interactive-mode flag is on, and the run reached one of the review loop's own four routine phase boundaries — build done to review, review verdict to fix, fix to re-review, gates to pull request — which hold for the human's recorded go rather than advancing on their own | `h9k review proceed`, `h9k review resolve` to redirect the boundary instead of merely approving it, or — at the review-verdict-to-fix boundary only — `h9k review fixed` once you have committed your own fix in the worktree. The park reason itself names the ones that apply, with the exact command for each |
 | a changes-requested fix lap's disagreement park | A human reviewer requested changes, the fix lap fixed what it agreed with, and it disagreed with one finding — so it posted nothing about that one and drafted a reply for you instead. The reviewer has heard nothing yet. | `h9k review resolve` with one of `--post-reply-as-written`, `--post-reply "<your text>"`, `--post-nothing` — plus your ordinary verdict |
+| "A review-feedback follow-up answered a thread a person opened and posted nothing" | A thread lap declined or routed a thread a person opened — a question counts, and so does one asked beside an approval — and drafted the reply rather than sending it. The line names the thread, the disposition, and the drafted words; `h9k task show` prints them whole. Nothing was posted and nothing was pushed. | the same three reply choices, plus your ordinary verdict |
 | closeout's own park reason | The same obstruction survived its automatic-lap cap without clearing, or the pull request's lifetime automatic-closeout budget is spent | `h9k pr resolve` |
 | the recorded dependency failure | A blocker died, so the dependent stays `Blocked` rather than silently unblocking | recover the blocker, as the recorded reason names |
 | the agent asked a question and stopped | A run recorded a question and exited. `h9k ask` and `h9k answer` are Slice 2, so no command answers it | `h9k task show`, then decide it by hand |
@@ -1047,14 +1048,22 @@ is always recorded, whichever way it goes: `h9k task show` prints a **Mechanical
 so nothing about a rewritten branch history under an open pull request is invisible to whoever
 reads the task next.
 
-One park takes `review resolve` differently, and it is the only place in the platform where your
-answer is what another person hears. When a human reviewer requests changes, closeout dispatches a
-fix lap carrying that review's body and every inline comment as findings. The lap fixes what it
-agrees with, replies in those threads, and resolves them. Where it *disagrees*, it posts nothing
-and resolves nothing — a disagreement with a person is yours to send, not an agent's — and parks
-with three things saved beside the run: what the reviewer asked for, why the session thinks
-otherwise, and a **proposed reply** written to the reviewer. Resolving that park requires a reply
-choice alongside your ordinary verdict:
+Two parks take `review resolve` differently, and they are the only places in the platform where
+your answer is what another person hears.
+
+The first: a human reviewer requests changes, and closeout dispatches a fix lap carrying that
+review's body and every inline comment as findings. The lap fixes what it agrees with, replies in
+those threads, and resolves them. Where it *disagrees*, it posts nothing and resolves nothing.
+
+The second, and the ordinary one: an ordinary review-feedback lap **declines or routes a thread a
+person opened** — including one asked beside an approval, and including a question, since
+answering a question is a decline. It posts nothing there either, whatever the reviewer's verdict
+and however right the lap is. Telling a colleague their point does not hold is yours to send, not
+an agent's, because the reply goes out under your login.
+
+Both park the same way, with three things saved beside the run: what the reviewer asked for, why
+the session thinks otherwise, and a **proposed reply** written to the reviewer. Resolving either
+requires a reply choice alongside your ordinary verdict:
 
 - `--post-reply-as-written` — send the drafted reply verbatim, under your own login, in the
   reviewer's own thread (or as a top-level pull-request comment when what was disputed was the
@@ -1073,8 +1082,17 @@ when you interrupt it with Ctrl+C in that window — the error says so and names
 sent: re-run with `--post-nothing`, never with a
 reply choice, or the reviewer reads the same reply twice under your login. `h9k task show` renders every changes-requested review
 this pull request has taken — reviewer, time, finding count, link — with any parked disagreement
-under it and what you directed. Once the lap pushes, that reviewer's review is re-requested on the
+under it and what you directed, and a **Replies drafted for a human reviewer's thread, not
+posted** block for the thread-lap kind, with each thread's link, its disposition, and the drafted
+words in full. Once a changes-requested lap pushes, that reviewer's review is re-requested on the
 new head automatically, because their verdict is what blocks the merge until they change it.
+
+None of this rests on the prompt alone. A follow-up session posts every in-thread reply through
+`h9k pr reply`, which refuses a decline or a route into a thread the platform read a person
+opening and records the attempt on the run; the `gh` routes into a review thread are refused by a
+PreToolUse guard the session launches with. It is a refusal of the ordinary route rather than a
+sandbox, and it is not extended to `gh pr comment`, which is the only way to answer a review's
+own unthreadable body.
 
 Two distinctions get confused, so they are worth stating flatly:
 

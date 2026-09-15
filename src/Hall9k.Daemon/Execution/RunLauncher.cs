@@ -592,7 +592,13 @@ public sealed class RunLauncher(
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
                     runId, sessionId, worktree.Path, runDirectory, prompt, mode, model, project.SkipPermissions,
-                    UntrustedWorkingDirectory: isPrReview)
+                    UntrustedWorkingDirectory: isPrReview,
+                    // Every follow-up kind, not only the review-feedback one (task: a
+                    // review-feedback follow-up never answers a human reviewer in the owner's
+                    // name on its own): a follow-up is exactly the session that works an open
+                    // pull request's threads, and a CI-fix lap wandering into a person's thread
+                    // is as much the thing being prevented as a thread lap doing it on purpose.
+                    GuardsReviewThreadReplies: followUp is not null)
                 {
                     SessionName = sessionName,
                 },

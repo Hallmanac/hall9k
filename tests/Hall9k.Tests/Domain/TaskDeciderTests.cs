@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -1680,6 +1681,52 @@ public sealed class TaskDeciderTests
 
         task.KnownHumanReviewThreadIds.Should().BeEmpty("a manual reopen wipes the comparison points too");
         task.KnownPendingReviewRequestLogins.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The thread DETAIL beside those comparison points is a different fact and travels
+    /// differently (task: a review-feedback follow-up never answers a human reviewer in the owner's
+    /// name on its own): it is what the posting path refuses a decline on, so it survives the
+    /// completion between two laps, and <c>h9k pr resolve</c> — which makes no provider read of its
+    /// own — passes the aggregate's own copy back in rather than blinding the guard for the lap it
+    /// is about to start. A reopen that genuinely carries nothing still records nothing.
+    /// </summary>
+    [Fact]
+    public void Observed_human_thread_detail_survives_a_completion_and_a_manual_reopen_carries_it_back()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+        ReviewThreadReference[] observed =
+            [new ReviewThreadReference("PRRT_1", "jsmotherman", "https://github.com/x/y/pull/7#discussion_r1")];
+
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "Unresolved review comments.",
+            FollowUpKind.ReviewFeedback, automatic: true, Now, DomainId.New(),
+            knownHumanReviewThreadIds: ["PRRT_1"],
+            humanReviewThreads: observed));
+
+        task.KnownHumanReviewThreads.Should().BeEquivalentTo(observed);
+
+        CompleteFollowUp(task);
+        task.KnownHumanReviewThreads.Should().BeEquivalentTo(
+            observed, "the observation outlives the lap it was made for — a thread's author does not change");
+
+        // What PullRequestResolveCommand actually does: no provider read of its own, so it hands
+        // the aggregate's own copy straight back.
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "Human asked for another attempt.",
+            FollowUpKind.ReviewFeedback, automatic: false, Now, DomainId.New(),
+            humanReviewThreads: task.KnownHumanReviewThreads));
+
+        task.KnownHumanReviewThreads.Should().BeEquivalentTo(
+            observed, "the guard must not go dark on the one reopen route an operator drives by hand");
+
+        CompleteFollowUp(task);
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "Fix the checks.",
+            FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New()));
+
+        task.KnownHumanReviewThreads.Should().BeEmpty(
+            "a dispatch that observed no human thread records none — absence is not carried forward by accident");
     }
 
     [Fact]

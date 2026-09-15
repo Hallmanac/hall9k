@@ -9,7 +9,13 @@ Read every unresolved review thread on a pull request, give it a disposition, ac
 
 This skill works on an **existing** PR only. Never open a PR from an agent session: the Hall9k daemon opens PRs (`PullRequestOpener`), and agents are forbidden from doing so.
 
-**One kind of thread is not yours to settle here.** Where a *human* reviewer formally requested changes (a `CHANGES_REQUESTED` review) and you disagree with one of their findings, do not reply and do not resolve that thread — telling a person they are wrong is the implementer's to send, not an agent's. Draft the reply, park, and let them send it, edit it, or drop it; the platform's own changes-requested fix lap carries the exact block shape for that (`DISAGREEMENT:` / `REVIEWER ASKED:` / `MY REASONING:` / `PROPOSED REPLY:`, then `RESOLUTION: disputed`), and `h9k review resolve --post-reply-as-written` / `--post-reply "<text>"` / `--post-nothing` is what actually sends it (PLAN.md Decisions Log #152). Everything else in this skill is unchanged: fixes you agree with, questions, and a **bot's** disagreement are all handled here, in-thread, as they always have been.
+**A decline or a route on a thread a person opened is not yours to post.** Not the reply, not the resolve — whether or not they formally requested changes, whether or not they approved the pull request in the same breath, and whether or not you are right. You usually are right; that was never the question. Telling a colleague their point does not hold is the owner's to send, because the reply goes out under the owner's login. Draft it, park, and let them send it, edit it, or drop it: the block shape is `DISAGREEMENT:` (carrying `thread=` and `disposition=decline|route`) / `REVIEWER ASKED:` / `MY REASONING:` / `PROPOSED REPLY:`, then `RESOLUTION: disputed`, and `h9k review resolve --post-reply-as-written` / `--post-reply "<text>"` / `--post-nothing` is what actually sends it (PLAN.md Decisions Log #62, #152, #159). Answering a question counts: a question you answer with "yes, deliberately, because X" is a decline, so it is drafted and parked like any other.
+
+Origin incidents, both with replies that were accurate and still had to be deleted: arx-platform PR #2021 (2026-09-09) and PR #2042 (2026-09-15), where a follow-up answered a reviewer in the owner's name minutes after they approved.
+
+Everything else in this skill is unchanged: a **fix**'s reply, and everything a **bot** opened, are handled here, in-thread, as they always have been.
+
+**Inside a Hall9k follow-up, in-thread replies go through the platform.** The command is `h9k pr reply <task> --thread <node id> --disposition fix|decline|route --body "<text>"`, and the `gh` reply routes are refused before they run — only that command can tell a bot's thread from a person's. Running this skill standalone, outside a dispatched run, the `gh` route in step 7 is what you have; the rule above still applies, and the draft goes to whoever asked you to run the skill.
 
 ## Whose comment is whose
 
@@ -69,14 +75,21 @@ Two consequences worth stating:
    Dismissal is now decline or route, not a third bucket: a suggestion to refactor something that follows an established codebase pattern is a decline citing the pattern; a suggestion that would break functionality is a decline citing why; a valid-but-out-of-scope suggestion is a route, filed as an idea rather than only mentioned in a reply.
 
 5. **Human threads get more care than bot threads, at every disposition.** Same mechanics, higher bar:
-   - **A question gets an answer, not a code change.** If the honest answer is "yes, deliberately, because X", that reply *is* the resolution — usually a decline whose evidence is the answer itself, occasionally a fix if the honest answer turns out to be "you're right". Inventing a change to look responsive is worse than saying nothing.
+   - **A decline or a route posts nothing at all.** See the carve-out at the top of this skill: draft the reply, park it, and let the owner send it. Steps 7 and 9 below apply to a bot's thread, and to a fix's reply in anyone's.
+   - **A question gets an answer, not a code change.** If the honest answer is "yes, deliberately, because X", that answer *is* the resolution — usually a decline whose evidence is the answer itself, occasionally a fix if the honest answer turns out to be "you're right". Inventing a change to look responsive is worse than saying nothing. Since answering a question is a decline, a question a *person* asked is drafted and parked rather than posted.
    - **Never resolve a human's thread without replying substantively.** A resolved thread with no answer in it is worse than an open one: it reads as handled.
    - **One honest attempt per thread.** Say your piece once, with reasoning and evidence. Never re-litigate a point a previous run already answered.
    - **A design disagreement you cannot honestly judge with evidence is not yours to settle.** That is different from decline: decline disproves a claim, this is a genuine "both positions are defensible." Do not pick a side to close the thread. Hand it to a human (see below).
 
 6. **Apply fixes** before replying to their threads, so the reply describes something that exists. Threads disposed decline or route get no code change.
 
-7. **Reply in the thread**, because feedback is answered where it lives. `$COMMENT_ID` is the numeric `databaseId` of a comment in the thread (the first one is the reviewer's, and replying under it is what puts your answer in that thread), never the `PRRC_…` node id:
+7. **Reply in the thread**, because feedback is answered where it lives — for a bot's thread on any disposition, and for a fix's reply in anyone's. A decline or a route on a person's thread posts nothing; it is drafted and parked (see the carve-out above).
+
+   Inside a Hall9k follow-up:
+   ```bash
+   h9k pr reply "$TASK_ID" --thread "$THREAD_ID" --disposition fix|decline|route --body "…"
+   ```
+   Standalone, `$COMMENT_ID` is the numeric `databaseId` of a comment in the thread (the first one is the reviewer's, and replying under it is what puts your answer in that thread), never the `PRRC_…` node id:
    ```bash
    gh api "repos/$SLUG/pulls/$PR_NUMBER/comments/$COMMENT_ID/replies" -f body="…"
    ```
@@ -89,7 +102,7 @@ Two consequences worth stating:
 9. **Resolve the thread**, once its reply is posted, per its disposition and its author:
    - **fix**: resolve it, bot-authored or human-authored — a fix invites no argument.
    - **decline or route, bot-authored**: resolve it. The evidence (or the routing note) is what a bot needed; there is nobody left to answer.
-   - **decline or route, human-authored**: leave it open. The evidence is posted, but closing a person's thread for them is not yours to do — they read it and resolve it themselves. **Agents never close a human's thread on a decline or a route.**
+   - **decline or route, human-authored**: nothing was posted and nothing is resolved. The thread stays open and unanswered until the owner decides what it hears. **Agents never answer or close a person's thread on a decline or a route.**
    ```bash
    gh api graphql -f query='mutation($id:ID!){ resolveReviewThread(input:{threadId:$id}) { thread { isResolved } } }' -f id="$THREAD_ID"
    ```
@@ -105,12 +118,21 @@ Two consequences worth stating:
 
     — with the thread's own real node id, never the `<node id>` placeholder text above left in place. Then a line reading exactly `SUMMARY:`, followed by a plain-language recap and any follow-ups worth tracking — put it there, not between the blocks or before them, or it is read as the last thread's own evidence rather than a closing note. When running as a Hall9k follow-up, this is what `AgentPromptBuilder.BuildFollowUp`'s own summary instructions already ask for; running the skill standalone, write the same blocks anyway — they are what makes the triage measurable rather than only remembered.
 
-## Handing a disagreement to a human
+## Handing a reply to a human
 
-If a thread is a design disagreement where the reviewer's position and yours are both defensible and the call belongs to a person: handle every other thread first (your replies land on the PR immediately), then close your summary with a line reading exactly
+Two things come here: a thread that is a genuine design disagreement where both positions are defensible and the call belongs to a person, and **every decline or route on a thread a person opened**. Handle everything else first (those replies land on the PR immediately), then close your summary with a line reading exactly
 
 ```
 RESOLUTION: disputed
 ```
 
-Above it, under the `SUMMARY:` line step 11 asks for, record **both** positions: what the reviewer asked for and their reasoning, what you would do instead and yours, and what you already did. When this skill is running inside a Hall9k follow-up run, that marker parks the run as `NeedsHuman` with your text saved beside it and nothing is pushed until a human decides (`h9k review resolve`). Park at most once: this is one honest attempt, not a negotiation.
+Above it, under the `SUMMARY:` line step 11 asks for, record **both** positions: what the reviewer asked for and their reasoning, what you would do instead and yours, and what you already did. For each thread a person opened, add a block:
+
+```
+DISAGREEMENT: thread=<node id>; disposition=decline|route; at=path/to/file.cs:123
+REVIEWER ASKED: <their point, in your own words>
+MY REASONING: <why you think otherwise, with the evidence>
+PROPOSED REPLY: <the words the owner will actually send, verbatim if they approve them>
+```
+
+Write the proposed reply as a reply, not as a report about the thread: it goes out as-is if they choose `--post-reply-as-written`. When this skill is running inside a Hall9k follow-up run, that marker parks the run as `NeedsHuman` with your drafts saved beside it and nothing is pushed until a human decides — `h9k review resolve` offers to send each drafted reply as written, send their own text instead, or send nothing. Park at most once: this is one honest attempt, not a negotiation.

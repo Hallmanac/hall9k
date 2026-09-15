@@ -354,6 +354,39 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </summary>
     public List<ReviewDisagreementReplyDirection> ChangesRequestedReplyDirections { get; set; } = [];
     /// <summary>
+    /// Every reply a review-feedback lap on this run drafted for a thread a PERSON opened and
+    /// parked rather than posting (task: a review-feedback follow-up never answers a human
+    /// reviewer in the owner's name on its own), oldest first and never cleared — history, the
+    /// same way <see cref="ChangesRequestedDisagreements"/> is, while the live park lives on
+    /// <see cref="RunAggregate.ParkedDisagreements"/>. Kept apart from that list so
+    /// <c>h9k task show</c> can render these under a heading that is true of them: they answer no
+    /// changes-requested review, because there was none.
+    /// </summary>
+    public List<ReviewDisagreement> HumanThreadReplyDrafts { get; set; } = [];
+    /// <summary>
+    /// Every in-thread reply a session on this run put through <c>h9k pr reply</c>, oldest first.
+    /// The audit trail that makes the posting path's one self-reported input checkable: the
+    /// disposition each reply claimed, against the thread's provider-observed author kind.
+    /// </summary>
+    public List<ReviewThreadReplyRecord> ReviewThreadRepliesPosted { get; set; } = [];
+    /// <summary>
+    /// Every reply the posting path refused because it was aimed at a human's thread on a decline
+    /// or a route with no resolved park behind it, oldest first. Non-empty means a session tried
+    /// to answer a person in the owner's name and the platform stopped it — worth seeing on the
+    /// board, not only in the run log.
+    /// </summary>
+    public List<RefusedThreadReplyRecord> RefusedHumanThreadReplies { get; set; } = [];
+    /// <summary>
+    /// The unresolved threads a person opened that closeout read as asking nothing, beside a
+    /// review from that same person requesting no change — the FYI beside an approval, which buys
+    /// no follow-up lap (task: a review-feedback follow-up never answers a human reviewer in the
+    /// owner's name on its own). Replaced, not appended, on each
+    /// <see cref="Events.AdvisoryReviewThreadsObserved"/>: it is the latest read's answer, not a
+    /// running total, and a thread whose next comment does ask something drops out of it on the
+    /// sweep that reads it. Empty for every run whose pull request has none.
+    /// </summary>
+    public List<string> AdvisoryHumanReviewThreadIds { get; set; } = [];
+    /// <summary>
     /// Every thread a resolve-review-threads follow-up on this run has triaged, oldest first
     /// (task: every review thread on a pull request gets a triage disposition before any fix
     /// work): fix, decline (with the session's own evidence), or route. One entry per thread per
@@ -1145,6 +1178,26 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ChangesRequestedDisagreements.AddRange(@event.Data.Disagreements);
         view.ParkedOnReviewDisagreement = true;
     }
+
+    // Same split, same reason as the changes-requested park above: the ReviewParked right behind
+    // this one owns the state move, this one owns only the drafts.
+    public void Apply(IEvent<HumanThreadReplyParked> @event, RunDetails view)
+    {
+        view.HumanThreadReplyDrafts.AddRange(@event.Data.Drafts);
+        view.ParkedOnReviewDisagreement = true;
+    }
+
+    public void Apply(IEvent<ReviewThreadReplyPosted> @event, RunDetails view) =>
+        view.ReviewThreadRepliesPosted.Add(new ReviewThreadReplyRecord(
+            @event.Data.ThreadId, @event.Data.Disposition, @event.Data.ThreadIsHumanAuthored,
+            @event.Data.PostedAt));
+
+    public void Apply(IEvent<ReviewThreadReplyRefused> @event, RunDetails view) =>
+        view.RefusedHumanThreadReplies.Add(new RefusedThreadReplyRecord(
+            @event.Data.ThreadId, @event.Data.Disposition, @event.Data.Reason, @event.Data.RefusedAt));
+
+    public void Apply(IEvent<AdvisoryReviewThreadsObserved> @event, RunDetails view) =>
+        view.AdvisoryHumanReviewThreadIds = [.. @event.Data.ThreadIds];
 
     public void Apply(IEvent<ReviewDisagreementReplyDirected> @event, RunDetails view) =>
         view.ChangesRequestedReplyDirections.Add(new ReviewDisagreementReplyDirection(

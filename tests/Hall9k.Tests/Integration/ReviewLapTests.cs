@@ -2271,7 +2271,7 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
             new GitHubReviewReplies(gh.Runner), cts.Token);
 
         (await act.Should().ThrowAsync<DomainValidationException>())
-            .WithMessage("*not a changes-requested disagreement*");
+            .WithMessage("*carries no drafted reply*");
     }
 
     /// <summary>The three choices are three answers to one question, so passing two is refused up front.</summary>

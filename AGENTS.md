@@ -102,7 +102,13 @@ first-class interface, always, for every command:
   P2P identity layer (§16 #38-#58); until then, breaking this invariant breaks review handling
   (§16 #62). The one command that starts a thread, `h9k pr request-changes` (§16 #149), posts a
   review a human typed and ran; a lap's push guard denies an agent the ordinary route to it.
-- **An agent never tells a *human* reviewer they are wrong on a standing review**: draft it, park, let them send it (§16 #152) — a plain thread comment instead gets an evidence-based decline reply, leaving only its resolve to them (§16 #159).
+- **An agent never posts a decline or a route into a thread a *person* opened** — not the reply, not
+  the resolve, whatever their verdict and however right it is. Draft it, park, and let the owner
+  send, edit, or drop it (`h9k review resolve --post-reply-as-written` / `--post-reply "…"` /
+  `--post-nothing`); replies route through `h9k pr reply`, which refuses the rest. A **fix**'s reply
+  still posts in anyone's thread; a **bot's** thread is untouched (§16 #62, #152, #159). Origin: two
+  accurate replies posted under Brian's login minutes after a reviewer approved, arx-platform
+  PR #2021 (2026-09-09) and PR #2042 (2026-09-15), both deleted by hand.
 - **Feedback reaches the platform only when a review is submitted.** GitHub hides an unsubmitted
   (`PENDING`) review's comments from the API entirely, so a reviewer part-way through a draft is
   invisible to the closeout monitor and to any agent reading the PR. Never read silence as "the
