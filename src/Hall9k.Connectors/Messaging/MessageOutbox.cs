@@ -18,7 +18,9 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// local store — the process dies, or the token is cancelled, between the two — so the very
     /// next seq this store's own query allocates can already be occupied. Bounded rather than
     /// infinite: a genuine allocation lag self-heals in one bump, and running past that many means
-    /// something else is wrong that retrying alone will not fix.</summary>
+    /// something else is wrong that retrying alone will not fix — <see cref="SendAsync"/> lets the
+    /// conflict propagate once this bound is hit rather than recording a failure against a seq
+    /// whose real content belongs to someone else entirely.</summary>
     private const int MaxSeqAdvancesOnConflict = 5;
 
     public async Task<MessageEnvelopeV1> SendAsync(
@@ -56,7 +58,16 @@ public sealed class MessageOutbox(IMessageTransport transport)
                 seq++;
                 continue;
             }
-            catch (Exception exception) when (exception is LedgerPushRejectedException or InvalidOperationException)
+            // MessageSeqAlreadyUsedException is itself an InvalidOperationException, so it must be
+            // excluded here explicitly — once the catch above stops retrying (MaxSeqAdvancesOnConflict
+            // exhausted), a conflict at yet another seq must never fall through to this one: the
+            // ledger already holds different, real content at that seq, and recording *this*
+            // message's own content as a failure there would misattribute it exactly the same way
+            // the retry above exists to prevent. Nothing safe to record here — every seq this
+            // attempt ever tried belongs to someone else's real content — so it propagates instead.
+            catch (Exception exception)
+                when (exception is LedgerPushRejectedException
+                    || (exception is InvalidOperationException and not MessageSeqAlreadyUsedException))
             {
                 session.Events.StartStream<MessageAggregate>(streamId, MessageDecider.FailSend(envelope, exception.Message, now));
                 await session.SaveChangesAsync(cancellationToken);
