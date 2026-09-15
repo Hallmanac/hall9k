@@ -879,7 +879,11 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 // child was Delivered dispatched no replay and its later merge no retarget. Blank
                 // only when no earlier run recorded one either and the rev-parse could not be
                 // read — the cases RunDispatched.BaseCommit's own doc already admits.
-                BaseCommit: baseCommit));
+                BaseCommit: baseCommit,
+                // Carried forward from the resumed branch's own previous run, exactly as BaseBranch
+                // and BaseCommit are just above (StackedBaseResolver.ResumedBase's own doc) — null
+                // for a fresh cut, which is every ordinary claim.
+                OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

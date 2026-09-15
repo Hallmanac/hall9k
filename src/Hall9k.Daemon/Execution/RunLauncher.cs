@@ -405,7 +405,11 @@ public sealed class RunLauncher(
                 // carried forward for it is the project's base too.
                 BaseBranch: runBaseBranch == project.BaseBranch ? string.Empty : runBaseBranch,
                 // Resolved above, once, so the record and every prompt below name the same commit.
-                BaseCommit: baseCommit));
+                BaseCommit: baseCommit,
+                // Carried forward from the resumed branch's own previous run, exactly as BaseBranch
+                // and BaseCommit are just above (StackedBaseResolver.ResumedBase's own doc) — null
+                // for a fresh cut, which is every ordinary run.
+                OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded

@@ -105,6 +105,17 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// (<c>StackedParentWatch</c>'s own doc has the full account; task eec9096d, 2026-09-15). Blank
     /// on every ordinary run, and blank here even for an ordinary stacked child whose own retarget
     /// happens through the ordinary closeout path rather than this fallback.
+    /// <para>
+    /// Set here either by this run's own <c>PullRequestOpened</c> (the run that actually hit the
+    /// fallback), or carried forward at dispatch from the run before this one when this run resumes
+    /// an already-open branch instead — <c>RunDispatched.OpenedAgainstBaseBranch</c>, populated
+    /// through <c>StackedBaseResolver.ResumedBase</c> exactly as <see cref="BaseBranch"/> and
+    /// <see cref="BaseCommit"/> already are. Without that carry-forward the field lived only on the
+    /// one run that appended <c>PullRequestOpened</c>, so it read blank on every later run of the
+    /// same task — including a follow-up's own <c>PullRequestUpdated</c>, which never sets it — the
+    /// moment the parent got so much as one follow-up (independent pre-PR review, cycle 1,
+    /// conformance lens).
+    /// </para>
     /// </summary>
     public string? OpenedAgainstBaseBranch { get; set; }
     /// <summary>
@@ -894,6 +905,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         PrReviewMentionCommentId = @event.Data.PrReviewMentionCommentId,
         BaseBranch = @event.Data.BaseBranch,
         BaseCommit = @event.Data.BaseCommit,
+        OpenedAgainstBaseBranch = @event.Data.OpenedAgainstBaseBranch,
         ExecutorMode = @event.Data.ExecutorMode,
         Model = @event.Data.Model ?? AgentModel.Unknown,
         ReviewStageComposition = @event.Data.ReviewStageComposition ?? ReviewStageComposition.FullPipeline,
