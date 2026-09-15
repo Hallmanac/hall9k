@@ -7,12 +7,20 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// stream, by whichever node observed the parent's merge.
 /// <para>
 /// Informational, like <see cref="PullRequestMechanicalRebaseAttempted"/>: it never moves
-/// <see cref="RunState"/> or <see cref="ReviewPhase"/> on its own. Ordinarily a stacked replay
-/// dispatches alongside it, and that is what actually moves this run on, arriving as the ordinary
-/// <c>TaskReopened</c> + <see cref="RunSuperseded"/> pair every automatic follow-up uses — except
-/// for a child that already sits on the base branch's own tip when its parent merges
-/// (<c>StackedParentVerdict.ParentMergedAligned</c>), where this event is the whole of what
-/// happens: there is nothing left to replay, so no follow-up run is dispatched alongside it.
+/// <see cref="RunState"/> or <see cref="ReviewPhase"/> on its own. A stacked replay dispatches
+/// alongside it — a no-op one, upstream and onto both the same commit, for a child that already
+/// sits on the base branch's own tip when its parent merges
+/// (<c>StackedParentVerdict.ParentMergedAligned</c>), which has nothing left to REPLAY but still
+/// needs the dispatch: it is the only path left that ever earns this task's own Decisions Log
+/// placeholder its real number once this retarget has moved it off the parent's branch
+/// (independent pre-PR review, cycle 1, adversarial lens — an earlier version of this fix skipped
+/// that dispatch here, so the retarget alone left the placeholder unrenumbered forever). Skipped
+/// only when the rebase budget is already spent and this retarget itself needed no write (GitHub
+/// had already moved the base on its own) — the one shape where this event really is the whole of
+/// what happens, the placeholder staying unrenumbered until a human's own h9k pr resolve grants a
+/// further lap. Whenever the dispatch does happen, it is what actually moves this run on, arriving
+/// as the ordinary <c>TaskReopened</c> + <see cref="RunSuperseded"/> pair every automatic follow-up
+/// uses.
 /// </para>
 /// <para>
 /// Appended for a <em>failed</em> retarget too, with <paramref name="Succeeded"/> false: the whole
