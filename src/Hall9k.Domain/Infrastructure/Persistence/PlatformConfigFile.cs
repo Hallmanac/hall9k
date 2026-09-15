@@ -90,8 +90,9 @@ public static class PlatformConfigFile
     /// from the daemon's own <c>ConfigurationBinder</c> call, Decisions Log #111's follow-up), so
     /// the diagnosis recovers the same siblings rather than discarding the whole section — a
     /// healthy <c>maxConcurrentTaskRuns</c> sitting next to a malformed
-    /// <c>maxConcurrentAgentSessions</c> must not be reported as skipped too. The four
-    /// review-cycle caps in <see cref="ConfigurationBinderBoundIntKeys"/> are the opposite case:
+    /// <c>maxConcurrentAgentSessions</c> must not be reported as skipped too. The leaves in
+    /// <see cref="ConfigurationBinderBoundIntKeys"/> (the four review-cycle caps and the four
+    /// message-poll settings) are the opposite case:
     /// <c>ResolverOwnedKeys</c> does not exclude them, so a value-shape failure among them can be
     /// one <c>ConfigurationBinder</c> itself throws on at daemon startup, and <see
     /// cref="DaemonFailsToStartOn"/> is what tells that case apart from a merely-ignored one so it
@@ -246,7 +247,8 @@ public static class PlatformConfigFile
     /// actually throws on too, rather than one this type's stricter POCO deserialize rejects but
     /// the binder quietly ignores. The binder only has a registered conversion for the scalar
     /// leaves named in <see cref="ConfigurationBinderBoundIntKeys"/> — the four review-cycle
-    /// caps, each a non-nullable <c>int</c> that <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c>
+    /// caps and the four message-poll settings, each a non-nullable <c>int</c> that
+    /// <c>Hall9k.Daemon.DaemonOptionsBinding.ResolverOwnedKeys</c>
     /// does NOT exclude from Program.cs's own <c>Bind()</c> call, unlike the three concurrency
     /// keys. <see cref="OperatingSettings.MaxConcurrentAgentSessions"/> is deliberately not one of
     /// these any more: it is retired and excluded from that same <c>Bind()</c> call (Decisions Log
@@ -312,6 +314,10 @@ public static class PlatformConfigFile
         nameof(OperatingSettings.MaxAdversarialReviewCycles),
         nameof(OperatingSettings.MaxFinalFullPassRounds),
         nameof(OperatingSettings.LifetimeReviewCycleBudget),
+        nameof(OperatingSettings.MessageActivePollMinSeconds),
+        nameof(OperatingSettings.MessageActivePollMaxSeconds),
+        nameof(OperatingSettings.MessageIdlePollMinSeconds),
+        nameof(OperatingSettings.MessageIdlePollMaxSeconds),
     ];
 
     /// <summary>
@@ -331,6 +337,10 @@ public static class PlatformConfigFile
         (nameof(OperatingSettings.MaxAdversarialReviewCycles), (settings, value) => settings.MaxAdversarialReviewCycles = value),
         (nameof(OperatingSettings.MaxFinalFullPassRounds), (settings, value) => settings.MaxFinalFullPassRounds = value),
         (nameof(OperatingSettings.LifetimeReviewCycleBudget), (settings, value) => settings.LifetimeReviewCycleBudget = value),
+        (nameof(OperatingSettings.MessageActivePollMinSeconds), (settings, value) => settings.MessageActivePollMinSeconds = value),
+        (nameof(OperatingSettings.MessageActivePollMaxSeconds), (settings, value) => settings.MessageActivePollMaxSeconds = value),
+        (nameof(OperatingSettings.MessageIdlePollMinSeconds), (settings, value) => settings.MessageIdlePollMinSeconds = value),
+        (nameof(OperatingSettings.MessageIdlePollMaxSeconds), (settings, value) => settings.MessageIdlePollMaxSeconds = value),
     ];
 
     /// <summary>
@@ -340,9 +350,9 @@ public static class PlatformConfigFile
     /// one anything downstream still reads (<see
     /// cref="ConfigFileReadResult.MaxConcurrentAgentSessionsIsFabricatedZero"/>, consulted by
     /// <see cref="OperatingSettingsResolver.ResolveMaxConcurrentTaskRuns"/> so it does not convert
-    /// a fabricated zero into a run ceiling of one); the four review-cycle caps have no such
-    /// downstream legacy-conversion concern, so their own zeroing is applied but not separately
-    /// reported.
+    /// a fabricated zero into a run ceiling of one); the four review-cycle caps and the four
+    /// message-poll settings have no such downstream legacy-conversion concern, so their own
+    /// zeroing is applied but not separately reported.
     /// </summary>
     /// <returns>Whether the quirk fired for maxConcurrentAgentSessions — see <see cref="ConfigFileReadResult.MaxConcurrentAgentSessionsIsFabricatedZero"/>.</returns>
     private static bool ApplyIntBinderQuirks(JsonObject document, OperatingSettings settings)
