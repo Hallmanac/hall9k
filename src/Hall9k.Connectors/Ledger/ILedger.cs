@@ -103,4 +103,16 @@ public interface ILedger
     /// retry loop otherwise.
     /// </summary>
     Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Fetches <paramref name="refName"/> fresh, then whether any path under
+    /// <paramref name="pathPrefix"/> currently exists in its tree — <see langword="false"/> both
+    /// when the ref does not exist yet and when it exists but nothing under the prefix does. What a
+    /// genesis-style "only when the folder is empty" write checks before writing: <see cref="ReadAsync"/>'s
+    /// own single-path, write-if-absent shape only ever answers about the one path a caller already
+    /// knows the name of, never "has anything at all ever landed here" (independent pre-PR review,
+    /// cycle 1, conformance and adversarial lenses, medium: a per-fingerprint absence check let a
+    /// second, later joiner self-claim ownership in a project that already had one).
+    /// </summary>
+    Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken);
 }

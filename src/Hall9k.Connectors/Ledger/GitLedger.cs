@@ -140,6 +140,27 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         throw new LedgerPushRejectedException(request.RefName, MaxPushAttempts, lastError);
     }
 
+    public async Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
+    {
+        RequireRegistered(refName);
+        await FetchRefAsync(repositoryPath, refName, cancellationToken);
+        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        if (tip is null)
+        {
+            return false;
+        }
+
+        (int exitCode, string output, string error) = await RunGitAsync(
+            repositoryPath, ["ls-tree", "-r", "--name-only", tip, "--", pathPrefix], null, null, cancellationToken);
+        if (exitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git ls-tree -r {tip} -- {pathPrefix} failed in {repositoryPath}: {error.Trim()}");
+        }
+
+        return output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length > 0;
+    }
+
     private static void RequireRegistered(string refName)
     {
         if (!LedgerRefRegistry.IsRegistered(refName))

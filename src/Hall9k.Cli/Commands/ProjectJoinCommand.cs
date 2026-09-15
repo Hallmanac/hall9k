@@ -422,11 +422,15 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
     /// <summary>
     /// Genesis (idea 202383dc, T1's own criterion 2): writes this project's first
-    /// <c>members/&lt;fingerprint&gt;.yaml</c>, role owner, only when the members ref does not
-    /// already hold one for this fingerprint — write-if-absent, the same shape
-    /// <see cref="EnsureRootFileAsync"/> already uses. Never overwrites an existing entry: a
-    /// second genesis join (a re-run, or a second node establishing what turns out to be the
-    /// identical root) finds the file already there and does nothing further.
+    /// <c>members/&lt;fingerprint&gt;.yaml</c>, role owner — only when the members ref's own
+    /// <c>members/</c> folder is entirely empty, never merely when this fingerprint's own file
+    /// happens to be absent. A per-fingerprint check let a second, later node establishing its own
+    /// fresh root self-claim ownership in a project that already had a real owner, since its own
+    /// fingerprint's file was of course absent too (independent pre-PR review, cycle 1, conformance
+    /// and adversarial lenses, medium) — <see cref="GitLedgerChainReader"/>'s own genesis rule is
+    /// "the very first commit ever touching a members file", and this must refuse to write at all
+    /// once that slot is spent, exactly the same criterion the chain reader will judge this write
+    /// against.
     /// </summary>
     private static async Task<bool> EnsureGenesisMemberFileAsync(
         ILedger ledger, string repositoryPath, string fingerprint, DateTimeOffset issuedAt,
@@ -435,9 +439,12 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         const string refName = "refs/hall9k/ledger/members";
         string path = $"members/{fingerprint}.yaml";
 
-        LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
-        if (current.Exists)
+        if (await ledger.HasAnyAsync(repositoryPath, refName, "members/", cancellationToken))
         {
+            // Genesis was already spent — by this fingerprint's own earlier join, or by someone
+            // else's — so this join is not this project's first member and must not self-claim
+            // ownership. A re-run whose own file is already there also lands here, correctly, as a
+            // no-op: HasAnyAsync is true either way.
             return false;
         }
 

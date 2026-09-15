@@ -69,6 +69,15 @@ internal sealed class FakeLedger : ILedger
         return Task.FromResult(LedgerWriteOutcome.Written(Guid.NewGuid().ToString("N")));
     }
 
+    public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
+    {
+        RequireRegistered(refName);
+        bool any = _files.Keys.Any(key =>
+            key.Repository == repositoryPath && key.RefName == refName
+            && key.Path.StartsWith(pathPrefix, StringComparison.Ordinal));
+        return Task.FromResult(any);
+    }
+
     private static void RequireRegistered(string refName)
     {
         if (!LedgerRefRegistry.IsRegistered(refName))
