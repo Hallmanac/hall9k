@@ -409,10 +409,20 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 {
                     current.Remove(fingerprint);
                 }
+                else if (ParseRole(content) is { } role)
+                {
+                    current[fingerprint] = new ProjectMember(fingerprint, role, ParseIssuedAt(content));
+                }
                 else
                 {
-                    MembershipRole role = ParseRole(content);
-                    current[fingerprint] = new ProjectMember(fingerprint, role, ParseIssuedAt(content));
+                    // A role that is neither "owner" nor "member" is malformed ledger data, not a
+                    // valid closed-set value to guess at — recorded as unverifiable rather than
+                    // silently granted Member-level trust (independent review finding: this
+                    // previously coerced any unrecognized role, including a missing or garbled
+                    // one, straight to Member).
+                    unverified.Add(new UnverifiedLedgerWrite(
+                        "membership", fingerprint, fingerprint,
+                        $"commit {commit} declares a role that is neither \"owner\" nor \"member\""));
                 }
             }
         }
@@ -460,10 +470,18 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             : DateTimeOffset.UnixEpoch;
     }
 
-    private static MembershipRole ParseRole(string? content)
+    /// <summary>Null for anything other than exactly "owner" or "member" — a missing or garbled
+    /// role is refused rather than guessed at, since <see cref="MembershipRole"/> is a closed pair
+    /// and every other value is invalid ledger data, not a third option to default to.</summary>
+    private static MembershipRole? ParseRole(string? content)
     {
         string? raw = content is null ? null : ExtractQuotedYamlValue(content, "role");
-        return string.Equals(raw, "owner", StringComparison.OrdinalIgnoreCase) ? MembershipRole.Owner : MembershipRole.Member;
+        return raw switch
+        {
+            _ when string.Equals(raw, "owner", StringComparison.OrdinalIgnoreCase) => MembershipRole.Owner,
+            _ when string.Equals(raw, "member", StringComparison.OrdinalIgnoreCase) => MembershipRole.Member,
+            _ => null,
+        };
     }
 
     /// <summary>Fetches <paramref name="refName"/> fresh. A missing remote ref is not a failure —
@@ -472,17 +490,29 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// <c>FetchRefAsync</c> applies. A genuine failure (network, credentials) is thrown rather than
     /// swallowed into "proceed as though this ref were simply absent": that would let an
     /// unreachable ledger compute as an empty or partial chain instead of surfacing the read as
-    /// having failed at all (independent pre-PR review, cycle 1, adversarial lens, medium).</summary>
+    /// having failed at all (independent pre-PR review, cycle 1, adversarial lens, medium). A
+    /// confirmed-missing remote ref also clears any local copy an earlier fetch left behind —
+    /// otherwise <see cref="ResolveTipAsync"/> would keep reading that stale local tip as though
+    /// origin still held it, letting a ref origin has since deleted go on granting whatever it
+    /// last granted (independent review finding).</summary>
     private async Task FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
     {
         ProcessResult result = await runner("git", ["fetch", "origin", $"+{refName}:{refName}"], repositoryPath, cancellationToken);
-        if (result.ExitCode != 0 && !result.StandardError.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
+        if (result.ExitCode == 0)
+        {
+            return;
+        }
+
+        if (!result.StandardError.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
         {
             throw new InvalidOperationException(
                 $"git fetch of {refName} from origin in {repositoryPath} failed (exit {result.ExitCode}): "
                 + $"{result.StandardError.Trim()} — refusing to compute trust from a possibly stale or "
                 + "incomplete read.");
         }
+
+        // Best-effort: if no local copy exists either, this is simply a no-op.
+        await runner("git", ["update-ref", "-d", refName], repositoryPath, cancellationToken);
     }
 
     private async Task<string?> ResolveTipAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
@@ -501,11 +531,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     private async Task<IReadOnlyList<(string Sha, DateTimeOffset Time)>> CommitsOldestFirstAsync(
         string repositoryPath, string tip, CancellationToken cancellationToken)
     {
-        string? output = await RunGitCaptureAsync(
+        string output = await RunGitCaptureOrThrowAsync(
             repositoryPath, ["log", "--format=%H%x09%cI", "--reverse", "--topo-order", "--first-parent", tip], cancellationToken);
 
         List<(string, DateTimeOffset)> commits = [];
-        foreach (string line in (output ?? string.Empty).Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        foreach (string line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             string[] parts = line.Split('\t', 2);
             if (parts.Length != 2
@@ -527,26 +557,56 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     private async Task<IReadOnlyList<string>> CommitsTouchingPathAsync(
         string repositoryPath, string tip, string path, CancellationToken cancellationToken)
     {
-        string? output = await RunGitCaptureAsync(
+        string output = await RunGitCaptureOrThrowAsync(
             repositoryPath, ["log", "--format=%H", "--topo-order", "--first-parent", tip, "--", path], cancellationToken);
-        return [.. (output ?? string.Empty).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
+        return [.. output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
     }
 
     /// <summary>Every path <paramref name="commit"/> added, changed, or removed relative to its own
-    /// parent(s) — <c>--root</c> so a commit with no parent (a fresh ref's first commit) diffs
-    /// against the empty tree instead of failing.</summary>
+    /// mainline parent — <c>--root</c> so a commit with no parent (a fresh ref's first commit) diffs
+    /// against the empty tree instead of failing, and <c>--diff-merges=first-parent</c> so a merge
+    /// commit diffs against its first parent alone rather than git's own bare default of naming no
+    /// paths at all for a merge (confirmed live against a throwaway repo). Every walk that feeds a
+    /// commit here already replays <c>--topo-order --first-parent</c>
+    /// (<see cref="CommitsOldestFirstAsync"/>), so a merge commit only ever appears when its first
+    /// parent is the ref's own prior mainline tip — a path introduced purely via that merge's second
+    /// parent must diff as mainline-introduced right here, or it is applied to nothing, recorded as
+    /// unverified for nothing, and simply vanishes from the walk (independent pre-PR review,
+    /// cycle 2, conformance lens, medium).</summary>
     private async Task<IReadOnlyList<string>> ChangedPathsAsync(string repositoryPath, string commit, CancellationToken cancellationToken)
     {
-        string? output = await RunGitCaptureAsync(
-            repositoryPath, ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", commit], cancellationToken);
-        return [.. (output ?? string.Empty).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
+        string output = await RunGitCaptureOrThrowAsync(
+            repositoryPath,
+            ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "--diff-merges=first-parent", commit],
+            cancellationToken);
+        return [.. output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
     }
 
     /// <summary>The content of <paramref name="path"/> at <paramref name="commit"/>'s own tree, or
     /// null when the path is not there — either it never existed at this commit, or (a members
-    /// removal) this commit is the one that deleted it.</summary>
-    private async Task<string?> ReadAtCommitAsync(string repositoryPath, string commit, string path, CancellationToken cancellationToken) =>
-        await RunGitCaptureAsync(repositoryPath, ["show", $"{commit}:{path}"], cancellationToken);
+    /// removal) this commit is the one that deleted it. Only that specific, documented git message
+    /// is read as absence; any other failure (a corrupt or incomplete local object, disk I/O) is
+    /// thrown instead of silently read as a deletion, which would let a broken local read change
+    /// what this walk trusts rather than simply fail (independent review finding: this previously
+    /// folded every non-zero exit from <c>git show</c> into absence).</summary>
+    private async Task<string?> ReadAtCommitAsync(string repositoryPath, string commit, string path, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner("git", ["show", $"{commit}:{path}"], repositoryPath, cancellationToken);
+        if (result.ExitCode == 0)
+        {
+            return result.StandardOutput;
+        }
+
+        if (result.StandardError.Contains("does not exist in", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        throw new InvalidOperationException(
+            $"git show {commit}:{path} failed in {repositoryPath} (exit {result.ExitCode}): "
+            + $"{result.StandardError.Trim()} — refusing to read this as a deletion when the failure was "
+            + "never confirmed to mean the path is actually absent.");
+    }
 
     /// <summary>Verifies <paramref name="commitSha"/> was actually signed by
     /// <paramref name="publicKeyLine"/> — the identical technique
@@ -631,5 +691,24 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     {
         ProcessResult result = await runner("git", arguments, repositoryPath, cancellationToken);
         return result.ExitCode == 0 ? result.StandardOutput : null;
+    }
+
+    /// <summary>For a walk that has already confirmed <c>tip</c> or <c>commit</c> resolves: a log
+    /// or diff-tree over a commit this walk already knows exists has no legitimate failure mode, so
+    /// unlike <see cref="RunGitCaptureAsync"/> a non-zero exit here is thrown rather than folded
+    /// into "no commits"/"no changed paths" — a corrupt pack or a local git failure must stop the
+    /// walk, never silently read as though that commit changed nothing at all (independent review
+    /// finding, the same fail-closed reasoning <see cref="ReadAtCommitAsync"/> now applies).</summary>
+    private async Task<string> RunGitCaptureOrThrowAsync(string repositoryPath, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner("git", arguments, repositoryPath, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git {string.Join(' ', arguments)} failed in {repositoryPath} (exit {result.ExitCode}): "
+                + $"{result.StandardError.Trim()} — refusing to read this commit as though it changed nothing.");
+        }
+
+        return result.StandardOutput;
     }
 }
