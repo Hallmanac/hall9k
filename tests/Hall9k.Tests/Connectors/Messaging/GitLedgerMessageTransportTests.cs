@@ -46,4 +46,82 @@ public sealed class GitLedgerMessageTransportTests
 
         value.Should().Be(rawValue);
     }
+
+    [Theory]
+    [InlineData("messages/5.json", 5L)]
+    [InlineData("messages/0.json", 0L)]
+    [InlineData("messages/9999999999.json", 9999999999L)]
+    public void ParseSeqFromPath_AcceptsTheExactCanonicalName(string path, long expectedSeq)
+    {
+        long? seq = GitLedgerMessageTransport.ParseSeqFromPath(path);
+
+        seq.Should().Be(expectedSeq);
+    }
+
+    [Theory]
+    [InlineData("messages/5.txt", "wrong extension")]
+    [InlineData("messages/05.json", "a leading zero could collide with the canonical name for 5")]
+    [InlineData("messages/+5.json", "a leading sign could collide with the canonical name for 5")]
+    [InlineData("messages/x/5.json", "a nested path is never an envelope this ref's own writer wrote")]
+    [InlineData("messages/5.json.bak", "wrong extension")]
+    [InlineData("messages/five.json", "not a number at all")]
+    [InlineData("messages/.json", "no digits at all")]
+    public void ParseSeqFromPath_RefusesAnythingThatIsNotTheExactCanonicalName(string path, string because)
+    {
+        long? seq = GitLedgerMessageTransport.ParseSeqFromPath(path);
+
+        seq.Should().BeNull(because);
+    }
+
+    [Fact]
+    public void HasSshSignatureHeader_TrueForAnSshSignedCommit()
+    {
+        string rawCommit =
+            "tree deadbeef\n"
+            + "parent cafebabe\n"
+            + "author A <a@example.com> 1700000000 +0000\n"
+            + "committer A <a@example.com> 1700000000 +0000\n"
+            + "gpgsig -----BEGIN SSH SIGNATURE-----\n"
+            + " U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAg\n"
+            + " -----END SSH SIGNATURE-----\n"
+            + "\n"
+            + "Send message 1\n";
+
+        GitLedgerMessageTransport.HasSshSignatureHeader(rawCommit).Should().BeTrue();
+    }
+
+    [Fact]
+    public void HasSshSignatureHeader_FalseForAnOpenPgpSignedCommit()
+    {
+        // Exactly the shape a forged commit takes when signed with an OpenPGP key instead of the
+        // sender's own registered SSH key: git verify-commit still exits 0 for it against the
+        // local machine's own default keyring, so this check must never trust that exit code
+        // without confirming the signature itself is SSH first.
+        string rawCommit =
+            "tree deadbeef\n"
+            + "parent cafebabe\n"
+            + "author Attacker <attacker@example.com> 1700000000 +0000\n"
+            + "committer Attacker <attacker@example.com> 1700000000 +0000\n"
+            + "gpgsig -----BEGIN PGP SIGNATURE-----\n"
+            + " iQEzBAABCAAdFiEE\n"
+            + " -----END PGP SIGNATURE-----\n"
+            + "\n"
+            + "Send message 1\n";
+
+        GitLedgerMessageTransport.HasSshSignatureHeader(rawCommit).Should().BeFalse();
+    }
+
+    [Fact]
+    public void HasSshSignatureHeader_FalseWhenThereIsNoSignatureAtAll()
+    {
+        string rawCommit =
+            "tree deadbeef\n"
+            + "parent cafebabe\n"
+            + "author A <a@example.com> 1700000000 +0000\n"
+            + "committer A <a@example.com> 1700000000 +0000\n"
+            + "\n"
+            + "Send message 1\n";
+
+        GitLedgerMessageTransport.HasSshSignatureHeader(rawCommit).Should().BeFalse();
+    }
 }
