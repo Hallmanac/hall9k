@@ -135,10 +135,16 @@ public static class GateDurationHistoryQuery
 
     /// <summary>
     /// The single most recent recorded wall-clock duration for <paramref name="gateName"/> from a
-    /// run <paramref name="nodeId"/> itself dispatched — the raw material for a clean-base
-    /// comparison's own budget (task: the clean-base comparison can actually finish — origin
-    /// incident 2026-09-05/06, a fixed 5-minute cap that this project's own 11-12 minute test gate
-    /// could never meet). Node-scoped for the identical reason <c>NodeLoad.LiveSlots</c> filters
+    /// run <paramref name="nodeId"/> itself dispatched, excluding <paramref name="excludingRunId"/>
+    /// so a run's own just-recorded sample never budgets a comparison already reading this history
+    /// for that same run (independent pre-PR review, cycle 1, adversarial lens, low: the clean-base
+    /// comparison races against a recording budget elsewhere in <c>VerificationRunner</c>, so this
+    /// run's own failed-gate duration can already be on the stream by the time this call runs) — the
+    /// same exclusion <see cref="LoadRecentHistoryAsync"/> already applies for the identical reason,
+    /// just against a single latest sample instead of a trailing average. The raw material for a
+    /// clean-base comparison's own budget (task: the clean-base comparison can actually finish —
+    /// origin incident 2026-09-05/06, a fixed 5-minute cap that this project's own 11-12 minute test
+    /// gate could never meet). Node-scoped for the identical reason <c>NodeLoad.LiveSlots</c> filters
     /// its own runs by node: a duration observed on one machine says nothing reliable about
     /// another's. This wants "how long did this take here last time", not
     /// <see cref="GateDurationHistory"/>'s own trailing average, so it is the newest matching
@@ -159,10 +165,12 @@ public static class GateDurationHistoryQuery
     /// </para>
     /// </summary>
     public static async Task<TimeSpan?> MostRecentDurationOnNodeAsync(
-        IQuerySession session, Guid projectId, Guid nodeId, string gateName, CancellationToken cancellationToken)
+        IQuerySession session, Guid projectId, Guid nodeId, string gateName, Guid excludingRunId,
+        CancellationToken cancellationToken)
     {
         IReadOnlyList<RunListItem> runs = await session.Query<RunListItem>()
             .Where(run => run.NodeId == nodeId)
+            .Where(run => run.Id != excludingRunId)
             .Where(run => run.MatchesSql(
                 "exists (select 1 from mt_doc_tasklistitem t where t.id = (d.data ->> 'taskId')::uuid and t.data ->> 'projectId' = ?)",
                 projectId.ToString()))

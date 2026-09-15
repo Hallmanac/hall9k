@@ -3534,6 +3534,84 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// Task: a composition-none lap whose mandatory gate fails after the pre-final-pass rebase
+    /// parks or fails the run instead of stopping silently with the task left Claimed. Covers the
+    /// ordinary fail-hard path's own control flow at the <c>ReviewEngine</c> layer — not the
+    /// 2026-09-15 08:57 incident's own timing gap, which lived entirely inside
+    /// <c>VerificationRunner</c>'s own gate-failure recording and is covered there instead, at the
+    /// layer that actually caused it
+    /// (<see cref="VerificationRunnerTests.A_failing_gate_records_the_failure_before_a_slow_clean_base_comparison_finishes"/>,
+    /// independent pre-PR review, cycle 1, both lenses, medium): this test's own scripted executor
+    /// records no real elapsed time, so nothing here ever exercised that gap in the first place.
+    /// An earlier real rebase already landed and was gated clean, then a StackReplay lap's own
+    /// renumbering-only no-op — real content (a Decisions Log placeholder assigned its number), not
+    /// an infrastructure hiccup — moved this branch's tip again without itself being a real rebase
+    /// (<see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/>'s own trailing-no-op
+    /// carry-forward stays false once an earlier real rebase has already been gated clean). The
+    /// mandatory gate the composition-none path still owes (Decisions Log #92's review guarantee is
+    /// waived, not this one) fails for real, and repair is not eligible — <c>ReviewEngine</c>'s own
+    /// <c>EnsureGateCoversHeadRepairEligibleAsync</c> must not return
+    /// <c>GateCoverageOutcome.Stop</c> without a park or a fail already on the stream: the ordinary
+    /// path here already reaches a task-level disposition on its own (<c>VerificationRunner</c>'s
+    /// own <c>RecordFailureAsync</c>), so <c>EnsureGateFailureRecordedAsync</c>'s own park branch is
+    /// never reached. That branch — the lost-generation-race shape it actually exists for — has no
+    /// test of its own yet (independent pre-PR review, cycle 1, adversarial lens, low: named here
+    /// rather than fixed, since reproducing the race deterministically needs a seam this suite does
+    /// not have today).
+    /// </summary>
+    [Fact]
+    public async Task A_settling_gate_failure_from_a_renumbering_only_no_op_under_composition_none_fails_the_run_with_no_repair_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> failingVerifyCommands =
+        [
+            new Hall9k.Domain.Features.Project.VerifyCommand(
+                "test", GateScript.New().Print("DecisionsLogNumberingGuardTests: buried placeholder, real content").Exit(1).Command),
+        ];
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAndGateAsync(
+            store, failingVerifyCommands, cts.Token, ReviewStageComposition.None);
+
+        // An earlier real rebase already landed and was gated clean (08:41's own "initial gates
+        // passed"), then a later renumbering-only no-op moved this branch's tip again — the exact
+        // pair RunAggregate.Apply(RunRebasedOntoBase) has to tell apart so the second landing does
+        // not wrongly inherit the first one's repair eligibility.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId,
+                new RunRebasedOntoBase(
+                    runId, "aaaaaaa", "bbbbbbb", WasNoOp: false, RecoveredByAgentSession: false,
+                    "rebased onto origin/main", Now),
+                new VerificationPassed(runId, Now, null, RanFullScope: true, "bbbbbbb", ""),
+                new RunRebasedOntoBase(
+                    runId, "bbbbbbb", "bbbbbbb", WasNoOp: true, RecoveredByAgentSession: false,
+                    "StackReplay lap: Decisions Log placeholder assigned its number", Now,
+                    DecisionsLogRenumbered: true));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new();
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the gate fails with no real rebase behind it, so today's fail-hard contract is unchanged");
+        executor.Spawns.Should().BeEmpty(
+            "composition none never dispatches a reviewer, and no repair session is repair-eligible here");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Failed, "a mandatory gate failure with no repair eligibility must end the run, never leave it live with nothing to show for it");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Failed, "the task must leave Claimed rather than sit unresolved with a dead run");
+        task.FailureReason.Should().Contain("DecisionsLogNumberingGuardTests", "the gate's own failure summary must be named for a human to act on");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<SettlingGateRepairDispatched>().Should().BeEmpty("a renumbering-only no-op earns no repair lap");
+        events.OfType<Hall9k.Domain.Features.Run.Events.RunFailed>().Should().ContainSingle();
+    }
+
+    /// <summary>
     /// Task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
     /// repair lap inside the same run instead of failing it. A repair session that never actually
     /// fixes the gate sends the loop straight back to the identical failure every time Settling is

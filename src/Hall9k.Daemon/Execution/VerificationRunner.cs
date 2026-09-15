@@ -60,15 +60,15 @@ public sealed partial class VerificationRunner(
     /// of failing it): <see cref="FailedGateName"/> names a genuine gate failure — whether
     /// <c>allowRepairInsteadOfFail</c> was true (the run stays open, for a caller to dispatch a
     /// repair session over) or false (the ordinary <see cref="RunFailed"/>/<c>TaskFailed</c> append
-    /// still runs, exactly as <see cref="VerifyAsync"/> always has). <see cref="FailureOutput"/>,
-    /// by contrast, is populated only on the repair-eligible path — the reason a caller has to read
-    /// <see cref="FailedGateName"/>, not <see cref="Passed"/> alone, to tell a genuine gate failure
-    /// apart from a pre-gate one (stranded work, a missing run or task, or an abandoned task) when
-    /// deciding whether a failure is safe to dispatch a repair session over (independent pre-PR
-    /// review, cycle 1, adversarial lens): every pre-gate failure shape leaves both null, since
-    /// nothing downstream of those ever reads them — the run already failed (and, for stranded
-    /// work, the task did too) or was retired superseded (for an abandoned task) by the time either
-    /// returns.
+    /// still runs, exactly as <see cref="VerifyAsync"/> always has). <see cref="FailureOutput"/> is
+    /// populated for either path once a genuine gate failure is recorded — the reason a caller has
+    /// to read <see cref="FailedGateName"/>, not <see cref="Passed"/> alone, to tell a genuine gate
+    /// failure apart from a pre-gate one (stranded work, a missing run or task, or an abandoned
+    /// task) when deciding whether a failure is safe to dispatch a repair session over, or what to
+    /// show a human when it is not (independent pre-PR review, cycle 1, both lenses): every pre-gate
+    /// failure shape leaves both null, since nothing downstream of those ever reads them — the run
+    /// already failed (and, for stranded work, the task did too) or was retired superseded (for an
+    /// abandoned task) by the time either returns.
     /// </summary>
     public readonly record struct SettlingVerificationResult(bool Passed, string? FailedGateName, string? FailureOutput);
 
@@ -261,10 +261,10 @@ public sealed partial class VerificationRunner(
                 return new SettlingVerificationResult(false, failedGate.Name, reportedReason);
             }
 
-            await RecordGateFailureAsync(
+            string recordedReason = await RecordGateFailureAsync(
                 runId, taskId, run.NodeId, project, failedGate, reason, isInfrastructureFailure, gateDurations,
                 cancellationToken);
-            return new SettlingVerificationResult(false, failedGate.Name, null);
+            return new SettlingVerificationResult(false, failedGate.Name, recordedReason);
         }
 
         foreach (VerifyCommand gate in gates)
@@ -1530,6 +1530,25 @@ public sealed partial class VerificationRunner(
     }
 
     /// <summary>
+    /// How long a fresh clean-base comparison gets to answer before this run's own terminal
+    /// disposition stops waiting on it (independent pre-PR review, cycle 1, both lenses, medium —
+    /// the 2026-09-15 08:57 incident: about 14.5 minutes between the `test` gate actually failing
+    /// and <see cref="RunFailed"/>/<c>TaskFailed</c> landing, with the task reading Claimed and
+    /// nothing under Needs you for the whole gap, because <see cref="DescribeCleanBaseComparisonAsync"/>
+    /// ran that same ~15-minute gate a second time, against a clean checkout of main, before
+    /// <see cref="RecordFailureAsync"/> ever got a chance to write). Pinned to
+    /// <see cref="DaemonOptions.PollInterval"/> itself, not a fixed guess (independent pre-PR
+    /// review, cycle 1, conformance lens, medium: a fixed 10-second budget was still up to two full
+    /// five-second sweeps longer than the one sweep <c>h9k status</c> is supposed to need), so the
+    /// budget tracks whatever the daemon's own sweep cadence is actually configured to. Generous
+    /// enough that a cache hit or a gate that genuinely fails fast even freshly run — every one of
+    /// this file's own clean-base comparison tests — still lands inline exactly as before; short
+    /// enough that a comparison shaped like the gate itself (minutes, not seconds) never again holds
+    /// a real failure hostage behind it.
+    /// </summary>
+    private TimeSpan CleanBaseComparisonRecordingBudget => options.Value.PollInterval;
+
+    /// <summary>
     /// Records a gate's real failure, first asking whether this same gate also fails against a
     /// clean checkout of the project's own base branch — the Windows field report's own origin
     /// incident (task: a verify gate that cannot pass on clean main is caught before it costs a
@@ -1542,14 +1561,68 @@ public sealed partial class VerificationRunner(
     /// same way on a clean checkout of main, and re-running the comparison there would report the
     /// container's own outage as "the gate also fails on clean base" — undoing the classification
     /// this same method's caller just did (independent pre-PR review, cycle 1, conformance lens).
+    /// Returns the reason actually recorded onto <see cref="RunFailed"/> — annotated when the
+    /// comparison won the race, the caller's own plain <paramref name="reason"/> otherwise — so a
+    /// caller such as <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s own safety net always has a
+    /// real diagnostic in hand for a human, not null (independent pre-PR review, cycle 1, both
+    /// lenses, medium: nothing downstream of the fail-hard path used to receive this method's own
+    /// output at all).
+    /// <para>
+    /// Races that comparison against <see cref="CleanBaseComparisonRecordingBudget"/> rather than
+    /// always awaiting it before <see cref="RecordFailureAsync"/> ever runs (see that budget's own
+    /// doc for the incident this closes). Winning the race is unchanged from before: the annotated
+    /// reason lands inline, in the same transaction shape this method always used, and is what this
+    /// method returns. Losing it no longer means this call itself keeps waiting for the comparison
+    /// to finish (independent pre-PR review, cycle 1, both lenses, medium: awaiting it here even
+    /// after giving up on including it reintroduced the identical 08:57 gap one layer up, since
+    /// every caller of this method — including the safety net whose only job is to never block
+    /// longer than one sweep — still sat behind this call's own return) — the plain reason is
+    /// recorded and returned immediately, and the comparison is left running in the background,
+    /// observed only for an unhandled exception rather than awaited, so it can still warm
+    /// <see cref="CleanBaseGateVerdict"/> for whichever run next asks this same question without
+    /// holding this method, or anything downstream of it, open a second longer than the budget.
+    /// Its own annotation is discarded once it finally answers — <see cref="RunFailed"/> is
+    /// append-only, so there is nothing left here to attach it to. The run's own node slot is freed
+    /// the moment this call returns (<c>NodeLoad</c> counts only live runs), while the background
+    /// comparison keeps a full gate-sized process (a `dotnet build`/`dotnet test` against
+    /// <c>repo/dev</c>, up to <see cref="AdHocGateRunner.ComputeComparisonBudget"/>'s own budget)
+    /// running unaccounted for — a real, but bounded, cost against a freshly dispatched run landing
+    /// on the same node before that background process exits (independent pre-PR review, cycle 1,
+    /// conformance lens, low).
+    /// </para>
     /// </summary>
-    private async Task RecordGateFailureAsync(
+    private async Task<string> RecordGateFailureAsync(
         Guid runId, Guid taskId, Guid nodeId, ProjectDetails? project, VerifyCommand gate, string reason,
         bool isInfrastructureFailure, IReadOnlyList<GateDuration> gateDurations, CancellationToken cancellationToken)
     {
-        string reportedReason = await BuildReportedGateFailureReasonAsync(
+        Task<string> reportedReasonTask = BuildReportedGateFailureReasonAsync(
             runId, nodeId, project, gate, reason, isInfrastructureFailure, cancellationToken);
-        await RecordFailureAsync(runId, taskId, gate.Name, reportedReason, gateDurations, cancellationToken);
+        Task first = await Task.WhenAny(
+            reportedReasonTask, Task.Delay(CleanBaseComparisonRecordingBudget, cancellationToken));
+
+        if (first == reportedReasonTask)
+        {
+            string reportedReason = await reportedReasonTask;
+            await RecordFailureAsync(runId, taskId, gate.Name, reportedReason, gateDurations, cancellationToken);
+            return reportedReason;
+        }
+
+        // The comparison is still running past the budget — this run's own terminal disposition,
+        // and every caller of this method, must not wait on it any longer. Recorded now, with the
+        // plain reason, and returned as-is: the comparison itself keeps running below, off this
+        // call's own critical path, unawaited — only watched for a fault so an unobserved
+        // cancellation never reaches the process-wide TaskScheduler.UnobservedTaskException handler;
+        // every other exception is already handled inside BuildReportedGateFailureReasonAsync's own
+        // try/catch. Its own annotation is discarded once it finally answers — RunFailed is
+        // append-only, so there is nothing left to attach it to — and the next run against this
+        // same base commit is who benefits from the CleanBaseGateVerdict it still warms.
+        await RecordFailureAsync(runId, taskId, gate.Name, reason, gateDurations, cancellationToken);
+        _ = reportedReasonTask.ContinueWith(
+            static faulted => faulted.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return reason;
     }
 
     /// <summary>
@@ -1773,9 +1846,16 @@ public sealed partial class VerificationRunner(
             // not a fixed cap alone (task: the clean-base comparison can actually finish — origin
             // incident 2026-09-05/06, a 5-minute cap this project's own 11-12 minute test gate
             // could never meet, so every comparison reported "inconclusive" instead of ever
-            // actually diagnosing the red main it was run for).
+            // actually diagnosing the red main it was run for). Excludes this same run (independent
+            // pre-PR review, cycle 1, adversarial lens, low): RecordGateFailureAsync now races this
+            // comparison against a recording budget and can record this run's own failed gate — a
+            // real, but possibly very short, wall-clock sample — before this read runs, and without
+            // the exclusion that sample could become "the most recent" and shrink the budget a
+            // comparison already in flight has yet to read, the same way excludingRunId already
+            // keeps a run's own pass out of GateDurationHistoryQuery.LoadRecentHistoryAsync's trailing
+            // average.
             TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
-                query, project.Id, nodeId, gate.Name, cancellationToken);
+                query, project.Id, nodeId, gate.Name, excludingRunId: runId, cancellationToken);
             TimeSpan comparisonTimeout = AdHocGateRunner.ComputeComparisonBudget(recentDuration, options.Value.VerifyGateTimeout);
             GateCheckResult result = await AdHocGateRunner.RunAsync(checkout, gate.Command, comparisonTimeout, cancellationToken);
             if (result.Outcome != GateCheckOutcome.Failed)

@@ -625,7 +625,13 @@ public sealed class ReviewEngine(
                                     // already recorded RunFailed/TaskFailed itself, exactly as
                                     // VerifyAsync always has, since allowRepairInsteadOfFail was
                                     // false above (or the pre-gate check failed before it was ever
-                                    // consulted).
+                                    // consulted). EnsureGateFailureRecordedAsync is the safety net
+                                    // for when it did not (task: a composition-none lap whose
+                                    // mandatory gate fails after the pre-final-pass rebase parks or
+                                    // fails the run instead of stopping silently with the task left
+                                    // Claimed).
+                                    await EnsureGateFailureRecordedAsync(
+                                        context, gateResult.FailedGateName, gateResult.FailureOutput, cancellationToken);
                                     return false;
                                 }
 
@@ -1094,6 +1100,12 @@ public sealed class ReviewEngine(
                             if (!eligibleForSettlingGateRepair || reverifyGateResult.FailedGateName is null)
                             {
                                 // VerificationRunner already failed the run and task honestly.
+                                // EnsureGateFailureRecordedAsync is the safety net for when it did
+                                // not (task: a composition-none lap whose mandatory gate fails
+                                // after the pre-final-pass rebase parks or fails the run instead of
+                                // stopping silently with the task left Claimed).
+                                await EnsureGateFailureRecordedAsync(
+                                    context, reverifyGateResult.FailedGateName, reverifyGateResult.FailureOutput, cancellationToken);
                                 return false;
                             }
 
@@ -2593,6 +2605,12 @@ public sealed class ReviewEngine(
         // FailedGateName, not just Passed, decides repair eligibility here too.
         if (!eligibleForSettlingGateRepair || gateResult.FailedGateName is null)
         {
+            // VerificationRunner already failed the run and task honestly on the ordinary path.
+            // EnsureGateFailureRecordedAsync is the safety net for when it did not — this method
+            // must never return Stop having recorded neither a park nor a failure (this task's
+            // own objective).
+            await EnsureGateFailureRecordedAsync(
+                context, gateResult.FailedGateName, gateResult.FailureOutput, cancellationToken);
             return GateCoverageOutcome.Stop;
         }
 
@@ -2601,6 +2619,65 @@ public sealed class ReviewEngine(
             humanGuidance: null, enforceCap: true, cancellationToken)
             ? GateCoverageOutcome.LoopAgain
             : GateCoverageOutcome.Stop;
+    }
+
+    /// <summary>
+    /// The safety net for the three call sites below that dispatch through
+    /// <c>VerifyForSettlingAsync</c> (task: a composition-none lap whose mandatory gate fails after
+    /// the pre-final-pass rebase parks or fails the run instead of stopping silently with the task
+    /// left Claimed) — not every non-repair-eligible mandatory-gate failure in this file:
+    /// <see cref="EnsureGateCoversHeadAsync"/> calls <c>VerifyAsync</c> directly and carries no net
+    /// of its own, and neither do <c>RunSupervisor</c>'s own two ordinary-pipeline call sites
+    /// (independent pre-PR review, cycle 1, adversarial lens, low — naming the gap honestly rather
+    /// than claiming a coverage this method does not have). Every one of the three sites this
+    /// method does cover already trusts <c>VerifyForSettlingAsync</c>'s own fail-hard path
+    /// (<c>allowRepairInsteadOfFail</c> false) to have recorded <c>RunFailed</c>/<c>TaskFailed</c>
+    /// itself, and it does on the ordinary path — but nothing local to any of those call sites
+    /// actually verifies it landed, and <c>VerificationRunner</c>'s own <c>RecordFailureAsync</c>
+    /// and <c>FailBeforeGatesAsync</c> both silently skip that append on a lost generation race
+    /// (their shared <c>catch (EventStreamUnexpectedMaxEventIdException)</c>, which logs and moves
+    /// on rather than retrying) — the exact shape that leaves a run live with no session, no park,
+    /// and no failure, and its task stuck Claimed with nothing under Needs you, for as long as
+    /// nothing else happens to notice.
+    /// <para>
+    /// Reads the run fresh rather than trusting the caller's own in-memory <see cref="RunAggregate"/>,
+    /// which was loaded before <c>VerifyForSettlingAsync</c> ran and cannot see what that call just
+    /// did. A run already terminal needed nothing more — the ordinary path already worked, or an
+    /// abandoned task's own retirement (<c>RetireAbandonedRunAsync</c>) already ended it a different
+    /// way. A run still live gets an explicit park, naming the failed gate and its own failure
+    /// output — <paramref name="failureOutput"/> is the same <c>SettlingVerificationResult.FailureOutput</c>
+    /// every call site already has in hand for its own repair dispatch, carried through here too so a
+    /// human under Needs you gets the actual diagnostic rather than a bare gate name (Copilot review,
+    /// this PR) — and offering the same resolve verbs (<c>h9k review resolve &lt;task&gt; --needs-fixes</c>
+    /// or <c>--merge-ready</c>) a review park already does, so a human finds this under Needs you
+    /// instead of a dead run nobody is watching.
+    /// </para>
+    /// </summary>
+    private async Task EnsureGateFailureRecordedAsync(
+        ReviewContext context, string? failedGateName, string? failureOutput, CancellationToken cancellationToken)
+    {
+        await using (IQuerySession query = store.QuerySession())
+        {
+            RunDetails? run = await query.LoadAsync<RunDetails>(context.RunId, cancellationToken);
+            if (run is { State.IsTerminal: true })
+            {
+                return;
+            }
+        }
+
+        string what = failedGateName is null
+            ? "Verification could not be completed"
+            : $"The mandatory build/test gate failed on '{failedGateName}'";
+        string diagnostic = string.IsNullOrWhiteSpace(failureOutput)
+            ? string.Empty
+            : $"\n\n{failureOutput}";
+        await ParkAsync(
+            context.RunId, context.TaskId,
+            $"{what}, and this run was left live instead of ending: worth a human's look rather " +
+            "than leaving it with no session and nothing under Needs you. Resolve with " +
+            $"h9k review resolve {context.TaskId} --needs-fixes \"<guidance>\" to dispatch a fix session, or " +
+            $"--merge-ready once you've verified it yourself.{diagnostic}",
+            cancellationToken: cancellationToken);
     }
 
     /// <summary>
