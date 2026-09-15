@@ -86,6 +86,7 @@ public sealed class NodeVouchCommand : Hall9kAsyncCommand<NodeVouchCommand.Setti
 
         int vouchedInto = 0;
         string? targetFingerprint = null;
+        List<string> failedProjects = [];
         foreach (ProjectDetails project in projects)
         {
             try
@@ -99,17 +100,30 @@ public sealed class NodeVouchCommand : Hall9kAsyncCommand<NodeVouchCommand.Setti
                     targetFingerprint ??= fingerprint;
                 }
             }
-            // A per-project refusal (this node not yet enrolled in THAT project's own copy of the
-            // owner chain — each project's ledger is independent) is a reason to skip that one
-            // project, never to abort a vouch that already landed in an earlier one: a
-            // DomainValidationException left uncaught here would otherwise throw partway through
-            // the loop, leaving an already-successful write unreported and its own
-            // OwnerDecider.VouchNode event never appended (blast-radius sweep finding).
-            catch (Exception exception)
-                when (exception is LedgerPushRejectedException or InvalidOperationException or DomainValidationException)
+            // This node not yet enrolled in THAT project's own copy of the owner chain (each
+            // project's ledger is independent) is a reason to skip that one project alone, never
+            // to abort a vouch that already landed in an earlier one: a DomainValidationException
+            // left uncaught here would otherwise throw partway through the loop, leaving an
+            // already-successful write unreported and its own OwnerDecider.VouchNode event never
+            // appended (blast-radius sweep finding).
+            catch (DomainValidationException exception)
             {
                 AnsiConsole.MarkupLine(
-                    $"[yellow]Could not vouch in '{project.Name.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}) — skipped.[/]");
+                    $"[yellow]Could not vouch in '{project.Name.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}) — skipped: not enrolled there.[/]");
+            }
+            // A push rejection, a network/credential failure, or a conflict this project's own
+            // retries never resolved is not an authorization refusal — the vouch was supposed to
+            // land there and did not, so this project keeps skipping it once continuing on to the
+            // rest, but reports it as an actionable failure rather than silently folding it into
+            // the same "skipped" bucket a benign non-enrollment gets (independent review finding:
+            // catching these the same as DomainValidationException let this command report overall
+            // success while the owner's fleet was only partially updated).
+            catch (Exception exception)
+                when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
+            {
+                failedProjects.Add(project.Name);
+                AnsiConsole.MarkupLine(
+                    $"[red]Failed to vouch in '{project.Name.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}) — re-run once fixed.[/]");
             }
         }
 
@@ -118,11 +132,20 @@ public sealed class NodeVouchCommand : Hall9kAsyncCommand<NodeVouchCommand.Setti
             throw new DomainValidationException(
                 $"Nothing was vouched for node {targetNodeId} in any project — either it has not joined one "
                 + "yet (its own node file has to exist somewhere first, h9k project join on that node), or "
-                + "this node is not itself enrolled anywhere it did join; see the messages above for which.");
+                + "this node is not itself enrolled anywhere it did join, or every attempt failed outright; "
+                + "see the messages above for which.");
         }
 
         session.Events.Append(context.OwnerId, OwnerDecider.VouchNode(owner, targetNodeId, targetFingerprint, now));
         await session.SaveChangesAsync(cancellationToken);
+
+        if (failedProjects.Count > 0)
+        {
+            throw new DomainValidationException(
+                $"Vouched node {targetNodeId} in {vouchedInto} project(s), but failed in {failedProjects.Count}: "
+                + $"{string.Join(", ", failedProjects)} — that project still does not trust this node until you "
+                + $"re-run h9k node vouch {targetNodeId} once the failure is fixed.");
+        }
 
         AnsiConsole.MarkupLine(
             $"[green]Vouched[/] node [dim]{targetNodeId}[/] [dim](key fingerprint {targetFingerprint})[/] into "
@@ -168,6 +191,21 @@ public sealed class NodeVouchCommand : Hall9kAsyncCommand<NodeVouchCommand.Setti
             return null;
         }
 
+        // Fingerprinted before anything is pushed, never after: a malformed self-announced key
+        // must refuse this vouch outright, not land an invalid commit on the owner ref and only
+        // then discover the key cannot be fingerprinted (independent pre-PR review finding).
+        string targetFingerprint;
+        try
+        {
+            targetFingerprint = NodeKeyStore.Fingerprint(targetPublicKey);
+        }
+        catch (DomainValidationException exception)
+        {
+            throw new DomainValidationException(
+                $"Target node {targetNodeId}'s own declared public key in '{repositoryPath}' is malformed "
+                + $"({exception.Message}) — refusing to vouch it.");
+        }
+
         string refName = $"refs/hall9k/ledger/owners/{root}";
         string path = $"owners/{root}/nodes/{targetNodeId}.yaml";
         string content = BuildYaml(
@@ -184,7 +222,7 @@ public sealed class NodeVouchCommand : Hall9kAsyncCommand<NodeVouchCommand.Setti
                 cancellationToken);
             if (outcome.Verdict == LedgerWriteVerdict.Written)
             {
-                return NodeKeyStore.Fingerprint(targetPublicKey);
+                return targetFingerprint;
             }
         }
 
