@@ -1891,12 +1891,14 @@ public sealed class RunAggregate
         // A real rebase moves this branch's fork point, so the recorded one stops being true of it
         // (independent pre-PR review, cycle 1, adversarial lens): a stale BaseCommit names a commit
         // the branch may no longer contain, and a replay dispatched from a stale upstream re-applies
-        // commits it was supposed to drop. Only a non-no-op event moves anything — a no-op means
-        // origin's base was already contained, so the fork point is exactly where it was — and only
-        // an actual commit is written: RebasedOntoCommit carries the literal "unknown" sentinel when
-        // the read failed (ReviewEngine.ResolveObservedOntoCommitAsync), which is an admitted gap,
-        // never a commit to record as this branch's fork point.
-        if (!@event.WasNoOp && @event.OntoCommitObserved)
+        // commits it was supposed to drop. A non-no-op event always moves it, and so does a
+        // ParentMergedAligned no-op (ForkPointAdvanced true): the branch already held the observed
+        // tip, so nothing here moved HEAD, but the recorded fork point was still stale against it
+        // (independent pre-PR review, cycle 1, both lenses). Either way only an actual commit is
+        // written: RebasedOntoCommit carries the literal "unknown" sentinel when the read failed
+        // (ReviewEngine.ResolveObservedOntoCommitAsync), which is an admitted gap, never a commit to
+        // record as this branch's fork point.
+        if ((!@event.WasNoOp || @event.ForkPointAdvanced) && @event.OntoCommitObserved)
         {
             BaseCommit = @event.RebasedOntoCommit;
         }

@@ -2763,14 +2763,22 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         // tip — so it is recorded rather than only logged (independent pre-PR review, cycle 1,
         // conformance lens): a run whose recorded fork point stayed at the parent's original head
         // would hand the mandatory final pass a range still carrying every commit the base gained
-        // after the parent merged as if it were this task's own work.
-        finalRunEvents.OfType<RunRebasedOntoBase>().Should().ContainSingle(
+        // after the parent merged as if it were this task's own work. WasNoOp itself stays true —
+        // git never ran, the branch already held the tip — with ForkPointAdvanced carrying the
+        // fork-point move instead (independent pre-PR review, cycle 1, both lenses: a false WasNoOp
+        // here used to also force a second, fail-hard full gate over the exact tip the build gate
+        // had already passed, and make every Settling entry re-append this event as newly eligible
+        // for the rebase repair lap).
+        RunRebasedOntoBase recordedRebase = finalRunEvents.OfType<RunRebasedOntoBase>().Should().ContainSingle(
                 e => e.RebasedOntoCommit == baseTip,
                 "the checkpoint's ParentMergedAligned observation moves this run's recorded fork point to the "
                 + "base's own tip even though nothing here was rebased")
-            .Which.WasNoOp.Should().BeFalse(
-                "the recorded fork point genuinely moved from the parent's stale original head, even though "
-                + "no git rebase ran for this particular observation");
+            .Subject;
+        recordedRebase.WasNoOp.Should().BeTrue(
+            "no git rebase ran for this particular observation — the branch already held the observed tip");
+        recordedRebase.ForkPointAdvanced.Should().BeTrue(
+            "the recorded fork point genuinely moved from the parent's stale original head, even though "
+            + "WasNoOp itself honestly reports that no rebase ran");
         RunDetails runAfterResolution = (await finalQuery.LoadAsync<RunDetails>(fixture.RunId, cts.Token))!;
         runAfterResolution.BaseCommit.Should().Be(baseTip,
             "later ranges, including the mandatory final pass, must read only this task's own commits");
