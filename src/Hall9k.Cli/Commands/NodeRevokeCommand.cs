@@ -80,6 +80,7 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
         }
 
         int revokedIn = 0;
+        List<string> failedProjects = [];
         foreach (ProjectDetails project in projects)
         {
             try
@@ -92,29 +93,50 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
                 }
             }
             // Same reasoning as NodeVouchCommand's identical catch: each project's own copy of the
-            // owner chain is independent, so a refusal in one project must skip that project alone,
-            // never abort a revocation that already landed in an earlier one.
-            catch (Exception exception)
-                when (exception is LedgerPushRejectedException or InvalidOperationException or DomainValidationException)
+            // owner chain is independent, so this node not being enrolled there must skip that one
+            // project alone, never abort a revocation that already landed in an earlier one.
+            catch (DomainValidationException exception)
             {
                 AnsiConsole.MarkupLine(
-                    $"[yellow]Could not revoke in '{project.Name.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}) — skipped.[/]");
+                    $"[yellow]Could not revoke in '{project.Name.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}) — skipped: not enrolled there.[/]");
+            }
+            // Same reasoning as NodeVouchCommand's identical catch: a push rejection, a
+            // network/credential failure, or exhausted conflict retries means the revocation was
+            // supposed to land here and did not — that project still trusts the revoked node, and
+            // reporting overall success would hide exactly the failure a revocation's own caller
+            // most needs to see (independent review finding).
+            catch (Exception exception)
+                when (exception is LedgerPushRejectedException or InvalidOperationException or DomainConflictException)
+            {
+                failedProjects.Add(project.Name);
+                AnsiConsole.MarkupLine(
+                    $"[red]Failed to revoke in '{project.Name.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}) — "
+                    + "this project still trusts the node; re-run once fixed.[/]");
             }
         }
 
         // Unlike a vouch (which can legitimately find the target simply hasn't joined a given
         // project yet), RevokeInProjectAsync only ever fails by throwing — so revokedIn == 0 means
-        // every single project refused this node as unenrolled, and there is nothing real to
-        // record locally either.
+        // every single project refused this node as unenrolled or failed outright, and there is
+        // nothing real to record locally either.
         if (revokedIn == 0)
         {
             throw new DomainValidationException(
                 $"Nothing was revoked for node {targetNodeId} in any project — this node is not itself "
-                + "enrolled anywhere it could act; see the messages above for which.");
+                + "enrolled anywhere it could act, or every attempt failed outright; see the messages "
+                + "above for which.");
         }
 
         session.Events.Append(context.OwnerId, OwnerDecider.RevokeNode(owner, targetNodeId, now));
         await session.SaveChangesAsync(cancellationToken);
+
+        if (failedProjects.Count > 0)
+        {
+            throw new DomainValidationException(
+                $"Revoked node {targetNodeId} in {revokedIn} project(s), but failed in {failedProjects.Count}: "
+                + $"{string.Join(", ", failedProjects)} — that project still trusts this node until you re-run "
+                + $"h9k node revoke {targetNodeId} once the failure is fixed.");
+        }
 
         AnsiConsole.MarkupLine(
             $"[green]Revoked[/] node [dim]{targetNodeId}[/] from owner [dim]{root}[/]'s own fleet, "
