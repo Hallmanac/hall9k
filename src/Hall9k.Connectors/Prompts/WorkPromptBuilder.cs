@@ -247,6 +247,7 @@ public static class WorkPromptBuilder
         if (isInteractive)
         {
             AppendFragment(prompt, file, "interactive-delivery-line", ("Deliver", DeliverWord));
+            AppendSharedRepositoryHistorySafetyRule(prompt);
             AppendCommitDisciplineRuleForInteractiveSession(prompt);
             AppendSelfDeliveryRule(prompt);
             // The take-the-wheel session composes no pull request body of its own — that is why it
@@ -764,15 +765,24 @@ public static class WorkPromptBuilder
 
     /// <summary>
     /// The worktree-sharing warning every session that commits has to see, wherever it is
-    /// dispatched from: a build's own checkpoint-commit rules
+    /// dispatched from: a headless build's own checkpoint-commit rules
     /// (<see cref="AppendCheckpointCommitRules"/>, <see cref="AppendDelegatedContractorCommitRules"/>),
+    /// the interactive take-the-wheel build's own commit-discipline branch of <see cref="Build"/>,
     /// and — via the <c>using static</c> this method's own visibility enables —
     /// <c>Hall9k.Daemon.Execution.AgentPromptBuilder</c>'s follow-up, fix-checks,
-    /// review-requested-changes, settling-gate-repair, and review-fix prompts, one call site per
-    /// entry point rather than the text itself repeated across each template file (origin incident,
-    /// 2026-09-15: a fix session's own history surgery in the shared repository wiped a sibling
-    /// task's branch reflog; see <c>Hall9k.Daemon.Execution.ForceWithLeasePusher</c>'s own doc for
-    /// the guard fix this prompt rule is the other half of).
+    /// review-requested-changes, rebase, stack-replay, pre-final-pass-rebase, settling-gate-repair,
+    /// review-fix, budget-retry, session-error-retry, and uncommitted-work-recovery prompts, one
+    /// call site per entry point (or per shared helper those entry points call) rather than the
+    /// text itself repeated across each template file (origin incident, 2026-09-15: a fix session's
+    /// own history surgery in the shared repository wiped a sibling task's branch reflog; see
+    /// <c>Hall9k.Daemon.Execution.ForceWithLeasePusher</c>'s own doc for the guard fix this prompt
+    /// rule is the other half of). Every prompt that can leave this session inside a git worktree
+    /// with a shell now carries it — the interactive build, both resume-after-error legs
+    /// (<c>Hall9k.Daemon.Execution.AgentPromptBuilder.BuildBudgetRetry</c>,
+    /// <c>Hall9k.Daemon.Execution.AgentPromptBuilder.BuildSessionErrorRetry</c>), and the
+    /// commit-only recovery prompt
+    /// (<c>Hall9k.Daemon.Execution.AgentPromptBuilder.BuildUncommittedWorkRecovery</c>) were the
+    /// last four gaps (independent pre-PR review, cycle 1, adversarial lens).
     /// </summary>
     public static void AppendSharedRepositoryHistorySafetyRule(StringBuilder prompt) =>
         AppendFragment(prompt, $"{TemplateDirectory}/shared-repository-history-safety.md", "note");

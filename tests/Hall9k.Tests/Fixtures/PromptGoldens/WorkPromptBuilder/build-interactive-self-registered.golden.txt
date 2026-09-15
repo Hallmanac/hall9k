@@ -16,6 +16,18 @@ Add rate limiting to auth endpoints
 - Commit your work with clear messages. Do NOT push, do NOT open a pull request —
   delivery is `h9k task deliver`, run by the operator explicitly; nothing pushes or
   opens a pull request until then.
+- **This worktree shares one repository with every other run on this node.**
+  A git command that expires, deletes, or rewrites reflogs reaches every
+  branch on the node, not only this one — never run `git reflog expire`,
+  `git gc --prune`, `git filter-branch`, or any other command that rewrites
+  or deletes reflogs. A commit message that needs fixing gets fixed with
+  `git commit --amend` (the tip) or an interactive-free rebase reword (an
+  earlier commit) — never `git filter-branch`. Origin incident (2026-09-15):
+  a fix session ran `git filter-branch` to strip em dashes from commit
+  messages and then `git reflog expire --expire=now --all` to clean up
+  after it, wiping a sibling task's own branch reflog on the same node and
+  making that task's own next push refuse a tip it had legitimately pushed
+  earlier.
 - Commit as you go, new files included. `h9k task deliver` refuses to push, naming the
   files, while the worktree holds either a modified-but-uncommitted file or a new,
   never-`git add`ed one under src/ or tests/ — an untracked file only warns without
