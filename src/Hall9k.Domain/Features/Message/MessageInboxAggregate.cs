@@ -14,6 +14,7 @@ public sealed class MessageInboxAggregate
     public long HighestSeqReceived { get; private set; }
     public bool SenderIgnored { get; private set; }
     public string? IgnoredReason { get; private set; }
+    public bool IgnoredForVerificationFailure { get; private set; }
     public DateTimeOffset? IgnoredAt { get; private set; }
 
     public void Apply(InboxCursorAdvanced @event)
@@ -23,6 +24,7 @@ public sealed class MessageInboxAggregate
         HighestSeqReceived = @event.Seq;
         SenderIgnored = false;
         IgnoredReason = null;
+        IgnoredForVerificationFailure = false;
         IgnoredAt = null;
     }
 
@@ -32,6 +34,7 @@ public sealed class MessageInboxAggregate
         SenderNodeId = @event.SenderNodeId;
         SenderIgnored = true;
         IgnoredReason = @event.Reason;
+        IgnoredForVerificationFailure = @event.VerificationFailed;
         IgnoredAt = @event.At;
     }
 
@@ -41,6 +44,7 @@ public sealed class MessageInboxAggregate
         SenderNodeId = @event.SenderNodeId;
         SenderIgnored = false;
         IgnoredReason = null;
+        IgnoredForVerificationFailure = false;
         IgnoredAt = null;
     }
 }

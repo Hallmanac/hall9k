@@ -5,7 +5,9 @@ namespace Hall9k.Domain.Features.Message;
 
 /// <summary>This node's own read view of one sender's inbox — never in the repository, per idea
 /// 202383dc's own rule that cursors are local. <c>h9k status</c> (M1b) reads
-/// <see cref="SenderIgnored"/> to name an unvouched sender.</summary>
+/// <see cref="SenderIgnored"/> to name a sender it cannot currently trust — either because no node
+/// file vouches for it at all, or because <see cref="IgnoredForVerificationFailure"/> is true and a
+/// specific envelope from an otherwise-vouched sender failed signature verification.</summary>
 public sealed class MessageInboxDetails
 {
     public Guid Id { get; set; }
@@ -13,6 +15,7 @@ public sealed class MessageInboxDetails
     public long HighestSeqReceived { get; set; }
     public bool SenderIgnored { get; set; }
     public string? IgnoredReason { get; set; }
+    public bool IgnoredForVerificationFailure { get; set; }
     public DateTimeOffset? IgnoredAt { get; set; }
 }
 
@@ -31,6 +34,7 @@ public sealed class MessageInboxDetailsProjection : SingleStreamProjection<Messa
         SenderNodeId = @event.Data.SenderNodeId,
         SenderIgnored = true,
         IgnoredReason = @event.Data.Reason,
+        IgnoredForVerificationFailure = @event.Data.VerificationFailed,
         IgnoredAt = @event.Data.At,
     };
 
@@ -43,6 +47,7 @@ public sealed class MessageInboxDetailsProjection : SingleStreamProjection<Messa
         // started passing, since the sweep that raised it.
         view.SenderIgnored = false;
         view.IgnoredReason = null;
+        view.IgnoredForVerificationFailure = false;
         view.IgnoredAt = null;
     }
 
@@ -50,6 +55,7 @@ public sealed class MessageInboxDetailsProjection : SingleStreamProjection<Messa
     {
         view.SenderIgnored = true;
         view.IgnoredReason = @event.Data.Reason;
+        view.IgnoredForVerificationFailure = @event.Data.VerificationFailed;
         view.IgnoredAt = @event.Data.At;
     }
 
@@ -57,6 +63,7 @@ public sealed class MessageInboxDetailsProjection : SingleStreamProjection<Messa
     {
         view.SenderIgnored = false;
         view.IgnoredReason = null;
+        view.IgnoredForVerificationFailure = false;
         view.IgnoredAt = null;
     }
 }

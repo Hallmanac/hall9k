@@ -64,7 +64,8 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
             {
                 AppendInboxEvents(
                     session, inboxStreamId, inbox is not null,
-                    [MessageInboxDecider.IgnoreSender(senderNodeId, "no node file vouches for this sender's outbox", now)]);
+                    [MessageInboxDecider.IgnoreSender(
+                        senderNodeId, "no node file vouches for this sender's outbox", verificationFailed: false, now)]);
                 await session.SaveChangesAsync(cancellationToken);
             }
 
@@ -181,13 +182,17 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
             string reason = read.RejectedSeqs.Count == 1
                 ? $"envelope verification failed for seq {read.RejectedSeqs[0]}"
                 : $"envelope verification failed for seqs {string.Join(", ", read.RejectedSeqs)}";
-            inboxEvents.Add(MessageInboxDecider.IgnoreSender(senderNodeId, reason, now));
+            inboxEvents.Add(MessageInboxDecider.IgnoreSender(senderNodeId, reason, verificationFailed: true, now));
         }
-        else if (inbox is not null && inbox.SenderIgnored)
+        // This sweep read the sender's outbox successfully but found nothing new to advance the
+        // cursor to — without this, a prior "not vouched at all" ignored mark would never clear on
+        // its own, even though the sender is vouched again right now. Never appended when the
+        // standing mark is IgnoredForVerificationFailure: a specific envelope that failed signature
+        // verification is a fact about that envelope, not the sender's current vouch status, and a
+        // sweep that simply finds nothing new must never be read as clearing it — only a genuine
+        // cursor advance past it does (MessageInboxDecider.ConfirmVouched's own doc).
+        else if (inbox is not null && inbox.SenderIgnored && !inbox.IgnoredForVerificationFailure)
         {
-            // This sweep read the sender's outbox successfully but found nothing new to advance
-            // the cursor to — without this, a prior ignored mark would never clear on its own,
-            // even though the sender is vouched again right now.
             inboxEvents.Add(MessageInboxDecider.ConfirmVouched(senderNodeId, now));
         }
 
