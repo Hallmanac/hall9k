@@ -299,6 +299,22 @@ public sealed class TaskAggregate
     private readonly List<string> _knownHumanReviewThreadIds = [];
     public IReadOnlyList<string> KnownHumanReviewThreadIds => _knownHumanReviewThreadIds;
 
+    /// <summary>
+    /// The same threads <see cref="KnownHumanReviewThreadIds"/> names, with the opener's login and
+    /// the link to each (task: a review-feedback follow-up never answers a human reviewer in the
+    /// owner's name on its own). This is the provider-observed answer to "did a PERSON open this
+    /// thread", which is what <c>h9k pr reply</c> refuses on and what a park shows the operator so
+    /// they can read the thread before approving a reply to it.
+    /// <para>
+    /// Empty wherever the dispatch recorded no detail — a manual reopen, or a reopen recorded
+    /// before the field existed. Empty is read as "nothing observed", so the posting path refuses
+    /// nothing on its strength: absence of an observation is never an observation of absence, and
+    /// the prompt's own rule still stands over the session either way.
+    /// </para>
+    /// </summary>
+    private readonly List<ReviewThreadReference> _knownHumanReviewThreads = [];
+    public IReadOnlyList<ReviewThreadReference> KnownHumanReviewThreads => _knownHumanReviewThreads;
+
     /// <summary>Reviewers with a pending review request, observed at the most recent automatic dispatch decision.</summary>
     private readonly List<string> _knownPendingReviewRequestLogins = [];
     public IReadOnlyList<string> KnownPendingReviewRequestLogins => _knownPendingReviewRequestLogins;
@@ -1260,8 +1276,16 @@ public sealed class TaskAggregate
             ResetAutomaticCloseoutState();
         }
 
+        // Copied out before either list is cleared, because a caller is allowed to hand the
+        // reopen this aggregate's own exposed list straight back — h9k pr resolve does exactly
+        // that with the thread detail, having made no provider read of its own — and clearing
+        // first would empty the source it is about to read from (self-review, this task: it did).
+        string[] knownThreadIds = [.. @event.KnownHumanReviewThreadIds ?? []];
+        ReviewThreadReference[] knownThreads = [.. @event.HumanReviewThreads ?? []];
         _knownHumanReviewThreadIds.Clear();
-        _knownHumanReviewThreadIds.AddRange(@event.KnownHumanReviewThreadIds ?? []);
+        _knownHumanReviewThreadIds.AddRange(knownThreadIds);
+        _knownHumanReviewThreads.Clear();
+        _knownHumanReviewThreads.AddRange(knownThreads);
         _knownPendingReviewRequestLogins.Clear();
         _knownPendingReviewRequestLogins.AddRange(@event.KnownPendingReviewRequestLogins ?? []);
 
