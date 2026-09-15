@@ -954,6 +954,65 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     [Fact]
+    public async Task An_ordinary_new_send_after_retention_is_first_reached_never_retriggers_a_squash()
+    {
+        // Comparing the whole survivor set (rather than just its lowest surviving seq) used to
+        // reintroduce the same forever-repeating push the previous fix removed: every ordinary new
+        // send changes the survivor set too — one more seq now counts as "sent" — so once retention
+        // was first reached, every later flush was immediately followed by a second, unnecessary
+        // force-push that rewrote the ref for no benefit (independent pre-PR review, cycle 1,
+        // adversarial lens). Nothing new has aged out between the two squashes below, so the second
+        // must push nothing even though a fresh envelope was sent in between.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await MessageOutbox.QueueAsync(
+            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "old", Now,
+            cts.Token);
+        await outbox.FlushAsync(session, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+
+        DateTimeOffset firstSquashNow = Now.AddHours(48).AddMinutes(1);
+        MessageSquashResult firstSquash = await outbox.SquashAsync(
+            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow, cts.Token);
+        firstSquash.EnvelopesKept.Should().Be(0, "the only envelope sent so far has aged out of the retention window");
+
+        IReadOnlyList<MessageOutboxTip> tipsAfterFirstSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
+        string tipAfterFirstSquash = tipsAfterFirstSquash.Single(tip => tip.SenderNodeId == nodeA).Tip;
+
+        // A brand-new send, still well within retention — the survivor set now differs from the
+        // first squash's (it holds this new envelope too), but nothing has aged out that had not
+        // already aged out before. The flush itself is expected to move the tip; only the squash
+        // that follows it must not move it again.
+        await MessageOutbox.QueueAsync(
+            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "new",
+            firstSquashNow, cts.Token);
+        await outbox.FlushAsync(session, RepositoryPath, nodeA, committerA, signingKeyA, firstSquashNow, cts.Token);
+
+        IReadOnlyList<MessageOutboxTip> tipsAfterFlush = await transport.ProbeAsync(RepositoryPath, cts.Token);
+        string tipAfterFlush = tipsAfterFlush.Single(tip => tip.SenderNodeId == nodeA).Tip;
+        tipAfterFlush.Should().NotBe(tipAfterFirstSquash, "the flush itself must move the tip, or the assertion below would be vacuous");
+
+        MessageSquashResult secondSquash = await outbox.SquashAsync(
+            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA,
+            firstSquashNow.AddMinutes(1), cts.Token);
+        secondSquash.EnvelopesKept.Should().Be(1, "the newly sent envelope is still within the retention window");
+
+        IReadOnlyList<MessageOutboxTip> tipsAfterSecondSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
+        string tipAfterSecondSquash = tipsAfterSecondSquash.Single(tip => tip.SenderNodeId == nodeA).Tip;
+        tipAfterSecondSquash.Should().Be(
+            tipAfterFlush,
+            "no envelope aged out between the two squashes, so an ordinary new send must never retrigger one");
+    }
+
+    [Fact]
     public async Task A_repeatedly_failing_flush_appends_only_one_send_failed_event_per_message()
     {
         // Before the fix, every failed FlushAsync call appended a fresh MessageSendFailed to every

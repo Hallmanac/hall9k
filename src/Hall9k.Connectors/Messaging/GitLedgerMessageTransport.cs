@@ -198,13 +198,20 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
                 + "that might be stale, which could overwrite newer remote envelopes.");
         }
 
+        // The fetch above only proves what the remote tip was at that moment — the orphan below is
+        // built from it, but nothing stops the remote from moving again before the push lands. The
+        // lease pins the push to exactly the tip this fetch just observed (or, when the fetch found
+        // no ref at all, to "must still not exist"), so a push that would otherwise silently
+        // overwrite an envelope that landed on the remote in between is refused instead.
+        string? fetchedTip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
         string commitId = await BuildEnvelopeCommitAsync(
             repositoryPath, survivors, seedFromTip: null, parentTip: null, "Squash outbox", committer, signingKey,
             cancellationToken);
 
         (int pushExit, _, string pushError) = await RunGitRawAsync(
-            repositoryPath, ["push", "origin", $"+{commitId}:{refName}"], environment: null, standardInput: null,
-            cancellationToken);
+            repositoryPath,
+            ["push", $"--force-with-lease={refName}:{fetchedTip}", "origin", $"{commitId}:{refName}"],
+            environment: null, standardInput: null, cancellationToken);
         if (pushExit != 0)
         {
             throw new LedgerPushRejectedException(refName, 1, pushError);
