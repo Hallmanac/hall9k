@@ -177,6 +177,31 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length > 0;
     }
 
+    public async Task<IReadOnlyList<string>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken)
+    {
+        RequireRegistered(refPrefix);
+
+        (int exitCode, string output, string error) = await RunGitAsync(
+            repositoryPath, ["ls-remote", "origin", $"{refPrefix}*"], null, null, cancellationToken);
+        if (exitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git ls-remote origin {refPrefix}* failed in {repositoryPath}: {error.Trim()}");
+        }
+
+        List<string> refs = [];
+        foreach (string line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string[] parts = line.Split('\t', 2);
+            if (parts.Length == 2 && parts[1].Trim().StartsWith(refPrefix, StringComparison.Ordinal))
+            {
+                refs.Add(parts[1].Trim());
+            }
+        }
+
+        return refs;
+    }
+
     private static void RequireRegistered(string refName)
     {
         if (!LedgerRefRegistry.IsRegistered(refName))

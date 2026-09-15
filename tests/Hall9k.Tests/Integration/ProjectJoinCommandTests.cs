@@ -722,6 +722,9 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
             inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<string>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
+            inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
     }
 
     /// <summary>
@@ -748,5 +751,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
             inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<string>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
+            inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
     }
 }
