@@ -31,6 +31,19 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
     /// (this node), so a push still losing after this many is fighting something else entirely.</summary>
     private const int MaxPushAttempts = 5;
 
+    /// <summary>The only principal <see cref="IsSignedByRegisteredKeyAsync"/> ever writes into a
+    /// temporary <c>allowed_signers</c> file — a fixed literal, never the commit's own committer
+    /// email. That field previously carried the (attacker-controlled) committer email of the very
+    /// commit under verification: a crafted email containing a space let a malicious pusher smuggle
+    /// their own key into the allowed-signers line's key-type/key-data fields, displacing the
+    /// sender's real registered key into a trailing, ignored comment, so <c>git verify-commit</c>
+    /// verified the forged commit against the attacker's own key instead (independent pre-PR review,
+    /// cycle 1, adversarial lens). <c>git verify-commit</c> never requires this principal to match
+    /// the commit's own committer identity — it accepts any line in the file whose key verifies the
+    /// signature — so a fixed principal costs nothing: the one candidate key already came from the
+    /// sender's own node file, never from anything this commit's author controls.</summary>
+    private const string AllowedSignersPrincipal = "hall9k-sender";
+
     private static readonly UTF8Encoding Utf8NoBom = new(encoderShouldEmitUTF8Identifier: false);
 
     private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
@@ -368,13 +381,6 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
     private async Task<bool> IsSignedByRegisteredKeyAsync(
         string repositoryPath, string commitSha, string publicKeyLine, CancellationToken cancellationToken)
     {
-        string? committerEmail = (await RunGitCaptureAsync(
-            repositoryPath, ["log", "-1", "--format=%ce", commitSha], cancellationToken))?.Trim();
-        if (committerEmail.IsBlank())
-        {
-            return false;
-        }
-
         // git verify-commit picks the signature format from the gpgsig header itself
         // (get_format_by_sig), never from "-c gpg.format=ssh" — that setting only chooses what a
         // *new* signature is created as. A commit signed with an OpenPGP or X.509 key therefore
@@ -393,7 +399,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
             System.IO.Path.GetTempPath(), $"h9k-message-allowed-signers-{Guid.NewGuid():N}");
         try
         {
-            await File.WriteAllTextAsync(allowedSignersFile, $"{committerEmail} {publicKeyLine}\n", cancellationToken);
+            await File.WriteAllTextAsync(allowedSignersFile, $"{AllowedSignersPrincipal} {publicKeyLine}\n", cancellationToken);
             ProcessResult result = await runner(
                 "git",
                 ["-c", "gpg.format=ssh", "-c", $"gpg.ssh.allowedSignersFile={allowedSignersFile}", "verify-commit", commitSha],
