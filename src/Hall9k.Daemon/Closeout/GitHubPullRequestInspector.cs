@@ -1,5 +1,5 @@
-using System.Diagnostics;
 using System.Text.Json;
+using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Features.Run;
 
 namespace Hall9k.Daemon.Closeout;
@@ -17,8 +17,10 @@ namespace Hall9k.Daemon.Closeout;
 /// look quiet while feedback is being written (Decisions Log #62).
 /// </para>
 /// </summary>
-public sealed class GitHubPullRequestInspector : IPullRequestInspector
+public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : IPullRequestInspector
 {
+    private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
+
     // Genuine failures only. CANCELLED (usually a superseding push's concurrency group)
     // and ACTION_REQUIRED (a workflow awaiting human approval) are deliberately neither
     // failing nor pending: a fix run cannot fix either, so dispatching one would burn
@@ -319,7 +321,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             new(0, 0, [], null, null, [], [], [], [], ExternalReviewState.None, 0);
     }
 
-    private static async Task<ReviewObservation> InspectReviewsAsync(
+    private async Task<ReviewObservation> InspectReviewsAsync(
         string repositoryPath, string pullRequestUrl, int pullRequestNumber, CancellationToken cancellationToken)
     {
         (string owner, string name) = ParseOwnerAndRepository(pullRequestUrl);
@@ -1394,31 +1396,13 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             : throw new InvalidOperationException($"Cannot parse owner/repository from {pullRequestUrl}.");
     }
 
-    private static async Task<string> RunGhAsync(
+    private async Task<string> RunGhAsync(
         string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
-        using Process process = new();
-        process.StartInfo = new ProcessStartInfo
-        {
-            FileName = "gh",
-            WorkingDirectory = workingDirectory,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-        };
-        foreach (string argument in arguments)
-        {
-            process.StartInfo.ArgumentList.Add(argument);
-        }
-
-        process.Start();
-        Task<string> standardOutput = process.StandardOutput.ReadToEndAsync(cancellationToken);
-        Task<string> standardError = process.StandardError.ReadToEndAsync(cancellationToken);
-        await process.WaitForExitAsync(cancellationToken);
-
-        return process.ExitCode == 0
-            ? await standardOutput
+        ProcessResult result = await runner("gh", arguments, workingDirectory, cancellationToken);
+        return result.ExitCode == 0
+            ? result.StandardOutput
             : throw new InvalidOperationException(
-                $"gh {string.Join(' ', arguments)} exited {process.ExitCode}: {(await standardError).Trim()}");
+                $"gh {string.Join(' ', arguments)} exited {result.ExitCode}: {result.StandardError.Trim()}");
     }
 }

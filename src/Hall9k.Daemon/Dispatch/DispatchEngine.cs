@@ -50,7 +50,8 @@ public sealed class DispatchEngine(
     /// that never touches a gated project constructs this engine as it always has; the default is
     /// the real gate, which for an ungated project makes not one call.
     /// </summary>
-    private readonly TrackerClaimGate _trackerClaimGate = trackerClaimGate ?? new TrackerClaimGate();
+    private readonly TrackerClaimGate _trackerClaimGate =
+        trackerClaimGate ?? new TrackerClaimGate(new ProjectScopedGitHubRunner(store).Runner);
 
     /// <summary>
     /// When the last sweep started, by this process's wall clock — the baseline for

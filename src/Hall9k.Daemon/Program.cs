@@ -20,6 +20,7 @@ using Hall9k.Domain;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx;
+using Marten;
 using Microsoft.Extensions.Configuration;
 using Wolverine;
 using Wolverine.Marten;
@@ -176,11 +177,20 @@ builder.Services.AddSingleton<LaunchHoldEngine>();
 builder.Services.AddSingleton<RunSupervisor>();
 builder.Services.AddSingleton<RunLauncher>();
 builder.Services.AddSingleton<TokenBudgetRetryEngine>();
-builder.Services.AddSingleton<IPullRequestInspector, GitHubPullRequestInspector>();
+builder.Services.AddSingleton<IPullRequestInspector>(services =>
+    new GitHubPullRequestInspector(services.GetRequiredService<ProcessRunner>()));
 // The one process-spawning seam GitHub's own writes go through, registered rather than let
 // GitHubWorkItemProvider default to ExternalProcess.Runner, so CloseoutEngine's GitHub writes are
-// testable against a recorded process instead of a real, machine-authenticated gh.
-builder.Services.AddSingleton<ProcessRunner>(_ => ExternalProcess.Runner);
+// testable against a recorded process instead of a real, machine-authenticated gh. Bound to
+// ProjectScopedGitHubRunner rather than ExternalProcess.Runner directly (idea 202383dc, A2b item
+// 4): every gh call this singleton reaches — CloseoutEngine, RunLauncher, ReviewEngine,
+// AutoPrReviewEngine, TrackerClaimGate, and the IPullRequestInspector/IRemoteParentReader/
+// IReviewConversationReader implementations below, all of which already thread this same
+// ProcessRunner through — now pins the project whose repository lives at the working directory
+// it is given to that project's own GitHub account, rather than whichever account the machine's
+// own gh happens to be logged into. git spawns pass straight through unchanged.
+builder.Services.AddSingleton<ProcessRunner>(services =>
+    new ProjectScopedGitHubRunner(services.GetRequiredService<IDocumentStore>()).Runner);
 // Jira's write transport moved off a spawned process (twg) onto hall9k's own REST client
 // (Decisions Log #114), so its seam is the same JiraRequester delegate the read-side provider
 // already uses — registered here, generically, so CloseoutEngine's and JiraWriteRetryEngine's own

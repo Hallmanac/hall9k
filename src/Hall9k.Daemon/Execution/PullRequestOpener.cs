@@ -32,8 +32,11 @@ namespace Hall9k.Daemon.Execution;
 public sealed class PullRequestOpener(
     IDocumentStore store,
     ILogger<PullRequestOpener> logger,
-    IPullRequestInspector? inspector = null)
+    IPullRequestInspector? inspector = null,
+    ProcessRunner? processRunner = null)
 {
+    private readonly ProcessRunner processRunner = processRunner ?? ExternalProcess.Runner;
+
     public async Task OpenAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
@@ -551,7 +554,11 @@ public sealed class PullRequestOpener(
         IReadOnlyList<string> arguments = await CreateArgumentsAsync(
             logger, run, task, TryReadAgentSummary(run), await SourceUrlAsync(task, cancellationToken), baseBranch,
             conventions, cancellationToken);
-        string output = await RunInWorktreeAsync(run.WorktreePath, "gh", arguments, cancellationToken);
+        ProcessResult result = await processRunner("gh", arguments, run.WorktreePath, cancellationToken);
+        string output = result.ExitCode == 0
+            ? result.StandardOutput.Trim() + result.StandardError.Trim()
+            : throw new InvalidOperationException(
+                $"gh {string.Join(' ', arguments)} exited {result.ExitCode}: {result.StandardError.Trim()}");
 
         string url = output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .LastOrDefault(line => line.StartsWith("https://", StringComparison.Ordinal))
