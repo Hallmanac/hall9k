@@ -3062,7 +3062,11 @@ public sealed class CloseoutEngine(
     /// commits (the project rebase-merges, so the parent's work is on the base under new SHAs). Or
     /// the parent's branch was force-pushed: the base stays where it is and only the replay is
     /// owed, onto the parent's new head. Both are the same mechanical operation with a different
-    /// <c>--onto</c>, which is why they share one follow-up kind and one budget.
+    /// <c>--onto</c>, which is why they share one follow-up kind and one budget. A merged parent
+    /// whose child already sits on the base's own tip is the retarget half of the first trigger with
+    /// no replay behind it — <see cref="StackedParentVerdict.ParentMergedAligned"/>, handled in its
+    /// own early return above this comment rather than folded into the replay path below, since it
+    /// dispatches nothing and spends no budget.
     /// </para>
     /// <para>
     /// Two budgets bound this path, deliberately asymmetrically. The rebase budget below is the
@@ -3089,6 +3093,25 @@ public sealed class CloseoutEngine(
     /// succeeds.
     /// </para>
     /// </summary>
+    private async Task ParkForSpentRebaseBudgetAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        RunDetails run,
+        StackedParentObservation observation,
+        DateTimeOffset now,
+        CancellationToken cancellationToken) =>
+        await ParkAsync(
+            session, run,
+            $"This is a stacked pull request and {observation.Detail}. Its rebase budget is spent "
+            // "rebase(s)", not "replay(s)": this counter is spent by the checkpoint rebases a
+            // child takes in-run as well as by the replays dispatched here, so naming only one of
+            // the two would misreport what the number counted (task: a stacked child absorbs its
+            // parent's post-delivery churn safely).
+            + $"({task.StackReplaysDispatched}/{_options.MaxStackReplayRuns} rebase(s)) — the parent branch has "
+            + "kept moving faster than this branch can follow it. Rebase and retarget this pull request by "
+            + "hand, or grant another attempt with h9k pr resolve.",
+            now, cancellationToken);
+
     private async Task<bool> TryReplayStackedChildAsync(
         IDocumentSession session,
         TaskAggregate task,
@@ -3169,6 +3192,59 @@ public sealed class CloseoutEngine(
             return true;
         }
 
+        if (observation.Verdict == StackedParentVerdict.ParentMergedAligned)
+        {
+            // The one verdict that is neither "nothing to do" nor "a replay is owed", but still
+            // owes a provider write: the parent merged and this child already sits on the base
+            // branch's own tip, so there is nothing left to REPLAY — but the pull request's base
+            // still names the parent's branch, which is going away, and nothing else moves it
+            // (independent pre-PR review, cycle 1, conformance and adversarial lenses: the earlier
+            // fix answered this state with plain Aligned, which this method returns false on above,
+            // and the retarget it still owed was never dispatched). DecideFollowUpAsync's own
+            // dispatch checks do not apply here, because there is no follow-up to dispatch — only
+            // the retarget, the same idempotent write ParentMerged below makes, done here directly
+            // since that branch is one this verdict never reaches.
+            //
+            // The rebase budget still gates it, though (conformance review, cycle 2): a child
+            // already past its cap has exhausted the platform's automatic say over its pull request
+            // for this parent's churn, and moving the base is not free of consequence just because
+            // nothing replays behind it — it hands the child a new base with no automatic replay
+            // ever coming to reconcile it further, once the human's own manual fix runs out too.
+            // Parking with the base untouched, the same park the replay path below reaches, leaves
+            // a coherent stack for them to finish by hand.
+            if (task.StackReplaysDispatched >= _options.MaxStackReplayRuns)
+            {
+                await ParkForSpentRebaseBudgetAsync(session, task, run, observation, now, cancellationToken);
+                return true;
+            }
+
+            StackedRetargetOutcome retarget =
+                snapshot.BaseRefName is { } observedBase && observedBase == project.BaseBranch
+                    ? StackedRetargetOutcome.AlreadyOnBase(observation.ParentBranch, project.BaseBranch)
+                    : await TryRetargetStackedChildAsync(
+                        run, project, observation.ParentBranch, cancellationToken);
+            session.Events.Append(run.Id, new StackedPullRequestRetargeted(
+                run.Id, observation.ParentBranch, project.BaseBranch, observation.BoundaryCommit,
+                retarget.Succeeded, retarget.Detail, now));
+            await session.SaveChangesAsync(cancellationToken);
+
+            if (!retarget.Succeeded)
+            {
+                logger.LogWarning(
+                    "Task {TaskId}: could not retarget stacked pull request {Url} from {ParentBranch} onto "
+                    + "{BaseBranch} — {Detail}; no replay is owed, and the next sweep tries the retarget again",
+                    task.Id, task.PullRequestUrl, observation.ParentBranch, project.BaseBranch, retarget.Detail);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "Task {TaskId}: stacked pull request {Url} is aimed at {BaseBranch} now — {Detail}",
+                    task.Id, task.PullRequestUrl, project.BaseBranch, retarget.Detail);
+            }
+
+            return true;
+        }
+
         // Everything past here is ParentMerged or ParentMoved: the parent's branch moved out from
         // under this child, and a replay is owed. Written as early returns above rather than a
         // switch precisely so that reading is explicit — a switch statement's silent fall-through
@@ -3181,17 +3257,7 @@ public sealed class CloseoutEngine(
         // Parking with the base untouched leaves a coherent stack for them to finish by hand.
         if (task.StackReplaysDispatched >= _options.MaxStackReplayRuns)
         {
-            await ParkAsync(
-                session, run,
-                $"This is a stacked pull request and {observation.Detail}. Its rebase budget is spent "
-                // "rebase(s)", not "replay(s)": this counter is spent by the checkpoint rebases a
-                // child takes in-run as well as by the replays dispatched here, so naming only one
-                // of the two would misreport what the number counted (task: a stacked child absorbs
-                // its parent's post-delivery churn safely).
-                + $"({task.StackReplaysDispatched}/{_options.MaxStackReplayRuns} rebase(s)) — the parent branch has "
-                + "kept moving faster than this branch can follow it. Rebase and retarget this pull request by "
-                + "hand, or grant another attempt with h9k pr resolve.",
-                now, cancellationToken);
+            await ParkForSpentRebaseBudgetAsync(session, task, run, observation, now, cancellationToken);
             return true;
         }
 

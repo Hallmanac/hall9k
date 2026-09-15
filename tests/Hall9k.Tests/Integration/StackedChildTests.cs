@@ -463,6 +463,63 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
     }
 
     /// <summary>
+    /// The combined shape the budget check above and the exact-tip alignment further below each
+    /// guard on their own, proven together: a child that already sits on its merged parent's base
+    /// tip — <see cref="StackedParentVerdict.ParentMergedAligned"/>, nothing left to replay — but
+    /// whose rebase budget is ALSO already spent from the churn that got it there. The retarget
+    /// this verdict ordinarily owes moves the pull request's base regardless of whether a replay
+    /// runs behind it, so answering it without checking the budget first would let a child past its
+    /// cap keep having its base moved automatically forever, with no dispatch left to answer any
+    /// further churn once a human's own manual fix runs out too — the same runaway the plain
+    /// ParentMerged budget check exists to stop, reached through the one arm that used to skip it
+    /// (conformance review, cycle 2, of the fix for task 450b9d84's reparking loop).
+    /// </summary>
+    [Fact]
+    public async Task A_child_past_its_rebase_budget_and_already_aligned_with_the_merged_base_still_parks()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token, priorStackReplays: 2);
+
+        Git(fixture.RepoPath, "checkout -q main");
+        Git(fixture.RepoPath, $"merge -q --ff-only {fixture.ParentBranch}");
+        Git(fixture.RepoPath, "push -q origin main");
+        string baseTip = Git(fixture.RepoPath, "rev-parse HEAD").Trim();
+
+        await using (IDocumentSession session = fixture.Store.LightweightSession())
+        {
+            session.Events.Append(fixture.ParentRunId, new PullRequestMerged(fixture.ParentRunId, Now, Now));
+            session.Events.Append(fixture.ParentRunId, new RunCompleted(fixture.ParentRunId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The fix session's own rebase, exactly as the plain ParentMergedAligned test performs it —
+        // the child now holds both its merged parent's head and the base's own tip, so there is
+        // nothing left to replay. What differs here is the budget seeded into the fixture above:
+        // this child has none left.
+        Git(fixture.ChildWorktreePath, $"rebase -q {baseTip}");
+
+        FakeStackedInspector inspector = new();
+        await NewEngine(fixture, inspector, maxStackReplayRuns: 2).PollOnceAsync(cts.Token);
+
+        inspector.Retargets.Should().BeEmpty(
+            "the rebase budget gates the retarget here exactly as it gates a plain replay — a child past its "
+            + "cap parks with the base untouched rather than having it moved automatically");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.StackedOnBranch.Should().Be(fixture.ParentBranch,
+            "nothing was moved, so the record still names the stack the human inherits");
+        run.ParkedReason.Should().Contain("rebase budget is spent")
+            .And.Contain("2/2")
+            .And.Contain("h9k pr resolve");
+
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        child.StackReplaysDispatched.Should().Be(2, "the park spends nothing further — the budget was already spent");
+    }
+
+    /// <summary>
     /// A parent that merged somewhere other than the project's base — a mid-stack parent, itself
     /// stacked, merged while still aimed at ITS parent's branch. The child's correct base is one
     /// level up, and mechanically moving it onto the project's base would take it off a branch
@@ -587,6 +644,179 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
             + "directly rather than taken from a record that predates the parent's second commit");
         child.StackReplayUpstreamCommit.Should().NotBe(fixture.ParentHeadCommit,
             "replaying from the stale record would carry the parent's second commit onto the base as well");
+    }
+
+    /// <summary>
+    /// The 2026-09-14 shape (task 450b9d84, origin of this feature's own fix): a merged parent whose
+    /// exact head landed on the base branch (a fast-forward, the same shape GitHub's own "rebase and
+    /// merge" produces when the branch is already current), the base branch then advancing PAST that
+    /// head with a later, unrelated commit — another chain task's own merge, in the real incident —
+    /// and the child already rebased onto that later tip, exactly as a fix session resolving an
+    /// earlier park would leave it. The child's branch therefore contains both the parent's head AND
+    /// the base's later tip, and nothing is left to REPLAY: choosing the parent's head as the
+    /// boundary and replaying onto the base's tip would re-apply the base's own later commit back
+    /// onto a branch that already has it, conflicting by construction rather than over anything this
+    /// branch's own work actually disagrees with — the identical park PLAN.md kept reproducing every
+    /// cycle before this fix.
+    /// <para>
+    /// The verdict is <see cref="StackedParentVerdict.ParentMergedAligned"/>, not plain
+    /// <see cref="StackedParentVerdict.Aligned"/> (independent pre-PR review, cycle 1, conformance
+    /// and adversarial lenses): the pull request's base still names the parent's branch, which is
+    /// going away, and a plain Aligned here left nothing that ever retargeted it — this test
+    /// originally asserted <c>inspector.Retargets.Should().BeEmpty()</c>, which encoded that defect
+    /// rather than catching it.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_child_already_holding_its_merged_parents_head_and_the_bases_later_tip_is_retargeted_without_replaying()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+
+        // The parent merges as a fast-forward, which is what preserves its head's exact commit
+        // identity on the base — the shape that makes the parent's head reachable from the base's
+        // own later history rather than only from a cherry-picked copy of it.
+        Git(fixture.RepoPath, "checkout -q main");
+        Git(fixture.RepoPath, $"merge -q --ff-only {fixture.ParentBranch}");
+        Git(fixture.RepoPath, "push -q origin main");
+
+        // The base moves further still — another task's own merge landing after this one, the same
+        // shape #371 was in the real incident.
+        File.WriteAllText(Path.Combine(fixture.RepoPath, "OTHER-TASK.md"), "another task's own merge\n");
+        Git(fixture.RepoPath, "add -A");
+        Git(fixture.RepoPath, "-c user.name=Test -c user.email=t@t commit -qm \"another task merged\"");
+        Git(fixture.RepoPath, "push -q origin main");
+        string baseTip = Git(fixture.RepoPath, "rev-parse HEAD").Trim();
+
+        await using (IDocumentSession session = fixture.Store.LightweightSession())
+        {
+            session.Events.Append(fixture.ParentRunId, new PullRequestMerged(fixture.ParentRunId, Now, Now));
+            session.Events.Append(fixture.ParentRunId, new RunCompleted(fixture.ParentRunId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The fix session's own rebase: a plain rebase onto the base's tip, exactly what resolves an
+        // earlier replay park by hand. Since the parent's head is a real ancestor of both the child's
+        // branch and the base's tip now, git's own fork-point math lands this identically to
+        // `rebase --onto baseTip parentHeadCommit` — the child keeps only its own commit, replayed
+        // onto the base's later tip.
+        Git(fixture.ChildWorktreePath, $"rebase -q {baseTip}");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(fixture.ProjectId, cts.Token))!;
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+
+        StackedParentObservation observation = await new StackedParentWatch(
+                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+            .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
+
+        observation.Verdict.Should().Be(StackedParentVerdict.ParentMergedAligned,
+            "the branch already sits on the base's own tip, so replaying the parent's head onto that same "
+            + "tip would only re-apply a commit the branch already has, onto itself — but the pull request "
+            + "still names the parent's branch, which is going away, so a retarget is still owed");
+        observation.Detail.Should().Contain("already sits on").And.Contain("nothing to replay");
+        observation.BoundaryCommit.Should().Be(baseTip,
+            "everything up to and including the base's own tip already belongs to the parent's line, which "
+            + "is what the retarget this verdict still owes records as its boundary");
+        observation.OntoCommit.Should().BeEmpty("nothing was observed to replay, so no onto commit is named");
+
+        // The same shape through the actual dispatch path: no replay is attempted, but the pull
+        // request's base still moves off the parent's branch.
+        FakeStackedInspector inspector = new();
+        await NewEngine(fixture, inspector).PollOnceAsync(cts.Token);
+
+        inspector.Retargets.Should().Equal(["main"],
+            "nothing here replays, but the pull request's base still names the parent's branch and has to "
+            + "move off it, exactly as the ordinary ParentMerged path does");
+        await using IQuerySession afterSweep = fixture.Store.QuerySession();
+        RunDetails runAfterSweep = (await afterSweep.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+        runAfterSweep.LastStackedRetargetSucceeded.Should().BeTrue();
+        runAfterSweep.StackedOnBranch.Should().BeNull("the retarget clears the recorded parent base");
+        TaskAggregate childAfterSweep =
+            (await afterSweep.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        childAfterSweep.StackReplaysDispatched.Should().Be(0,
+            "nothing was owed to replay, so no budget is spent even though the retarget ran");
+    }
+
+    /// <summary>
+    /// The sibling shape one base commit further on (independent pre-PR review, cycle 1, conformance
+    /// and adversarial lenses): a fix session rebases the child onto the base's tip at time T, and
+    /// before the next look, the base moves again to T+1. The child no longer holds the base's
+    /// CURRENT tip, so the exact-tip check above does not fire — but the boundary still must not fall
+    /// back to the parent's own head, because the child's line, by way of the base commit it was
+    /// rebased onto, already carries the base's own commit between the parent's head and T. Replaying
+    /// from the parent's head onto T+1 would re-apply that commit right back onto itself — the same
+    /// conflict-by-construction the exact-tip check exists to rule out, reproduced in a throwaway
+    /// repository under /tmp by both review lenses before this fix. The correct boundary is T, the
+    /// furthest point on the base's own line this branch already contains.
+    /// </summary>
+    [Fact]
+    public async Task A_child_rebased_onto_an_earlier_base_tip_replays_from_that_tip_not_the_parents_head()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+
+        // The parent merges as a fast-forward, so its head becomes reachable from the base's own
+        // later history rather than only from a cherry-picked copy of it.
+        Git(fixture.RepoPath, "checkout -q main");
+        Git(fixture.RepoPath, $"merge -q --ff-only {fixture.ParentBranch}");
+        Git(fixture.RepoPath, "push -q origin main");
+
+        // The base gains one commit, and the child — a fix session resolving an earlier park, or an
+        // earlier replay that already landed — is rebased onto it.
+        File.WriteAllText(Path.Combine(fixture.RepoPath, "FIRST-OTHER-TASK.md"), "the first other task's merge\n");
+        Git(fixture.RepoPath, "add -A");
+        Git(fixture.RepoPath, "-c user.name=Test -c user.email=t@t commit -qm \"the first other task merged\"");
+        Git(fixture.RepoPath, "push -q origin main");
+        string earlierBaseTip = Git(fixture.RepoPath, "rev-parse HEAD").Trim();
+        Git(fixture.ChildWorktreePath, $"rebase -q {earlierBaseTip}");
+
+        // The base gains a SECOND commit after that rebase — the shape one cycle further on than the
+        // sibling test above, where the base does not move again once the child is rebased onto it.
+        File.WriteAllText(Path.Combine(fixture.RepoPath, "SECOND-OTHER-TASK.md"), "a second other task's merge\n");
+        Git(fixture.RepoPath, "add -A");
+        Git(fixture.RepoPath, "-c user.name=Test -c user.email=t@t commit -qm \"a second other task merged\"");
+        Git(fixture.RepoPath, "push -q origin main");
+        string laterBaseTip = Git(fixture.RepoPath, "rev-parse HEAD").Trim();
+
+        await using (IDocumentSession session = fixture.Store.LightweightSession())
+        {
+            session.Events.Append(fixture.ParentRunId, new PullRequestMerged(fixture.ParentRunId, Now, Now));
+            session.Events.Append(fixture.ParentRunId, new RunCompleted(fixture.ParentRunId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(fixture.ProjectId, cts.Token))!;
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+
+        StackedParentObservation observation = await new StackedParentWatch(
+                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+            .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
+
+        observation.Verdict.Should().Be(StackedParentVerdict.ParentMerged,
+            "the child does not hold the base's current tip, so a replay is still owed");
+        observation.BoundaryCommit.Should().Be(earlierBaseTip,
+            "the child already carries the base's own commits up to the tip it was rebased onto — falling "
+            + "back to the parent's own head would replay that base commit right back onto itself");
+        observation.BoundaryCommit.Should().NotBe(fixture.ParentHeadCommit,
+            "the parent's own head is no longer the highest parent-line commit this branch holds");
+        observation.OntoCommit.Should().Be(laterBaseTip, "the replay lands on the base's freshly observed tip");
+
+        // The same shape through the actual dispatch path: the replay's own recorded boundary has to
+        // agree, or the mechanical rebase it drives repeats the identical conflict.
+        FakeStackedInspector inspector = new();
+        await NewEngine(fixture, inspector).PollOnceAsync(cts.Token);
+
+        await using IQuerySession afterSweep = fixture.Store.QuerySession();
+        TaskAggregate childAfterSweep =
+            (await afterSweep.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        childAfterSweep.StackReplayUpstreamCommit.Should().Be(earlierBaseTip);
+        childAfterSweep.StackReplayOntoCommit.Should().Be(laterBaseTip);
     }
 
     /// <summary>
