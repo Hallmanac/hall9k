@@ -1,5 +1,4 @@
 using Hall9k.Daemon.Closeout;
-using Hall9k.Domain.Features.Tasks;
 
 namespace Hall9k.Tests.Fakes;
 
