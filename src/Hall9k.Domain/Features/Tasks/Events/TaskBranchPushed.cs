@@ -23,6 +23,18 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// a warning and carries on. The ancestor and reflog checks still cover the ordinary case either way;
 /// this only closes the gap the origin incident found.
 /// </para>
+/// <para>
+/// Classified <see cref="Hall9k.Domain.Infrastructure.Persistence.EventScope.ProjectScoped"/> in
+/// <see cref="Hall9k.Domain.Infrastructure.Persistence.EventScopeRegistry"/> — every task event
+/// travels (idea 202383dc) — but "this node pushed this tip" is only true on the node that appended
+/// it. This event's own shape deliberately carries no node id: idea 202383dc ruled node identity
+/// travels as Marten event metadata (<see cref="Hall9k.Domain.Infrastructure.Persistence.EventOriginStampingListener.NodeIdHeader"/>),
+/// never as a change to an event's own fields. M2 replication, once built, must read that header —
+/// not <see cref="Tip"/> alone — before trusting a replicated copy of this event as its own node's
+/// history; without that check, a node reading a sibling's replicated push here would treat the
+/// sibling's tip as safe to force over and overwrite the very history this guard exists to protect
+/// (independent pre-PR review, cycle 1, conformance lens).
+/// </para>
 /// </summary>
 /// <param name="Branch">The branch this node just pushed.</param>
 /// <param name="Tip">The commit that push landed at — this node's own local HEAD at push time.</param>
