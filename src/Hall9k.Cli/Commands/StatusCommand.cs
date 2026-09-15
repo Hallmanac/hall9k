@@ -3,8 +3,10 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -64,6 +66,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
 
         await WriteIdentityLineAsync(session, cancellationToken);
         await WriteMessagesLineAsync(session, cancellationToken);
+        await WriteUnverifiedLedgerWritesAsync(session, cancellationToken);
 
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
             session, DateTimeOffset.UtcNow, cancellationToken);
@@ -352,6 +355,49 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]messages: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>
+    /// Every writer this node's own message sweep has seen but could not verify against a
+    /// project's ledger chain (idea 202383dc, T1 criterion 3: "an unverifiable writer's files and
+    /// envelopes are ignored and the writer is named"), read from the standing record the sweep
+    /// itself persists (<c>Hall9k.Daemon.Messaging.MessageSweepEngine.PersistUnverifiedWritesAsync</c>,
+    /// off the same <c>TrustChain.UnverifiedWrites</c> that sweep already computes once per tick)
+    /// — never a live ledger chain walk from here: this pane reads only what this machine's own
+    /// store already has, the same "no git or network work in h9k status itself" rule every other
+    /// pane in this command follows (independent pre-PR review, cycle 1, human resolution
+    /// 2026-09-15). Silent when there is nothing to say, the same "a quiet pane says nothing"
+    /// posture the rest of this command already follows.
+    /// </summary>
+    internal static async Task WriteUnverifiedLedgerWritesAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<UnverifiedLedgerWriteDetails> writes =
+                await session.Query<UnverifiedLedgerWriteDetails>().ToListAsync(cancellationToken);
+            if (writes.Count == 0)
+            {
+                return;
+            }
+
+            foreach (IGrouping<Guid, UnverifiedLedgerWriteDetails> byProject in writes
+                .GroupBy(write => write.ProjectId)
+                .OrderBy(group => group.Key))
+            {
+                ProjectDetails? project = await session.LoadAsync<ProjectDetails>(byProject.Key, cancellationToken);
+                string projectName = project?.Name ?? byProject.Key.ToString();
+
+                foreach (UnverifiedLedgerWriteDetails write in byProject.OrderBy(write => write.FirstSeenAt))
+                {
+                    AnsiConsole.MarkupLineInterpolated(
+                        $"[yellow]unverifiable {write.Kind} by {write.Identifier.EscapeMarkup()}[/] in project '{projectName.EscapeMarkup()}' (under {write.RootFingerprint.EscapeMarkup()}) — {write.Reason.EscapeMarkup()} [dim](last seen {write.LastSeenAt:u})[/]");
+                }
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]unverifiable ledger writes: unavailable ({exception.Message})[/]");
         }
     }
 
