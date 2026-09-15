@@ -219,6 +219,48 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_vouch_introduced_purely_via_a_merge_commits_second_parent_is_still_applied()
+    {
+        // The exact gap the independent pre-PR review reproduced live against the pre-fix
+        // ChangedPathsAsync (cycle 2, conformance lens, medium): `git diff-tree` with no
+        // `-m`/`-c`/`--cc`/`--diff-merges` flag names no paths at all for a merge commit, so once
+        // CommitsOldestFirstAsync started replaying `--topo-order --first-parent` (this same task's
+        // own cycle-1 fix), a merge commit whose first parent is the ref's own prior tip legitimately
+        // entered the walk — but every path it introduced purely via its second parent vanished from
+        // ComputeOwnerChainAsync's view: neither applied to the chain nor recorded as unverified.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity sideNode = GenerateIdentity();
+
+        string refName = $"refs/hall9k/ledger/owners/{owner.Fingerprint}";
+        string tip = await RunGitCaptureAsync(ownerRepo, ["rev-parse", "--verify", refName]);
+
+        string vouchPath = $"owners/{owner.Fingerprint}/nodes/{sideNode.NodeId}.yaml";
+        string vouchContent = BuildYaml(
+            ("node_id", sideNode.NodeId.ToString()), ("public_key", sideNode.PublicKeyLine), ("issued_at", Now()));
+
+        // A side commit, never itself the ref's own tip, introduces the vouch — signed by the owner,
+        // exactly as VouchAsync would sign it.
+        string sideTree = await BuildTreeWithFileAsync(ownerRepo, tip, vouchPath, vouchContent);
+        string sideCommit = await CommitTreeAsync(ownerRepo, sideTree, [tip], owner, "side vouch");
+
+        // Merged straight onto the ref's own current tip: the merge's first parent is the ref's own
+        // prior mainline tip, so it legitimately enters CommitsOldestFirstAsync's
+        // --topo-order --first-parent replay — but the vouch itself was introduced purely via the
+        // second parent.
+        string mergeCommit = await CommitTreeAsync(ownerRepo, sideTree, [tip, sideCommit], owner, "merge side vouch");
+        await RunGitCaptureAsync(ownerRepo, ["push", "origin", $"{mergeCommit}:{refName}"]);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.IsAllowedSigner(sideNode.Fingerprint).Should().BeTrue(
+            "the vouch was legitimately signed by the enrolled root, even though it entered the ref "
+            + "purely via a merge commit's second parent");
+        chain.OwnerChains[owner.Fingerprint].Nodes.Should().Contain(node => node.NodeId == sideNode.NodeId.ToString());
+    }
+
+    [Fact]
     public async Task Genesis_picks_the_first_file_by_ref_order()
     {
         string hub = _repo.CreateHub();
@@ -320,6 +362,107 @@ public sealed class GitLedgerChainReaderTests : IDisposable
                 new LedgerSigningKey(signer.PrivateKeyPath)),
             CancellationToken.None);
         outcome.Verdict.Should().Be(LedgerWriteVerdict.Written, $"test setup write to {path} must land");
+    }
+
+    /// <summary>
+    /// Builds a new tree over <paramref name="parentTip"/>'s own — adding one file — without ever
+    /// moving any ref: the merge-commit test needs a commit that exists purely as a side branch, not
+    /// a fresh ref tip, which <c>GitLedger.WriteAsync</c>'s own push-and-commit flow cannot produce
+    /// on its own. Mirrors <c>GitLedger.BuildTreeAsync</c>'s own private-index technique exactly.
+    /// </summary>
+    private static async Task<string> BuildTreeWithFileAsync(string repositoryPath, string parentTip, string path, string content)
+    {
+        string tempIndex = Path.Combine(Path.GetTempPath(), $"h9k-chain-reader-test-index-{Guid.NewGuid():N}");
+        try
+        {
+            await RunGitCaptureAsync(repositoryPath, ["read-tree", parentTip], indexFile: tempIndex);
+            string blobId = await RunGitCaptureAsync(repositoryPath, ["hash-object", "-w", "--stdin"], indexFile: tempIndex, standardInput: content);
+            await RunGitCaptureAsync(
+                repositoryPath, ["update-index", "--add", "--cacheinfo", $"100644,{blobId},{path}"], indexFile: tempIndex);
+            return await RunGitCaptureAsync(repositoryPath, ["write-tree"], indexFile: tempIndex);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(tempIndex);
+            }
+            catch (IOException)
+            {
+                // Best-effort cleanup of a temp index; nothing downstream reads it again.
+            }
+        }
+    }
+
+    /// <summary>A signed commit over an explicit parent list — the merge-commit test's own way to
+    /// build a two-parent commit, which no <see cref="ILedger"/> write ever produces.</summary>
+    private static async Task<string> CommitTreeAsync(
+        string repositoryPath, string treeId, IReadOnlyList<string> parents, GeneratedIdentity signer, string message)
+    {
+        List<string> arguments =
+        [
+            "-c", $"user.name={Committer.Name}",
+            "-c", $"user.email={Committer.Email}",
+            "-c", "gpg.format=ssh",
+            "-c", $"user.signingkey={signer.PrivateKeyPath}",
+        ];
+
+        arguments.Add("commit-tree");
+        arguments.Add(treeId);
+        foreach (string parent in parents)
+        {
+            arguments.Add("-p");
+            arguments.Add(parent);
+        }
+
+        arguments.Add("-S");
+        arguments.Add("-m");
+        arguments.Add(message);
+
+        return await RunGitCaptureAsync(repositoryPath, arguments);
+    }
+
+    private static async Task<string> RunGitCaptureAsync(
+        string repositoryPath, IReadOnlyList<string> arguments, string? indexFile = null, string? standardInput = null)
+    {
+        using Process process = new();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            RedirectStandardInput = standardInput is not null,
+            UseShellExecute = false,
+        };
+        process.StartInfo.ArgumentList.Add("-C");
+        process.StartInfo.ArgumentList.Add(repositoryPath);
+        foreach (string argument in arguments)
+        {
+            process.StartInfo.ArgumentList.Add(argument);
+        }
+
+        if (indexFile is not null)
+        {
+            process.StartInfo.Environment["GIT_INDEX_FILE"] = indexFile;
+        }
+
+        process.Start();
+        if (standardInput is not null)
+        {
+            await process.StandardInput.WriteAsync(standardInput);
+            process.StandardInput.Close();
+        }
+
+        string output = await process.StandardOutput.ReadToEndAsync();
+        string error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed in {repositoryPath}: {error}");
+        }
+
+        return output.Trim();
     }
 
     private static string Now() => DateTimeOffset.UtcNow.ToString("o", CultureInfo.InvariantCulture);

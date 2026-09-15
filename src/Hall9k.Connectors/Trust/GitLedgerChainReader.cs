@@ -533,12 +533,22 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     }
 
     /// <summary>Every path <paramref name="commit"/> added, changed, or removed relative to its own
-    /// parent(s) — <c>--root</c> so a commit with no parent (a fresh ref's first commit) diffs
-    /// against the empty tree instead of failing.</summary>
+    /// mainline parent — <c>--root</c> so a commit with no parent (a fresh ref's first commit) diffs
+    /// against the empty tree instead of failing, and <c>--diff-merges=first-parent</c> so a merge
+    /// commit diffs against its first parent alone rather than git's own bare default of naming no
+    /// paths at all for a merge (confirmed live against a throwaway repo). Every walk that feeds a
+    /// commit here already replays <c>--topo-order --first-parent</c>
+    /// (<see cref="CommitsOldestFirstAsync"/>), so a merge commit only ever appears when its first
+    /// parent is the ref's own prior mainline tip — a path introduced purely via that merge's second
+    /// parent must diff as mainline-introduced right here, or it is applied to nothing, recorded as
+    /// unverified for nothing, and simply vanishes from the walk (independent pre-PR review,
+    /// cycle 2, conformance lens, medium).</summary>
     private async Task<IReadOnlyList<string>> ChangedPathsAsync(string repositoryPath, string commit, CancellationToken cancellationToken)
     {
         string? output = await RunGitCaptureAsync(
-            repositoryPath, ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", commit], cancellationToken);
+            repositoryPath,
+            ["diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "--diff-merges=first-parent", commit],
+            cancellationToken);
         return [.. (output ?? string.Empty).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
     }
 
