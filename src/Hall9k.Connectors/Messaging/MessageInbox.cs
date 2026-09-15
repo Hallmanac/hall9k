@@ -5,10 +5,15 @@ using Microsoft.Extensions.Logging;
 namespace Hall9k.Connectors.Messaging;
 
 /// <summary>One sweep's own outcome: how many envelopes this sender's outbox held past this node's
-/// cursor, how many actually stored (addressed here and not a duplicate), and whether the sender
-/// could not be vouched for at all.</summary>
+/// cursor, how many actually stored (addressed here and not a duplicate), and whether the sender is
+/// now ignored — either because it could not be vouched for at all, or because a specific envelope
+/// from it failed signature verification even though the sender itself is vouched. <see cref="StalledAtSeq"/>
+/// is the first seq this sweep could not inspect at all (a numeric gap in the sender's own outbox, or
+/// a transport-level tool failure) — distinct from a rejected candidate, which was inspected and
+/// refused; a stalled seq was never reached, so the cursor stops short of it and the same position is
+/// retried next sweep.</summary>
 public sealed record MessageInboxSweepResult(
-    Guid SenderNodeId, bool SenderIgnored, int EnvelopesConsidered, int EnvelopesStored);
+    Guid SenderNodeId, bool SenderIgnored, int EnvelopesConsidered, int EnvelopesStored, long? StalledAtSeq = null);
 
 /// <summary>
 /// The receiving half of the message seam (idea 202383dc, M1a): reads everything
@@ -81,6 +86,20 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 rejectedSeq, senderNodeId);
         }
 
+        if (read.StalledAtSeq is { } stalledAtSeq)
+        {
+            // The transport found seq stalledAtSeq unreachable this sweep — a numeric gap in the
+            // sender's own outbox (its own earlier failed send with no resend yet, or forgery or
+            // corruption the transport cannot tell apart from here) or a git-tool failure reading
+            // it. Either way nothing past it was inspected, so it is never silent: logged here even
+            // though nothing today (M1b's sweep and status wiring, not yet built) surfaces it
+            // further.
+            logger?.LogWarning(
+                "Sender {SenderNodeId}'s outbox has unreachable content at seq {StalledAtSeq} — the cursor "
+                + "stays behind it until this resolves",
+                senderNodeId, stalledAtSeq);
+        }
+
         int stored = 0;
         // Starts at the persisted cursor, never at readFrom: the cursor only ever advances to a
         // seq this sweep actually saw the transport return, and only when this sweep was not an
@@ -137,10 +156,11 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
             stored++;
         }
 
-        // A rejected candidate (a bad signature, a missing introducing commit) was still
-        // inspected, so it counts toward the cursor the same as a stored or skipped one — never
-        // just the highest seq that happened to parse and route, or a rejected candidate at the
-        // tail gets re-inspected on every sweep forever.
+        // A rejected candidate (a bad signature) was still inspected, so it counts toward the
+        // cursor the same as a stored or skipped one — never just the highest seq that happened to
+        // parse and route, or a rejected candidate at the tail gets re-inspected on every sweep
+        // forever. A stalled seq (read.StalledAtSeq) is the opposite: never inspected at all, so
+        // read.HighestSeqInspected already stops short of it and this Math.Max never counts it.
         highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
 
         bool cursorAdvanced = highestSeqConsidered > persistedCursor && !overrideSkipsAhead;
@@ -178,7 +198,8 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
 
         await session.SaveChangesAsync(cancellationToken);
         return new MessageInboxSweepResult(
-            senderNodeId, envelopeVerificationFailed, read.Envelopes.Count + read.RejectedSeqs.Count, stored);
+            senderNodeId, envelopeVerificationFailed, read.Envelopes.Count + read.RejectedSeqs.Count, stored,
+            read.StalledAtSeq);
     }
 
     private static void AppendInboxEvents(IDocumentSession session, Guid streamId, bool streamExists, IReadOnlyList<object> events)

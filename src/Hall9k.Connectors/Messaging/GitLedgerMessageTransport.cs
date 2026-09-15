@@ -108,17 +108,21 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
         List<TransportEnvelope> envelopes = [];
         List<long> rejectedSeqs = [];
         long highestSeqInspected = sinceSeq;
+        long? stalledAtSeq = null;
         foreach (long seq in candidateSeqs)
         {
-            // MessageOutbox always allocates the next seq as this node's own highest-plus-one, and
-            // a resend reuses the seq it already failed at rather than skipping ahead, so a
-            // genuine sender's own candidates are always contiguous. A gap here can only mean
-            // something else placed a file on this ref — a forgery, or corruption — and trusting
-            // it as "inspected" would let that one file drag the cursor past every real envelope
-            // still sitting beyond the gap. Stop instead: the gap is re-examined next sweep rather
-            // than silently trusted.
+            // MessageOutbox allocates the next seq as this node's own highest-plus-one, but a
+            // failed push leaves that seq's own slot empty on the ref until something explicitly
+            // resends it — so a numeric gap here is not proof of forgery or corruption the way it
+            // would be if seq allocation were unconditionally contiguous; it can equally be this
+            // same sender's own unresolved failed send. Either way, nothing beyond the gap has
+            // actually been inspected, and trusting it as "inspected" would let it drag the cursor
+            // past every real envelope still sitting beyond the gap. Stop instead: the gap is
+            // re-examined next sweep rather than silently trusted, and stalledAtSeq tells the caller
+            // there is unreached content here rather than genuinely nothing new.
             if (seq != highestSeqInspected + 1)
             {
+                stalledAtSeq = seq;
                 break;
             }
 
@@ -131,6 +135,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
                 // git itself failed to answer this — never a verdict on the envelope. Stop rather
                 // than treat a tool failure as indistinguishable from a forged or corrupt envelope;
                 // the cursor must never advance past content nobody has actually inspected yet.
+                stalledAtSeq = seq;
                 break;
             }
 
@@ -153,6 +158,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
                 // Same reasoning as the missing-introducing-commit case above: git's own tree
                 // listing already proved this blob exists, so a failure to read it back is a tool
                 // failure, not a rejection — stop rather than skip past it.
+                stalledAtSeq = seq;
                 break;
             }
 
@@ -160,7 +166,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
             highestSeqInspected = seq;
         }
 
-        return TransportReadResult.Ok(envelopes, highestSeqInspected, rejectedSeqs);
+        return TransportReadResult.Ok(envelopes, highestSeqInspected, rejectedSeqs, stalledAtSeq);
     }
 
     private static string OutboxRef(Guid nodeId) => $"refs/hall9k/messages/{nodeId}";
