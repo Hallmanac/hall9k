@@ -455,6 +455,39 @@ public sealed class StackedPromptTests
     }
 
     /// <summary>
+    /// Origin incident, 2026-09-15 (task 450b9d84/PR #382): a retried replay reused the recorded
+    /// onto commit and landed short of a number the base had taken in the meantime.
+    /// <see cref="RunLauncher"/>'s own retry path now resolves the base's current tip fresh instead
+    /// — this covers the prompt's own side, that the swap is stated plainly rather than left for
+    /// the session to notice as an unexplained mismatch against this task's own history.
+    /// </summary>
+    [Fact]
+    public void A_retry_resolved_onto_commit_is_named_plainly_in_the_prompt()
+    {
+        string prompt = AgentPromptBuilder.BuildStackReplay(
+            SomeTask(), SomeProject(), "task/child-slice-two", "https://github.com/x/y/pull/8",
+            CommitStyle.Narrative, baseBranch: "main", upstreamCommit: "abc1234", ontoCommit: "ffff999",
+            ontoCommitResolvedFromCurrentBaseTip: true);
+
+        prompt.Should().Contain("already failed once");
+        prompt.Should().Contain(
+            "ffff999", "the note names the fresh commit the retry actually lands on");
+        prompt.Should().Contain(
+            "originally dispatched onto",
+            "the note says plainly that the recorded commit is stale, not just that a commit changed");
+    }
+
+    [Fact]
+    public void An_ordinary_dispatch_never_mentions_a_retry_resolved_onto_commit()
+    {
+        string prompt = AgentPromptBuilder.BuildStackReplay(
+            SomeTask(), SomeProject(), "task/child-slice-two", "https://github.com/x/y/pull/8",
+            CommitStyle.Narrative, baseBranch: "main", upstreamCommit: "abc1234", ontoCommit: "ffff999");
+
+        prompt.Should().NotContain("already failed once");
+    }
+
+    /// <summary>
     /// A replay onto a moved parent head, rather than onto the base after a merge: same operation,
     /// different <c>--onto</c>, which is the whole reason both triggers share one follow-up kind.
     /// </summary>

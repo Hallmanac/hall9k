@@ -342,8 +342,37 @@ public sealed class RunLauncher(
             // recompose, self-review range, rebase replay and fixup-fold all key off the recorded
             // commit rather than origin/<parent> (independent pre-PR review, cycles 1 and 2,
             // adversarial lens).
+            //
+            // task.StackReplayOntoCommit is a DISPATCH-TIME prediction, written once by whatever
+            // dispatched this follow-up (CloseoutEngine or StackedParentWatch) and never touched
+            // again — including across a retry. The prediction is exactly right for that first
+            // dispatch, but a retry can land long after it, with the base having moved in the
+            // meantime (origin incident, 2026-09-15, task 450b9d84/PR #382: the base took a real
+            // Decisions Log number for another entry between the failed lap and its retry, and the
+            // retry rebuilt its prompt against the stale recorded commit, landing short of it and
+            // failing the same numbering guard a second time). RetryPending is this task's own
+            // standing "a retry is still unconsumed" flag (TaskDetails.RetryPending's own doc) —
+            // true for every dispatch from the moment a retry lands until the task ends, which is
+            // deliberately broader than "only this one relaunch": it costs nothing to resolve the
+            // base's own current tip fresh instead of trusting a prediction this task has already
+            // shown can go stale. FollowUpKind.Rebase carries no equivalent hazard: its own onto
+            // target is always `origin/<base>`, a ref BuildRebase's own prompt fetches fresh at
+            // session run time, never a commit frozen at dispatch time.
+            StackReplayOntoResolver.Resolution stackReplayOnto = isStackReplay
+                ? await StackReplayOntoResolver.ResolveAsync(
+                    processRunner, worktree.Path, runBaseBranch, task.StackReplayOntoCommit ?? string.Empty,
+                    task.RetryPending, cancellationToken)
+                : default;
+            if (isStackReplay && task.RetryPending && !stackReplayOnto.ResolvedFromCurrentBaseTip)
+            {
+                logger.LogWarning(
+                    "Task {TaskId}: run {RunId} retries a stacked replay but could not read {Base}'s current "
+                    + "tip in {Worktree} — falling back to the recorded onto commit {Recorded}",
+                    taskId, runId, runBaseBranch, worktree.Path, task.StackReplayOntoCommit);
+            }
+
             string baseCommit = isStackReplay
-                ? task.StackReplayOntoCommit ?? string.Empty
+                ? stackReplayOnto.Commit
                 : resumedBase?.ForkPointCommit ?? worktree.StartPointCommit;
 
             // Of those three, exactly one can name a commit this branch never landed on, and it is
@@ -506,9 +535,10 @@ public sealed class RunLauncher(
                                 task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                 runBaseBranch,
                                 task.StackReplayUpstreamCommit ?? string.Empty,
-                                task.StackReplayOntoCommit ?? string.Empty,
+                                baseCommit,
                                 commandTimeout: options.Value.VerifyGateTimeout,
-                                voiceSkill: voiceSkill)
+                                voiceSkill: voiceSkill,
+                                ontoCommitResolvedFromCurrentBaseTip: stackReplayOnto.ResolvedFromCurrentBaseTip)
                             // A human's changes-requested review gets its own prompt rather than
                             // the thread one (task: a changes-requested pull-request review from a
                             // human becomes a fix lap): the findings are handed over, and a

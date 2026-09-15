@@ -1212,10 +1212,20 @@ public static class AgentPromptBuilder
     /// <see cref="AppendRebaseVerificationRule"/>'s own parameter. The replay itself authors
     /// nothing: it carries the child's existing commit messages across unchanged.
     /// </param>
+    /// <param name="ontoCommitResolvedFromCurrentBaseTip">
+    /// Set when <paramref name="ontoCommit"/> was read fresh off <paramref name="baseBranch"/>'s
+    /// own current tip for a retry of this same follow-up, rather than carried over from this
+    /// task's dispatch-time recording (<see cref="StackReplayOntoResolver.ResolveAsync"/>'s own
+    /// doc names the origin incident: a retry that reused the stale recorded commit landed short
+    /// of a base that had moved and failed the same gate a second time). Says so plainly in the
+    /// prompt so the session does not read the mismatch between this commit and whatever this
+    /// task's own follow-up reason names as a sign something is wrong.
+    /// </param>
     public static string BuildStackReplay(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl,
         CommitStyle commitStyle, string baseBranch, string upstreamCommit, string ontoCommit,
-        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null)
+        TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null,
+        bool ontoCommitResolvedFromCurrentBaseTip = false)
     {
         const string file = $"{TemplateDirectory}/stack-replay.md";
         StringBuilder prompt = new();
@@ -1254,6 +1264,13 @@ public static class AgentPromptBuilder
         AppendFragment(
             prompt, file, "boundary-explanation",
             ("UpstreamCommit", upstreamCommit), ("OntoCommit", ontoCommit), ("BaseBranch", baseBranch));
+        if (ontoCommitResolvedFromCurrentBaseTip)
+        {
+            AppendFragment(
+                prompt, file, "retry-fresh-onto-note",
+                ("OntoCommit", ontoCommit), ("BaseBranch", baseBranch));
+        }
+
         AppendFragment(prompt, file, "resolve-conflicts");
         AppendFragment(prompt, file, "check-replay");
         // The fold's own boundary is where this replay just landed, not `origin/<base>`: after the
