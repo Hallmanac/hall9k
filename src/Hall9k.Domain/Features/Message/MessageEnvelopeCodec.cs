@@ -82,6 +82,7 @@ public static class MessageEnvelopeCodec
 
             if (dto.To is null
                 || dto.Seq < 1
+                || dto.At == default
                 || dto.FromNode == Guid.Empty
                 || dto.FromOwner.IsBlank()
                 || dto.Kind is null

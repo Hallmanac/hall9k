@@ -90,6 +90,19 @@ public sealed class MessageEnvelopeCodecTests
     }
 
     [Fact]
+    public void Decode_RefusesAMissingAt_WithoutThrowing()
+    {
+        // A missing "at" property deserializes System.Text.Json's non-nullable DateTimeOffset to
+        // its default (0001-01-01), not a thrown exception — silently accepting it here would
+        // record and later display a corrupted sent timestamp instead of refusing the envelope.
+        string json = """{"version":1,"seq":1,"fromNode":"11111111-1111-1111-1111-111111111111","fromOwner":"fp","to":"project","about":null,"kind":"note","body":"hi"}""";
+
+        MessageEnvelopeCodec.DecodeResult result = MessageEnvelopeCodec.Decode(json);
+
+        result.Outcome.Should().Be(MessageEnvelopeCodec.DecodeOutcome.Malformed);
+    }
+
+    [Fact]
     public void Decode_RefusesAMissingFromNode_WithoutThrowing()
     {
         string json = """{"version":1,"seq":1,"at":"2026-09-14T12:00:00Z","fromOwner":"fp","to":"project","about":null,"kind":"note","body":"hi"}""";
