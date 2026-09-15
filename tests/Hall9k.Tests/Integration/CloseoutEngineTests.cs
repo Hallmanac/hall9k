@@ -2768,6 +2768,145 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The FYI beside an approval (task: a review-feedback follow-up never answers a human
+    /// reviewer in the owner's name on its own). Origin incident, arx-platform PR #2021 on
+    /// 2026-09-09: John Mark approved and opened one thread saying his own pull request needed
+    /// the same pattern; three minutes later closeout reopened the task on it and the lap
+    /// answered him under Brian's login. Nothing here was ever asked of this pull request, so
+    /// nothing should have been dispatched.
+    /// </summary>
+    [Fact]
+    public async Task An_approval_and_an_fyi_thread_dispatch_nothing_and_say_so_on_the_run()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 1,
+                UnresolvedReviewThreadIds = ["PRRT_fyi"],
+                UnresolvedHumanThreadIds = ["PRRT_fyi"],
+                UnresolvedHumanThreadDetails =
+                [
+                    new UnresolvedHumanThread(
+                        "PRRT_fyi", "johnmark", "https://github.com/x/y/pull/7#discussion_r1",
+                        "Nice, my own PR needs the same pattern."),
+                ],
+                Reviewers = [FakeInspector.Approved("johnmark")],
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.AwaitingReview, "an FYI beside an approval buys no lap — a visible wait, not a dispatch");
+        run.AdvisoryHumanReviewThreadIds.Should().ContainSingle(
+            "the board must be able to say the remark was read and deliberately not acted on")
+            .Which.Should().Be("PRRT_fyi");
+        (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.State.Should().Be(
+            TaskState.Done, "no reopen was appended; the task's own state is untouched");
+    }
+
+    /// <summary>
+    /// The FYI exception is narrow on purpose: the same approval, the same person, and a thread
+    /// that asks something dispatches exactly as it always has (task: a review-feedback follow-up
+    /// never answers a human reviewer in the owner's name on its own). Origin incident,
+    /// arx-platform PR #2042 on 2026-09-15: jsmotherman approved and asked why a canary value
+    /// rather than the sentinel. That question deserved a drafted answer, and this is the sweep
+    /// that buys the lap to write one.
+    /// </summary>
+    [Theory]
+    [InlineData("Why a canary value here rather than reusing the sentinel?", "a question")]
+    [InlineData("This should be the sentinel, not a canary value.", "a request for a change")]
+    public async Task An_approval_and_a_thread_that_asks_something_still_dispatches(string body, string because)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 1,
+                UnresolvedReviewThreadIds = ["PRRT_asks"],
+                UnresolvedHumanThreadIds = ["PRRT_asks"],
+                UnresolvedHumanThreadDetails =
+                [
+                    new UnresolvedHumanThread(
+                        "PRRT_asks", "jsmotherman", "https://github.com/x/y/pull/7#discussion_r2", body),
+                ],
+                Reviewers = [FakeInspector.Approved("jsmotherman")],
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.AdvisoryHumanReviewThreadIds.Should().BeEmpty(
+            $"{because} beside an approval is not an FYI");
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
+        task.HumanReviewThreads.Should().ContainSingle().Which.Url.Should().Be(
+            "https://github.com/x/y/pull/7#discussion_r2",
+            "the lap's own park needs the link and the author, which only the dispatch observation carries");
+    }
+
+    /// <summary>
+    /// A thread beside a STANDING changes-requested verdict is never advisory, however mildly it
+    /// is worded (task: a review-feedback follow-up never answers a human reviewer in the owner's
+    /// name on its own). The reviewer is still blocking the merge, and reading their next remark
+    /// as an FYI would leave the pull request waiting on a person nobody dispatched a lap for.
+    /// </summary>
+    [Fact]
+    public async Task A_thread_beside_a_standing_changes_requested_verdict_is_never_advisory()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (_, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 1,
+                UnresolvedReviewThreadIds = ["PRRT_blocking"],
+                UnresolvedHumanThreadIds = ["PRRT_blocking"],
+                UnresolvedHumanThreadDetails =
+                [
+                    new UnresolvedHumanThread(
+                        "PRRT_blocking", "teammate", "https://github.com/x/y/pull/7#discussion_r3",
+                        "Noting this for later."),
+                ],
+                Reviewers =
+                [
+                    new PullRequestReviewer(
+                        "teammate", ReviewerKind.Human, FakeInspector.ReviewedHead, "CHANGES_REQUESTED",
+                        FakeInspector.ReviewedHead),
+                ],
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.AdvisoryHumanReviewThreadIds.Should().BeEmpty(
+            "a person whose verdict still blocks the merge is not someone whose threads are FYIs");
+    }
+
+    /// <summary>
     /// The countersign is off unless someone said otherwise: nothing about a quiet pull
     /// request should spend review quota by default (Decisions Log #62).
     /// </summary>
