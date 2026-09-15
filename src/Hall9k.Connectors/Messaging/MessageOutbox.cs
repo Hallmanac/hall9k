@@ -26,6 +26,18 @@ public sealed record MessageSquashResult(int EnvelopesKept);
 public sealed class MessageOutbox(IMessageTransport transport)
 {
     /// <summary>
+    /// The survivor seqs <see cref="SquashAsync"/> actually pushed last time it ran for a given
+    /// outbox, so a later sweep whose own aged-out check still reads true — which it does forever
+    /// once anything has ever aged out, since a squash never touches the local event store, only
+    /// the transport's own copy (this class's own doc) — can tell "nothing has changed since that
+    /// push" from "something new aged out" and skip the push instead of force-pushing an identical
+    /// orphan commit under a fresh timestamp every tick (independent pre-PR review, cycle 1, both
+    /// lenses). In-memory and per-process, the same as <c>MessageSweepEngine._lastKnownTips</c>: a
+    /// restart costs at most one redundant squash, never a forever-repeating one.
+    /// </summary>
+    private readonly Dictionary<(string RepositoryPath, Guid FromNodeId), IReadOnlyList<long>> _lastSquashedSurvivorSeqs = [];
+
+    /// <summary>
     /// Static, unlike every other method here: queueing never touches <see cref="IMessageTransport"/>
     /// at all, so a caller with no transport to hand — <c>h9k message send</c>, which never waits on
     /// git or a network — needs no <see cref="MessageOutbox"/> instance either.
@@ -87,7 +99,14 @@ public sealed class MessageOutbox(IMessageTransport transport)
         }
         catch (Exception exception) when (exception is LedgerPushRejectedException or InvalidOperationException)
         {
-            foreach (MessageDetails message in pending)
+            // Only a message not already marked failed gets a fresh MessageSendFailed appended: an
+            // outage that keeps this same batch failing tick after tick would otherwise duplicate
+            // every envelope's full body onto its own stream once per sweep for as long as the
+            // outage lasts — thousands of appends a day per message, replayed again by the eventual
+            // successful flush's own Resend aggregation (independent pre-PR review, cycle 1,
+            // adversarial lens). A message already SendFailed stays SendFailed either way; nothing
+            // here needs a second event to say so again.
+            foreach (MessageDetails message in pending.Where(message => !message.SendFailed))
             {
                 Guid failedStreamId = MessageStreamId.ForMessage(fromNodeId, message.Seq);
                 session.Events.Append(failedStreamId, MessageDecider.FailSend(ToEnvelope(message), exception.Message, now));
@@ -142,6 +161,13 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// of pointless force-pushes a day, and it moves the outbox tip on every tick even for a node
     /// that has never sent anything, which defeats the daemon's own message sweep's unmoved-tip
     /// skip for every reader watching it (independent pre-PR review, cycle 1, both lenses).
+    /// <see cref="MessageDetails"/>'s own <c>SentAt</c> never changes once a squash actually drops
+    /// an envelope — a squash rewrites the transport's own copy only, never the local event store
+    /// this query reads (this method's own doc, and <see cref="_lastSquashedSurvivorSeqs"/>'s) — so
+    /// that first check alone stays true forever after the first real drop, and would otherwise
+    /// force-push an identical orphan commit, unchanged survivors and all, on every later sweep for
+    /// the rest of the node's life. Skipping again once the survivor set itself stops changing is
+    /// what actually stops that (independent pre-PR review, cycle 1, both lenses).
     /// </para>
     /// </summary>
     public async Task<MessageSquashResult> SquashAsync(
@@ -166,9 +192,18 @@ public sealed class MessageOutbox(IMessageTransport transport)
         }
 
         List<MessageDetails> survivors = [.. sent.Where(message => message.SentAt >= cutoff)];
+        List<long> survivorSeqs = [.. survivors.Select(message => message.Seq)];
+        (string RepositoryPath, Guid FromNodeId) key = (repositoryPath, fromNodeId);
+        if (_lastSquashedSurvivorSeqs.TryGetValue(key, out IReadOnlyList<long>? previousSurvivorSeqs)
+            && previousSurvivorSeqs.SequenceEqual(survivorSeqs))
+        {
+            return new MessageSquashResult(survivors.Count);
+        }
+
         List<TransportEnvelope> batch = [.. survivors.Select(
             message => new TransportEnvelope(message.Seq, MessageEnvelopeCodec.Encode(ToEnvelope(message))))];
         await transport.SquashAsync(repositoryPath, fromNodeId, batch, committer, signingKey, cancellationToken);
+        _lastSquashedSurvivorSeqs[key] = survivorSeqs;
         return new MessageSquashResult(survivors.Count);
     }
 

@@ -901,6 +901,87 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     [Fact]
+    public async Task A_second_squash_after_something_has_already_aged_out_pushes_nothing_more()
+    {
+        // The guard this class's own doc explains: SquashAsync never touches the local event
+        // store, so once one envelope has genuinely aged out, MessageDetails.SentAt for it stays
+        // below the cutoff forever — the "has anything aged out" check alone stays true on every
+        // later sweep for the rest of the node's life. Before the fix, that meant every later
+        // sweep force-pushed an identical orphan commit under a fresh timestamp, moving the tip
+        // every tick even though the survivor set never actually changed (independent pre-PR
+        // review, cycle 1, both lenses).
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await MessageOutbox.QueueAsync(
+            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "old", Now,
+            cts.Token);
+        await outbox.FlushAsync(session, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+
+        DateTimeOffset firstSquashNow = Now.AddHours(48).AddMinutes(1);
+        MessageSquashResult firstSquash = await outbox.SquashAsync(
+            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow, cts.Token);
+        firstSquash.EnvelopesKept.Should().Be(0, "the only envelope sent has aged out of the retention window");
+
+        IReadOnlyList<MessageOutboxTip> tipsAfterFirstSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
+        string tipAfterFirstSquash = tipsAfterFirstSquash.Single(tip => tip.SenderNodeId == nodeA).Tip;
+
+        // Nothing new has been queued, flushed, or aged out since — the same aged-out envelope is
+        // still the only row SquashAsync's own query ever sees, exactly the shape that used to
+        // force a fresh push every time.
+        MessageSquashResult secondSquash = await outbox.SquashAsync(
+            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow.AddMinutes(1),
+            cts.Token);
+        secondSquash.EnvelopesKept.Should().Be(0);
+
+        IReadOnlyList<MessageOutboxTip> tipsAfterSecondSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
+        string tipAfterSecondSquash = tipsAfterSecondSquash.Single(tip => tip.SenderNodeId == nodeA).Tip;
+        tipAfterSecondSquash.Should().Be(
+            tipAfterFirstSquash, "the survivor set has not changed since the first squash, so the second must push nothing");
+    }
+
+    [Fact]
+    public async Task A_repeatedly_failing_flush_appends_only_one_send_failed_event_per_message()
+    {
+        // Before the fix, every failed FlushAsync call appended a fresh MessageSendFailed to every
+        // pending message regardless of whether it was already marked failed — an outage lasting a
+        // whole weekend would duplicate each envelope's full body onto its own stream once per
+        // sweep for as long as it lasted (independent pre-PR review, cycle 1, adversarial lens).
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+
+        AlwaysRejectingFlushTransport transport = new();
+        MessageOutbox outbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await MessageOutbox.QueueAsync(
+            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "hello", Now,
+            cts.Token);
+
+        for (int attempt = 0; attempt < 3; attempt++)
+        {
+            Func<Task> flush = () => outbox.FlushAsync(
+                session, RepositoryPath, nodeA, committerA, signingKeyA, Now.AddSeconds(attempt), cts.Token);
+            await flush.Should().ThrowAsync<LedgerPushRejectedException>();
+        }
+
+        IReadOnlyList<JasperFx.Events.IEvent> events = await session.Events.FetchStreamAsync(
+            MessageStreamId.ForMessage(nodeA, 1), token: cts.Token);
+        events.Count(@event => @event.Data is MessageSendFailed).Should().Be(
+            1, "the message was already SendFailed after the first rejection, so later rejections must not append again");
+    }
+
+    [Fact]
     public async Task Send_then_handle_round_trips_through_the_actual_cli_commands()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
@@ -1156,5 +1237,33 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
             string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> survivors, LedgerCommitter committer,
             LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
             throw new NotSupportedException("This fake only stands in for a read.");
+    }
+
+    /// <summary>Stands in for an outage that rejects every push: FlushAsync always throws
+    /// <see cref="LedgerPushRejectedException"/>, the same shape a real repeatedly-rejected push
+    /// produces.</summary>
+    private sealed class AlwaysRejectingFlushTransport : IMessageTransport
+    {
+        public Task SendAsync(
+            string repositoryPath, Guid fromNodeId, long seq, string content, LedgerCommitter committer,
+            LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("This fake only stands in for a failing flush.");
+
+        public Task FlushAsync(
+            string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> envelopes, LedgerCommitter committer,
+            LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
+            throw new LedgerPushRejectedException(refName: $"refs/hall9k/messages/{fromNodeId}", attempts: 5, gitError: "rejected");
+
+        public Task<IReadOnlyList<MessageOutboxTip>> ProbeAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("This fake only stands in for a failing flush.");
+
+        public Task SquashAsync(
+            string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> survivors, LedgerCommitter committer,
+            LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("This fake only stands in for a failing flush.");
+
+        public Task<TransportReadResult> ReadSinceAsync(
+            string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken) =>
+            throw new NotSupportedException("This fake only stands in for a failing flush.");
     }
 }
