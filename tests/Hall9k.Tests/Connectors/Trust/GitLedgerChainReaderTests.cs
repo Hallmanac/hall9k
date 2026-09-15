@@ -143,6 +143,82 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_forged_committer_email_cannot_smuggle_an_unauthorized_key_into_self_certification()
+    {
+        // The exact injection the independent pre-PR review reproduced (cycle 1, conformance and
+        // adversarial lenses, both high) against the pre-fix IsSignedByAsync, which wrote the
+        // commit's own (attacker-controlled) committer email as the allowed-signers principal: a
+        // committer email crafted as "x <attacker key>" smuggles the attacker's own key into the
+        // allowed-signers line's key-type/key-data fields, pushing the real candidate key (root's
+        // own, here) into a trailing, ignored comment — so git verify-commit ends up verifying the
+        // signature against the attacker's key it was actually signed with, not the root's, and the
+        // check wrongly reports the commit as self-certified. A fixed allowed-signers principal
+        // (GitLedgerChainReader.AllowedSignersPrincipal) closes this: the commit was never actually
+        // signed by root's own key, so self-certification must fail.
+        string hub = _repo.CreateHub();
+        GeneratedIdentity root = GenerateIdentity();
+        GeneratedIdentity attacker = GenerateIdentity();
+        string repo = _repo.CloneNode(hub);
+
+        string refName = $"refs/hall9k/ledger/owners/{root.Fingerprint}";
+        string path = $"owners/{root.Fingerprint}/root.yaml";
+        string content = BuildYaml(("public_key", root.PublicKeyLine), ("created_at", Now()));
+        LedgerCommitter forgedCommitter = new("Attacker", $"x {attacker.PublicKeyLine}");
+
+        LedgerFile current = await _ledger.ReadAsync(repo, refName, path, CancellationToken.None);
+        LedgerWriteOutcome outcome = await _ledger.WriteAsync(
+            new LedgerWriteRequest(
+                repo, refName, path, content, current.BlobId, "forged root", forgedCommitter,
+                new LedgerSigningKey(attacker.PrivateKeyPath)),
+            CancellationToken.None);
+        outcome.Verdict.Should().Be(LedgerWriteVerdict.Written, "the write itself is unauthenticated at A1's own layer");
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().NotContainKey(
+            root.Fingerprint, "the commit was actually signed by the attacker's key, never root's own");
+        chain.IsAllowedSigner(root.Fingerprint).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task A_later_revocation_never_retroactively_voids_an_earlier_membership_write()
+    {
+        // The point-in-time replay fix (independent pre-PR review, cycle 1, conformance and
+        // adversarial lenses, medium and high): a member write's signer is checked against the
+        // owner chain as it stood WHEN THAT WRITE LANDED, never the chain's own final state.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity laptop = GenerateIdentity();
+        string laptopRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(laptopRepo, laptop, laptop);
+        await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
+
+        GeneratedIdentity bob = GenerateIdentity();
+        await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "member", owner);
+
+        // The laptop, still enrolled at this point, removes bob's membership.
+        await DeleteMemberFileAsync(ownerRepo, bob.Fingerprint, laptop);
+
+        // git's own commit timestamp is second-resolution, so the revocation below needs to land in
+        // a provably later second than the removal above, or the two could tie and the assertion
+        // below would no longer isolate what this test exists to prove.
+        await Task.Delay(TimeSpan.FromSeconds(1.1));
+
+        // The laptop is revoked only afterward.
+        await RevokeAsync(ownerRepo, owner.Fingerprint, laptop.NodeId, owner);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.RoleOf(bob.Fingerprint).Should().BeNull(
+            "bob's removal was legitimately signed by the laptop while it was still enrolled; the "
+            + "laptop's later revocation must not retroactively undo it");
+        chain.IsAllowedSigner(laptop.Fingerprint).Should().BeFalse("the laptop is revoked as of the final read");
+    }
+
+    [Fact]
     public async Task Genesis_picks_the_first_file_by_ref_order()
     {
         string hub = _repo.CreateHub();
@@ -208,6 +284,19 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         string content = BuildYaml(
             ("node_id", target.NodeId.ToString()), ("public_key", target.PublicKeyLine), ("issued_at", Now()));
         await WriteAsync(repositoryPath, refName, path, content, signer);
+    }
+
+    private async Task DeleteMemberFileAsync(string repositoryPath, string rootFingerprint, GeneratedIdentity signer)
+    {
+        string refName = "refs/hall9k/ledger/members";
+        string path = $"members/{rootFingerprint}.yaml";
+        LedgerFile current = await _ledger.ReadAsync(repositoryPath, refName, path, CancellationToken.None);
+        LedgerWriteOutcome outcome = await _ledger.DeleteAsync(
+            new LedgerDeleteRequest(
+                repositoryPath, refName, path, current.BlobId, "test delete", Committer,
+                new LedgerSigningKey(signer.PrivateKeyPath)),
+            CancellationToken.None);
+        outcome.Verdict.Should().Be(LedgerWriteVerdict.Written, $"test setup deletion of {path} must land");
     }
 
     private async Task RevokeAsync(string repositoryPath, string ownerRoot, Guid targetNodeId, GeneratedIdentity signer)
