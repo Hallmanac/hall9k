@@ -241,6 +241,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "DefaultInteractiveClaimStaleAfterDays, default 3). There is no reclaim to configure — the nudge "
             + "is the whole remedy, never a timeout.")]
         public int? InteractiveClaimStaleAfterDays { get; init; }
+
+        [CommandOption("--invite-expiry-hours <HOURS>")]
+        [Description(
+            "How many hours a minted invite stays valid before a join naming it, or the minting node's own "
+            + "daemon sweep, refuses it as expired (OperatingSettings.InviteExpiryHours, default 72, idea "
+            + "202383dc T2). Read directly by h9k node invite/h9k project invite at mint time — an invite "
+            + "already minted keeps whatever expiry it was minted with, unaffected by a later change here.")]
+        public int? InviteExpiryHours { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -282,8 +290,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             AnsiConsole.MarkupLineInterpolated($"[green]{line}[/]");
         }
 
-        bool onlyInteractiveClaimStaleAfterDaysChanged =
-            settings.InteractiveClaimStaleAfterDays is not null
+        // Both settings named here take effect the moment this write lands — neither is read
+        // through a live DaemonOptions instance a running daemon would need restarting to pick up
+        // (InteractiveClaimStaleAfterDays: h9k status reads the file fresh every render;
+        // InviteExpiryHours: h9k node invite/h9k project invite read the file fresh at mint time) —
+        // so a call touching only these two, in any combination, gets the "already in force" note
+        // below rather than the daemon-restart one every other setting on this command needs.
+        bool onlyImmediateEffectSettingsChanged =
+            (settings.InteractiveClaimStaleAfterDays is not null || settings.InviteExpiryHours is not null)
             && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.OrchestratorModel is null
@@ -297,15 +311,15 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.MessagePollActiveMin is null && settings.MessagePollActiveMax is null
             && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null;
 
-        if (onlyInteractiveClaimStaleAfterDaysChanged)
+        if (onlyImmediateEffectSettingsChanged)
         {
             AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Written to {Hall9kDatabase.ConfigFile} — h9k status reads this fresh on every render, so it is already in force; there is no daemon restart or environment variable involved.[/]");
+                $"[dim]Written to {Hall9kDatabase.ConfigFile} — read fresh from the file at the moment each one is used, so it is already in force; there is no daemon restart or environment variable involved.[/]");
         }
         else
         {
             AnsiConsole.MarkupLineInterpolated(
-                $"[dim]Written to {Hall9kDatabase.ConfigFile} — a running daemon picks this up on its next start (h9k daemon stop, then h9k daemon start); h9k config show prints the effective settings. (--interactive-claim-stale-after-days, if you set it, is already in force — h9k status reads it fresh from the file, with no daemon restart involved.)[/]");
+                $"[dim]Written to {Hall9kDatabase.ConfigFile} — a running daemon picks this up on its next start (h9k daemon stop, then h9k daemon start); h9k config show prints the effective settings. (--interactive-claim-stale-after-days and --invite-expiry-hours, if you set either, are already in force — both are read fresh from the file, with no daemon restart involved.)[/]");
         }
 
         return ExitCodes.Ok;
@@ -331,7 +345,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.SpendBudget is null && settings.SpendPeriod is null
             && settings.ReviewStageComposition is null
             && settings.MessagePollActiveMin is null && settings.MessagePollActiveMax is null
-            && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null)
+            && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null
+            && settings.InviteExpiryHours is null)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass at least one setting, e.g. --max-concurrent-task-runs 2. "
@@ -457,6 +472,13 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 + "when it nudges a stale claim, so writing one here would confirm a setting the board would not "
                 + "actually honour.");
         }
+
+        if (settings.InviteExpiryHours is { } inviteExpiryHours && inviteExpiryHours < 1)
+        {
+            throw new DomainValidationException(
+                "--invite-expiry-hours must be at least 1 — an invite that expires before it is even minted "
+                + "could never be claimed.");
+        }
     }
 
     /// <summary>
@@ -554,6 +576,12 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             operating.InteractiveClaimStaleAfterDays = staleAfterDays;
             changed.Add($"interactive-claim-stale-after-days = {staleAfterDays}");
+        }
+
+        if (settings.InviteExpiryHours is { } inviteExpiryHours)
+        {
+            operating.InviteExpiryHours = inviteExpiryHours;
+            changed.Add($"invite-expiry-hours = {inviteExpiryHours}");
         }
 
         if (settings.MaxComplianceReviewCycles is { } complianceCap)

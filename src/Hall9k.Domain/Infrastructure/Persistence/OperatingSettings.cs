@@ -132,6 +132,21 @@ public sealed class OperatingSettings
     public int? InteractiveClaimStaleAfterDays { get; set; }
 
     /// <summary>
+    /// How many hours a minted invite (idea 202383dc, T2) stays valid before a join naming it, or
+    /// the minting node's own sweep, refuses it as expired — 72 by default, RULED 2026-09-13
+    /// (a2-team-half-walk-2026-09-13.md, Criteria T2). Read directly by <c>h9k node invite</c>/
+    /// <c>h9k project invite</c> at mint time, the same "no daemon process acts on it directly"
+    /// reasoning <see cref="InteractiveClaimStaleAfterDays"/> already documents: the expiry is
+    /// baked into the invite's own <c>ExpiresAt</c> the moment it is minted, so nothing downstream
+    /// — not the sweep, not a later join — ever re-reads this setting again for an invite already
+    /// minted. Null defers to <see cref="DefaultInviteExpiryHours"/>.
+    /// </summary>
+    public int? InviteExpiryHours { get; set; }
+
+    /// <summary>Mirrors the 72-hour default RULED for idea 202383dc, T2 — see <see cref="InviteExpiryHours"/>'s own doc.</summary>
+    public const int DefaultInviteExpiryHours = 72;
+
+    /// <summary>
     /// This node's override of the conformance review track's cycle cap (Decisions Log #63);
     /// null defers to <see cref="DefaultMaxComplianceReviewCycles"/>. Task &gt; project &gt; node &gt;
     /// compiled default is the resolution order every one of these four caps shares.

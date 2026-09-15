@@ -104,6 +104,14 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
             : "config file";
         table.AddRow("message-poll-idle-min/-max", $"{idleMin}s / {idleMax}s ({idleOrigin})".EscapeMarkup());
 
+        // Not part of the report above, the identical reason interactive-claim-stale-after-days
+        // is not: nothing binds this through DaemonOptions either — h9k node invite/h9k project
+        // invite read the config file fresh at mint time, and an invite already minted keeps
+        // whatever expiry it was minted with regardless of a later change here.
+        int inviteExpiryHours = configured.InviteExpiryHours ?? OperatingSettings.DefaultInviteExpiryHours;
+        string inviteExpiryOrigin = configured.InviteExpiryHours is null ? "default" : "config file";
+        table.AddRow("invite-expiry-hours", $"{inviteExpiryHours}h ({inviteExpiryOrigin})".EscapeMarkup());
+
         AnsiConsole.Write(table);
 
         foreach (string line in await SpendLinesAsync(report, cancellationToken))
