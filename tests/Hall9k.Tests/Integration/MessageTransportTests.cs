@@ -460,6 +460,106 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     [Fact]
+    public async Task A_rejected_candidate_marks_the_sender_ignored_for_status_even_though_the_cursor_moved()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        const string ownerB = "owner-b-fingerprint";
+
+        RejectingMessageTransport transport = new(HighestSeqInspected: 5, RejectedSeqs: [5]);
+        MessageInbox inbox = new(transport);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
+            session, RepositoryPath, nodeA, nodeB, ownerB, Now, cancellationToken: cts.Token);
+
+        sweep.SenderIgnored.Should().BeTrue("an envelope failing sender verification must be visible to h9k status");
+
+        MessageInboxDetails? inboxDoc = await session.LoadAsync<MessageInboxDetails>(
+            MessageStreamId.ForInbox(nodeA), cts.Token);
+        inboxDoc!.SenderIgnored.Should().BeTrue(
+            "the cursor advancing past a rejected candidate must never be read as this sender being fine");
+        inboxDoc.HighestSeqReceived.Should().Be(5, "the cursor still moves past the rejected candidate");
+    }
+
+    [Fact]
+    public async Task A_clean_sweep_after_a_rejected_candidate_clears_the_ignored_mark()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        const string ownerB = "owner-b-fingerprint";
+        Guid inboxStreamId = MessageStreamId.ForInbox(nodeA);
+
+        RejectingMessageTransport rejecting = new(HighestSeqInspected: 5, RejectedSeqs: [5]);
+        MessageInbox inboxOverRejecting = new(rejecting);
+
+        await using (IDocumentSession firstSession = _postgres.Store.LightweightSession())
+        {
+            await inboxOverRejecting.ReadFromAsync(
+                firstSession, RepositoryPath, nodeA, nodeB, ownerB, Now, cancellationToken: cts.Token);
+        }
+
+        // The next sweep finds the sender vouched and nothing new past the cursor — no rejection
+        // this time — which must clear the mark the previous sweep raised.
+        RejectingMessageTransport clean = new(HighestSeqInspected: 5, RejectedSeqs: []);
+        MessageInbox inboxOverClean = new(clean);
+
+        await using (IDocumentSession secondSession = _postgres.Store.LightweightSession())
+        {
+            MessageInboxSweepResult second = await inboxOverClean.ReadFromAsync(
+                secondSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+            second.SenderIgnored.Should().BeFalse();
+        }
+
+        await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
+        MessageInboxDetails? inboxDoc = await assertSession.LoadAsync<MessageInboxDetails>(inboxStreamId, cts.Token);
+        inboxDoc!.SenderIgnored.Should().BeFalse("a later clean sweep must clear an earlier verification-failure mark");
+    }
+
+    [Fact]
+    public async Task A_seq_conflict_from_an_earlier_unrecorded_push_moves_to_the_next_seq_instead_of_misattributing_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        // Simulates a push that landed at the ledger for seq 1 whose own local MessageSent record
+        // was never saved (a crash, a cancellation, right after the push succeeded) — this node's
+        // own store has no idea seq 1 was ever used.
+        MessageEnvelopeV1 phantom = new(
+            1, Now, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "landed but never recorded locally");
+        await transport.SendAsync(
+            RepositoryPath, nodeA, 1, MessageEnvelopeCodec.Encode(phantom), committerA, signingKeyA, cts.Token);
+
+        MessageEnvelopeV1 sent;
+        await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
+        {
+            sent = await outbox.SendAsync(
+                sendSession, RepositoryPath, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null,
+                MessageKind.Note, "a brand new message", committerA, signingKeyA, Now.AddSeconds(1), cts.Token);
+        }
+
+        sent.Seq.Should().Be(2, "seq 1 already holds different content this node's own store never saw");
+
+        await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
+        MessageDetails? atTwo = await assertSession.LoadAsync<MessageDetails>(MessageStreamId.ForMessage(nodeA, 2), cts.Token);
+        atTwo.Should().NotBeNull();
+        atTwo!.SendFailed.Should().BeFalse();
+        atTwo.SentAt.Should().NotBeNull();
+
+        MessageDetails? atOne = await assertSession.LoadAsync<MessageDetails>(MessageStreamId.ForMessage(nodeA, 1), cts.Token);
+        atOne.Should().BeNull("this node's own store must never record a failure against seq 1's real, different content");
+    }
+
+    [Fact]
     public async Task A_sender_vouched_again_clears_the_ignored_mark_even_with_nothing_new()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
