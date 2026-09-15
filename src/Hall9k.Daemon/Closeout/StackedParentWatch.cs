@@ -26,6 +26,21 @@ public enum StackedParentVerdict
     ParentMerged,
 
     /// <summary>
+    /// The parent's pull request merged into the project's own base branch, and this child's branch
+    /// already contains that base branch's own tip — nothing left to REPLAY: a previous replay
+    /// already landed, or a fix session rebased the branch there by hand. The retarget is still
+    /// owed, though, exactly as it is for <see cref="ParentMerged"/>: the pull request's recorded
+    /// base still names the parent's branch, which is going away, and nothing else moves it. Kept
+    /// distinct from <see cref="Aligned"/> for that reason — plain Aligned answers "nothing is
+    /// owed", and closeout's own reader of these verdicts only ever retargets on <see cref="ParentMerged"/>,
+    /// so answering Aligned here left the retarget permanently undone (independent pre-PR review,
+    /// cycle 1, conformance and adversarial lenses: this is the 2026-09-14 shape, task 450b9d84,
+    /// where the earlier fix for the replay-conflicts-by-construction defect answered this state
+    /// with Aligned and never dispatched the retarget it still owed).
+    /// </summary>
+    ParentMergedAligned,
+
+    /// <summary>
     /// The parent's branch head moved without merging, to a commit the child's branch does not
     /// contain: ordinarily a review lap folding fixes into its own commits and force-pushing, but
     /// an ordinary commit appended since the child was cut reads identically here and is not
@@ -92,8 +107,11 @@ public enum StackedParentVerdict
 /// run's own recorded fork point (<c>RunDetails.BaseCommit</c>), once the child's branch is
 /// confirmed to contain it — never <c>git merge-base</c>: see
 /// <see cref="StackedParentWatch"/>'s own doc for the force-push case that proves merge-base wrong
-/// here. Blank on every verdict but <see cref="StackedParentVerdict.ParentMerged"/> and
-/// <see cref="StackedParentVerdict.ParentMoved"/> — <see cref="StackedParentVerdict.Aligned"/>,
+/// here. Blank on every verdict but <see cref="StackedParentVerdict.ParentMerged"/>,
+/// <see cref="StackedParentVerdict.ParentMoved"/> and
+/// <see cref="StackedParentVerdict.ParentMergedAligned"/> — the last of these carries the base
+/// branch's own tip rather than a replay's upstream, since nothing there is replayed, only
+/// retargeted. <see cref="StackedParentVerdict.Aligned"/>,
 /// <see cref="StackedParentVerdict.Unobservable"/>,
 /// <see cref="StackedParentVerdict.ParentMergedElsewhere"/>,
 /// <see cref="StackedParentVerdict.ParentDead"/> and
@@ -118,6 +136,15 @@ public sealed record StackedParentObservation(
 
     public static StackedParentObservation Unobservable(string detail) =>
         new(StackedParentVerdict.Unobservable, string.Empty, string.Empty, string.Empty, detail);
+
+    /// <summary>
+    /// Carries the base branch's own tip as the boundary — everything at or before it belongs to the
+    /// parent's now-merged line, which this branch already has — even though nothing here is
+    /// replayed: the retarget this verdict still owes reads it the same way
+    /// <see cref="StackedParentVerdict.ParentMerged"/>'s own retarget does.
+    /// </summary>
+    public static StackedParentObservation ParentMergedAligned(string parentBranch, string boundaryCommit, string detail) =>
+        new(StackedParentVerdict.ParentMergedAligned, parentBranch, boundaryCommit, string.Empty, detail);
 
     /// <summary>
     /// Carries the parent's branch, unlike the two above: the park this verdict produces names the
@@ -174,12 +201,16 @@ public sealed record StackedParentObservation(
 /// <strong>A child GitHub has already retargeted.</strong> Where the repository deletes head
 /// branches on merge, GitHub takes the parent's branch off origin at the merge and moves every open
 /// child's base onto the base branch itself, all of it before any sweep here has observed the merge
-/// (Decisions Log #186). Such a child reaches exactly two verdicts, in this order,
-/// and never a dead end: <see cref="StackedParentVerdict.Aligned"/> while the parent's merge is
-/// still unrecorded — the parent's head resolves from the pull request's own ref, the child contains
-/// it, and nothing is owed — and then <see cref="StackedParentVerdict.ParentMerged"/> once the
-/// parent's own closeout records the merge, which is what dispatches the replay that drops the
-/// parent's now-duplicated commits. A merged parent is never read as dead on the way through:
+/// (Decisions Log #186). Such a child ordinarily reaches exactly two verdicts, in
+/// this order, and never a dead end: <see cref="StackedParentVerdict.Aligned"/> while the parent's
+/// merge is still unrecorded — the parent's head resolves from the pull request's own ref, the child
+/// contains it, and nothing is owed — and then <see cref="StackedParentVerdict.ParentMerged"/> once
+/// the parent's own closeout records the merge, which is what dispatches the replay that drops the
+/// parent's now-duplicated commits. The one variation is a child that, by the time that second look
+/// happens, already sits on the base branch's own later tip — a previous replay landed, or a fix
+/// session rebased it there by hand — which reaches <see cref="StackedParentVerdict.ParentMergedAligned"/>
+/// instead: the same retarget, with no replay behind it because there is nothing left to drop. A
+/// merged parent is never read as dead on the way through:
 /// <c>TaskDependency.IsDelivered</c> turns on the parent's pull request not having been observed
 /// CLOSED, and a merge is not a close. The child's own base moving under it is therefore never the
 /// thing that ends its story; what used to end it was the platform's own raw
@@ -521,14 +552,119 @@ public sealed class StackedParentWatch(
                 return StackedParentObservation.Aligned(alignment);
             }
 
+            // A merged parent's own onto is the project's base branch's own tip, not the parent's
+            // old head — so alignment for a merged parent has to be judged against THAT commit,
+            // fetched now and checked for containment before a boundary is ever chosen. A child
+            // that already sits on it — because an earlier replay already landed, or because a fix
+            // session rebased it there by hand — owes nothing to REPLAY: replaying from the parent's
+            // head onto that tip would re-apply commits the base gained AFTER the parent merged
+            // (another task's own merge, say) onto a branch that already has them, which conflicts
+            // by construction rather than by anything genuinely unresolved. This is the 2026-09-14
+            // shape (task 450b9d84): the child held both its merged parent's head and the base
+            // branch's later tip, and the boundary computed below — the parent's head — replayed the
+            // base's own newer commit right back onto itself. It still owes a RETARGET, though: see
+            // StackedParentVerdict.ParentMergedAligned's own doc (independent pre-PR review, cycle
+            // 1, conformance and adversarial lenses — the fix that first answered this state
+            // answered it with plain Aligned and never retargeted at all).
+            string mergedBaseTip = string.Empty;
+            string? advancedMergedBoundary = null;
+            if (parentMerged)
+            {
+                ParentHeadRead baseTipRead = await ReadRemoteBranchHeadAsync(
+                    git, repositoryPath, project.BaseBranch, cancellationToken);
+                if (baseTipRead.Commit is not { } candidateBaseTip)
+                {
+                    return StackedParentObservation.Unobservable(
+                        $"the parent's pull request merged, but origin/{project.BaseBranch}'s own tip could not be "
+                        + $"resolved ({baseTipRead.Detail}), so there is no observed commit for the replay to "
+                        + "land on");
+                }
+
+                ProcessResult childHoldsBaseTipResult = await git(
+                    "git",
+                    ["merge-base", "--is-ancestor", candidateBaseTip, $"refs/heads/{childRun.Branch}"],
+                    repositoryPath,
+                    cancellationToken);
+                if (childHoldsBaseTipResult.ExitCode is not (0 or 1))
+                {
+                    return StackedParentObservation.Unobservable(
+                        $"git could not tell whether {project.BaseBranch}'s tip is contained in "
+                        + $"{childRun.Branch}: " + FirstLine(childHoldsBaseTipResult.StandardError));
+                }
+
+                if (childHoldsBaseTipResult.ExitCode == 0)
+                {
+                    return StackedParentObservation.ParentMergedAligned(
+                        parentBranch, candidateBaseTip,
+                        $"the parent task's pull request merged, and {childRun.Branch} already sits on "
+                        + $"{project.BaseBranch}'s own tip {Short(candidateBaseTip)} — nothing to replay, but "
+                        + $"this pull request's base still names {parentBranch} and needs to move onto "
+                        + $"{project.BaseBranch}");
+                }
+
+                mergedBaseTip = candidateBaseTip;
+
+                // The child does not hold the base's CURRENT tip, but it may already hold a LATER
+                // point on the base's own line than the parent's own head — the same 2026-09-14
+                // shape one cycle further on (independent pre-PR review, cycle 1, conformance and
+                // adversarial lenses): a fix session rebases the child onto the base's tip at time
+                // T, and by the time this sweep looks, the base has moved again to some T+1. Staying
+                // at the parent's own head as the boundary regardless would replay the base's own
+                // commits between T and the parent's head right back onto themselves — the identical
+                // conflict-by-construction this whole check exists to rule out, just one base commit
+                // later. Advancing past the parent's head is safe only once the parent's head is
+                // confirmed to actually BE on the base branch's own line: git merge-base between the
+                // base tip and the child when that is NOT so — a rebase-merge gave the parent's
+                // commits new SHAs on the base, so the child's OLD-SHA copies share no history with
+                // the base beyond whatever predates the parent's branch entirely — would walk PAST
+                // the parent's head to something much earlier, resurrecting the exact duplication
+                // this boundary exists to prevent (this type's own doc on why merge-base is not used
+                // elsewhere here). Where the parent's head is not reachable from the base's own tip,
+                // this falls through and the boundary below stays the parent's own head, exactly as
+                // it always has.
+                if (childHoldsParentHead)
+                {
+                    ProcessResult parentHeadOnBase = await git(
+                        "git",
+                        ["merge-base", "--is-ancestor", parentHead, mergedBaseTip],
+                        repositoryPath,
+                        cancellationToken);
+                    if (parentHeadOnBase.ExitCode is not (0 or 1))
+                    {
+                        return StackedParentObservation.Unobservable(
+                            $"git could not tell whether {parentBranch}'s head is contained in "
+                            + $"{project.BaseBranch}'s own tip: " + FirstLine(parentHeadOnBase.StandardError));
+                    }
+
+                    if (parentHeadOnBase.ExitCode == 0)
+                    {
+                        ProcessResult advanced = await git(
+                            "git",
+                            ["merge-base", mergedBaseTip, $"refs/heads/{childRun.Branch}"],
+                            repositoryPath,
+                            cancellationToken);
+                        if (advanced.ExitCode != 0 || advanced.StandardOutput.Trim().IsBlank())
+                        {
+                            return StackedParentObservation.Unobservable(
+                                $"git could not find the furthest commit of {project.BaseBranch} that "
+                                + $"{childRun.Branch} already contains: " + FirstLine(advanced.StandardError));
+                        }
+
+                        advancedMergedBoundary = advanced.StandardOutput.Trim();
+                    }
+                }
+            }
+
             // The boundary. Directly observed wherever it can be: a child that CONTAINS the
             // parent's current head — which only reaches here when the parent merged — was not
             // rewritten out from under, and holding the parent's whole branch means that head IS
-            // the highest parent commit on the child's own line. Preferred over the record even
-            // when there is one (independent pre-PR review, cycle 1, adversarial lens): the record
-            // is this run's fork point as it was at dispatch, and a rebase that moves the branch
-            // afterwards leaves it naming a commit the branch may no longer contain — a replay
-            // from a stale upstream re-applies the parent's commits onto the base instead of
+            // the highest parent commit on the child's own line, UNLESS the check just above found
+            // the child already carries the base branch's own line further still, in which case that
+            // later commit is the true highest one and is preferred. Either is preferred over the
+            // record even when there is one (independent pre-PR review, cycle 1, adversarial lens):
+            // the record is this run's fork point as it was at dispatch, and a rebase that moves the
+            // branch afterwards leaves it naming a commit the branch may no longer contain — a
+            // replay from a stale upstream re-applies the parent's commits onto the base instead of
             // dropping them, the exact duplication this boundary exists to prevent. An observed
             // commit that is currently true beats a recorded one that was.
             //
@@ -537,9 +673,9 @@ public sealed class StackedParentWatch(
             // left to read the boundary from — merge-base gets it wrong for exactly this case
             // (this type's own doc). A child whose run recorded no fork point either is admitted
             // as unobservable rather than replayed on a guess.
-            string boundary = childHoldsParentHead
+            string boundary = advancedMergedBoundary ?? (childHoldsParentHead
                 ? parentHead
-                : childRun.BaseCommit;
+                : childRun.BaseCommit);
             if (boundary.IsBlank())
             {
                 return StackedParentObservation.Unobservable(
@@ -579,24 +715,14 @@ public sealed class StackedParentWatch(
             }
             if (parentMerged)
             {
-                // Onto the project's base branch's own freshly observed tip, which is where the
-                // retarget is about to aim the pull request. Unobservable whichever way that read
-                // came back short — a failed fetch or a base branch origin does not have — because
-                // neither is a fact about the PARENT, which is what this verdict speaks about.
-                ParentHeadRead baseTipRead = await ReadRemoteBranchHeadAsync(
-                    git, repositoryPath, project.BaseBranch, cancellationToken);
-                if (baseTipRead.Commit is not { } baseTip)
-                {
-                    return StackedParentObservation.Unobservable(
-                        $"the parent's pull request merged, but origin/{project.BaseBranch}'s own tip could not be "
-                        + $"resolved ({baseTipRead.Detail}), so there is no observed commit for the replay to land on");
-                }
-
+                // Fetched and checked for containment above, before the boundary was chosen — never
+                // re-fetched here, so this arm and that check can never read the base tip
+                // differently.
                 return new StackedParentObservation(
-                    StackedParentVerdict.ParentMerged, parentBranch, boundary, baseTip,
+                    StackedParentVerdict.ParentMerged, parentBranch, boundary, mergedBaseTip,
                     $"the parent task's pull request merged, so this pull request's base moves from "
                     + $"{parentBranch} to {project.BaseBranch} and its own commits replay from {Short(boundary)} "
-                    + $"onto {Short(baseTip)}");
+                    + $"onto {Short(mergedBaseTip)}");
             }
 
             // "Moved to a head this branch does not contain" is the whole of what was observed, and

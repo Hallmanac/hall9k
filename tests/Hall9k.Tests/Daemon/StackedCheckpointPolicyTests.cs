@@ -28,6 +28,23 @@ public sealed class StackedCheckpointPolicyTests
     }
 
     /// <summary>
+    /// The parent merged and this branch already sits on the base's own tip: the checkpoint has
+    /// nothing to REPLAY, exactly like plain Aligned. The retarget this verdict still owes is not
+    /// this checkpoint's to make — see StackedParentVerdict.ParentMergedAligned's own doc — so it is
+    /// not asserted here at all, only that the checkpoint proceeds rather than parking or replaying.
+    /// </summary>
+    [Fact]
+    public void A_child_already_on_the_bases_tip_after_its_parent_merged_owes_no_replay()
+    {
+        StackedCheckpointVerdict verdict = Decide(StackedParentObservation.ParentMergedAligned(
+            ParentBranch, "aaaaaaaa1111", "the parent task's pull request merged, and the branch already sits "
+            + "on main's own tip — nothing to replay"));
+
+        verdict.Action.Should().Be(StackedCheckpointAction.Proceed);
+        verdict.UpstreamCommit.Should().BeEmpty("nothing is replayed, so no boundary is claimed");
+    }
+
+    /// <summary>
     /// A failed read is not a fact and is not this run's fault — the identical stance the unstacked
     /// half of the same gate takes on a failed fetch. Parking here would park a run over a network
     /// blip, and closeout's own replay is the second reader once the branch is pushed.
