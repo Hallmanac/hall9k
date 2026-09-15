@@ -105,14 +105,18 @@ public sealed class ProjectGitHubClientTests
     }
 
     /// <summary>
-    /// The token read already turned a hung gh into a <see cref="DomainValidationException"/>
-    /// before this fix; the actual command run here never did, so it escaped standalone
-    /// <c>h9k project join</c> as an unhandled <see cref="TimeoutException"/> and a stack trace
-    /// instead of the reason on stderr AGENTS.md's CLI standard requires (independent pre-PR
-    /// review, cycle 1, conformance and adversarial lenses, both low).
+    /// <see cref="ProjectGitHubClient.RunAsync"/> itself must NOT translate a hung gh's
+    /// <see cref="TimeoutException"/>: it is now every connector's shared seam
+    /// (<c>ProjectScopedGitHubRunner</c>), and each connector already turns a hang into its own
+    /// richer, per-operation message — a blanket catch here converted every one of those into this
+    /// method's own generic wording before any connector's own handling ever saw the exception
+    /// (independent pre-PR review, cycle 1, adversarial lens). The one caller with no handling of
+    /// its own, <see cref="ProjectGitHubAccessMirror.ObserveAsync"/>, carries this translation
+    /// itself now — see <c>ProjectGitHubAccessMirrorTests</c> — so this test locks in that the raw
+    /// exception propagates from here instead.
     /// </summary>
     [Fact]
-    public async Task RunAsync_reports_a_hung_gh_command_as_a_domain_exception_rather_than_crashing()
+    public async Task RunAsync_lets_a_hung_gh_commands_TimeoutException_propagate_for_the_caller_to_translate()
     {
         RecordingProcessRunner tokenRunner = RecordingProcessRunner.Succeeding("token-for-hallmanac\n");
         RecordingEnvironmentProcessRunner ghRunner = new(() => throw new TimeoutException(
@@ -121,7 +125,7 @@ public sealed class ProjectGitHubClientTests
 
         Func<Task> run = () => client.RunAsync(Account, "/repos/hall9k", ["repo", "view"], CancellationToken.None);
 
-        (await run.Should().ThrowAsync<DomainValidationException>()).WithMessage("*did not answer*");
+        (await run.Should().ThrowAsync<TimeoutException>()).WithMessage("*did not answer*");
     }
 
     [Fact]

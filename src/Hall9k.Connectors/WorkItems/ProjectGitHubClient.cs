@@ -42,11 +42,26 @@ public sealed record ProjectGitHubAccount(long Id, string Login);
 /// </para>
 /// </summary>
 public sealed class ProjectGitHubClient(
-    EnvironmentProcessRunner? runner = null, ProcessRunner? tokenRunner = null, Func<string, string?>? environmentVariable = null)
+    EnvironmentProcessRunner? runner = null, ProcessRunner? tokenRunner = null, Func<string, string?>? environmentVariable = null,
+    TimeProvider? clock = null)
 {
+    /// <summary>
+    /// How long a keyring-resolved token (<c>gh auth token --user &lt;login&gt;</c>) is reused
+    /// before this client asks gh again — short enough that a rotated or revoked token is picked
+    /// up quickly, long enough that a closeout sweep touching several pull requests for the same
+    /// project spawns that second gh process once rather than once per gh call (independent pre-PR
+    /// review, cycle 1, conformance lens). An ambient <c>GH_TOKEN</c>/<c>GITHUB_TOKEN</c> is never
+    /// cached: it is read fresh from the environment every call, which is already as cheap as this
+    /// cache would make it.
+    /// </summary>
+    private static readonly TimeSpan TokenCacheTtl = TimeSpan.FromMinutes(2);
+
     private readonly EnvironmentProcessRunner runner = runner ?? ExternalProcess.RunnerWithEnvironment;
     private readonly ProcessRunner tokenRunner = tokenRunner ?? ExternalProcess.Runner;
     private readonly Func<string, string?> environmentVariable = environmentVariable ?? Environment.GetEnvironmentVariable;
+    private readonly TimeProvider clock = clock ?? TimeProvider.System;
+    private readonly object tokenCacheGate = new();
+    private readonly Dictionary<string, (string Token, DateTimeOffset ExpiresAt)> tokenCache = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Runs one <c>gh</c> command from <paramref name="workingDirectory"/>, authenticated as
@@ -54,31 +69,30 @@ public sealed class ProjectGitHubClient(
     /// so the actual gh invocation — pinning the token, setting the environment — is testable
     /// against an in-memory fake with no Marten session in the loop at all; a caller that already
     /// knows the account (<see cref="ProjectGitHubAccessMirror"/>, chiefly) calls this directly.
+    /// <para>
+    /// Deliberately does not translate a hung gh's <see cref="TimeoutException"/> (or the
+    /// <see cref="ProcessOutputStuckException"/> that derives from it) into a
+    /// <see cref="DomainValidationException"/> the way <see cref="TokenAsync"/>'s own token read
+    /// does: this same method is now every connector's shared <c>gh</c> seam, reached through
+    /// <c>ProjectScopedGitHubRunner</c> by <c>GitHubWorkItemProvider</c>, <c>GitHubReviewThreads</c>,
+    /// <c>GitHubPullRequestSurface</c>, and the rest — each of which already wraps its own runner
+    /// call to turn a hang into a richer, per-operation message (which credential hint to give, an
+    /// exit-code-aware distinction between a hang and a failure whose output pipe stuck open, and
+    /// so on). A blanket catch here converted every one of those into this method's own generic
+    /// wording before any of that per-operation handling ever saw the exception (independent pre-PR
+    /// review, cycle 1, adversarial lens): a caller with no handling of its own for either type is
+    /// <see cref="ProjectGitHubAccessMirror.ObserveAsync"/>'s own <c>repo view</c> read, and that is
+    /// where the translation belongs instead.
+    /// </para>
     /// </summary>
     public async Task<ProcessResult> RunAsync(
         ProjectGitHubAccount account, string workingDirectory, IReadOnlyList<string> arguments, CancellationToken cancellationToken)
     {
         string token = await TokenAsync(account.Login, workingDirectory, cancellationToken);
-        try
-        {
-            return await runner(
-                "gh", arguments, workingDirectory,
-                new Dictionary<string, string>(StringComparer.Ordinal) { ["GH_TOKEN"] = token },
-                cancellationToken);
-        }
-        // The token read above already wraps its own gh call this way; the actual command run here
-        // never did, so a gh hung on the network answered with an unhandled TimeoutException (or
-        // ProcessOutputStuckException, which derives from it) all the way out of both
-        // ProjectGitHubAccessMirror.ObserveAsync and standalone h9k project join — the one CLI
-        // command with no catch of its own for either type, printing a stack trace instead of the
-        // reason on stderr AGENTS.md's CLI standard requires (independent pre-PR review, cycle 1,
-        // conformance and adversarial lenses, both low). DomainValidationException is caught
-        // globally in Program.cs, the same as the token-read failure just above.
-        catch (TimeoutException exception)
-        {
-            throw new DomainValidationException(
-                $"gh {string.Join(' ', arguments)} did not answer from {workingDirectory}: {exception.Message}");
-        }
+        return await runner(
+            "gh", arguments, workingDirectory,
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["GH_TOKEN"] = token },
+            cancellationToken);
     }
 
     /// <summary>
@@ -154,6 +168,15 @@ public sealed class ProjectGitHubClient(
             return ambient;
         }
 
+        DateTimeOffset now = clock.GetUtcNow();
+        lock (tokenCacheGate)
+        {
+            if (tokenCache.TryGetValue(login, out (string Token, DateTimeOffset ExpiresAt) cached) && cached.ExpiresAt > now)
+            {
+                return cached.Token;
+            }
+        }
+
         ProcessResult result;
         try
         {
@@ -173,6 +196,11 @@ public sealed class ProjectGitHubClient(
                 $"gh could not produce a token for '{login}' (gh auth token --user {login}): "
                 + $"{result.StandardError.Trim()}. Check 'gh auth status' names this account as logged in "
                 + "on this machine.");
+        }
+
+        lock (tokenCacheGate)
+        {
+            tokenCache[login] = (token, now + TokenCacheTtl);
         }
 
         return token;

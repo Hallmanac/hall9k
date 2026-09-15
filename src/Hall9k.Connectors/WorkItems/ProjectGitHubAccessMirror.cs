@@ -38,8 +38,26 @@ public sealed class ProjectGitHubAccessMirror(ProjectGitHubClient? client = null
     {
         ProjectGitHubAccount account = await ProjectGitHubClient.ResolveAccountAsync(session, project, cancellationToken);
 
-        ProcessResult repoView = await client.RunAsync(
-            account, project.RepositoryPath, ["repo", "view", "--json", "viewerPermission,nameWithOwner"], cancellationToken);
+        ProcessResult repoView;
+        try
+        {
+            repoView = await client.RunAsync(
+                account, project.RepositoryPath, ["repo", "view", "--json", "viewerPermission,nameWithOwner"], cancellationToken);
+        }
+        // ProjectGitHubClient.RunAsync itself no longer translates this (independent pre-PR
+        // review, cycle 1, adversarial lens): every other caller reaches it through
+        // ProjectScopedGitHubRunner, and each of those connectors already turns a hang into its
+        // own richer message. This call — standalone h9k project join's own read of this
+        // install's role — is the one caller with no handling of its own, so a hung gh would
+        // otherwise escape as a raw TimeoutException (or the ProcessOutputStuckException that
+        // derives from it) and print a stack trace instead of the reason on stderr AGENTS.md's
+        // CLI standard requires.
+        catch (TimeoutException exception)
+        {
+            throw new DomainValidationException(
+                $"gh repo view did not answer from {project.RepositoryPath}: {exception.Message}");
+        }
+
         if (repoView.ExitCode != 0)
         {
             throw new DomainValidationException(
