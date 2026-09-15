@@ -54,6 +54,25 @@ public sealed class StackedPullRequestOpenBaseTests
                 + "aim a stacked pull request at the wrong base while the parent is still open");
 
     /// <summary>
+    /// The fallback shape: opening against the project's base rather than the recorded parent
+    /// branch is what earns <c>RunDetails.OpenedAgainstBaseBranch</c> a value — the one case where
+    /// a later reader (a grandchild's own checkpoint, StackedParentWatch's own doc) can learn where
+    /// this pull request actually opened without asking GitHub itself.
+    /// </summary>
+    [Fact]
+    public void A_base_that_differs_from_the_recorded_one_is_recorded_on_the_new_field()
+        => PullRequestOpener.OpenedAgainstBaseBranchFor("main", ParentBranch)
+            .Should().Be("main", "the fallback moved this pull request off the recorded base, so a later "
+                + "reader needs to be told without a live GitHub call");
+
+    /// <summary>The ordinary path: nothing moved, so there is nothing new to say beyond the recorded base.</summary>
+    [Fact]
+    public void A_base_that_matches_the_recorded_one_leaves_the_new_field_blank()
+        => PullRequestOpener.OpenedAgainstBaseBranchFor(ParentBranch, ParentBranch)
+            .Should().BeNull("the recorded base already says where this opened; a second field naming the "
+                + "identical fact would just be one more place for the two to drift apart");
+
+    /// <summary>
     /// The fallback's own warning renders. Asserted because the fallback runs INSIDE the log
     /// call's blast radius: the template repeats {ParentBranch} and {BaseBranch}, MEL binds
     /// placeholders positionally per occurrence without deduplicating names, and passing one
@@ -78,8 +97,9 @@ public sealed class StackedPullRequestOpenBaseTests
         logger.Messages.Should().ContainSingle().Which.Should().Be(
             $"Run {Guid.Empty}: the stacked parent branch {ParentBranch} is not on origin — merged and deleted "
             + "while this branch was still building, or never pushed at all — so this pull request opens against "
-            + $"main instead. The run still records {ParentBranch} as its base, because this branch still carries "
-            + "the parent's commits and closeout's replay onto main is still owed",
+            + "main instead, recorded on this run's own OpenedAgainstBaseBranch so a later reader does not need "
+            + $"GitHub to learn it. The run still declares {ParentBranch} as its stacked-on base, because this "
+            + "branch still carries the parent's commits and closeout's replay onto main is still owed",
             "each repeated placeholder needs its argument repeated too, and in its own position — a message "
             + "that names the parent branch where it means the project's base would misreport the retarget");
 
