@@ -1,6 +1,7 @@
 using Hall9k.Connectors.Messaging;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Marten;
@@ -41,6 +42,12 @@ public sealed class MessageSweepEngine(
     /// re-reads every sender once, which is cheap and correct, never lossy.</summary>
     private readonly Dictionary<(string RepositoryPath, Guid SenderNodeId), string> _lastKnownTips = [];
 
+    /// <summary>Whether this process has already logged the ambiguous-project warning <see
+    /// cref="SweepOnceAsync"/> gives once this node has more than one eligible project — in-memory
+    /// and per-process by design, the same as <see cref="_lastKnownTips"/>: a restart re-warns
+    /// once, which is cheap and never lossy, rather than spamming it every tick forever.</summary>
+    private bool _loggedAmbiguousProjectChoice;
+
     public async Task<MessageSweepResult> SweepOnceAsync(CancellationToken cancellationToken)
     {
         Guid nodeId = node.NodeId;
@@ -60,10 +67,31 @@ public sealed class MessageSweepEngine(
 
             IReadOnlyList<ProjectDetails> allProjects =
                 await lookupSession.Query<ProjectDetails>().ToListAsync(cancellationToken);
-            project = allProjects
+            List<ProjectDetails> eligibleProjects = [.. allProjects
                 .Where(candidate => !candidate.IsArchived && candidate.RepositoryPath.IsNotBlank())
-                .OrderBy(candidate => candidate.Id)
-                .FirstOrDefault();
+                .OrderBy(candidate => candidate.Id)];
+            project = eligibleProjects.FirstOrDefault();
+
+            // The one-project scope itself (this class's own doc comment) is out of this sweep's
+            // control; picking silently among two or more is what independent pre-PR review, cycle
+            // 1, conformance lens flagged: whichever one this sweep does NOT pick may have no node
+            // file for this node at all, so every reader on that project ignores this node's own
+            // outbox with no error anywhere. Logged once per process, never per tick, so an operator
+            // troubleshooting undelivered messages has a lead without the log filling up with a
+            // warning this sweep repeats forever for a node whose registration never changes.
+            if (eligibleProjects.Count > 1 && !_loggedAmbiguousProjectChoice)
+            {
+                _loggedAmbiguousProjectChoice = true;
+                logger.LogWarning(
+                    "This node has {Count} eligible projects for the message sweep, which only ever sweeps one "
+                    + "(idea 202383dc, M1b's documented one-project scope): {Chosen} was picked, by lowest project "
+                    + "id. If this node's own node.yaml was written into a different project ({OtherProjects}), no "
+                    + "other node reading that project's ledger can vouch for it, and this node's messages will "
+                    + "never arrive. Run h9k project join against {ChosenAgain} to make sure this node's node file "
+                    + "actually lives there.",
+                    eligibleProjects.Count, project!.Name,
+                    string.Join(", ", eligibleProjects.Skip(1).Select(candidate => candidate.Name)), project.Name);
+            }
         }
 
         if (project is null)
@@ -76,8 +104,9 @@ public sealed class MessageSweepEngine(
         await SquashAsync(project, nodeId, identity, now, cancellationToken);
 
         await using IDocumentSession finalSession = store.LightweightSession();
-        bool activeCadence = await HasUnflushedOrUnreadAsync(finalSession, nodeId, cancellationToken)
-            || await launchHold.CurrentHoldAsync(nodeId, cancellationToken) is not null;
+        bool hasUnflushedOrUnread = await HasUnflushedOrUnreadAsync(finalSession, nodeId, cancellationToken);
+        NodeDetails? currentHold = await launchHold.CurrentHoldAsync(nodeId, cancellationToken);
+        bool activeCadence = ComputeActiveCadence(hasUnflushedOrUnread, currentHold);
         return new MessageSweepResult(activeCadence, justPushed);
     }
 
@@ -177,6 +206,20 @@ public sealed class MessageSweepEngine(
             logger.LogWarning(exception, "Message squash failed for project {ProjectId}; will retry next sweep", project.Id);
         }
     }
+
+    /// <summary>
+    /// Whether the loop's NEXT tick should use the fast cadence: this node has something
+    /// unflushed or unread, or a node-wide launch hold is actually standing right now.
+    /// <paramref name="currentHold"/> is <see cref="LaunchHoldEngine.CurrentHoldAsync"/>'s own
+    /// result, which is non-null once this node has ever registered "whether or not a hold is
+    /// standing" (its own doc comment) — so testing it for non-null alone, rather than its
+    /// <see cref="NodeDetails.LaunchHoldActive"/> flag, made this true for every registered node
+    /// forever, never dropping to the idle cadence at all (independent pre-PR review, cycle 1,
+    /// both lenses). Pure and side-effect-free, the same reason <see cref="SendersToRead"/> is
+    /// its own static method: unit-testable without a document store or a launch hold engine.
+    /// </summary>
+    internal static bool ComputeActiveCadence(bool hasUnflushedOrUnread, NodeDetails? currentHold) =>
+        hasUnflushedOrUnread || currentHold is { LaunchHoldActive: true };
 
     private static Task<bool> HasUnflushedOrUnreadAsync(
         IDocumentSession session, Guid nodeId, CancellationToken cancellationToken) =>
