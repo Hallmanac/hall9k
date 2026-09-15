@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Trust;
 
 namespace Hall9k.Connectors.Messaging;
 
@@ -106,12 +107,19 @@ public interface IMessageTransport
 
     /// <summary>Every envelope <paramref name="senderNodeId"/>'s outbox holds past
     /// <paramref name="sinceSeq"/>, oldest first — or <see cref="TransportReadResult.SenderNotVouched"/>
-    /// when that sender's node file does not vouch for the outbox read.</summary>
+    /// when that sender's node file does not vouch for the outbox read. <paramref name="trustChain"/>,
+    /// when given, is used instead of computing a fresh one: a sweep reading several senders in the
+    /// same tick would otherwise repeat the full chain walk (an <c>ls-remote</c>, a fetch per owner
+    /// ref plus the members ref, and a signature check per candidate key) once per sender, even
+    /// though nothing about the chain changes between reads in the same sweep (independent pre-PR
+    /// review, cycle 1, conformance lens, low). Null still means "compute it fresh" — the identical
+    /// behavior a caller reading only one sender already gets.</summary>
     Task<TransportReadResult> ReadSinceAsync(
         string repositoryPath,
         Guid senderNodeId,
         long sinceSeq,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        TrustChain? trustChain = null);
 
     /// <summary>
     /// Every outbox ref currently under the messages prefix, and each one's current tip, from a
