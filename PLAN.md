@@ -1616,6 +1616,28 @@ survives intact.
 > was renumbered here by hand to **#197**, the log's next free number. No citation of `#196`
 > for this entry existed elsewhere in this repository to rewrite.
 
+PLACEHOLDER-a2968825. **The orchestrator-recipe-generator skill's start-up step 3 arms a silent
+one-shot background waiter for `h9kd.log` (and any other watched source) with `Bash
+run_in_background`, never the `Monitor` tool, for this watch or any re-arm of it — superseding
+#195's own Monitor-armed delivery mechanism for the identical filtering pipeline.** Why: Brian's
+ruling, 2026-09-15, to the project window building this task: `Monitor` expires every thirty
+minutes and wakes the window on every expiry and every re-arm, and #191 already holds that routine
+monitor events, expiries, and re-arms are never surfaced to the operator — an arm of `Monitor`
+itself cannot honor that, since every expiry and re-arm is an event `Monitor` hands the window
+whether or not anything actionable happened. A one-shot loop that tests every actionable and
+routine line a poll's own chunk contains, in full, before returning to the timer or exiting (never
+stopping at the first match, which would silently drop whatever followed it in the same chunk),
+appends every routine match to `notes/monitor-tally.log`, and prints and silently re-arms only on
+an actionable line, does not have this problem: nothing about a poll, an exit, or a re-arm is ever
+an event the window sees. #195's own design is otherwise unchanged in shape: routine lines are
+still tallied for the periodic summary and only actionable lines still reach the operator; only the
+delivery mechanism moves off `Monitor`. #195's own classification of what is actionable versus
+routine — including matching `PullRequestOpened` on its fixed `\[2001\]` log id rather than its
+wording, and reporting three `gh failure` lines in a row with no recovery between them — still
+governs the waiter built here. **Does this block the later vision?** No: prose only, inside the
+same skill and the same shared-text mechanism #155/#191/#195 already established; nothing here
+touches domain code or the P2P identity layer (§16 #38-#58).
+
 ---
 
 ## 17. Reference Materials
