@@ -1,7 +1,6 @@
 using FluentAssertions;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Daemon.Messaging;
-using Hall9k.Domain.Features.Node;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -78,33 +77,31 @@ public sealed class MessageSweepEngineTests
     }
 
     [Fact]
-    public void A_registered_node_with_no_hold_standing_and_nothing_pending_is_idle()
+    public void A_node_with_no_active_run_and_nothing_pending_is_idle()
     {
-        // LaunchHoldEngine.CurrentHoldAsync returns the node's own NodeDetails once it has ever
-        // registered, whether or not a hold is standing — testing that result for non-null alone
-        // used to make every registered node read as active forever (independent pre-PR review,
-        // cycle 1, both lenses).
-        NodeDetails registeredNoHold = new() { LaunchHoldActive = false };
+        bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: false, hasActiveRun: false);
 
-        bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: false, registeredNoHold);
-
-        activeCadence.Should().BeFalse("a registered node with nothing pending and no standing hold is idle");
+        activeCadence.Should().BeFalse("nothing pending and no live run means there is nothing to poll fast for");
     }
 
     [Fact]
-    public void A_standing_launch_hold_forces_the_active_cadence_even_with_nothing_pending()
+    public void An_active_run_forces_the_active_cadence_even_with_nothing_pending()
     {
-        NodeDetails withHold = new() { LaunchHoldActive = true };
+        // A launch-hold-failure flag used to stand in for "holds work" here, which made a node
+        // busy with a live run read idle (nothing about a launch hold is set) while a node merely
+        // stuck failing to launch sessions read active — neither reading is what the ruled
+        // criterion ("while this node holds work ... or has unacknowledged envelopes") actually
+        // names (independent pre-PR review, cycle 1, both lenses). A node's own live run is the
+        // proxy used instead.
+        bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: false, hasActiveRun: true);
 
-        bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: false, withHold);
-
-        activeCadence.Should().BeTrue("a node-wide launch hold is held work, even with nothing unflushed or unread");
+        activeCadence.Should().BeTrue("a node running or holding a live run is held work, even with nothing unflushed or unread");
     }
 
     [Fact]
-    public void Unflushed_or_unread_work_forces_the_active_cadence_with_no_hold_at_all()
+    public void Unflushed_or_unread_work_forces_the_active_cadence_with_no_active_run_at_all()
     {
-        bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: true, currentHold: null);
+        bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: true, hasActiveRun: false);
 
         activeCadence.Should().BeTrue();
     }

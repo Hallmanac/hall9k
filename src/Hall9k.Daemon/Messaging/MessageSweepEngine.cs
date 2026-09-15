@@ -1,10 +1,12 @@
 using Hall9k.Connectors.Messaging;
-using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Marten;
+using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Messaging;
@@ -33,7 +35,6 @@ public sealed class MessageSweepEngine(
     MessageInbox inbox,
     IMessageTransport transport,
     MessageNodeIdentityResolver identityResolver,
-    LaunchHoldEngine launchHold,
     IOptions<DaemonOptions> options,
     ILogger<MessageSweepEngine> logger)
 {
@@ -105,8 +106,8 @@ public sealed class MessageSweepEngine(
 
         await using IDocumentSession finalSession = store.LightweightSession();
         bool hasUnflushedOrUnread = await HasUnflushedOrUnreadAsync(finalSession, nodeId, cancellationToken);
-        NodeDetails? currentHold = await launchHold.CurrentHoldAsync(nodeId, cancellationToken);
-        bool activeCadence = ComputeActiveCadence(hasUnflushedOrUnread, currentHold);
+        bool hasActiveRun = await HasActiveRunAsync(finalSession, nodeId, cancellationToken);
+        bool activeCadence = ComputeActiveCadence(hasUnflushedOrUnread, hasActiveRun);
         return new MessageSweepResult(activeCadence, justPushed);
     }
 
@@ -220,17 +221,20 @@ public sealed class MessageSweepEngine(
 
     /// <summary>
     /// Whether the loop's NEXT tick should use the fast cadence: this node has something
-    /// unflushed or unread, or a node-wide launch hold is actually standing right now.
-    /// <paramref name="currentHold"/> is <see cref="LaunchHoldEngine.CurrentHoldAsync"/>'s own
-    /// result, which is non-null once this node has ever registered "whether or not a hold is
-    /// standing" (its own doc comment) — so testing it for non-null alone, rather than its
-    /// <see cref="NodeDetails.LaunchHoldActive"/> flag, made this true for every registered node
-    /// forever, never dropping to the idle cadence at all (independent pre-PR review, cycle 1,
-    /// both lenses). Pure and side-effect-free, the same reason <see cref="SendersToRead"/> is
-    /// its own static method: unit-testable without a document store or a launch hold engine.
+    /// unflushed or unread, or this node holds or is running work right now.
+    /// <paramref name="hasActiveRun"/> is <see cref="HasActiveRunAsync"/>'s own result — this node's
+    /// own <see cref="RunState.IsLive"/> runs — rather than <see cref="NodeDetails.LaunchHoldActive"/>:
+    /// that flag names a node stuck failing to launch sessions at all (a failure state), which is
+    /// neither "holds work" nor "running" the ruled criterion actually names, and mapping the two
+    /// together left a node busy with live runs but nothing unflushed or unread reading idle, while a
+    /// node stuck launch-held read active (independent pre-PR review, cycle 1, both lenses). A true
+    /// holder-lock reading of "holds work" is not built yet (noted elsewhere); this is the honest
+    /// proxy available today, the same one <c>DispatchEngine.MeasureLoadAsync</c> already reads for
+    /// this node's own live slots. Pure and side-effect-free, the same reason <see cref="SendersToRead"/>
+    /// is its own static method: unit-testable without a document store.
     /// </summary>
-    internal static bool ComputeActiveCadence(bool hasUnflushedOrUnread, NodeDetails? currentHold) =>
-        hasUnflushedOrUnread || currentHold is { LaunchHoldActive: true };
+    internal static bool ComputeActiveCadence(bool hasUnflushedOrUnread, bool hasActiveRun) =>
+        hasUnflushedOrUnread || hasActiveRun;
 
     private static Task<bool> HasUnflushedOrUnreadAsync(
         IDocumentSession session, Guid nodeId, CancellationToken cancellationToken) =>
@@ -238,5 +242,17 @@ public sealed class MessageSweepEngine(
             .Where(message =>
                 (message.FromNodeId == nodeId && message.SentAt == null)
                 || (message.ReceivedAt != null && message.HandledAt == null))
+            .AnyAsync(cancellationToken);
+
+    /// <summary>Whether this node currently has any run in a live state (mirrors
+    /// <c>DispatchEngine.MeasureLoadAsync</c>'s own per-node live-slot read) — the proxy for "this
+    /// node holds or is running work" <see cref="ComputeActiveCadence"/>'s own doc explains.</summary>
+    private static Task<bool> HasActiveRunAsync(
+        IQuerySession session, Guid nodeId, CancellationToken cancellationToken) =>
+        session.Query<RunListItem>()
+            .Where(run => run.NodeId == nodeId)
+            .Where(run => run.MatchesSql(
+                "d.data ->> 'state' in (?, ?, ?, ?)",
+                RunState.Dispatched.Value, RunState.Running.Value, RunState.Verifying.Value, RunState.UnderReview.Value))
             .AnyAsync(cancellationToken);
 }
