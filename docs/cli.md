@@ -473,14 +473,15 @@ own channels can see, honestly — best-effort by construction, not enforcement.
 `h9k message send <text> --to <audience> [--about <id>]` · `h9k messages` · `h9k message handle <id>`
 
 The successor to `notes/node-mailbox.md`'s GitHub-issue workaround (idea 202383dc, M1b): `send`
-queues an envelope in this node's own store — no git, no network wait — and the daemon's own
+queues an envelope in this node's own store (no git, no network wait) and the daemon's own
 message sweep is what actually lands it in this node's outbox, on a jittered cadence (15 to 25
 seconds while there is something to send or read, 30 to 45 seconds when idle, immediately again
-the tick right after this node's own push). `--to` addresses a specific `node:<node-id>`, every
+the tick right after this node's own push). `--to` addresses a specific `node:<node-id>` (the full
+id: `h9k status` prints only its short form; `h9k project join` prints the full id), every
 node an owner reads from with `owner:<fingerprint>`, or the whole project with the literal word
-`project`; `h9k status` prints this node's own id and `h9k owner show` prints a root fingerprint.
+`project`; `h9k owner show` prints a root fingerprint.
 `--about <id>` carries a task or idea id through as-is for the reader to act on. `messages` lists
-what has arrived; `handle <id>` marks one handled — an explicit act, never implied by `messages`
+what has arrived; `handle <id>` marks one handled: an explicit act, never implied by `messages`
 having merely printed it. Scoped to a single project's own repository per node today, not every
 registered project a node holds (see [scope.md](scope.md)).
 
@@ -849,7 +850,7 @@ paired with `--spend-period <day|week>`, backlog: spend-governor step three, Dec
 once the current period's recorded spend reaches the budget, the dispatcher declines to claim
 further queued work until the period rolls, gating claims only and never touching work already
 claimed; `--spend-budget none` clears it back to unbudgeted, since "no budget" has no compiled
-default number the way the review caps do — and the message sweep's own poll ranges
+default number the way the review caps do; and the message sweep's own poll ranges
 (`--message-poll-active-min`/`-max`, 15 to 25 seconds by default, and `--message-poll-idle-min`/
 `-max`, 30 to 45 seconds by default; idea 202383dc, M1b), each a floor that must stay at or below
 its own ceiling once this call's change applies. Unlike the four review-cycle caps above, the
@@ -857,7 +858,7 @@ spend budget and the per-role model overrides (`default` clears an override) bot
 back once set. Every one of these is durable in the platform config file so a fresh machine or an
 autostarted daemon runs with the operator's settings without an environment variable ritual, and
 every one except the interactive-claim staleness threshold takes effect only on the daemon's next
-start —
+start.
 `h9k status`'s own Queued section names a stopped concurrency or spend gate honestly, but only for
 whatever a running daemon last confirmed, so raising a spent budget still needs a restart before
 the queue moves again. `show` resolves and names each setting's origin (environment variable,

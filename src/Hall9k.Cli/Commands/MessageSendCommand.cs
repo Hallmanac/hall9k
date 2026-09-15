@@ -28,10 +28,11 @@ public sealed class MessageSendCommand : Hall9kAsyncCommand<MessageSendCommand.S
 
         [CommandOption("--to <AUDIENCE>")]
         [Description(
-            "Who this note is addressed to: node:<node-id> (one specific node), owner:<fingerprint> "
-            + "(every node that owner reads from), or the literal word project (every node reading "
-            + "this project's messages). h9k status prints this node's own id; h9k owner show prints "
-            + "a root fingerprint.")]
+            "Who this note is addressed to: node:<node-id> (one specific node, the full id — h9k "
+            + "status only prints its short form; h9k project join prints the full id), "
+            + "owner:<fingerprint> (every node that owner reads from), or the literal word project "
+            + "(every node reading this project's messages). h9k owner show prints a root "
+            + "fingerprint.")]
         public string To { get; init; } = string.Empty;
 
         [CommandOption("--about <ID>")]
