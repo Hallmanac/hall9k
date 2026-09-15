@@ -334,7 +334,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             return;
         }
 
-        GitHubWorkItemProvider provider = new();
+        GitHubWorkItemProvider provider = new(new ProjectScopedGitHubRunner(store).Runner);
 
         // gh issue create takes any host gh is configured against, including a GitHub Enterprise
         // one, and succeeds there — but ExternalReference records owner/repo with no host, so an
