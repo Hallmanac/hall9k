@@ -3,6 +3,7 @@ using Hall9k.Cli.Commands;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Infrastructure.Bootstrap;
@@ -1291,7 +1292,8 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
             throw new NotSupportedException("This fake only stands in for a read.");
 
         public Task<TransportReadResult> ReadSinceAsync(
-            string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken) =>
+            string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken,
+            TrustChain? trustChain = null) =>
             Task.FromResult(TransportReadResult.Ok([], HighestSeqInspected, RejectedSeqs));
 
         public Task<IReadOnlyList<MessageOutboxTip>> ProbeAsync(string repositoryPath, CancellationToken cancellationToken) =>
@@ -1327,7 +1329,8 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
             throw new NotSupportedException("This fake only stands in for a failing flush.");
 
         public Task<TransportReadResult> ReadSinceAsync(
-            string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken) =>
+            string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken,
+            TrustChain? trustChain = null) =>
             throw new NotSupportedException("This fake only stands in for a failing flush.");
     }
 }

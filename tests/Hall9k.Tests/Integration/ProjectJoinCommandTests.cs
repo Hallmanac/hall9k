@@ -89,13 +89,17 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         outcome.EstablishedRoot.Should().BeTrue();
         outcome.ClaimedOwnerFingerprint.Should().Be(outcome.KeyFingerprint);
 
-        ledger.Writes.Should().HaveCount(2, "the root file and the node file each write once");
+        ledger.Writes.Should().HaveCount(3, "the root file, the genesis members file, and the node file each write once");
         ledger.Writes.Should().OnlyContain(
             write => write.SigningKey != null && write.SigningKey!.PrivateKeyPath == outcome.PrivateKeyPath,
             "every ledger commit is signed with this node's own key");
 
         LedgerWriteRequest rootWrite = ledger.Writes.Single(w => w.RefName == $"refs/hall9k/ledger/owners/{outcome.KeyFingerprint}");
         rootWrite.Path.Should().Be($"owners/{outcome.KeyFingerprint}/root.yaml");
+
+        LedgerWriteRequest memberWrite = ledger.Writes.Single(w => w.RefName == "refs/hall9k/ledger/members");
+        memberWrite.Path.Should().Be($"members/{outcome.KeyFingerprint}.yaml");
+        memberWrite.Content.Should().Contain("owner");
 
         LedgerWriteRequest nodeWrite = ledger.Writes.Single(w => w.RefName == $"refs/hall9k/ledger/nodes/{outcome.NodeId}");
         nodeWrite.Path.Should().Be($"nodes/{outcome.NodeId}/node.yaml");
@@ -104,6 +108,49 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         OwnerDetails owner = (await session.LoadAsync<OwnerDetails>(project.OwnerId, cts.Token))!;
         owner.RootFingerprint.Should().Be(outcome.KeyFingerprint);
         owner.RootFingerprintVerified.Should().BeTrue();
+
+        ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
+        updatedProject.Members.Should().ContainKey(outcome.KeyFingerprint);
+    }
+
+    /// <summary>
+    /// <see cref="ProjectJoinCommand.RunAsync"/>'s own genesis-member gate refuses to write when
+    /// the members/ folder already holds anyone's file, never merely when this node's own
+    /// fingerprint's file happens to be absent — a per-fingerprint check would let a second node
+    /// establishing its own fresh root self-claim ownership in a project that already has a real
+    /// owner, since its own fingerprint's file is of course absent too (independent pre-PR review,
+    /// cycle 1, conformance and adversarial lenses, medium). Simulated here with a member file
+    /// pre-seeded directly through the fake ledger under an unrelated fingerprint, standing in for
+    /// a genuinely earlier join this test never has to actually run.
+    /// </summary>
+    [Fact]
+    public async Task Establishing_a_fresh_root_never_self_claims_genesis_membership_when_the_members_folder_already_has_another_owner()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+
+        string priorOwnerFingerprint = new string('d', 64);
+        LedgerWriteOutcome seedOutcome = await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                project.RepositoryPath, "refs/hall9k/ledger/members", $"members/{priorOwnerFingerprint}.yaml",
+                $"root_fingerprint: \"{priorOwnerFingerprint}\"\nrole: \"owner\"\nissued_at: \"{Now:o}\"\n",
+                ExpectedBlobId: null, "seed a prior owner's own genesis member", new LedgerCommitter("Seed", "seed@hall9k.local"),
+                new LedgerSigningKey("/does/not/matter/for/a/fake/ledger")),
+            cts.Token);
+        seedOutcome.Verdict.Should().Be(LedgerWriteVerdict.Written, "test setup: the prior owner's own member file must land");
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        outcome.EstablishedRoot.Should().BeTrue("this node still establishes its own root — genesis membership alone is refused");
+        ledger.Writes.Should().NotContain(
+            w => w.RefName == "refs/hall9k/ledger/members" && w.Path == $"members/{outcome.KeyFingerprint}.yaml",
+            "the members folder was already non-empty, so this join must never self-claim genesis ownership");
+
+        ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
+        updatedProject.Members.Should().NotContainKey(outcome.KeyFingerprint);
     }
 
     [Fact]
@@ -639,6 +686,12 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
             return await inner.WriteAsync(request, cancellationToken);
         }
+
+        public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
+            inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 
     /// <summary>
@@ -657,5 +710,13 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
             request.RepositoryPath == unreachableRepositoryPath
                 ? throw new LedgerPushRejectedException(request.RefName, attempts: 5, gitError: "could not read from remote repository")
                 : inner.WriteAsync(request, cancellationToken);
+
+        public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
+            request.RepositoryPath == unreachableRepositoryPath
+                ? throw new LedgerPushRejectedException(request.RefName, attempts: 5, gitError: "could not read from remote repository")
+                : inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 }

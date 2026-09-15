@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Trust;
 
 namespace Hall9k.Domain.Infrastructure.Persistence;
 
@@ -189,10 +190,19 @@ public static class EventScopeRegistry
         [typeof(ProjectGitHubAccessObserved)] = EventScope.NodeScoped,
         [typeof(ProjectGitHubCollaboratorsObserved)] = EventScope.NodeScoped,
 
+        // idea 202383dc, T1: project membership is team-facing (the a2-team-half-walk-2026-09-13
+        // ruling's own words), so it travels with this project's other project-scoped streams.
+        [typeof(MemberVouched)] = EventScope.ProjectScoped,
+        [typeof(MemberRemoved)] = EventScope.ProjectScoped,
+
         // Hall9k.Domain.Features.Owner — an owner's own cross-node identity.
         [typeof(OwnerRegistered)] = EventScope.OwnerScoped,
         [typeof(OwnerRootClaimed)] = EventScope.OwnerScoped,
         [typeof(OwnerSettingsChanged)] = EventScope.OwnerScoped,
+        // idea 202383dc, T1: node vouches are owner-scoped — "other nodes learn them from the
+        // files" (the ruling's own words), never from this event.
+        [typeof(NodeVouched)] = EventScope.OwnerScoped,
+        [typeof(NodeRevoked)] = EventScope.OwnerScoped,
 
         // Hall9k.Domain.Features.Node — this node's own identity, key, and holds ("holds" is
         // named node-scoped in idea 202383dc's own list).
@@ -218,6 +228,14 @@ public static class EventScopeRegistry
         [typeof(InboxCursorAdvanced)] = EventScope.NodeScoped,
         [typeof(InboxSenderIgnored)] = EventScope.NodeScoped,
         [typeof(InboxSenderVouched)] = EventScope.NodeScoped,
+
+        // Hall9k.Domain.Features.Trust — this node's own message sweep's own sighting of a
+        // writer its ledger chain read could not verify (idea 202383dc, T1 criterion 3). The
+        // identical reasoning the message events just above already carry: this is a local
+        // observation the sweep persists so h9k status can name the writer without a live
+        // ledger walk, never a team-visible fact replicated from here — every other node's own
+        // sweep reaches the identical conclusion by reading the ledger itself.
+        [typeof(UnverifiedLedgerWriteObserved)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Connection — a node's own registered credential; never
         // replicated (Guid tokens and gh CLI logins are inherently local to the machine).

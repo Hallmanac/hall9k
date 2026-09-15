@@ -1,5 +1,8 @@
 using System.Globalization;
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Connectors.Messaging;
 
@@ -9,10 +12,17 @@ namespace Hall9k.Connectors.Messaging;
 /// and sender node, and answers the sender-verification question the same way
 /// <see cref="GitLedgerMessageTransport"/> does — by asking <see cref="ILedger"/> (real or
 /// <c>FakeLedger</c>) whether the sender has a node file — without ever touching git or a real
-/// signature: that half of the check is A1's own (<c>GitLedgerTests</c>), not this transport's, per
-/// the acceptance criterion this task ships against.
+/// signature: that half of the check is A1's own (<c>GitLedgerTests</c>), not this transport's.
+/// <para>
+/// <paramref name="chainReader"/> is optional, defaulting to null: a test that does not care about
+/// chain-level trust (the overwhelming majority — M1a/M1b's own seam tests predate T1 and never
+/// exercised a vouch or a revocation) gets exactly the node-file-only check it always did. A test
+/// that does care passes a chain reader (real <see cref="GitLedgerChainReader"/>'s own tests are a
+/// real repository; here it is whatever fake a test builds) and gets the identical chain-level gate
+/// <see cref="GitLedgerMessageTransport"/> now enforces unconditionally in production.
+/// </para>
 /// </summary>
-public sealed class InMemoryMessageTransport(ILedger ledger) : IMessageTransport
+public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader? chainReader = null) : IMessageTransport
 {
     private readonly Dictionary<(string RepositoryPath, Guid NodeId), SortedList<long, string>> outboxes = [];
 
@@ -117,7 +127,8 @@ public sealed class InMemoryMessageTransport(ILedger ledger) : IMessageTransport
         versions[key] = versions.GetValueOrDefault(key) + 1;
 
     public async Task<TransportReadResult> ReadSinceAsync(
-        string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken)
+        string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken,
+        TrustChain? trustChain = null)
     {
         LedgerFile nodeFile = await ledger.ReadAsync(
             repositoryPath, $"refs/hall9k/ledger/nodes/{senderNodeId}", $"nodes/{senderNodeId}/node.yaml",
@@ -125,6 +136,37 @@ public sealed class InMemoryMessageTransport(ILedger ledger) : IMessageTransport
         if (!nodeFile.Exists)
         {
             return TransportReadResult.SenderNotVouched;
+        }
+
+        if (chainReader is not null)
+        {
+            string? publicKeyLine = GitLedgerChainReader.ExtractQuotedYamlValue(nodeFile.Content ?? string.Empty, "public_key");
+            string? fingerprint = null;
+            try
+            {
+                fingerprint = publicKeyLine is null ? null : NodeKeyStore.Fingerprint(publicKeyLine);
+            }
+            catch (DomainValidationException)
+            {
+                // Malformed key line — falls through to SenderNotVouched below, same as "no key at all".
+            }
+
+            TrustChain chain = trustChain ?? await chainReader.ComputeAsync(repositoryPath, cancellationToken);
+            if (fingerprint is null)
+            {
+                return TransportReadResult.SenderNotVouched;
+            }
+
+            // Bound to senderNodeId, not merely "allowed somewhere" — the identical node-id check
+            // GitLedgerMessageTransport now enforces (independent pre-PR review, cycle 1,
+            // conformance and adversarial lenses, medium), so a test driving this fake against a
+            // real FakeLedgerChainReader exercises the same rule production does.
+            if (!chain.IsAllowedSigner(fingerprint, senderNodeId))
+            {
+                return TransportReadResult.NotVouched(
+                    "this sender's own node file exists, but its key is not currently vouched into any "
+                    + "project member's own trust chain for this node id");
+            }
         }
 
         if (!outboxes.TryGetValue((repositoryPath, senderNodeId), out SortedList<long, string>? envelopes))

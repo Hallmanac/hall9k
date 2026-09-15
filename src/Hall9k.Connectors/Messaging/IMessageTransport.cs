@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Trust;
 
 namespace Hall9k.Connectors.Messaging;
 
@@ -33,9 +34,19 @@ public sealed record TransportReadResult(
     IReadOnlyList<TransportEnvelope> Envelopes,
     long HighestSeqInspected,
     IReadOnlyList<long> RejectedSeqs,
-    long? StalledAtSeq = null)
+    long? StalledAtSeq = null,
+    string? NotVouchedReason = null)
 {
-    public static readonly TransportReadResult SenderNotVouched = new(false, [], 0, []);
+    /// <summary>The stale, M1a-era default reason: no node file at all vouches for the sender's
+    /// own outbox. <see cref="NotVouched"/> is used instead whenever a more specific reason is
+    /// known — most importantly, a node file that does exist but whose key the ledger chain itself
+    /// currently refuses (independent pre-PR review, cycle 1, conformance lens, medium: a reader
+    /// naming this reason for every rejection, including a chain-level one, misleads whoever reads
+    /// it in h9k status about which half of sender verification actually refused the sender).</summary>
+    public static readonly TransportReadResult SenderNotVouched =
+        new(false, [], 0, [], NotVouchedReason: "no node file vouches for this sender's outbox");
+
+    public static TransportReadResult NotVouched(string reason) => new(false, [], 0, [], NotVouchedReason: reason);
 
     public static TransportReadResult Ok(
         IReadOnlyList<TransportEnvelope> envelopes, long highestSeqInspected, IReadOnlyList<long>? rejectedSeqs = null,
@@ -96,12 +107,19 @@ public interface IMessageTransport
 
     /// <summary>Every envelope <paramref name="senderNodeId"/>'s outbox holds past
     /// <paramref name="sinceSeq"/>, oldest first — or <see cref="TransportReadResult.SenderNotVouched"/>
-    /// when that sender's node file does not vouch for the outbox read.</summary>
+    /// when that sender's node file does not vouch for the outbox read. <paramref name="trustChain"/>,
+    /// when given, is used instead of computing a fresh one: a sweep reading several senders in the
+    /// same tick would otherwise repeat the full chain walk (an <c>ls-remote</c>, a fetch per owner
+    /// ref plus the members ref, and a signature check per candidate key) once per sender, even
+    /// though nothing about the chain changes between reads in the same sweep (independent pre-PR
+    /// review, cycle 1, conformance lens, low). Null still means "compute it fresh" — the identical
+    /// behavior a caller reading only one sender already gets.</summary>
     Task<TransportReadResult> ReadSinceAsync(
         string repositoryPath,
         Guid senderNodeId,
         long sinceSeq,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken,
+        TrustChain? trustChain = null);
 
     /// <summary>
     /// Every outbox ref currently under the messages prefix, and each one's current tip, from a

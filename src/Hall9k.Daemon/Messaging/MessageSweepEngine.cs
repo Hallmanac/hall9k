@@ -1,9 +1,11 @@
 using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Marten;
 using Marten.Linq.MatchesSql;
@@ -34,6 +36,7 @@ public sealed class MessageSweepEngine(
     MessageOutbox outbox,
     MessageInbox inbox,
     IMessageTransport transport,
+    ILedgerChainReader chainReader,
     MessageNodeIdentityResolver identityResolver,
     IOptions<DaemonOptions> options,
     ILogger<MessageSweepEngine> logger)
@@ -144,7 +147,37 @@ public sealed class MessageSweepEngine(
             return;
         }
 
-        foreach (MessageOutboxTip tip in SendersToRead(tips, nodeId, project.RepositoryPath, _lastKnownTips))
+        IReadOnlyList<MessageOutboxTip> toRead = SendersToRead(tips, nodeId, project.RepositoryPath, _lastKnownTips);
+        if (toRead.Count == 0)
+        {
+            return;
+        }
+
+        // Computed once for the whole sweep, never per sender: every sender's own read otherwise
+        // repeated the full ledger chain walk (an ls-remote, a fetch per owner ref plus the members
+        // ref, and a signature check per candidate key), even though nothing about the chain changes
+        // between reads in the same tick (independent pre-PR review, cycle 1, conformance lens, low).
+        TrustChain? trustChain = null;
+        try
+        {
+            trustChain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            // Not fatal to this sweep: each per-sender read below falls back to computing its own
+            // chain fresh when none is supplied, the identical behavior this sweep always had before
+            // this cache existed.
+            logger.LogWarning(
+                exception, "Precomputing the trust chain failed for project {ProjectId}; each sender read "
+                + "this sweep will compute its own instead", project.Id);
+        }
+
+        if (trustChain is not null)
+        {
+            await PersistUnverifiedWritesAsync(project, trustChain, now, cancellationToken);
+        }
+
+        foreach (MessageOutboxTip tip in toRead)
         {
             try
             {
@@ -161,7 +194,7 @@ public sealed class MessageSweepEngine(
                 await using IDocumentSession session = store.LightweightSession();
                 MessageInboxSweepResult read = await inbox.ReadFromAsync(
                     session, project.RepositoryPath, tip.SenderNodeId, nodeId, identity.OwnerRootFingerprint, now,
-                    cancellationToken: cancellationToken);
+                    trustChain: trustChain, cancellationToken: cancellationToken);
 
                 // Never recorded on a read that came back not vouched or stalled: neither one
                 // actually looked at the sender's content, so caching the tip here would make this
@@ -181,6 +214,54 @@ public sealed class MessageSweepEngine(
                     exception, "Reading sender {SenderNodeId}'s outbox failed for project {ProjectId}; will retry next sweep",
                     tip.SenderNodeId, project.Id);
             }
+        }
+    }
+
+    /// <summary>
+    /// Persists every writer this sweep's own trust chain read found it could not verify
+    /// (<see cref="TrustChain.UnverifiedWrites"/>) as a standing, per-project record
+    /// (<see cref="UnverifiedLedgerWriteDetails"/>) — the acceptance criterion "the writer is
+    /// named in h9k status" (idea 202383dc, T1 criterion 3) is settled by that pane reading this
+    /// record, never by a live ledger walk from h9k status itself. One event per observed writer
+    /// per tick, folded by <see cref="UnverifiedLedgerWriteStreamId.For"/> into a single standing
+    /// fact rather than growing without bound: the identical writer seen again only advances its
+    /// own <c>LastSeenAt</c> (independent pre-PR review, human resolution 2026-09-15).
+    /// </summary>
+    private async Task PersistUnverifiedWritesAsync(
+        ProjectDetails project, TrustChain trustChain, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        if (trustChain.UnverifiedWrites.Count == 0)
+        {
+            return;
+        }
+
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            foreach (UnverifiedLedgerWrite write in trustChain.UnverifiedWrites)
+            {
+                Guid streamId = UnverifiedLedgerWriteStreamId.For(project.Id, write.Kind, write.Identifier, write.RootFingerprint);
+                UnverifiedLedgerWriteAggregate? existing = await session.Events
+                    .AggregateStreamAsync<UnverifiedLedgerWriteAggregate>(streamId, token: cancellationToken);
+                UnverifiedLedgerWriteObserved observed = UnverifiedLedgerWriteDecider.Observe(
+                    project.Id, write.Kind, write.Identifier, write.RootFingerprint, write.Reason, now);
+                if (existing is null)
+                {
+                    session.Events.StartStream<UnverifiedLedgerWriteAggregate>(streamId, observed);
+                }
+                else
+                {
+                    session.Events.Append(streamId, observed);
+                }
+            }
+
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Persisting this sweep's unverifiable ledger writers failed for project {ProjectId}; "
+                + "will retry next sweep", project.Id);
         }
     }
 

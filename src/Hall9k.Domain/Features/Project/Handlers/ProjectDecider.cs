@@ -561,4 +561,30 @@ public static class ProjectDecider
                 + "relative path would name a different repository for every caller. Pass a full path.");
         }
     }
+
+    public static MemberVouched VouchMember(
+        Guid projectId, string rootFingerprint, ProjectMemberRole role, DateTimeOffset issuedAt)
+    {
+        if (rootFingerprint.IsBlank())
+        {
+            throw new DomainValidationException("A project membership needs the root fingerprint it is vouching.");
+        }
+
+        if (role != ProjectMemberRole.Owner && role != ProjectMemberRole.Member)
+        {
+            throw new DomainValidationException("A project member's role must be owner or member (idea 202383dc).");
+        }
+
+        return new MemberVouched(projectId, rootFingerprint, role, issuedAt);
+    }
+
+    public static MemberRemoved RemoveMember(Guid projectId, string rootFingerprint, DateTimeOffset removedAt)
+    {
+        if (rootFingerprint.IsBlank())
+        {
+            throw new DomainValidationException("A project member removal needs the root fingerprint being removed.");
+        }
+
+        return new MemberRemoved(projectId, rootFingerprint, removedAt);
+    }
 }

@@ -1,8 +1,11 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Connectors.Messaging;
 
@@ -11,20 +14,28 @@ namespace Hall9k.Connectors.Messaging;
 /// signed, one writer per node's own outbox ref. A read walks the outbox ref directly by git
 /// plumbing — listing <c>messages/*.json</c> at the ref's tip and, for each candidate envelope,
 /// checking the commit that actually introduced its path was signed by the key in that sender's own
-/// node file (idea 202383dc's sender-verification rule), never trusting the tip commit's own
-/// signature for the whole tree beneath it — because <see cref="ILedger"/>'s own contract is a
-/// single-path read, never an enumeration or a signature check, and this is the one place in the
-/// whole platform that reads a message ref at all; nothing else ever touches
-/// <c>refs/hall9k/messages/*</c>.
+/// node file, never trusting the tip commit's own signature for the whole tree beneath it — because
+/// <see cref="ILedger"/>'s own contract is a single-path read, never an enumeration or a signature
+/// check, and this is the one place in the whole platform that reads a message ref at all; nothing
+/// else ever touches <c>refs/hall9k/messages/*</c>.
+/// <para>
+/// Sender verification is chain-level (idea 202383dc, T1 upgrading M1a's own node-level rule): the
+/// candidate key is still read from the sender's own self-announced node file, but that key must
+/// now also be <see cref="TrustChain.IsAllowedSigner"/> — vouched into a project-member owner's own
+/// chain, not merely "some node file happens to exist claiming it" — before any commit signature is
+/// even checked against it. A sender's own bare self-announcement was never proof of anything past
+/// M1a; the <see cref="ILedgerChainReader"/> walk is what actually vouches for it now.
+/// </para>
 /// <para>
 /// Never covered by this task's own tests: Brian's 2026-09-13 testing rule reserves a real
 /// repository for <c>GitLedgerTests</c> and the chain reader's own tests, and every message-seam
 /// test here drives <see cref="InMemoryMessageTransport"/> instead. Real signature verification
-/// against A1's own <c>GitLedgerTests</c> is exactly what that rule is trusting to have already
-/// proven the signing half works; this class only has to ask git the same question A1's tests do.
+/// against A1's own <c>GitLedgerTests</c>, and chain verification against
+/// <c>GitLedgerChainReaderTests</c>, is exactly what that rule is trusting to have already proven
+/// both halves work; this class only has to ask each the same question their own tests do.
 /// </para>
 /// </summary>
-public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? runner = null) : IMessageTransport
+public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader chainReader, ProcessRunner? runner = null) : IMessageTransport
 {
     /// <summary>Same bound as <c>GitLedger.MaxPushAttempts</c>, for the identical reason: two
     /// writers racing converge within a round or two, and this ref has exactly one writer besides
@@ -221,7 +232,8 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
     }
 
     public async Task<TransportReadResult> ReadSinceAsync(
-        string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken)
+        string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken,
+        TrustChain? trustChain = null)
     {
         string nodeFileRefName = $"refs/hall9k/ledger/nodes/{senderNodeId}";
         string nodeFilePath = $"nodes/{senderNodeId}/node.yaml";
@@ -235,6 +247,36 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
         if (publicKeyLine is null)
         {
             return TransportReadResult.SenderNotVouched;
+        }
+
+        string senderFingerprint;
+        try
+        {
+            senderFingerprint = NodeKeyStore.Fingerprint(publicKeyLine);
+        }
+        catch (DomainValidationException)
+        {
+            return TransportReadResult.SenderNotVouched;
+        }
+
+        // Chain-level, idea 202383dc T1: the sender's own self-announced key is no longer enough
+        // on its own — it must also be currently allowed by the project's own ledger chain (a
+        // project-member owner's own key, or a node vouched into one and not revoked), and bound
+        // to this exact senderNodeId — never merely allowed for some other node the same owner
+        // happens to have vouched (independent pre-PR review, cycle 1, conformance and adversarial
+        // lenses, medium): without the node-id check, any member could overwrite senderNodeId's own
+        // self-announced node file with their own key and have their own messages accepted as if
+        // they were that node. trustChain, when the caller already computed one this same sweep
+        // (MessageSweepEngine.ProbeAndReadAsync, reading several senders in one tick), is used as
+        // is rather than walking the whole ledger again per sender; a caller reading only one
+        // sender still gets a fresh computation, exactly as before (independent pre-PR review,
+        // cycle 1, conformance lens, low).
+        TrustChain chain = trustChain ?? await chainReader.ComputeAsync(repositoryPath, cancellationToken);
+        if (!chain.IsAllowedSigner(senderFingerprint, senderNodeId))
+        {
+            return TransportReadResult.NotVouched(
+                "this sender's own node file exists, but its key is not currently vouched into any "
+                + "project member's own trust chain for this node id");
         }
 
         string refName = OutboxRef(senderNodeId);

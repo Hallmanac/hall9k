@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Marten;
 using Microsoft.Extensions.Logging;
@@ -43,6 +44,12 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
     /// or finds real envelopes beyond it, the cursor is left exactly where it was, rather than
     /// silently skipping ahead over content this sweep never looked at.
     /// </param>
+    /// <param name="trustChain">
+    /// Passed straight through to <see cref="IMessageTransport.ReadSinceAsync"/> — when a caller
+    /// (<c>MessageSweepEngine.ProbeAndReadAsync</c>) already computed one this same sweep, reusing
+    /// it avoids walking the whole ledger chain again for every sender it reads in that same tick.
+    /// Null still means "let the transport compute it fresh".
+    /// </param>
     public async Task<MessageInboxSweepResult> ReadFromAsync(
         IDocumentSession session,
         string repositoryPath,
@@ -51,6 +58,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         string myOwnerFingerprint,
         DateTimeOffset now,
         long? sinceSeqOverride = null,
+        TrustChain? trustChain = null,
         CancellationToken cancellationToken = default)
     {
         Guid inboxStreamId = MessageStreamId.ForInbox(senderNodeId);
@@ -59,7 +67,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         long persistedCursor = inbox?.HighestSeqReceived ?? 0;
         long readFrom = sinceSeqOverride ?? persistedCursor;
 
-        TransportReadResult read = await transport.ReadSinceAsync(repositoryPath, senderNodeId, readFrom, cancellationToken);
+        TransportReadResult read = await transport.ReadSinceAsync(repositoryPath, senderNodeId, readFrom, cancellationToken, trustChain);
         if (!read.SenderVouched)
         {
             logger?.LogWarning(
@@ -67,10 +75,14 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 senderNodeId);
             if (inbox is null || !inbox.SenderIgnored)
             {
+                // read.NotVouchedReason names the actual cause — no node file at all, or (chain-level,
+                // idea 202383dc T1) a node file that exists but whose key the ledger chain itself
+                // currently refuses — never the stale, hardcoded M1a reason regardless of which one
+                // actually applied (independent pre-PR review, cycle 1, conformance lens, medium).
+                string reason = read.NotVouchedReason ?? "no node file vouches for this sender's outbox";
                 AppendInboxEvents(
                     session, inboxStreamId, inbox is not null,
-                    [MessageInboxDecider.IgnoreSender(
-                        senderNodeId, "no node file vouches for this sender's outbox", verificationFailed: false, now)]);
+                    [MessageInboxDecider.IgnoreSender(senderNodeId, reason, verificationFailed: false, now)]);
                 await session.SaveChangesAsync(cancellationToken);
             }
 

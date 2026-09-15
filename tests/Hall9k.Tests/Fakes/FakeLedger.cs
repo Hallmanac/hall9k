@@ -21,6 +21,9 @@ internal sealed class FakeLedger : ILedger
     /// (content, committer, signing key) rather than re-deriving from <see cref="ReadAsync"/>.</summary>
     public List<LedgerWriteRequest> Writes { get; } = [];
 
+    /// <summary>Every delete this fake actually accepted, in order — the same reason <see cref="Writes"/> exists.</summary>
+    public List<LedgerDeleteRequest> Deletes { get; } = [];
+
     public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken)
     {
         RequireRegistered(refName);
@@ -46,6 +49,33 @@ internal sealed class FakeLedger : ILedger
         string blobId = Guid.NewGuid().ToString("N");
         _files[key] = new StoredFile(request.Content, blobId);
         return Task.FromResult(LedgerWriteOutcome.Written(blobId));
+    }
+
+    public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken)
+    {
+        RequireRegistered(request.RefName);
+        RequireSigningKey(request.SigningKey);
+        (string RepositoryPath, string RefName, string Path) key = (request.RepositoryPath, request.RefName, request.Path);
+        string? currentBlobId = _files.TryGetValue(key, out StoredFile? existing) ? existing.BlobId : null;
+
+        if (currentBlobId != request.ExpectedBlobId)
+        {
+            return Task.FromResult(LedgerWriteOutcome.Conflict(
+                existing is null ? LedgerFile.Absent : new LedgerFile(existing.Content, existing.BlobId)));
+        }
+
+        Deletes.Add(request);
+        _files.Remove(key);
+        return Task.FromResult(LedgerWriteOutcome.Written(Guid.NewGuid().ToString("N")));
+    }
+
+    public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
+    {
+        RequireRegistered(refName);
+        bool any = _files.Keys.Any(key =>
+            key.Repository == repositoryPath && key.RefName == refName
+            && key.Path.StartsWith(pathPrefix, StringComparison.Ordinal));
+        return Task.FromResult(any);
     }
 
     private static void RequireRegistered(string refName)

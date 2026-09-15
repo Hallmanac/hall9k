@@ -101,7 +101,7 @@ workspace. The hall9k project's own move into its default home landed as that cu
 (backlog 52): the project home at `~/.hall9k/projects/hall9k` is canonical, and this repository is
 worked from its `repo/dev` worktree.
 
-**The same bare repo also carries a hidden ledger** (Decisions Log PLACEHOLDER-5b1f57cd, idea
+**The same bare repo also carries a hidden ledger** (Decisions Log #189, idea
 202383dc), a set of
 git refs under `refs/hall9k/` that GitHub never shows and branch protection never sees (both match
 `refs/heads/*`/`refs/tags/*` only): small files, one writer per path, history nobody merges into
@@ -143,6 +143,40 @@ h9k message send --to <AUDIENCE> --about <task-or-idea-id> "<text>"   # carries 
 h9k messages                                             # this node's own received messages, unread (received, not yet handled) by default
 h9k messages --all                                       # include already-handled messages too
 h9k message handle <id>                                  # mark a received message handled: an explicit act, never implied by h9k messages having printed it
+```
+
+**Trust files and the chain reader** (idea 202383dc, T1): vouches, revocations, and project
+membership are files in the same hidden ledger, and every read of every ledger and messages ref
+recomputes, fresh, which signers a project currently trusts: never a cached answer, so a
+revocation or a removal takes effect the moment the next read walks the ledger again.
+`owners/<root>/nodes/<node-id>.yaml` vouches a node into an owner's own fleet (node id, node public
+key, issued at), and `owners/<root>/revoked/<node-id>.yaml` revokes one, both on the existing
+`refs/hall9k/ledger/owners/<root>` ref, written by any node already enrolled in that owner's own
+chain (the root itself, or a node already vouched in). Anyone else is refused before any push, and
+the latest of a vouch or a revocation, in that ref's own commit order, wins, so a surviving node
+undoes a bad revocation by vouching again. Project membership is its own ref,
+`refs/hall9k/ledger/members`, one `members/<root-fingerprint>.yaml` per member (root fingerprint,
+role owner or member, issued at); `h9k project join` writes the first one itself, self-signed, the
+moment it finds that ref's own `members/` folder entirely empty (genesis is spent once, project-wide,
+never merely per fingerprint). Nothing writes a member file after that today: adding a member is not
+yet built, and waits on the invite flow (T2). `Hall9k.Connectors.Trust.
+GitLedgerChainReader` is the one place this is computed: it walks every owner root a project's
+ledger has ever seen, resolves each root's own chain independent of membership, then replays the
+members ref against those chains, checking each write's signer against that chain's own state at
+the time the write landed, not its current state (so a later revocation never retroactively voids
+an earlier, legitimately signed write). A stranger's own internally self-consistent root and node
+file count for nothing anywhere in this project, because they were never made a member; an
+unverifiable write is recorded, and named by `h9k project members`, rather than silently dropped.
+The same chain now gates node-to-node message reads too: a sender's key still comes from its own
+self-announced node file, but it also has to be currently allowed by the chain, bound to that exact
+sender's own node id, before its commit signature is ever checked (idea 202383dc, M1a's node-level
+check upgraded to chain-level).
+
+```bash
+h9k node vouch <node-id>              # vouch a node into this owner's own fleet, across every project this owner already joined; prints the vouched node's own key fingerprint
+h9k node revoke <node-id>             # revoke a node from this owner's own fleet; a later h9k node vouch for the identical id restores it
+h9k project members <name>            # this project's current members: root, login when known locally, role, vouched nodes, verified state
+h9k project member remove <name> <fingerprint>   # remove a root's project membership (deletes the file); refused unless this node's own root holds the owner role here
 ```
 
 Ideas come before tasks (Decisions Log #35, redesigned by backlog 31). An idea undergoes

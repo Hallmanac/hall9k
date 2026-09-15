@@ -145,6 +145,63 @@ public sealed class OwnerDeciderTests
         view.VoiceSkill.Should().Be(VoiceSkillName.None, "--clear-voice-skill forgets it");
     }
 
+    [Fact]
+    public void VouchNode_produces_an_event_carrying_the_node_and_its_fingerprint()
+    {
+        OwnerAggregate owner = Registered();
+        Guid nodeId = Guid.NewGuid();
+
+        NodeVouched vouched = OwnerDecider.VouchNode(owner, nodeId, "node-fingerprint", Now);
+
+        vouched.OwnerId.Should().Be(owner.Id);
+        vouched.NodeId.Should().Be(nodeId);
+        vouched.NodeFingerprint.Should().Be("node-fingerprint");
+        vouched.IssuedAt.Should().Be(Now);
+    }
+
+    [Fact]
+    public void VouchNode_refuses_an_empty_node_id()
+    {
+        OwnerAggregate owner = Registered();
+
+        Action act = () => OwnerDecider.VouchNode(owner, Guid.Empty, "node-fingerprint", Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void VouchNode_refuses_a_blank_fingerprint()
+    {
+        OwnerAggregate owner = Registered();
+
+        Action act = () => OwnerDecider.VouchNode(owner, Guid.NewGuid(), "  ", Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void RevokeNode_refuses_an_empty_node_id()
+    {
+        OwnerAggregate owner = Registered();
+
+        Action act = () => OwnerDecider.RevokeNode(owner, Guid.Empty, Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void OwnerAggregate_tracks_a_vouched_node_and_forgets_it_once_revoked()
+    {
+        OwnerAggregate owner = Registered();
+        Guid nodeId = Guid.NewGuid();
+
+        owner.Apply(OwnerDecider.VouchNode(owner, nodeId, "node-fingerprint", Now));
+        owner.VouchedNodes.Should().ContainKey(nodeId);
+
+        owner.Apply(OwnerDecider.RevokeNode(owner, nodeId, Now.AddMinutes(5)));
+        owner.VouchedNodes.Should().NotContainKey(nodeId);
+    }
+
     private static OwnerAggregate Registered()
     {
         OwnerAggregate owner = new();
