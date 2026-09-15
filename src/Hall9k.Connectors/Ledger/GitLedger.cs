@@ -57,6 +57,18 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                 return LedgerWriteOutcome.Conflict(current);
             }
 
+            // Checked against this same fresh tip, in this same retry attempt, right before the
+            // commit that will be pushed is even built: a rival genesis write that already landed
+            // under a different path this attempt's own fetch just picked up fails this check
+            // before ever reaching the fast-forward push, closing the gap a separate, earlier
+            // "is the prefix empty" call could never see (independent review finding).
+            if (request.RequireEmptyPrefix is { } prefix
+                && tip is not null
+                && await HasAnyAtTipAsync(request.RepositoryPath, tip, prefix, cancellationToken))
+            {
+                return LedgerWriteOutcome.Conflict(current);
+            }
+
             string commitId = await BuildCommitAsync(request, tip, cancellationToken);
 
             if (BeforePushForTesting is { } beforePush)
@@ -138,6 +150,31 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         }
 
         throw new LedgerPushRejectedException(request.RefName, MaxPushAttempts, lastError);
+    }
+
+    public async Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
+    {
+        RequireRegistered(refName);
+        await FetchRefAsync(repositoryPath, refName, cancellationToken);
+        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        return tip is not null && await HasAnyAtTipAsync(repositoryPath, tip, pathPrefix, cancellationToken);
+    }
+
+    /// <summary>Shared with <see cref="HasAnyAsync"/>'s own public "is this prefix ever
+    /// touched" check, but taken here against a tip a caller already resolved — <see cref="WriteAsync"/>'s
+    /// own <see cref="LedgerWriteRequest.RequireEmptyPrefix"/> check needs this evaluated against
+    /// the exact tip its own retry attempt just fetched, not a second, independently fetched one.</summary>
+    private async Task<bool> HasAnyAtTipAsync(string repositoryPath, string tip, string pathPrefix, CancellationToken cancellationToken)
+    {
+        (int exitCode, string output, string error) = await RunGitAsync(
+            repositoryPath, ["ls-tree", "-r", "--name-only", tip, "--", pathPrefix], null, null, cancellationToken);
+        if (exitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git ls-tree -r {tip} -- {pathPrefix} failed in {repositoryPath}: {error.Trim()}");
+        }
+
+        return output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length > 0;
     }
 
     private static void RequireRegistered(string refName)

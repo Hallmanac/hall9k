@@ -679,6 +679,9 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
             inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 
     /// <summary>
@@ -702,5 +705,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
             request.RepositoryPath == unreachableRepositoryPath
                 ? throw new LedgerPushRejectedException(request.RefName, attempts: 5, gitError: "could not read from remote repository")
                 : inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 }

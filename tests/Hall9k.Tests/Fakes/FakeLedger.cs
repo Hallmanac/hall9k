@@ -45,6 +45,18 @@ internal sealed class FakeLedger : ILedger
                 existing is null ? LedgerFile.Absent : new LedgerFile(existing.Content, existing.BlobId)));
         }
 
+        // Mirrors GitLedger.WriteAsync's own RequireEmptyPrefix check: any other path already
+        // present under the prefix refuses this write, the same ref-wide guard a genesis-style
+        // write needs beyond ExpectedBlobId's own single-path compare-and-swap.
+        if (request.RequireEmptyPrefix is { } prefix
+            && _files.Keys.Any(other =>
+                other.Repository == request.RepositoryPath && other.RefName == request.RefName
+                && other.Path.StartsWith(prefix, StringComparison.Ordinal)))
+        {
+            return Task.FromResult(LedgerWriteOutcome.Conflict(
+                existing is null ? LedgerFile.Absent : new LedgerFile(existing.Content, existing.BlobId)));
+        }
+
         Writes.Add(request);
         string blobId = Guid.NewGuid().ToString("N");
         _files[key] = new StoredFile(request.Content, blobId);
@@ -67,6 +79,15 @@ internal sealed class FakeLedger : ILedger
         Deletes.Add(request);
         _files.Remove(key);
         return Task.FromResult(LedgerWriteOutcome.Written(Guid.NewGuid().ToString("N")));
+    }
+
+    public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
+    {
+        RequireRegistered(refName);
+        bool any = _files.Keys.Any(key =>
+            key.Repository == repositoryPath && key.RefName == refName
+            && key.Path.StartsWith(pathPrefix, StringComparison.Ordinal));
+        return Task.FromResult(any);
     }
 
     private static void RequireRegistered(string refName)
