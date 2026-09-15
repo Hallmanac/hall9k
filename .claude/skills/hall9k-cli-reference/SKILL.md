@@ -147,25 +147,30 @@ h9k message handle <id>                                  # mark a received messa
 
 **Trust files and the chain reader** (idea 202383dc, T1): vouches, revocations, and project
 membership are files in the same hidden ledger, and every read of every ledger and messages ref
-recomputes, fresh, which signers a project currently trusts — never a cached answer, so a
+recomputes, fresh, which signers a project currently trusts: never a cached answer, so a
 revocation or a removal takes effect the moment the next read walks the ledger again.
 `owners/<root>/nodes/<node-id>.yaml` vouches a node into an owner's own fleet (node id, node public
 key, issued at), and `owners/<root>/revoked/<node-id>.yaml` revokes one, both on the existing
 `refs/hall9k/ledger/owners/<root>` ref, written by any node already enrolled in that owner's own
-chain (the root itself, or a node already vouched in) — anyone else is refused before any push, and
+chain (the root itself, or a node already vouched in). Anyone else is refused before any push, and
 the latest of a vouch or a revocation, in that ref's own commit order, wins, so a surviving node
 undoes a bad revocation by vouching again. Project membership is its own ref,
 `refs/hall9k/ledger/members`, one `members/<root-fingerprint>.yaml` per member (root fingerprint,
 role owner or member, issued at); `h9k project join` writes the first one itself, self-signed, the
-moment it establishes a brand-new root — every later addition needs a hand-run vouch from an
-owner-role member until the invite flow (T2, not yet built) exists. `Hall9k.Connectors.Trust.
+moment it finds that ref's own `members/` folder entirely empty (genesis is spent once, project-wide,
+never merely per fingerprint). Nothing writes a member file after that today: adding a member is not
+yet built, and waits on the invite flow (T2). `Hall9k.Connectors.Trust.
 GitLedgerChainReader` is the one place this is computed: it walks every owner root a project's
 ledger has ever seen, resolves each root's own chain independent of membership, then replays the
-members ref against those chains — a stranger's own internally self-consistent root and node file
-count for nothing anywhere in this project, because they were never made a member. The same chain
-now gates node-to-node message reads too: a sender's key still comes from its own self-announced
-node file, but it also has to be currently allowed by the chain before its commit signature is
-ever checked (idea 202383dc, M1a's node-level check upgraded to chain-level).
+members ref against those chains, checking each write's signer against that chain's own state at
+the time the write landed, not its current state (so a later revocation never retroactively voids
+an earlier, legitimately signed write). A stranger's own internally self-consistent root and node
+file count for nothing anywhere in this project, because they were never made a member; an
+unverifiable write is recorded, and named by `h9k project members`, rather than silently dropped.
+The same chain now gates node-to-node message reads too: a sender's key still comes from its own
+self-announced node file, but it also has to be currently allowed by the chain, bound to that exact
+sender's own node id, before its commit signature is ever checked (idea 202383dc, M1a's node-level
+check upgraded to chain-level).
 
 ```bash
 h9k node vouch <node-id>              # vouch a node into this owner's own fleet, across every project this owner already joined; prints the vouched node's own key fingerprint
