@@ -113,6 +113,46 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         updatedProject.Members.Should().ContainKey(outcome.KeyFingerprint);
     }
 
+    /// <summary>
+    /// <see cref="ProjectJoinCommand.RunAsync"/>'s own genesis-member gate refuses to write when
+    /// the members/ folder already holds anyone's file, never merely when this node's own
+    /// fingerprint's file happens to be absent — a per-fingerprint check would let a second node
+    /// establishing its own fresh root self-claim ownership in a project that already has a real
+    /// owner, since its own fingerprint's file is of course absent too (independent pre-PR review,
+    /// cycle 1, conformance and adversarial lenses, medium). Simulated here with a member file
+    /// pre-seeded directly through the fake ledger under an unrelated fingerprint, standing in for
+    /// a genuinely earlier join this test never has to actually run.
+    /// </summary>
+    [Fact]
+    public async Task Establishing_a_fresh_root_never_self_claims_genesis_membership_when_the_members_folder_already_has_another_owner()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+
+        string priorOwnerFingerprint = new string('d', 64);
+        LedgerWriteOutcome seedOutcome = await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                project.RepositoryPath, "refs/hall9k/ledger/members", $"members/{priorOwnerFingerprint}.yaml",
+                $"root_fingerprint: \"{priorOwnerFingerprint}\"\nrole: \"owner\"\nissued_at: \"{Now:o}\"\n",
+                ExpectedBlobId: null, "seed a prior owner's own genesis member", new LedgerCommitter("Seed", "seed@hall9k.local"),
+                new LedgerSigningKey("/does/not/matter/for/a/fake/ledger")),
+            cts.Token);
+        seedOutcome.Verdict.Should().Be(LedgerWriteVerdict.Written, "test setup: the prior owner's own member file must land");
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        outcome.EstablishedRoot.Should().BeTrue("this node still establishes its own root — genesis membership alone is refused");
+        ledger.Writes.Should().NotContain(
+            w => w.RefName == "refs/hall9k/ledger/members" && w.Path == $"members/{outcome.KeyFingerprint}.yaml",
+            "the members folder was already non-empty, so this join must never self-claim genesis ownership");
+
+        ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
+        updatedProject.Members.Should().NotContainKey(outcome.KeyFingerprint);
+    }
+
     [Fact]
     public async Task Joining_twice_writes_the_ledger_once()
     {
