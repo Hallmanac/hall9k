@@ -208,7 +208,8 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             // The importer is built from the registered connections rather than the default one:
             // placing a Jira reference needs the site that connection carries, which is the one
             // asymmetry between the two sources (PLAN.md §10).
-            WorkItemImporter importer = await WorkItemConnections.ImporterAsync(session, cancellationToken);
+            WorkItemImporter importer = await WorkItemConnections.ImporterAsync(
+                session, cancellationToken, processRunner: new ProjectScopedGitHubRunner(store).Runner);
             header.AddRow("External", ExternalMarkup(importer, details.ExternalReference));
             if (details.ExternalStatusObserved.IsNotBlank() && details.ExternalObservedAt is { } observedAt)
             {

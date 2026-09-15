@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -407,7 +408,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         AnsiConsole.MarkupLine($"[blue]Draft {shortId} revised[/]: {string.Join(", ", Changed(revised))}.");
         // After the confirmation, not before it: what changed here is the news, and the tracker
         // write is what followed from it.
-        await RewriteRecordAsync(session, task, revised, context, cancellationToken);
+        await RewriteRecordAsync(store, session, task, revised, context, cancellationToken);
         // The refusal path names the consequence (TaskDecider.Revise's own call into
         // ReviewStageCompositionValidation.VetInput); the accepted path has to name it too, or the
         // only operator who ever reads it is the one who tried the command without
@@ -440,6 +441,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
     /// </para>
     /// </summary>
     private static async Task RewriteRecordAsync(
+        IDocumentStore store,
         IQuerySession session,
         TaskAggregate task,
         TaskRevised revised,
@@ -464,6 +466,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
                 session, task, project, context.NodeId, node?.MachineName ?? Environment.MachineName,
                 DateTimeOffset.UtcNow, revised.AcceptanceCriteria.HasValue,
+                provider: new GitHubWorkItemProvider(new ProjectScopedGitHubRunner(store).Runner),
                 cancellationToken: cancellationToken);
             AnsiConsole.MarkupLine(DescribeRewrite(
                 outcome, task.Origin is not null, revised.AcceptanceCriteria.HasValue, project.Name,

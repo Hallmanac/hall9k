@@ -90,7 +90,9 @@ public sealed class PullRequestReplyCommand : Hall9kAsyncCommand<PullRequestRepl
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
-        return await ReplyAsync(session, taskId, settings, new GitHubReviewReplies(), cancellationToken);
+        return await ReplyAsync(
+            session, taskId, settings,
+            new GitHubReviewReplies(new ProjectScopedGitHubRunner(store).Runner), cancellationToken);
     }
 
     /// <summary>

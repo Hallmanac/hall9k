@@ -98,7 +98,7 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
         return await RunAsync(
-            store, session, settings, ExternalProcess.Runner,
+            store, session, settings, new ProjectScopedGitHubRunner(store).Runner,
             new GitWorktreeManager(new ConsoleWorktreeLogger<GitWorktreeManager>()), cancellationToken);
     }
 

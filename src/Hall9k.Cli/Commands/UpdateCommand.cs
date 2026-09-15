@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Installation;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Storage;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -42,7 +43,12 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
     /// indefinitely on a truly wedged <c>gh</c>.</summary>
     private static readonly TimeSpan DownloadDeadline = TimeSpan.FromMinutes(10);
 
-    private readonly ProcessRunner gh = gh ?? ExternalProcess.RunnerWithDeadline(DownloadDeadline);
+    // No project is involved (the release comes from Hall9k's own repository, never a registered
+    // project's), so this still funnels through ProjectGitHubClient — the one place the platform
+    // spawns gh — but in its ambient mode: whatever gh's own auth already resolves to, exactly
+    // the behaviour this had before the migration (idea 202383dc, A2b item 4).
+    private readonly ProcessRunner gh = gh ?? new ProjectGitHubClient(
+        ExternalProcess.RunnerWithEnvironmentAndDeadline(DownloadDeadline)).AmbientProcessRunner;
 
     protected override Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken) =>
         RunAsync(

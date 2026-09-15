@@ -76,6 +76,6 @@ public sealed class PullRequestRequestChangesCommand : Hall9kAsyncCommand<PullRe
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
         return await PullRequestReviewVerdict.DeliverAsync(
             session, taskId, ReviewerVerdict.ChangesRequested, settings.Note!.Trim(), findings,
-            new GitHubPullRequestSurface(), cancellationToken);
+            new GitHubPullRequestSurface(new ProjectScopedGitHubRunner(store).Runner), cancellationToken);
     }
 }

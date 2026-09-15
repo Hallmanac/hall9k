@@ -40,7 +40,7 @@ internal static class TrackerClaimCheck
         string? externalReference,
         TrackerClaimGate? gate,
         CancellationToken cancellationToken) =>
-        (gate ?? new TrackerClaimGate()).CheckAsync(
+        (gate ?? new TrackerClaimGate(new ProjectScopedGitHubRunner(store).Runner)).CheckAsync(
             store,
             project.ClaimGate,
             Reference(externalReference),
@@ -221,7 +221,7 @@ internal static class TrackerClaimCheck
         TrackerAssignmentTake? take,
         CancellationToken cancellationToken)
     {
-        TrackerTake taken = await (take ?? new TrackerAssignmentTake()).TakeAsync(
+        TrackerTake taken = await (take ?? new TrackerAssignmentTake(new ProjectScopedGitHubRunner(store).Runner)).TakeAsync(
             store,
             project.ClaimGate,
             Reference(externalReference),
@@ -279,7 +279,7 @@ internal static class TrackerClaimCheck
         TakeOffer offer,
         CancellationToken cancellationToken)
     {
-        TrackerAssignmentTake taker = take ?? new TrackerAssignmentTake();
+        TrackerAssignmentTake taker = take ?? new TrackerAssignmentTake(new ProjectScopedGitHubRunner(store).Runner);
         TrackerClaimDecision decision;
         try
         {

@@ -179,7 +179,9 @@ public sealed class ReviewResolveCommand : Hall9kAsyncCommand<ReviewResolveComma
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Task, cancellationToken);
-        return await ResolveAsync(session, taskId, settings, new GitHubReviewReplies(), cancellationToken);
+        return await ResolveAsync(
+            session, taskId, settings, new GitHubReviewReplies(new ProjectScopedGitHubRunner(store).Runner),
+            cancellationToken);
     }
 
     /// <summary>
