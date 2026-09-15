@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Tests.Fakes;
 using Xunit;
@@ -187,5 +188,47 @@ public sealed class ProjectGitHubClientTests
         Func<Task> run = () => bound("git", ["status"], "/tmp", CancellationToken.None);
 
         await run.Should().ThrowAsync<ArgumentOutOfRangeException>();
+    }
+
+    /// <summary>
+    /// The seam <c>NodeBootstrap</c>'s own bootstrap now reads gh's identity through, rather than a
+    /// raw process of its own (independent pre-PR review, cycle 1, human verdict) — proven here the
+    /// same way <see cref="RunAmbientAsync_runs_gh_with_no_account_pinned"/> proves the transport it
+    /// wraps, with no real gh in the loop.
+    /// </summary>
+    [Fact]
+    public void AmbientIdentityReader_returns_gh_api_users_own_output_with_no_account_pinned()
+    {
+        RecordingEnvironmentProcessRunner ghRunner = RecordingEnvironmentProcessRunner.Succeeding("""{"id": 1, "login": "hallmanac"}""" + "\n");
+        GhIdentityReader reader = ProjectGitHubClient.AmbientIdentityReader("/tmp", ghRunner.Runner);
+
+        string? json = reader();
+
+        json.Should().Be("""{"id": 1, "login": "hallmanac"}""");
+        ghRunner.Calls.Single().Arguments.Should().ContainInOrder("api", "user");
+        ghRunner.Calls.Single().Environment.Should().BeEmpty("no account is confirmed yet to pin a token for");
+    }
+
+    [Fact]
+    public void AmbientIdentityReader_returns_null_when_gh_exits_non_zero()
+    {
+        RecordingEnvironmentProcessRunner ghRunner = RecordingEnvironmentProcessRunner.Failing("gh: not authenticated");
+        GhIdentityReader reader = ProjectGitHubClient.AmbientIdentityReader("/tmp", ghRunner.Runner);
+
+        reader().Should().BeNull();
+    }
+
+    /// <summary>
+    /// Best-effort, matching the raw spawn this replaced: a gh that cannot even be reached (not
+    /// installed, wedged past its deadline) reads as unconfirmed rather than throwing out of
+    /// <c>NodeBootstrap.EnsureAsync</c>/<c>RefreshGitHubIdentityAsync</c>.
+    /// </summary>
+    [Fact]
+    public void AmbientIdentityReader_returns_null_rather_than_throwing_when_gh_cannot_be_reached()
+    {
+        EnvironmentProcessRunner throwing = (_, _, _, _, _) => throw new TimeoutException("gh did not answer within 3 seconds");
+        GhIdentityReader reader = ProjectGitHubClient.AmbientIdentityReader("/tmp", throwing);
+
+        reader().Should().BeNull();
     }
 }

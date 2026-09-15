@@ -1715,19 +1715,28 @@ this task, neither exercised by an existing test (confirmed by grep) so the seam
 add. `TaskRecordPublication.WriteAsync`'s own `GitHubWorkItemProvider? provider = null` fallback —
 dead in production once both its real callers pass one explicitly — was tightened to a required
 parameter rather than left as an unaccounted escape hatch a future caller could silently fall
-through. **The two deliberate exceptions.** `UpdateCommand`'s release download reads Hall9k's own
-public release repository, never a registered project's, and could run before any project — or any
-database — exists on a fresh install; it still funnels through `ProjectGitHubClient`, via a new
-`RunAmbientAsync`/`AmbientProcessRunner` pair that runs `gh` with no account pinned (gh's own
-ambient auth, the exact behavior this call always had), so the platform still has exactly one place
-that ever spawns `gh`, even for the one call with no account to choose. `NodeBootstrap.RunQuick`'s
-own `gh api user` is left as the one raw, unmigrated spawn: it is what confirms the very GitHub
-identity `ProjectGitHubClient.ResolveAccountAsync` later reads, so migrating it would be circular
-(no account exists yet to choose), and its synchronous, 3-second-bounded contract — chosen so a
-`h9k` invocation never hangs 120 seconds on a wedged `gh` during ordinary bootstrap — is
-incompatible with the async, 120-second-deadline `ProcessRunner` shape every other site now uses;
-changing that contract would touch the ~280 `NodeBootstrapSeed`-based test call sites the adapter
-task's own #197 entry already had to reconcile once. **Enforcement.** Two source-scanning guard
+through. **The deliberate exception, and bootstrap's own route around it.** `UpdateCommand`'s
+release download reads Hall9k's own public release repository, never a registered project's, and
+could run before any project — or any database — exists on a fresh install; it still funnels
+through `ProjectGitHubClient`, via a new `RunAmbientAsync`/`AmbientProcessRunner` pair that runs
+`gh` with no account pinned (gh's own ambient auth, the exact behavior this call always had), so
+the platform still has exactly one place that ever spawns `gh`, even for the one call with no
+account to choose. `NodeBootstrap`'s own `gh api user` read — what first confirms the very GitHub
+identity `ProjectGitHubClient.ResolveAccountAsync` later reads, so there is no account yet to
+choose — runs ambient through that same seam rather than a raw spawn of its own: a new
+`ProjectGitHubClient.AmbientIdentityReader`, bound to the identical 3-second deadline
+`NodeBootstrap`'s own read always used rather than `ExternalProcess.Deadline`'s two minutes, built
+and supplied by the two Cli call sites that need a live read (`h9k project add`, `h9k project
+join`) and by the daemon's own `DispatchLoop` at daemon start. `NodeBootstrap.EnsureAsync` and
+`RefreshGitHubIdentityAsync` take the reader as the existing `GhIdentityReader` delegate they
+already had a seam for; an omitted one is now simply skipped rather than falling back to a raw
+call, which would need `Hall9k.Domain` to reference `Hall9k.Connectors` — the very thing that would
+have made this the one remaining exception. Kept in a fix lap of this same task rather than the
+first pass because the fix is real refactor, not a documentation-only rewording: a build session
+missed that `NodeBootstrap.RunQuick`'s own `gh api user` case is not actually circular the way it
+first looked (that read confirms an *account*, not a *process seam* — the seam it needs already
+existed) and shipped it as a documented exception instead (independent pre-PR review, cycle 1,
+human verdict, 2026-09-15). **Enforcement.** Two source-scanning guard
 tests (`GitHubSpawnSeamGuardTests`, following the existing `ContainerRoutingGuardTests`/
 `ProcessTerminationGuardTests` pattern and their shared `TestSourceTree` helper): no file outside
 `ExternalProcess.cs` builds a raw `ProcessStartInfo` naming `gh` directly, and no GitHub-or-tracker

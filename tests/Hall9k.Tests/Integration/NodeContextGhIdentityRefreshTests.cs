@@ -9,9 +9,10 @@ namespace Hall9k.Tests.Integration;
 
 /// <summary>
 /// <see cref="NodeContext.InitializeAsync"/>'s own <c>ghIdentityReader</c> parameter is the seam
-/// that lets a real daemon start (<c>DispatchLoop</c>, which passes
-/// <c>NodeBootstrap.RealGhIdentityReader</c>) refresh this install's GitHub identity without
-/// dragging every other caller of <see cref="NodeContext.InitializeAsync"/> — <c>NodeBootstrapSeed</c>'s
+/// that lets a real daemon start (<c>DispatchLoop</c>, which passes a reader built from
+/// <c>Hall9k.Connectors.WorkItems.ProjectGitHubClient.AmbientIdentityReader</c>) refresh this
+/// install's GitHub identity without dragging every other caller of
+/// <see cref="NodeContext.InitializeAsync"/> — <c>NodeBootstrapSeed</c>'s
 /// roughly 280 integration-test call sites included — into shelling out to the real <c>gh</c>. This
 /// pins a fake reader instead, proving the refresh actually runs and updates the connection when a
 /// caller opts in, the way a caller that omits the parameter (every other test in this tree) never

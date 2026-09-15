@@ -59,8 +59,12 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         // reason and already gets this from ProjectAddCommand.ExecuteAsync's own earlier call, so
         // this is only reached standalone. Best-effort: a gh that cannot answer leaves the
         // connection's already-recorded identity exactly as it was.
-        BootstrapContext refreshContext = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        await NodeBootstrap.RefreshGitHubIdentityAsync(session, refreshContext.ConnectionId, cancellationToken);
+        // Ambient (no account pinned): a node's own very first join can be this install's genesis
+        // bootstrap too, before any GitHub connection is confirmed, so there is no account yet for
+        // ProjectGitHubClient to resolve and run this as.
+        GhIdentityReader ghIdentityReader = ProjectGitHubClient.AmbientIdentityReader(Environment.CurrentDirectory);
+        BootstrapContext refreshContext = await NodeBootstrap.EnsureAsync(session, cancellationToken, ghIdentityReader);
+        await NodeBootstrap.RefreshGitHubIdentityAsync(session, refreshContext.ConnectionId, cancellationToken, ghIdentityReader);
         await session.SaveChangesAsync(cancellationToken);
 
         JoinOutcome outcome;
