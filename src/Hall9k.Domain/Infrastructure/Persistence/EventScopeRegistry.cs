@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
@@ -241,6 +242,13 @@ public static class EventScopeRegistry
         // sweep reaches the identical conclusion by reading the ledger itself.
         [typeof(UnverifiedLedgerWriteObserved)] = EventScope.NodeScoped,
         [typeof(UnverifiedLedgerWriteResolved)] = EventScope.NodeScoped,
+
+        // Hall9k.Domain.Features.Invite — idea 202383dc, T2: an invite's own plaintext secret is
+        // kept only in the minting node's own store, never the ledger and never replicated; the
+        // ledger's owners/<root>/invites/<id>.yaml file (hash, claim, role, expiry, spent) is the
+        // team-visible fact, written and updated directly by ILedger, never through this stream.
+        [typeof(InviteMinted)] = EventScope.NodeScoped,
+        [typeof(InviteSpent)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Connection — a node's own registered credential; never
         // replicated (Guid tokens and gh CLI logins are inherently local to the machine).

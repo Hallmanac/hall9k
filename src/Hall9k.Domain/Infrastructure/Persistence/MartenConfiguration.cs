@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
@@ -62,5 +63,6 @@ public static class MartenConfiguration
         opts.Projections.Add<MessageDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<MessageInboxDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<UnverifiedLedgerWriteDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<InviteDetailsProjection>(ProjectionLifecycle.Inline);
     }
 }
