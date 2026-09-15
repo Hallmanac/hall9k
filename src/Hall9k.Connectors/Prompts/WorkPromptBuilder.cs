@@ -725,6 +725,7 @@ public static class WorkPromptBuilder
     {
         const string file = $"{TemplateDirectory}/checkpoint-commit-rules.md";
         string baseBranch = baseBranchOverride ?? project.BaseBranch;
+        AppendSharedRepositoryHistorySafetyRule(prompt);
         AppendFragment(prompt, file, "commit-as-you-go");
         AppendSelfReviewPhaseRules(
             prompt, project, worktreePath, baseBranch: baseBranch,
@@ -760,6 +761,21 @@ public static class WorkPromptBuilder
         AppendFragment(prompt, file, "between-steps");
         AppendFragment(prompt, file, "final-clean-tree-rule");
     }
+
+    /// <summary>
+    /// The worktree-sharing warning every session that commits has to see, wherever it is
+    /// dispatched from: a build's own checkpoint-commit rules
+    /// (<see cref="AppendCheckpointCommitRules"/>, <see cref="AppendDelegatedContractorCommitRules"/>),
+    /// and — via the <c>using static</c> this method's own visibility enables —
+    /// <c>Hall9k.Daemon.Execution.AgentPromptBuilder</c>'s follow-up, fix-checks,
+    /// review-requested-changes, settling-gate-repair, and review-fix prompts, one call site per
+    /// entry point rather than the text itself repeated across each template file (origin incident,
+    /// 2026-09-15: a fix session's own history surgery in the shared repository wiped a sibling
+    /// task's branch reflog; see <c>Hall9k.Daemon.Execution.ForceWithLeasePusher</c>'s own doc for
+    /// the guard fix this prompt rule is the other half of).
+    /// </summary>
+    public static void AppendSharedRepositoryHistorySafetyRule(StringBuilder prompt) =>
+        AppendFragment(prompt, $"{TemplateDirectory}/shared-repository-history-safety.md", "note");
 
     private static void AppendGateLines(StringBuilder prompt, ProjectDetails project)
     {
@@ -958,6 +974,7 @@ public static class WorkPromptBuilder
         string baseBranch, string? stackedForkPointCommit, VoiceSkillName? voiceSkill)
     {
         const string file = $"{TemplateDirectory}/delegated-contractor-commit-rules.md";
+        AppendSharedRepositoryHistorySafetyRule(prompt);
         AppendFragment(prompt, $"{TemplateDirectory}/checkpoint-commit-rules.md", "commit-as-you-go");
         AppendSelfReviewPhaseRules(
             prompt, project, worktreePath, recomposeFollows: delegationBaseCommit is not null,
