@@ -45,7 +45,8 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
 
         if (outcome.Verdict == LedgerWriteVerdict.Conflict)
         {
-            throw new InvalidOperationException(
+            throw new MessageSeqAlreadyUsedException(
+                fromNodeId, seq,
                 $"{path} already exists in {refName} — seq {seq} was already used, which should never "
                 + "happen since this node's own store allocates it once and this ref has exactly one writer.");
         }
@@ -106,16 +107,31 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
         Dictionary<string, bool> verifiedCommits = [];
         List<TransportEnvelope> envelopes = [];
         List<long> rejectedSeqs = [];
+        long highestSeqInspected = sinceSeq;
         foreach (long seq in candidateSeqs)
         {
+            // MessageOutbox always allocates the next seq as this node's own highest-plus-one, and
+            // a resend reuses the seq it already failed at rather than skipping ahead, so a
+            // genuine sender's own candidates are always contiguous. A gap here can only mean
+            // something else placed a file on this ref — a forgery, or corruption — and trusting
+            // it as "inspected" would let that one file drag the cursor past every real envelope
+            // still sitting beyond the gap. Stop instead: the gap is re-examined next sweep rather
+            // than silently trusted.
+            if (seq != highestSeqInspected + 1)
+            {
+                break;
+            }
+
             string path = PathFor(seq);
             string? introducingCommit = await RunGitCaptureAsync(
                 repositoryPath, ["log", "--format=%H", "-n", "1", tip, "--", path], cancellationToken);
             introducingCommit = introducingCommit?.Trim();
             if (introducingCommit.IsBlank())
             {
-                rejectedSeqs.Add(seq);
-                continue;
+                // git itself failed to answer this — never a verdict on the envelope. Stop rather
+                // than treat a tool failure as indistinguishable from a forged or corrupt envelope;
+                // the cursor must never advance past content nobody has actually inspected yet.
+                break;
             }
 
             if (!verifiedCommits.TryGetValue(introducingCommit, out bool isVerified))
@@ -127,36 +143,55 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
             if (!isVerified)
             {
                 rejectedSeqs.Add(seq);
+                highestSeqInspected = seq;
                 continue;
             }
 
             string? content = await RunGitCaptureAsync(repositoryPath, ["show", $"{introducingCommit}:{path}"], cancellationToken);
-            if (content is not null)
+            if (content is null)
             {
-                envelopes.Add(new TransportEnvelope(seq, content));
+                // Same reasoning as the missing-introducing-commit case above: git's own tree
+                // listing already proved this blob exists, so a failure to read it back is a tool
+                // failure, not a rejection — stop rather than skip past it.
+                break;
             }
-            else
-            {
-                rejectedSeqs.Add(seq);
-            }
+
+            envelopes.Add(new TransportEnvelope(seq, content));
+            highestSeqInspected = seq;
         }
 
-        // Every candidate at or below this point was inspected — verified and returned, or
-        // rejected and recorded in rejectedSeqs — so the highest one this call ever looked at is
-        // always the highest candidate, never just the highest one that happened to verify: a
-        // reader's cursor must advance past a rejected candidate too, or it re-inspects the
-        // identical rejection forever.
-        return TransportReadResult.Ok(envelopes, candidateSeqs[^1], rejectedSeqs);
+        return TransportReadResult.Ok(envelopes, highestSeqInspected, rejectedSeqs);
     }
 
     private static string OutboxRef(Guid nodeId) => $"refs/hall9k/messages/{nodeId}";
 
-    private static string PathFor(long seq) => $"messages/{seq.ToString(CultureInfo.InvariantCulture)}.json";
+    private const string MessagesDirectory = "messages/";
+    private const string EnvelopeExtension = ".json";
 
-    private static long? ParseSeqFromPath(string path)
+    private static string PathFor(long seq) => $"{MessagesDirectory}{seq.ToString(CultureInfo.InvariantCulture)}{EnvelopeExtension}";
+
+    /// <summary>Accepts only an exact, canonical <c>messages/&lt;seq&gt;.json</c> path — no nested
+    /// directory, no other extension, no leading zero or sign — so that two different names (a
+    /// stray <c>messages/5.txt</c>, a nested <c>messages/x/5.json</c>, a padded
+    /// <c>messages/05.json</c>) can never both resolve to the same seq. <see cref="PathFor"/>'s own
+    /// canonical form is the only name this ever matches, which is also what makes the round trip
+    /// exact: a matched seq always formats back to the exact digits it was parsed from.</summary>
+    internal static long? ParseSeqFromPath(string path)
     {
-        string fileName = System.IO.Path.GetFileNameWithoutExtension(path);
-        return long.TryParse(fileName, NumberStyles.Integer, CultureInfo.InvariantCulture, out long seq) ? seq : null;
+        if (!path.StartsWith(MessagesDirectory, StringComparison.Ordinal) ||
+            !path.EndsWith(EnvelopeExtension, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        string digits = path[MessagesDirectory.Length..^EnvelopeExtension.Length];
+        if (digits.Contains('/') ||
+            !long.TryParse(digits, NumberStyles.None, CultureInfo.InvariantCulture, out long seq))
+        {
+            return null;
+        }
+
+        return seq.ToString(CultureInfo.InvariantCulture) == digits ? seq : null;
     }
 
     /// <summary>Fetches the sender's own outbox ref fresh from origin. A missing remote ref (the
@@ -182,6 +217,20 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
         string? committerEmail = (await RunGitCaptureAsync(
             repositoryPath, ["log", "-1", "--format=%ce", commitSha], cancellationToken))?.Trim();
         if (committerEmail.IsBlank())
+        {
+            return false;
+        }
+
+        // git verify-commit picks the signature format from the gpgsig header itself
+        // (get_format_by_sig), never from "-c gpg.format=ssh" — that setting only chooses what a
+        // *new* signature is created as. A commit signed with an OpenPGP or X.509 key therefore
+        // still verifies through gpg/gpgsm against whatever the local machine's own default
+        // keyring trusts, never checked against the one SSH key this sender's own node file
+        // names — so anyone whose key is in that keyring could forge a commit verify-commit
+        // happily accepts. Confirming the header itself is an SSH signature is the only way this
+        // check means what it claims to before ever trusting verify-commit's own exit code.
+        string? rawCommit = await RunGitCaptureAsync(repositoryPath, ["cat-file", "commit", commitSha], cancellationToken);
+        if (rawCommit is null || !HasSshSignatureHeader(rawCommit))
         {
             return false;
         }
@@ -216,6 +265,27 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
     {
         ProcessResult result = await runner("git", arguments, repositoryPath, cancellationToken);
         return result.ExitCode == 0 ? result.StandardOutput : null;
+    }
+
+    /// <summary>Reads a raw commit object exactly the way <c>git cat-file commit &lt;sha&gt;</c>
+    /// prints it: the <c>gpgsig</c> header's own first line always carries the signature block's
+    /// own opening marker immediately after the header name, with no other line able to produce
+    /// that same prefix — a pure string check, so nothing about testing it needs a real
+    /// repository, unlike <see cref="IsSignedByRegisteredKeyAsync"/> itself.</summary>
+    internal static bool HasSshSignatureHeader(string rawCommitObject)
+    {
+        const string header = "gpgsig ";
+        const string sshMarker = "-----BEGIN SSH SIGNATURE-----";
+        foreach (string rawLine in rawCommitObject.Split('\n'))
+        {
+            string line = rawLine.TrimEnd('\r');
+            if (line.StartsWith(header, StringComparison.Ordinal))
+            {
+                return line[header.Length..].StartsWith(sshMarker, StringComparison.Ordinal);
+            }
+        }
+
+        return false;
     }
 
     /// <summary>Reverses <c>ProjectJoinCommand</c>'s own <c>QuoteYaml</c> — the same small, flat,
