@@ -12,11 +12,16 @@ public sealed record TransportEnvelope(long Seq, string Content);
 /// tried to read — idea 202383dc's sender-verification rule — so <see cref="Envelopes"/> is always
 /// empty in that case and nothing from this sender is trusted this sweep.
 /// <see cref="HighestSeqInspected"/> is the highest seq this call actually looked at, whether or
-/// not it ended up in <see cref="Envelopes"/>: a candidate the transport rejected for its own
-/// reasons (an invalid signature, a missing introducing commit) still counts, so a reader's cursor
-/// can advance past it instead of re-inspecting the identical rejected candidate on every sweep.
-/// <see cref="RejectedSeqs"/> names exactly which candidates those were, so the reader can log the
-/// sender-verification failure rather than the rejection passing through silently.
+/// not it ended up in <see cref="Envelopes"/>: a candidate the transport rejected on its own terms
+/// (an invalid signature) still counts, so a reader's cursor can advance past it instead of
+/// re-inspecting the identical rejected candidate on every sweep. It never counts a candidate the
+/// transport could not even inspect — a gap in an otherwise-contiguous seq sequence, or a
+/// tool-level failure reading the commit that should have introduced it — since a genuine sender
+/// never leaves a gap (seq is always this node's own highest-plus-one, and a resend reuses its own
+/// seq rather than skipping ahead), and neither case is a verdict on the envelope itself.
+/// <see cref="RejectedSeqs"/> names exactly which candidates were the former — rejected, not merely
+/// uninspected — so the reader can log the sender-verification failure rather than the rejection
+/// passing through silently.
 /// </summary>
 public sealed record TransportReadResult(
     bool SenderVouched,
