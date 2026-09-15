@@ -558,8 +558,10 @@ the project's own facts from `h9k project show` (its home, whether its code live
 directory or a `repo/dev` worktree, its verify gates, base branch, commit style, linked trackers,
 and the other projects sharing this node's ceiling). From that it writes
 `recipes/orchestrator.md` and, for a project, `recipes/idea-discovery.md` and
-`recipes/task-refinement.md`, seeds `journal.md`, `sessions.md`, and
-`notes/prototype-feedback.md` at the home's own root when none exist yet, stores a per-agent-CLI
+`recipes/task-refinement.md`, seeds `journal.md`, `sessions.md`,
+`notes/prototype-feedback.md`, and the background waiter script(s) the recipe's own start-up
+sequence arms (`notes/waiters/log-waiter.sh`/`.ps1`, plus one more of the same shape per
+non-`h9kd.log` source a recipe polls) at the home's own root when none exist yet, stores a per-agent-CLI
 launch text explicitly, even when the discovered machine needs no change from the platform's own
 computed default (`h9k orchestrator measure` refuses to run against a line nothing ever asked to
 store), and finishes by running `h9k orchestrator measure` and printing the launch line to paste
@@ -581,7 +583,8 @@ the line is the last thing to do, not something to keep working from.
 `<recipe>.new` beside the current file, and the launch anchor's own start-up step is what compares
 the two, reports what changed and what would be lost, and asks whether to adopt it (keeping a
 dated `.prev` of what it replaced), keep the current file, or merge them by hand. `journal.md`,
-`sessions.md`, and `notes/prototype-feedback.md` are never regenerated once they exist — they are
+`sessions.md`, `notes/prototype-feedback.md`, and the background waiter scripts (and their offset
+and gh-streak state files) are never regenerated once they exist — they are
 the window's own live state, not generated content.
 
 ---
