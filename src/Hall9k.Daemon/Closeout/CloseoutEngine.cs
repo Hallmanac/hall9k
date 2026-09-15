@@ -3300,13 +3300,22 @@ public sealed class CloseoutEngine(
             // own (alreadyOnBase) still gets no further automatic action here: the follow-up below
             // would be the one write this whole sweep makes, and it is gated by the same budget the
             // park above already enforces for every other shape — just asked here instead, since
-            // alreadyOnBase is what let this sweep skip that park a moment ago. Left unrenumbered in
-            // this one narrow corner (both conditions at once) rather than overspending the cap this
-            // sweep already decided not to park over; a human's own h9k pr resolve grants the lap
-            // that would pick it up.
+            // alreadyOnBase is what let this sweep skip that park a moment ago. Parked here rather
+            // than returned silently (independent pre-PR review, cycle 1, conformance and
+            // adversarial lenses): the retarget above already landed, so the run stops reading as a
+            // stacked child from the next sweep on, and nothing else ever prompts the h9k pr resolve
+            // that renumbers this task's own Decisions Log placeholder if this arm does not ask for
+            // it directly.
             if (task.StackReplaysDispatched >= _options.MaxStackReplayRuns)
             {
-                await session.SaveChangesAsync(cancellationToken);
+                await ParkAsync(
+                    session, run,
+                    $"This is a stacked pull request and {observation.Detail}. It is retargeted onto "
+                    + $"{project.BaseBranch} now, but its rebase budget is spent "
+                    + $"({task.StackReplaysDispatched}/{_options.MaxStackReplayRuns} rebase(s)), so no "
+                    + "follow-up was dispatched to earn this task's own Decisions Log placeholder its "
+                    + "real number. Grant another attempt with h9k pr resolve.",
+                    now, cancellationToken);
                 return true;
             }
 
