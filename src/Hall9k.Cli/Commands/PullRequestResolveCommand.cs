@@ -96,7 +96,17 @@ public sealed class PullRequestResolveCommand : Hall9kAsyncCommand<PullRequestRe
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.Reopen(
             task, previousRunId, previousRun.Branch, reason, kind,
             automatic: false,
-            resolvedAt, context.OwnerId));
+            resolvedAt, context.OwnerId,
+            // Carried forward rather than wiped, unlike the obstruction counters a manual grant
+            // deliberately resets (task: a review-feedback follow-up never answers a human
+            // reviewer in the owner's name on its own). This command makes no provider read, so
+            // it observes nothing of its own — and the reopen REPLACES whatever the last
+            // dispatch recorded, so passing nothing here would blind the posting path's
+            // whose-thread check for the lap this command is about to start, on the one route an
+            // operator reaches for by hand. A thread the reviewer has since resolved only ever
+            // makes that check refuse more, never less, and nothing here is fabricated: every
+            // entry is an observation closeout actually made.
+            humanReviewThreads: [.. task.KnownHumanReviewThreads]));
         session.Events.Append(previousRunId, new CloseoutBudgetGranted(previousRunId, reason, resolvedAt));
         try
         {

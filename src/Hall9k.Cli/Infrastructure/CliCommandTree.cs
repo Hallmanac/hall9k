@@ -276,6 +276,26 @@ public static class CliCommandTree
                 .WithExample("pr", "resolve", "28b19893")
                 .WithExample("pr", "resolve", "28b19893", "--checks")
                 .WithExample("pr", "resolve", "28b19893", "--rebase");
+            pullRequest.AddCommand<PullRequestReplyCommand>("reply")
+                .WithDescription(
+                    "Post one reply inside a review thread on a task's own pull request — the platform's "
+                    + "posting path, and the only route a follow-up session has to a thread. A decline or a "
+                    + "route into a thread a PERSON opened is refused outright and recorded: telling a "
+                    + "colleague their point does not hold is yours to send, so the lap drafts it, parks, and "
+                    + "h9k review resolve posts it as written, posts your own text, or posts nothing. A bot's "
+                    + "thread and a fix's reply into anyone's thread post as they always have "
+                    + "(PLAN.md log #62, #159).")
+                .WithExample(
+                    "pr", "reply", "28b19893", "--thread", "PRRT_kwDO", "--disposition", "fix",
+                    "--body", "\"Fixed in the commit above: the sentinel is reused now.\"");
+            pullRequest.AddCommand<PullRequestReplyGuardCommand>("reply-guard")
+                .WithDescription(
+                    "Not for you: the PreToolUse hook a follow-up session launches with, which refuses the "
+                    + "shell routes that write inside a review thread so every reply goes through h9k pr "
+                    + "reply. Reads Claude Code's hook payload on stdin and exits 2 to refuse. Registered "
+                    + "rather than hidden so the same check can be run by hand when a session reports a "
+                    + "refusal you did not expect: pipe the payload in on stdin.")
+                .WithExample("pr", "reply-guard");
             pullRequest.AddCommand<PullRequestReviewCommand>("review")
                 .WithDescription(
                     "Run YOUR own review lap on a pull request (PLAN.md log #149). Attaches to the pr-review "
