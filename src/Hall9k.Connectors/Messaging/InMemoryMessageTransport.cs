@@ -35,7 +35,8 @@ public sealed class InMemoryMessageTransport(ILedger ledger) : IMessageTransport
 
         if (envelopes.ContainsKey(seq))
         {
-            throw new InvalidOperationException(
+            throw new MessageSeqAlreadyUsedException(
+                fromNodeId, seq,
                 $"Node {fromNodeId} already has an envelope at seq {seq} — seq is allocated once, "
                 + "from this node's own store, so this should never happen.");
         }
