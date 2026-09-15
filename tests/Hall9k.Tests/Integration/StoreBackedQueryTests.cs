@@ -344,7 +344,7 @@ public sealed class StoreBackedQueryTests(PostgresFixture postgres) : IClassFixt
 
         await using IQuerySession query = store.QuerySession();
         TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
-            query, projectId, nodeId, "test", cts.Token);
+            query, projectId, nodeId, "test", DomainId.New(), cts.Token);
 
         recentDuration.Should().Be(
             TimeSpan.FromMinutes(12), "the newest recorded run's own duration, not an average of the two");
@@ -380,7 +380,7 @@ public sealed class StoreBackedQueryTests(PostgresFixture postgres) : IClassFixt
 
         await using IQuerySession query = store.QuerySession();
         TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
-            query, projectId, nodeId, "test", cts.Token);
+            query, projectId, nodeId, "test", DomainId.New(), cts.Token);
 
         recentDuration.Should().Be(
             TimeSpan.FromMinutes(12),
@@ -405,7 +405,7 @@ public sealed class StoreBackedQueryTests(PostgresFixture postgres) : IClassFixt
 
         await using IQuerySession query = store.QuerySession();
         TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
-            query, projectId, comparisonNodeId, "test", cts.Token);
+            query, projectId, comparisonNodeId, "test", DomainId.New(), cts.Token);
 
         recentDuration.Should().BeNull("this node has recorded nothing for this gate — a sibling node's duration is not this node's own");
     }
@@ -420,9 +420,45 @@ public sealed class StoreBackedQueryTests(PostgresFixture postgres) : IClassFixt
 
         await using IQuerySession query = store.QuerySession();
         TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
-            query, projectId, nodeId, "test", cts.Token);
+            query, projectId, nodeId, "test", DomainId.New(), cts.Token);
 
         recentDuration.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The clean-base comparison's own budget must never be corrupted by the very run that is
+    /// asking for it (independent pre-PR review, cycle 1, adversarial lens, low — a comparison run
+    /// concurrently with <c>VerificationRunner.RecordGateFailureAsync</c>'s own recording budget can
+    /// see this run's own just-recorded duration as "the most recent" before this read runs).
+    /// </summary>
+    [Fact]
+    public async Task The_asking_runs_own_duration_never_counts_toward_its_own_budget()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        Guid askingRunId = DomainId.New();
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            SeedRun(session, projectId, ownerId, Now.AddMinutes(-2), "test", TimeSpan.FromMinutes(12), nodeId: nodeId);
+            // The asking run's own sample — newer than the one above, and exactly what a fast,
+            // freshly failed gate would look like next to a comparison still reading history.
+            SeedRun(
+                session, projectId, ownerId, Now, "test", TimeSpan.FromSeconds(30), passed: false, nodeId: nodeId,
+                runId: askingRunId);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession query = store.QuerySession();
+        TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
+            query, projectId, nodeId, "test", askingRunId, cts.Token);
+
+        recentDuration.Should().Be(
+            TimeSpan.FromMinutes(12),
+            "the asking run's own newer-but-excluded sample must not shrink the budget it is itself computing");
     }
 
 

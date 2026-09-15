@@ -455,9 +455,12 @@ plainly in the handoff, rather than proven at the host's expense (PLAN.md §16
 Each gate is also validated once, at `h9k project set --verify` time, against a clean checkout of
 the project's own base branch — a gate that cannot pass there refuses the whole `project set`
 outright (`--accept-broken-gate` records it anyway, with a loud warning). A run that later fails a
-gate which also fails on clean base says so in the recorded failure reason, rather than reporting
-that same bare failure a second time — the distinction that tells "this gate was never going to
-pass" apart from a real regression in the run's own branch.
+gate races a fresh comparison against that same clean base against a short recording budget (one
+daemon poll sweep) rather than waiting on it unconditionally: the recorded failure reason says the
+gate also fails on clean base when the comparison answers within that budget — in practice, a
+cached verdict from an earlier run against the identical base commit — and reports the bare
+failure otherwise, so a real regression in the run's own branch is never held from a human behind
+however long a freshly run comparison takes.
 
 Gates are deterministic and cheap to trust, which is why they come first. Everything after them
 is judgment.

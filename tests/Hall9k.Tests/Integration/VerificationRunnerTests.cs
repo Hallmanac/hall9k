@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Documents;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -351,6 +352,115 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         {
             TemporaryTree.Delete(cleanBase);
             File.Delete(counterFile);
+        }
+    }
+
+    /// <summary>
+    /// Task: a composition-none lap whose mandatory gate fails after the pre-final-pass rebase
+    /// parks or fails the run instead of stopping silently with the task left Claimed. Reproduces
+    /// the 2026-09-15 08:57 incident's own shape at the layer that actually causes it (independent
+    /// pre-PR review, cycle 1, both lenses, medium): the `test` gate genuinely failed at 08:57:26,
+    /// but <see cref="RunFailed"/>/<c>TaskFailed</c> did not land until about 14.5 minutes later,
+    /// because <see cref="VerificationRunner"/>'s own gate-failure recording used to always await
+    /// the identical gate run a second time — before recording anything — against a clean checkout
+    /// of main, to see whether main itself was broken. <paramref name="comparisonPause"/> stands in
+    /// for that gap at a scale well past <see cref="VerificationRunner.CleanBaseComparisonRecordingBudget"/>
+    /// but still a test can wait out: the run's own gate (against the plain, non-git
+    /// <c>_worktree</c>) fails immediately, while the identical command against <c>cleanBase</c> (a
+    /// real <c>.git</c> checkout) pauses first — so a poll that gives up well before the pause
+    /// elapses, but after the budget, can only see <see cref="RunState.Failed"/> if the run's own
+    /// failure was recorded without waiting out the full comparison.
+    /// </summary>
+    [Fact]
+    public async Task A_failing_gate_records_the_failure_before_a_slow_clean_base_comparison_finishes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        string cleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-base-{Guid.NewGuid():N}");
+        await InitializeCleanCheckoutAsync(cleanBase, "main", cts.Token);
+        try
+        {
+            TimeSpan comparisonPause = TimeSpan.FromSeconds(20);
+            Guid projectId = DomainId.New();
+            Guid nodeId = DomainId.New();
+            VerifyCommand gate = new(
+                "slow-to-diagnose",
+                GateScript.New()
+                    .BranchOnDirectory(
+                        ".git", GateScript.New().Pause(comparisonPause), GateScript.New().Print("not the comparison checkout"))
+                    .Print("unconditionally-broken")
+                    .Exit(1).Command);
+
+            (Guid taskId1, Guid runId1) = await SeedAsync(
+                store, [gate], cts.Token, repositoryPath: cleanBase, projectId: projectId, nodeId: nodeId);
+
+            Task<bool> verifyTask = NewRunner(store).VerifyAsync(
+                runId1, taskId1, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
+
+            // Gives up at 15s: past the recording budget (a single DaemonOptions.PollInterval
+            // sweep — 5s by NewRunner's own default — with margin for a loaded test host), well
+            // short of the 20s comparisonPause. Only a fix that records the run's own failure
+            // without waiting out the still-running comparison can pass this poll.
+            RunDetails? run = null;
+            for (int attempt = 0; attempt < 150 && run is not { State.IsTerminal: true }; attempt++)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cts.Token);
+                await using IQuerySession pollQuery = store.QuerySession();
+                run = await pollQuery.LoadAsync<RunDetails>(runId1, cts.Token);
+            }
+
+            run.Should().NotBeNull(
+                "the run's own gate already failed and must be recorded promptly, not held open " +
+                "behind the slow clean-base comparison still running in the background");
+            run!.State.Value.Should().Be("Failed");
+            run.FailureReason.Should().Contain("unconditionally-broken")
+                .And.NotContain(
+                    "also fails when run against a clean checkout",
+                    "the comparison had not finished by the time this run's own failure was recorded");
+
+            bool passed = await verifyTask;
+            passed.Should().BeFalse("the gate is unconditionally broken");
+
+            // VerifyAsync returning is no longer proof the comparison itself finished (independent
+            // pre-PR review, cycle 1, both lenses, medium): it now runs the plain-reason recording
+            // and returns immediately once the budget is spent, rather than waiting out the
+            // comparison's own tail the way it used to — the exact wait that reintroduced the
+            // 08:57 gap one layer up, at ReviewEngine's own safety net, once that net stopped
+            // trusting VerifyForSettlingAsync's return alone to mean a park or fail already
+            // landed. So the cache this warms is polled for directly here instead.
+            string cleanBaseHeadSha = (await TestGit.CaptureAsync(cleanBase, ["rev-parse", "HEAD"], cts.Token)).Trim();
+            string verdictId = CleanBaseGateVerdict.ComputeId(nodeId, projectId, gate.Name, gate.Command, cleanBaseHeadSha);
+            CleanBaseGateVerdict? verdict = null;
+            for (int attempt = 0; attempt < 400 && verdict is null; attempt++)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cts.Token);
+                await using IQuerySession verdictQuery = store.QuerySession();
+                verdict = await verdictQuery.LoadAsync<CleanBaseGateVerdict>(verdictId, cts.Token);
+            }
+
+            verdict.Should().NotBeNull(
+                "the comparison that could not help this run's own reason must still run to " +
+                "completion, off the critical path, and warm the cache for the next run to ask the " +
+                "same question — proving the fix defers the comparison rather than dropping it");
+            verdict!.BasePasses.Should().BeFalse("the gate is unconditionally broken on the clean checkout too");
+
+            // The comparison ran to completion and warmed the cache for the next run to ask the
+            // same question — proving the fix defers the comparison rather than dropping it.
+            (Guid taskId2, Guid runId2) = await SeedAsync(
+                store, [gate], cts.Token, projectId: projectId, nodeId: nodeId, registerProject: false);
+            await NewRunner(store).VerifyAsync(
+                runId2, taskId2, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run2 = (await query.LoadAsync<RunDetails>(runId2, cts.Token))!;
+            run2.FailureReason.Should().Contain(
+                "also fails when run against a clean checkout of 'main'",
+                "the first run's own comparison warmed the cache even though it landed too late to " +
+                "help that run's own reason");
+        }
+        finally
+        {
+            TemporaryTree.Delete(cleanBase);
         }
     }
 

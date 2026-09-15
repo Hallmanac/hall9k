@@ -374,8 +374,16 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 // five-minute cap this project's own 11-12 minute test gate could never meet timed
                 // out on this CLI path exactly as it used to on the daemon's (independent pre-PR
                 // review, cycle 1, adversarial lens, low).
+                //
+                // excludingRunId: Guid.Empty, not runId (independent pre-PR review, cycle 1,
+                // adversarial lens sweep of a composition-none gate-park fix elsewhere in this same
+                // query, VerificationRunner.cs): RecordFailureAsync above (line 215) already records
+                // this run's own gate duration before this call runs, so this path can self-poison
+                // its own comparison budget the identical way that fix closes on the daemon's side.
+                // Left as-is here — outside that fix's own branch — and named rather than folded in,
+                // per this task's own sweep rule for a pre-existing sibling no finding dispositioned.
                 TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
-                    session, project.Id, nodeId, gate.Name, cancellationToken);
+                    session, project.Id, nodeId, gate.Name, excludingRunId: Guid.Empty, cancellationToken);
                 TimeSpan comparisonTimeout = AdHocGateRunner.ComputeComparisonBudget(recentDuration, GateTimeout);
                 GateCheckResult result = await AdHocGateRunner.RunAsync(
                     checkout, gate.Command, comparisonTimeout, cancellationToken);
