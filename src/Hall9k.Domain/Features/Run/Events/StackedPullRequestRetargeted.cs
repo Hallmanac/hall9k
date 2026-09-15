@@ -7,9 +7,12 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// stream, by whichever node observed the parent's merge.
 /// <para>
 /// Informational, like <see cref="PullRequestMechanicalRebaseAttempted"/>: it never moves
-/// <see cref="RunState"/> or <see cref="ReviewPhase"/> on its own. The stacked replay dispatched
-/// alongside it is what actually moves this run on, and that arrives as the ordinary
-/// <c>TaskReopened</c> + <see cref="RunSuperseded"/> pair every automatic follow-up uses.
+/// <see cref="RunState"/> or <see cref="ReviewPhase"/> on its own. Ordinarily a stacked replay
+/// dispatches alongside it, and that is what actually moves this run on, arriving as the ordinary
+/// <c>TaskReopened</c> + <see cref="RunSuperseded"/> pair every automatic follow-up uses — except
+/// for a child that already sits on the base branch's own tip when its parent merges
+/// (<c>StackedParentVerdict.ParentMergedAligned</c>), where this event is the whole of what
+/// happens: there is nothing left to replay, so no follow-up run is dispatched alongside it.
 /// </para>
 /// <para>
 /// Appended for a <em>failed</em> retarget too, with <paramref name="Succeeded"/> false: the whole
@@ -30,15 +33,17 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// </param>
 /// <param name="ToBase">The base it was retargeted onto: the project's own base branch.</param>
 /// <param name="BoundaryCommit">
-/// The commit everything at or before which belongs to the parent, as this sweep observed it — the
-/// <c>&lt;upstream&gt;</c> the replay drops the parent's commits at. That is the parent branch's own
-/// head when the child still contains it (a parent that merged without ever being rewritten), and
-/// the child's recorded fork point when it does not; <c>StackedParentWatch</c>'s own doc has why
-/// those are the only two honest answers. Named for the role it plays rather than for one of the
-/// two things it can be, because a reader following the field has to know what it means when the
-/// parent DID advance past the child's cut point before merging (independent pre-PR review, cycle
-/// 1, conformance lens). Empty when no boundary could be observed, which is why the replay refuses
-/// to dispatch rather than guessing one.
+/// The commit everything at or before which belongs to the parent, as this sweep observed it —
+/// ordinarily the <c>&lt;upstream&gt;</c> the replay drops the parent's commits at, and for
+/// <c>StackedParentVerdict.ParentMergedAligned</c> the project's own base branch tip this pull
+/// request already sits on instead, with no replay behind it. <c>StackedParentWatch</c>'s own doc
+/// has the full account of which observed commit this can be — the parent branch's own head, the
+/// child's recorded fork point, the base branch's own tip, or a merge-base of the child and that
+/// tip once a merged parent's boundary is confirmed already on its line. Named for the role it
+/// plays rather than for one of those, because a reader following the field has to know what it
+/// means when the parent DID advance past the child's cut point before merging (independent pre-PR
+/// review, cycle 1, conformance lens). Empty when no boundary could be observed, which is why the
+/// replay refuses to dispatch rather than guessing one.
 /// </param>
 /// <param name="Detail">What actually happened, readable from <c>h9k task show</c>.</param>
 public sealed record StackedPullRequestRetargeted(

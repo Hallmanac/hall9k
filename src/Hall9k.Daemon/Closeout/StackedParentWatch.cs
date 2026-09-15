@@ -105,13 +105,16 @@ public enum StackedParentVerdict
 /// replaying them onto a base that already holds them. The parent's own head where that head is
 /// still on the child's line (a merged parent that was never rewritten), and otherwise the child
 /// run's own recorded fork point (<c>RunDetails.BaseCommit</c>), once the child's branch is
-/// confirmed to contain it — never <c>git merge-base</c>: see
-/// <see cref="StackedParentWatch"/>'s own doc for the force-push case that proves merge-base wrong
-/// here. Blank on every verdict but <see cref="StackedParentVerdict.ParentMerged"/>,
+/// confirmed to contain it. Never <c>git merge-base</c> between the child and the PARENT's own
+/// head: see <see cref="StackedParentWatch"/>'s own doc for the force-push case that proves that
+/// particular merge-base wrong. It CAN be a merge-base of a different pair, though — the child and
+/// the project's own base branch tip, once a merged parent is confirmed on that tip's own line
+/// (<see cref="ObserveAsync"/>'s own advance-boundary check) — which is safe for the reason that
+/// same check gives. Blank on every verdict but <see cref="StackedParentVerdict.ParentMerged"/>,
 /// <see cref="StackedParentVerdict.ParentMoved"/> and
 /// <see cref="StackedParentVerdict.ParentMergedAligned"/> — the last of these carries the base
-/// branch's own tip rather than a replay's upstream, since nothing there is replayed, only
-/// retargeted. <see cref="StackedParentVerdict.Aligned"/>,
+/// branch's own tip, or a later commit of it this branch already contains, rather than a replay's
+/// upstream, since nothing there is replayed, only retargeted. <see cref="StackedParentVerdict.Aligned"/>,
 /// <see cref="StackedParentVerdict.Unobservable"/>,
 /// <see cref="StackedParentVerdict.ParentMergedElsewhere"/>,
 /// <see cref="StackedParentVerdict.ParentDead"/> and
@@ -121,7 +124,10 @@ public enum StackedParentVerdict
 /// The commit the replay lands on, freshly observed: the parent's new head for a force-push, or the
 /// project's base branch tip once the parent merged. A commit rather than a ref, for the reasons
 /// <c>TaskReopened.StackReplayOntoCommit</c> gives. Blank alongside
-/// <paramref name="BoundaryCommit"/>.
+/// <paramref name="BoundaryCommit"/> on every verdict but
+/// <see cref="StackedParentVerdict.ParentMergedAligned"/>, which is the one shape where
+/// <paramref name="BoundaryCommit"/> is filled and this is blank instead — nothing is replayed, so
+/// there is no onto commit to name, but the boundary is still the observed fact the retarget records.
 /// </param>
 /// <param name="Detail">What was observed, in a sentence for the log and the reopen's reason.</param>
 public sealed record StackedParentObservation(
@@ -180,7 +186,8 @@ public sealed record StackedParentObservation(
 /// is trusted only once git confirms the child's branch actually contains that commit, because for a
 /// replay run the field is a dispatch-time prediction rather than an observation (see
 /// <see cref="ObserveAsync"/>'s own containment check). What it is
-/// never computed from is <c>git merge-base</c>, because that gets it
+/// never computed from, for a parent that moved WITHOUT merging, is <c>git merge-base</c> between
+/// the child and the parent's own (new) head, because that gets it
 /// wrong in exactly the case this watch exists for. A force-pushed parent rewrites the history the
 /// child shares with it, so the merge base of the child and the parent's NEW head collapses back to
 /// the base branch — and a replay from there re-applies the child's copy of the parent's OLD commit
@@ -189,6 +196,12 @@ public sealed record StackedParentObservation(
 /// obvious way. A child whose parent moved without merging and whose run recorded no fork point
 /// either (a stream written before that field) is therefore
 /// <see cref="StackedParentVerdict.Unobservable"/> rather than replayed on a guess.
+/// <c>git merge-base</c> between the child and the project's own BASE branch tip is a different
+/// pair entirely, and it is used, once a merged parent's boundary is confirmed to already be on
+/// that tip's own line: a base branch only ever fast-forwards, so that merge-base can only land at
+/// or after the confirmed point, never behind it — the hazard above does not apply (see
+/// <see cref="ObserveAsync"/>'s own advance-boundary check for why, including the one shape it
+/// exists for: a rebase merge, which never lands the parent's own head on the base at all).
 /// </para>
 /// <para>
 /// Runs against the project's bare repository rather than the child run's retained worktree,
@@ -605,23 +618,48 @@ public sealed class StackedParentWatch(
                 mergedBaseTip = candidateBaseTip;
 
                 // The child does not hold the base's CURRENT tip, but it may already hold a LATER
-                // point on the base's own line than the parent's own head — the same 2026-09-14
-                // shape one cycle further on (independent pre-PR review, cycle 1, conformance and
-                // adversarial lenses): a fix session rebases the child onto the base's tip at time
-                // T, and by the time this sweep looks, the base has moved again to some T+1. Staying
-                // at the parent's own head as the boundary regardless would replay the base's own
-                // commits between T and the parent's head right back onto themselves — the identical
-                // conflict-by-construction this whole check exists to rule out, just one base commit
-                // later. Advancing past the parent's head is safe only once the parent's head is
-                // confirmed to actually BE on the base branch's own line: git merge-base between the
-                // base tip and the child when that is NOT so — a rebase-merge gave the parent's
-                // commits new SHAs on the base, so the child's OLD-SHA copies share no history with
-                // the base beyond whatever predates the parent's branch entirely — would walk PAST
-                // the parent's head to something much earlier, resurrecting the exact duplication
-                // this boundary exists to prevent (this type's own doc on why merge-base is not used
-                // elsewhere here). Where the parent's head is not reachable from the base's own tip,
-                // this falls through and the boundary below stays the parent's own head, exactly as
-                // it always has.
+                // point on the base's own line than the last point this boundary can already vouch
+                // for — the same 2026-09-14 shape one cycle further on (independent pre-PR review,
+                // cycle 1, conformance and adversarial lenses): a fix session rebases the child onto
+                // the base's tip at time T, and by the time this sweep looks, the base has moved
+                // again to some T+1. Staying at the OLD point as the boundary regardless would
+                // replay the base's own commits between T and that point right back onto
+                // themselves — the identical conflict-by-construction this whole check exists to
+                // rule out, just one base commit later. Advancing past a point is safe only once
+                // THAT point is confirmed to be both still held by the child and actually ON the
+                // base branch's own line: git merge-base between the base tip and the child can then
+                // only return something at or after it, never behind it — a merge-base is always a
+                // descendant of every other common ancestor.
+                //
+                // Two shapes reach here with such a point already in hand. A merged parent whose
+                // head was never rewritten — a fast-forward or an ordinary merge commit — is vouched
+                // for by the parent's own head, exactly as before: childHoldsParentHead is true, and
+                // the check below confirms that head is on the base's own line. A REBASE merge —
+                // GitHub's own "rebase and merge", the platform's own merge method
+                // (GitHubPullRequestInspector.cs), which gives the parent's commits new SHAs on the
+                // base even when nothing else about them changed — never lands the parent's exact
+                // head on the base at all, so childHoldsParentHead is false here for that shape on
+                // every sweep, including an ordinary one where the child has already been rebased
+                // past the parent once. There the run's own recorded fork point
+                // (childRun.BaseCommit) is the point to vouch for instead — the same commit
+                // ReviewEngine's own stacked checkpoint records here once it observes this exact
+                // state (see that recording's own doc) — once it is confirmed the child still holds
+                // it and it is now an ancestor of the base's fresh tip. Skipped where that record is
+                // blank, or does not (yet) satisfy either check: nothing here is vouched for, so
+                // nothing advances (independent pre-PR review, cycle 1, adversarial lens: gated on
+                // childHoldsParentHead alone, every ordinary rebase-merge fell through to that
+                // stale, never-updated record on every sweep after the child was first carried past
+                // it, which that record no longer described — Unobservable forever rather than the
+                // boundary this check exists to find).
+                //
+                // Where neither shape holds — a child still sitting entirely on the parent's own
+                // untouched branch, never yet brought onto any point of the base's own line at
+                // all — there is nothing to vouch for here: merge-base against the base's tip would
+                // walk back to wherever the parent's branch first forked from it, resurrecting the
+                // parent's own commits as this child's boundary (this type's own doc on why
+                // merge-base is not used elsewhere here). That case falls through and the boundary
+                // below stays the parent's own head, exactly as it always has.
+                string? advanceAnchor = null;
                 if (childHoldsParentHead)
                 {
                     ProcessResult parentHeadOnBase = await git(
@@ -638,20 +676,61 @@ public sealed class StackedParentWatch(
 
                     if (parentHeadOnBase.ExitCode == 0)
                     {
-                        ProcessResult advanced = await git(
+                        advanceAnchor = parentHead;
+                    }
+                }
+                else if (childRun.BaseCommit.IsNotBlank())
+                {
+                    ProcessResult recordedInChild = await git(
+                        "git",
+                        ["merge-base", "--is-ancestor", childRun.BaseCommit, $"refs/heads/{childRun.Branch}"],
+                        repositoryPath,
+                        cancellationToken);
+                    if (recordedInChild.ExitCode is not (0 or 1))
+                    {
+                        return StackedParentObservation.Unobservable(
+                            $"git could not tell whether this run's recorded fork point "
+                            + $"{Short(childRun.BaseCommit)} is contained in {childRun.Branch}: "
+                            + FirstLine(recordedInChild.StandardError));
+                    }
+
+                    if (recordedInChild.ExitCode == 0)
+                    {
+                        ProcessResult recordedOnBase = await git(
                             "git",
-                            ["merge-base", mergedBaseTip, $"refs/heads/{childRun.Branch}"],
+                            ["merge-base", "--is-ancestor", childRun.BaseCommit, mergedBaseTip],
                             repositoryPath,
                             cancellationToken);
-                        if (advanced.ExitCode != 0 || advanced.StandardOutput.Trim().IsBlank())
+                        if (recordedOnBase.ExitCode is not (0 or 1))
                         {
                             return StackedParentObservation.Unobservable(
-                                $"git could not find the furthest commit of {project.BaseBranch} that "
-                                + $"{childRun.Branch} already contains: " + FirstLine(advanced.StandardError));
+                                $"git could not tell whether this run's recorded fork point "
+                                + $"{Short(childRun.BaseCommit)} is contained in {project.BaseBranch}'s own tip: "
+                                + FirstLine(recordedOnBase.StandardError));
                         }
 
-                        advancedMergedBoundary = advanced.StandardOutput.Trim();
+                        if (recordedOnBase.ExitCode == 0)
+                        {
+                            advanceAnchor = childRun.BaseCommit;
+                        }
                     }
+                }
+
+                if (advanceAnchor is not null)
+                {
+                    ProcessResult advanced = await git(
+                        "git",
+                        ["merge-base", mergedBaseTip, $"refs/heads/{childRun.Branch}"],
+                        repositoryPath,
+                        cancellationToken);
+                    if (advanced.ExitCode != 0 || advanced.StandardOutput.Trim().IsBlank())
+                    {
+                        return StackedParentObservation.Unobservable(
+                            $"git could not find the furthest commit of {project.BaseBranch} that "
+                            + $"{childRun.Branch} already contains: " + FirstLine(advanced.StandardError));
+                    }
+
+                    advancedMergedBoundary = advanced.StandardOutput.Trim();
                 }
             }
 
