@@ -314,7 +314,8 @@ and budget.
       (`command grep -Ei --line-buffered '<pattern>'` on POSIX, `Select-String -Pattern
       '<pattern>'` on PowerShell, case-insensitive by default): `parked|failed|error|merged|closeout
       complete|reopened|dispute|needs you|adopted|fatal|unhandled|\[2001\]|PR opened|pushed to
-      existing PR|Application is shutting down|orphaned run|gh failure`. The daemon's own log
+      existing PR|Application is shutting down|orphaned run|gh failure|crashed|held for a human|poll
+      interval reset`. The daemon's own log
       capitalizes freely (`Unhandled exception`, `Failed to connect`, `outcome Disputed`), so a
       case-sensitive match misses exactly the crash and dispute lines this monitor exists to
       catch. `\[2001\]` is `DaemonLogEvents.PullRequestOpened`'s own structural id (the default
@@ -326,12 +327,23 @@ and budget.
       too, not only the board-status wording of the same phrase. `Application is shutting down` is
       the daemon host's own real shutdown line (the default `Microsoft.Hosting.Lifetime` logger),
       not `daemon (stopped|exiting)`, which matches nothing the daemon ever actually writes.
-      `orphaned run` and `gh failure` are carried here too, not only in stage 4's own actionable
-      test: none of these three phrases is guaranteed to share a substring with any other term in
-      this pattern (a `gh failure` line, for one, contains none of "failed", "error", or "fatal"),
-      so without naming them here explicitly a line reporting only one of them never survives this
-      stage to reach the actionable test at all, and the whole point of that test is exactly to
-      catch them.
+      `orphaned run`, `gh failure`, `crashed`, and `held for a human` are carried here too, not
+      only in stage 4's own actionable test: none of these phrases is guaranteed to share a
+      substring with any other term in this pattern (a `gh failure` line, for one, contains none
+      of "failed", "error", or "fatal"; the four crash shapes stage 4 lists below — `Review loop
+      crashed for run …`, `Pr-review loop crashed for run …`, `Monitor for run … crashed`,
+      `Resumed pipeline for run … crashed` — are written with `LogError` but their message text
+      carries none of "failed", "error", "fatal", or "unhandled" either, only the bare word
+      "crashed"; and `DispatchEngine.cs`'s own dependency-hold line, `Task {TaskId} is held for a
+      human rather than unblocked: {Reason}`, carries none of them and does not read `parked for
+      the human`), so without naming them here explicitly a line reporting only one of them never
+      survives this stage to reach the actionable test at all, and the whole point of that test is
+      exactly to catch them. `poll interval reset` is carried here for a different reason: it
+      names no actionable shape of its own (`... sweep succeeded; poll interval reset to
+      {Interval}` is routine recovery, not something to report), but the gh-failure streak counter
+      in stage 4 below can only reset itself on a surviving line, and a recovery line dropped here
+      before ever reaching that counter leaves isolated, already-healed blips hours apart counted
+      as though they were consecutive.
    2. Drop the one known-noise shape this pattern otherwise lets through: any line containing
       `error: False`, dropped case-sensitively (`command grep -v --line-buffered 'error: False'`,
       or PowerShell's `Where-Object { $_ -cnotmatch 'error: False' }`). A real failure line reads
@@ -386,7 +398,11 @@ and budget.
       there), silent bookkeeping this window reads back at its next periodic summary (see *The
       periodic summary* below) instead of reporting it now.
       Actionable, matched case-insensitively unless noted: `dispute`, `fatal`, `unhandled`,
-      `needs you`, `parked for the human`, a merge that failed and stayed failed (`merge attempt
+      `needs you`, `parked for the human`, a task held for a human (`held for a human`:
+      `DispatchEngine.cs`'s own dependency-hold line, `Task {TaskId} is held for a human rather
+      than unblocked: {Reason}`, a park a dependency's own failure or abandonment forces that
+      needs the same human ruling the voice block calls actionable, worded differently from
+      `parked for the human` and not covered by it), a merge that failed and stayed failed (`merge attempt
       failed \(([0-9]+)/\1\)`, a captured, repeated group, not a literal `\(3/3\)`:
       `MaxMechanicalResolutionAttempts` (`src/Hall9k.Daemon/DaemonOptions.cs`) is configurable and
       defaults to 3, not fixed at it, so a node set to 2 or 4 logs its own final attempt as `(2/2)`
