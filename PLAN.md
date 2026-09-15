@@ -1690,7 +1690,7 @@ touches domain code or the P2P identity layer (§16 #38-#58).
 > Every citation of the placeholder elsewhere in this repository was rewritten to
 > `#201` in the same commit.
 
-PLACEHOLDER-c04000aa. **Every remaining direct `gh` call site funnels through
+201. **Every remaining direct `gh` call site funnels through
 `ProjectGitHubClient` too, so no call in the platform spawns `gh` without choosing the account it
 runs as.** Why: idea 202383dc (Hall9k for a distributed team), piece A2b's own migration item,
 ruled its own unstacked do-now task (Brian, 2026-09-12), blocked on the GitHub adapter (§16 #197)
@@ -1752,6 +1752,12 @@ every pre-existing test passed without an expectation edited, and `DaemonEnviron
 check (never a real `gh` subcommand) is untouched. **Does this block the later vision?** No: one new
 wiring class and two small `ProjectGitHubClient` additions, no event, no projection, no interface
 changed; the P2P identity layer (§16 #38-#58) is untouched.
+
+> Renumbering placement note: this entry was appended under placeholder
+> `PLACEHOLDER-c04000aa` and assigned **#201** by the mechanical pre-final-pass
+> rebase step — the log's next free number once this branch was rebased onto its base.
+> Every citation of the placeholder elsewhere in this repository was rewritten to
+> `#201` in the same commit.
 
 ---
 
