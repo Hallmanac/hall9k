@@ -97,9 +97,10 @@ public sealed class StackedPullRequestOpenBaseTests
         logger.Messages.Should().ContainSingle().Which.Should().Be(
             $"Run {Guid.Empty}: the stacked parent branch {ParentBranch} is not on origin — merged and deleted "
             + "while this branch was still building, or never pushed at all — so this pull request opens against "
-            + "main instead, recorded on this run's own OpenedAgainstBaseBranch so a later reader does not need "
-            + $"GitHub to learn it. The run still declares {ParentBranch} as its stacked-on base, because this "
-            + "branch still carries the parent's commits and closeout's replay onto main is still owed",
+            + "main instead. If it opens, this run's own OpenedAgainstBaseBranch records that so a later reader "
+            + $"does not need GitHub to learn it. The run still declares {ParentBranch} as its stacked-on base, "
+            + "because this branch still carries the parent's commits and closeout's replay onto main is still "
+            + "owed",
             "each repeated placeholder needs its argument repeated too, and in its own position — a message "
             + "that names the parent branch where it means the project's base would misreport the retarget");
 

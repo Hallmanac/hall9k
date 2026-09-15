@@ -403,6 +403,109 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
             "follow-up worktrees are retained like first-run ones until closeout completes (log #21)");
     }
 
+    /// <summary>
+    /// Copilot review, PR #388: <c>IsFollowUp</c> is this run's own recorded fact, not re-derived
+    /// from the task here — <c>PushBranchAsync</c>'s own doc already names one way it can go stale
+    /// (a retry resuming <c>task.RetryBranch</c> rather than <c>task.FollowUpBranch</c>), and this
+    /// sibling test's own dispatch above shows a second: nothing stops a follow-up's own
+    /// <see cref="RunDispatched"/> from being appended with the field left at its default while
+    /// <c>task.PullRequestUrl</c> already names the open pull request — both land in exactly the
+    /// same place here, <c>OpenAsync</c> appending a fresh <see cref="PullRequestOpened"/> rather
+    /// than a <see cref="PullRequestUpdated"/>. Before the fix, that path always computed
+    /// <c>openedAgainstBaseBranch</c> as null (nothing here resolves a fresh base when an existing
+    /// pull request URL is already recorded), and <c>RunDetails.Apply(PullRequestOpened)</c>
+    /// overwrites the field unconditionally — silently dropping whatever a stacked fallback
+    /// recorded on an earlier run of this same task and carried forward onto this one's own
+    /// <see cref="RunDispatched.OpenedAgainstBaseBranch"/>, the fact a grandchild's own checkpoint
+    /// needs (<c>StackedParentWatch</c>'s own doc).
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_run_whose_own_IsFollowUp_reads_false_still_preserves_the_carried_forward_opened_against_base_branch()
+    {
+        const string pullRequestUrl = "https://github.com/x/y/pull/13";
+        const string openedAgainstBaseBranch = "main";
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# stale IsFollowUp test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Worktree first = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, firstRunId, "Stale IsFollowUp keeps the carried-forward base", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
+        File.WriteAllText(Path.Combine(first.Path, "WORK.md"), "first run\n");
+        Git(first.Path, "add -A");
+        Git(first.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+        Git(first.Path, $"push -q origin {first.Branch}");
+        await worktrees.RemoveAsync(repoPath, first.Path, cts.Token);
+
+        Guid followUpRunId = DomainId.New();
+        Worktree followUp = await worktrees.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(repoPath, first.Branch, taskId, followUpRunId), cts.Token);
+        File.WriteAllText(Path.Combine(followUp.Path, "FIX.md"), "review feedback resolved\n");
+        Git(followUp.Path, "add -A");
+        Git(followUp.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Resolve review feedback\"");
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Stale IsFollowUp keeps the carried-forward base",
+                    ["review comments resolved"], TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var firstClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, firstRunId, Now);
+            task.Apply(firstClaim);
+            var completed = TaskDecider.Complete(task, firstRunId, pullRequestUrl, Now);
+            task.Apply(completed);
+            var reopened = TaskDecider.Reopen(
+                task, firstRunId, first.Branch, "Unresolved review comments",
+                FollowUpKind.ReviewFeedback, automatic: false, Now, ownerId);
+            task.Apply(reopened);
+            var followUpClaim = TaskDecider.Claim(task, DomainId.New(), ownerId, followUpRunId, Now);
+            task.Apply(followUpClaim);
+            session.Events.StartStream<TaskAggregate>(taskId,
+                [.. lifecycle, firstClaim, completed, reopened, followUpClaim]);
+            session.Store(new TaskLease { Id = taskId, NodeId = followUpClaim.NodeId, LeaseGeneration = 2, HeartbeatAt = Now });
+
+            // IsFollowUp deliberately left at its default (false), the exact staleness this test
+            // covers, while OpenedAgainstBaseBranch still carries forward the earlier run's own
+            // stacked fallback — the shape StackedBaseResolver.ResumedBase produces in production.
+            session.Events.StartStream<RunAggregate>(followUpRunId,
+                new RunDispatched(followUpRunId, taskId, followUpClaim.NodeId, ownerId, 2, DomainId.New(),
+                    followUp.Path, followUp.Branch, ExecutorMode.Subscription, Now,
+                    OpenedAgainstBaseBranch: openedAgainstBaseBranch),
+                new AgentSessionCompleted(followUpRunId, Now),
+                new VerificationPassed(followUpRunId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance);
+        await opener.OpenAsync(followUpRunId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        Hall9k.Domain.Features.Run.Projections.RunDetails runView =
+            (await query.LoadAsync<Hall9k.Domain.Features.Run.Projections.RunDetails>(followUpRunId, cts.Token))!;
+        runView.PullRequestUrl.Should().Be(pullRequestUrl);
+        runView.OpenedAgainstBaseBranch.Should().Be(openedAgainstBaseBranch,
+            "this open resolves no fresh base of its own (the pull request already exists), so the "
+            + "run's own already-carried-forward fact must stand rather than being overwritten with null");
+    }
+
     [Fact]
     public async Task Follow_up_with_rewritten_history_force_pushes_the_rebased_branch()
     {

@@ -139,8 +139,16 @@ public sealed class PullRequestOpener(
                         run, task, openBase, project.WritingConventions, cancellationToken)
                     : (null, 0);
 
+            // The run's own already-recorded fact stands when this open resolves no fresh base of
+            // its own — an existing pull request URL (openBase is left null above on purpose) or a
+            // non-GitHub origin — rather than null, which would silently drop whatever a stacked
+            // fallback recorded on an earlier run of this same task the moment IsFollowUp reads
+            // false for a run that still names an existing pull request (Copilot review, PR #388: a
+            // retry resuming this branch through task.RetryBranch rather than task.FollowUpBranch
+            // reaches here exactly that way). Apply(PullRequestOpened) below overwrites this field
+            // unconditionally, so what is passed here is what survives.
             string? openedAgainstBaseBranch = openBase is null
-                ? null
+                ? run.OpenedAgainstBaseBranch
                 : OpenedAgainstBaseBranchFor(openBase, run.BaseBranchOr(project.BaseBranch));
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -487,10 +495,17 @@ public sealed class PullRequestOpener(
     /// </para>
     /// <para>
     /// Names <see cref="RunDetails.OpenedAgainstBaseBranch"/> rather than leaving "the run still records
-    /// the old base" unexplained: that field is what OpenAsync appends alongside this very warning, and it
-    /// is the reason a grandchild's own checkpoint can learn where this pull request actually opened
-    /// without a live GitHub call of its own (StackedParentWatch's own doc on the mid-stack shape this
-    /// fallback produces — task eec9096d, 2026-09-15).
+    /// the old base" unexplained, but in the future tense: this fires from inside
+    /// <see cref="ResolveOpenBaseAsync"/>, before <c>gh pr create</c> has even run, let alone before
+    /// <c>OpenAsync</c> appends the event that field actually comes from — so if <c>gh pr create</c>
+    /// itself then fails (an expired login, a rate limit), no such event is ever appended and nothing
+    /// is recorded at all. Saying it WAS recorded here would be exactly the unobserved-fact assertion
+    /// AGENTS.md's never-guess rule forbids on an operator-facing line (independent pre-PR review,
+    /// cycle 1, adversarial lens). Phrased as what happens if this pull request opens, not as an
+    /// accomplished fact — the reason a grandchild's own checkpoint can later learn where this pull
+    /// request actually opened without a live GitHub call of its own, once it does
+    /// (StackedParentWatch's own doc on the mid-stack shape this fallback produces — task eec9096d,
+    /// 2026-09-15).
     /// </para>
     /// </summary>
     internal static void LogStackedParentBranchGone(
@@ -499,10 +514,10 @@ public sealed class PullRequestOpener(
             DaemonLogEvents.StackedParentBranchGoneAtPullRequestOpen,
             "Run {RunId}: the stacked parent branch {ParentBranch} is not on origin — merged and deleted while "
             + "this branch was still building, or never pushed at all — so this pull request opens against "
-            + "{BaseBranch} instead, recorded on this run's own OpenedAgainstBaseBranch so a later reader does "
-            + "not need GitHub to learn it. The run still declares {ParentBranch} as its stacked-on base, "
-            + "because this branch still carries the parent's commits and closeout's replay onto {BaseBranch} "
-            + "is still owed",
+            + "{BaseBranch} instead. If it opens, this run's own OpenedAgainstBaseBranch records that so a "
+            + "later reader does not need GitHub to learn it. The run still declares {ParentBranch} as its "
+            + "stacked-on base, because this branch still carries the parent's commits and closeout's replay "
+            + "onto {BaseBranch} is still owed",
             runId, parentBranch, projectBaseBranch, parentBranch, projectBaseBranch);
 
     /// <summary>
