@@ -1,6 +1,7 @@
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Shared.Exceptions;
+using Marten.Exceptions;
 using Npgsql;
 using Spectre.Console.Cli;
 
@@ -112,6 +113,19 @@ catch (DomainBusinessRuleException exception)
 {
     await Console.Error.WriteLineAsync(exception.Message);
     return ExitCodes.BusinessRule;
+}
+catch (ExistingStreamIdCollisionException)
+{
+    // MessageOutbox.QueueAsync (h9k message send) allocates a seq as this node's own store's
+    // highest-plus-one, then a separate StartStream — two invocations racing within the same
+    // few milliseconds can both read the same highest seq and only one of the two StartStream
+    // calls wins, which Marten reports as this collision rather than anything domain-specific
+    // (independent pre-PR review, cycle 1, adversarial lens). Nothing was lost: the losing
+    // invocation's own message was never recorded, so the fix is simply to run it again, which
+    // allocates the next seq fresh.
+    await Console.Error.WriteLineAsync(
+        "Another h9k message send on this node landed at the same moment. Nothing was recorded — run the command again.");
+    return ExitCodes.Conflict;
 }
 catch (DatabaseNotConfiguredException)
 {
