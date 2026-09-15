@@ -84,6 +84,14 @@ public static class StackedCheckpointPolicy
         // satisfied, and nothing is spent for finding that out.
         StackedParentVerdict.Aligned => Proceed(observation.Detail),
 
+        // The parent merged and this branch already sits on the base's own tip: nothing is owed to
+        // REPLAY here either, for the identical reason plain Aligned proceeds. The retarget this
+        // verdict still owes is not this checkpoint's to make — closeout's own sweep does it, once
+        // this run has an open pull request to move (see
+        // StackedParentVerdict.ParentMergedAligned's own doc), exactly as it already does for the
+        // ordinary ParentMerged case below.
+        StackedParentVerdict.ParentMergedAligned => Proceed(observation.Detail),
+
         // A read that failed is not a fact (AGENTS.md's never-guess rule), and it is not this
         // run's fault either — the identical stance the unstacked half of this gate takes on a
         // failed fetch. Proceeding is safe in the same way it is there: once this branch is

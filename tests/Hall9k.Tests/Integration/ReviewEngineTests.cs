@@ -2634,6 +2634,130 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// The 2026-09-14 shape (task 450b9d84): the checkpoint's own first replay attempt genuinely
+    /// conflicts — the parent's merge and a later, unrelated commit on the base both touch the same
+    /// file this child's own commit touches — so it parks for a human exactly as designed. A fix
+    /// session then resolves it by hand, rebasing onto the base's own later tip (the correct
+    /// target), and the pipeline resumes. Before this fix, the same checkpoint recomputed the
+    /// boundary as the parent's own head again on that next look — the branch still contains it,
+    /// same as it always did — attempted the identical broken replay against a branch that no
+    /// longer needed one, and re-parked with the identical message two seconds later; this asserts
+    /// exactly one park across the whole resolution, and that the run reaches merge-ready rather
+    /// than looping.
+    /// </summary>
+    [Fact]
+    public async Task A_fix_sessions_rebase_onto_the_merged_bases_tip_is_followed_by_a_push_not_a_second_park()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
+
+        // The parent merges as a fast-forward — the shape that preserves its head's exact commit
+        // identity on the base, so the base's own later history can still reach it directly (the
+        // same shape GitHub's own "rebase and merge" produces when the branch is already current).
+        string mergeClone = Path.Combine(_home, $"merge-{Guid.NewGuid():N}");
+        Git(_home, $"clone -q \"{fixture.OriginPath}\" \"{mergeClone}\"");
+        Git(mergeClone, "checkout -q main");
+        Git(mergeClone, $"merge -q --ff-only origin/{fixture.ParentBranch}");
+        Git(mergeClone, "push -q origin main");
+
+        // The base moves further still — another chain task's own merge, touching the very file
+        // the child's own commit touches (Widget.cs), so the checkpoint's own first replay attempt
+        // genuinely conflicts; and appending its own entry to base.txt, the same growing-list shape
+        // PLAN.md's own Decisions Log has.
+        File.WriteAllText(Path.Combine(mergeClone, "Widget.cs"), "class Widget { int fromMain; }\n");
+        File.WriteAllText(Path.Combine(mergeClone, "base.txt"), "base\nentry-from-another-chain-task\n");
+        Git(mergeClone, "add -A");
+        Git(mergeClone, "-c user.name=Test -c user.email=t@t commit -qm \"another chain task merged\"");
+        Git(mergeClone, "push -q origin main");
+
+        // And a second, later commit right after it — the shape #191's own placeholder assignment
+        // took right after #371 in the real incident. Replaying the FIRST of these two in isolation
+        // (which is exactly what the pre-fix boundary computation does) onto a tip that already
+        // holds both is what actually conflicts — not because the content disagrees, but because
+        // the append landed at the same line the second commit already built on.
+        File.WriteAllText(
+            Path.Combine(mergeClone, "base.txt"),
+            "base\nentry-from-another-chain-task\nentry-from-a-later-chain-task\n");
+        Git(mergeClone, "add -A");
+        Git(mergeClone, "-c user.name=Test -c user.email=t@t commit -qm \"a later chain task merged too\"");
+        Git(mergeClone, "push -q origin main");
+        string baseTip = GitOutput(mergeClone, "rev-parse HEAD");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(fixture.ParentRunId, new PullRequestMerged(fixture.ParentRunId, Now, Now));
+            session.Events.Append(fixture.ParentRunId, new RunCompleted(fixture.ParentRunId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor executor = new("Nothing to fix.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the checkpoint's own first replay attempt genuinely conflicts");
+        executor.Spawns.Should().BeEmpty("no session of any kind is dispatched for a checkpoint conflict");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            List<object> runEvents =
+                [.. (await query.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+            runEvents.OfType<ReviewParked>().Should().ContainSingle()
+                .Which.Reason.Should().Contain("conflicted");
+        }
+
+        // The fix: resolved by hand exactly as the park's own message directs — a needs-fixes
+        // resolution dispatches a fix session, which rebases onto the base's own later tip and
+        // resolves the genuine conflict.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(fixture.RunId, new ReviewParkResolved(
+                fixture.RunId, ReviewVerdict.NeedsFixes,
+                "rebase onto the base's own tip and resolve the conflict", Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumeExecutor = new(
+            "Rebased onto the base's own tip and resolved the conflict.\n\nRESOLUTION: fixed",
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready");
+        resumeExecutor.OnSpawnByIndex[0] = () =>
+        {
+            Git(fixture.WorktreePath, "fetch -q origin");
+            TryGit(fixture.WorktreePath, $"rebase {baseTip}").Should().NotBe(0,
+                "the same genuine conflict the checkpoint's own attempt hit");
+            // Merges both intents rather than picking the base's own content verbatim: a resolution
+            // identical to the base's own commit would rebase to an empty, auto-dropped commit,
+            // leaving this branch indistinguishable from the base itself rather than a branch that
+            // still carries its own work on top of it.
+            File.WriteAllText(
+                Path.Combine(fixture.WorktreePath, "Widget.cs"), "class Widget { int fromMain; int childOwn; }\n");
+            Git(fixture.WorktreePath, "add -A");
+            Git(
+                fixture.WorktreePath,
+                "-c user.name=Test -c user.email=test@test -c core.editor=true -c commit.gpgsign=false "
+                + "rebase --continue");
+        };
+
+        mergeReady = await NewEngine(store, resumeExecutor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeTrue(
+            "the branch now sits on the base's own tip, so the checkpoint reads Aligned and proceeds rather "
+            + "than recomputing the parent's head as the boundary and re-attempting the same broken replay");
+        resumeExecutor.Spawns.Should().HaveCount(3,
+            "the fix session and a genuine first review cycle — not a second, identical park");
+
+        await using IQuerySession finalQuery = store.QuerySession();
+        List<object> finalRunEvents =
+            [.. (await finalQuery.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+        finalRunEvents.OfType<ReviewParked>().Should().ContainSingle(
+            "one park at most across the whole resolution — the fix is followed by a push, not a second, "
+            + "identical park");
+    }
+
+    /// <summary>
     /// A stacked child mid-run: a real origin, a parent branch pushed and Delivered, this child's
     /// branch cut from the parent's head with that head recorded as its fork point, and the run
     /// sitting exactly where the review loop is entered (gates passed, no pull request yet). One
@@ -2752,14 +2876,14 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         await session.SaveChangesAsync(cancellationToken);
 
         return new StackedChildFixture(
-            taskId, runId, parentTaskId, worktreePath, originPath, parentBranch, parentHeadCommit,
+            taskId, runId, parentTaskId, parentRunId, worktreePath, originPath, parentBranch, parentHeadCommit,
             childHeadCommit);
     }
 
     /// <summary>What a stacked-checkpoint test needs in hand: the child's run, its worktree, and the parent's branch.</summary>
     private sealed record StackedChildFixture(
-        Guid TaskId, Guid RunId, Guid ParentTaskId, string WorktreePath, string OriginPath, string ParentBranch,
-        string ParentHeadCommit, string ChildHeadCommit);
+        Guid TaskId, Guid RunId, Guid ParentTaskId, Guid ParentRunId, string WorktreePath, string OriginPath,
+        string ParentBranch, string ParentHeadCommit, string ChildHeadCommit);
 
     /// <summary>
     /// One more commit on a branch origin already has — the parent taking a post-delivery lap while
