@@ -3,6 +3,7 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -36,13 +37,29 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
         IQuerySession session, Settings settings, ILedgerChainReader chainReader, CancellationToken cancellationToken)
     {
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
-        TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+
+        TrustChain chain;
+        try
+        {
+            chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+        }
+        // GitLedgerChainReader now throws on a genuine network or credential failure rather than
+        // folding it into an empty chain (independent pre-PR review, cycle 1, adversarial lens,
+        // medium) — reported here with the real cause, rather than the misleading "No verified
+        // members yet" this command printed before for the identical failure.
+        catch (InvalidOperationException exception)
+        {
+            throw new DomainValidationException(
+                $"Could not read '{project.Name}'s own ledger chain: {exception.Message} Re-run "
+                + $"h9k project members {project.Name} once the remote is reachable again.");
+        }
 
         if (chain.Members.Count == 0)
         {
             AnsiConsole.MarkupLine(
                 $"[dim]No verified members yet for '{project.Name.EscapeMarkup()}' — h9k project join "
                 + "establishes the first one.[/]");
+            WriteUnverifiedWrites(chain);
             return ExitCodes.Ok;
         }
 
@@ -70,6 +87,32 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
         }
 
         AnsiConsole.Write(table);
+        WriteUnverifiedWrites(chain);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Names every vouch, revocation, or membership write the chain read found but could not
+    /// verify — a stranger's forged vouch, an unsigned mutation, a member-role root trying to write
+    /// a membership — so the writer is named here rather than vanishing without a trace (idea
+    /// 202383dc, T1 criterion 3: "an unverifiable writer's files and envelopes are ignored and the
+    /// writer is named"; independent pre-PR review, cycle 1, conformance lens, medium). Silent when
+    /// there is nothing to say, the same "a quiet pane says nothing" posture <c>StatusCommand</c>'s
+    /// own panes already follow.
+    /// </summary>
+    private static void WriteUnverifiedWrites(TrustChain chain)
+    {
+        if (chain.UnverifiedWrites.Count == 0)
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine("\n[yellow]Unverifiable writes ignored:[/]");
+        foreach (UnverifiedLedgerWrite write in chain.UnverifiedWrites)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]  {write.Kind}[/] {write.Identifier.EscapeMarkup()} [dim](under {write.RootFingerprint.EscapeMarkup()}): "
+                + $"{write.Reason.EscapeMarkup()}[/]");
+        }
     }
 }
