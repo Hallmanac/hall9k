@@ -23,7 +23,7 @@ public sealed class MessageInboxDeciderTests
     {
         MessageInboxAggregate inbox = new();
         inbox.Apply(MessageInboxDecider.AdvanceCursor(SenderNode, 3, Now));
-        inbox.Apply(MessageInboxDecider.IgnoreSender(SenderNode, "no node file", Now.AddMinutes(1)));
+        inbox.Apply(MessageInboxDecider.IgnoreSender(SenderNode, "no node file", verificationFailed: false, Now.AddMinutes(1)));
 
         inbox.SenderIgnored.Should().BeTrue();
 
@@ -32,12 +32,13 @@ public sealed class MessageInboxDeciderTests
         inbox.HighestSeqReceived.Should().Be(4);
         inbox.SenderIgnored.Should().BeFalse();
         inbox.IgnoredReason.Should().BeNull();
+        inbox.IgnoredForVerificationFailure.Should().BeFalse();
     }
 
     [Fact]
     public void IgnoreSender_RefusesABlankReason()
     {
-        Action act = () => MessageInboxDecider.IgnoreSender(SenderNode, string.Empty, Now);
+        Action act = () => MessageInboxDecider.IgnoreSender(SenderNode, string.Empty, verificationFailed: false, Now);
 
         act.Should().Throw<DomainValidationException>();
     }
@@ -46,7 +47,7 @@ public sealed class MessageInboxDeciderTests
     public void ConfirmVouched_ClearsAnIgnoredMarkWithoutTouchingTheCursor()
     {
         MessageInboxAggregate inbox = new();
-        inbox.Apply(MessageInboxDecider.IgnoreSender(SenderNode, "no node file", Now));
+        inbox.Apply(MessageInboxDecider.IgnoreSender(SenderNode, "no node file", verificationFailed: false, Now));
 
         inbox.SenderIgnored.Should().BeTrue();
 
@@ -55,5 +56,16 @@ public sealed class MessageInboxDeciderTests
         inbox.SenderIgnored.Should().BeFalse();
         inbox.IgnoredReason.Should().BeNull();
         inbox.HighestSeqReceived.Should().Be(0, "a vouch confirmation is not a cursor advance");
+    }
+
+    [Fact]
+    public void IgnoreSender_ForAVerificationFailure_MarksItDistinctlyFromAnUnvouchedSender()
+    {
+        MessageInboxAggregate inbox = new();
+        inbox.Apply(MessageInboxDecider.IgnoreSender(SenderNode, "envelope verification failed for seq 5", verificationFailed: true, Now));
+
+        inbox.SenderIgnored.Should().BeTrue();
+        inbox.IgnoredForVerificationFailure.Should().BeTrue(
+            "a specific envelope failing verification is a different fact than the sender not being vouched for at all");
     }
 }
