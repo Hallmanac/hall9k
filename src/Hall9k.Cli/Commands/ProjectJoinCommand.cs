@@ -4,7 +4,11 @@ using System.Text;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Invite;
+using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -29,12 +33,24 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         [CommandOption("--owner <FINGERPRINT>")]
         [Description(
             "Claim an existing root's fingerprint as this node's owner instead of establishing a new "
-            + "one. Recorded on the node file and the local owner record unverified, until the team "
-            + "half's vouch confirms it (not yet built). Omit it on a genesis node: the first join "
+            + "one. Recorded on the node file and the local owner record unverified, until an already-"
+            + "enrolled node of that owner confirms it: a hand-run h9k node vouch, or the minting "
+            + "node's own daemon sweep matching a claimed h9k node invite. Omit it on a genesis node: the first join "
             + "with no --owner establishes this owner's root using this node's own key. Re-runnable: "
             + "joining again with a different fingerprint changes the claim, retiring a self-created "
             + "root when this node turns out to belong to another one.")]
         public string? Owner { get; init; }
+
+        [CommandOption("--invite <SECRET>")]
+        [Description(
+            "A single-use secret from h9k node invite or h9k project invite (idea 202383dc, T2). Proves "
+            + "possession by writing HMAC(secret, this node's own key fingerprint) into this node's own node "
+            + "file's proof field; the minting node's own daemon sweep matches it and vouches this node in, no "
+            + "further prompt needed. A node-of-owner invite claims that invite's own owner (like --owner, but "
+            + "read from the secret — combining the two is refused) and creates no root; a member-of-project "
+            + "invite creates this node's own root when it has none yet, same as an ordinary --owner-less join. "
+            + "Refused if the invite is not found in this project's own ledger, already spent, or expired.")]
+        public string? Invite { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -71,7 +87,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         JoinOutcome outcome;
         try
         {
-            outcome = await RunAsync(session, project, settings.Owner, cancellationToken);
+            outcome = await RunAsync(session, project, settings.Owner, settings.Invite, cancellationToken);
         }
         // A1's own git plumbing throws these as plain, undecorated exceptions rather than a
         // Domain*Exception — fine for h9k project add's own TryJoinAsync, which already wraps
@@ -103,10 +119,27 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
     internal static Task<JoinOutcome> RunAsync(
         IDocumentSession session, ProjectDetails project, string? claimedOwnerOverride, CancellationToken cancellationToken) =>
+        RunAsync(session, project, claimedOwnerOverride, invite: null, cancellationToken);
+
+    /// <summary>The invite-aware overload (idea 202383dc, T2) — everything <see cref="RunAsync(IDocumentSession,ProjectDetails,string?,CancellationToken)"/>
+    /// already does, plus proving possession of a minted secret when one is given.</summary>
+    internal static Task<JoinOutcome> RunAsync(
+        IDocumentSession session, ProjectDetails project, string? claimedOwnerOverride, string? invite,
+        CancellationToken cancellationToken) =>
         RunAsync(
-            session, project, claimedOwnerOverride,
+            session, project, claimedOwnerOverride, invite,
             new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(),
             new ProjectGitHubAccessMirror(), cancellationToken);
+
+    internal static Task<JoinOutcome> RunAsync(
+        IDocumentSession session,
+        ProjectDetails project,
+        string? claimedOwnerOverride,
+        ILedger ledger,
+        NodeKeyStore keyStore,
+        ProjectGitHubAccessMirror githubAccess,
+        CancellationToken cancellationToken) =>
+        RunAsync(session, project, claimedOwnerOverride, invite: null, ledger, keyStore, githubAccess, cancellationToken);
 
     /// <summary>
     /// The whole join flow, seamed on <see cref="ILedger"/>, <see cref="NodeKeyStore"/>, and
@@ -118,11 +151,19 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         IDocumentSession session,
         ProjectDetails project,
         string? claimedOwnerOverride,
+        string? invite,
         ILedger ledger,
         NodeKeyStore keyStore,
         ProjectGitHubAccessMirror githubAccess,
         CancellationToken cancellationToken)
     {
+        if (claimedOwnerOverride.IsNotBlank() && invite.IsNotBlank())
+        {
+            throw new DomainValidationException(
+                "--owner and --invite are refused together — an invite already names the owner it claims "
+                + "(node-of-owner) or claims none at all (member-of-project); pass one or the other.");
+        }
+
         if (claimedOwnerOverride.IsNotBlank() && !NodeKeyStore.IsFingerprint(claimedOwnerOverride))
         {
             throw new DomainValidationException(
@@ -182,6 +223,65 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
                 $"Node {context.NodeId}'s recorded public key no longer matches the key on disk at "
                 + $"{NodeKeyStore.DirectoryFor(context.NodeId)} — something replaced the key files outside "
                 + "h9k. Restore the original key files before joining again.");
+        }
+
+        // Validated and read before claimedOwnerOverride is used to compute claimedFingerprint
+        // below, so a node-of-owner invite's own root can drive that computation exactly the way
+        // an explicit --owner already does — and before any ledger byte is written, so a spent,
+        // expired, or garbled invite is refused with nothing left to unwind (idea 202383dc, T2:
+        // "a spent or expired invite is refused at join").
+        string? inviteProof = null;
+        string? inviteMinterRoot = null;
+        if (invite.IsNotBlank())
+        {
+            if (!InviteSecret.TryParse(invite, out string inviteRoot, out Guid inviteId))
+            {
+                throw new DomainValidationException(
+                    $"'{invite}' is not a recognized invite secret — h9k node invite/h9k project invite print "
+                    + "the exact value to pass here.");
+            }
+
+            string inviteRefName = InviteLedgerRecord.RefName(inviteRoot);
+            string invitePath = InviteLedgerRecord.PathFor(inviteRoot, inviteId);
+            LedgerFile inviteFile = await ledger.ReadAsync(project.RepositoryPath, inviteRefName, invitePath, cancellationToken);
+            InviteLedgerRecord? inviteRecord = InviteLedgerRecord.Parse(inviteFile.Content);
+            if (inviteRecord is null)
+            {
+                throw new DomainValidationException(
+                    $"No invite {inviteId} found in '{project.Name}'s own ledger — it may have been minted into "
+                    + "a different project, or this project's own copy has not been fetched yet.");
+            }
+
+            if (inviteRecord.SecretHash != InviteSecret.Hash(invite))
+            {
+                throw new DomainValidationException(
+                    $"'{invite}' does not match invite {inviteId}'s own recorded secret — check it was typed "
+                    + "or pasted correctly.");
+            }
+
+            if (inviteRecord.Spent)
+            {
+                throw new DomainValidationException($"Invite {inviteId} is already spent — single use, idea 202383dc T2.");
+            }
+
+            if (inviteRecord.ExpiresAt <= now)
+            {
+                throw new DomainValidationException(
+                    $"Invite {inviteId} expired at {inviteRecord.ExpiresAt:u} — ask the minting node for a fresh one.");
+            }
+
+            inviteProof = InviteSecret.ComputeProof(invite, key.Fingerprint);
+            inviteMinterRoot = inviteRoot;
+            if (inviteRecord.Claim == InviteClaimKind.NodeOfOwner)
+            {
+                // Mirrors an explicit --owner exactly: an unverified claim, no root established —
+                // "a join with an invite creates no root when the claim is node-of-owner".
+                claimedOwnerOverride = inviteRoot;
+            }
+            // A member-of-project claim leaves claimedOwnerOverride untouched: null falls through
+            // to the ordinary "no --owner" path below, which keeps this node's own existing root
+            // if it has one, or establishes a fresh one if it does not — "creates the joiner's
+            // root when the claim is member-of-project and the joiner has none".
         }
 
         // No --owner keeps whatever root this owner already claims (including one claimed on a
@@ -244,7 +344,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
         bool wroteNodeFile = await WriteNodeFileAsync(
             ledger, project.RepositoryPath, context.NodeId, key, claimedFingerprint,
-            node.MachineName, node.OperatingSystem, node.KeyRegisteredAt ?? now,
+            node.MachineName, node.OperatingSystem, node.KeyRegisteredAt ?? now, inviteProof,
             committer, signingKey, cancellationToken);
 
         // A node's own claim is install-wide (the Node stream), but node.yaml is only ever
@@ -261,6 +361,33 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
         await session.SaveChangesAsync(cancellationToken);
 
+        // Optional nudge (idea 202383dc, T2: "an optional note-kind message nudges the minting
+        // node's owner when a proof appears; the sweep does not depend on it") — queued only,
+        // never flushed here (this command never touches git or a network), and never allowed to
+        // fail the join itself: this node is not yet vouched into anything, so the message may
+        // well be read as SenderNotVouched and simply ignored, which is fine — the minting node's
+        // own sweep finds the proof on its own regardless.
+        if (inviteProof is not null && inviteMinterRoot is not null)
+        {
+            try
+            {
+                await MessageOutbox.QueueAsync(
+                    session, context.NodeId, claimedFingerprint, MessageAudience.Owner(inviteMinterRoot), about: null,
+                    MessageKind.Note, $"Invite proof written for node {context.NodeId} in '{project.Name}'.", now,
+                    cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // Best-effort only, and deliberately broad: MessageOutbox.QueueAsync's own
+                // SaveChangesAsync can fail in ways this call site cannot enumerate (a transient
+                // Marten/Postgres error, not only the domain exceptions a validation failure would
+                // throw), and none of them may ever fail the join whose own work — the root claim,
+                // the node file with its proof — already landed above. The sweep's own ledger read
+                // is what actually vouches this invite in, never this message.
+                AnsiConsole.MarkupLine($"[yellow]Could not queue the invite nudge ({exception.Message.EscapeMarkup()}) — skipped.[/]");
+            }
+        }
+
         return new JoinOutcome(
             context.NodeId, key.Fingerprint, key.PrivateKeyPath, claimedFingerprint,
             establishingRoot, retiredPreviousRoot, wroteNodeFile, ownerClaimChanged);
@@ -273,7 +400,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             + $"key [dim]{outcome.KeyFingerprint}[/] at [dim]{outcome.PrivateKeyPath.EscapeMarkup()}[/].");
         AnsiConsole.MarkupLine(outcome.EstablishedRoot
             ? $"[dim]This is this owner's root — {outcome.ClaimedOwnerFingerprint} is the owner id everywhere in Hall9k now.[/]"
-            : $"[dim]Claimed owner {outcome.ClaimedOwnerFingerprint}, unverified until the team half's vouch confirms it (not yet built).[/]");
+            : $"[dim]Claimed owner {outcome.ClaimedOwnerFingerprint}, unverified until an already-enrolled node of that owner confirms it (h9k node vouch, or a matched h9k node invite).[/]");
         if (outcome.RetiredPreviousRoot)
         {
             AnsiConsole.MarkupLine("[yellow]This node's own previously self-created root was retired in favor of the claimed owner.[/]");
@@ -481,7 +608,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
     private static async Task<bool> WriteNodeFileAsync(
         ILedger ledger, string repositoryPath, Guid nodeId, NodeSigningKey key, string claimedOwnerFingerprint,
-        string machineName, string operatingSystem, DateTimeOffset joinedAt,
+        string machineName, string operatingSystem, DateTimeOffset joinedAt, string? inviteProof,
         LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
     {
         string refName = $"refs/hall9k/ledger/nodes/{nodeId}";
@@ -495,7 +622,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             ("machine_name", machineName),
             ("operating_system", operatingSystem),
             ("joined_at", joinedAt.ToString("o", CultureInfo.InvariantCulture)),
-            ("invite_proof", null));
+            ("invite_proof", inviteProof));
 
         // content depends only on this call's own arguments, never on what is currently on disk,
         // so a Conflict — something else wrote node.yaml between the read and the write — is

@@ -99,9 +99,14 @@ public static class CliCommandTree
                     + "--owner establishes this owner's root (owners/<fingerprint>/root.yaml) using this "
                     + "node's own key, and that fingerprint becomes the owner id everywhere in Hall9k. "
                     + "Re-runnable to change the claimed owner — h9k project add runs this automatically "
-                    + "once a project's repository is reachable.")
+                    + "once a project's repository is reachable. --invite <secret> (idea 202383dc, T2) proves "
+                    + "possession of a secret from h9k node invite/h9k project invite by writing "
+                    + "HMAC(secret, this node's own key fingerprint) into this node's own node file's proof "
+                    + "field — the minting node's own daemon sweep matches it and vouches this node in, no "
+                    + "further prompt needed; refused together with --owner.")
                 .WithExample("project", "join", "hall9k")
-                .WithExample("project", "join", "hall9k", "--owner", "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716");
+                .WithExample("project", "join", "hall9k", "--owner", "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716")
+                .WithExample("project", "join", "hall9k", "--invite", "3f9c2a7e...d1908f7e.9a41c6...");
             project.AddCommand<ProjectInitCommand>("init")
                 .WithDescription(
                     "Create (or repair) a registered project's home directory. The adopt path for a "
@@ -203,6 +208,19 @@ public static class CliCommandTree
                     + "(h9k project add offers this same rename inline on a name collision), but works "
                     + "on a live project too.")
                 .WithExample("project", "rename", "hall9k", "hall9k-old");
+            project.AddCommand<ProjectInviteCommand>("invite")
+                .WithDescription(
+                    "Mint a single-use, member-of-project invite secret (idea 202383dc, T2): writes "
+                    + "owners/<this node's own root>/invites/<invite-id>.yaml into this project's own ledger, "
+                    + "prints the secret exactly once, and keeps it only in this node's own local store. "
+                    + "Refused, before any push, unless this node's own root currently holds the owner role "
+                    + "in this project's own chain. --role sets the new member's own role once claimed (owner "
+                    + "or member; default member). Expires in 72 hours by default (h9k config set "
+                    + "--invite-expiry-hours). Give the printed secret to the new member; h9k project join "
+                    + "<project> --invite <secret> there proves possession, and this node's own daemon sweep "
+                    + "vouches it in with no further prompt.")
+                .WithExample("project", "invite", "hall9k")
+                .WithExample("project", "invite", "hall9k", "--role", "owner");
             project.AddCommand<ProjectMembersCommand>("members")
                 .WithDescription(
                     "List this project's members as the ledger's own chain read currently sees them (idea "
@@ -256,6 +274,17 @@ public static class CliCommandTree
                 + "every non-archived project this owner is registered to, signed with this node's own key. "
                 + "Refused, before any push, unless this node is itself currently enrolled in that owner's "
                 + "own chain — the root itself, or a node already vouched into it and not revoked.");
+            node.AddCommand<NodeInviteCommand>("invite")
+                .WithDescription(
+                    "Mint a single-use, node-of-owner invite secret (idea 202383dc, T2): writes "
+                    + "owners/<root>/invites/<invite-id>.yaml — the secret's own hash, never the secret — "
+                    + "into every non-archived project this owner is registered to, prints the secret exactly "
+                    + "once, and keeps it only in this node's own local store. Refused per project, before any "
+                    + "push, unless this node is itself currently enrolled in that owner's own chain there. "
+                    + "Expires in 72 hours by default (h9k config set --invite-expiry-hours). Give the printed "
+                    + "secret to the new node; h9k project join <project> --invite <secret> there proves "
+                    + "possession, and this node's own daemon sweep vouches it in with no further prompt.")
+                .WithExample("node", "invite");
             node.AddCommand<NodeVouchCommand>("vouch")
                 .WithDescription(
                     "Vouch a node into this owner's own fleet: writes its node id, its own public key (read "
