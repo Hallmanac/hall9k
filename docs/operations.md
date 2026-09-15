@@ -353,12 +353,15 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 ```
 
 `recipes/orchestrator.md` sets the orchestrator window's default operator voice (plain
-language, one idea per paragraph, a scenario before any criteria walk), which stays quiet on
-routine monitor events by default: no reply to a routine one, and what happened rolls into one
+language, one idea per paragraph, a scenario before any criteria walk), which never surfaces a
+routine monitor event: no reply to a routine one, ever, and what happened rolls into one
 summary about every three hours grouped by task, while anything actionable is still reported at
-once. The recipe's own monitor step arms this as a filtering pipeline rather than a plain
-tail-and-grep: routine daemon-log lines are dropped into `notes/monitor-tally.log` for that
-summary to read back, and only an actionable line ever reaches the session as a Monitor event.
+once. The recipe's own start-up step arms this as a silent background waiter, never the `Monitor`
+tool: a one-shot Bash `run_in_background` loop polls the daemon log by byte offset, drops routine
+daemon-log lines into `notes/monitor-tally.log` for that summary to read back, and exits only on
+an actionable line, which the window acts on and silently re-arms. `Monitor` expires every thirty
+minutes and would otherwise wake the window on every expiry and every re-arm; those events,
+expiries, and re-arms are never surfaced to the operator either.
 
 A task's directory moves into `tasks/_archive/` the moment it is terminal — true closeout (its
 pull request merged and the closeout monitor observed it, not merely `Done` with a pull request
