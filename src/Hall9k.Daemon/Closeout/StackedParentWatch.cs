@@ -335,29 +335,32 @@ public sealed class StackedParentWatch(
                 + "arrives on");
         }
 
-        // Where the parent's own work actually landed, read off the parent's run rather than assumed
-        // to be the project's base (independent pre-PR review, 2026-09-07, adversarial lens). They
-        // differ in one shape: a mid-stack parent, itself stacked, merged while still aimed at ITS
-        // parent's branch — and a SECOND shape that reads identically off the recorded field alone:
-        // GitHub retargets a mid-stack parent's own pull request onto the project's base exactly the
-        // way it retargets a stacked child's, the moment the parent's own parent branch is deleted
-        // (Decisions Log #186), and nothing here rewrites this run's recorded base when that
-        // happens — PullRequestOpener's own fallback deliberately leaves it alone (its own doc). The
-        // two are not told apart by the recorded field, so a mismatch here is a SUSPICION, not a
-        // verdict: ResolveActualMergedIntoAsync below settles it — the pull request's actual base,
-        // read live when it can be, or from this platform's own record of that same fallback when it
-        // can't (task eec9096d, 2026-09-15, the shape observed on task eec9096d's own parent M1b).
-        // Only once that comes back still naming somewhere other than the project's own base is this
+        // Where the parent's own work actually landed decides this, not the parent run's own
+        // recorded base (independent pre-PR review, cycle 1, conformance lens: gating the live read
+        // on the recorded base already looking wrong reads the record FIRST and only checks a live
+        // source once that record already disagrees with the project's base — backwards for a field
+        // that is never rewritten once GitHub retargets a mid-stack parent's own pull request onto
+        // the project's base the moment the parent's own parent branch is deleted (Decisions Log
+        // #186; PullRequestOpener's own fallback deliberately leaves the record alone). A parent
+        // retargeted and merged that way reads a recorded base of the project's own base branch —
+        // indistinguishable, on the record alone, from a parent that never was mid-stack at all — so
+        // gating on the record disagreeing first means that shape never reaches a live read: the
+        // child sails past the merged-elsewhere park it exists to produce, and closeout mechanically
+        // retargets and replays it onto a base missing the grandparent's own work (task eec9096d,
+        // 2026-09-15, the shape observed on task eec9096d's own parent M1b). So the live source is
+        // always asked once the parent has merged, record or no record; ResolveActualMergedIntoAsync
+        // itself falls back to the record only when the live read cannot be made at all. Only once
+        // the actual base comes back naming somewhere other than the project's own base is this
         // child parked: retargeting onto the project's base from a genuine mid-stack merge would take
         // it off a base carrying the grandparent's work and replay its commits without it, and this
         // platform's own merge bar never merges an un-retargeted stacked pull request, so nothing
         // automatic should answer THAT shape. Ordering across three or more levels is out of this
         // slice by design (docs/scope.md), and a park leaves the human a coherent stack.
-        if (parentMerged && parentRun?.BaseBranchOr(project.BaseBranch) is { } mergedInto
-            && mergedInto != project.BaseBranch)
+        if (parentMerged)
         {
+            string recordedMergedInto = parentRun?.BaseBranchOr(project.BaseBranch) ?? project.BaseBranch;
             string actualMergedInto = await ResolveActualMergedIntoAsync(
-                project, parentBranch, parentRun?.PullRequestNumber, mergedInto,
+                project, parentBranch, parentRun?.PullRequestNumber, recordedMergedInto,
                 parentRun?.OpenedAgainstBaseBranch, cancellationToken);
             if (actualMergedInto != project.BaseBranch)
             {
@@ -435,34 +438,23 @@ public sealed class StackedParentWatch(
         // (<c>RemoteStackedParentSweep</c>, <c>TaskAggregate.Apply(RemoteStackedParentObserved)</c>),
         // so by the time <c>parentMerged</c> reads true the recorded base already came from that same
         // post-merge read, and a merged pull request's base does not move again once it is closed.
-        // The fresh look below is not settling a stale snapshot, then; it exists so this arm reads
-        // the parent's base through the identical, single code path the local arm does — the one
-        // place a genuinely stale LOCAL record (<c>OpenedAgainstBaseBranch</c>) gets corrected by a
-        // live read — rather than trusting this already-definitive remote observation without ever
-        // routing it through the same check.
+        // No further live read is made here for that reason: this arm is already the definitive fact
+        // <see cref="ResolveActualMergedIntoAsync"/>'s own live-read tier exists to obtain for a
+        // LOCAL parent, so calling that method here would spend a provider request re-asking GitHub
+        // something this sweep already knows, in the name of "the identical check" — the single
+        // reader this class's own doc and <c>RemoteStackedParentSweep</c>'s both promise (independent
+        // pre-PR review, cycle 1, conformance and adversarial lenses: an earlier shape of this fix
+        // routed the remote arm through that method too, and its own comment admitted the re-read
+        // learned nothing new).
         if (parentMerged && parent.RemoteBaseBranch.IsNotBlank()
             && parent.RemoteBaseBranch != project.BaseBranch)
         {
-            // parent.RemoteBaseBranch itself, not null, fills ResolveActualMergedIntoAsync's own
-            // locallyKnownActualBase slot: the sweep's read is already the definitive fact this
-            // doc's own paragraph above argues it is, so a transient failure of the fresh re-read
-            // one line below must fall back to that known-good answer rather than sliding past it
-            // to the git ancestor check, which cannot even prove a rebase or squash merge landed
-            // (Copilot review, PR #388 — that tier can only prove containment IN, never OUT, per
-            // ResolveActualMergedIntoAsync's own doc, so letting a network blip here reach it risks
-            // exactly the false ParentMergedElsewhere this whole method exists to rule out).
-            string actualMergedInto = await ResolveActualMergedIntoAsync(
-                project, parentBranch, parentNumber, parent.RemoteBaseBranch, parent.RemoteBaseBranch,
-                cancellationToken);
-            if (actualMergedInto != project.BaseBranch)
-            {
-                return StackedParentObservation.ParentMergedElsewhere(
-                    parentBranch,
-                    $"pull request #{parentNumber}, the one this task is stacked on, merged into "
-                    + $"{actualMergedInto} rather than the project's own {project.BaseBranch} — it was itself "
-                    + "stacked, so this pull request's base cannot be moved onto the project's base mechanically "
-                    + "without dropping work that branch does not have");
-            }
+            return StackedParentObservation.ParentMergedElsewhere(
+                parentBranch,
+                $"pull request #{parentNumber}, the one this task is stacked on, merged into "
+                + $"{parent.RemoteBaseBranch} rather than the project's own {project.BaseBranch} — it was itself "
+                + "stacked, so this pull request's base cannot be moved onto the project's base mechanically "
+                + "without dropping work that branch does not have");
         }
 
         return await ObserveAgainstRepositoryAsync(
@@ -470,14 +462,18 @@ public sealed class StackedParentWatch(
     }
 
     /// <summary>
-    /// Where the parent's pull request actually merged, called only once a RECORDED base
-    /// (<paramref name="recordedMergedInto"/>) has already been found to name something other than
-    /// the project's own base branch — never trusted at face value for that shape, because GitHub
-    /// retargets a mid-stack parent's own pull request onto the project's base exactly the way it
-    /// retargets a stacked child's, the moment the parent's own parent branch is deleted (Decisions
+    /// Where the parent's pull request actually merged, called by the LOCAL arm whenever the parent
+    /// has merged, unconditionally — never gated on the recorded base already looking wrong, because
+    /// GitHub retargets a mid-stack parent's own pull request onto the project's base exactly the way
+    /// it retargets a stacked child's, the moment the parent's own parent branch is deleted (Decisions
     /// Log #186), and nothing on this platform's records is rewritten when that happens
-    /// (<c>PullRequestOpener.ResolveOpenBaseAsync</c>'s own doc). Answered from whichever source can
-    /// actually answer it, in order, and the recorded base is reached only when none of them can:
+    /// (<c>PullRequestOpener.ResolveOpenBaseAsync</c>'s own doc) — so a recorded base that already
+    /// names the project's own base branch is exactly as uninformative about where the parent
+    /// ACTUALLY merged as one that disagrees with it. The REMOTE arm never calls this: its own
+    /// recorded base is already the definitive fact this method exists to obtain, captured in the
+    /// same <c>gh pr view</c> that established the merge itself (the remote arm's own doc). Answered
+    /// from whichever source can actually answer it, in order, and the recorded base is reached only
+    /// when none of them can:
     /// <list type="number">
     /// <item>
     /// A fresh read of the parent's own pull request through <paramref name="parentPullRequestNumber"/>
@@ -497,29 +493,33 @@ public sealed class StackedParentWatch(
     /// aimed at its recorded base).
     /// </item>
     /// <item>
-    /// <paramref name="locallyKnownActualBase"/> — for a local parent, this platform's own record of
-    /// the identical fallback, set on the parent's own run when THIS install opened its pull request
-    /// (<see cref="Hall9k.Domain.Features.Run.Projections.RunDetails.OpenedAgainstBaseBranch"/>); for
-    /// a remote parent, <c>RemoteStackedParentSweep</c>'s own already-observed base
-    /// (<c>parent.RemoteBaseBranch</c>), which the remote arm's own caller passes here rather than
-    /// leaving blank — that observation is the identical fact the live read above would answer with,
-    /// captured in the same <c>gh pr view</c> that established the merge itself (the remote arm's own
-    /// doc). Free either way: no provider call, no git call. Blank only for a local parent whose own
-    /// opener never hit that fallback. Reached only when the live read above could not be made — no
-    /// pull request number to ask, or the call itself failed — never as a corroboration of it, since
-    /// the live read is already the definitive fact once it answers.
-    /// </item>
-    /// <item>
     /// The parent's own head commit's reachability from the project's base branch's current tip: if
     /// the base branch already contains that commit, the parent's work is on the base's own line
-    /// regardless of what any record says. The reverse does NOT hold under this platform's own
+    /// regardless of what any record says. Tried before <paramref name="locallyKnownActualBase"/>
+    /// even though it costs a git call and that record does not, because the record is only ever an
+    /// OPEN-time snapshot that a later hand-retarget-and-merge can leave stale (the same reason the
+    /// live read above is tried ahead of it) — a freshly observed fact takes precedence over a static
+    /// one whenever both are available, and this is the one source below the live read that can still
+    /// be fresh when the live read itself failed. The reverse does NOT hold under this platform's own
     /// rebase-and-merge method (<c>GitHubPullRequestInspector.cs</c>): a rebase merge gives the
     /// parent's commits new SHAs on the base, so the parent's own PRE-rebase head is never reachable
     /// from the base even when the parent's work is genuinely there. This check can only ever prove
-    /// the base IN — never prove it out — so a miss here falls through to
-    /// <paramref name="recordedMergedInto"/> exactly as a failed call would, rather than asserting the
-    /// parent merged elsewhere on evidence that cannot show that (independent pre-PR review, cycle
-    /// 1, conformance lens). Reached only when neither source above could answer at all.
+    /// the base IN — never prove it out — so a miss here falls through to the next source exactly as a
+    /// failed call would, rather than asserting the parent merged elsewhere on evidence that cannot
+    /// show that (independent pre-PR review, cycle 1, conformance lens).
+    /// </item>
+    /// <item>
+    /// <paramref name="locallyKnownActualBase"/> — this platform's own record of the identical
+    /// open-time fallback, set on the parent's own run when THIS install opened its pull request
+    /// (<see cref="Hall9k.Domain.Features.Run.Projections.RunDetails.OpenedAgainstBaseBranch"/>). Free:
+    /// no provider call, no further git call. Blank for a local parent whose own opener never hit that
+    /// fallback. Reached only once neither source above could answer at all — a live read that could
+    /// not be made, and a reachability check that came back inconclusive rather than proving the base
+    /// IN — never ahead of the reachability check, because this record can go stale in a way a fresh
+    /// git read cannot (independent pre-PR review, cycle 1, adversarial lens: trusting this record
+    /// immediately on a failed live read, ahead of a reachability check that might still positively
+    /// confirm the true base, risked exactly the stale-record hazard the live read's own reordering
+    /// above exists to avoid).
     /// </item>
     /// </list>
     /// Every one of those calls is best-effort: a failure at any step falls through to the next, and
@@ -545,10 +545,7 @@ public sealed class StackedParentWatch(
             }
         }
 
-        if (locallyKnownActualBase.IsNotBlank())
-        {
-            return locallyKnownActualBase;
-        }
+        string fallback = locallyKnownActualBase.IsNotBlank() ? locallyKnownActualBase : recordedMergedInto;
 
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
         string repositoryPath = project.RepositoryPath;
@@ -570,23 +567,23 @@ public sealed class StackedParentWatch(
 
             if ((pullRequestRead?.Commit ?? branchRead.Commit) is not { } parentHead)
             {
-                return recordedMergedInto;
+                return fallback;
             }
 
             ParentHeadRead baseTipRead = await ReadRemoteBranchHeadAsync(
                 git, repositoryPath, project.BaseBranch, cancellationToken);
             if (baseTipRead.Commit is not { } baseTip)
             {
-                return recordedMergedInto;
+                return fallback;
             }
 
             ProcessResult reachable = await git(
                 "git", ["merge-base", "--is-ancestor", parentHead, baseTip], repositoryPath, cancellationToken);
-            return reachable.ExitCode == 0 ? project.BaseBranch : recordedMergedInto;
+            return reachable.ExitCode == 0 ? project.BaseBranch : fallback;
         }
         catch (TimeoutException)
         {
-            return recordedMergedInto;
+            return fallback;
         }
         finally
         {
