@@ -59,12 +59,22 @@ public enum ReviewerKind
 /// <see cref="LastReviewedCommit"/> keeps answering the countersign's own, different question.
 /// </para>
 /// </summary>
+/// <param name="LatestReviewBody">
+/// The prose of this account's most recent review of ANY type — the one <c>latestReviews</c>
+/// reports, not the standing verdict beside it. Read for exactly one question (task: a
+/// review-feedback follow-up never answers a human reviewer in the owner's name on its own):
+/// whether a reviewer whose verdict requests no change nevertheless asked for one in words, which
+/// is the "plain COMMENT with no request-for-change signal" half of what makes a thread beside it
+/// safe to leave undispatched. Null where the provider reported none, which reads as "nothing
+/// asked" only in combination with the thread's own text — never on its own.
+/// </param>
 public sealed record PullRequestReviewer(
     string Login,
     ReviewerKind Kind,
     string? LastReviewedCommit = null,
     string? StandingReviewState = null,
-    string? StandingReviewCommit = null)
+    string? StandingReviewCommit = null,
+    string? LatestReviewBody = null)
 {
     /// <summary>An app account: the [bot] suffix decision downstream rests on this.</summary>
     public bool IsBot => Kind == ReviewerKind.Bot;
@@ -102,6 +112,42 @@ public sealed record PullRequestReviewer(
 /// reason names for the human).
 /// </summary>
 public sealed record ErroredReview(string Reviewer, string Url);
+
+/// <summary>
+/// One unresolved review thread a PERSON opened, read whole enough to decide whether anybody is
+/// actually waiting on an answer (task: a review-feedback follow-up never answers a human
+/// reviewer in the owner's name on its own).
+/// <para>
+/// The thread ids beside this in <see cref="PullRequestSnapshot.HumanThreadIds"/> answer "how
+/// many, and which" and nothing else, which is all the mechanical obstruction key and the
+/// human-engagement diff ever needed (Decisions Log #80). Deciding that a thread reading "nice,
+/// my own pull request needs this too" should not wake an agent needs the words themselves, and
+/// showing an operator the thread a drafted reply answers needs the link.
+/// </para>
+/// </summary>
+/// <param name="OpeningComment">
+/// The thread's FIRST comment, verbatim — the reviewer's own, per the thread-starter invariant
+/// (AGENTS.md). Deliberately not the whole thread: later comments may be this platform's own
+/// replies from an earlier lap, and reading one of those as the reviewer's ask would let an
+/// agent's words buy a lap.
+/// <para>
+/// <b>Null means the provider did not report it</b> — a thread whose opener came back with no
+/// body, or with no opening comment at all — and is a different fact from an empty string, which
+/// is a body the provider reported as empty. Coalescing the two said "this thread asks nothing"
+/// about a thread nobody could read, and <c>AdvisoryReviewThreads</c> then suppressed the lap
+/// against its own documented fail-safe (Copilot, PR #397). Unobserved is carried as unknown,
+/// never filled in (AGENTS.md).
+/// </para>
+/// </param>
+public sealed record UnresolvedHumanThread(string ThreadId, string Author, string Url, string? OpeningComment)
+{
+    /// <summary>
+    /// The three fields a reopen carries onto the task stream, without the body — the words stay
+    /// an artifact of the read, the same "only the classification travels" discipline every other
+    /// thread record here keeps.
+    /// </summary>
+    public ReviewThreadReference Reference => new(ThreadId, Author, Url);
+}
 
 /// <summary>
 /// One poll's observation of a pull request, as reported by the provider. Timestamps are
@@ -257,7 +303,8 @@ public sealed record PullRequestSnapshot(
     bool HasObservedChecks = true,
     bool ReviewThreadsTruncated = false,
     IReadOnlyList<string>? RequestedHumanReviewerLogins = null,
-    IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null)
+    IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null,
+    IReadOnlyList<UnresolvedHumanThread>? UnresolvedHumanThreadDetails = null)
 {
     /// <summary>
     /// How a requested TEAM reviewer is recorded in every reviewer list here, since GitHub exposes
@@ -285,6 +332,14 @@ public sealed record PullRequestSnapshot(
 
     /// <summary>The human-started subset of <see cref="ThreadIds"/>.</summary>
     public IReadOnlyList<string> HumanThreadIds => UnresolvedHumanThreadIds ?? [];
+
+    /// <summary>
+    /// The same human-started threads <see cref="HumanThreadIds"/> names, with the opener's login,
+    /// link and words. Empty on a provider read that predates this being collected, and on a test
+    /// fixture that sets only the ids — which reads as "no thread text observed" and so classifies
+    /// nothing as advisory, leaving every such thread on the dispatch path it has always been on.
+    /// </summary>
+    public IReadOnlyList<UnresolvedHumanThread> HumanThreads => UnresolvedHumanThreadDetails ?? [];
 
     /// <summary>Reviewers with a pending review request right now.</summary>
     public IReadOnlyList<string> PendingReviewers => PendingReviewRequestLogins ?? [];

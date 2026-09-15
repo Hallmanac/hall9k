@@ -112,7 +112,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
               mergeable
               reviewDecision
               reviewThreads(first: 100) {
-                nodes { id isResolved comments(first: 50) { nodes { author { login __typename } pullRequestReview { id } body path line originalLine } } }
+                nodes { id isResolved comments(first: 50) { nodes { author { login __typename } pullRequestReview { id } body url path line originalLine } } }
                 pageInfo { hasNextPage }
               }
               reviewRequests(first: 20) {
@@ -188,7 +188,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             OutstandingReviewerLogins: reviews.OutstandingReviewerLogins,
             ReviewThreadsTruncated: reviews.ReviewThreadsTruncated,
             RequestedHumanReviewerLogins: reviews.RequestedHumanReviewerLogins,
-            ChangesRequestedReviews: reviews.ChangesRequestedReviews);
+            ChangesRequestedReviews: reviews.ChangesRequestedReviews,
+            UnresolvedHumanThreadDetails: reviews.UnresolvedHumanThreadDetails);
     }
 
     /// <summary>
@@ -303,6 +304,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         string? HeadCommit,
         IReadOnlyList<string> UnresolvedThreadIds,
         IReadOnlyList<string> UnresolvedHumanThreadIds,
+        IReadOnlyList<UnresolvedHumanThread> UnresolvedHumanThreadDetails,
         IReadOnlyList<string> PendingReviewRequestLogins,
         ExternalReviewState CopilotReviewState,
         int CopilotReviewThreadCount,
@@ -313,7 +315,8 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
         IReadOnlyList<string>? RequestedHumanReviewerLogins = null,
         IReadOnlyList<ChangesRequestedReview>? ChangesRequestedReviews = null)
     {
-        public static readonly ReviewObservation None = new(0, 0, [], null, null, [], [], [], ExternalReviewState.None, 0);
+        public static readonly ReviewObservation None =
+            new(0, 0, [], null, null, [], [], [], [], ExternalReviewState.None, 0);
     }
 
     private static async Task<ReviewObservation> InspectReviewsAsync(
@@ -361,6 +364,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
 
         List<string> threadIds = [];
         List<string> humanThreadIds = [];
+        List<UnresolvedHumanThread> humanThreads = [];
         int copilotThreadCount = 0;
         foreach (JsonElement thread in reviewThreads.GetProperty("nodes").EnumerateArray())
         {
@@ -398,6 +402,24 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             if (starter is { IsHuman: true })
             {
                 humanThreadIds.Add(id);
+                // The opener's own comment, whole: its text is what tells an FYI beside an
+                // approval from a question somebody is waiting on an answer to (task: a
+                // review-feedback follow-up never answers a human reviewer in the owner's name on
+                // its own), and its url is what a park shows the operator instead of an opaque
+                // node id. Only the OPENER's, not the whole thread: later comments in it may be
+                // this platform's own earlier replies, and reading those as the reviewer's ask
+                // would let an agent's own words dispatch a lap.
+                // The body stays null where the provider reported none, rather than coalescing to
+                // "": an unreadable thread and a thread that says nothing are different facts, and
+                // read as the same one they made a thread nobody could read classify as asking
+                // nothing (Copilot, PR #397). The url still coalesces, because blank there is
+                // rendered as "no link observed" and decides nothing.
+                JsonElement? opener = ThreadFirstComment(thread);
+                humanThreads.Add(new UnresolvedHumanThread(
+                    id,
+                    starter.Login,
+                    opener is { } first ? ReadString(first, "url") ?? "" : "",
+                    opener is { } body ? ReadString(body, "body") : null));
             }
         }
 
@@ -409,6 +431,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             headCommit,
             threadIds,
             humanThreadIds,
+            humanThreads,
             ReadPendingReviewRequestLogins(pullRequest),
             copilotReviewState,
             copilotThreadCount,
@@ -540,6 +563,17 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
             }
         }
     }
+
+    /// <summary>
+    /// One string property, or null where the provider reported it as anything else — absent, or
+    /// GraphQL's own null for a field it could not resolve. Null rather than an empty string, so
+    /// a caller decides what an unreported field means rather than inheriting a blank that reads
+    /// as an observed empty value.
+    /// </summary>
+    private static string? ReadString(JsonElement element, string property) =>
+        element.TryGetProperty(property, out JsonElement value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
 
     /// <summary>
     /// Where a review comment points, in the same `path/to/file.cs:123` form every platform review
@@ -1047,6 +1081,7 @@ public sealed class GitHubPullRequestInspector : IPullRequestInspector
                 LastReviewedCommit = ReadReviewedCommit(review),
                 StandingReviewState = verdict?.State,
                 StandingReviewCommit = verdict?.Commit,
+                LatestReviewBody = ReadString(review, "body"),
             });
         }
 
