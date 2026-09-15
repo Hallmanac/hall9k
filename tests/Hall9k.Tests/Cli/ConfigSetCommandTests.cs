@@ -544,4 +544,60 @@ public sealed class ConfigSetCommandTests
 
         act.Should().Throw<DomainValidationException>().WithMessage("*nothing to acknowledge*");
     }
+
+    [Fact]
+    public void A_message_poll_min_above_the_max_in_the_same_call_is_refused()
+    {
+        ConfigSetCommand.Settings settings = new() { MessagePollActiveMin = 100, MessagePollActiveMax = 50 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*at or below*");
+    }
+
+    [Fact]
+    public void A_message_poll_min_alone_above_the_shipped_default_max_is_refused()
+    {
+        // Only the min is passed this call — the compiled default idle max (45s) is what it must
+        // be checked against, since nothing else is on record. Before this fix, a solo flag was
+        // never checked against anything and always validated (independent pre-PR review, cycle
+        // 1, both lenses).
+        ConfigSetCommand.Settings settings = new() { MessagePollIdleMin = 60 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*message-poll-idle-min*message-poll-idle-max*");
+    }
+
+    [Fact]
+    public void A_message_poll_min_alone_above_a_persisted_max_is_refused()
+    {
+        OperatingSettings current = new() { MessageActivePollMaxSeconds = 20 };
+        ConfigSetCommand.Settings settings = new() { MessagePollActiveMin = 25 };
+
+        Action act = () => ConfigSetCommand.Validate(settings, current);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*20s*");
+    }
+
+    [Fact]
+    public void A_message_poll_max_alone_at_or_above_the_shipped_default_min_validates()
+    {
+        ConfigSetCommand.Settings settings = new() { MessagePollIdleMax = 60 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void Raising_both_message_poll_bounds_together_above_the_persisted_range_validates()
+    {
+        OperatingSettings current = new() { MessageActivePollMinSeconds = 15, MessageActivePollMaxSeconds = 25 };
+        ConfigSetCommand.Settings settings = new() { MessagePollActiveMin = 100, MessagePollActiveMax = 200 };
+
+        Action act = () => ConfigSetCommand.Validate(settings, current);
+
+        act.Should().NotThrow();
+    }
 }
