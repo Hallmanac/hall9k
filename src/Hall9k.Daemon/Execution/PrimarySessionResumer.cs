@@ -79,7 +79,13 @@ public sealed class PrimarySessionResumer(IExecutor executor)
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             run.Id, DomainId.New(), run.WorktreePath, run.RunDirectory, prompt,
             run.ExecutorMode, run.Model, project.SkipPermissions,
-            ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: task.Type == TaskType.PrReview)
+            ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: task.Type == TaskType.PrReview,
+            // The same guard the original spawn carried (task: a review-feedback follow-up never
+            // answers a human reviewer in the owner's name on its own). A resume rewrites the
+            // settings file, so omitting it here would silently lift the guard from the retry of
+            // exactly the session it was written for — the blast-radius shape the launcher's own
+            // two branches have been caught by before.
+            GuardsReviewThreadReplies: run.IsFollowUp)
         {
             SessionName = sessionName,
         }, cancellationToken);

@@ -33,6 +33,26 @@ namespace Hall9k.Daemon.Execution;
 /// platform's usual unbounded-turns session exactly as it always was; the one caller that sets
 /// it (the uncommitted-files pre-gate recovery) is the one session on this whole seam whose job
 /// is narrow enough that a small, fixed turn count is actually the right shape for it.
+/// <para>
+/// GuardsReviewThreadReplies installs the in-thread reply guard in this session's settings file
+/// (<see cref="Hall9k.Connectors.Prompts.ClaudeSettingsFile.ReviewThreadReplyGuardHook"/>, task:
+/// a review-feedback follow-up never answers a human reviewer in the owner's name on its own):
+/// the shell routes that write inside somebody's review thread are refused, so the only way this
+/// session reaches one is <c>h9k pr reply</c>, which knows whose thread it is. Set by every
+/// spawn site whose session works a FOLLOW-UP run's worktree, which is the only shape that holds
+/// an open pull request's branch for the whole of its life: the launcher's own dispatch, the
+/// resumer behind an error retry, and every session the review loop and the gates put into that
+/// same run afterwards (<c>ReviewEngine</c>, <c>VerificationRunner</c>'s uncommitted-work
+/// recovery). False everywhere else, so a fresh build session's settings file is byte-for-byte
+/// what it was.
+/// </para>
+/// <para>
+/// Three spawn paths deliberately never set it, and none of them can reach a follow-up: an
+/// interactive claim and a deliberate kick-off both refuse a reopened task outright
+/// (<c>TaskWorkCommand</c>, <c>TaskStartCommand</c>), and a pr-review lap writes nothing to the
+/// pull request at all, under a deny list of its own
+/// (<see cref="Hall9k.Connectors.Prompts.ClaudeSettingsFile.ReviewLapDeniedTools"/>).
+/// </para>
 /// </summary>
 public sealed record AgentSpawnRequest(
     Guid RunId,
@@ -46,7 +66,8 @@ public sealed record AgentSpawnRequest(
     string? SessionArtifactName = null,
     Guid? ResumeSessionId = null,
     bool UntrustedWorkingDirectory = false,
-    int? MaxTurns = null)
+    int? MaxTurns = null,
+    bool GuardsReviewThreadReplies = false)
 {
     /// <summary>
     /// Environment variables layered onto the owner's environment for this session only.

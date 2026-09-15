@@ -55,7 +55,8 @@ public sealed class ClaudeExecutor(
         // Sized to the live VerifyGateTimeout rather than ClaudeSettingsFile's own build-time
         // default (2026-09-02 finding): an operator who raises the option gets a foreground gate
         // run that survives it on every headless dispatch, with no constant to remember to bump.
-        string settingsContent = ClaudeSettingsFile.Build(options.Value.VerifyGateTimeout);
+        string settingsContent = ClaudeSettingsFile.Build(
+            options.Value.VerifyGateTimeout, request.GuardsReviewThreadReplies);
         await File.WriteAllTextAsync(SettingsFile(request, runDirectory), settingsContent, cancellationToken);
 
         string command = $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(request, runDirectory))}";
