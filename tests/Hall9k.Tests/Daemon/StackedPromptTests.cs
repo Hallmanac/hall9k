@@ -459,22 +459,48 @@ public sealed class StackedPromptTests
     /// onto commit and landed short of a number the base had taken in the meantime.
     /// <see cref="RunLauncher"/>'s own retry path now resolves the base's current tip fresh instead
     /// — this covers the prompt's own side, that the swap is stated plainly rather than left for
-    /// the session to notice as an unexplained mismatch against this task's own history.
+    /// the session to notice as an unexplained mismatch against this task's own history. The note
+    /// only claims the base moved when the fresh commit actually differs from the one this task
+    /// recorded at dispatch time (independent pre-PR review, cycle 1, both lenses): claiming it
+    /// unconditionally would be false for a retry where the base never moved, or for a hand-back
+    /// retry that never failed at all — the sibling tests below cover those.
     /// </summary>
     [Fact]
-    public void A_retry_resolved_onto_commit_is_named_plainly_in_the_prompt()
+    public void A_retry_resolved_onto_commit_that_moved_says_so_plainly_in_the_prompt()
     {
         string prompt = AgentPromptBuilder.BuildStackReplay(
             SomeTask(), SomeProject(), "task/child-slice-two", "https://github.com/x/y/pull/8",
             CommitStyle.Narrative, baseBranch: "main", upstreamCommit: "abc1234", ontoCommit: "ffff999",
-            ontoCommitResolvedFromCurrentBaseTip: true);
+            ontoCommitResolvedFromCurrentBaseTip: true, recordedOntoCommit: "eeee888");
 
-        prompt.Should().Contain("already failed once");
+        prompt.Should().Contain("This follow-up is a retry");
         prompt.Should().Contain(
             "ffff999", "the note names the fresh commit the retry actually lands on");
         prompt.Should().Contain(
-            "originally dispatched onto",
-            "the note says plainly that the recorded commit is stale, not just that a commit changed");
+            "the base has moved since that recording",
+            "the note says plainly that the base moved, backed by the actual comparison");
+        prompt.Should().Contain("eeee888", "the stale recorded commit is named so the session can recognize and avoid it");
+        prompt.Should().NotContain("already failed once", "a retry can also come from an interactive hand-back, not only a failure");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, both lenses: a retry where the base has not moved gets a
+    /// fresh tip identical to the recorded commit, so the note must not claim a difference that
+    /// does not exist.
+    /// </summary>
+    [Fact]
+    public void A_retry_whose_base_never_moved_does_not_claim_it_did()
+    {
+        string prompt = AgentPromptBuilder.BuildStackReplay(
+            SomeTask(), SomeProject(), "task/child-slice-two", "https://github.com/x/y/pull/8",
+            CommitStyle.Narrative, baseBranch: "main", upstreamCommit: "abc1234", ontoCommit: "ffff999",
+            ontoCommitResolvedFromCurrentBaseTip: true, recordedOntoCommit: "ffff999");
+
+        prompt.Should().Contain("This follow-up is a retry");
+        prompt.Should().Contain("the base has not moved since",
+            "the fresh tip matches the recorded commit, so the note says so honestly");
+        prompt.Should().NotContain("the base has moved since that recording");
+        prompt.Should().NotContain("already failed once");
     }
 
     [Fact]
@@ -485,6 +511,7 @@ public sealed class StackedPromptTests
             CommitStyle.Narrative, baseBranch: "main", upstreamCommit: "abc1234", ontoCommit: "ffff999");
 
         prompt.Should().NotContain("already failed once");
+        prompt.Should().NotContain("This follow-up is a retry");
     }
 
     /// <summary>

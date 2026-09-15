@@ -1221,11 +1221,22 @@ public static class AgentPromptBuilder
     /// prompt so the session does not read the mismatch between this commit and whatever this
     /// task's own follow-up reason names as a sign something is wrong.
     /// </param>
+    /// <param name="recordedOntoCommit">
+    /// The dispatch-time prediction <paramref name="ontoCommit"/> was resolved against
+    /// (<c>TaskDetails.StackReplayOntoCommit</c>) — read only when
+    /// <paramref name="ontoCommitResolvedFromCurrentBaseTip"/> is set, so the prompt's own retry
+    /// note can state whether the base actually moved as an observed fact (comparing the two
+    /// commits) rather than asserting it unconditionally. A retry can also be triggered by an
+    /// interactive hand-back rather than a prior failure, and the base may not have moved at all
+    /// since the earlier attempt — either would make an unconditional "already failed" / "is
+    /// stale" claim false (independent pre-PR review, cycle 1, both lenses; AGENTS.md's "never
+    /// guess at unobserved facts").
+    /// </param>
     public static string BuildStackReplay(
         TaskDetails task, ProjectDetails project, string branch, string pullRequestUrl,
         CommitStyle commitStyle, string baseBranch, string upstreamCommit, string ontoCommit,
         TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null,
-        bool ontoCommitResolvedFromCurrentBaseTip = false)
+        bool ontoCommitResolvedFromCurrentBaseTip = false, string? recordedOntoCommit = null)
     {
         const string file = $"{TemplateDirectory}/stack-replay.md";
         StringBuilder prompt = new();
@@ -1269,6 +1280,22 @@ public static class AgentPromptBuilder
             AppendFragment(
                 prompt, file, "retry-fresh-onto-note",
                 ("OntoCommit", ontoCommit), ("BaseBranch", baseBranch));
+
+            // Only a positive comparison earns a claim about whether the base moved — an unknown
+            // (blank) recording says nothing further rather than guessing either way.
+            if (recordedOntoCommit.IsNotBlank())
+            {
+                if (recordedOntoCommit != ontoCommit)
+                {
+                    AppendFragment(
+                        prompt, file, "retry-fresh-onto-note-moved",
+                        ("OntoCommit", ontoCommit), ("RecordedOntoCommit", recordedOntoCommit));
+                }
+                else
+                {
+                    AppendFragment(prompt, file, "retry-fresh-onto-note-unmoved");
+                }
+            }
         }
 
         AppendFragment(prompt, file, "resolve-conflicts");
