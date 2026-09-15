@@ -215,6 +215,20 @@ public sealed class TaskAggregate
     /// launcher starts clean from the base branch when it is gone (or when this is null).
     /// </summary>
     public string? RetryBranch { get; private set; }
+
+    /// <summary>
+    /// The branch this node most recently force-with-lease pushed for this task, or null before its
+    /// first push — the durable half of the force-with-lease push guard fix (origin incident,
+    /// 2026-09-15; see <see cref="Events.TaskBranchPushed"/>'s own doc). Read back by
+    /// <c>PullRequestOpener</c> before its own next push and compared against origin's current tip
+    /// so a branch reflog wiped by an unrelated session's history surgery in the shared repository
+    /// cannot make the guard refuse a tip this node itself already pushed.
+    /// </summary>
+    public string? LastPushedBranch { get; private set; }
+
+    /// <summary>See <see cref="LastPushedBranch"/> — the commit that push landed at.</summary>
+    public string? LastPushedBranchTip { get; private set; }
+
     /// <summary>
     /// Automatic (monitor-driven) reopens since the last human-initiated one — the
     /// lifetime-ceiling counter for PR closeout (Decisions Log #22, backlog 45). A manual
@@ -752,6 +766,15 @@ public sealed class TaskAggregate
     // The in-run half of the rebase budget Apply(TaskReopened)'s StackReplay arm spends the
     // dispatched half of — see StackedCheckpointRebased's own doc for why one budget covers both.
     public void Apply(StackedCheckpointRebased @event) => StackReplaysDispatched++;
+
+    // The durable record the force-with-lease push guard reads back — see TaskBranchPushed's own
+    // doc. Overwritten on every push rather than accumulated: only the most recent tip is ever
+    // relevant, because a push that lands makes origin's tip that value until something else moves it.
+    public void Apply(TaskBranchPushed @event)
+    {
+        LastPushedBranch = @event.Branch;
+        LastPushedBranchTip = @event.Tip;
+    }
 
     // Absent means "left alone" — a revision that reworded the objective must not also claim
     // the criteria were retyped identically (Optional carries that distinction).
