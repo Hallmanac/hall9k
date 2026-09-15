@@ -17,24 +17,41 @@ public sealed class NodeContext
     private BootstrapContext Resolved =>
         _context ?? throw new InvalidOperationException("NodeContext not initialized yet.");
 
-    public async Task InitializeAsync(IDocumentStore store, CancellationToken cancellationToken)
+    /// <summary>
+    /// <paramref name="ghIdentityReader"/> is <see langword="null"/> for every caller that never
+    /// asked for a GitHub identity refresh at all — every test through
+    /// <c>NodeBootstrapSeed.NewNodeAsync</c> (or the two exempted files that seed a connection ahead
+    /// of a deliberately deferred call here) included, none of which pass one. <c>DispatchLoop</c>,
+    /// the one place bootstrap actually happens on a real daemon start, passes
+    /// <see cref="NodeBootstrap.RealGhIdentityReader"/> so this install's numeric id and login are
+    /// current at daemon start too, not only at <c>h9k project add</c>/<c>h9k project join</c>. A
+    /// plain, unseamed daemon-start call was tried here first and reverted (independent pre-PR
+    /// review, cycle 1, conformance and adversarial lenses, both medium): it shelled to the real
+    /// <c>gh</c> unconditionally, reaching the real network on every one of <c>NodeBootstrapSeed</c>'s
+    /// roughly 280 integration-test call sites — the one path that seed exists specifically to keep
+    /// off gh and the network (PLAN.md §16 #110). <see cref="NodeBootstrap.GhIdentityReader"/> is
+    /// the seam that lets a real daemon start opt in without dragging every test along with it.
+    /// <para>
+    /// Bounded rather than blocking: <c>NodeBootstrap</c>'s own gh read (<c>RunQuick</c>) gives up
+    /// after 3 seconds with both output streams drained on background callbacks, so a daemon start
+    /// against a gh that cannot answer at all still completes — this method's own callers
+    /// (<see cref="WaitForInitializationAsync"/>) wait at most that long longer than before, never
+    /// unboundedly.
+    /// </para>
+    /// </summary>
+    public async Task InitializeAsync(
+        IDocumentStore store, CancellationToken cancellationToken, GhIdentityReader? ghIdentityReader = null)
     {
         await using IDocumentSession session = store.LightweightSession();
         _context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         await session.SaveChangesAsync(cancellationToken);
 
-        // A daemon-start GitHub identity refresh was tried here (idea 202383dc, A2b) and reverted:
-        // NodeBootstrap.RefreshGitHubIdentityAsync shells to the real gh with no ProcessRunner seam,
-        // so calling it unconditionally on every InitializeAsync ran the real gh and reached the real
-        // network on every one of NodeBootstrapSeed's ~280 integration-test call sites — the one path
-        // that seed exists specifically to keep off gh and the network (PLAN.md §16 #110) — and left
-        // this method's own callers (WaitForInitializationAsync) blocked on gh's unbounded read on
-        // every real daemon start too, not only the first (independent pre-PR review, cycle 1,
-        // conformance and adversarial lenses, both medium). h9k project add already refreshes this
-        // install's identity explicitly, right before it needs to know it is confirmed
-        // (ProjectAddCommand.RequireConfirmedGitHubAccount); a daemon-start refresh can return once
-        // NodeBootstrap's own gh calls carry a process-runner seam a test can pin instead of the real
-        // process.
+        if (ghIdentityReader is not null)
+        {
+            await NodeBootstrap.RefreshGitHubIdentityAsync(session, _context.ConnectionId, cancellationToken, ghIdentityReader);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
         _initialized.TrySetResult();
     }
 
