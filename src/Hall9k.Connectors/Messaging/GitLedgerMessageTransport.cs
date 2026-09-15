@@ -232,7 +232,8 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
     }
 
     public async Task<TransportReadResult> ReadSinceAsync(
-        string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken)
+        string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken,
+        TrustChain? trustChain = null)
     {
         string nodeFileRefName = $"refs/hall9k/ledger/nodes/{senderNodeId}";
         string nodeFilePath = $"nodes/{senderNodeId}/node.yaml";
@@ -265,10 +266,13 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
         // happens to have vouched (independent pre-PR review, cycle 1, conformance and adversarial
         // lenses, medium): without the node-id check, any member could overwrite senderNodeId's own
         // self-announced node file with their own key and have their own messages accepted as if
-        // they were that node. Recomputed fresh every read, so a revocation takes effect on the
-        // very next sweep.
-        TrustChain trustChain = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
-        if (!trustChain.IsAllowedSigner(senderFingerprint, senderNodeId))
+        // they were that node. trustChain, when the caller already computed one this same sweep
+        // (MessageSweepEngine.ProbeAndReadAsync, reading several senders in one tick), is used as
+        // is rather than walking the whole ledger again per sender; a caller reading only one
+        // sender still gets a fresh computation, exactly as before (independent pre-PR review,
+        // cycle 1, conformance lens, low).
+        TrustChain chain = trustChain ?? await chainReader.ComputeAsync(repositoryPath, cancellationToken);
+        if (!chain.IsAllowedSigner(senderFingerprint, senderNodeId))
         {
             return TransportReadResult.NotVouched(
                 "this sender's own node file exists, but its key is not currently vouched into any "

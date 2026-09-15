@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Trust;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Messaging;
 using Hall9k.Domain.Features.Message;
@@ -101,8 +102,8 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
 
         MessageSweepEngine engine = new(
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
-            new MessageNodeIdentityResolver(new NodeKeyStore()), Options.Create(new DaemonOptions()),
-            NullLogger<MessageSweepEngine>.Instance);
+            new FakeLedgerChainReader(TrustChain.Empty), new MessageNodeIdentityResolver(new NodeKeyStore()),
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
 
         await engine.SweepOnceAsync(cts.Token);
         transport.ProbeCount.Should().Be(1, "the first sweep always probes once");
@@ -153,10 +154,11 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             inner.FlushAsync(repositoryPath, fromNodeId, envelopes, committer, signingKey, cancellationToken);
 
         public Task<TransportReadResult> ReadSinceAsync(
-            string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken)
+            string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken,
+            TrustChain? trustChain = null)
         {
             ReadCount++;
-            return inner.ReadSinceAsync(repositoryPath, senderNodeId, sinceSeq, cancellationToken);
+            return inner.ReadSinceAsync(repositoryPath, senderNodeId, sinceSeq, cancellationToken, trustChain);
         }
 
         public Task<IReadOnlyList<MessageOutboxTip>> ProbeAsync(string repositoryPath, CancellationToken cancellationToken)

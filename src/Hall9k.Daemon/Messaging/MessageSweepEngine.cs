@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project.Projections;
@@ -34,6 +35,7 @@ public sealed class MessageSweepEngine(
     MessageOutbox outbox,
     MessageInbox inbox,
     IMessageTransport transport,
+    ILedgerChainReader chainReader,
     MessageNodeIdentityResolver identityResolver,
     IOptions<DaemonOptions> options,
     ILogger<MessageSweepEngine> logger)
@@ -144,7 +146,32 @@ public sealed class MessageSweepEngine(
             return;
         }
 
-        foreach (MessageOutboxTip tip in SendersToRead(tips, nodeId, project.RepositoryPath, _lastKnownTips))
+        IReadOnlyList<MessageOutboxTip> toRead = SendersToRead(tips, nodeId, project.RepositoryPath, _lastKnownTips);
+        if (toRead.Count == 0)
+        {
+            return;
+        }
+
+        // Computed once for the whole sweep, never per sender: every sender's own read otherwise
+        // repeated the full ledger chain walk (an ls-remote, a fetch per owner ref plus the members
+        // ref, and a signature check per candidate key), even though nothing about the chain changes
+        // between reads in the same tick (independent pre-PR review, cycle 1, conformance lens, low).
+        TrustChain? trustChain = null;
+        try
+        {
+            trustChain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            // Not fatal to this sweep: each per-sender read below falls back to computing its own
+            // chain fresh when none is supplied, the identical behavior this sweep always had before
+            // this cache existed.
+            logger.LogWarning(
+                exception, "Precomputing the trust chain failed for project {ProjectId}; each sender read "
+                + "this sweep will compute its own instead", project.Id);
+        }
+
+        foreach (MessageOutboxTip tip in toRead)
         {
             try
             {
@@ -161,7 +188,7 @@ public sealed class MessageSweepEngine(
                 await using IDocumentSession session = store.LightweightSession();
                 MessageInboxSweepResult read = await inbox.ReadFromAsync(
                     session, project.RepositoryPath, tip.SenderNodeId, nodeId, identity.OwnerRootFingerprint, now,
-                    cancellationToken: cancellationToken);
+                    trustChain: trustChain, cancellationToken: cancellationToken);
 
                 // Never recorded on a read that came back not vouched or stalled: neither one
                 // actually looked at the sender's content, so caching the tip here would make this
