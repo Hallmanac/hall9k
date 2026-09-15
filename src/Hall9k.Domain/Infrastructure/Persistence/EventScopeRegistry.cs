@@ -193,10 +193,19 @@ public static class EventScopeRegistry
         [typeof(ProjectGitHubAccessObserved)] = EventScope.NodeScoped,
         [typeof(ProjectGitHubCollaboratorsObserved)] = EventScope.NodeScoped,
 
+        // idea 202383dc, T1: project membership is team-facing (the a2-team-half-walk-2026-09-13
+        // ruling's own words), so it travels with this project's other project-scoped streams.
+        [typeof(MemberVouched)] = EventScope.ProjectScoped,
+        [typeof(MemberRemoved)] = EventScope.ProjectScoped,
+
         // Hall9k.Domain.Features.Owner — an owner's own cross-node identity.
         [typeof(OwnerRegistered)] = EventScope.OwnerScoped,
         [typeof(OwnerRootClaimed)] = EventScope.OwnerScoped,
         [typeof(OwnerSettingsChanged)] = EventScope.OwnerScoped,
+        // idea 202383dc, T1: node vouches are owner-scoped — "other nodes learn them from the
+        // files" (the ruling's own words), never from this event.
+        [typeof(NodeVouched)] = EventScope.OwnerScoped,
+        [typeof(NodeRevoked)] = EventScope.OwnerScoped,
 
         // Hall9k.Domain.Features.Node — this node's own identity, key, and holds ("holds" is
         // named node-scoped in idea 202383dc's own list).

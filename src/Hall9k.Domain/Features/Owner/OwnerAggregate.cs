@@ -41,6 +41,15 @@ public sealed class OwnerAggregate
 
     public DateTimeOffset? RootClaimedAt { get; private set; }
 
+    /// <summary>
+    /// Nodes this owner has vouched into their own fleet, keyed by node id — this node's own
+    /// audit trail (idea 202383dc, T1). The ledger's own <c>owners/&lt;root&gt;/nodes/*.yaml</c>
+    /// files are what every node's chain read actually trusts; this is never consulted for that.
+    /// </summary>
+    public IReadOnlyDictionary<Guid, DateTimeOffset> VouchedNodes => _vouchedNodes;
+
+    private readonly Dictionary<Guid, DateTimeOffset> _vouchedNodes = [];
+
     public void Apply(OwnerRegistered @event)
     {
         Id = @event.Id;
@@ -68,4 +77,8 @@ public sealed class OwnerAggregate
         RootFingerprintVerified = @event.Verified;
         RootClaimedAt = @event.ClaimedAt;
     }
+
+    public void Apply(NodeVouched @event) => _vouchedNodes[@event.NodeId] = @event.IssuedAt;
+
+    public void Apply(NodeRevoked @event) => _vouchedNodes.Remove(@event.NodeId);
 }

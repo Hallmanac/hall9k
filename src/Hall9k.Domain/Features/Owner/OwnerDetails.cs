@@ -30,6 +30,9 @@ public sealed class OwnerDetails
     public bool RootFingerprintVerified { get; set; }
 
     public DateTimeOffset? RootClaimedAt { get; set; }
+
+    /// <summary>Mirrors <see cref="OwnerAggregate.VouchedNodes"/>.</summary>
+    public Dictionary<Guid, DateTimeOffset> VouchedNodes { get; set; } = [];
 }
 
 public sealed class OwnerDetailsProjection : SingleStreamProjection<OwnerDetails, Guid>
@@ -63,4 +66,10 @@ public sealed class OwnerDetailsProjection : SingleStreamProjection<OwnerDetails
         view.RootFingerprintVerified = @event.Data.Verified;
         view.RootClaimedAt = @event.Data.ClaimedAt;
     }
+
+    public void Apply(IEvent<NodeVouched> @event, OwnerDetails view) =>
+        view.VouchedNodes[@event.Data.NodeId] = @event.Data.IssuedAt;
+
+    public void Apply(IEvent<NodeRevoked> @event, OwnerDetails view) =>
+        view.VouchedNodes.Remove(@event.Data.NodeId);
 }
