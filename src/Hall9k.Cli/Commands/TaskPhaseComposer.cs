@@ -557,6 +557,19 @@ internal static class TaskPhaseComposer
     /// way instead.
     /// </summary>
     private static TaskPhase AwaitingReviewPhase(string pullRequest, RunDetails run, DateTimeOffset now) =>
+        // Wrapped rather than threaded into each arm below: an advisory thread buys no lap, so the
+        // run never leaves this state for the ReviewPending one whose own Threads() detail names
+        // it — and a reader looking at a watched pull request with a person's unanswered thread on
+        // it deserves to be told, from whichever arm happens to describe the Copilot side (task: a
+        // review-feedback follow-up never answers a human reviewer in the owner's name on its own).
+        WithAdvisoryDetail(AwaitingReviewPhaseCore(pullRequest, run, now), run);
+
+    private static TaskPhase WithAdvisoryDetail(TaskPhase phase, RunDetails run) =>
+        AdvisoryClause(run) is { Length: > 0 } clause
+            ? phase with { Detail = phase.Detail.IsBlank() ? clause.Trim() : $"{phase.Detail}{clause}" }
+            : phase;
+
+    private static TaskPhase AwaitingReviewPhaseCore(string pullRequest, RunDetails run, DateTimeOffset now) =>
         // Ahead of every Copilot reading below, for the same reason AttentionComposer's own stacked
         // branch sits ahead of its two arms (task: the bar machinery treats an un-retargeted stacked
         // PR as not at the bar): the phase line and the attention line under it must never disagree,
@@ -685,10 +698,31 @@ internal static class TaskPhaseComposer
         string detail = run.UnresolvedHumanReviewThreads is { } human
             ? $"{count}, {human} from a human"
             : count;
+        detail += AdvisoryClause(run);
         return run.LastReviewThreadOutcomes.Count > 0
             ? $"{detail}; last triage: {DispositionSummary(run.LastReviewThreadOutcomes)}"
             : detail;
     }
+
+    /// <summary>
+    /// The threads a person opened that asked nothing, said out loud (task: a review-feedback
+    /// follow-up never answers a human reviewer in the owner's name on its own). Without this
+    /// clause the board shows an unresolved human thread and no lap, which reads as the machinery
+    /// having missed a person rather than having read them and decided, correctly, that nobody is
+    /// waiting. Silent when there are none, which is almost every row.
+    /// <para>
+    /// It says what was observed and no more. The archetype is the FYI beside an approval, but the
+    /// classifier accepts a reviewer with no verdict at all — a comment-only reviewer who asked
+    /// nothing — so naming an approval here would assert one nobody observed to an operator
+    /// reading how close the merge bar is (independent pre-PR review, cycle 1, adversarial lens).
+    /// </para>
+    /// </summary>
+    private static string AdvisoryClause(RunDetails run) => run.AdvisoryHumanReviewThreadIds.Count switch
+    {
+        0 => string.Empty,
+        1 => " (1 human thread asks nothing, not dispatched)",
+        var count => $" ({count} human threads ask nothing, not dispatched)",
+    };
 
     /// <summary>
     /// A follow-up's own triage (task: every review thread on a pull request gets a triage
