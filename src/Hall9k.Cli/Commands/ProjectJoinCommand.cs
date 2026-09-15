@@ -7,6 +7,7 @@ using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
@@ -222,6 +223,19 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             await EnsureRootFileAsync(
                 ledger, project.RepositoryPath, claimedFingerprint, key.PublicKeyLine, now,
                 committer, signingKey, cancellationToken);
+
+            // Genesis (idea 202383dc, T1): the node establishing a brand-new root is this
+            // project's own first owner-role member — self-written, the members ref's folder
+            // still empty. Project-scoped, unlike the root file above: a root is owner-wide (every
+            // project this owner joins shares one root.yaml lineage), but membership is this
+            // project's own fact alone, so it is only ever written here, never elsewhere.
+            bool wroteGenesisMember = await EnsureGenesisMemberFileAsync(
+                ledger, project.RepositoryPath, claimedFingerprint, now, committer, signingKey, cancellationToken);
+            if (wroteGenesisMember)
+            {
+                session.Events.Append(
+                    project.Id, ProjectDecider.VouchMember(project.Id, claimedFingerprint, ProjectMemberRole.Owner, now));
+            }
         }
 
         bool wroteNodeFile = await WriteNodeFileAsync(
@@ -404,6 +418,43 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
         // A conflict here means another join won the race to establish the identical root between
         // the read above and this write — the root exists either way, which is what this call wanted.
+    }
+
+    /// <summary>
+    /// Genesis (idea 202383dc, T1's own criterion 2): writes this project's first
+    /// <c>members/&lt;fingerprint&gt;.yaml</c>, role owner, only when the members ref does not
+    /// already hold one for this fingerprint — write-if-absent, the same shape
+    /// <see cref="EnsureRootFileAsync"/> already uses. Never overwrites an existing entry: a
+    /// second genesis join (a re-run, or a second node establishing what turns out to be the
+    /// identical root) finds the file already there and does nothing further.
+    /// </summary>
+    private static async Task<bool> EnsureGenesisMemberFileAsync(
+        ILedger ledger, string repositoryPath, string fingerprint, DateTimeOffset issuedAt,
+        LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
+    {
+        const string refName = "refs/hall9k/ledger/members";
+        string path = $"members/{fingerprint}.yaml";
+
+        LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
+        if (current.Exists)
+        {
+            return false;
+        }
+
+        string content = BuildYaml(
+            ("root_fingerprint", fingerprint),
+            ("role", ProjectMemberRole.Owner.Value),
+            ("issued_at", issuedAt.ToString("o", CultureInfo.InvariantCulture)));
+
+        LedgerWriteOutcome outcome = await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                repositoryPath, refName, path, content, ExpectedBlobId: null,
+                $"Establish {fingerprint} as this project's first owner-role member", committer, signingKey),
+            cancellationToken);
+
+        // A conflict here means another join won the race to establish the identical genesis
+        // member between the read above and this write — the entry exists either way.
+        return outcome.Verdict == LedgerWriteVerdict.Written;
     }
 
     /// <summary>How many times a conflicting ledger write retries against a fresh read before giving up.</summary>

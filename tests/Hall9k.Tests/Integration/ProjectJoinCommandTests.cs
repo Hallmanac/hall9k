@@ -89,13 +89,17 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         outcome.EstablishedRoot.Should().BeTrue();
         outcome.ClaimedOwnerFingerprint.Should().Be(outcome.KeyFingerprint);
 
-        ledger.Writes.Should().HaveCount(2, "the root file and the node file each write once");
+        ledger.Writes.Should().HaveCount(3, "the root file, the genesis members file, and the node file each write once");
         ledger.Writes.Should().OnlyContain(
             write => write.SigningKey != null && write.SigningKey!.PrivateKeyPath == outcome.PrivateKeyPath,
             "every ledger commit is signed with this node's own key");
 
         LedgerWriteRequest rootWrite = ledger.Writes.Single(w => w.RefName == $"refs/hall9k/ledger/owners/{outcome.KeyFingerprint}");
         rootWrite.Path.Should().Be($"owners/{outcome.KeyFingerprint}/root.yaml");
+
+        LedgerWriteRequest memberWrite = ledger.Writes.Single(w => w.RefName == "refs/hall9k/ledger/members");
+        memberWrite.Path.Should().Be($"members/{outcome.KeyFingerprint}.yaml");
+        memberWrite.Content.Should().Contain("owner");
 
         LedgerWriteRequest nodeWrite = ledger.Writes.Single(w => w.RefName == $"refs/hall9k/ledger/nodes/{outcome.NodeId}");
         nodeWrite.Path.Should().Be($"nodes/{outcome.NodeId}/node.yaml");
@@ -104,6 +108,9 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         OwnerDetails owner = (await session.LoadAsync<OwnerDetails>(project.OwnerId, cts.Token))!;
         owner.RootFingerprint.Should().Be(outcome.KeyFingerprint);
         owner.RootFingerprintVerified.Should().BeTrue();
+
+        ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
+        updatedProject.Members.Should().ContainKey(outcome.KeyFingerprint);
     }
 
     [Fact]
