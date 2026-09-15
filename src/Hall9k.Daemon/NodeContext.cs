@@ -19,22 +19,25 @@ public sealed class NodeContext
 
     /// <summary>
     /// <paramref name="ghIdentityReader"/> is <see langword="null"/> for every caller that never
-    /// asked for a GitHub identity refresh at all — every test through
+    /// asked for a GitHub identity read at all — every test through
     /// <c>NodeBootstrapSeed.NewNodeAsync</c> (or the two exempted files that seed a connection ahead
-    /// of a deliberately deferred call here) included, none of which pass one. <c>DispatchLoop</c>,
-    /// the one place bootstrap actually happens on a real daemon start, passes
-    /// <see cref="NodeBootstrap.RealGhIdentityReader"/> so this install's numeric id and login are
-    /// current at daemon start too, not only at <c>h9k project add</c>/<c>h9k project join</c>. A
-    /// plain, unseamed daemon-start call was tried here first and reverted (independent pre-PR
-    /// review, cycle 1, conformance and adversarial lenses, both medium): it shelled to the real
-    /// <c>gh</c> unconditionally, reaching the real network on every one of <c>NodeBootstrapSeed</c>'s
-    /// roughly 280 integration-test call sites — the one path that seed exists specifically to keep
-    /// off gh and the network (PLAN.md §16 #110). <see cref="NodeBootstrap.GhIdentityReader"/> is
-    /// the seam that lets a real daemon start opt in without dragging every test along with it.
+    /// of a deliberately deferred call here) included, none of which pass one, and both
+    /// <see cref="NodeBootstrap.EnsureAsync"/> below and <see cref="NodeBootstrap.RefreshGitHubIdentityAsync"/>
+    /// treat an omitted reader as "no live read available" rather than falling back to one of their
+    /// own. <c>DispatchLoop</c>, the one place bootstrap actually happens on a real daemon start,
+    /// passes a reader built from <c>Hall9k.Connectors.WorkItems.ProjectGitHubClient.AmbientIdentityReader</c>
+    /// so this install's numeric id and login are current at daemon start too, not only at
+    /// <c>h9k project add</c>/<c>h9k project join</c>. A plain, unseamed daemon-start call was tried
+    /// here first and reverted (independent pre-PR review, cycle 1, conformance and adversarial
+    /// lenses, both medium): it shelled to the real <c>gh</c> unconditionally, reaching the real
+    /// network on every one of <c>NodeBootstrapSeed</c>'s roughly 280 integration-test call sites —
+    /// the one path that seed exists specifically to keep off gh and the network (PLAN.md §16
+    /// #110). <see cref="NodeBootstrap.GhIdentityReader"/> is the seam that lets a real daemon start
+    /// opt in without dragging every test along with it.
     /// <para>
-    /// Bounded rather than blocking: <c>NodeBootstrap</c>'s own gh read (<c>RunQuick</c>) gives up
-    /// after 3 seconds with both output streams drained on background callbacks, so a daemon start
-    /// against a gh that cannot answer at all still completes — this method's own callers
+    /// Bounded rather than blocking: the ambient reader <c>DispatchLoop</c> passes gives up after 3
+    /// seconds with both output streams drained on background callbacks, so a daemon start against
+    /// a gh that cannot answer at all still completes — this method's own callers
     /// (<see cref="WaitForInitializationAsync"/>) wait at most that long longer than before, never
     /// unboundedly.
     /// </para>
@@ -43,7 +46,7 @@ public sealed class NodeContext
         IDocumentStore store, CancellationToken cancellationToken, GhIdentityReader? ghIdentityReader = null)
     {
         await using IDocumentSession session = store.LightweightSession();
-        _context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        _context = await NodeBootstrap.EnsureAsync(session, cancellationToken, ghIdentityReader);
         await session.SaveChangesAsync(cancellationToken);
 
         if (ghIdentityReader is not null)

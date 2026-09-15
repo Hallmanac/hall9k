@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project;
@@ -133,7 +134,11 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
                 + "drop --no-home and let the home hold the clone.");
         }
 
-        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        // Ambient (no account pinned): no GitHub connection is confirmed yet at genesis, so there
+        // is no account for ProjectGitHubClient to resolve and run this as — the identical reason
+        // DispatchLoop's own daemon-start bootstrap uses the same ambient reader.
+        GhIdentityReader ghIdentityReader = ProjectGitHubClient.AmbientIdentityReader(Environment.CurrentDirectory);
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken, ghIdentityReader);
 
         // Read again right here rather than trusting whatever this connection carried from an
         // earlier bootstrap: an install that only just ran 'gh auth login' since its genesis
@@ -145,7 +150,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         // aggregating), which would misread a fully-authenticated gh as unconfirmed. Falling back
         // to whatever the connection already carries covers the opposite case: gh being briefly
         // unreachable must not un-confirm an install that already has a real account on file.
-        bool confirmedLive = await NodeBootstrap.RefreshGitHubIdentityAsync(session, context.ConnectionId, cancellationToken);
+        bool confirmedLive = await NodeBootstrap.RefreshGitHubIdentityAsync(session, context.ConnectionId, cancellationToken, ghIdentityReader);
         ConnectionDetails? githubConnection = await session.LoadAsync<ConnectionDetails>(context.ConnectionId, cancellationToken);
         RequireConfirmedGitHubAccount(confirmedLive || githubConnection?.GitHubAccountId is not null);
 

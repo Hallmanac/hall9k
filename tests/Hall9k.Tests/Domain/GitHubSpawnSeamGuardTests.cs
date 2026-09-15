@@ -40,11 +40,13 @@ namespace Hall9k.Tests.Domain;
 /// <c>ProjectScopedGitHubRunnerTests</c> and <c>ProjectGitHubClientTests</c> actually exercising the
 /// resolution. What this guard catches is the specific, mechanical regression class both scans name:
 /// a raw spawn reappearing, or a connector construction reverting to the unaccounted default.
-/// <c>NodeBootstrap.RunQuick</c> is the one deliberate exception this migration leaves in place —
-/// it discovers the very GitHub identity <see cref="Hall9k.Connectors.WorkItems.ProjectGitHubClient.ResolveAccountAsync"/>
-/// later reads, so there is no account yet to resolve, and its raw <c>ProcessStartInfo(fileName, arguments)</c>
-/// construction is generic (the literal <c>"gh"</c> is only ever in the call to it, never in the
-/// <c>ProcessStartInfo</c> shape itself), so neither scan below needs to name it explicitly.
+/// <c>NodeBootstrap.RunQuick</c> is left generic on purpose (a raw <c>ProcessStartInfo(fileName,
+/// arguments)</c> construction with no literal <c>"gh"</c> in its own shape) but is no longer a gh
+/// spawn at all: its one remaining caller is the git-config read, and the identity read it used to
+/// make (<c>gh api user</c>, ahead of any account existing for
+/// <see cref="Hall9k.Connectors.WorkItems.ProjectGitHubClient.ResolveAccountAsync"/> to resolve)
+/// now runs ambient through <c>ProjectGitHubClient.AmbientIdentityReader</c> instead, so neither
+/// scan below needs to name an exception for it.
 /// </para>
 /// </summary>
 public sealed class GitHubSpawnSeamGuardTests

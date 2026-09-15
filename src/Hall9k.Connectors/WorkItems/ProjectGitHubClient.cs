@@ -1,6 +1,7 @@
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -137,6 +138,61 @@ public sealed class ProjectGitHubClient(
                 ? RunAmbientAsync(workingDirectory, arguments, cancellationToken)
                 : throw new ArgumentOutOfRangeException(
                     nameof(fileName), fileName, "This runner only ever spawns gh.");
+
+    /// <summary>
+    /// How long <see cref="AmbientIdentityReader"/> gives <c>gh api user</c> to answer — the same
+    /// bound <c>NodeBootstrap</c>'s own raw spawn always used before this method replaced it, kept
+    /// short rather than <see cref="ExternalProcess.Deadline"/>'s two minutes so an ordinary
+    /// <c>h9k</c> invocation never hangs on a wedged <c>gh</c> during bootstrap.
+    /// </summary>
+    private static readonly TimeSpan BootstrapIdentityDeadline = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Adapts <see cref="RunAmbientAsync"/> into the synchronous, parameterless
+    /// <see cref="GhIdentityReader"/> shape <c>NodeBootstrap.EnsureAsync</c> and
+    /// <c>RefreshGitHubIdentityAsync</c> take — the seam the Cli and the daemon each supply their
+    /// own instance of at the one or two call sites that actually need a live read (<c>h9k project
+    /// add</c>, <c>h9k project join</c>, and the daemon's own start), so bootstrap's identity read
+    /// runs through this class, the platform's one place that ever spawns <c>gh</c>, rather than a
+    /// raw process of its own (independent pre-PR review, cycle 1, human verdict). Ambient, never
+    /// account-pinned, because bootstrap runs before any project — or any registered GitHub
+    /// connection — exists: there is no account yet to resolve, since
+    /// <see cref="ResolveAccountAsync"/> reads the very connection this call is what first
+    /// confirms. <c>Hall9k.Domain</c> gains no reference to <c>Hall9k.Connectors</c> from this: the
+    /// <see cref="GhIdentityReader"/> delegate type is already Domain's own, and only the Cli and
+    /// daemon composition roots (which already reference this class) ever construct one.
+    /// <para>
+    /// <paramref name="runner"/> defaults to the real transport bound to
+    /// <see cref="BootstrapIdentityDeadline"/> rather than <see cref="ExternalProcess.Deadline"/>'s
+    /// two minutes; a test pins its own fake here the same way every other seam on this class does,
+    /// rather than shelling to a real <c>gh</c>.
+    /// </para>
+    /// </summary>
+    public static GhIdentityReader AmbientIdentityReader(string workingDirectory, EnvironmentProcessRunner? runner = null)
+    {
+        ProjectGitHubClient client = new(runner: runner ?? ExternalProcess.RunnerWithEnvironmentAndDeadline(BootstrapIdentityDeadline));
+        return () =>
+        {
+            try
+            {
+                ProcessResult result = client
+                    .RunAmbientAsync(workingDirectory, ["api", "user"], CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                return result.ExitCode == 0 && result.StandardOutput.IsNotBlank()
+                    ? result.StandardOutput.Trim()
+                    : null;
+            }
+            // A gh that cannot answer at all (not installed, wedged, no network) is exactly as
+            // unconfirmed as one that answers with a non-zero exit — NodeBootstrap's own contract,
+            // unchanged from the raw spawn this replaces, is best-effort with no exception ever
+            // escaping the reader.
+            catch (Exception exception) when (exception is TimeoutException or InvalidOperationException
+                or System.ComponentModel.Win32Exception)
+            {
+                return null;
+            }
+        };
+    }
 
     /// <summary>
     /// The account this project's own repository access runs as — its registered GitHub

@@ -16,16 +16,17 @@ public sealed record BootstrapContext(Guid OwnerId, Guid NodeId, Guid Connection
 
 /// <summary>
 /// How <see cref="NodeBootstrap"/> reads gh's own identity — a delegate rather than a direct call
-/// to the private, real <c>GhUserJson</c>, so a caller can pin a fake instead of the real process.
-/// <see cref="EnsureAsync"/> and <see cref="RefreshGitHubIdentityAsync"/> both default an omitted
-/// reader to the real one (<c>ghIdentityReader ?? GhUserJson</c>), unchanged from before this seam
-/// existed — <c>h9k project add</c> and <c>h9k project join</c> still get the live call without
-/// passing anything. <see cref="Hall9k.Daemon.NodeContext.InitializeAsync"/> is the one caller with
-/// the opposite default: its own <c>ghIdentityReader</c> parameter decides whether it calls
-/// <see cref="RefreshGitHubIdentityAsync"/> at all, defaulting to skipping it entirely, so every one
-/// of <c>NodeBootstrapSeed</c>'s roughly 280 integration-test call sites (which never pass one) never
-/// refreshes and never reaches the real gh — only <c>DispatchLoop</c>, the one place bootstrap
-/// actually happens on a real daemon start, passes <see cref="RealGhIdentityReader"/> and opts in.
+/// to a real gh process, so a caller can pin a fake instead. <c>Hall9k.Domain</c> never constructs
+/// a live one of these itself: <see cref="EnsureAsync"/> and <see cref="RefreshGitHubIdentityAsync"/>
+/// both leave an omitted reader as <see langword="null"/> and skip the gh read entirely rather than
+/// falling back to a raw process of their own, which would need <c>Hall9k.Domain</c> to reference
+/// <c>Hall9k.Connectors</c> (where the platform's one real gh transport, <c>ProjectGitHubClient</c>,
+/// lives). The live reader is instead built by <c>Hall9k.Connectors.WorkItems.ProjectGitHubClient
+/// .AmbientIdentityReader</c> and supplied explicitly by the two call sites that need a live read —
+/// <c>h9k project add</c> and <c>h9k project join</c> (Cli) — and by <c>DispatchLoop</c>, the one
+/// place bootstrap actually happens on a real daemon start (Daemon). Every one of
+/// <c>NodeBootstrapSeed</c>'s roughly 280 integration-test call sites (which never pass one) never
+/// refreshes and never reaches the real gh.
 /// </summary>
 public delegate string? GhIdentityReader();
 
@@ -36,9 +37,6 @@ public delegate string? GhIdentityReader();
 /// </summary>
 public static class NodeBootstrap
 {
-    /// <summary>The genuine gh call, for the one production caller that wants it (<c>DispatchLoop</c>).</summary>
-    public static readonly GhIdentityReader RealGhIdentityReader = GhUserJson;
-
     public static async Task<BootstrapContext> EnsureAsync(
         IDocumentSession session, CancellationToken cancellationToken, GhIdentityReader? ghIdentityReader = null)
     {
@@ -82,7 +80,7 @@ public static class NodeBootstrap
         Guid connectionId = connection?.Id ?? DomainId.New();
         if (connection is null)
         {
-            GitHubAccountIdentity? identity = ParseGhIdentity((ghIdentityReader ?? GhUserJson)());
+            GitHubAccountIdentity? identity = ParseGhIdentity(ghIdentityReader?.Invoke());
             ConnectionRegistered registered = ConnectionDecider.Register(
                 connectionId, ownerId, WorkItemProvider.GitHub,
                 identity?.Login ?? Environment.UserName, CredentialReference.GhCli, now);
@@ -109,7 +107,8 @@ public static class NodeBootstrap
     /// <see cref="GhIdentityReader"/> parameter), at <c>h9k project add</c>, and at
     /// <c>h9k project join</c>: none of <see cref="EnsureAsync"/>'s roughly forty other call sites
     /// naturally trigger a GitHub read the way Jira's own <c>TrackerClaimGate</c> does lazily on
-    /// first claim-gate check (idea 202383dc, A2b), so each of those three moments asks explicitly.
+    /// first claim-gate check (idea 202383dc, A2b), so each of those three moments asks explicitly,
+    /// passing a reader built by <c>Hall9k.Connectors.WorkItems.ProjectGitHubClient.AmbientIdentityReader</c>.
     /// Best-effort: a <c>gh</c> that cannot answer (not installed, not authenticated, offline) leaves
     /// the connection's already-recorded identity exactly as it was, never guessed at (AGENTS.md).
     /// <para>
@@ -126,7 +125,7 @@ public static class NodeBootstrap
     public static async Task<bool> RefreshGitHubIdentityAsync(
         IDocumentSession session, Guid connectionId, CancellationToken cancellationToken, GhIdentityReader? ghIdentityReader = null)
     {
-        if (ParseGhIdentity((ghIdentityReader ?? GhUserJson)()) is not { } observed)
+        if (ghIdentityReader?.Invoke() is not { } json || ParseGhIdentity(json) is not { } observed)
         {
             return false;
         }
@@ -159,8 +158,6 @@ public static class NodeBootstrap
     private static string? GitConfig(string key) => RunQuick("git", $"config {key}");
 
     internal sealed record GitHubAccountIdentity(long Id, string Login);
-
-    private static string? GhUserJson() => RunQuick("gh", "api user");
 
     /// <summary>
     /// Split from the raw gh call so it is unit-testable against recorded gh output without a
@@ -202,12 +199,15 @@ public static class NodeBootstrap
     }
 
     /// <summary>
-    /// The 3-second bound is real only because both streams are drained on background callbacks
-    /// rather than a blocking <c>ReadToEnd()</c> ahead of <c>WaitForExit</c> — that ordering waits
-    /// on end-of-file from the pipe, which a <c>gh</c> hung on network or credential state never
-    /// sends, so the nominal timeout below it was never reached (found in this same task's own
-    /// self-review). Reading both streams, not just stdout, also avoids the classic redirected-
-    /// process deadlock: an unread stderr pipe can fill and block the child from exiting at all.
+    /// <c>git config</c>'s own reader, the one remaining caller — the former <c>gh api user</c>
+    /// read this also served now runs through <c>ProjectGitHubClient.AmbientIdentityReader</c>
+    /// instead, so this method never spawns <c>gh</c>. The 3-second bound is real only because both
+    /// streams are drained on background callbacks rather than a blocking <c>ReadToEnd()</c> ahead
+    /// of <c>WaitForExit</c> — that ordering waits on end-of-file from the pipe, which a hung
+    /// <c>git</c> credential helper never sends, so the nominal timeout below it was never reached
+    /// (found in this same task's own self-review). Reading both streams, not just stdout, also
+    /// avoids the classic redirected-process deadlock: an unread stderr pipe can fill and block the
+    /// child from exiting at all.
     /// </summary>
     private static string? RunQuick(string fileName, string arguments)
     {
