@@ -1298,6 +1298,19 @@ public sealed class RunAggregate
         ParkedOnReviewDisagreement = true;
     }
 
+    /// <summary>
+    /// The review-feedback sibling of <see cref="Apply(ReviewDisagreementParked)"/> (task: a
+    /// review-feedback follow-up never answers a human reviewer in the owner's name on its own),
+    /// landing in the same two places deliberately: the drafts are what <c>h9k review resolve</c>
+    /// posts, edits, or drops, and the flag is what makes it require one of those three answers
+    /// before the run continues. One lever for the operator, whichever park drafted the reply.
+    /// </summary>
+    public void Apply(HumanThreadReplyParked @event)
+    {
+        ParkedDisagreements = @event.Drafts;
+        ParkedOnReviewDisagreement = true;
+    }
+
     public void Apply(ReviewParked @event)
     {
         // Captured before the overwrite: State (and, for interactive mode's own gate, ReviewPhase)
