@@ -953,12 +953,26 @@ public sealed class CloseoutEngine(
                         + $"branch {project.BaseBranch} — a mechanical rebase onto {project.BaseBranch} would not "
                         + "address what GitHub reads as conflicting",
                         null)
-                    : await TryMechanicalRebaseAsync(session, fence.Version, project, run, cancellationToken);
+                    : await TryMechanicalRebaseAsync(session, fence.Version, project, run, task, cancellationToken);
             session.Events.Append(run.Id, new PullRequestMechanicalRebaseAttempted(
                 run.Id, mechanical.Succeeded, mechanical.Detail, mechanical.PushedCommit, now));
 
             if (mechanical.Succeeded)
             {
+                // Records the tip this path just force-pushed on the task's own durable stream, the
+                // same as PullRequestOpener.RecordBranchPushedAsync does for its own push: without
+                // this, the task's recorded tip goes stale the moment this path runs, and the
+                // guard's recorded-tip door — the one this fix just wired into the call above — can
+                // never recognize this path's own next push (conformance + adversarial review,
+                // cycle 1). mechanical.Succeeded always carries a non-null PushedCommit (both
+                // success returns above set it from a resolved HEAD), but the null-check stays
+                // rather than trusting that pairing blindly.
+                if (mechanical.PushedCommit is not null)
+                {
+                    session.Events.Append(
+                        run.TaskId, new TaskBranchPushed(run.TaskId, run.Branch, mechanical.PushedCommit, now));
+                }
+
                 // The run stays exactly where it was (AwaitingReview): the very next sweep
                 // re-inspects the newly pushed head and naturally observes whatever GitHub's CI
                 // reports for it — all green needs nothing further here, a failing check reopens
@@ -3575,7 +3589,7 @@ public sealed class CloseoutEngine(
     /// </summary>
     private async Task<MechanicalRebaseOutcome> TryMechanicalRebaseAsync(
         IDocumentSession session, long fenceVersion, ProjectDetails project, RunDetails run,
-        CancellationToken cancellationToken)
+        TaskAggregate task, CancellationToken cancellationToken)
     {
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
         string worktreePath = run.WorktreePath;
@@ -3652,7 +3666,22 @@ public sealed class CloseoutEngine(
             rebaseApplied = true;
 
             ProcessResult headCommit = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
-            string pushedCommit = headCommit.ExitCode == 0 ? headCommit.StandardOutput.Trim() : "unknown";
+            if (headCommit.ExitCode != 0)
+            {
+                // A rebase that applied cleanly but left HEAD unreadable must not fall through as a
+                // success carrying a placeholder tip: that placeholder would still satisfy
+                // mechanical.Succeeded's own non-null contract at the call site and get appended as
+                // this task's recorded TaskBranchPushed tip, permanently unmatchable by a future
+                // recorded-tip check and overwriting whatever real tip was recorded before it
+                // (independent review, PR #392 — never guess at unobserved facts).
+                await RestoreWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, rebaseApplied, cancellationToken);
+                return new MechanicalRebaseOutcome(
+                    false,
+                    $"git rev-parse HEAD after the mechanical rebase failed: {FirstLine(headCommit.StandardError)}",
+                    null);
+            }
+
+            string pushedCommit = headCommit.StandardOutput.Trim();
 
             if (preRebaseHead is not null && preRebaseHead == pushedCommit)
             {
@@ -3663,13 +3692,21 @@ public sealed class CloseoutEngine(
                     null);
             }
 
+            // The third door, mirroring PullRequestOpener's own recordedPushedTips: the caller
+            // already carries the TaskAggregate this sweep fenced, so this fast path reads the
+            // same recorded tip the opener would, rather than falling back to the ancestor-or-reflog
+            // doors alone as it did before this fix (independent pre-PR review, cycle 1, both
+            // lenses — the recorded tip went stale on this path because it never wrote one either;
+            // see the append after this method's own success return, below).
+            HashSet<string> recordedPushedTips = task.LastPushedBranch == run.Branch
+                && task.LastPushedBranchTip is { } recordedTip
+                ? [recordedTip]
+                : [];
+
             try
             {
-                // No recorded-pushed-tips set to hand the guard here: this mechanical fast path
-                // reads only the run and the project, not the task's own TaskDetails, so it falls
-                // back to the guard's ancestor-or-reflog doors alone, exactly as before this fix.
                 await ForceWithLeasePusher.PushAsync(
-                    git, worktreePath, run.Branch, new HashSet<string>(), cancellationToken);
+                    git, worktreePath, run.Branch, recordedPushedTips, cancellationToken);
             }
             catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
             {

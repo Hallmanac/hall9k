@@ -2398,6 +2398,92 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         (int logExitCode, string logOutput) = TryGit(worktree.Path, $"log --format=%s origin/{worktree.Branch}");
         logExitCode.Should().Be(0);
         logOutput.Should().Contain("main moved, no overlap");
+
+        // Independent pre-PR review, cycle 1 (both lenses): this fast path used to hand
+        // ForceWithLeasePusher an empty recordedPushedTips set and never wrote its own push back
+        // to the task, so the task's recorded tip went stale the moment this path ran. Both halves
+        // of the fix are asserted here: the tip this push just landed at is recorded on the task's
+        // own durable stream, the same as PullRequestOpener's own push already was.
+        task.LastPushedBranch.Should().Be(worktree.Branch);
+        task.LastPushedBranchTip.Should().Be(run.LastMechanicalRebasePushedCommit,
+            "the mechanical rebase path must record its own push the same way PullRequestOpener's does");
+    }
+
+    /// <summary>
+    /// Closes the medium defect an independent pre-PR review found (cycle 1, both lenses): this
+    /// fast path read no recorded tip before this fix, so after a sibling session's history
+    /// surgery wiped the branch's own reflog (the 2026-09-15 origin incident's exact mechanism),
+    /// the guard's ancestor and reflog doors both refused a tip this same task had already
+    /// legitimately pushed, and the mechanical attempt fell back to a full review lap it did not
+    /// need. A task-stream <c>TaskBranchPushed</c> record for the tip already on origin — exactly
+    /// what a prior sweep's own successful push would have left behind — is now enough on its own.
+    /// </summary>
+    [Fact]
+    public async Task A_conflicting_pull_request_still_rebases_mechanically_after_its_own_recorded_tips_reflog_is_wiped()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) =
+            await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        (_, string originalTip) = TryGit(worktree.Path, "rev-parse HEAD");
+        originalTip = originalTip.Trim();
+
+        // The recorded tip a prior successful push would have left on the task's own durable
+        // stream — TaskBranchPushed is appended directly here rather than through a real push,
+        // since SeedAwaitingReviewAsync's own push predates this fix and never recorded one.
+        await using (IDocumentSession recordSession = store.LightweightSession())
+        {
+            recordSession.Events.Append(
+                taskId,
+                new Hall9k.Domain.Features.Tasks.Events.TaskBranchPushed(taskId, worktree.Branch, originalTip, Now));
+            await recordSession.SaveChangesAsync(cts.Token);
+        }
+
+        // origin/main moves forward with a change to a file the task branch never touched — a
+        // real, cleanly-rebasable divergence, the same shape the sibling test above sets up.
+        File.WriteAllText(Path.Combine(repoPath, "OTHER.md"), "unrelated change on main\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm \"main moved, no overlap\"");
+        Git(repoPath, "push -q origin main");
+
+        // Reproduce the origin incident directly in the retained worktree: rewrite the branch's
+        // own local history (an amend, the narrative-history shape a follow-up lap performs) and
+        // then wipe its reflog, so neither the ancestor nor the reflog door can call originalTip
+        // safe on its own — only the TaskBranchPushed record just appended above can.
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output, absorbed\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -q --amend -m \"work, absorbed\"");
+        Git(worktree.Path, "reflog expire --expire=now --all");
+        Git(worktree.Path, "gc --prune=now --quiet");
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsConflicting = true },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastMechanicalRebaseSucceeded.Should().BeTrue(
+            "the recorded tip must have let this land even though the ancestor and reflog doors both refuse it");
+        run.LastMechanicalRebaseDetail.Should().Contain("force-pushed cleanly");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "the task is never reopened for a clean mechanical rebase");
+        task.LastPushedBranchTip.Should().Be(run.LastMechanicalRebasePushedCommit,
+            "this push's own tip replaces the earlier recorded one on the task's stream");
+
+        (int exitCode, string output) = TryGit(repoPath, $"ls-remote origin refs/heads/{worktree.Branch}");
+        exitCode.Should().Be(0);
+        output.Trim().Split('\t')[0].Should().Be(run.LastMechanicalRebasePushedCommit);
+
+        (int logExitCode, string logOutput) = TryGit(worktree.Path, $"log --format=%s origin/{worktree.Branch}");
+        logExitCode.Should().Be(0);
+        logOutput.Should().Contain("main moved, no overlap");
+        logOutput.Should().Contain("work, absorbed");
     }
 
     /// <summary>
