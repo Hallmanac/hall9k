@@ -125,7 +125,16 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ProcessRunner? run
             "git", ["ls-remote", "origin", "refs/hall9k/messages/*"], repositoryPath, cancellationToken);
         if (result.ExitCode != 0)
         {
-            return [];
+            // Thrown, never swallowed into an empty tip list: a genuine network, credential, or
+            // repository failure must never look identical to "no message refs yet", or the sweep
+            // could silently miss messages while reading the idle cadence as if nothing were
+            // pending. MessageSweepEngine.ProbeAndReadAsync already catches and logs exactly this
+            // ("Message probe failed... will retry next sweep"), the same retry-next-tick shape a
+            // probe failure always had — this only routes the failure through that existing path
+            // instead of a second, silent one.
+            throw new InvalidOperationException(
+                $"git ls-remote against {repositoryPath} for the message probe failed "
+                + $"(exit {result.ExitCode}): {result.StandardError.Trim()}");
         }
 
         List<MessageOutboxTip> tips = [];

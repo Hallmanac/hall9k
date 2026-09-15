@@ -18,9 +18,12 @@ public sealed class MessageAggregate
     /// <summary>
     /// The envelope's own timestamp — set once, at <see cref="Apply(MessageQueued)"/>, and never
     /// moved by a later flush attempt or retry: the wire content a flush re-encodes must stay
-    /// byte-for-byte identical across retries, and the sweep's own squash-by-age filter
-    /// (idea 202383dc, M1b) reads this rather than <see cref="SentAt"/> for the same reason —
-    /// how long this envelope has actually existed, not when this node last tried to land it.
+    /// byte-for-byte identical across retries. The sweep's own squash-by-age filter (idea
+    /// 202383dc, M1b) deliberately reads <see cref="SentAt"/> instead, never this field: a push
+    /// rejected for longer than the retention window still lands with a fresh <see cref="SentAt"/>
+    /// the moment the next flush finally succeeds, so measuring from this much older queue time
+    /// would force-remove an envelope moments after a reader's first chance to fetch it
+    /// (independent pre-PR review, cycle 1, adversarial lens).
     /// </summary>
     public DateTimeOffset QueuedAt { get; private set; }
 
