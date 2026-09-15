@@ -127,7 +127,8 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
         versions[key] = versions.GetValueOrDefault(key) + 1;
 
     public async Task<TransportReadResult> ReadSinceAsync(
-        string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken)
+        string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken,
+        TrustChain? trustChain = null)
     {
         LedgerFile nodeFile = await ledger.ReadAsync(
             repositoryPath, $"refs/hall9k/ledger/nodes/{senderNodeId}", $"nodes/{senderNodeId}/node.yaml",
@@ -150,7 +151,7 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
                 // Malformed key line — falls through to SenderNotVouched below, same as "no key at all".
             }
 
-            TrustChain trustChain = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
+            TrustChain chain = trustChain ?? await chainReader.ComputeAsync(repositoryPath, cancellationToken);
             if (fingerprint is null)
             {
                 return TransportReadResult.SenderNotVouched;
@@ -160,7 +161,7 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
             // GitLedgerMessageTransport now enforces (independent pre-PR review, cycle 1,
             // conformance and adversarial lenses, medium), so a test driving this fake against a
             // real FakeLedgerChainReader exercises the same rule production does.
-            if (!trustChain.IsAllowedSigner(fingerprint, senderNodeId))
+            if (!chain.IsAllowedSigner(fingerprint, senderNodeId))
             {
                 return TransportReadResult.NotVouched(
                     "this sender's own node file exists, but its key is not currently vouched into any "

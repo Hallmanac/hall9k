@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Marten;
 using Microsoft.Extensions.Logging;
@@ -43,6 +44,12 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
     /// or finds real envelopes beyond it, the cursor is left exactly where it was, rather than
     /// silently skipping ahead over content this sweep never looked at.
     /// </param>
+    /// <param name="trustChain">
+    /// Passed straight through to <see cref="IMessageTransport.ReadSinceAsync"/> — when a caller
+    /// (<c>MessageSweepEngine.ProbeAndReadAsync</c>) already computed one this same sweep, reusing
+    /// it avoids walking the whole ledger chain again for every sender it reads in that same tick.
+    /// Null still means "let the transport compute it fresh".
+    /// </param>
     public async Task<MessageInboxSweepResult> ReadFromAsync(
         IDocumentSession session,
         string repositoryPath,
@@ -51,6 +58,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         string myOwnerFingerprint,
         DateTimeOffset now,
         long? sinceSeqOverride = null,
+        TrustChain? trustChain = null,
         CancellationToken cancellationToken = default)
     {
         Guid inboxStreamId = MessageStreamId.ForInbox(senderNodeId);
@@ -59,7 +67,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         long persistedCursor = inbox?.HighestSeqReceived ?? 0;
         long readFrom = sinceSeqOverride ?? persistedCursor;
 
-        TransportReadResult read = await transport.ReadSinceAsync(repositoryPath, senderNodeId, readFrom, cancellationToken);
+        TransportReadResult read = await transport.ReadSinceAsync(repositoryPath, senderNodeId, readFrom, cancellationToken, trustChain);
         if (!read.SenderVouched)
         {
             logger?.LogWarning(

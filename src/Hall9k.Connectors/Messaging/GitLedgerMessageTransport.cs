@@ -232,7 +232,8 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
     }
 
     public async Task<TransportReadResult> ReadSinceAsync(
-        string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken)
+        string repositoryPath, Guid senderNodeId, long sinceSeq, CancellationToken cancellationToken,
+        TrustChain? trustChain = null)
     {
         string nodeFileRefName = $"refs/hall9k/ledger/nodes/{senderNodeId}";
         string nodeFilePath = $"nodes/{senderNodeId}/node.yaml";
@@ -265,10 +266,13 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
         // happens to have vouched (independent pre-PR review, cycle 1, conformance and adversarial
         // lenses, medium): without the node-id check, any member could overwrite senderNodeId's own
         // self-announced node file with their own key and have their own messages accepted as if
-        // they were that node. Recomputed fresh every read, so a revocation takes effect on the
-        // very next sweep.
-        TrustChain trustChain = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
-        if (!trustChain.IsAllowedSigner(senderFingerprint, senderNodeId))
+        // they were that node. trustChain, when the caller already computed one this same sweep
+        // (MessageSweepEngine.ProbeAndReadAsync, reading several senders in one tick), is used as
+        // is rather than walking the whole ledger again per sender; a caller reading only one
+        // sender still gets a fresh computation, exactly as before (independent pre-PR review,
+        // cycle 1, conformance lens, low).
+        TrustChain chain = trustChain ?? await chainReader.ComputeAsync(repositoryPath, cancellationToken);
+        if (!chain.IsAllowedSigner(senderFingerprint, senderNodeId))
         {
             return TransportReadResult.NotVouched(
                 "this sender's own node file exists, but its key is not currently vouched into any "
@@ -412,12 +416,27 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
     /// rather than the exit code alone. Any other non-zero exit — a network drop, a credential
     /// failure — is a real failure the caller must never treat as "nothing new": the local ref, if
     /// one exists from an earlier successful fetch, would otherwise be read as if it were current.
+    /// A confirmed-missing remote ref also clears any local copy an earlier fetch left behind, so a
+    /// squashed-away or force-deleted outbox is read as genuinely empty rather than whatever the
+    /// stale local ref still points at (independent review finding, the identical gap
+    /// <c>GitLedgerChainReader</c>'s own <c>FetchRefAsync</c> had).
     /// </summary>
     private async Task<bool> FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
     {
         ProcessResult result = await runner("git", ["fetch", "origin", $"+{refName}:{refName}"], repositoryPath, cancellationToken);
-        return result.ExitCode == 0
-            || result.StandardError.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase);
+        if (result.ExitCode == 0)
+        {
+            return true;
+        }
+
+        if (!result.StandardError.Contains("couldn't find remote ref", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        // Best-effort: if no local copy exists either, this is simply a no-op.
+        await runner("git", ["update-ref", "-d", refName], repositoryPath, cancellationToken);
+        return true;
     }
 
     /// <summary>Verifies one specific commit — the commit that introduced the envelope path being
