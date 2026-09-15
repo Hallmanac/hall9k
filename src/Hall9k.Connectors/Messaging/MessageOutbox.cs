@@ -119,13 +119,30 @@ public sealed class MessageOutbox(IMessageTransport transport)
     }
 
     /// <summary>
-    /// Squashes this node's own outbox to envelopes younger than <paramref name="retention"/>
+    /// Squashes this node's own outbox to envelopes sent within <paramref name="retention"/>
     /// (idea 202383dc, M1b's retention rule) — reads only <c>SentAt is not null</c> messages
     /// (anything still pending a flush is not physically in the ref yet, so it is never a squash
     /// candidate at all) and rewrites the transport's own copy to hold exactly the survivors.
     /// Touches nothing in the local event store: a message's own history — sent, resent, received,
     /// handled — is a fact this node already recorded, and squashing the outbox never un-happens
     /// it, it only stops re-shipping old bytes over the wire.
+    /// <para>
+    /// The cutoff is measured against <see cref="MessageDetails.SentAt"/>, never
+    /// <see cref="MessageDetails.QueuedAt"/>: a node that could not reach origin for longer than
+    /// <paramref name="retention"/> still has every envelope land with a fresh <c>SentAt</c> the
+    /// moment its next flush finally succeeds, so measuring from the much older queue time would
+    /// force-remove an envelope moments after a reader's very first chance to fetch it
+    /// (independent pre-PR review, cycle 1, adversarial lens).
+    /// </para>
+    /// <para>
+    /// Calls <see cref="IMessageTransport.SquashAsync"/> only when at least one sent envelope has
+    /// actually aged out: every survivor is already physically present in the transport's own
+    /// copy, so a squash with nothing to drop would only force-push a fresh orphan commit under a
+    /// new timestamp for no observable change — on a node's fast sweep cadence, that is thousands
+    /// of pointless force-pushes a day, and it moves the outbox tip on every tick even for a node
+    /// that has never sent anything, which defeats the daemon's own message sweep's unmoved-tip
+    /// skip for every reader watching it (independent pre-PR review, cycle 1, both lenses).
+    /// </para>
     /// </summary>
     public async Task<MessageSquashResult> SquashAsync(
         IDocumentSession session,
@@ -138,11 +155,17 @@ public sealed class MessageOutbox(IMessageTransport transport)
         CancellationToken cancellationToken)
     {
         DateTimeOffset cutoff = now - retention;
-        IReadOnlyList<MessageDetails> survivors = await session.Query<MessageDetails>()
-            .Where(message => message.FromNodeId == fromNodeId && message.SentAt != null && message.QueuedAt >= cutoff)
+        IReadOnlyList<MessageDetails> sent = await session.Query<MessageDetails>()
+            .Where(message => message.FromNodeId == fromNodeId && message.SentAt != null)
             .OrderBy(message => message.Seq)
             .ToListAsync(cancellationToken);
 
+        if (!sent.Any(message => message.SentAt < cutoff))
+        {
+            return new MessageSquashResult(sent.Count);
+        }
+
+        List<MessageDetails> survivors = [.. sent.Where(message => message.SentAt >= cutoff)];
         List<TransportEnvelope> batch = [.. survivors.Select(
             message => new TransportEnvelope(message.Seq, MessageEnvelopeCodec.Encode(ToEnvelope(message))))];
         await transport.SquashAsync(repositoryPath, fromNodeId, batch, committer, signingKey, cancellationToken);

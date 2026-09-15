@@ -43,6 +43,20 @@ public sealed class MessageSendCommand : Hall9kAsyncCommand<MessageSendCommand.S
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
+        using var store = CliStore.Open();
+        await using IDocumentSession session = store.LightweightSession();
+        return await RunAsync(session, settings, cancellationToken);
+    }
+
+    /// <summary>
+    /// The whole command body, with its session handed in rather than opened through
+    /// <see cref="CliStore.Open()"/> — this codebase's CLI commands have no other test seam (the
+    /// same shape <c>PullRequestReviewCommand.RunAsync</c> and
+    /// <c>ReviewResolveCommand.ResolvePrReviewAsync</c> already take), and a round trip test that
+    /// only re-implements this body inline never actually exercises it.
+    /// </summary>
+    internal static async Task<int> RunAsync(IDocumentSession session, Settings settings, CancellationToken cancellationToken)
+    {
         if (settings.Text.IsBlank())
         {
             throw new DomainValidationException("A message needs a body — pass the text as the command's own argument.");
@@ -54,9 +68,6 @@ public sealed class MessageSendCommand : Hall9kAsyncCommand<MessageSendCommand.S
         }
 
         MessageAudience audience = MessageAudience.Parse(settings.To);
-
-        using var store = CliStore.Open();
-        await using IDocumentSession session = store.LightweightSession();
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         await session.SaveChangesAsync(cancellationToken);

@@ -468,6 +468,22 @@ agent's independent decision. Unlike `write-jira` or `link-issue`, this is not a
 there is nothing external here to verify the claim against, so the platform records only what its
 own channels can see, honestly — best-effort by construction, not enforcement.
 
+### Messages: node-to-node notes
+
+`h9k message send <text> --to <audience> [--about <id>]` · `h9k messages` · `h9k message handle <id>`
+
+The successor to `notes/node-mailbox.md`'s GitHub-issue workaround (idea 202383dc, M1b): `send`
+queues an envelope in this node's own store — no git, no network wait — and the daemon's own
+message sweep is what actually lands it in this node's outbox, on a jittered cadence (15 to 25
+seconds while there is something to send or read, 30 to 45 seconds when idle, immediately again
+the tick right after this node's own push). `--to` addresses a specific `node:<node-id>`, every
+node an owner reads from with `owner:<fingerprint>`, or the whole project with the literal word
+`project`; `h9k status` prints this node's own id and `h9k owner show` prints a root fingerprint.
+`--about <id>` carries a task or idea id through as-is for the reader to act on. `messages` lists
+what has arrived; `handle <id>` marks one handled — an explicit act, never implied by `messages`
+having merely printed it. Scoped to a single project's own repository per node today, not every
+registered project a node holds (see [scope.md](scope.md)).
+
 ### Recovery
 
 `h9k run kill` · `h9k task retry | resolve | abandon` · `h9k pr resolve` · `h9k review resolve` ·
@@ -828,16 +844,20 @@ and the task-lifetime budget — each overridable per project, and per task too 
 `h9k task set-review-caps`), the review stage composition (`--review-stage-composition
 <VALUE>`, [above](#tasks-development-and-dispatch); the node level has no clearing word and needs
 `--accept-reduced-review` for a value that removes a load-bearing guarantee, Decisions Log #129),
-and a periodic token-spend budget (`--spend-budget <tokens|none>`
+a periodic token-spend budget (`--spend-budget <tokens|none>`
 paired with `--spend-period <day|week>`, backlog: spend-governor step three, Decisions Log #120) —
 once the current period's recorded spend reaches the budget, the dispatcher declines to claim
 further queued work until the period rolls, gating claims only and never touching work already
 claimed; `--spend-budget none` clears it back to unbudgeted, since "no budget" has no compiled
-default number the way the review caps do. Unlike the four review-cycle caps above, this and the
-per-role model overrides (`default` clears an override) both have a real way back once set. Every
-one of these is durable in the platform config file so a fresh machine or an autostarted
-daemon runs with the operator's settings without an environment variable ritual, and every one
-except the interactive-claim staleness threshold takes effect only on the daemon's next start —
+default number the way the review caps do — and the message sweep's own poll ranges
+(`--message-poll-active-min`/`-max`, 15 to 25 seconds by default, and `--message-poll-idle-min`/
+`-max`, 30 to 45 seconds by default; idea 202383dc, M1b), each a floor that must stay at or below
+its own ceiling once this call's change applies. Unlike the four review-cycle caps above, the
+spend budget and the per-role model overrides (`default` clears an override) both have a real way
+back once set. Every one of these is durable in the platform config file so a fresh machine or an
+autostarted daemon runs with the operator's settings without an environment variable ritual, and
+every one except the interactive-claim staleness threshold takes effect only on the daemon's next
+start —
 `h9k status`'s own Queued section names a stopped concurrency or spend gate honestly, but only for
 whatever a running daemon last confirmed, so raising a spent budget still needs a restart before
 the queue moves again. `show` resolves and names each setting's origin (environment variable,
