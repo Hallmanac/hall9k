@@ -1616,7 +1616,7 @@ survives intact.
 > was renumbered here by hand to **#197**, the log's next free number. No citation of `#196`
 > for this entry existed elsewhere in this repository to rewrite.
 
-PLACEHOLDER-a2968825. **The orchestrator-recipe-generator skill's start-up step 3 arms a silent
+198. **The orchestrator-recipe-generator skill's start-up step 3 arms a silent
 one-shot background waiter for `h9kd.log` (and any other watched source) with `Bash
 run_in_background`, never the `Monitor` tool, for this watch or any re-arm of it — superseding
 #195's own Monitor-armed delivery mechanism for the identical filtering pipeline.** Why: Brian's
@@ -1637,6 +1637,12 @@ wording, and reporting three `gh failure` lines in a row with no recovery betwee
 governs the waiter built here. **Does this block the later vision?** No: prose only, inside the
 same skill and the same shared-text mechanism #155/#191/#195 already established; nothing here
 touches domain code or the P2P identity layer (§16 #38-#58).
+
+> Renumbering placement note: this entry was appended under placeholder
+> `PLACEHOLDER-a2968825` and assigned **#198** by the mechanical pre-final-pass
+> rebase step — the log's next free number once this branch was rebased onto its base.
+> Every citation of the placeholder elsewhere in this repository was rewritten to
+> `#198` in the same commit.
 
 ---
 
