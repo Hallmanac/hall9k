@@ -72,6 +72,17 @@ public static class ExternalProcess
             RunAsync(fileName, arguments, workingDirectory, deadline, environment: null, cancellationToken);
 
     /// <summary>
+    /// <see cref="RunnerWithEnvironment"/>, bound to a caller-supplied deadline instead of
+    /// <see cref="Deadline"/> — the <see cref="EnvironmentProcessRunner"/> twin of
+    /// <see cref="RunnerWithDeadline"/>, for the one caller (<c>UpdateCommand</c>'s release
+    /// download, through <c>ProjectGitHubClient</c>) that needs both a pinned token and a longer
+    /// wait than an ordinary metadata read.
+    /// </summary>
+    public static EnvironmentProcessRunner RunnerWithEnvironmentAndDeadline(TimeSpan deadline) =>
+        (fileName, arguments, workingDirectory, environment, cancellationToken) =>
+            RunAsync(fileName, arguments, workingDirectory, deadline, environment, cancellationToken);
+
+    /// <summary>
     /// How long a tool gets before Hall9k stops waiting for it. The caller's token is not enough
     /// on its own: it carries a human pressing Ctrl-C, and the runs that matter here have no
     /// human at the keyboard — an import driven by the daemon, or by a script in CI, waits on a

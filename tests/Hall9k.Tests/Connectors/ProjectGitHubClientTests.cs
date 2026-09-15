@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Tests.Fakes;
@@ -121,5 +122,66 @@ public sealed class ProjectGitHubClientTests
         Func<Task> run = () => client.RunAsync(Account, "/repos/hall9k", ["repo", "view"], CancellationToken.None);
 
         (await run.Should().ThrowAsync<DomainValidationException>()).WithMessage("*did not answer*");
+    }
+
+    [Fact]
+    public async Task AsProcessRunner_runs_gh_as_the_bound_account_in_the_plain_ProcessRunner_shape()
+    {
+        RecordingProcessRunner tokenRunner = RecordingProcessRunner.Succeeding("token-for-hallmanac\n");
+        RecordingEnvironmentProcessRunner ghRunner = RecordingEnvironmentProcessRunner.Succeeding("{}");
+        ProjectGitHubClient client = new(ghRunner.Runner, tokenRunner.Runner, NoAmbientToken);
+        ProcessRunner bound = client.AsProcessRunner(Account);
+
+        await bound("gh", ["repo", "view"], "/repos/hall9k", CancellationToken.None);
+
+        tokenRunner.Calls.Single().Arguments.Should().ContainInOrder("auth", "token", "--user", "hallmanac");
+        ghRunner.Calls.Single().Environment["GH_TOKEN"].Should().Be("token-for-hallmanac");
+    }
+
+    [Fact]
+    public async Task AsProcessRunner_refuses_anything_other_than_gh()
+    {
+        ProjectGitHubClient client = new();
+        ProcessRunner bound = client.AsProcessRunner(Account);
+
+        Func<Task> run = () => bound("git", ["status"], "/repos/hall9k", CancellationToken.None);
+
+        await run.Should().ThrowAsync<ArgumentOutOfRangeException>();
+    }
+
+    [Fact]
+    public async Task RunAmbientAsync_runs_gh_with_no_account_pinned()
+    {
+        RecordingEnvironmentProcessRunner ghRunner = RecordingEnvironmentProcessRunner.Succeeding("{}");
+        ProjectGitHubClient client = new(ghRunner.Runner);
+
+        await client.RunAmbientAsync("/tmp", ["release", "download"], CancellationToken.None);
+
+        ghRunner.Calls.Single().Arguments.Should().ContainInOrder("release", "download");
+        ghRunner.Calls.Single().Environment.Should().BeEmpty("no account token is pinned in ambient mode");
+    }
+
+    [Fact]
+    public async Task AmbientProcessRunner_runs_gh_ambiently_in_the_plain_ProcessRunner_shape()
+    {
+        RecordingEnvironmentProcessRunner ghRunner = RecordingEnvironmentProcessRunner.Succeeding("{}");
+        ProjectGitHubClient client = new(ghRunner.Runner);
+        ProcessRunner bound = client.AmbientProcessRunner;
+
+        await bound("gh", ["release", "download"], "/tmp", CancellationToken.None);
+
+        ghRunner.Calls.Single().Arguments.Should().ContainInOrder("release", "download");
+        ghRunner.Calls.Single().Environment.Should().BeEmpty("no account token is pinned in ambient mode");
+    }
+
+    [Fact]
+    public async Task AmbientProcessRunner_refuses_anything_other_than_gh()
+    {
+        ProjectGitHubClient client = new();
+        ProcessRunner bound = client.AmbientProcessRunner;
+
+        Func<Task> run = () => bound("git", ["status"], "/tmp", CancellationToken.None);
+
+        await run.Should().ThrowAsync<ArgumentOutOfRangeException>();
     }
 }
