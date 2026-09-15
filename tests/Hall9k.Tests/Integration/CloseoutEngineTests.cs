@@ -2674,7 +2674,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
-    /// A human-authored thread this exact run already declined and replied to stays open by
+    /// A human-authored thread this exact run already declined and discharged stays open by
     /// design (Decisions Log #159: "a human-authored one stays open"), so it keeps reading as
     /// unresolved on every sweep after this one — but a second dispatch on it can only repeat
     /// "never re-litigate a point a previous run already answered" and push nothing, wasting a
@@ -2682,6 +2682,12 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     /// adversarial lens). Once every unresolved thread is accounted for this way, the sweep must
     /// not dispatch — but the observation the closeout gate itself reads still gates a
     /// pre-approved merge, so this must read as a visible wait, not a silent all-clear.
+    /// <para>
+    /// "Discharged" is the drafted reply parked for the owner, which is what a decline of a
+    /// person's thread now produces — the in-thread reply this test once seeded is refused
+    /// outright (task: a review-feedback follow-up never answers a human reviewer in the owner's
+    /// name on its own).
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_thread_already_declined_and_answered_by_this_run_does_not_buy_a_second_dispatch()
@@ -2697,6 +2703,15 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             triageSession.Events.Append(runId, new ReviewThreadsTriaged(
                 runId,
                 [new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "scratch-repo demonstration", "brianhallmanac", IsHuman: true)],
+                Now));
+            triageSession.Events.Append(runId, new HumanThreadReplyParked(
+                runId,
+                [
+                    new ReviewDisagreement(
+                        "the canary is wrong", "the sentinel already means unset here",
+                        "The sentinel already means unset here.",
+                        ThreadId: "PRRC_1", Disposition: ReviewThreadDisposition.Decline),
+                ],
                 Now));
             await triageSession.SaveChangesAsync(cts.Token);
         }
@@ -2718,6 +2733,58 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             RunState.AwaitingReview, "nothing outstanding remains to dispatch a follow-up onto — a visible wait, not a park");
         (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!.State.Should().Be(
             TaskState.Done, "no reopen was appended; the task's own state is untouched");
+    }
+
+    /// <summary>
+    /// The exclusion above needs evidence that the run actually discharged what it owed, not just
+    /// the disposition (independent pre-PR review, cycle 1, conformance lens). A decline used to
+    /// imply an answer, because the lap posted its evidence in the thread; that reply is now
+    /// forbidden, so a decline with no posted reply and no parked draft means the person heard
+    /// nothing at all. Excluding it on the disposition alone dropped the thread from every later
+    /// dispatch decision and left them answered by nobody — so with neither record it stays
+    /// outstanding and keeps buying a lap, the same fallback a bot thread whose resolve mutation
+    /// never landed already takes.
+    /// </summary>
+    [Fact]
+    public async Task A_declined_human_thread_this_run_never_answered_or_parked_still_dispatches()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        await using (IDocumentSession triageSession = store.LightweightSession())
+        {
+            triageSession.Events.Append(runId, new ReviewThreadsTriaged(
+                runId,
+                [new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "does not hold", "brianhallmanac", IsHuman: true)],
+                Now));
+            await triageSession.SaveChangesAsync(cts.Token);
+        }
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                UnresolvedReviewThreadCount = 1,
+                UnresolvedHumanThreadCount = 1,
+                UnresolvedReviewThreadIds = ["PRRC_1"],
+                UnresolvedHumanThreadIds = ["PRRC_1"],
+                UnresolvedHumanThreadDetails =
+                [
+                    new UnresolvedHumanThread(
+                        "PRRC_1", "brianhallmanac", "https://x/1", "This throws when the list is empty."),
+                ],
+            },
+        };
+        await NewEngine(store, node, inspector, worktrees).PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Superseded);
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Queued);
+        task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
     }
 
     /// <summary>
@@ -4187,6 +4254,15 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             triageSession.Events.Append(runId, new ReviewThreadsTriaged(
                 runId,
                 [new ReviewThreadOutcome("PRRC_1", ReviewThreadDisposition.Decline, "already addressed", "brianhallmanac", IsHuman: true)],
+                Now));
+            triageSession.Events.Append(runId, new HumanThreadReplyParked(
+                runId,
+                [
+                    new ReviewDisagreement(
+                        "already addressed", "the commit above does it",
+                        "That is what the commit above does.",
+                        ThreadId: "PRRC_1", Disposition: ReviewThreadDisposition.Decline),
+                ],
                 Now));
             await triageSession.SaveChangesAsync(cts.Token);
         }

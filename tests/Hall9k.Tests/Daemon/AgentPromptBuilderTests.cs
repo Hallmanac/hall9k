@@ -785,73 +785,89 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
-    /// The reply-and-resolve asymmetry a triage disposition earns (Decisions Log #159): a fix
-    /// invites no argument, but a declined or routed thread only ever gets resolved by the agent
-    /// when its author is a bot — a human's stays open for them to close.
+    /// The reply-and-resolve asymmetry a triage disposition earns (Decisions Log #159, as the
+    /// review-feedback reply park widened it): a fix invites no argument and is posted in anyone's
+    /// thread, while a decline or a route reaches a bot's thread and nothing at all of a person's.
     /// </summary>
     [Fact]
-    public void Follow_up_prompt_states_the_bot_resolves_human_stays_open_rule()
+    public void Follow_up_prompt_states_the_bot_resolves_human_gets_nothing_rule()
     {
         string prompt = AgentPromptBuilder.BuildFollowUp(
             SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
 
-        prompt.Should().Contain("Bot-authored thread: resolve it");
-        prompt.Should().Contain("Human-authored thread: leave it open");
-        prompt.Should().Contain("closing a", "the reason it stays open is stated, not just the rule");
+        prompt.Should().Contain("Bot-authored thread: post the evidence");
+        prompt.Should().Contain("Human-authored thread: post NOTHING. No reply, no resolve.");
+        prompt.Should().Contain("the owner's to send, not yours",
+            "the reason is stated, not just the rule — a session that understands it drafts better");
     }
 
     /// <summary>
-    /// The one thread a ReviewFeedback lap answers nothing on (Decisions Log #152, and the
-    /// resolve-review-threads skill's own carve-out): a human reviewer whose CHANGES_REQUESTED
-    /// verdict still stands. The lap reaches one whenever the changes-requested fix lap pushed and
-    /// left the disputed thread unresolved, and this prompt's own decline rule — the last word a
-    /// session reads, with the skill a load away — told it to post its evidence into the thread of
-    /// the person the implementer may deliberately have left unanswered (routed finding, run
-    /// 01a07d98, adversarial lens, cycle 3). The disagreement is drafted and parked instead, for
-    /// the implementer to send, edit, or drop.
+    /// Every in-thread reply routes through the platform's own posting path, and the prompt says
+    /// so with the task id filled in (task: a review-feedback follow-up never answers a human
+    /// reviewer in the owner's name on its own). A session told only "do not post" and left to
+    /// find the sanctioned route itself would reach for <c>gh</c> and hit the guard.
     /// </summary>
     [Fact]
-    public void Follow_up_prompt_never_posts_a_disagreement_into_a_standing_changes_requested_thread()
+    public void Follow_up_prompt_names_the_platform_posting_path_with_this_task_id()
+    {
+        TaskDetails task = SomeTask();
+
+        string prompt = AgentPromptBuilder.BuildFollowUp(
+            task, SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
+
+        prompt.Should().Contain($"h9k pr reply {task.Id} --thread");
+        prompt.Should().Contain("--disposition fix|decline|route");
+        prompt.Should().Contain("resolveReviewThread",
+            "resolving a thread is unchanged and stays the session's own, which the prompt must say "
+            + "or a session reads the guard as covering that too");
+    }
+
+    /// <summary>
+    /// No thread a PERSON opened is answered by this lap on a decline or a route, whatever their
+    /// verdict (task: a review-feedback follow-up never answers a human reviewer in the owner's
+    /// name on its own). Until 2026-09-15 the carve-out was scoped to a standing
+    /// <c>CHANGES_REQUESTED</c> review (Decisions Log #152) and this prompt told a session to post
+    /// its evidence into every other human thread — which is what produced both origin incidents,
+    /// each beside an approval and each with an accurate reply. The drafted reply parks instead.
+    /// </summary>
+    [Fact]
+    public void Follow_up_prompt_never_posts_a_decline_or_a_route_into_a_human_thread()
     {
         string prompt = AgentPromptBuilder.BuildFollowUp(
             SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
 
-        prompt.Should().Contain("`CHANGES_REQUESTED` verdict on this",
-            "the carve-out is scoped to a standing review, not to every thread a human opened");
-        prompt.Should().Contain("post NOTHING — no reply, no resolve");
-        prompt.Should().Contain("never posted by you: draft the reply,");
-        prompt.Should().Contain("send it, edit it, or drop it (Decisions Log #152)",
-            "the three choices belong to the implementer, and the ruling is cited where it applies");
-        prompt.Should().Contain("gh pr view --json",
-            "a standing verdict is a fact to read off the pull request, not one to assume from the threads");
-        prompt.Should().Contain("ignoring their `COMMENTED` ones",
-            "a reviewer's newest review of any type masks the verdict a plain thread reply wrapped "
-            + "in a COMMENTED review left standing — the same read Decisions Log #150 fixed");
+        prompt.Should().Contain("Human-authored thread: post NOTHING. No reply, no resolve.");
+        prompt.Should().Contain("formally requested changes and whether or not you are right",
+            "the rule no longer turns on the reviewer's verdict, and being right was never what "
+            + "made a reply the owner's to send");
         prompt.Should().Contain("PROPOSED REPLY:",
             "the drafted reply rides in the park's own block, which is what a human sends from");
         prompt.Should().Contain(AgentPromptBuilder.DisputeMarker,
             "the carve-out lands on the park this prompt already teaches");
-        prompt.Should().Contain("standing-review disagreements",
-            "the dispute section's own gate must admit it, not only a genuinely undecidable thread");
+        prompt.Should().Contain("disposition=route",
+            "a routed human thread parks the same way a declined one does, and the tag is what says which");
+        prompt.Should().Contain("rule above, not an exception to it: answering it is a decline",
+            "a question is the ordinary case of the rule, not an exception a session can read past");
         prompt.Should().NotContain("--post-reply-as-written",
-            "those choices live on a changes-requested lap's park, and h9k review resolve refuses them here");
+            "the three posting choices are the owner's to run, and naming a flag the session cannot "
+            + "use invites it to try");
     }
 
     /// <summary>
-    /// The carve-out above is narrow on purpose: a bot's disagreement is still answered in-thread
-    /// and resolved there, and a human's plain thread comment still gets the evidence-based decline
-    /// reply Decisions Log #159 rules for — one honest attempt, then the human resolves it.
+    /// The rule is about a PERSON's thread and nothing else: a bot's disagreement is still
+    /// answered in-thread and resolved there (Decisions Log #159, untouched), and a fix's reply
+    /// still goes into anyone's thread, because the commit is its evidence.
     /// </summary>
     [Fact]
-    public void Follow_up_prompt_keeps_the_reply_once_rule_for_threads_outside_the_carve_out()
+    public void Follow_up_prompt_leaves_bot_threads_and_fixes_posting_as_before()
     {
         string prompt = AgentPromptBuilder.BuildFollowUp(
             SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7", CommitStyle.Append);
 
-        prompt.Should().Contain("**decline**: reply with the evidence",
-            "an evidence-backed decline is still posted where no standing review is in play");
-        prompt.Should().Contain("Bot-authored thread: resolve it. The evidence is what a bot needed",
-            "a bot's thread is unchanged by the carve-out");
+        prompt.Should().Contain("Bot-authored thread: post the evidence",
+            "a bot's thread is untouched by the widening");
+        prompt.Should().Contain("bot-authored or human-authored, since a fix invites no",
+            "a fix is still replied to and resolved in anyone's thread");
         prompt.Should().Contain("One honest attempt per thread per follow-up; never re-litigate",
             "the reply-once rule survives");
     }
