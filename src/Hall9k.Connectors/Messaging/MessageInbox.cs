@@ -11,9 +11,14 @@ namespace Hall9k.Connectors.Messaging;
 /// is the first seq this sweep could not inspect at all (a numeric gap in the sender's own outbox, or
 /// a transport-level tool failure) — distinct from a rejected candidate, which was inspected and
 /// refused; a stalled seq was never reached, so the cursor stops short of it and the same position is
-/// retried next sweep.</summary>
+/// retried next sweep. <see cref="SenderNotVouched"/> is the specific reason <see cref="SenderIgnored"/>
+/// can be true with <see cref="EnvelopesConsidered"/> and <see cref="EnvelopesStored"/> both zero — no
+/// node file vouches for this sender at all, distinct from a vouched sender whose envelope merely
+/// failed signature verification — so a caller deciding whether this read is worth remembering (a
+/// probed tip, a cursor) can tell "genuinely read nothing new" from "never actually looked".</summary>
 public sealed record MessageInboxSweepResult(
-    Guid SenderNodeId, bool SenderIgnored, int EnvelopesConsidered, int EnvelopesStored, long? StalledAtSeq = null);
+    Guid SenderNodeId, bool SenderIgnored, int EnvelopesConsidered, int EnvelopesStored, long? StalledAtSeq = null,
+    bool SenderNotVouched = false);
 
 /// <summary>
 /// The receiving half of the message seam (idea 202383dc, M1a): reads everything
@@ -69,7 +74,8 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 await session.SaveChangesAsync(cancellationToken);
             }
 
-            return new MessageInboxSweepResult(senderNodeId, SenderIgnored: true, EnvelopesConsidered: 0, EnvelopesStored: 0);
+            return new MessageInboxSweepResult(
+                senderNodeId, SenderIgnored: true, EnvelopesConsidered: 0, EnvelopesStored: 0, SenderNotVouched: true);
         }
 
         // An override above the persisted cursor deliberately skips whatever sits between the two
