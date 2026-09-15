@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Trust;
 using JasperFx;
 using JasperFx.Events.Projections;
 using Marten;
@@ -60,5 +61,6 @@ public static class MartenConfiguration
         opts.Projections.Add<RunListItemProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<MessageDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<MessageInboxDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<UnverifiedLedgerWriteDetailsProjection>(ProjectionLifecycle.Inline);
     }
 }
