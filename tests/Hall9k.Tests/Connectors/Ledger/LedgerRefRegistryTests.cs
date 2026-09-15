@@ -30,6 +30,14 @@ public sealed class LedgerRefRegistryTests
     }
 
     [Fact]
+    public void MembersRef_IsRegisteredAsAnExactEntry_FromTheChainReadersFirstCommit()
+    {
+        LedgerRefRegistry.IsRegistered("refs/hall9k/ledger/members").Should().BeTrue();
+        LedgerRefRegistry.MembersRef.Kind.Should().Be(LedgerRefKind.Exact);
+        LedgerRefRegistry.FetchRefspecs.Should().Contain("+refs/hall9k/ledger/members:refs/hall9k/ledger/members");
+    }
+
+    [Fact]
     public void IsRegistered_OnAnUnrelatedRef_IsFalse()
     {
         LedgerRefRegistry.IsRegistered("refs/heads/main").Should().BeFalse();

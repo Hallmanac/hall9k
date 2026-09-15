@@ -93,4 +93,14 @@ public interface ILedger
     /// throws <see cref="LedgerPushRejectedException"/>.
     /// </summary>
     Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Removes <see cref="LedgerDeleteRequest.Path"/> from a new commit on
+    /// <see cref="LedgerDeleteRequest.RefName"/>'s tip — a genuine tree deletion, not a
+    /// content-only tombstone. Same optimistic concurrency and retry behavior as
+    /// <see cref="WriteAsync"/>: <see cref="LedgerWriteVerdict.Conflict"/> when the path no longer
+    /// matches <see cref="LedgerDeleteRequest.ExpectedBlobId"/>, and the identical push-rejected
+    /// retry loop otherwise.
+    /// </summary>
+    Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken);
 }

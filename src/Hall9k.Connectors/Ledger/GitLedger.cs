@@ -99,6 +99,47 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         throw new LedgerPushRejectedException(request.RefName, MaxPushAttempts, lastError);
     }
 
+    public async Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken)
+    {
+        RequireRegistered(request.RefName);
+        RequireSigningKey(request.SigningKey);
+        await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
+
+        string lastError = string.Empty;
+        for (int attempt = 1; attempt <= MaxPushAttempts; attempt++)
+        {
+            string? tip = await ResolveTipAsync(request.RepositoryPath, request.RefName, cancellationToken);
+            LedgerFile current = await ReadAtTipAsync(request.RepositoryPath, tip, request.Path, cancellationToken);
+            if (current.BlobId != request.ExpectedBlobId)
+            {
+                return LedgerWriteOutcome.Conflict(current);
+            }
+
+            string commitId = await BuildDeleteCommitAsync(request, tip, cancellationToken);
+
+            (int pushExit, _, string pushError) = await RunGitAsync(
+                request.RepositoryPath,
+                ["push", "origin", $"{commitId}:{request.RefName}"],
+                environment: null,
+                standardInput: null,
+                cancellationToken);
+            if (pushExit == 0)
+            {
+                await SetLocalRefAsync(request.RepositoryPath, request.RefName, commitId, cancellationToken);
+                return LedgerWriteOutcome.Written(commitId);
+            }
+
+            lastError = pushError;
+            logger.LogInformation(
+                "Push to {RefName} was rejected on attempt {Attempt}/{MaxAttempts} ({Error}); re-fetching to retry",
+                request.RefName, attempt, MaxPushAttempts, pushError.Trim());
+
+            await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
+        }
+
+        throw new LedgerPushRejectedException(request.RefName, MaxPushAttempts, lastError);
+    }
+
     private static void RequireRegistered(string refName)
     {
         if (!LedgerRefRegistry.IsRegistered(refName))
@@ -305,6 +346,129 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                 // narrowly (not bare Exception) so this finally block can never turn a successful
                 // BuildTreeAsync into a failure over cleanup alone, while still letting a genuine
                 // defect elsewhere in this method surface.
+            }
+        }
+    }
+
+    /// <summary>
+    /// Mirrors <see cref="BuildCommitAsync"/> for a deletion: the new tree drops
+    /// <see cref="LedgerDeleteRequest.Path"/> instead of adding one, everything else (parent,
+    /// signing, config isolation) identical.
+    /// </summary>
+    private static async Task<string> BuildDeleteCommitAsync(
+        LedgerDeleteRequest request, string? parentTip, CancellationToken cancellationToken)
+    {
+        string treeId = await BuildDeleteTreeAsync(request.RepositoryPath, request.Path, parentTip, cancellationToken);
+
+        List<string> arguments =
+        [
+            "-c", $"user.name={request.Committer.Name}",
+            "-c", $"user.email={request.Committer.Email}",
+        ];
+        if (request.SigningKey is { } signingKey)
+        {
+            arguments.Add("-c");
+            arguments.Add("gpg.format=ssh");
+            arguments.Add("-c");
+            arguments.Add($"user.signingkey={signingKey.PrivateKeyPath}");
+        }
+
+        arguments.Add("commit-tree");
+        arguments.Add(treeId);
+        if (parentTip is not null)
+        {
+            arguments.Add("-p");
+            arguments.Add(parentTip);
+        }
+
+        if (request.SigningKey is not null)
+        {
+            arguments.Add("-S");
+        }
+
+        arguments.Add("-m");
+        arguments.Add(request.CommitMessage);
+
+        (int exitCode, string output, string error) = await RunGitAsync(
+            request.RepositoryPath, arguments, null, null, cancellationToken);
+        if (exitCode != 0)
+        {
+            throw new InvalidOperationException($"git commit-tree failed in {request.RepositoryPath}: {error.Trim()}");
+        }
+
+        return output.Trim();
+    }
+
+    /// <summary>
+    /// Mirrors <see cref="BuildTreeAsync"/> for a deletion: rebuilds the index directly from
+    /// <paramref name="parentTip"/>'s own flat tree listing (<c>git ls-tree -r</c>), omitting
+    /// <paramref name="path"/>, via <c>update-index --index-info</c> — never
+    /// <c>read-tree</c> plus <c>update-index --force-remove</c>, which git refuses outright in a
+    /// bare repository ("this operation must be run in a work tree") even though nothing about it
+    /// touches a working tree's own files: <c>--force-remove</c> still insists on one to stat
+    /// against, where <c>--index-info</c> takes the mode and blob id it is given and never looks
+    /// at disk at all. A no-op tree (identical to the parent's) when the path was already absent
+    /// there, which <see cref="DeleteAsync"/>'s own optimistic-concurrency read already made sure
+    /// matches the caller's expectation.
+    /// </summary>
+    private static async Task<string> BuildDeleteTreeAsync(
+        string repositoryPath, string path, string? parentTip, CancellationToken cancellationToken)
+    {
+        string tempIndex = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"h9k-ledger-index-{Guid.NewGuid():N}");
+        Dictionary<string, string> indexEnvironment = new() { ["GIT_INDEX_FILE"] = tempIndex };
+        try
+        {
+            if (parentTip is not null)
+            {
+                (int lsExit, string lsOutput, string lsError) = await RunGitAsync(
+                    repositoryPath, ["ls-tree", "-r", parentTip], null, null, cancellationToken);
+                if (lsExit != 0)
+                {
+                    throw new InvalidOperationException($"git ls-tree -r {parentTip} failed in {repositoryPath}: {lsError.Trim()}");
+                }
+
+                StringBuilder indexInfo = new();
+                foreach (string line in lsOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    // "<mode> <type> <sha>\t<path>" — reformatted as "<mode> <sha> 0\t<path>",
+                    // the shape --index-info reads on stdin.
+                    int tab = line.IndexOf('\t');
+                    string entryPath = line[(tab + 1)..];
+                    if (entryPath == path)
+                    {
+                        continue;
+                    }
+
+                    string[] metadata = line[..tab].Split(' ', 3);
+                    indexInfo.Append(metadata[0]).Append(' ').Append(metadata[2]).Append(" 0\t").Append(entryPath).Append('\n');
+                }
+
+                (int indexExit, _, string indexError) = await RunGitAsync(
+                    repositoryPath, ["update-index", "--index-info"], indexEnvironment, indexInfo.ToString(), cancellationToken);
+                if (indexExit != 0)
+                {
+                    throw new InvalidOperationException($"git update-index --index-info failed in {repositoryPath}: {indexError.Trim()}");
+                }
+            }
+
+            (int writeExit, string treeOutput, string writeError) = await RunGitAsync(
+                repositoryPath, ["write-tree"], indexEnvironment, null, cancellationToken);
+            if (writeExit != 0)
+            {
+                throw new InvalidOperationException($"git write-tree failed in {repositoryPath}: {writeError.Trim()}");
+            }
+
+            return treeOutput.Trim();
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(tempIndex);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Best-effort cleanup of a temp file; nothing downstream reads it again.
             }
         }
     }

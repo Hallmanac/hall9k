@@ -14,3 +14,19 @@ public sealed record LedgerFile(string? Content, string? BlobId)
 
     public bool Exists => BlobId is not null;
 }
+
+/// <summary>
+/// One delete's whole ask: which ref and path to remove, and the blob the caller last read there —
+/// a delete is conditional on nothing having changed since that read, the same optimistic
+/// concurrency <see cref="LedgerWriteRequest"/> gives a write. Project membership removal (idea
+/// 202383dc, T1) is the first caller: "a member removal deletes the file" rather than leaving a
+/// tombstone, unlike node revocation, which is itself a file addition.
+/// </summary>
+public sealed record LedgerDeleteRequest(
+    string RepositoryPath,
+    string RefName,
+    string Path,
+    string? ExpectedBlobId,
+    string CommitMessage,
+    LedgerCommitter Committer,
+    LedgerSigningKey? SigningKey = null);

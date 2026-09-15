@@ -97,6 +97,14 @@ public static class LedgerRefRegistry
     /// </summary>
     public static readonly LedgerRefEntry NodesPrefix = RegisterPrefix("refs/hall9k/ledger/nodes/");
 
+    /// <summary>
+    /// Project membership (idea 202383dc, T1): one ref, <c>refs/hall9k/ledger/members</c>, holding
+    /// one <c>members/&lt;root-fingerprint&gt;.yaml</c> file per current member — exact, not a
+    /// prefix, since the ref name itself is fixed and known up front the same way
+    /// <see cref="Records"/> is; what varies per member is a path inside it, not the ref name.
+    /// </summary>
+    public static readonly LedgerRefEntry MembersRef = RegisterExact("refs/hall9k/ledger/members");
+
     public static LedgerRefEntry RegisterExact(string refName) => Register(refName, LedgerRefKind.Exact);
 
     public static LedgerRefEntry RegisterPrefix(string prefix) => Register(
