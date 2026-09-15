@@ -319,6 +319,8 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │                               orchestrator-recipe-generator skill, never regenerated
 ├── sessions.md                 seeded alongside it: the registry of sessions this window has spawned
 ├── notes/prototype-feedback.md seeded alongside it: dated feedback about this node's own generated recipes
+├── notes/waiters/               seeded alongside it: the background log waiter script(s) this
+│                               window arms at start-up, plus their offset and gh-streak state
 ├── projects/<name>/            a project's home, unless the project records another location
 │   ├── AGENTS.md               rendered from the project's facts; never hand-maintained
 │   ├── repo/                   <name>.git (bare) · dev/ (primary branch) · wt-*/ (dispatch)
@@ -331,8 +333,10 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │   ├── .claude/skills/         symlinks into the line above: the Claude Code adapter
 │   ├── journal.md              seeded once by the same skill: this window's own live state
 │   ├── sessions.md             seeded alongside it: the registry of sessions this window has spawned
-│   └── notes/prototype-feedback.md  seeded alongside it: dated feedback about this project's own
-│                               generated recipes
+│   ├── notes/prototype-feedback.md  seeded alongside it: dated feedback about this project's own
+│   │                           generated recipes
+│   └── notes/waiters/          seeded alongside it: this window's own background waiter script(s)
+│                               and their offset and gh-streak state
 ├── ideas/<idea-id>/workspace/  the fallback for an idea captured with no project, or a project
 │                               with no home yet: permanent, never relocated after capture
 ├── postgres/docker-compose.yml Hall9k's own Postgres definition (h9k install writes it, §Postgres)

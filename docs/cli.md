@@ -616,7 +616,9 @@ otherwise, in the same shape on every machine:
 ├── journal.md  seeded once by the orchestrator-recipe-generator skill; the window's own live
 │               state, never regenerated
 ├── sessions.md seeded alongside it: the registry of sessions this window has spawned
-└── notes/      seeded alongside it: prototype-feedback.md holds dated recipe feedback
+└── notes/      seeded alongside it: prototype-feedback.md holds dated recipe feedback; waiters/
+              holds the background waiter script(s) this window arms at start-up, plus their
+              offset and gh-streak state
 ```
 
 Creating it is platform code end to end: the directories, the bare clone with its fetch refspec
