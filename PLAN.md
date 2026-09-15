@@ -1690,6 +1690,60 @@ touches domain code or the P2P identity layer (§16 #38-#58).
 > Every citation of the placeholder elsewhere in this repository was rewritten to
 > `#201` in the same commit.
 
+PLACEHOLDER-c04000aa. **Every remaining direct `gh` call site funnels through
+`ProjectGitHubClient` too, so no call in the platform spawns `gh` without choosing the account it
+runs as.** Why: idea 202383dc (Hall9k for a distributed team), piece A2b's own migration item,
+ruled its own unstacked do-now task (Brian, 2026-09-12), blocked on the GitHub adapter (§16 #197)
+that introduced the helper. A re-inventory at build time (origin/main e406ae1d) found the 17
+sites/11 files the idea's own re-review counted on 2026-09-12 had grown to 12 files —
+`GitHubRemoteParentReader` arrived with the stacked-child retarget work in the meantime. **The
+wiring.** Rather than resolving an account at each of the dozen call sites individually, one new
+class, `Hall9k.Connectors.WorkItems.ProjectScopedGitHubRunner`, is the platform's real
+`ProcessRunner`: identical to `ExternalProcess.Runner` for every tool except `gh`, where it matches
+`workingDirectory` — already the registered project's own repository path at every existing call
+site, since that is what each of them already passes as `gh`'s own working directory — back to
+that project and pins the call to its account through `ProjectGitHubClient`. Every GitHub connector
+class already threaded a `ProcessRunner` through unchanged (`GitHubWorkItemProvider`,
+`GitHubReviewAssignments`, `TrackerClaimGate`, and the rest — a caller-supplied `ProcessRunner` was
+already used rather than silently bypassed, per the adapter's own item-4 doc comment), so wiring
+this in at the one place each is constructed for real — a CLI command's own `ExecuteAsync`, or the
+daemon's single `ProcessRunner` DI registration in `Program.cs` — was the whole migration; no
+constructor, method signature, or test seam on any of those classes changed. Two sites had no
+`ProcessRunner` seam at all and gained one: `GitHubPullRequestInspector.RunGhAsync` and
+`PullRequestOpener`'s own `gh pr create` call, both raw `System.Diagnostics.Process` spawns before
+this task, neither exercised by an existing test (confirmed by grep) so the seam cost nothing to
+add. `TaskRecordPublication.WriteAsync`'s own `GitHubWorkItemProvider? provider = null` fallback —
+dead in production once both its real callers pass one explicitly — was tightened to a required
+parameter rather than left as an unaccounted escape hatch a future caller could silently fall
+through. **The two deliberate exceptions.** `UpdateCommand`'s release download reads Hall9k's own
+public release repository, never a registered project's, and could run before any project — or any
+database — exists on a fresh install; it still funnels through `ProjectGitHubClient`, via a new
+`RunAmbientAsync`/`AmbientProcessRunner` pair that runs `gh` with no account pinned (gh's own
+ambient auth, the exact behavior this call always had), so the platform still has exactly one place
+that ever spawns `gh`, even for the one call with no account to choose. `NodeBootstrap.RunQuick`'s
+own `gh api user` is left as the one raw, unmigrated spawn: it is what confirms the very GitHub
+identity `ProjectGitHubClient.ResolveAccountAsync` later reads, so migrating it would be circular
+(no account exists yet to choose), and its synchronous, 3-second-bounded contract — chosen so a
+`h9k` invocation never hangs 120 seconds on a wedged `gh` during ordinary bootstrap — is
+incompatible with the async, 120-second-deadline `ProcessRunner` shape every other site now uses;
+changing that contract would touch the ~280 `NodeBootstrapSeed`-based test call sites the adapter
+task's own #197 entry already had to reconcile once. **Enforcement.** Two source-scanning guard
+tests (`GitHubSpawnSeamGuardTests`, following the existing `ContainerRoutingGuardTests`/
+`ProcessTerminationGuardTests` pattern and their shared `TestSourceTree` helper): no file outside
+`ExternalProcess.cs` builds a raw `ProcessStartInfo` naming `gh` directly, and no GitHub-or-tracker
+connector class is constructed bare (zero-argument, defaulting to the unaccounted
+`ExternalProcess.Runner`) outside the two call sites that only ever use a connector's synchronous,
+`gh`-free `WebUrl` method. Both carry a positive control against a stale marker or an
+over-eager `TestSourceTree.StripCommentsAndStrings`. New unit and integration coverage
+(`ProjectGitHubClientTests`' new cases, `ProjectScopedGitHubRunnerTests`) exercises
+`AsProcessRunner`/`RunAmbientAsync`/`AmbientProcessRunner` and the account-by-repository-path
+resolution itself, including the refusal when no registered project's repository matches the
+working directory `gh` was about to run from. Behavior is unchanged for a single-account install:
+every pre-existing test passed without an expectation edited, and `DaemonEnvironment`'s gh-presence
+check (never a real `gh` subcommand) is untouched. **Does this block the later vision?** No: one new
+wiring class and two small `ProjectGitHubClient` additions, no event, no projection, no interface
+changed; the P2P identity layer (§16 #38-#58) is untouched.
+
 ---
 
 ## 17. Reference Materials
