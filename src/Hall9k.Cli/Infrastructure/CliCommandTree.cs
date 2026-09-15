@@ -203,6 +203,26 @@ public static class CliCommandTree
                     + "(h9k project add offers this same rename inline on a name collision), but works "
                     + "on a live project too.")
                 .WithExample("project", "rename", "hall9k", "hall9k-old");
+            project.AddCommand<ProjectMembersCommand>("members")
+                .WithDescription(
+                    "List this project's members as the ledger's own chain read currently sees them (idea "
+                    + "202383dc, T1): root fingerprint, this install's own login for that root when it is "
+                    + "known locally, role (owner or member), the nodes currently vouched under that root, "
+                    + "and verified state. Recomputed fresh every run — a revocation or a removal another "
+                    + "node made shows up the moment this runs again, never a local cache.")
+                .WithExample("project", "members", "hall9k");
+            project.AddBranch("member", member =>
+            {
+                member.SetDescription("Change project membership");
+                member.AddCommand<ProjectMemberRemoveCommand>("remove")
+                    .WithDescription(
+                        "Remove a root fingerprint's project membership: deletes members/<fingerprint>.yaml "
+                        + "from the ledger's own members ref (a genuine tree deletion, never a tombstone). "
+                        + "Refused, before any push, unless this node's own root currently holds the owner "
+                        + "role in this project's own chain (idea 202383dc, T1).")
+                    .WithExample("project", "member", "remove", "hall9k",
+                        "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716");
+            });
         });
 
         config.AddBranch("owner", owner =>
@@ -226,6 +246,28 @@ public static class CliCommandTree
                 .WithExample("owner", "set", "brian", "--rerequest-review", "default")
                 .WithExample("owner", "set", "--voice-skill", "my-voice")
                 .WithExample("owner", "set", "brian", "--clear-voice-skill");
+        });
+
+        config.AddBranch("node", node =>
+        {
+            node.SetDescription(
+                "This owner's own fleet of nodes (idea 202383dc, T1): vouch a node in, or revoke one, "
+                + "writing owners/<root>/nodes/<node-id>.yaml or owners/<root>/revoked/<node-id>.yaml into "
+                + "every non-archived project this owner is registered to, signed with this node's own key. "
+                + "Refused, before any push, unless this node is itself currently enrolled in that owner's "
+                + "own chain — the root itself, or a node already vouched into it and not revoked.");
+            node.AddCommand<NodeVouchCommand>("vouch")
+                .WithDescription(
+                    "Vouch a node into this owner's own fleet: writes its node id, its own public key (read "
+                    + "from its self-announced node file), and the time, then prints the vouched node's own "
+                    + "key fingerprint. Latest of vouch or revocation wins in the ledger's own ref commit "
+                    + "order, so vouching again after a bad revocation restores it.")
+                .WithExample("node", "vouch", "5b2e9a41-6c3f-4d8e-9a1b-2c3d4e5f6a7b");
+            node.AddCommand<NodeRevokeCommand>("revoke")
+                .WithDescription(
+                    "Revoke a node from this owner's own fleet. Takes effect the moment the next chain read "
+                    + "runs anywhere; a later h9k node vouch for the identical node id undoes it.")
+                .WithExample("node", "revoke", "5b2e9a41-6c3f-4d8e-9a1b-2c3d4e5f6a7b");
         });
 
         config.AddBranch("connection", connection =>
