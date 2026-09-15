@@ -728,20 +728,24 @@ public sealed class StackedParentWatch(
                 //
                 // The child's own history still answers this without any record: the point where the
                 // PARENT's own (pre-rewrite) branch forked from the base is exactly the unsafe
-                // fallback line 655 above warns about — merge-base against the base tip walking back
-                // to before the parent's commits even existed. A point the child holds that is
-                // strictly PAST that fork point can only have been reached by an actual rebase onto
-                // (some point of) the base's own line, so it is just as safe to trust as the two
-                // recorded shapes above, without needing either of them to have fired.
+                // fallback the "Where neither shape holds" paragraph above warns about — merge-base
+                // against the base tip walking back to before the parent's commits even existed. A
+                // point the child holds that is strictly PAST that fork point is trusted only once
+                // the check below confirms it was reached by an actual rebase onto (some point of)
+                // the base's own line, rather than by a hand merge of the base into the child, which
+                // reaches the same "strictly past the fork" point without ever discarding the
+                // child's stale pre-rewrite commits the way a rebase would (independent pre-PR
+                // review, cycle 1, adversarial lens).
                 //
                 // Restricted to a child that does NOT hold the parent's own (pre-rewrite) head at
                 // all (independent review, PR #380): childHoldsParentHead is exactly the "neither
-                // shape holds" case line 655 already promises falls through to the parent's own head
-                // below, and without this guard this block runs there too — a child still sitting
-                // untouched on its parent's branch that ALSO happens to contain some unrelated later
-                // base commit (a merge, a cherry-pick, anything landing a base commit without a real
-                // rebase) reads that unrelated commit as liveCandidate and advances the boundary past
-                // it, even though nothing here rebased the child past the parent's own work at all.
+                // shape holds" case the paragraph above already promises falls through to the
+                // parent's own head below, and without this guard this block runs there too — a
+                // child still sitting untouched on its parent's branch that ALSO happens to contain
+                // some unrelated later base commit (a merge, a cherry-pick, anything landing a base
+                // commit without a real rebase) reads that unrelated commit as liveCandidate and
+                // advances the boundary past it, even though nothing here rebased the child past the
+                // parent's own work at all.
                 if (advanceAnchor is null && !childHoldsParentHead)
                 {
                     ProcessResult originalForkPointResult = await git(
@@ -760,7 +764,31 @@ public sealed class StackedParentWatch(
                                 repositoryPath, cancellationToken);
                             if (advancedPastFork.ExitCode == 0)
                             {
-                                advanceAnchor = liveCandidate;
+                                // A rebase leaves a strictly linear history behind it; a hand merge
+                                // of the base into the child does not — it leaves exactly one merge
+                                // commit whose other parent still carries the child's own stale
+                                // pre-rewrite commits as ancestors, which a replay from liveCandidate
+                                // would then re-apply (independent pre-PR review, cycle 1,
+                                // adversarial lens). No merge commit between liveCandidate and the
+                                // child's own tip is what actually distinguishes the two, so it is
+                                // what gates trust here rather than "strictly past the fork" alone.
+                                ProcessResult mergeCommitsSinceCandidate = await git(
+                                    "git",
+                                    ["rev-list", "--merges", "--count",
+                                        $"{liveCandidate}..refs/heads/{childRun.Branch}"],
+                                    repositoryPath, cancellationToken);
+                                if (mergeCommitsSinceCandidate.ExitCode != 0)
+                                {
+                                    return StackedParentObservation.Unobservable(
+                                        $"git could not tell whether {childRun.Branch} reached "
+                                        + $"{Short(liveCandidate)} by rebase or by merge: "
+                                        + FirstLine(mergeCommitsSinceCandidate.StandardError));
+                                }
+
+                                if (mergeCommitsSinceCandidate.StandardOutput.Trim() == "0")
+                                {
+                                    advanceAnchor = liveCandidate;
+                                }
                             }
                         }
                     }
