@@ -722,7 +722,12 @@ public sealed class PullRequestOpener(
     {
         try
         {
-            string tip = (await RunInWorktreeAsync(worktreePath, "git", ["rev-parse", "HEAD"], cancellationToken)).Trim();
+            // The local branch ref, not HEAD: ForceWithLeasePusher's own push above pushes
+            // refs/heads/{branch}, and a worktree left on a detached HEAD at push time would
+            // otherwise record a commit this push never actually sent (independent pre-PR
+            // review, cycle 1, adversarial lens).
+            string tip = (await RunInWorktreeAsync(
+                worktreePath, "git", ["rev-parse", $"refs/heads/{branch}"], cancellationToken)).Trim();
             await using IDocumentSession session = store.LightweightSession();
             session.Events.Append(taskId, new TaskBranchPushed(taskId, branch, tip, DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cancellationToken);
