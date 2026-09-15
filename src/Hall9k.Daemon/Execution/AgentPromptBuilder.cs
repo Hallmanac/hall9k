@@ -2949,6 +2949,7 @@ public static class AgentPromptBuilder
         StringBuilder prompt = new();
         AppendFragment(prompt, $"{TemplateDirectory}/budget-retry.md", "body");
         prompt.AppendLine();
+        AppendSharedRepositoryHistorySafetyRule(prompt);
         WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(
             prompt, sessionRunsGates: task.Type != TaskType.PrReview);
 
@@ -2977,6 +2978,7 @@ public static class AgentPromptBuilder
         StringBuilder prompt = new();
         AppendFragment(prompt, $"{TemplateDirectory}/session-error-retry.md", "body");
         prompt.AppendLine();
+        AppendSharedRepositoryHistorySafetyRule(prompt);
         WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(
             prompt, sessionRunsGates: task.Type != TaskType.PrReview);
 
@@ -3037,6 +3039,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(Fragment(file, "working-rules-heading"));
         prompt.AppendLine();
+        AppendSharedRepositoryHistorySafetyRule(prompt);
         AppendFragment(prompt, file, "session-ends-note");
         AppendForegroundGatesRule(
             prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout, sessionRunsGates: false);
