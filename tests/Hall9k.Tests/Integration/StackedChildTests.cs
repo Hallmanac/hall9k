@@ -512,11 +512,66 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
             "nothing was moved, so the record still names the stack the human inherits");
         run.ParkedReason.Should().Contain("rebase budget is spent")
             .And.Contain("2/2")
-            .And.Contain("h9k pr resolve");
+            .And.Contain("h9k pr resolve")
+            .And.NotContain("Rebase and retarget",
+                "nothing here would ever have rebased — only the retarget is owed — so the park must not send "
+                + "a human to do a rebase this verdict never needed (independent pre-PR review, cycle 1, "
+                + "adversarial lens)");
 
         TaskAggregate child =
             (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
         child.StackReplaysDispatched.Should().Be(2, "the park spends nothing further — the budget was already spent");
+    }
+
+    /// <summary>
+    /// The sibling shape one step further on (independent pre-PR review, cycle 1, adversarial
+    /// lens): GitHub has already retargeted this pull request for itself — it deletes the merged
+    /// parent's head branch, which moves every open child's base onto the project's base before any
+    /// sweep here observes the merge (Decisions Log #186) — so there is no provider
+    /// write left for a spent rebase budget to gate. Parking it anyway would send a human to rebase
+    /// and retarget a pull request that already sits exactly where it belongs.
+    /// </summary>
+    [Fact]
+    public async Task A_child_past_its_rebase_budget_but_already_retargeted_by_github_is_not_parked()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token, priorStackReplays: 2);
+
+        Git(fixture.RepoPath, "checkout -q main");
+        Git(fixture.RepoPath, $"merge -q --ff-only {fixture.ParentBranch}");
+        Git(fixture.RepoPath, "push -q origin main");
+        string baseTip = Git(fixture.RepoPath, "rev-parse HEAD").Trim();
+
+        await using (IDocumentSession session = fixture.Store.LightweightSession())
+        {
+            session.Events.Append(fixture.ParentRunId, new PullRequestMerged(fixture.ParentRunId, Now, Now));
+            session.Events.Append(fixture.ParentRunId, new RunCompleted(fixture.ParentRunId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The same ParentMergedAligned shape the sibling park test seeds, but this time GitHub's own
+        // read already shows the pull request retargeted onto the project's base.
+        Git(fixture.ChildWorktreePath, $"rebase -q {baseTip}");
+        FakeStackedInspector inspector = new();
+        inspector.Snapshot = inspector.Snapshot with { BaseRefName = "main" };
+        await NewEngine(fixture, inspector, maxStackReplayRuns: 2).PollOnceAsync(cts.Token);
+
+        inspector.Retargets.Should().BeEmpty(
+            "the base was already main when this sweep looked, so nothing here calls the provider again");
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+        run.State.Should().NotBe(RunState.CloseoutParked,
+            "a spent rebase budget gates a write this sweep would make, not one it would not — this pull "
+            + "request is already on the project's base, so there is nothing left to park over");
+        run.LastStackedRetargetSucceeded.Should().BeTrue(
+            "the record still needs to say the base moved off the parent's branch, even though the provider "
+            + "was not called again to do it");
+        run.StackedOnBranch.Should().BeNull("the retarget clears the recorded parent base");
+
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        child.StackReplaysDispatched.Should().Be(2, "no replay ran, so the already-spent budget is untouched");
     }
 
     /// <summary>
@@ -648,9 +703,11 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
 
     /// <summary>
     /// The 2026-09-14 shape (task 450b9d84, origin of this feature's own fix): a merged parent whose
-    /// exact head landed on the base branch (a fast-forward, the same shape GitHub's own "rebase and
-    /// merge" produces when the branch is already current), the base branch then advancing PAST that
-    /// head with a later, unrelated commit — another chain task's own merge, in the real incident —
+    /// exact head landed on the base branch (a fast-forward, or an ordinary merge commit — either
+    /// preserves the parent's own SHA on the base, unlike GitHub's own "rebase and merge", which
+    /// always gives the parent's commits new ones even when the branch was already current), the
+    /// base branch then advancing PAST that head with a later, unrelated commit — another chain
+    /// task's own merge, in the real incident —
     /// and the child already rebased onto that later tip, exactly as a fix session resolving an
     /// earlier park would leave it. The child's branch therefore contains both the parent's head AND
     /// the base's later tip, and nothing is left to REPLAY: choosing the parent's head as the
@@ -817,6 +874,100 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
             (await afterSweep.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
         childAfterSweep.StackReplayUpstreamCommit.Should().Be(earlierBaseTip);
         childAfterSweep.StackReplayOntoCommit.Should().Be(laterBaseTip);
+    }
+
+    /// <summary>
+    /// The sibling shape the sibling test above cannot reach: there, the parent merges as a
+    /// fast-forward, so its exact head stays reachable from the base's own later history and
+    /// <c>childHoldsParentHead</c> is true throughout. GitHub's own "rebase and merge" — the
+    /// platform's own merge method (<c>GitHubPullRequestInspector.cs</c>) — never does that: it
+    /// always gives the parent's commits new SHAs on the base, even when the branch was already
+    /// current, so the parent's own head is never again reachable from the base at all once it
+    /// merges, and git's own already-applied-patch detection drops the child's copy of the parent's
+    /// commit the moment the child is rebased past it. A child already carried past that first base
+    /// tip therefore has no exact-SHA copy of the parent's head left to vouch for a further advance
+    /// when the base moves again — only this run's own recorded fork point does, once it is moved
+    /// to that first tip exactly as a landed replay (ReviewEngine's own stacked checkpoint, or a
+    /// closeout-dispatched follow-up run) always records it. Gated on <c>childHoldsParentHead</c>
+    /// alone, every sweep after the second base move fell back to a stale, no-longer-contained
+    /// record and answered Unobservable forever: no retarget, no park, a pull request stuck off the
+    /// merge bar with nothing but an Information log to show for it (independent pre-PR review,
+    /// cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task A_child_carried_past_a_rebase_merged_parent_replays_from_the_advanced_tip_when_the_base_moves_again()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        StackedFixture fixture = await SeedAsync(cts.Token);
+
+        // The parent merges exactly as GitHub's own "rebase and merge" lands it — replayed onto
+        // main under a brand-new SHA (MergeTheParentAsync's own doc) — so the parent's original
+        // head is never reachable from main at all, unlike a fast-forward or an ordinary merge
+        // commit.
+        await MergeTheParentAsync(fixture, cts.Token);
+        string firstBaseTip = Git(fixture.RepoPath, "rev-parse HEAD").Trim();
+
+        // The child already carried past it once — a landed replay, recorded on this run's own
+        // stream exactly as ReviewEngine's own stacked checkpoint records it. Git's own
+        // already-applied-patch detection drops the child's copy of the parent's commit in the same
+        // rebase, since the cherry-picked one on main is patch-identical to it — the child keeps
+        // only its own commit, on top of the base's first tip.
+        Git(fixture.ChildWorktreePath, $"rebase -q {firstBaseTip}");
+        await using (IDocumentSession session = fixture.Store.LightweightSession())
+        {
+            session.Events.Append(fixture.ChildRunId, new RunRebasedOntoBase(
+                fixture.ChildRunId, fixture.ParentHeadCommit, firstBaseTip, false, false,
+                "test setup: carried past the rebase-merged parent's first base tip", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The base advances again — another task's own merge, landing after the child was already
+        // carried onto the first tip. The child does not hold this later tip, so a replay is still
+        // owed — the same shape the fast-forward sibling test above proves, just without an
+        // exact-SHA copy of the parent's head left anywhere to fall back on.
+        Git(fixture.RepoPath, "checkout -q main");
+        File.WriteAllText(Path.Combine(fixture.RepoPath, "OTHER-TASK.md"), "another task's own merge\n");
+        Git(fixture.RepoPath, "add -A");
+        Git(fixture.RepoPath, "-c user.name=Test -c user.email=t@t commit -qm \"another task merged\"");
+        Git(fixture.RepoPath, "push -q origin main");
+        string secondBaseTip = Git(fixture.RepoPath, "rev-parse HEAD").Trim();
+
+        await using IQuerySession query = fixture.Store.QuerySession();
+        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(fixture.ProjectId, cts.Token))!;
+        TaskAggregate child =
+            (await query.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
+        run.BaseCommit.Should().Be(firstBaseTip, "the setup above recorded the landed replay's own onto commit");
+
+        StackedParentObservation observation = await new StackedParentWatch(
+                fixture.Worktrees, NullLogger<StackedParentWatch>.Instance)
+            .ObserveAsync(query, project, StackedParentDeclaration.From(child), run, cts.Token);
+
+        observation.Verdict.Should().Be(StackedParentVerdict.ParentMerged,
+            "the child does not hold the base's current tip, so a replay is still owed");
+        observation.BoundaryCommit.Should().Be(firstBaseTip,
+            "the child already carries the base's own commits up to the tip it was rebased onto — this run's "
+            + "own recorded fork point, since no exact-SHA copy of the parent's (rewritten) head survives to "
+            + "vouch for it instead — falling back to the parent's own stale head would replay that base "
+            + "commit right back onto itself");
+        observation.BoundaryCommit.Should().NotBe(fixture.ParentHeadCommit,
+            "the parent's own head was never reachable from the base at all once a rebase merge landed it "
+            + "under a new SHA, so it must never be chosen as the boundary here");
+        observation.OntoCommit.Should().Be(secondBaseTip, "the replay lands on the base's freshly observed tip");
+
+        // The same shape through the actual dispatch path: before this fix, the fallback to a
+        // stale, no-longer-contained record answered Unobservable forever — no retarget, no park,
+        // and a pull request stuck off the merge bar with nothing but an Information log to show
+        // for it.
+        FakeStackedInspector inspector = new();
+        await NewEngine(fixture, inspector).PollOnceAsync(cts.Token);
+
+        inspector.Retargets.Should().Equal(["main"]);
+        await using IQuerySession afterSweep = fixture.Store.QuerySession();
+        TaskAggregate childAfterSweep =
+            (await afterSweep.Events.AggregateStreamAsync<TaskAggregate>(fixture.ChildTaskId, token: cts.Token))!;
+        childAfterSweep.StackReplayUpstreamCommit.Should().Be(firstBaseTip);
+        childAfterSweep.StackReplayOntoCommit.Should().Be(secondBaseTip);
     }
 
     /// <summary>
