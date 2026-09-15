@@ -36,7 +36,7 @@ public sealed record DecisionsLogRenumberResult(
 /// the shape a conflict already resolved by hand takes once the loop re-enters here) — not only a
 /// clean apply. No agent session ever picks the number or edits a citation by hand.
 /// <para>
-/// <b>Two shapes, one outcome.</b> The ordinary shape is a placeholder entry belonging to THIS
+/// <b>Three shapes, one outcome.</b> The ordinary shape is a placeholder entry belonging to THIS
 /// branch's own task sitting at the log's tail: it is unconditionally assigned the next free
 /// number. The transition shape is a branch cut before this convention shipped, which chose a
 /// real number by hand at write time and now collides with an entry that reached the base after
@@ -48,6 +48,18 @@ public sealed record DecisionsLogRenumberResult(
 /// number that was already taken when it was written) — any other duplicate shape is a genuine
 /// hand-numbering mistake and is left for <c>DecisionsLogNumberingGuardTests</c> to fail exactly
 /// as it always has, never silently papered over.
+/// </para>
+/// <para>
+/// The third shape is a retry of THIS task's own earlier, successful run of this very step: a
+/// tail entry whose body still carries this task's own placement note
+/// (<see cref="TailEntryCarriesOwnPlacementNote"/>, <c>`PLACEHOLDER-{taskShortId}`</c>) proves, by
+/// construction, that the number it now collides with was this task's own independent
+/// assignment — never a hand-numbering mistake — regardless of what the fork point this call was
+/// handed now contains. A retry that genuinely rebases onto the base's own current tip hands this
+/// method a fork point which, by then, already contains whatever number an unrelated entry
+/// independently landed on the base after the first attempt; reading fork-point absence would
+/// wrongly decline exactly the collision this shape exists to resolve (origin incident,
+/// 2026-09-15, task 450b9d84/PR #382).
 /// </para>
 /// <para>
 /// <b>The next number.</b> The highest real (non-placeholder) entry number anywhere in the
@@ -161,32 +173,57 @@ public static class DecisionsLogRenumberer
                 return NoAction();
             }
 
-            // Only the transition shape ever reads forkPointSha or baseTipSha — the ordinary
-            // placeholder shape above never calls ReadFileAtRevisionAsync at all — so the check is
-            // scoped here rather than before the caller even knows which shape it has: a caller
-            // whose baseTipSha could not be resolved (most often
-            // ReviewEngine.ResolveObservedOntoCommitAsync's own UnreadableCommit fallback after a
-            // stuck output pipe) must never reach RewriteCitationsAsync's transition branch, which
-            // hands baseTipSha to git as a literal revision — and by the time that call would
-            // throw, this method has already rewritten PLAN.md's heading to disk, leaving a
-            // half-applied rewrite for the mandatory final pass to read (independent pre-PR
-            // review, cycle 3, adversarial lens). Checked before ANY write below, not only before
-            // this one read, so a bad forkPointSha is caught here on the identical terms.
-            if (forkPointSha == RunRebasedOntoBase.UnreadableCommit || baseTipSha == RunRebasedOntoBase.UnreadableCommit)
+            // Both shapes below end up calling RewriteCitationsAsync's non-placeholder sweep, which
+            // hands baseTipSha to git as a literal revision — and by the time that call would throw,
+            // this method has already rewritten PLAN.md's heading to disk, leaving a half-applied
+            // rewrite for the mandatory final pass to read. Checked here, before either shape writes
+            // anything, rather than only inside the hand-numbered shape below (PR #396 review,
+            // Copilot: the placement-note shape read baseTipSha just as unconditionally but had no
+            // guard of its own).
+            if (baseTipSha == RunRebasedOntoBase.UnreadableCommit)
             {
                 return NoAction();
             }
 
-            string forkPointPlan = await ReadFileAtRevisionAsync(
-                git, worktreePath, forkPointSha, PlanMarkdownFileName, cancellationToken);
-            if (ContainsRealEntryNumber(forkPointPlan, tailNumber))
+            // A third shape, alongside the ordinary placeholder shape and the hand-numbered
+            // transition shape below: the tail entry's own body still carries THIS task's own
+            // placement note from an earlier run of this same mechanical step (InsertPlacementNote,
+            // `PLACEHOLDER-{taskShortId}`) — proof, by construction, that this exact number was
+            // this task's own independent assignment, never a hand-numbering mistake, whatever the
+            // current fork point now contains. A retry that rebases onto the base's true current
+            // tip hands this method a fork point that already contains the SAME number claimed by
+            // an unrelated, independently-numbered entry that landed on the base after the first
+            // attempt — the fork-point-absence check below would wrongly decline exactly the
+            // collision this shape exists to resolve (origin incident, 2026-09-15, task
+            // 450b9d84/PR #382 — independent pre-PR review, cycle 1, both lenses).
+            if (TailEntryCarriesOwnPlacementNote(lines, scan, sectionEnd, taskShortId))
             {
-                // The number was already taken at this branch's own fork point — a hand-numbering
-                // mistake, not a parallel merge. Left for the guard to fail.
-                return NoAction();
+                oldCitationToken = tailNumber.ToString();
             }
+            else
+            {
+                // Only this hand-numbered shape ever reads forkPointSha — the placement-note shape
+                // above and the ordinary placeholder shape never call ReadFileAtRevisionAsync with it
+                // at all — so this second check is scoped here rather than folded into the baseTipSha
+                // guard above (independent pre-PR review, cycle 3, adversarial lens). Checked before
+                // ANY write below, not only before this one read, so a bad forkPointSha is caught here
+                // on the identical terms.
+                if (forkPointSha == RunRebasedOntoBase.UnreadableCommit)
+                {
+                    return NoAction();
+                }
 
-            oldCitationToken = tailNumber.ToString();
+                string forkPointPlan = await ReadFileAtRevisionAsync(
+                    git, worktreePath, forkPointSha, PlanMarkdownFileName, cancellationToken);
+                if (ContainsRealEntryNumber(forkPointPlan, tailNumber))
+                {
+                    // The number was already taken at this branch's own fork point — a hand-numbering
+                    // mistake, not a parallel merge. Left for the guard to fail.
+                    return NoAction();
+                }
+
+                oldCitationToken = tailNumber.ToString();
+            }
         }
 
         int newNumber = scan.MaxRealNumber + 1;
@@ -307,6 +344,42 @@ public static class DecisionsLogRenumberer
         }
 
         return new TailScan(tailLine, tailToken, tailIsPlaceholder, maxRealNumber, dividerLine, realEntryLinesByNumber);
+    }
+
+    /// <summary>
+    /// Whether the tail entry's own body — between its heading and the section boundary — still
+    /// carries a placement note (<see cref="InsertPlacementNote"/>) naming THIS task's own
+    /// placeholder token, left there by an earlier run of this same mechanical step. That note can
+    /// only exist if this task's own mechanical step itself assigned the tail entry's current
+    /// number — never a hand-numbered mistake, and never another task's own entry — so a caller
+    /// that finds one is entitled to skip the fork-point-absence check entirely: this branch's own
+    /// past assignment is trusted regardless of what the current fork point now contains.
+    /// <para>
+    /// Matches <see cref="InsertPlacementNote"/>'s own generated wording, not merely the bare
+    /// placeholder marker: a legacy hand-authored note can carry the identical
+    /// <c>`PLACEHOLDER-{taskShortId}`</c> marker while saying, honestly, that the number was
+    /// assigned by hand (PLAN.md #162's own note, written "in the same shape the mechanical
+    /// pre-final-pass rebase step writes" specifically to document that it predates this
+    /// convention) — a marker-only match would misread that honest disclosure as this task's own
+    /// mechanical proof (PR #396 review, Copilot).
+    /// </para>
+    /// </summary>
+    private static bool TailEntryCarriesOwnPlacementNote(
+        string[] lines, TailScan scan, int sectionEnd, string taskShortId)
+    {
+        int boundaryLine = scan.DividerLine >= 0 ? scan.DividerLine : sectionEnd;
+        string escapedMarker = Regex.Escape(DecisionsLogPlaceholder.TokenFor(taskShortId));
+        var mechanicalAssignmentLine = new Regex(
+            $"^> `{escapedMarker}` and assigned \\*\\*#\\d+\\*\\* by the mechanical pre-final-pass$");
+        for (int i = scan.TailLine + 1; i < boundaryLine; i++)
+        {
+            if (mechanicalAssignmentLine.IsMatch(lines[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static bool ContainsRealEntryNumber(string planMarkdown, int number)
