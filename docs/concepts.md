@@ -686,9 +686,21 @@ Per poll, in priority order:
   themselves approve or dismiss it, so it stays on the lap above. Before touching any code, this
   lap gives every thread exactly one disposition — fix, decline (with reproduction-grade evidence),
   or route (filed as a card) — so a wrong or already-addressed thread no longer buys a full fix
-  lap. A decline or a route still gets an in-thread reply, but only a bot-authored thread may then
-  be resolved by the agent; a human-authored one stays open for the human to close, so a lap can
-  legitimately push nothing at all. The decline rate is recorded per thread on the run stream.
+  lap. A decline or a route on a **bot's** thread gets its in-thread reply and then a resolve. On
+  a thread a **person** opened it gets neither: the lap drafts the reply and parks it, and the
+  owner sends it, edits it, or drops it with the same three `h9k review resolve` choices the
+  changes-requested lap's disagreement park takes. Answering a question counts as a decline, so a
+  question a person asked is drafted and parked too. The thread stays open and unanswered until
+  they decide, and a lap can legitimately push nothing at all. The decline rate is recorded per
+  thread on the run stream. Two things back the rule up: every in-thread reply routes through
+  `h9k pr reply`, which refuses a decline or a route into a person's thread and records the
+  attempt, and the `gh` routes into a thread are refused by the session's own PreToolUse guard.
+  One thread never buys this lap in the first place — an unresolved thread a person opened that
+  asks nothing, beside a review of theirs that asks nothing ("nice, my own PR needs this too").
+  A thread that reports a defect asks something even in plain indicative form ("this throws when
+  the list is empty"), so it dispatches like any other request. The exception is reported on the
+  phase line as a human thread that asks nothing rather than dispatched, and it still holds a
+  pre-approved merge exactly as any other unresolved thread does.
 - **An errored Copilot review.** Re-requested exactly once through the provider's API, because an
   errored review produces zero threads and thread count alone would read as a clean pass.
 

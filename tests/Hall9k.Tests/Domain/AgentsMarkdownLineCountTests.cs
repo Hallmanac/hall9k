@@ -46,11 +46,19 @@ namespace Hall9k.Tests.Domain;
 /// cutting existing content to make room would have meant shortening doctrine this task did not
 /// touch and has no standing to judge as safe to compress; a real future addition should still
 /// look there first.
+/// A fifth, and the first that actually did look there: task 7d8d1fec widened the
+/// never-answer-a-human-reviewer rule from a standing changes-requested review to every thread a
+/// person opened, and the one-line bullet #152 left behind could not carry it — the rule now has
+/// two exceptions that matter at turn 1 (a fix's reply, and a bot's thread), a sanctioned posting
+/// command a session has to know the name of, and two origin incidents rather than one. What it
+/// replaced was cut rather than kept beside it, and the replacement is wrapped at the same ~100
+/// columns everything else here uses; the remaining six lines are the rule's own content, not
+/// slack. Ceiling to 222.
 /// </para>
 /// </summary>
 public sealed class AgentsMarkdownLineCountTests
 {
-    private const int LineCeiling = 216;
+    private const int LineCeiling = 222;
 
     [Fact]
     public void AGENTS_markdown_stays_at_or_under_its_recorded_line_ceiling()
