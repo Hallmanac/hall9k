@@ -90,8 +90,8 @@ public sealed class MessageSweepEngine(
                     + "other node reading that project's ledger can vouch for it, and this node's messages will "
                     + "never arrive. Run h9k project join against {ChosenAgain} to make sure this node's node file "
                     + "actually lives there.",
-                    eligibleProjects.Count, project!.Name,
-                    string.Join(", ", eligibleProjects.Skip(1).Select(candidate => candidate.Name)), project.Name);
+                    eligibleProjects.Count, eligibleProjects[0].Name,
+                    string.Join(", ", eligibleProjects.Skip(1).Select(candidate => candidate.Name)), eligibleProjects[0].Name);
             }
         }
 
