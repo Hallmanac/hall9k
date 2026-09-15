@@ -14,6 +14,13 @@ namespace Hall9k.Connectors.Messaging;
 /// </summary>
 public sealed class MessageOutbox(IMessageTransport transport)
 {
+    /// <summary>A push can land at the ledger and still never be reflected in this node's own
+    /// local store — the process dies, or the token is cancelled, between the two — so the very
+    /// next seq this store's own query allocates can already be occupied. Bounded rather than
+    /// infinite: a genuine allocation lag self-heals in one bump, and running past that many means
+    /// something else is wrong that retrying alone will not fix.</summary>
+    private const int MaxSeqAdvancesOnConflict = 5;
+
     public async Task<MessageEnvelopeV1> SendAsync(
         IDocumentSession session,
         string repositoryPath,
@@ -29,24 +36,37 @@ public sealed class MessageOutbox(IMessageTransport transport)
         CancellationToken cancellationToken)
     {
         long seq = await NextSeqAsync(session, fromNodeId, cancellationToken);
-        MessageEnvelopeV1 envelope = new(seq, now, fromNodeId, fromOwnerFingerprint, to, about, kind, body);
-        Guid streamId = MessageStreamId.ForMessage(fromNodeId, seq);
+        for (int attempt = 0; ; attempt++)
+        {
+            MessageEnvelopeV1 envelope = new(seq, now, fromNodeId, fromOwnerFingerprint, to, about, kind, body);
+            Guid streamId = MessageStreamId.ForMessage(fromNodeId, seq);
 
-        try
-        {
-            await transport.SendAsync(
-                repositoryPath, fromNodeId, seq, MessageEnvelopeCodec.Encode(envelope), committer, signingKey, cancellationToken);
-        }
-        catch (Exception exception) when (exception is LedgerPushRejectedException or InvalidOperationException)
-        {
-            session.Events.StartStream<MessageAggregate>(streamId, MessageDecider.FailSend(envelope, exception.Message, now));
+            try
+            {
+                await transport.SendAsync(
+                    repositoryPath, fromNodeId, seq, MessageEnvelopeCodec.Encode(envelope), committer, signingKey, cancellationToken);
+            }
+            catch (MessageSeqAlreadyUsedException) when (attempt < MaxSeqAdvancesOnConflict)
+            {
+                // This node's own local store lagged an earlier push that already landed at this
+                // seq — the ledger already holds different, real content there, so recording this
+                // new message as a failure at that same seq would misattribute it. Move to the
+                // next seq instead; NextSeqAsync's own next call will see whichever of the two
+                // this session actually commits.
+                seq++;
+                continue;
+            }
+            catch (Exception exception) when (exception is LedgerPushRejectedException or InvalidOperationException)
+            {
+                session.Events.StartStream<MessageAggregate>(streamId, MessageDecider.FailSend(envelope, exception.Message, now));
+                await session.SaveChangesAsync(cancellationToken);
+                throw;
+            }
+
+            session.Events.StartStream<MessageAggregate>(streamId, MessageDecider.Send(fromNodeId, seq, now));
             await session.SaveChangesAsync(cancellationToken);
-            throw;
+            return envelope;
         }
-
-        session.Events.StartStream<MessageAggregate>(streamId, MessageDecider.Send(fromNodeId, seq, now));
-        await session.SaveChangesAsync(cancellationToken);
-        return envelope;
     }
 
     /// <summary>Seq is monotonic per node, from this node's own store — never from the ledger,
