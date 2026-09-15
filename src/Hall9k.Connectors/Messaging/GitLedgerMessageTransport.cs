@@ -260,12 +260,19 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
 
         // Chain-level, idea 202383dc T1: the sender's own self-announced key is no longer enough
         // on its own — it must also be currently allowed by the project's own ledger chain (a
-        // project-member owner's own key, or a node vouched into one and not revoked). Recomputed
-        // fresh every read, so a revocation takes effect on the very next sweep.
+        // project-member owner's own key, or a node vouched into one and not revoked), and bound
+        // to this exact senderNodeId — never merely allowed for some other node the same owner
+        // happens to have vouched (independent pre-PR review, cycle 1, conformance and adversarial
+        // lenses, medium): without the node-id check, any member could overwrite senderNodeId's own
+        // self-announced node file with their own key and have their own messages accepted as if
+        // they were that node. Recomputed fresh every read, so a revocation takes effect on the
+        // very next sweep.
         TrustChain trustChain = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
-        if (!trustChain.IsAllowedSigner(senderFingerprint))
+        if (!trustChain.IsAllowedSigner(senderFingerprint, senderNodeId))
         {
-            return TransportReadResult.SenderNotVouched;
+            return TransportReadResult.NotVouched(
+                "this sender's own node file exists, but its key is not currently vouched into any "
+                + "project member's own trust chain for this node id");
         }
 
         string refName = OutboxRef(senderNodeId);

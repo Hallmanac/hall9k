@@ -33,9 +33,19 @@ public sealed record TransportReadResult(
     IReadOnlyList<TransportEnvelope> Envelopes,
     long HighestSeqInspected,
     IReadOnlyList<long> RejectedSeqs,
-    long? StalledAtSeq = null)
+    long? StalledAtSeq = null,
+    string? NotVouchedReason = null)
 {
-    public static readonly TransportReadResult SenderNotVouched = new(false, [], 0, []);
+    /// <summary>The stale, M1a-era default reason: no node file at all vouches for the sender's
+    /// own outbox. <see cref="NotVouched"/> is used instead whenever a more specific reason is
+    /// known — most importantly, a node file that does exist but whose key the ledger chain itself
+    /// currently refuses (independent pre-PR review, cycle 1, conformance lens, medium: a reader
+    /// naming this reason for every rejection, including a chain-level one, misleads whoever reads
+    /// it in h9k status about which half of sender verification actually refused the sender).</summary>
+    public static readonly TransportReadResult SenderNotVouched =
+        new(false, [], 0, [], NotVouchedReason: "no node file vouches for this sender's outbox");
+
+    public static TransportReadResult NotVouched(string reason) => new(false, [], 0, [], NotVouchedReason: reason);
 
     public static TransportReadResult Ok(
         IReadOnlyList<TransportEnvelope> envelopes, long highestSeqInspected, IReadOnlyList<long>? rejectedSeqs = null,

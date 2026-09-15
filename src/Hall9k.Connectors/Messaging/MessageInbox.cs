@@ -67,10 +67,14 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 senderNodeId);
             if (inbox is null || !inbox.SenderIgnored)
             {
+                // read.NotVouchedReason names the actual cause — no node file at all, or (chain-level,
+                // idea 202383dc T1) a node file that exists but whose key the ledger chain itself
+                // currently refuses — never the stale, hardcoded M1a reason regardless of which one
+                // actually applied (independent pre-PR review, cycle 1, conformance lens, medium).
+                string reason = read.NotVouchedReason ?? "no node file vouches for this sender's outbox";
                 AppendInboxEvents(
                     session, inboxStreamId, inbox is not null,
-                    [MessageInboxDecider.IgnoreSender(
-                        senderNodeId, "no node file vouches for this sender's outbox", verificationFailed: false, now)]);
+                    [MessageInboxDecider.IgnoreSender(senderNodeId, reason, verificationFailed: false, now)]);
                 await session.SaveChangesAsync(cancellationToken);
             }
 
