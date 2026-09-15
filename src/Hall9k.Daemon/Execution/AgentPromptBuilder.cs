@@ -881,6 +881,7 @@ public static class AgentPromptBuilder
         FoldBoundary? fold = null, VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/rebase.md";
+        AppendSharedRepositoryHistorySafetyRule(prompt);
         if (project.VerifyCommands.Count == 0)
         {
             AppendFragment(prompt, file, "no-verification-gates");
@@ -1521,6 +1522,7 @@ public static class AgentPromptBuilder
         VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/commit-style.md";
+        AppendSharedRepositoryHistorySafetyRule(prompt);
         if (commitStyle == CommitStyle.Append)
         {
             AppendFragment(prompt, file, "append-style");
@@ -3100,6 +3102,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "worktree-note", ("Branch", branch));
         AppendFragment(prompt, file, "verify-and-fix");
+        AppendSharedRepositoryHistorySafetyRule(prompt);
         AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
         AppendFragment(prompt, file, "disposition-lead", ("DispositionsHeading", ReviewFindingDispositions.Heading));

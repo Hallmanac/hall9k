@@ -50,6 +50,18 @@ Add rate limiting to auth endpoints
     commits and nothing of the parent's, and the count must match what you
     recorded above (a commit git drops as already-present upstream is the one
     legitimate exception — say which, and why, in your summary).
+- **This worktree shares one repository with every other run on this node.**
+  A git command that expires, deletes, or rewrites reflogs reaches every
+  branch on the node, not only this one — never run `git reflog expire`,
+  `git gc --prune`, `git filter-branch`, or any other command that rewrites
+  or deletes reflogs. A commit message that needs fixing gets fixed with
+  `git commit --amend` (the tip) or an interactive-free rebase reword (an
+  earlier commit) — never `git filter-branch`. Origin incident (2026-09-15):
+  a fix session ran `git filter-branch` to strip em dashes from commit
+  messages and then `git reflog expire --expire=now --all` to clean up
+  after it, wiping a sibling task's own branch reflog on the same node and
+  making that task's own next push refuse a tip it had legitimately pushed
+  earlier.
   - **Required before you finish**: re-run the project's verification gates against
     the rebased tree and fix whatever they surface. A clean-looking rebase can still
     break the build — each side compiled alone; combined is what you are testing now:
