@@ -296,7 +296,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         await ledger.WriteAsync(
             new LedgerWriteRequest(
                 RepositoryPath, $"refs/hall9k/ledger/owners/{root}", vouchPath,
-                $"node_id: \"{joinerNodeId}\"\npublic_key: \"{joinerKey.PublicKeyLine}\"\nissued_at: \"{manualVouchAt:O}\"\n",
+                $"node_id: \"{joinerNodeId}\"{Environment.NewLine}public_key: \"{joinerKey.PublicKeyLine}\"{Environment.NewLine}issued_at: \"{manualVouchAt:O}\"{Environment.NewLine}",
                 ExpectedBlobId: null, "manual h9k node vouch", new LedgerCommitter("Test Node", "node@test.local"),
                 new LedgerSigningKey("/does/not/matter/key")),
             cts.Token);
