@@ -455,7 +455,7 @@ internal static class TaskPhaseComposer
             // another here is only the post-PR review watcher's own read of Copilot: landed,
             // requested but still pending, or neither observed yet (origin: PR #50 sat Delivered
             // for 23 minutes with a landed Copilot review nobody had read before the merge).
-            "AwaitingReview" => WithTriageDetail(AwaitingReviewPhase(pullRequest, run, now), run),
+            "AwaitingReview" => WithTriageDetail(AwaitingReviewPhase(task, pullRequest, run, now), run),
             "ChecksFailing" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable,
                 ChecksDetail(run)),
             "ReviewPending" => new TaskPhase($"watching {pullRequest}", SessionLiveness.NotApplicable, Threads(run)),
@@ -556,20 +556,20 @@ internal static class TaskPhaseComposer
     /// own comment below already refuses to assert; Unknown reads the identical conservative
     /// way instead.
     /// </summary>
-    private static TaskPhase AwaitingReviewPhase(string pullRequest, RunDetails run, DateTimeOffset now) =>
+    private static TaskPhase AwaitingReviewPhase(TaskListItem task, string pullRequest, RunDetails run, DateTimeOffset now) =>
         // Wrapped rather than threaded into each arm below: an advisory thread buys no lap, so the
         // run never leaves this state for the ReviewPending one whose own Threads() detail names
         // it — and a reader looking at a watched pull request with a person's unanswered thread on
         // it deserves to be told, from whichever arm happens to describe the Copilot side (task: a
         // review-feedback follow-up never answers a human reviewer in the owner's name on its own).
-        WithAdvisoryDetail(AwaitingReviewPhaseCore(pullRequest, run, now), run);
+        WithAdvisoryDetail(AwaitingReviewPhaseCore(task, pullRequest, run, now), run);
 
     private static TaskPhase WithAdvisoryDetail(TaskPhase phase, RunDetails run) =>
         AdvisoryClause(run) is { Length: > 0 } clause
             ? phase with { Detail = phase.Detail.IsBlank() ? clause.Trim() : $"{phase.Detail}{clause}" }
             : phase;
 
-    private static TaskPhase AwaitingReviewPhaseCore(string pullRequest, RunDetails run, DateTimeOffset now) =>
+    private static TaskPhase AwaitingReviewPhaseCore(TaskListItem task, string pullRequest, RunDetails run, DateTimeOffset now) =>
         // Ahead of every Copilot reading below, for the same reason AttentionComposer's own stacked
         // branch sits ahead of its two arms (task: the bar machinery treats an un-retargeted stacked
         // PR as not at the bar): the phase line and the attention line under it must never disagree,
@@ -579,10 +579,11 @@ internal static class TaskPhaseComposer
                 $"watching {pullRequest} — stacked on {parentBranch}",
                 SessionLiveness.NotApplicable,
                 "its base is still the parent's branch; it retargets and replays when the parent merges")
-            : AwaitingReviewCopilotPhase(pullRequest, run, now);
+            : AwaitingReviewCopilotPhase(task, pullRequest, run, now);
 
     /// <summary>The Copilot-observation readings, once the stacked check above has had its say.</summary>
-    private static TaskPhase AwaitingReviewCopilotPhase(string pullRequest, RunDetails run, DateTimeOffset now) => run.ExternalReviewState.Value switch
+    private static TaskPhase AwaitingReviewCopilotPhase(
+        TaskListItem task, string pullRequest, RunDetails run, DateTimeOffset now) => run.ExternalReviewState.Value switch
     {
         "Landed" => new TaskPhase($"watching {pullRequest} — Copilot review landed",
             SessionLiveness.NotApplicable, CopilotThreadsDetail(run, now)),
@@ -598,10 +599,27 @@ internal static class TaskPhaseComposer
         // ordinary errored review, since there is nothing left to wait on here — the merge (or
         // the remaining gates) proceeds without Copilot rather than a re-request ever landing.
         // Self-corrects on its own the next sweep a real review lands, since ExternalReviewState
-        // is recomputed fresh every time rather than carried forward.
-        "Unavailable" => new TaskPhase($"watching {pullRequest} — Copilot review unavailable",
-            SessionLiveness.NotApplicable,
-            "refused for quota; accepted, and proceeding on the remaining gates without it"),
+        // is recomputed fresh every time rather than carried forward. Only a pre-approved task's
+        // own daemon actually proceeds on its own here (CloseoutEngine.TryAutoMergeAsync never
+        // runs otherwise); every other task waits on the human merge exactly as the "None" arm
+        // below says, and the wording now matches whichever of the two this task actually is
+        // rather than always claiming the platform's own hand (independent pre-PR review, cycle
+        // 1, conformance finding) — the same split the attention line under this one already
+        // makes (AttentionComposer.CopilotAwaitingReviewAttention's "Unavailable" arm). It also
+        // hedges on RunDetails.ExternalReviewChecksPending the way the "None" arm below does and
+        // this one did not: nothing on this row proceeds, automatically or by a human's hand,
+        // while a check is still reporting, so claiming either would tell the reader the wrong
+        // thing is theirs to act on right now (independent pre-PR review, cycle 1, adversarial
+        // finding, which named this same gap at both this arm and the sibling one below).
+        "Unavailable" => run.ExternalReviewChecksPending
+            ? new TaskPhase($"watching {pullRequest} — Copilot review unavailable",
+                SessionLiveness.NotApplicable,
+                $"refused for quota; accepted, and {TaskStatusComposer.ChecksPendingClause(run.ExternalReviewChecksPendingSince, now)}")
+            : new TaskPhase($"watching {pullRequest} — Copilot review unavailable",
+                SessionLiveness.NotApplicable,
+                task.EffectivePreApproval.MergesAutomatically
+                    ? "refused for quota; accepted, and proceeding on the remaining gates without it"
+                    : "refused for quota; accepted, and the merge is yours without it"),
         // No external review activity does not automatically mean a human's merge is the only
         // thing left: a pending check holds the merge on its own (the merge bar is unchanged by
         // Decisions Log #164), so a run whose CI picture was still incomplete as

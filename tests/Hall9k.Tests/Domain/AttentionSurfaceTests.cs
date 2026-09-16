@@ -620,6 +620,41 @@ public sealed class AttentionSurfaceTests
     }
 
     /// <summary>
+    /// A quota refusal (task: a Copilot review refused for quota is treated as review
+    /// unavailable) reads as "your merge" only once the CI picture is settled — the same hedge
+    /// the "Landed"/"None" pair above already carries, and one the "Unavailable" arm did not
+    /// (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public void A_quota_refusal_hedges_on_a_still_pending_check_the_same_as_landed_and_none()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/24";
+
+        RunDetails unavailable = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        unavailable.ExternalReviewState = ExternalReviewState.Unavailable;
+        TaskStatusRow reviewUnavailable = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), unavailable);
+
+        reviewUnavailable.Attention.NeedsYou.Should().BeTrue("the refusal was accepted; nothing else is going to answer for Copilot");
+        reviewUnavailable.Attention.Cause.Should().Contain("refused for quota");
+        reviewUnavailable.Attention.Cause.Should().Contain("the merge is yours without it");
+
+        RunDetails unavailableChecksPending = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        unavailableChecksPending.ExternalReviewState = ExternalReviewState.Unavailable;
+        unavailableChecksPending.ExternalReviewChecksPending = true;
+        unavailableChecksPending.ExternalReviewChecksPendingSince = StatusFixtures.Now.AddMinutes(-12);
+        TaskStatusRow reviewUnavailableChecksPending = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Done, runId, pullRequest), unavailableChecksPending);
+
+        reviewUnavailableChecksPending.Attention.NeedsYou.Should().BeTrue();
+        reviewUnavailableChecksPending.Attention.Cause.Should().Contain("refused for quota");
+        reviewUnavailableChecksPending.Attention.Cause.Should().Contain("a check has been pending 12m");
+        reviewUnavailableChecksPending.Attention.Cause.Should().NotContain(
+            "the merge is yours without it", "a check still reporting means the merge is not actually the reader's yet");
+    }
+
+    /// <summary>
     /// The unflagged (non-pre-approved) arm shares CloseoutEngine's own dispatch-suppression
     /// branch (CloseoutEngine.cs, the alreadyAnsweredThreadIds skip): a human-authored thread this
     /// run's own last triage declined or routed on purpose (Decisions Log #159) can leave this run

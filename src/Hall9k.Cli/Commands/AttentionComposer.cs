@@ -895,7 +895,15 @@ internal static class AttentionComposer
         // A quota refusal is accepted, not chased (Brian's ruling, 2026-09-16 morning): the cause
         // says so plainly rather than falling to the generic "no confirmed review activity" the
         // default arm gives an ordinary errored review, since nothing here is going to be
-        // re-requested — the merge is the human's, without Copilot's review.
+        // re-requested — the merge is the human's, without Copilot's review. Hedged on
+        // RunDetails.ExternalReviewChecksPending the same way the "Landed" and "None" arms
+        // already are: a check still reporting means the merge is not actually the reader's yet,
+        // whatever Copilot said (independent pre-PR review, cycle 1, both lenses).
+        "Unavailable" when run.ExternalReviewChecksPending => new TaskAttention(AttentionLevel.NeedsYou,
+            "Copilot's review was refused for quota — accepted, and "
+            + $"{TaskStatusComposer.ChecksPendingClause(run.ExternalReviewChecksPendingSince, now)} — "
+            + "read its checks, then the merge is yours",
+            run.PullRequestUrl ?? string.Empty),
         "Unavailable" => new TaskAttention(AttentionLevel.NeedsYou,
             "Copilot's review was refused for quota — accepted, and the merge is yours without it",
             run.PullRequestUrl ?? string.Empty),
