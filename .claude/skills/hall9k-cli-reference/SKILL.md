@@ -536,8 +536,8 @@ doors, and the same `h9k task revise --clear-interactive-mode` fallback, turn it
 
 `h9k task retry` on a Failed task ordinarily resumes the failed run's own branch (or starts clean
 from the base branch when nothing survives) and dispatches a fresh build session — but a run whose
-only failure was `PullRequestOpener` itself (the branch already pushed, its review already
-settled, and `gh pr create` or the push failing on something like a network timeout) resumes at
+only failure was `PullRequestOpener` itself (the branch already pushed and recorded, its review
+already settled, and `gh pr create` failing on something like a network timeout) resumes at
 that step alone instead: no build or review session dispatches, and the next run re-attempts the
 pull-request open directly against the same pushed tip, retargeting onto the base branch first if
 a stacked parent merged in the meantime, exactly as closeout would. That resumed run also carries
@@ -548,8 +548,11 @@ worktree still exists, its branch still matches, and the branch's tip hasn't mov
 origin or the local ref in that worktree since — the daemon reverifies all of that live at
 dispatch time — and while no operator reason from `--reason` or a handback is still pending
 unread, since a build session is the only thing that ever reads one. Any of those failing falls
-back to the ordinary full dispatch. `h9k task retry` itself states, right after requeuing, which
-of the paths the next run means to take and why.
+back to the ordinary full dispatch. A push itself failing almost never qualifies: the branch's tip
+is only recorded once `PullRequestOpener`'s own push already succeeded, so a first build whose push
+times out has nothing recorded to resume against and takes the ordinary full dispatch instead — the
+shortcut is, in practice, for `gh pr create` failing after a push that already landed. `h9k task
+retry` itself states, right after requeuing, which of the paths the next run means to take and why.
 
 ```bash
 h9k task start <id>                              # dispatch a Published, Queued, or already-Blocked task headless, on the spot, ceiling-exempt
