@@ -452,8 +452,15 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// run's <see cref="RunDetails.ExternalReviewState"/> ever read
     /// <see cref="ExternalReviewState.Landed"/> is excluded even when a refusal and a merge both
     /// happened, because a landed review means Copilot did in fact review it before it merged
-    /// (independent pre-PR review, cycle 3, adversarial lens, medium). Degraded rather than fatal
-    /// on a database hiccup, the same as the panes above.
+    /// (independent pre-PR review, cycle 3, adversarial lens, medium). That exclusion is read
+    /// from a second query over every run of the candidate tasks, not from the first, refusal-or-
+    /// merge-filtered query alone: a run that observed <see cref="ExternalReviewState.Landed"/>
+    /// on an ordinary pass, with neither a refusal nor a merge of its own, never matches the first
+    /// query's filter, and the daemon's closeout engine returns from its merged-run branch before
+    /// ever recording a landed observation on the run that does the merging — so reading the
+    /// exclusion off the first query's own rows would miss exactly the run this pane most needs to
+    /// see (independent pre-PR review, cycle 4, adversarial lens, medium). Degraded rather than
+    /// fatal on a database hiccup, the same as the panes above.
     /// </para>
     /// </summary>
     internal static async Task WriteMergedWithoutCopilotReviewAsync(
@@ -469,8 +476,13 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 return;
             }
 
+            Guid[] candidateTaskIds = [.. candidates.Select(run => run.TaskId).Distinct()];
+            IReadOnlyList<RunDetails> everyRunOfCandidateTasks = await session.Query<RunDetails>()
+                .Where(run => candidateTaskIds.Contains(run.TaskId))
+                .ToListAsync(cancellationToken);
+
             List<(Guid TaskId, DateTimeOffset MergedAt, int? PullRequestNumber)> merged = [];
-            foreach (IGrouping<Guid, RunDetails> byTask in candidates.GroupBy(run => run.TaskId))
+            foreach (IGrouping<Guid, RunDetails> byTask in everyRunOfCandidateTasks.GroupBy(run => run.TaskId))
             {
                 bool everRefused = byTask.Any(run => run.CopilotReviewUnavailableAt != null);
                 bool everLanded = byTask.Any(run => run.ExternalReviewState == ExternalReviewState.Landed);
