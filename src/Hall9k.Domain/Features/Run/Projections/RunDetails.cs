@@ -88,6 +88,15 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </para>
     /// </summary>
     public List<ActiveSession> ActiveSessions { get; set; } = [];
+    /// <summary>
+    /// The gate actually running right now, when one is (task: a run whose verification gate is
+    /// executing is reported as live work in progress, never as stalled with no session
+    /// recorded). Null between gates and once the last configured gate has finished — see
+    /// <see cref="Run.ActiveGate"/>'s own doc for why this is not simply another
+    /// <see cref="ActiveSessions"/> entry: a gate is not an agent session, and nothing on this
+    /// run's own stream ever writes to the agent stream file while one runs.
+    /// </summary>
+    public ActiveGate? ActiveGate { get; set; }
     public string? PullRequestUrl { get; set; }
     public int? PullRequestNumber { get; set; }
     /// <summary>
@@ -1140,6 +1149,11 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     // VerificationFailed/VerificationPassed above, since a gate that resolves this event's
     // retry still leaves later gates in the same VerifyAsync call to run.
     public void Apply(IEvent<GateRetried> @event, RunDetails view) => view.PendingGateRetry = @event.Data.Gate;
+
+    public void Apply(IEvent<GateStarted> @event, RunDetails view) =>
+        view.ActiveGate = new ActiveGate(@event.Data.GateName, @event.Data.ProcessId, @event.Data.StartedAt);
+
+    public void Apply(IEvent<GateEnded> @event, RunDetails view) => view.ActiveGate = null;
 
     public void Apply(IEvent<ReviewDispatched> @event, RunDetails view)
     {
