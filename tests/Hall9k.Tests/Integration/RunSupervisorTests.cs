@@ -2172,6 +2172,20 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     /// must check for that once the backoff wakes up, rather than relaunching into a node that has
     /// meanwhile gone bad and spending the one retry on a resume that cannot work yet (independent
     /// pre-PR review, cycle 1, conformance lens).
+    /// <para>
+    /// Root cause of the 2026-09-16 flake (task 27cdde8e run 01a0aa6d, three concurrent test
+    /// gates on the Mac): the previous version raced a real 300ms backoff against polling for
+    /// <see cref="RunSessionErrorRetried"/> every 250ms and then writing the hold — a window thin
+    /// enough that ordinary host contention could let the backoff wake and find no hold yet,
+    /// resuming the scripted session for real. That resumed "success" then reached
+    /// <see cref="ReviewEngine"/>'s own conformance lens through the real <c>ClaudeExecutor</c>
+    /// this class's factory wires it with, against the <c>HALL9K_CLAUDE_PATH</c> pin this class
+    /// deliberately points at a binary that does not exist — hence "the conformance review
+    /// session (cycle 1) died without a result", a failure that names a lens this test never
+    /// intends to reach. <see cref="RunSupervisor.RetryBackoffDelay"/> replaces that race with
+    /// explicit sequencing: the backoff wait itself blocks on a gate this test controls, so the
+    /// hold is always written before the wait is ever allowed to resolve, regardless of host load.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_hold_raised_during_the_primary_sessions_retry_backoff_holds_it_instead_of_resuming()
@@ -2186,17 +2200,25 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         ScriptedResumeExecutor resumeExecutor = new(ResultLine);
-        RunSupervisor supervisor = NewSupervisor(
-            store, node, executor: resumeExecutor,
-            options: new DaemonOptions { SessionErrorRetryBackoff = TimeSpan.FromMilliseconds(300) });
+        RunSupervisor supervisor = NewSupervisor(store, node, executor: resumeExecutor);
+
+        // RetryBuildSessionAsync only reaches its backoff wait once RunSessionErrorRetried is
+        // already durably saved (its own doc comment), so awaiting backoffEntered is exactly as
+        // reliable a synchronization point as polling for that event — without a wall-clock
+        // window between observing it and raising the hold below.
+        TaskCompletionSource backoffEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        TaskCompletionSource releaseBackoff = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        supervisor.RetryBackoffDelay = (_, _) =>
+        {
+            backoffEntered.TrySetResult();
+            return releaseBackoff.Task;
+        };
         supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
 
-        // The retry is durably recorded before the backoff wait even starts — the same moment a
-        // crash-recovery test synchronizes on. Raising the hold right after this is still well
-        // inside the 300ms backoff window.
-        await WaitForEventCountAsync<RunSessionErrorRetried>(store, runId, 1, cts.Token);
+        await backoffEntered.Task.WaitAsync(cts.Token);
         LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
         await launchHold.RaiseOrJoinAsync(node.NodeId, DomainId.New(), "Failed to authenticate", cts.Token);
+        releaseBackoff.TrySetResult();
 
         RunDetails details = await WaitForStateAsync(store, runId, "LaunchHeld", cts.Token);
         resumeExecutor.Spawns.Should().BeEmpty(

@@ -84,6 +84,19 @@ public sealed class RunSupervisor(
     /// </summary>
     private const int MaxLaunchHeldSpawnFailures = 5;
 
+    /// <summary>
+    /// The wait <see cref="RetryBuildSessionAsync"/> takes between recording the in-place error
+    /// retry and its own post-wait hold check — real <see cref="Task.Delay(TimeSpan, CancellationToken)"/>
+    /// for every daemon, and the one seam a test has to pin exactly when that check runs without
+    /// racing a concurrent hold-raise against real elapsed time (RunSupervisorTests:
+    /// A_hold_raised_during_the_primary_sessions_retry_backoff_holds_it_instead_of_resuming —
+    /// that race, lost under three concurrent test gates, is what let a retry it should have held
+    /// resume for real and reach ReviewEngine's own conformance lens against this test class's
+    /// deliberately broken Claude binary path, task 27cdde8e run 01a0aa6d). Never set outside a
+    /// test.
+    /// </summary>
+    internal Func<TimeSpan, CancellationToken, Task> RetryBackoffDelay { get; set; } = Task.Delay;
+
     public int ActiveCount => _monitors.Count;
 
     /// <summary>
@@ -1572,7 +1585,7 @@ public sealed class RunSupervisor(
     private async Task<(BuildSessionRetryOutcome Outcome, int ProcessId, DateTimeOffset ProcessStartedAt)> RetryBuildSessionAsync(
         Guid runId, Guid taskId, CancellationToken cancellationToken)
     {
-        await Task.Delay(_options.SessionErrorRetryBackoff, cancellationToken);
+        await RetryBackoffDelay(_options.SessionErrorRetryBackoff, cancellationToken);
         if (await JoinLaunchHoldIfActiveAsync(runId, cancellationToken))
         {
             return (BuildSessionRetryOutcome.Held, 0, default);
