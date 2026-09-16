@@ -353,6 +353,125 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         ledger.Writes.Should().BeEmpty("a member-role owner is refused before any push");
     }
 
+    [Fact]
+    public async Task A_member_of_project_invite_round_trips_through_the_sweep_and_ends_verified()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
+            [new ProjectMember(myRoot, MembershipRole.Owner, Now)]));
+
+        string secret;
+        Guid inviteId;
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            int exitCode = await ProjectInviteCommand.RunAsync(
+                session, project, roleInput: "member", ledger, chainReader, new NodeKeyStore(), cts.Token);
+            exitCode.Should().Be(ExitCodes.Ok);
+
+            InviteDetails minted = (await session.Query<InviteDetails>().ToListAsync(cts.Token)).Single();
+            minted.Claim.Should().Be(InviteClaimKind.MemberOfProject);
+            minted.Spent.Should().BeFalse();
+            inviteId = minted.Id;
+
+            InviteAggregate aggregate = (await session.Events.AggregateStreamAsync<InviteAggregate>(inviteId, token: cts.Token))!;
+            secret = aggregate.Secret;
+        }
+
+        // The joiner: a brand-new member with no existing root, proving possession purely through
+        // its own self-announced node file — the same "target node is ledger-only" pattern the
+        // node-of-owner tests already use.
+        Guid joinerNodeId = DomainId.New();
+        NodeSigningKey joinerKey = await new NodeKeyStore().EnsureAsync(joinerNodeId, cts.Token);
+        string proof = InviteSecret.ComputeProof(secret, joinerKey.Fingerprint);
+        await WriteSelfAnnouncedNodeFileAsync(ledger, joinerNodeId, joinerKey, ownerFingerprint: joinerKey.Fingerprint, inviteProof: proof, cts.Token);
+
+        // The minting node's own daemon sweep — same local identity as the mint phase above.
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+
+        InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
+        sweep.InvitesSpent.Should().Be(1, "the joiner's own proof matches the one outstanding member-of-project invite");
+
+        LedgerWriteRequest memberWrite = ledger.Writes.Single(w => w.Path == $"members/{joinerKey.Fingerprint}.yaml");
+        memberWrite.Content.Should().Contain($"role: \"{ProjectMemberRole.Member.Value}\"");
+
+        LedgerFile invitesFile = await ledger.ReadAsync(
+            RepositoryPath, InviteLedgerRecord.RefName(myRoot), InviteLedgerRecord.PathFor(myRoot, inviteId), cts.Token);
+        InviteLedgerRecord? spentRecord = InviteLedgerRecord.Parse(invitesFile.Content);
+        spentRecord!.Spent.Should().BeTrue("the ledger's own record, not only the local one, ends up marked spent");
+
+        await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
+        InviteDetails after = (await assertSession.LoadAsync<InviteDetails>(inviteId, cts.Token))!;
+        after.Spent.Should().BeTrue();
+        after.ClaimedByRootFingerprint.Should().Be(joinerKey.Fingerprint);
+    }
+
+    [Fact]
+    public async Task A_member_of_project_invite_refuses_to_overwrite_an_existing_member()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
+
+        // An existing owner-role member already in this project's own ledger, distinct from the
+        // minting node's own root — the invite holder below tries to redirect the grant onto it.
+        NodeSigningKey victimKey = await new NodeKeyStore().EnsureAsync(DomainId.New(), cts.Token);
+        string victimRoot = victimKey.Fingerprint;
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                RepositoryPath, "refs/hall9k/ledger/members", $"members/{victimRoot}.yaml",
+                $"root_fingerprint: \"{victimRoot}\"\nrole: \"{ProjectMemberRole.Owner.Value}\"\nissued_at: \"{Now:O}\"\n",
+                ExpectedBlobId: null, "seed existing owner member", new LedgerCommitter("Test Node", "node@test.local"),
+                new LedgerSigningKey("/does/not/matter/key")),
+            cts.Token);
+
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
+            [new ProjectMember(myRoot, MembershipRole.Owner, Now), new ProjectMember(victimRoot, MembershipRole.Owner, Now)]));
+
+        string secret;
+        Guid inviteId;
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            int exitCode = await ProjectInviteCommand.RunAsync(
+                session, project, roleInput: "member", ledger, chainReader, new NodeKeyStore(), cts.Token);
+            exitCode.Should().Be(ExitCodes.Ok);
+
+            InviteDetails minted = (await session.Query<InviteDetails>().ToListAsync(cts.Token)).Single();
+            inviteId = minted.Id;
+            InviteAggregate aggregate = (await session.Events.AggregateStreamAsync<InviteAggregate>(inviteId, token: cts.Token))!;
+            secret = aggregate.Secret;
+        }
+
+        // The invite holder's own key checks out (the HMAC proof matches), but it self-declares
+        // the VICTIM's own root fingerprint as owner_fingerprint in its node file — exactly the
+        // unverified redirection the sweep must refuse rather than silently honor.
+        Guid joinerNodeId = DomainId.New();
+        NodeSigningKey joinerKey = await new NodeKeyStore().EnsureAsync(joinerNodeId, cts.Token);
+        string proof = InviteSecret.ComputeProof(secret, joinerKey.Fingerprint);
+        await WriteSelfAnnouncedNodeFileAsync(ledger, joinerNodeId, joinerKey, ownerFingerprint: victimRoot, inviteProof: proof, cts.Token);
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+
+        InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
+        sweep.InvitesSpent.Should().Be(0, "the sweep refuses to overwrite an existing member's own role file");
+
+        LedgerFile victimFile = await ledger.ReadAsync(RepositoryPath, "refs/hall9k/ledger/members", $"members/{victimRoot}.yaml", cts.Token);
+        victimFile.Content.Should().Contain($"role: \"{ProjectMemberRole.Owner.Value}\"", "the existing member's own role must survive untouched");
+
+        await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
+        InviteDetails after = (await assertSession.LoadAsync<InviteDetails>(inviteId, cts.Token))!;
+        after.Spent.Should().BeFalse("the invite stays outstanding so a legitimate holder can still be retried");
+    }
+
     /// <summary>Mints a node-of-owner invite where the caller's own single local identity plays
     /// both the root and the minting node — the root's own key always counts as "enrolled" under
     /// its own chain, so this needs no second device at all, unlike the full three-node test.</summary>
