@@ -277,15 +277,22 @@ branch as well when the parent *merges* into it, since its branch is going away,
 the parent when its branch merely moves. Bounded by a per-child rebase budget that parks for a human
 past its cap. A parent that merged into something other than the base branch (a mid-stack parent
 merged by hand while still aimed at its own parent) parks the child untouched rather than retarget
-it, which is the pairwise edges declining to guess at the multi-level ordering below.
+it, which is the pairwise edges declining to guess at the multi-level ordering below — a child still
+mid-run first dispatches this run's one read-only stack assessment (PLAN.md §16, Decisions Log
+#203) and parks only on an undecidable verdict, while a child whose pull request is already open —
+the closeout watcher's own sweep, a separate monitor this assessment does not reach — parks
+directly.
 
 The parent's post-delivery churn is absorbed at **two checkpoints** rather than chased push by push
 (#146): a child still in flight catches up to its parent's current head immediately before its own
 first review cycle and immediately before the mandatory final full pass, and nowhere in between.
 Each catch-up is mechanical — the same replay, plus the gates, no review cycle — spending the same
-rebase budget and parking past the same cap. A conflict at a checkpoint restores the branch and
-parks; so does a parent that has died terminally (abandoned, `Failed`, or Done having never
-delivered a pull request that can merge), wherever the child is in its own pipeline.
+rebase budget and parking past the same cap. A conflict at a checkpoint first dispatches that same
+one read-only stack assessment; the branch is restored and only an undecidable verdict parks for a
+human (PLAN.md §16, Decisions Log #203). A parent that has died terminally (abandoned, `Failed`, or
+Done having never delivered a pull request that can merge) does the same for a child still
+mid-run — assessed first, parking only on an undecidable verdict — while a child whose pull request
+is already open parks directly, under the closeout watcher's own separate sweep.
 
 The parent can also be a pull request **another install owns** —
 `h9k task add --stacked-on-pull-request <number>` (#153), the form a reviewer on her own node needs,
