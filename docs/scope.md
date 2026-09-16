@@ -685,16 +685,17 @@ answers to nobody until the next `h9k daemon start` adopts it. The run records *
 A note one node sends another, an owner, or the whole project: the first payload kind on the
 message transport (idea 202383dc, A2a/M1a/M1b), replacing `notes/node-mailbox.md`'s GitHub-issue
 workaround for that traffic, which is retired for node-to-node use as of this. `h9k message send
---to <node:id|owner:fingerprint|project> [--about <task-or-idea-id>] "<text>"` only ever queues in
-this node's own local store (never git, never a network wait); a daemon `MessageSweepLoop` is what
-actually lands a queued envelope in the outbox, batching everything queued since the last flush
-into one commit, on a cadence that tightens the moment there is something to send or read (15 to
-25 seconds, jittered) and relaxes when idle (30 to 45 seconds, jittered), with an immediate
-re-probe the tick right after this node's own push. The same sweep periodically squashes this
-node's own outbox down to envelopes younger than a 48-hour retention window, never another node's
-ref. `h9k messages [--all]` and `h9k message handle <id>` read and act on what arrived; `h9k
-status` names the unread count and any sender this node's inbox has had to ignore because that
-sender's node file does not vouch for their outbox.
+--to <node:id|owner:fingerprint|project> [--project <PROJECT>] [--about <task-or-idea-id>] "<text>"`
+only ever queues in this node's own local store (never git, never a network wait); a daemon
+`MessageSweepLoop` is what actually lands a queued envelope in the outbox, batching everything
+queued since the last flush into one commit, on a cadence that tightens the moment there is
+something to send or read (15 to 25 seconds, jittered) and relaxes when idle (30 to 45 seconds,
+jittered), with an immediate re-probe the tick right after this node's own push. The same sweep
+periodically squashes this node's own outbox down to envelopes younger than a 48-hour retention
+window, never another node's ref. `h9k messages [--all] [--project <PROJECT>]` and `h9k message
+handle <id> [--project <PROJECT>]` read and act on what arrived; `h9k status` names the unread
+count and any sender this node's inbox has had to ignore because that sender's node file does not
+vouch for their outbox.
 
 Envelopes are one node's own signed statement, ephemeral by design (Brian's ruling, 2026-09-13):
 anything that must survive a node's absence is a file in the ledger, never only a message. Sender
@@ -703,9 +704,14 @@ own node file, but it also has to be currently allowed by the project's own ledg
 that exact sender's own node id (a project-member owner's own key, or a node vouched into one and
 not revoked, recomputed fresh on every read), before its commit signature is ever checked; a sender
 whose key does not chain to a project member, or whose key belongs to a different node id, is
-ignored the same way an unvouched one always was. Scoped to a single project's own repository
-today, not every registered project a node happens to manage: see
-"Multi-node and peer-to-peer" below for why.
+ignored the same way an unvouched one always was. Project-scoped end to end now (idea 202383dc,
+M2): every eligible project a node is registered to (not archived, with a repository) is swept
+each tick through its own repository, never just the first one found; seq allocation and the
+per-sender inbox cursor are both keyed by (sender node, local project) so a sender common to two
+projects never collides between them; and the wire envelope itself carries a project key derived
+from that project's own ledger (its genesis member's own root fingerprint), identical on every
+node sharing the repository and never any one install's own locally-minted project id — see
+"Multi-node and peer-to-peer" below for the identity groundwork this key rests on.
 
 ### Configuration and policy
 
@@ -1100,7 +1106,9 @@ writing `HMAC(secret, this node's own key fingerprint)` into its own node file, 
 node's own daemon sweep matches the proof against its outstanding invites and vouches the node or
 member in with no further prompt: a second human's node joining an owner's root no longer needs a
 hand-run `h9k node vouch` at all. **Still not built**: no node discovery, no gossip, no event
-replication (M2, the one thing a message is deliberately never trusted with). **Two known, accepted
+replication (M2a, the one thing a message is deliberately never trusted with) — M2's own
+project-scoped outbox streams (above) are what M2a builds replication on, rather than retrofitting
+project scoping into it later. **Two known, accepted
 limits.** A force-push over a ledger ref still rewrites trust history along with everything else in
 it; nothing here detects or prevents that rewrite before the later relay replaces git as the carrier:
 every ledger and chain fetch is a forced update with no ancestry check, so a rewritten trust ref is

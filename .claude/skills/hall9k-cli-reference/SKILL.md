@@ -129,20 +129,28 @@ when idle (30 to 45 seconds, jittered), with an immediate re-probe the tick righ
 own push. The same sweep squashes this node's own outbox down to envelopes younger than
 `MessageRetention` (48 hours by default; a separate `DaemonOptions` value, not yet a `config set`
 flag, and unrelated to the `--message-poll-*` cadence flags above), and never another node's ref,
-only the one this node is the sole writer of. Scoped to a
-single project's own repository today (the first non-archived registered one); the message
-domain's own seq allocation and per-sender cursor are keyed by sender node alone, with no project
-scoping yet, so a node registered to several projects would need that schema extended before a
-second project's messages could be swept safely.
+only the one this node is the sole writer of. Project-scoped end to end (idea 202383dc, M2): every
+queued message records the local project it belongs to, seq allocation and the per-sender inbox
+cursor are both keyed by (sender node, project) rather than sender alone, and the sweep runs every
+eligible project (not archived, with a repository) each tick through its own repository — a node
+registered to several projects sends and reads each one's messages independently, and a flush
+failure in one project's own repository never touches another's pending messages. The wire
+envelope itself carries a project key derived from that project's own ledger (its genesis member's
+root fingerprint — `TrustChain.GenesisRootFingerprint`), identical on every node that shares the
+repository and never any one install's own locally-minted project id, since two nodes registering
+the same shared repository mint two different, uncorrelated ids for what is really one project.
 
 ```bash
-h9k message send --to node:<node-id> "<text>"           # queue a note to one specific node (needs the full id: h9k status shows only its short form; h9k project join prints the full id)
-h9k message send --to owner:<fingerprint> "<text>"       # queue a note to everything that owner's nodes read (h9k owner show prints a root fingerprint)
-h9k message send --to project "<text>"                   # queue a note to every node reading this project's messages
+h9k message send --to node:<node-id> "<text>"                         # queue a note to one specific node (needs the full id: h9k status shows only its short form; h9k project join prints the full id)
+h9k message send --to owner:<fingerprint> "<text>"                    # queue a note to everything that owner's nodes read (h9k owner show prints a root fingerprint)
+h9k message send --to project "<text>"                                # queue a note to every node reading this project's messages
 h9k message send --to <AUDIENCE> --about <task-or-idea-id> "<text>"   # carries the id through as-is; h9k messages prints it back
-h9k messages                                             # this node's own received messages, unread (received, not yet handled) by default
-h9k messages --all                                       # include already-handled messages too
-h9k message handle <id>                                  # mark a received message handled: an explicit act, never implied by h9k messages having printed it
+h9k message send --to <AUDIENCE> --project <PROJECT> "<text>"         # name, fragment, or id; defaults to this node's only eligible project when there is exactly one, otherwise required
+h9k messages                                                          # this node's own received messages across every eligible project, unread (received, not yet handled) by default
+h9k messages --all                                                    # include already-handled messages too
+h9k messages --project <PROJECT>                                      # only one project's own received messages
+h9k message handle <id>                                               # mark a received message handled: an explicit act, never implied by h9k messages having printed it
+h9k message handle <id> --project <PROJECT>                           # narrows the id fragment match when it is ambiguous across projects
 ```
 
 **Trust files and the chain reader** (idea 202383dc, T1): vouches, revocations, and project

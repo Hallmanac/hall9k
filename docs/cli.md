@@ -496,7 +496,7 @@ own channels can see, honestly — best-effort by construction, not enforcement.
 
 ### Messages: node-to-node notes
 
-`h9k message send <text> --to <audience> [--about <id>]` · `h9k messages` · `h9k message handle <id>`
+`h9k message send <text> --to <audience> [--about <id>] [--project <PROJECT>]` · `h9k messages [--project <PROJECT>]` · `h9k message handle <id> [--project <PROJECT>]`
 
 The successor to `notes/node-mailbox.md`'s GitHub-issue workaround (idea 202383dc, M1b): `send`
 queues an envelope in this node's own store (no git, no network wait) and the daemon's own
@@ -508,8 +508,10 @@ node an owner reads from with `owner:<fingerprint>`, or the whole project with t
 `project`; `h9k owner show` prints a root fingerprint.
 `--about <id>` carries a task or idea id through as-is for the reader to act on. `messages` lists
 what has arrived; `handle <id>` marks one handled: an explicit act, never implied by `messages`
-having merely printed it. Scoped to a single project's own repository per node today, not every
-registered project a node holds (see [scope.md](scope.md)).
+having merely printed it. Project-scoped end to end (idea 202383dc, M2): a node registered to
+several projects sends and reads each one's messages through its own repository, `--project`
+names which one (defaulting to this node's only eligible project when there is exactly one), and
+`messages`/`message handle` both take `--project` to filter or disambiguate (see [scope.md](scope.md)).
 
 ### Recovery
 
