@@ -16,6 +16,7 @@ using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
@@ -23,6 +24,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -36,6 +38,7 @@ namespace Hall9k.Tests.Integration;
 /// 2026-08-18: after PR #11 merged, a lease-expiry requeue spawned generation 6 to
 /// rebuild the feature that was already on main).
 /// </summary>
+[Collection("Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
@@ -233,7 +236,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         RefusingWorktreeManager worktrees = new();
         RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, nextRunId, node.NodeId, node.OwnerId, 3, cts.Token);
@@ -320,7 +323,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         MergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -391,7 +394,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -482,7 +485,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             NotMergedInspector inspector = new();
             RunLauncher launcher = new(store, worktrees, executor,
                 NewSupervisor(store, node), NewContextAssembler(store), inspector,
-                NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+                NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
                 Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
             await launcher.LaunchAsync(
@@ -502,6 +505,469 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 Directory.Delete(home, recursive: true);
             }
         }
+    }
+
+    /// <summary>
+    /// The evidence task (d697f76a, run 01a0a732): a run whose branch was pushed and whose review
+    /// had already settled failed only because <c>gh pr create</c> hit a network timeout. A retry
+    /// must not rebuild or re-review a tree nothing has touched — it re-attempts the pull-request
+    /// open against the identical tip, with no worktree checkout and no agent session of any kind.
+    /// <see cref="RefusingWorktreeManager"/> and <see cref="RefusingExecutor"/> both throw if
+    /// touched, so this test fails loudly rather than silently if the resume-at-open path ever
+    /// falls through to the ordinary dispatch.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_a_pull_request_open_failure_reopens_it_without_dispatching_a_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        // Isolated from the real platform home: PullRequestOpener resolves a blank
+        // RunDirectory through RunPaths.GlobalDirectory, which reads HALL9K_HOME directly —
+        // this test must not write into whatever real home this machine has configured
+        // (HomeEnvironmentIsolationTests's own guard is what caught this).
+        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        try
+        {
+            // "github.com" only needs to appear in the remote URL IsGitHubOriginAsync reads back — a
+            // real GitHub push is neither needed nor wanted for this test (PullRequestOpenerTests's
+            // own established trick).
+            string originPath = Path.Combine(root, "github.com-origin.git");
+            string repoPath = Path.Combine(root, "repo");
+            await TestGit.RunAsync(root, ["init", "--bare", "-q", "-b", "main", originPath], cts.Token);
+            await TestGit.RunAsync(root, ["clone", "-q", originPath, repoPath], cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(repoPath, "README.md"), "# resume at open\n", cts.Token);
+            await TestGit.RunAsync(repoPath, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(repoPath, TestGit.CommitAs("commit", "-qm", "init"), cts.Token);
+            await TestGit.RunAsync(repoPath, ["push", "-q", "origin", "main"], cts.Token);
+
+            Guid taskId = DomainId.New();
+            Guid projectId = DomainId.New();
+            Guid failedRunId = DomainId.New();
+            Guid retriedRunId = DomainId.New();
+
+            GitWorktreeManager seedingWorktrees = new(NullLogger<GitWorktreeManager>.Instance);
+            Worktree worktree = await seedingWorktrees.CreateAsync(
+                new WorktreeRequest(repoPath, "main", taskId, failedRunId, "Resume at pull-request-open",
+                    BranchNameTemplate.Default, ExternalReference: null),
+                cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(worktree.Path, "WORK.md"), "agent output\n", cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(worktree.Path, TestGit.CommitAs("commit", "-qm", "Add WORK.md"), cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["push", "-q", "origin", worktree.Branch], cts.Token);
+            string pushedTip = (await TestGit.CaptureAsync(worktree.Path, ["rev-parse", "HEAD"], cts.Token)).Trim();
+
+            // The opener writes pr-body.md here, and would read a build session's own pr-summary.md
+            // from here too, had one run — this bare event-seeded run never creates it on its own.
+            Directory.CreateDirectory(RunPaths.GlobalDirectory(failedRunId));
+
+            TaskAggregate aggregate;
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                var registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"resume-open-{taskId:N}", repoPath, null, "main", Now);
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                object[] lifecycle;
+                (aggregate, lifecycle) = TaskSeed.Start(
+                    TaskDecider.Add(
+                        taskId, projectId, "Resume at pull-request-open", ["opens without a fresh build or review"],
+                        TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                    node.OwnerId, Now.AddHours(-1));
+                var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, failedRunId, Now.AddMinutes(-30));
+                aggregate.Apply(firstClaim);
+                TaskBranchPushed pushed = new(taskId, worktree.Branch, pushedTip, Now.AddMinutes(-20));
+                aggregate.Apply(pushed);
+                var failed = TaskDecider.Fail(aggregate, failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10));
+                aggregate.Apply(failed);
+                var retried = TaskDecider.Retry(
+                    aggregate, failedRunId, worktree.Branch, "gh timed out, retry", Now.AddMinutes(-5), node.OwnerId);
+                aggregate.Apply(retried);
+                var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
+                aggregate.Apply(retryClaim);
+
+                session.Events.StartStream<TaskAggregate>(
+                    taskId, [.. lifecycle, firstClaim, pushed, failed, retried, retryClaim]);
+                session.Store(new TaskLease
+                {
+                    Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+                });
+
+                session.Events.StartStream<RunAggregate>(failedRunId,
+                    new RunDispatched(failedRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                        worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now.AddMinutes(-30)),
+                    new RunFailed(
+                        failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10),
+                        FailedDuringPullRequestOpen: true));
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("https://github.com/x/y/pull/77\n");
+            PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance, inspector: null, processRunner: gh.Runner);
+            NotMergedInspector inspector = new();
+            RefusingWorktreeManager worktrees = new();
+            RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), opener, ExternalProcess.Runner,
+                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+            await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+            gh.Calls.Should().ContainSingle(call => call.FileName == "gh", "the retry re-attempts gh pr create directly");
+
+            await using IQuerySession query = store.QuerySession();
+            TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            task.State.Value.Should().Be("Done", "the pull request opened and the task completed");
+            task.PullRequestUrl.Should().Be("https://github.com/x/y/pull/77");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The safety valve on the resume-at-open path: something pushed to the branch on origin
+    /// after this task's own recorded tip (another node, a human, a second retry) — the live check
+    /// must not trust the stale record and must fall back to the ordinary dispatch, which resumes
+    /// the branch through the same ordinary follow-up worktree checkout any other retry uses.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_a_pull_request_open_failure_falls_back_when_the_branchs_tip_moved_on_origin()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-moved-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        // Isolated from the real platform home: PullRequestOpener resolves a blank
+        // RunDirectory through RunPaths.GlobalDirectory, which reads HALL9K_HOME directly —
+        // this test must not write into whatever real home this machine has configured
+        // (HomeEnvironmentIsolationTests's own guard is what caught this).
+        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        try
+        {
+            string originPath = Path.Combine(root, "github.com-origin.git");
+            string repoPath = Path.Combine(root, "repo");
+            await TestGit.RunAsync(root, ["init", "--bare", "-q", "-b", "main", originPath], cts.Token);
+            await TestGit.RunAsync(root, ["clone", "-q", originPath, repoPath], cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(repoPath, "README.md"), "# resume at open, moved tip\n", cts.Token);
+            await TestGit.RunAsync(repoPath, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(repoPath, TestGit.CommitAs("commit", "-qm", "init"), cts.Token);
+            await TestGit.RunAsync(repoPath, ["push", "-q", "origin", "main"], cts.Token);
+
+            Guid taskId = DomainId.New();
+            Guid projectId = DomainId.New();
+            Guid failedRunId = DomainId.New();
+            Guid retriedRunId = DomainId.New();
+
+            GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+            Worktree worktree = await worktrees.CreateAsync(
+                new WorktreeRequest(repoPath, "main", taskId, failedRunId, "Resume at pull-request-open, moved tip",
+                    BranchNameTemplate.Default, ExternalReference: null),
+                cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(worktree.Path, "WORK.md"), "agent output\n", cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(worktree.Path, TestGit.CommitAs("commit", "-qm", "Add WORK.md"), cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["push", "-q", "origin", worktree.Branch], cts.Token);
+            string pushedTip = (await TestGit.CaptureAsync(worktree.Path, ["rev-parse", "HEAD"], cts.Token)).Trim();
+
+            // Someone else pushes to the same branch, from an entirely separate clone — origin's tip
+            // now disagrees with what this task's own record says it last pushed.
+            string outsiderClonePath = Path.Combine(root, "outsider-clone");
+            await TestGit.RunAsync(root, ["clone", "-q", originPath, outsiderClonePath], cts.Token);
+            await TestGit.RunAsync(outsiderClonePath, ["checkout", "-q", worktree.Branch], cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(outsiderClonePath, "RACE.md"), "someone else's push\n", cts.Token);
+            await TestGit.RunAsync(outsiderClonePath, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(outsiderClonePath, TestGit.CommitAs("commit", "-qm", "A push this task never accounted for"), cts.Token);
+            await TestGit.RunAsync(outsiderClonePath, ["push", "-q", "origin", worktree.Branch], cts.Token);
+
+            Directory.CreateDirectory(RunPaths.GlobalDirectory(failedRunId));
+
+            TaskAggregate aggregate;
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                var registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"resume-open-moved-{taskId:N}", repoPath, null, "main", Now);
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                object[] lifecycle;
+                (aggregate, lifecycle) = TaskSeed.Start(
+                    TaskDecider.Add(
+                        taskId, projectId, "Resume at pull-request-open, moved tip",
+                        ["falls back to a full build when the tip moved"],
+                        TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                    node.OwnerId, Now.AddHours(-1));
+                var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, failedRunId, Now.AddMinutes(-30));
+                aggregate.Apply(firstClaim);
+                TaskBranchPushed pushed = new(taskId, worktree.Branch, pushedTip, Now.AddMinutes(-20));
+                aggregate.Apply(pushed);
+                var failed = TaskDecider.Fail(aggregate, failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10));
+                aggregate.Apply(failed);
+                var retried = TaskDecider.Retry(
+                    aggregate, failedRunId, worktree.Branch, "gh timed out, retry", Now.AddMinutes(-5), node.OwnerId);
+                aggregate.Apply(retried);
+                var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
+                aggregate.Apply(retryClaim);
+
+                session.Events.StartStream<TaskAggregate>(
+                    taskId, [.. lifecycle, firstClaim, pushed, failed, retried, retryClaim]);
+                session.Store(new TaskLease
+                {
+                    Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+                });
+
+                session.Events.StartStream<RunAggregate>(failedRunId,
+                    new RunDispatched(failedRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                        worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now.AddMinutes(-30)),
+                    new RunFailed(
+                        failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10),
+                        FailedDuringPullRequestOpen: true));
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            CapturingExecutor executor = new();
+            NotMergedInspector inspector = new();
+            RunLauncher launcher = new(store, worktrees, executor,
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), ExternalProcess.Runner,
+                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+            await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+            executor.Request.Should().NotBeNull(
+                "the branch's tip moved on origin, so the retry falls back to the ordinary dispatch instead of "
+                + "trusting a pushed tip nothing can still vouch for");
+
+            await using IQuerySession query = store.QuerySession();
+            TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            task.State.Value.Should().Be("Claimed", "the ordinary dispatch proceeded — this never reopened the pull request");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The other half of the safety valve: origin's tip still matches the recorded one, but the
+    /// LOCAL branch ref in the reused worktree has moved past it — someone committed into the
+    /// retained worktree without ever pushing (an interactive claim landing there is the realistic
+    /// shape; this test drives the git state directly). Trusting origin alone would let
+    /// <see cref="PullRequestOpener"/> push those unreviewed local commits under force-with-lease,
+    /// since its own guard only refuses a tip outside the allow-list — it never confirms the local
+    /// ref hasn't moved past the recorded one (independent pre-PR review, cycle 1, adversarial
+    /// lens). The live local-ref check must catch this and fall back to the ordinary dispatch, the
+    /// same as the origin-moved test above.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_a_pull_request_open_failure_falls_back_when_the_branchs_tip_moved_locally()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-local-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        // Isolated from the real platform home: PullRequestOpener resolves a blank
+        // RunDirectory through RunPaths.GlobalDirectory, which reads HALL9K_HOME directly —
+        // this test must not write into whatever real home this machine has configured
+        // (HomeEnvironmentIsolationTests's own guard is what caught this).
+        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        try
+        {
+            string originPath = Path.Combine(root, "github.com-origin.git");
+            string repoPath = Path.Combine(root, "repo");
+            await TestGit.RunAsync(root, ["init", "--bare", "-q", "-b", "main", originPath], cts.Token);
+            await TestGit.RunAsync(root, ["clone", "-q", originPath, repoPath], cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(repoPath, "README.md"), "# resume at open, moved locally\n", cts.Token);
+            await TestGit.RunAsync(repoPath, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(repoPath, TestGit.CommitAs("commit", "-qm", "init"), cts.Token);
+            await TestGit.RunAsync(repoPath, ["push", "-q", "origin", "main"], cts.Token);
+
+            Guid taskId = DomainId.New();
+            Guid projectId = DomainId.New();
+            Guid failedRunId = DomainId.New();
+            Guid retriedRunId = DomainId.New();
+
+            GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+            Worktree worktree = await worktrees.CreateAsync(
+                new WorktreeRequest(repoPath, "main", taskId, failedRunId, "Resume at pull-request-open, moved locally",
+                    BranchNameTemplate.Default, ExternalReference: null),
+                cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(worktree.Path, "WORK.md"), "agent output\n", cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(worktree.Path, TestGit.CommitAs("commit", "-qm", "Add WORK.md"), cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["push", "-q", "origin", worktree.Branch], cts.Token);
+            string pushedTip = (await TestGit.CaptureAsync(worktree.Path, ["rev-parse", "HEAD"], cts.Token)).Trim();
+
+            // Nobody touches origin — instead, the retained worktree itself picks up a commit
+            // nothing has reviewed, exactly as an interactive claim landing on it after the
+            // failure would (h9k task work reuses this same worktree, since the branch already
+            // has one). Origin's tip still reads pushedTip; only the local ref has moved.
+            await File.WriteAllTextAsync(Path.Combine(worktree.Path, "UNREVIEWED.md"), "nobody saw this\n", cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(worktree.Path, TestGit.CommitAs("commit", "-qm", "Unreviewed local work"), cts.Token);
+
+            Directory.CreateDirectory(RunPaths.GlobalDirectory(failedRunId));
+
+            TaskAggregate aggregate;
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                var registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"resume-open-local-{taskId:N}", repoPath, null, "main", Now);
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                object[] lifecycle;
+                (aggregate, lifecycle) = TaskSeed.Start(
+                    TaskDecider.Add(
+                        taskId, projectId, "Resume at pull-request-open, moved locally",
+                        ["falls back to a full build when the tip moved in the local worktree"],
+                        TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                    node.OwnerId, Now.AddHours(-1));
+                var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, failedRunId, Now.AddMinutes(-30));
+                aggregate.Apply(firstClaim);
+                TaskBranchPushed pushed = new(taskId, worktree.Branch, pushedTip, Now.AddMinutes(-20));
+                aggregate.Apply(pushed);
+                var failed = TaskDecider.Fail(aggregate, failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10));
+                aggregate.Apply(failed);
+                var retried = TaskDecider.Retry(
+                    aggregate, failedRunId, worktree.Branch, "gh timed out, retry", Now.AddMinutes(-5), node.OwnerId);
+                aggregate.Apply(retried);
+                var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
+                aggregate.Apply(retryClaim);
+
+                session.Events.StartStream<TaskAggregate>(
+                    taskId, [.. lifecycle, firstClaim, pushed, failed, retried, retryClaim]);
+                session.Store(new TaskLease
+                {
+                    Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+                });
+
+                session.Events.StartStream<RunAggregate>(failedRunId,
+                    new RunDispatched(failedRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                        worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now.AddMinutes(-30)),
+                    new RunFailed(
+                        failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10),
+                        FailedDuringPullRequestOpen: true));
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            CapturingExecutor executor = new();
+            NotMergedInspector inspector = new();
+            RunLauncher launcher = new(store, worktrees, executor,
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), ExternalProcess.Runner,
+                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+            await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+            executor.Request.Should().NotBeNull(
+                "the branch's tip moved in the local worktree, so the retry falls back to the ordinary dispatch "
+                + "instead of pushing unreviewed local commits under a stale recorded tip");
+
+            await using IQuerySession query = store.QuerySession();
+            TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            task.State.Value.Should().Be("Claimed", "the ordinary dispatch proceeded — this never reopened the pull request");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The control on the three tests above: a retry after a failure anywhere but pull-request
+    /// opening — here, a gate failure, which by construction never reaches
+    /// <see cref="PullRequestOpener"/> and so never pushes a branch at all — behaves exactly as it
+    /// always has: the ordinary dispatch resumes the failed run's branch and spawns a fresh
+    /// session. <see cref="TaskDetails.LastPushedBranch"/> staying null is what tells the
+    /// resume-at-open check apart from the PR-open failure above, not the failure text.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_a_gate_failure_still_dispatches_a_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid failedRunId = DomainId.New();
+        Guid retriedRunId = DomainId.New();
+        const string branch = "task/gate-failure";
+
+        TaskAggregate aggregate;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            var registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"gate-failure-{taskId:N}", "/tmp/gate-failure-repo",
+                null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            object[] lifecycle;
+            (aggregate, lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Fails a gate, then retries", ["a retry after a gate failure dispatches a session"],
+                    TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                node.OwnerId, Now.AddHours(-1));
+            var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, failedRunId, Now.AddMinutes(-30));
+            aggregate.Apply(firstClaim);
+            var failed = TaskDecider.Fail(aggregate, failedRunId, "Verification failed: build broke", Now.AddMinutes(-10));
+            aggregate.Apply(failed);
+            var retried = TaskDecider.Retry(
+                aggregate, failedRunId, branch, "fix the build, retry", Now.AddMinutes(-5), node.OwnerId);
+            aggregate.Apply(retried);
+            var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
+            aggregate.Apply(retryClaim);
+
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, firstClaim, failed, retried, retryClaim]);
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+            });
+
+            // No TaskBranchPushed at all: a gate failure never reaches PullRequestOpener, so
+            // nothing was ever pushed — this alone is what sends the retry down the ordinary path.
+            session.Events.StartStream<RunAggregate>(failedRunId,
+                new RunDispatched(failedRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    $"/tmp/hall9k-gate-{failedRunId:N}", branch, ExecutorMode.Subscription, Now.AddMinutes(-30)),
+                new RunFailed(failedRunId, "Verification failed: build broke", Now.AddMinutes(-10)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+        executor.Request.Should().NotBeNull("a retry after a gate failure dispatches an ordinary session, exactly as before");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Value.Should().Be("Claimed", "the ordinary dispatch proceeded");
     }
 
     /// <summary>
@@ -567,7 +1033,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             NotMergedInspector inspector = new();
             RunLauncher launcher = new(store, worktrees, executor,
                 NewSupervisor(store, node), NewContextAssembler(store), inspector,
-                NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+                NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
                 Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
             await launcher.LaunchAsync(
@@ -648,7 +1114,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         RefusingWorktreeManager worktrees = new();
         RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
             Options.Create(new DaemonOptions()), logger);
 
         // staleRunId, at its own generation (1) — while the task has already moved on to
@@ -782,7 +1248,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         MergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -925,7 +1391,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
         RunLauncher launcher = new(store, worktrees, buildExecutor,
             NewSupervisor(store, node), killingContextAssembler, inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         // RefusingExecutor throws if the build session is ever spawned; if the pre-spawn fence
@@ -1024,7 +1490,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         MergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(childTaskId, childRunId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -1098,7 +1564,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         MergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(childTaskId, childRunId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -1157,7 +1623,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         MergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -1298,7 +1764,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: true),
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), ForkPointContainmentRunner(contained: true),
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
@@ -1391,7 +1857,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: true),
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), ForkPointContainmentRunner(contained: true),
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
@@ -1484,7 +1950,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: false),
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), ForkPointContainmentRunner(contained: false),
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
@@ -1609,7 +2075,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: true),
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), ForkPointContainmentRunner(contained: true),
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(childTaskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
@@ -1701,7 +2167,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: true),
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), ForkPointContainmentRunner(contained: true),
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(childTaskId, retriedRunId, node.NodeId, node.OwnerId, leaseGeneration, cts.Token);
@@ -1798,7 +2264,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), ForkPointContainmentRunner(contained: true),
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), ForkPointContainmentRunner(contained: true),
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(childTaskId, followUpRunId, node.NodeId, node.OwnerId, 2, cts.Token);
@@ -1914,7 +2380,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         MergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), gh.Runner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -2001,7 +2467,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         MergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
-            NewCloseoutEngine(store, node, inspector, worktrees), gh.Runner,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), gh.Runner,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -2087,7 +2553,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             MergedInspector inspector = new();
             RunLauncher launcher = new(store, worktrees, executor,
                 NewSupervisor(store, node), NewContextAssembler(store), inspector,
-                NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+                NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
                 Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
             await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
@@ -2186,7 +2652,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             NotMergedInspector inspector = new();
             RunLauncher launcher = new(store, worktrees, executor,
                 NewSupervisor(store, node), NewContextAssembler(store), inspector,
-                NewCloseoutEngine(store, node, inspector, worktrees), UnusedProcessRunner,
+                NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
                 Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
 
             await launcher.LaunchAsync(
@@ -2220,6 +2686,14 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         return new(store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes,
             Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
     }
+
+    /// <summary>
+    /// Every RunLauncher test but the resume-at-pull-request-open ones below never reaches
+    /// PullRequestOpener at all (nothing here carries a recorded PR-open failure to resume), so a
+    /// bare instance with no inspector and the default <c>gh</c> runner is all the constructor needs.
+    /// </summary>
+    private static PullRequestOpener NewPullRequestOpener(DocumentStore store) =>
+        new(store, NullLogger<PullRequestOpener>.Instance);
 
     /// <summary>
     /// RunLauncher's declined-dispatch closeout now runs through the same
