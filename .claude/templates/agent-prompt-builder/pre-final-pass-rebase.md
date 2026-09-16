@@ -12,6 +12,25 @@ been pushed. But other work merged into `{{BaseBranch}}` while this run was
 building, and a plain rebase onto it just conflicted. Your job is to bring this
 branch current before the platform's own mandatory final review pass and gates run,
 preserving the branch's own authored history — not to redo the original work.
+===checkpoint-heading===
+# Rebase this stacked branch onto its parent before review continues
+===checkpoint-with-pr-intro===
+This run already has the pull request above open and pushed. But this branch is
+stacked on `{{BaseBranch}}`, which has moved since — replaying this branch's own
+commits from the recorded fork point onto its new head just conflicted, twice.
+Your job is to bring it current before review continues, preserving the branch's
+own authored history — not to redo the original work.
+===checkpoint-without-pr-intro===
+This run's own work is not done yet — no pull request has opened, and nothing has
+been pushed. But this branch is stacked on `{{BaseBranch}}`, which has moved since
+it was cut — replaying this branch's own commits from the recorded fork point onto
+its new head just conflicted, twice. Your job is to bring it current before review
+continues, preserving the branch's own authored history — not to redo the original
+work.
+===checkpoint-no-push-without-pr===
+  - Do NOT push, and do NOT open a pull request — the platform's own mandatory
+    gate runs over the tree you leave behind, then review continues from there;
+    the daemon pushes and opens the pull request once the whole run is done.
 ===human-decision-heading===
 ## The human's decision on the disputed conflict
 ===human-decision-intro===

@@ -1029,14 +1029,20 @@ public static class AgentPromptBuilder
     /// <paramref name="pullRequestUrl"/> is read from <c>TaskDetails.PullRequestUrl</c> rather than
     /// assumed either way (independent pre-PR review, cycle 1, adversarial lens).
     /// <para>
-    /// The plain <c>git rebase origin/&lt;base&gt;</c> below is deliberately NOT given
-    /// <see cref="BuildRebase"/>'s stacked replay variant, and that is a reachability argument
-    /// rather than an omission (class sweep, independent pre-PR review, cycle 2): the only path
-    /// here is <c>ReviewEngine.DispatchRebaseRecoverySessionAsync</c>, downstream of a
-    /// pre-final-pass gate that refuses outright — before any git call, and before any phase that
-    /// could re-dispatch this session — whenever the run's base is not the project's own. A
-    /// stacked run therefore never reaches this prompt at all, and giving it a stacked branch here
-    /// would describe an operation nothing dispatches.
+    /// The plain <c>git rebase origin/&lt;base&gt;</c> below used to be the only mechanics this
+    /// method could ever render, on a reachability argument: the only path here was
+    /// <c>ReviewEngine.DispatchRebaseRecoverySessionAsync</c>, downstream of a pre-final-pass gate
+    /// that refuses outright whenever the run's base is not the project's own, so a stacked run
+    /// never reached this prompt at all. That is no longer the whole story (task: the stack
+    /// assessment runs only where a checkpoint would otherwise park): a stacked checkpoint's own
+    /// replay retry that also conflicts now reaches this same session — <c>ReviewEngine.ActOnStackAssessmentAsync</c>'s
+    /// own Replay branch — carrying <paramref name="baseCommit"/> as the fork point to replay from.
+    /// <paramref name="baseCommit"/> is what tells the two callers apart: <see cref="AppendStackedRebaseRules"/>
+    /// renders <see cref="BuildRebase"/>'s own stacked replay mechanics whenever
+    /// <paramref name="baseBranch"/> names a branch other than the project's own, exactly as
+    /// <see cref="BuildRebase"/>'s own <c>isStacked</c> check already decides; the ordinary,
+    /// unstacked pre-final-pass path passes null for both and renders the plain mechanics
+    /// unchanged.
     /// </para>
     /// </summary>
     /// <param name="voiceSkill">
@@ -1044,26 +1050,42 @@ public static class AgentPromptBuilder
     /// prompt's own verification rule asks for — see
     /// <see cref="AppendRebaseVerificationRule"/>'s own parameter.
     /// </param>
+    /// <param name="baseCommit">
+    /// This run's own stacked fork point, when this session is a stacked checkpoint's own replay
+    /// retry — see <see cref="AppendStackedRebaseRules"/>. Null for the ordinary, unstacked
+    /// pre-final-pass path, which needs no fork point at all.
+    /// </param>
+    /// <param name="precedesFirstReviewCycle">
+    /// True only for a stacked checkpoint's own replay retry that precedes this run's first review
+    /// cycle — selects the checkpoint-framed heading and intro (no false "mandatory final review
+    /// pass" claim: review has not started yet) rather than the ordinary pre-final-pass wording.
+    /// </param>
     public static string BuildPreFinalPassRebase(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
         string? pullRequestUrl, string? humanResolution = null, bool rebaseStillInProgress = false,
         string? baseBranch = null, TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null,
-        string? assessmentGuidance = null)
+        string? assessmentGuidance = null, string? baseCommit = null, bool precedesFirstReviewCycle = false)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
+        bool isStacked = effectiveBaseBranch != project.BaseBranch;
+        string? stackedForkPoint = WorkPromptBuilder.StackedForkPoint(project, effectiveBaseBranch, baseCommit);
         const string file = $"{TemplateDirectory}/pre-final-pass-rebase.md";
         StringBuilder prompt = new();
-        prompt.AppendLine(Fragment(file, "heading"));
+        prompt.AppendLine(Fragment(file, precedesFirstReviewCycle ? "checkpoint-heading" : "heading"));
         prompt.AppendLine();
         if (pullRequestUrl.IsNotBlank())
         {
             prompt.AppendLine($"Pull request: {pullRequestUrl}");
             prompt.AppendLine();
-            AppendFragment(prompt, file, "with-pr-intro", ("BaseBranch", effectiveBaseBranch));
+            AppendFragment(
+                prompt, file, precedesFirstReviewCycle ? "checkpoint-with-pr-intro" : "with-pr-intro",
+                ("BaseBranch", effectiveBaseBranch));
         }
         else
         {
-            AppendFragment(prompt, file, "without-pr-intro", ("BaseBranch", effectiveBaseBranch));
+            AppendFragment(
+                prompt, file, precedesFirstReviewCycle ? "checkpoint-without-pr-intro" : "without-pr-intro",
+                ("BaseBranch", effectiveBaseBranch));
         }
 
         prompt.AppendLine();
@@ -1122,18 +1144,37 @@ public static class AgentPromptBuilder
             AppendFragment(prompt, file, "rebase-not-in-progress");
         }
         AppendFragment(prompt, file, "fetch-first", ("BaseBranch", effectiveBaseBranch));
-        AppendFragment(prompt, file, "plain-rebase", ("BaseBranch", effectiveBaseBranch));
+        if (isStacked)
+        {
+            AppendStackedRebaseRules(prompt, branch, effectiveBaseBranch, stackedForkPoint);
+        }
+        else
+        {
+            AppendFragment(prompt, file, "plain-rebase", ("BaseBranch", effectiveBaseBranch));
+        }
+
         AppendFragment(prompt, file, "replay-rules");
         AppendFragment(prompt, file, "no-markers");
+        // stackedForkPoint's own presence, not isStacked, decides the fold boundary — the identical
+        // discriminator BuildRebase's own stacked branch uses: with no fork point recorded,
+        // AppendStackedRebaseRules above sent the agent straight to the dispute path rather than
+        // any replay, so there is no new commit for a gate fix to fold onto either.
         AppendRebaseVerificationRule(
-            prompt, project, commitStyle, effectiveBaseBranch, voiceSkill: voiceSkill);
+            prompt, project, commitStyle, effectiveBaseBranch,
+            fold: stackedForkPoint is null
+                ? null
+                : new FoldBoundary(
+                    "<the commit you recorded before the replay>",
+                    FragmentLines($"{TemplateDirectory}/rebase.md", "inline-fold-reason", ("EffectiveBaseBranch", effectiveBaseBranch))),
+            voiceSkill: voiceSkill);
         if (pullRequestUrl.IsNotBlank())
         {
             AppendFragment(prompt, file, "no-push-with-pr");
         }
         else
         {
-            AppendFragment(prompt, file, "no-push-without-pr");
+            AppendFragment(
+                prompt, file, precedesFirstReviewCycle ? "checkpoint-no-push-without-pr" : "no-push-without-pr");
         }
 
         AppendRebaseDisputeRules(prompt);
