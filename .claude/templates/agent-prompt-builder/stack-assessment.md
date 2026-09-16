@@ -4,7 +4,10 @@
 This session is read-only. Do not rebase, push, or commit anything, and do not
 run any command that changes a ref, a working tree, or a remote — `git status`,
 `git log`, `git rev-parse`, `git merge-base`, `git show`, `gh pr view`, and
-similar inspection commands only. The daemon is the one that rebases, pushes,
+similar inspection commands only. The one explicit exception is `git fetch
+origin`, required in the verification steps below so every ref you read is
+current — a fetch updates only remote-tracking refs, never a branch, a working
+tree, or anything this run owns. The daemon is the one that rebases, pushes,
 or dispatches a fix session afterward, using the verdict you report below.
 ===context-heading===
 ## What is being assessed
