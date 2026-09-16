@@ -28,13 +28,16 @@ Sources used, matching the evidence the origin task named:
   already knew from a first pass over those two files). This line only exists for a pull request
   whose Copilot threads were triaged automatically, which the daemon began doing for pull requests
   opened from 2026-09-10 onward.
-- For every other pull request (nearly all of them opened 2026-09-01 through 2026-09-09, before the
-  daemon triaged Copilot threads on its own), the outcome is read from the fix session's own reply
-  inside each thread, together with the thread's `isResolved` status. Every classification below
-  that relies on this second source is marked so in the per-thread appendix's citation column
-  wherever it matters; the two sources agree exactly on 30 of the 33 log-line pull requests. The
-  other three, PR #317, PR #388, and PR #398, are addressed individually in the data-quality
-  caveats below rather than forced to agree.
+- For every pull request, every thread's own category (which of the five main buckets, or a
+  caveat bucket) is read from the fix session's own reply inside that thread, together with the
+  thread's `isResolved` status; the appendix's citation column names the internal-findings file(s)
+  checked for overlap, not which of these two sources supplied the outcome, since the source is
+  uniform per thread rather than something that varies row by row. For a pull request opened
+  2026-09-10 or later, the daemon's own triage log line supplies an independent, trustworthy
+  aggregate (fix/decline/route counts) for the same pull request, used here as a cross-check
+  rather than as the classification source: the two agree exactly on 30 of the 33 log-line pull
+  requests. The other three, PR #317, PR #388, and PR #398, are addressed individually in the
+  data-quality caveats below rather than forced to agree.
 - The internal review's own findings: every `review-<n>-findings.md` file across every run under
   the task each pull request's branch belongs to (93 of the 114 tasks have a local record on this
   node; 863 such files in total, holding 3,143 individually parsed `FINDING:` lines with their
@@ -65,9 +68,17 @@ task's two named overlap categories cleanly.
 - **PR #398** (`task/eec9096d`, opened 2026-09-15): all sixteen fix-session replies in this pull
   request's Copilot threads read as the literal string `@/tmp/pr398replies/tN.txt` instead of the
   reply text itself, evidence that whatever posted them used an `@file` argument a tool along that
-  path did not expand. The daemon's own triage log line for this pull request (10 fix, 5 decline, 1
-  route) is trustworthy; the sixteen individual thread outcomes are not recoverable from the thread
-  text and are reported as "outcome unrecoverable" rather than guessed.
+  path did not expand (the path itself no longer exists on disk). The daemon's own triage log line
+  for this pull request (10 fix, 5 decline, 1 route) is trustworthy, but it is a whole-run aggregate
+  with no per-thread breakdown, so it cannot say which specific thread was fixed, declined, or
+  routed. Rather than either discarding that aggregate or guessing a thread-by-thread split it
+  cannot support, this report uses it at the grain it actually supports: the per-PR and overall
+  tables below carry this pull request's five declines as False-positive and its one route as
+  Routed (both unambiguous under the category definitions above), while the ten fixed threads stay
+  under Outcome-unrecoverable, since a fixed thread could be an overlap or a genuine miss and
+  nothing here can tell those apart. The appendix still lists all sixteen threads individually as
+  unrecoverable, because at the single-thread grain the log line's aggregate genuinely cannot say
+  which of these sixteen rows was fixed, declined, or routed.
 - **Three threads** (PR #199 twice, PR #229 once) show `isResolved: true` with no reply text
   anywhere, inline or at the pull request's issue-comment level. Whatever resolved them left no
   textual trace of why, so these three are also reported as "outcome unrecoverable".
@@ -87,10 +98,10 @@ task's two named overlap categories cleanly.
 | Overlap-ride-along | 71 | 23.0% |
 | Overlap-int.-routed | 1 | 0.3% |
 | Genuine-miss | 83 | 26.9% |
-| False-positive | 56 | 18.1% |
-| Routed | 22 | 7.1% |
+| False-positive | 61 | 19.7% |
+| Routed | 23 | 7.4% |
 | No-local-record | 35 | 11.3% |
-| Outcome-unrecoverable | 19 | 6.1% |
+| Outcome-unrecoverable | 13 | 4.2% |
 | **Total** | **309** | **100.0%** |
 
 "Overlap-fixed" is a Copilot thread whose defect the internal review had already found and already
@@ -99,10 +110,16 @@ confirming the fix. "Overlap-ride-along" is a Copilot thread whose defect the in
 already found, graded below High, and left unfixed as a ride-along per Decisions Log #87; Copilot's
 fix session picked it up anyway. "Genuine-miss" is a Copilot thread whose defect does not match
 anything in the internal review's own findings for that pull request's task, and which still got
-fixed. "False-positive" is a Copilot thread the fix session declined with evidence in its reply.
-"Routed" is a Copilot thread the fix session judged real but out of scope for the pull request in
-hand, filed as a hall9k idea instead. "No-local-record" and "Outcome-unrecoverable" are the two
-caveat categories above.
+fixed. "False-positive" is a Copilot thread the fix session declined with evidence in its reply (the
+appendix's own false-positive decline evidence section, below the main appendix table, quotes that
+evidence for every thread in this category that a reply's real text could be recovered for; PR
+#398's five declines, known only as an aggregate count from its own daemon triage log line, are the
+exception and are not attributed to a specific thread). "Routed" is a Copilot thread the fix session
+judged real but out of scope for the pull request in hand, filed as a hall9k idea instead (PR #398's
+one route is likewise an aggregate count, not attributed to a specific thread). "No-local-record"
+and "Outcome-unrecoverable" are the two caveat categories above; PR #398's ten fixed-but-unattributed
+threads are counted under Outcome-unrecoverable since a fixed thread could be an overlap or a
+genuine miss and the log line cannot say which.
 
 ## Per pull request
 
@@ -220,7 +237,7 @@ caveat categories above.
 | 394 | 2026-09-15 | 3 |  | 1 |  |  | 1 | 1 |  |  |
 | 396 | 2026-09-15 | 3 |  | 1 |  | 1 | 1 |  |  |  |
 | 397 | 2026-09-15 | 4 |  |  |  |  |  |  | 4 |  |
-| 398 | 2026-09-15 | 16 |  |  |  |  |  |  |  | 16 |
+| 398 | 2026-09-15 | 16 |  |  |  |  | 5 | 1 |  | 10 |
 | 399 | 2026-09-15 | 3 |  |  |  | 1 | 2 |  |  |  |
 
 ## Genuine misses, in detail
@@ -281,17 +298,23 @@ change behavior.
 
 Sixteen of the eighty-three, the single largest class, are the same shape: an event-sourced stream
 appended to without an `expectedVersion` fence, so a concurrent writer can silently lose or overwrite
-the append. Six of those sixteen are graded high because the race sits on project archive, purge,
-or reactivation, where the consequence is a live task or a whole project mutated after it should
-have been protected. A further six graded high are each a different shape: an ignored fetch-result
-return value ahead of a force-push (data loss), an unverified public key trusted for git-ledger
-signing (identity integrity), a kill command that cannot reach a whole class of runs (an operator's
-safety action silently failing), a cancelled operation whose child process keeps running and holding
-locks, a synchronous call that defeats its own timeout and can hang a CLI command indefinitely, and
-an upgrade path that breaks a working existing install. None of these sixteen "unfenced
-read-then-write" instances, and none of the six other high-severity instances, are the kind of
-defect a deterministic static analyzer finds; every one needs to know what the code is supposed to
-guarantee, not just what it does.
+the append. Ten of those sixteen are graded high because the race sits on project archive, purge,
+reactivation, or removal, where the consequence is a live task or a whole project mutated after it
+should have been protected (PR #334; six on PR #336; three on PR #338); the other six are graded
+medium (PR #261, one on PR #317, PR #343, two on PR #344, PR #379). Eight further high-severity
+misses are each a different shape: an ignored fetch-result return value ahead of a force-push (data
+loss), an unverified public key trusted for git-ledger signing (identity integrity), a write
+conflict silently treated as success on a project join (a stale identity claim commits), a kill
+command that cannot reach a whole class of runs (an operator's safety action silently failing), a
+message-inbox stream key built from an untrusted field (a real message can be lost as a duplicate),
+a cancelled operation whose child process keeps running and holding locks, a synchronous call that
+defeats its own timeout and can hang a CLI command indefinitely, and an upgrade path that breaks a
+working existing install. None of these twenty-four instances are analyzer-detectable under this
+repository's actual current build configuration; every one needs to know what the code is supposed
+to guarantee, not just what it does. One of them, the ignored fetch-result return value ahead of a
+force-push, is analyzer-detectable only if `CA1806` is explicitly configured to check that specific
+method by name (see "What share a deterministic .NET analyzer set would have caught" below); it is
+not caught by any default or general-purpose analyzer configuration.
 
 ### Full list
 
@@ -398,25 +421,41 @@ same fix-session lap the platform already runs, just triggered by a lower severi
 
 ### What share a deterministic .NET analyzer set would have caught
 
-Three of the eighty-three genuine misses, 3.6%, match a specific, nameable built-in .NET analyzer
-rule under the repository's current build configuration:
+Zero of the eighty-three genuine misses match a built-in .NET analyzer rule under this
+repository's actual current build configuration. A grep of `.editorconfig`,
+`Directory.Build.props`, `Directory.Build.targets`, and every `.csproj` for `AnalysisLevel`,
+`AnalysisMode`, `dotnet_diagnostic`, `CA1806`, `CA1031`, and `GenerateDocumentationFile` finds no
+matches anywhere in this repository today, so plain .NET SDK defaults govern:
 
-- **CA1806** (Do not ignore method results): two instances, both in
-  `GitLedgerMessageTransport.cs` (PR #379, lines 82 and 161), where `FetchRefAsync`'s boolean
-  return value is discarded before a flush and before a force-push.
-- **CA1031** (Do not catch general exception types): one instance, in
-  `ProjectGitHubAccessMirror.cs:157` (PR #382), where a catch around an entire parse loop discards
-  every valid collaborator because one malformed entry threw.
+- **CA1806** (Do not ignore method results) only checks a fixed, built-in list of framework calls
+  by default (string methods, LINQ, object creation, `TryParse`, HRESULT-returning calls) and does
+  not check a project's own private method — such as `GitLedgerMessageTransport.FetchRefAsync`,
+  whose boolean return value is discarded before a flush (PR #379 line 82) and before a
+  force-push (PR #379 line 161) — unless that method is named in an explicit
+  `dotnet_code_quality.CA1806.additional_use_results_methods` entry. No such entry exists here.
+  Adding one would close both misses, but that is a hand-maintained, per-method allowlist edit,
+  not a byproduct of "shipping the analyzer set": a future ignored-result defect on a differently
+  named method would still slip through it.
+- **CA1031** (Do not catch general exception types) is disabled by default, and more
+  fundamentally would not have caught the PR #382 case (`ProjectGitHubAccessMirror.cs:157`) even
+  if enabled: the catch Copilot flagged already carries an exception-type filter,
+  `catch (Exception exception) when (exception is JsonException or InvalidOperationException)`,
+  and CA1031 does not fire on a filtered catch. No configuration recovers this one.
 
-A fourth candidate, **CS1574** (XML comment has a `cref` that could not be resolved), would have
-caught the broken-cref genuine miss on PR #156 (`GitWorktreeManager.cs:5`) and would also have
-caught at least two of the low findings the internal review itself already wrote down (its very
-first reviewed pull request in this sample, PR #311, carries exactly this class of finding twice).
-It does not count toward the 3.6% above because `GenerateDocumentationFile` is off across this
-repository today, so the compiler never evaluates the `cref` and CS1574 never fires; turning that
-setting on is a one-line, zero-token change this report recommends regardless of anything else in
-it, since it is the one place a genuine miss and two already-known internal findings share the
-exact same fix.
+One genuine miss is a true, no-configuration-needed win: **CS1574** (XML comment has a `cref`
+that could not be resolved) would have caught the broken-cref miss on PR #156
+(`GitWorktreeManager.cs:5`) the moment `GenerateDocumentationFile` is turned on, since the
+compiler only evaluates a `cref` when that flag is set. This repository's own internal-review
+history already contains numerous real CS1574-class findings on other tasks outside this sample
+(broken `<see cref>` references caught by hand across many pull requests, all invisible to the
+compiler today for the same reason), so turning the flag on is a one-line, zero-token change this
+report recommends regardless of anything else in it.
+
+So the honest count is: one of the eighty-three (1.2%) is caught for free today by enabling
+`GenerateDocumentationFile`; two more (2.4%) could be caught only by adding a targeted,
+hand-maintained `CA1806` configuration entry naming `FetchRefAsync`; and the third original
+candidate, the `CA1031` case, is not analyzer-catchable at all under any configuration, because
+the catch it targets already carries an exception filter.
 
 No analyzer, built-in or otherwise, catches an unfenced `expectedVersion` append: that class needs
 to know Marten's own concurrency contract and this codebase's own fencing convention, which is
@@ -424,14 +463,15 @@ exactly the sixteen-instance class that dominates the high-severity end of this 
 
 ### What remains that only a second independent reviewer would catch
 
-Eighty of the eighty-three genuine misses, 96.4%, are not caught by a deterministic analyzer and
-are not covered by a settle-time medium fix pass, because the internal review never saw them at
-all in the first place. This is the residual a Copilot replacement has to answer for: sixteen
-unfenced-append races, six other high-severity defects each of a different shape, twenty-seven
-further medium defects, and thirty-one low ones (mostly wording and test gaps, plus one already
-counted toward the analyzer share). Closing this gap needs a reviewer capable of reading intent
-against implementation, the same thing the internal review's own conformance and adversarial
-lenses do; nothing mechanical stands in for that.
+Eighty-two of the eighty-three genuine misses, 98.8%, are not caught by enabling
+`GenerateDocumentationFile` alone and are not covered by a settle-time medium fix pass, because
+the internal review never saw them at all in the first place: eighteen high-severity defects
+(across sixteen unfenced-append races and eight other shapes), thirty-one medium defects, and
+thirty-three low ones (mostly wording and test gaps). Adding the optional, hand-maintained
+`CA1806` configuration named above would additionally close two of those (one high, one medium),
+leaving eighty (96.4%) if that configuration is adopted alongside the free win. Closing this gap
+needs a reviewer capable of reading intent against implementation, the same thing the internal
+review's own conformance and adversarial lenses do; nothing mechanical stands in for that.
 
 ## Observed lap costs
 
@@ -455,11 +495,17 @@ lap, not a new tier of expense.
 
 **Do all three, at different points, sized for what each one actually buys:**
 
-1. **Ship the analyzer set in CI now.** It is free in this platform's own currency: a build-time
-   check, not an agent session, so its marginal cost per pull request is effectively zero tokens
-   and a few seconds of CI time. Enable `GenerateDocumentationFile` alongside it. Between the two,
-   this closes four of the eighty-three genuine misses found here (3.6% before the doc-file flag,
-   about 4.8% after) at a cost this report cannot even round up to one lap.
+1. **Enable `GenerateDocumentationFile` in CI now.** It is free in this platform's own currency: a
+   build-time compiler flag, not an agent session, so its marginal cost per pull request is
+   effectively zero tokens and a few seconds of CI time. This alone closes one of the eighty-three
+   genuine misses found here (1.2%) by finally emitting `CS1574` for this sample's own broken-cref
+   case, plus, per this repository's own review history, a number of already-known internal
+   findings elsewhere that hand-caught the identical defect shape. Optionally, also add a
+   `dotnet_code_quality.CA1806.additional_use_results_methods` entry naming `FetchRefAsync`: a
+   small, hand-maintained, per-method configuration change, not a byproduct of "shipping the
+   analyzer set," that closes two more (2.4%). Do not expect `CA1031` to help here even if
+   enabled: this sample's own candidate catch already carries an exception filter that `CA1031`
+   does not fire on.
 
 2. **Extend the fix bar's settle-time pass to leftover medium findings.** This is the second
    cheapest option and the only one of the three that spends the platform's existing machinery
@@ -471,9 +517,11 @@ lap, not a new tier of expense.
    It buys 7.9% of the comparable Copilot-fixed value.
 
 3. **Keep a second-vendor review lens at the final pass only, sized at roughly one lap per pull
-   request.** The other two options together still leave 96.4% of the genuine misses uncaught,
-   including sixteen unfenced-append races and six other high-severity defects, nearly all of which
-   reached a user of the merged code. That is the load-bearing number here: most of what Copilot is
+   request.** The other two options together still leave at least 96.4% of the genuine misses
+   uncaught (98.8% if the optional `CA1806` configuration in option 1 is skipped), including
+   sixteen unfenced-append races (ten of them high severity) and eight further high-severity
+   defects of other shapes, nearly all of which reached a user of the merged code. That is the
+   load-bearing number here: most of what Copilot is
    worth on this repository is not redundant with the internal review and is not mechanically
    detectable, it is a second reader's judgment. Scoped to the final pass only, on the observed lap
    costs above, this option costs about one triage-run's worth of tokens per pull request, roughly
@@ -493,6 +541,13 @@ still needs a second reviewer, priced at about one ordinary lap per pull request
 rather than on every cycle.
 
 ## Appendix: every classified thread
+
+Every row's "Cited against" column names the internal-findings file(s) checked for an overlap
+match; it does not vary by thread-outcome source, since that source is uniform (thread reply text
+plus `isResolved`) for every row except the sixteen PR #398 rows below, which stay individually
+marked Outcome-unrecoverable per the data-quality caveat above even though this pull request's own
+aggregate outcome (10 fix, 5 decline, 1 route) is known and used at the per-PR and overall table
+level.
 
 | PR | File:line | Category | Cited against |
 |---:|---|---|---|
@@ -805,3 +860,69 @@ rather than on every cycle.
 | 399 | `src/Hall9k.Cli/Commands/TaskLinkIssueCommand.cs:70` | Genuine-miss | 6 findings file(s) checked, e.g. c04000aa-every-exi/01a0a65d/review-1-findings.md |
 | 399 | `src/Hall9k.Daemon/Execution/PullRequestOpener.cs:566` | False-positive | c04000aa-every-exi/01a0a765/review-1-findings.md |
 | 399 | `tests/Hall9k.Tests/Integration/PullRequestOpenerTests.cs:143` | False-positive | 6 findings file(s) checked, e.g. c04000aa-every-exi/01a0a65d/review-1-findings.md |
+
+## Appendix: false-positive decline evidence
+
+Every False-positive thread's own decline reason, paraphrased from the fix session's actual reply
+(read live from the pull request via `gh api graphql`, not reconstructed). PR #398's five declines
+are not included here: they are known only as an aggregate count from that pull request's own
+daemon triage log line, not attributed to a specific thread, per the data-quality caveat above.
+
+| PR | File:line | Decline evidence |
+|---:|---|---|
+| 121 | `src/Hall9k.Daemon/Review/ReviewCapResolver.cs:91` | Deliberate tradeoff, documented in the method's own doc comment and PLAN.md Decisions Log #108: comparing the resolved value to the compiled default is a cosmetic gap only, since it never changes which value is enforced. |
+| 131 | `src/Hall9k.Daemon/Dispatch/DispatchLoop.cs:50` | Deliberate: one of two operator-facing surfaces that intentionally print the raw configured ceiling rather than a silently substituted number, per `NodeLoad.MaxConcurrentRuns`'s own doc comment. |
+| 134 | `tests/Hall9k.Tests/Domain/ProcessTerminationGuardTests.cs:139` | Deliberate: follows the same documented blind-spot pattern already used by `ContainerRoutingGuardTests`/`HomeEnvironmentIsolationTests`; the scan's own limitation is spelled out in its doc comment, not hidden. |
+| 139 | `src/Hall9k.Daemon/Execution/AgentPromptBuilder.cs:1852` | Deliberate: the acceptance-criteria parenthetical is why-this-rule-exists provenance under AGENTS.md's "standing rules carry their origin incident" convention, which targets docs, not the runtime prompt payload. |
+| 139 | `src/Hall9k.Daemon/Execution/AgentPromptBuilder.cs:1857` | Same reasoning as the sibling thread at line 1852. |
+| 141 | `src/Hall9k.Daemon/Execution/PullRequestBody.cs:152` | Deliberate: an earlier cut pointed the PR body at the local review-findings path and was reverted in cycle 1 for three still-valid reasons, starting with leaking the operator's home-directory username. |
+| 142 | `src/Hall9k.Cli/Commands/ConfigShowCommand.cs:110` | Not a defect: the call goes through Spectre's `MarkupLineInterpolated`, whose interpolated-hole handler auto-escapes the value; only literal template markup is parsed. |
+| 142 | `src/Hall9k.Cli/Commands/StatusCommand.cs:74` | Same `MarkupLineInterpolated` auto-escaping reasoning as the sibling `ConfigShowCommand.cs` thread. |
+| 156 | `src/Hall9k.Domain/Features/Project/Events/ProjectSettingsChanged.cs:29` | Verified with a scratch repro: the `cref` resolves via C#'s enclosing-namespace lookup, since `Project` is a namespace nested in the common ancestor, not a missing type. |
+| 156 | `src/Hall9k.Domain/Features/Tasks/ExternalReference.cs:34` | Same sibling-namespace `cref` resolution as the `ProjectSettingsChanged.cs` thread, confirmed with `GenerateDocumentationFile` on (no CS1574). |
+| 158 | `tests/Hall9k.Tests/Integration/CardPublicationEngineTests.cs:313` | Not a bug: FluentAssertions' `.Contain(...)` does substring matching, so "credential" matches the seeded plural "credentials"; the test was run directly to confirm it passes. |
+| 165 | `src/Hall9k.Cli/Commands/TaskWorkCommand.cs:723` | No change needed: `MarkupLineInterpolated` auto-escapes each interpolated hole, verified with a scratch console app. |
+| 197 | `tests/Hall9k.Tests/Integration/PostgresFixture.cs:89` | Deliberate, documented in the method's own doc comment: per-user scoping would recreate the exact independent-contention-set failure the fixed path exists to close. |
+| 201 | `src/Hall9k.Cli/Commands/TaskReleaseCommand.cs:221` | Dismissed: citing a finding's task shortid/cycle in a code comment is an established codebase convention already used elsewhere (`WorktreeGitStatus.cs`, `TaskWorkCommand.cs`). |
+| 209 | `tests/Hall9k.Tests/Integration/TaskAndIdeaIdResolverEmptyFragmentTests.cs:13` | Not unused: `AutoCreate` resolves from the `JasperFx` using, matching the same import pattern every other integration test file in the repo uses. |
+| 217 | `src/Hall9k.Cli/DaemonControl/DaemonLifecycle.cs:163` | Both flagged call sites already use `MarkupLineInterpolated`, which auto-escapes interpolation holes per Spectre.Console's own documented contract. |
+| 220 | `src/Hall9k.Cli/Commands/InstallCommand.cs:101` | Already correct: `MarkupLineInterpolated` auto-escapes interpolation holes; verified empirically against the pinned Spectre.Console version. |
+| 224 | `src/Hall9k.Cli/Commands/ReviewProceedCommand.cs:13` | Verified false positive: the caught exception type lives in `JasperFx.Events`, not `Marten.Events`; removing the using reproduces a CS0246 build failure, so it is load-bearing. |
+| 234 | `PLAN.md:937` | Settled by the base branch: PR #228 landed Decisions Log #135 on `main` after this thread opened, and this branch has since rebased onto it. |
+| 261 | `src/Hall9k.Cli/Commands/OrchestratorLaunchTextSetCommand.cs:77` | The node-scoped path does validate: it goes through the same `WithText` helper as the project-scoped path, which throws on blank input before anything is written. |
+| 262 | `src/Hall9k.Connectors/WorkItems/GitHubWorkItemProvider.cs:359` | Deliberate: the lowercase "github" is the provider token used in the canonical reference syntax, not the product name. |
+| 268 | `tests/Hall9k.Tests/Integration/RunSupervisorTests.cs:1071` | `DirectoryNotFoundException` derives from `IOException`, so the existing catch already covers the case where the worktree is removed first; no change needed. |
+| 269 | `src/Hall9k.Connectors/Worktrees/GitWorktreeManager.cs:289` | Both sides of the comparison come from the same `Path.GetFullPath` normalization, so the equality guard holds for the case it covers. |
+| 269 | `src/Hall9k.Daemon/Execution/VerificationRunner.cs:1337` | The cached verdict is keyed by the exact commit sha and is only ever written under the checkout lock for a confirmed-clean checkout at that sha, so a cache hit is a true statement. |
+| 274 | `AGENTS.md:102` | Dismissed: the ceiling was raised in the same commit that added the content, and the raise's own doc comment records why. |
+| 279 | `src/Hall9k.Cli/Commands/AttentionComposer.cs:110` | Deliberate, per the sibling thread and PLAN.md Decisions Log #155: `h9k task deliver` runs the identical clean-tree-and-commits check this flag's own reason already names. |
+| 285 | `README.md:476` | The paragraph documents the default layout paths, and relocation is already covered earlier in the same README (`HALL9K_HOME`) and via `h9k project show`. |
+| 289 | `src/Hall9k.Domain/Features/Run/Events/ReviewThreadsTriaged.cs:2` | Declined with evidence: the referenced type resolves via C#'s enclosing-namespace lookup without a using directive; both CI legs built clean. |
+| 292 | `src/Hall9k.Cli/Commands/StatusCommand.cs:211` | Not a defect: `MarkupLineInterpolated` auto-escapes interpolated string holes per Spectre.Console's own documented contract. |
+| 300 | `src/Hall9k.Daemon/Closeout/CloseoutEngine.cs:888` | Declined: the state described is not reachable and the code path is unchanged by this PR; the count and id list come from the same loop in `GitHubPullRequestInspector`. |
+| 303 | `src/Hall9k.Cli/Infrastructure/PostedProse.cs:48` | Declined: `MarkupLineInterpolated` escapes every interpolation hole before markup parsing, verified against the pinned Spectre.Console version. |
+| 312 | `PLAN.md:1302` | Declined: the acceptance criteria's no-surviving-old-literal requirement scopes to src/docs/README/AGENTS.md/CLI text, not the Decisions Log's own historical entries, which describe what was true when written. |
+| 316 | `src/Hall9k.Daemon/Review/ReviewEngine.cs:1029` | Traced through and does not reproduce: the flagged branch requires `FinalFullPass` mode, which the composition on this line never reaches. |
+| 317 | `src/Hall9k.Daemon/Execution/LaunchHoldMonitor.cs:192` | Declined with two pieces of evidence: the behavior is self-correcting even when the liveness read is wrong, since a genuinely stuck process still reports its own terminal result. |
+| 318 | `AGENTS.md:22` | AGENTS.md sits exactly at its recorded line ceiling and the ceiling test passes on this branch; the doctrine-line commit reflowed an existing bullet to make room. |
+| 323 | `docs/getting-started.md:102` | Declined: this wording was already changed once earlier in the branch after two review passes found the prior warning contradicted the daemon's own adopt-on-startup design; re-verified against the code. |
+| 334 | `src/Hall9k.Cli/Commands/TaskAbandonCommand.cs:54` | Declined: the concrete completion-time gaps this thread names are the same ones already fixed by the other four threads on this PR; the suggested addition would duplicate that fix. |
+| 335 | `src/Hall9k.Domain/Features/Tasks/Queries/TaskPassageQuery.cs:84` | `RunListItem` rows for a `RunRecordReconstructed` stream never contribute fabricated build time; both call sites that create that stream capture `UtcNow` exactly once and thread it through. |
+| 335 | `src/Hall9k.Domain/Features/Tasks/Queries/TaskPassageQuery.cs:503` | `ReviewCyclePassage.Cycles`/`FixSessions` are defined, per the type's own doc, as cycles that actually completed; a cycle that never got its own completing event genuinely does not fit that definition. |
+| 336 | `src/Hall9k.Cli/Commands/ProjectAddCommand.cs:361` | Does not hold up: `newName` is already escaped at the exact spot the comment anchors to, via `EscapeMarkup()` on both interpolated values. |
+| 341 | `src/Hall9k.Daemon/Closeout/RemoteBranchDeletionPolicy.cs:53` | Half fixed (the half that can outlive a sweep), half declined (deduplication); the type's doc now states both, with the sweep-counter fence explained. |
+| 342 | `src/Hall9k.Cli/Diagnostics/ToolDoctor.cs:123` | Declined: `Hall9kDatabase.Resolve()` documents "no default to fall back to" as deliberate policy (Decisions Log #57, #73); resolution only happens through `DatabaseDoctor`'s own offer-and-confirm flow. |
+| 348 | `src/Hall9k.Connectors/Ledger/GitLedger.cs:73` | Declined: pushing by commit id against a plain fast-forward-only push as the compare-and-swap was a deliberate design choice, recorded in PLAN.md Decisions Log #189. |
+| 370 | `src/Hall9k.Domain/Infrastructure/Persistence/EventScopeRegistry.cs:173` | Deliberate, per the task's own Decisions Log #192 entry and the comment directly above the classification, naming the same tradeoff. |
+| 374 | `claude/skills/orchestrator-recipe-generator/SKILL.md:306` | Checked directly on the machine: macOS's BSD grep supports `--line-buffered` for GNU compatibility, verified with `grep --version` and a live test. |
+| 376 | `src/Hall9k.Connectors/Prompts/WorkPromptBuilder.cs:928` | Does not hold up: `VoiceSkillName` is a sealed record class, so the nullable here is a nullable reference type, not `Nullable<T>`; `.Value` is the type's own `string` property. |
+| 379 | `src/Hall9k.Domain/Infrastructure/Persistence/EventOriginStampingListener.cs:65` | Already fixed in the current code: `ownerId` is resolved from the node the listener already selected, not an unfiltered `Take(1)` on `OwnerDetails`, per the doc comment on that line. |
+| 382 | `src/Hall9k.Connectors/WorkItems/ProjectGitHubAccessMirror.cs:89` | Deliberate: the class doc comment above `ObserveAsync` already states the 100-entry read cap explicitly, matching the same call `GitHubReviewAssignments` makes for its own cap. |
+| 382 | `src/Hall9k.Daemon/NodeContext.cs:29` | Deliberate, already-documented tradeoff described by commit de96b95c on this branch and the surrounding comment. |
+| 388 | `src/Hall9k.Daemon/Closeout/StackedParentWatch.cs:572` | This is the third of three fallback tiers, reached only once the live read and local record both fail; its own doc comment already states this exact limitation. |
+| 388 | `tests/Hall9k.Tests/Integration/StackedChildTests.cs:710` | The specific risk cited is already covered independently by `GitHubRemoteParentReaderTests`, which asserts the JSON parsing and state mapping directly. |
+| 392 | `src/Hall9k.Daemon/Execution/PullRequestOpener.cs:740` | Deliberate: PLAN.md Decisions Log #197 documents `TaskBranchPushed` as appended best-effort, and the method's own doc comment states this directly. |
+| 394 | `src/Hall9k.Daemon/Review/ReviewEngine.cs:2658` | A real trade-off, but the same one the file already accepts elsewhere for the identical run-kill gap, per `EnsureCurrentGenerationAsync`'s own comment. |
+| 396 | `src/Hall9k.Daemon/Execution/StackReplayOntoResolver.cs:57` | Deliberate: the docstring already states the fallback contract generally, naming the unreachable-origin case only as a motivating example, not the full scope. |
+| 399 | `src/Hall9k.Daemon/Execution/PullRequestOpener.cs:566` | Disagree, verified directly: cloned a bare repository and ran `gh pr create` against it, which failed only on the actual missing-branch validation, not on the bare-repository shape. |
+| 399 | `tests/Hall9k.Tests/Integration/PullRequestOpenerTests.cs:143` | Disagree: the cited testing rule is written for the gh-account-resolution seam this task introduces, which is tested entirely through fakes (`RecordingProcessRunner`, etc.). |
