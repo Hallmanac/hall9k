@@ -60,11 +60,23 @@ public sealed record UnverifiedLedgerWrite(string Kind, string Identifier, strin
 /// 202383dc, T1). Recomputed fresh on every read (<see cref="ILedgerChainReader.ComputeAsync"/>),
 /// never cached across calls: a revocation or a removal takes effect the moment the next read walks
 /// the ledger again.
+/// <para>
+/// <see cref="GenesisRootFingerprint"/> is the fingerprint named by the very first commit
+/// <c>refs/hall9k/ledger/members</c>' own history ever holds (idea 202383dc, M2) — set the moment
+/// genesis is decided, whether or not that commit actually self-certifies, since it names a fact
+/// about the ref's own immutable history, not a verdict on trust. Every node that fetches the
+/// identical shared repository replays the identical commit history and lands on the identical
+/// value, regardless of any install's own locally-minted project id — the one thing this platform
+/// has that qualifies as "the project's own key, derived from the ledger" rather than from any one
+/// node's local database. Null only when the members ref itself has no commit yet (the project's
+/// ledger was never initialized — <c>h9k project join</c> never ran there).
+/// </para>
 /// </summary>
 public sealed record TrustChain(
     IReadOnlyDictionary<string, TrustedOwner> OwnerChains,
     IReadOnlyList<ProjectMember> Members,
-    IReadOnlyList<UnverifiedLedgerWrite>? UnverifiedWrites = null)
+    IReadOnlyList<UnverifiedLedgerWrite>? UnverifiedWrites = null,
+    string? GenesisRootFingerprint = null)
 {
     /// <summary>Never null, whatever a caller passed the primary constructor: a two-argument
     /// construction (every call site that predates this field) gets an empty list rather than a

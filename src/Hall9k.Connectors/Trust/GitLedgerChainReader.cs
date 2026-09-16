@@ -90,11 +90,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        (IReadOnlyList<ProjectMember> members, IReadOnlyList<UnverifiedLedgerWrite> memberUnverified) =
-            await ComputeMembersAsync(repositoryPath, ownerChains, cancellationToken);
+        (IReadOnlyList<ProjectMember> members, IReadOnlyList<UnverifiedLedgerWrite> memberUnverified,
+            string? genesisRootFingerprint) = await ComputeMembersAsync(repositoryPath, ownerChains, cancellationToken);
         unverified.AddRange(memberUnverified);
 
-        return new TrustChain(ownerChains, members, unverified);
+        return new TrustChain(ownerChains, members, unverified, genesisRootFingerprint);
     }
 
     /// <summary>Every <c>refs/hall9k/ledger/owners/&lt;fingerprint&gt;</c> ref origin currently
@@ -299,7 +299,8 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// dropped.
     /// </para>
     /// </summary>
-    private async Task<(IReadOnlyList<ProjectMember> Members, IReadOnlyList<UnverifiedLedgerWrite> Unverified)> ComputeMembersAsync(
+    private async Task<(IReadOnlyList<ProjectMember> Members, IReadOnlyList<UnverifiedLedgerWrite> Unverified,
+        string? GenesisRootFingerprint)> ComputeMembersAsync(
         string repositoryPath, IReadOnlyDictionary<string, TrustedOwner> ownerChains, CancellationToken cancellationToken)
     {
         await FetchRefAsync(repositoryPath, MembersRefName, cancellationToken);
@@ -307,7 +308,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         string? tip = await ResolveTipAsync(repositoryPath, MembersRefName, cancellationToken);
         if (tip is null)
         {
-            return ([], []);
+            return ([], [], null);
         }
 
         const string prefix = "members/";
@@ -315,6 +316,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         Dictionary<string, ProjectMember> current = [];
         List<UnverifiedLedgerWrite> unverified = [];
         bool genesisDecided = false;
+        string? genesisRootFingerprint = null;
 
         foreach (string commit in await CommitsOldestFirstAsync(repositoryPath, tip, cancellationToken))
         {
@@ -337,6 +339,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 if (!genesisDecided)
                 {
                     genesisDecided = true;
+                    // Named regardless of whether genesis actually self-certifies below: this is a
+                    // fact about the ref's own immutable first commit, not a verdict on trust, and
+                    // every node fetching the identical ref lands on the identical value (TrustChain's
+                    // own doc: "the project's own key, derived from the ledger").
+                    genesisRootFingerprint = fingerprint;
                     if (!isDeletion
                         && ownerChains.TryGetValue(fingerprint, out TrustedOwner? selfOwner)
                         && await IsSignedByAsync(repositoryPath, commit, selfOwner.RootPublicKeyLine, cancellationToken))
@@ -405,7 +412,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        return ([.. current.Values], unverified);
+        return ([.. current.Values], unverified, genesisRootFingerprint);
     }
 
     /// <summary>
