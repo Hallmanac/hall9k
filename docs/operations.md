@@ -548,6 +548,7 @@ h9k config set --max-compliance-review-cycles 5 --lifetime-review-cycle-budget 4
 h9k config set --review-stage-composition adversarial-only --accept-reduced-review   # which pre-PR review stages a run gets
 h9k config set --spend-budget 5000000 --spend-period week   # the periodic token-spend budget and its window
 h9k config set --spend-budget none                          # clear it back to unbudgeted
+h9k config set --invite-expiry-hours 48                      # how long a minted invite (h9k node invite/h9k project invite) stays claimable
 ```
 
 The four review-cycle caps (Decisions Log #112) — the conformance and adversarial track cycle

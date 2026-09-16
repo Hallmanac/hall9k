@@ -364,9 +364,14 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         // Optional nudge (idea 202383dc, T2: "an optional note-kind message nudges the minting
         // node's owner when a proof appears; the sweep does not depend on it") — queued only,
         // never flushed here (this command never touches git or a network), and never allowed to
-        // fail the join itself: this node is not yet vouched into anything, so the message may
-        // well be read as SenderNotVouched and simply ignored, which is fine — the minting node's
-        // own sweep finds the proof on its own regardless.
+        // fail the join itself. In practice this node is never yet vouched into anything at this
+        // point, so the minting node's own message transport always reads it as SenderNotVouched
+        // and drops it (GitLedgerMessageTransport.ReadSinceAsync computes the trust chain before
+        // it will read a sender at all) — it cannot arrive before the very vouch it exists to
+        // announce, only after, when it no longer adds anything. Left in place as a harmless,
+        // best-effort artifact rather than a working early nudge (independent pre-PR review, cycle
+        // 1, conformance lens, low): the minting node's own sweep finds the proof on its own
+        // regardless, which is the only thing this invite flow actually depends on.
         if (inviteProof is not null && inviteMinterRoot is not null)
         {
             try
