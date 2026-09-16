@@ -398,14 +398,21 @@ public static class RunPaths
     /// a permissions problem, a full disk, and a sharing violation all look identical from the
     /// outside otherwise.
     /// </summary>
+    /// <param name="heading">
+    /// The Markdown heading each appended entry is stamped under, ahead of its own timestamp —
+    /// callers name it rather than this helper assuming "Dispute position" for every well-known
+    /// path it writes to: <see cref="StackAssessmentEvidenceFile"/> is appended the same way but
+    /// holds a read-only assessment's own evidence, never a dispute (independent pre-PR review,
+    /// cycle 1, adversarial lens).
+    /// </param>
     public static async Task<Exception?> AppendDisputePositionAsync(
-        string filePath, string? summary, CancellationToken cancellationToken)
+        string filePath, string? summary, string heading, CancellationToken cancellationToken)
     {
         try
         {
             Directory.CreateDirectory(Path.GetDirectoryName(filePath) ?? filePath);
             await File.AppendAllTextAsync(
-                filePath, $"## Dispute position, {DateTimeOffset.UtcNow:u}\n\n{summary}\n\n", cancellationToken);
+                filePath, $"## {heading}, {DateTimeOffset.UtcNow:u}\n\n{summary}\n\n", cancellationToken);
             return null;
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)

@@ -214,6 +214,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            RecordingProcessRunner.NeverInvoked(),
             new StackedParentWatch(
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), new NoOpRemoteParentReader(),
                 NullLogger<StackedParentWatch>.Instance),
@@ -2519,6 +2520,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())), processes, verification,
             Options.Create(new DaemonOptions()), NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            RecordingProcessRunner.NeverInvoked(),
             new Hall9k.Daemon.Closeout.StackedParentWatch(
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), new NoOpRemoteParentReader(),
                 NullLogger<Hall9k.Daemon.Closeout.StackedParentWatch>.Instance),

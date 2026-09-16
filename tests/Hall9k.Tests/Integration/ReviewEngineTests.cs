@@ -3268,21 +3268,22 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// without ever actually rebasing sends <c>EnsureRebasedBeforeFinalPassAsync</c> straight back
     /// to the identical conflict every time Settling is re-entered.
     /// <para>
-    /// Before the stack-assessment feature (task: a stacked checkpoint that would park for a human
-    /// on a git shape first dispatches a read-only assessment run), that loop was bounded by
-    /// <see cref="MaxRebaseRecoveryRounds"/> alone — three automatic recovery sessions, then a
-    /// park. Now the run's own one read-only assessment intercepts the very first conflict, and its
-    /// own no-loop guard (<c>AssessOrParkAsync</c>) means the SECOND conflict — Settling's own
-    /// re-check right after a recovery session's unconfirmed "fixed" claim — parks immediately
-    /// with both diagnoses attached, rather than dispatching a second recovery session at all: the
-    /// round cap's own three-strikes shape is still real (a human's own repeated
-    /// <c>--needs-fixes</c> redispatch still reaches it, since that path never asks the assessment
-    /// a second time either), but a fully automatic loop like this one never gets far enough to
-    /// spend it.
+    /// That loop is bounded by <see cref="MaxRebaseRecoveryRounds"/> — three automatic recovery
+    /// sessions, then a park — exactly as it was before the stack-assessment feature (task: a
+    /// stacked checkpoint that would park for a human on a git shape first dispatches a read-only
+    /// assessment run) existed. The run's own one read-only assessment still intercepts the very
+    /// first conflict, and its own no-loop guard (<c>AssessOrParkAsync</c>) still means a SECOND
+    /// conflict never dispatches a second assessment — but it still owes this pre-final-pass path
+    /// its ordinary recovery rounds, so the second and third conflicts dispatch recovery rounds 2
+    /// and 3 the same as they always did, and only the FOURTH conflict — the round cap itself,
+    /// not the spent assessment — parks (independent pre-PR review, cycle 1, both lenses: an
+    /// earlier shape collapsed the round cap to 1 by parking directly the moment the assessment was
+    /// spent, losing two of the three recovery rounds a fully automatic loop like this one used to
+    /// get).
     /// </para>
     /// </summary>
     [Fact]
-    public async Task A_second_automatic_conflict_after_the_one_assessment_is_spent_parks_with_both_diagnoses_before_the_round_cap()
+    public async Task A_second_automatic_conflict_after_the_one_assessment_is_spent_still_gets_its_ordinary_recovery_rounds()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
@@ -3297,26 +3298,30 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             "Nothing to fix.\n\nVERDICT: merge-ready",
             "Nothing to fix either.\n\nVERDICT: merge-ready",
             ScriptedReplayAssessmentThatStillConflicts,
-            "Claiming this is resolved without touching the worktree.\n\nRESOLUTION: fixed");
+            "Claiming this is resolved without touching the worktree (round 1).\n\nRESOLUTION: fixed",
+            "Claiming this is resolved without touching the worktree (round 2).\n\nRESOLUTION: fixed",
+            "Claiming this is resolved without touching the worktree (round 3).\n\nRESOLUTION: fixed");
 
         bool mergeReady = await NewEngine(
                 store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 }, ReplayRetryConflictsRunner().Runner)
             .ReviewAsync(runId, taskId, cts.Token);
 
-        mergeReady.Should().BeFalse(
-            "this run's one assessment is already spent by the first conflict, so the second one parks directly");
+        mergeReady.Should().BeFalse("the round cap is reached without ever landing cleanly");
         executor.Spawns.Should().HaveCount(
-            4, "two lenses converging clean, the one read-only assessment, and exactly one recovery session " +
-            "before this run's one assessment is spent — never a second recovery session");
+            6, "two lenses converging clean, the one read-only assessment, and all three ordinary recovery " +
+            "rounds — the assessment being spent caps ASSESSMENTS at one, never the pre-existing recovery budget");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.ReviewParked);
-        run.ParkedReason.Should().Contain("already dispatched its one read-only stack assessment");
+        run.ParkedReason.Should().Contain(
+            "needed a recovery session", "the fourth conflict parks on the ordinary round cap, not on the spent assessment");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<StackAssessmentDispatched>().Should().ContainSingle("never a second assessment");
         events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().HaveCount(
-            1, "the run's own assessment is spent after the first conflict, so a second conflict parks directly rather than dispatching a second recovery session");
+            3, "a later, different conflict still owes this pre-final-pass path its own three recovery rounds "
+            + "even after this run's one assessment is spent");
     }
 
     /// <summary>
@@ -5912,6 +5917,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
             new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
@@ -5981,6 +5987,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions { MaxComplianceReviewCycles = 3 }), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
             new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
@@ -9066,6 +9073,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions()), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
             new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
@@ -9140,6 +9148,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions()), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
             new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
@@ -9193,6 +9202,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions()), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
             new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
@@ -9241,6 +9251,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), executor, executor.Processes),
             Options.Create(new DaemonOptions()), logger,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), RecordingProcessRunner.NeverInvoked(),
+            RecordingProcessRunner.NeverInvoked(),
             NewStackedParentWatch(),
             new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             new NeverInvokedPullRequestInspector(), NewUnusedCloseoutEngine(store, new NeverInvokedPullRequestInspector()));
@@ -9773,6 +9784,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         // NewUnusedCloseoutEngine builds, so the node it reads should be the same one every seed
         // here already claims its tasks under.
         NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+        ProcessRunner effectiveGhRunner = ghRunner ?? RecordingProcessRunner.NeverInvoked();
         return new(store, executor, executor.Processes,
             new VerificationRunner(
                 store, Options.Create(new DaemonOptions()), NullLogger<VerificationRunner>.Instance,
@@ -9780,7 +9792,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             Options.Create(new DaemonOptions()),
             NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
-            ghRunner ?? RecordingProcessRunner.NeverInvoked(),
+            effectiveGhRunner,
+            effectiveGhRunner,
             NewStackedParentWatch(),
             new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             inspector,
@@ -9911,10 +9924,19 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// test here has a real pull request to ask. Every other test passes no task PullRequestUrl at
     /// all, so <see cref="RecordingProcessRunner.NeverInvoked"/> is the right default: if a future
     /// edit makes that check run unexpectedly, the test fails loudly here instead of quietly
-    /// shelling out to the real gh CLI and the real network.
+    /// shelling out to the real gh CLI and the real network. Also the default for
+    /// <c>gitProcessRunner</c> (the assessment-driven mechanical git calls' own seam): before that
+    /// seam existed every one of this overload's own callers already fed <paramref name="ghRunner"/>
+    /// to the single ProcessRunner both roles shared, so defaulting the new one to the same value
+    /// keeps every existing call site here unchanged.
     /// </summary>
     private static ReviewEngine NewEngine(
-        DocumentStore store, ScriptedExecutor executor, DaemonOptions options, ProcessRunner ghRunner)
+        DocumentStore store, ScriptedExecutor executor, DaemonOptions options, ProcessRunner ghRunner) =>
+        NewEngine(store, executor, options, ghRunner, ghRunner);
+
+    private static ReviewEngine NewEngine(
+        DocumentStore store, ScriptedExecutor executor, DaemonOptions options, ProcessRunner ghRunner,
+        ProcessRunner gitRunner)
     {
         NeverInvokedPullRequestInspector inspector = new();
         return new(store, executor, executor.Processes,
@@ -9925,6 +9947,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             NullLogger<ReviewEngine>.Instance,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance),
             ghRunner,
+            gitRunner,
             NewStackedParentWatch(),
             new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
             inspector,
@@ -10453,7 +10476,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         run.HasDispatchedStackAssessment.Should().BeTrue();
         run.LastStackAssessmentVerdict.Should().Be("aligned");
         run.BaseCommit.Should().Be(ScriptedBoundary, "the fork point becomes the verdict's own boundary");
-        run.BaseBranch.Should().Be("main", "the base branch becomes the branch the onto commit sits on");
+        run.BaseBranch.Should().BeEmpty(
+            "the onto commit resolves to the project's own base branch, and blank is what BaseBranch means by "
+            + "that — this run is not stacked on anything of its own once the parent has merged into it");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<StackAssessmentDispatched>().Should().ContainSingle();
@@ -10536,7 +10561,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
-        run.BaseBranch.Should().Be("main", "the onto commit the assessment named is confirmed as main's own tip");
+        run.BaseBranch.Should().BeEmpty(
+            "the onto commit the assessment named is confirmed as main's own tip — the project's own base branch — "
+            + "and blank is what BaseBranch means by that, exactly the headline shape this feature exists for: a "
+            + "parent that merged into main leaves its child no longer stacked on anything of its own");
         run.BaseCommit.Should().Be(ScriptedOnto, "the mechanical replay's own landed commit is what the fork point becomes");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
@@ -10629,6 +10657,108 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
     /// <summary>A short SHA the way <c>ReviewEngine.ShortSha</c> renders one, for asserting on a prompt's own text.</summary>
     private static string ShortShaFor(string commit) => commit.Length > 10 ? commit[..10] : commit;
+
+    /// <summary>
+    /// An aligned verdict on the mandatory final pass's own pre-flight rebase is the one "this
+    /// branch is current with its base" exit on this path that used to skip
+    /// <c>RenumberDecisionsLogPlaceholderAsync</c> — every sibling exit (a clean rebase, a
+    /// confirmed-landed stuck-pipe rebase, the plain no-op, a replay that lands clean) already
+    /// numbers this branch's own placeholder before proceeding; this one owes it the identical
+    /// obligation (independent pre-PR review, cycle 1, adversarial lens). Real git, not a fake: the
+    /// renumberer reads and rewrites PLAN.md and commits the result, the same reason
+    /// <see cref="Pre_final_pass_rebase_no_op_still_assigns_the_placeholders_real_number"/> uses a
+    /// real worktree rather than a scripted one.
+    /// </summary>
+    [Fact]
+    public async Task An_aligned_verdict_on_the_pre_final_pass_path_still_numbers_the_placeholder()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        string taskShortId = DomainId.Short(taskId);
+        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
+        [
+            "# Fixture Plan",
+            "",
+            "## 16. v0 Decisions Log",
+            "",
+            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
+            "",
+            "---",
+            "",
+            "## 17. Reference Materials",
+            "",
+        ]));
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+        string head = GitOutput(worktreePath, "rev-parse HEAD");
+
+        // Already current with its base — nothing needs to move — so BoundaryCommit and
+        // OntoCommit are the same commit, the honest shape an "aligned" verdict names.
+        StackAssessmentVerdict verdict = StackAssessmentVerdict.Aligned(
+            head, head, "git merge-base --is-ancestor confirmed the recorded fork point already contains main's tip.");
+
+        ScriptedExecutor executor = new();
+        ReviewEngine engine = NewEngine(store, executor, new DaemonOptions(), ExternalProcess.Runner, ExternalProcess.Runner);
+        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
+        RunAggregate run = await store.QuerySession().Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token)
+            ?? throw new InvalidOperationException("run stream must exist");
+
+        ReviewEngine.RebaseGateOutcome outcome = await engine.ActOnPreFinalPassAssessmentAsync(context, run, verdict, cts.Token);
+
+        outcome.Should().Be(ReviewEngine.RebaseGateOutcome.Proceed, "aligned means nothing needs to move mechanically");
+        executor.Spawns.Should().BeEmpty("an aligned verdict dispatches nothing further");
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
+        plan.Should().Contain("1. **A test decision.**",
+            "an aligned verdict must still renumber the tail placeholder rather than let it merge unrenumbered");
+        plan.Should().NotContain(
+            $"#PLACEHOLDER-{taskShortId}", "no citation of the placeholder may survive once the mandatory final pass has run");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().Contain(
+            e => e.WasNoOp && e.DecisionsLogRenumbered,
+            "aligned moved nothing mechanically, but the renumbering commit that landed must still raise the gate flag");
+    }
+
+    /// <summary>
+    /// An undecidable verdict on the mandatory final pass's own pre-flight rebase (never the
+    /// stacked-checkpoint path — see <see cref="An_undecidable_verdict_parks_with_the_evidence_appended_to_the_park_text"/>
+    /// for that one) falls back to the ordinary rebase-recovery session rather than parking
+    /// outright: this path's conflicts were always that session's own territory before the
+    /// stack-assessment feature existed, and an ordinary content conflict on an unstacked branch
+    /// routinely IS none of the assessment's three shapes (independent pre-PR review, cycle 1,
+    /// both lenses).
+    /// </summary>
+    [Fact]
+    public async Task An_undecidable_verdict_on_the_pre_final_pass_path_dispatches_the_recovery_session_instead_of_parking()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        StackAssessmentVerdict verdict = StackAssessmentVerdict.Undecidable(
+            "the base's own history was rewritten between two candidate boundaries and they disagree");
+
+        ScriptedExecutor executor = new("The conflict needs real judgment.\n\nRESOLUTION: disputed");
+        ReviewEngine engine = NewEngine(store, executor, new DaemonOptions(), RecordingProcessRunner.NeverInvoked());
+        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
+        RunAggregate run = await store.QuerySession().Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token)
+            ?? throw new InvalidOperationException("run stream must exist");
+
+        ReviewEngine.RebaseGateOutcome outcome = await engine.ActOnPreFinalPassAssessmentAsync(context, run, verdict, cts.Token);
+
+        outcome.Should().Be(ReviewEngine.RebaseGateOutcome.LoopAgain, "the recovery session was dispatched; the loop re-enters once it completes");
+        executor.Spawns.Should().ContainSingle("undecidable falls back to the ordinary recovery session, not a park");
+        executor.Spawns[0].Prompt.Should().Contain(
+            "A read-only stack assessment run (not a human)", "the fix session must be told plainly this guidance is not a human's own decision");
+        executor.Spawns[0].Prompt.Should().Contain("disagree", "the assessment's own evidence carries into the recovery session's guidance");
+
+        List<object> events = [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().ContainSingle();
+    }
 
     [Fact]
     public async Task An_undecidable_verdict_parks_with_the_evidence_appended_to_the_park_text()

@@ -24,6 +24,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx;
 using Marten;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
 using Wolverine;
 using Wolverine.Marten;
 
@@ -171,7 +172,28 @@ builder.Services.AddSingleton(services => new TrackerClaimGate(
 builder.Services.AddSingleton<DispatchEngine>();
 builder.Services.AddSingleton<IExecutor, ClaudeExecutor>();
 builder.Services.AddSingleton<VerificationRunner>();
-builder.Services.AddSingleton<ReviewEngine>();
+// A factory rather than plain AddSingleton<ReviewEngine>(): its constructor takes TWO
+// ProcessRunner-typed parameters — the short-deadline processRunner every gh read uses, and
+// gitProcessRunner, bound here to ExternalProcess.RunnerWithDeadline(ReviewEngine.GitDeadline) for
+// the assessment-driven mechanical git calls that actually mutate the worktree (a fetch, a
+// rebase), the same ten-minute deadline the engine's own non-assessment rebases already get
+// (independent pre-PR review, cycle 1, both lenses: giving those calls the short gh-read deadline
+// was a test-seam convenience, not a production-cost decision). Plain constructor injection cannot
+// tell the two apart by type alone.
+builder.Services.AddSingleton(services => new ReviewEngine(
+    services.GetRequiredService<IDocumentStore>(),
+    services.GetRequiredService<IExecutor>(),
+    services.GetRequiredService<IProcessManager>(),
+    services.GetRequiredService<VerificationRunner>(),
+    services.GetRequiredService<IOptions<DaemonOptions>>(),
+    services.GetRequiredService<ILogger<ReviewEngine>>(),
+    services.GetRequiredService<IWorktreeManager>(),
+    services.GetRequiredService<ProcessRunner>(),
+    ExternalProcess.RunnerWithDeadline(ReviewEngine.GitDeadline),
+    services.GetRequiredService<StackedParentWatch>(),
+    services.GetRequiredService<LaunchHoldEngine>(),
+    services.GetRequiredService<IPullRequestInspector>(),
+    services.GetRequiredService<CloseoutEngine>()));
 builder.Services.AddSingleton<PrReviewEngine>();
 builder.Services.AddSingleton<PullRequestOpener>();
 builder.Services.AddSingleton<BlockerContextAssembler>();
