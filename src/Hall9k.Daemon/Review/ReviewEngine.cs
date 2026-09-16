@@ -126,7 +126,13 @@ public sealed class ReviewEngine(
     /// </summary>
     private const int MaxRebaseRecoveryRounds = 3;
 
-    private enum RebaseGateOutcome
+    // internal, not private: the stack-assessment methods below that return this are internal too,
+    // exercised directly by tests over a fake ProcessRunner and a scripted assessment response
+    // rather than through the real-git-dependent StackedParentWatch/plain-rebase preconditions
+    // that gate their own only production call sites (task: a stacked checkpoint that would park
+    // for a human on a git shape first dispatches a read-only assessment run — "no git integration
+    // tests").
+    internal enum RebaseGateOutcome
     {
         /// <summary>No-op, or a git rebase that applied cleanly (or a fetch/read that could not be completed) — proceed to the mandatory gate in this same iteration.</summary>
         Proceed,
@@ -917,7 +923,7 @@ public sealed class ReviewEngine(
 
                 case ReviewPhase.RebaseRecoveryNeeded:
                     if (!await DispatchRebaseRecoverySessionAsync(
-                        context, run, run.PendingRebaseRecoveryGuidance, cancellationToken))
+                        context, run, run.PendingRebaseRecoveryGuidance, assessmentGuidance: null, cancellationToken))
                     {
                         return false;
                     }
@@ -2816,6 +2822,15 @@ public sealed class ReviewEngine(
         // conflict branch below calls DispatchRebaseRecoverySessionAsync, which acquires the
         // identical lock for its own brief fetch — the in-process semaphore behind it is not
         // reentrant, so this lock must already be released by the time that call is made.
+        //
+        // mergeBaseForStuckRebase and originTipForConflict are declared here, outside the lock
+        // block below, rather than inside it: a conflict falls out of that block to the assessment
+        // dispatch beneath it (task: a stacked checkpoint that would park for a human on a git
+        // shape first dispatches a read-only assessment run), which needs this branch's own
+        // recorded fork point and attempted onto commit for the assessment's own context — values
+        // this same fetch already read moments earlier, not worth a second read.
+        string? mergeBaseForStuckRebase = null;
+        string? originTipForConflict = null;
         await using (IAsyncDisposable repositoryLock =
             await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
         {
@@ -2828,7 +2843,6 @@ public sealed class ReviewEngine(
                 return RebaseGateOutcome.Stop;
             }
 
-            string? mergeBaseForStuckRebase = null;
             string? preRebaseHead = null;
             try
             {
@@ -2870,6 +2884,7 @@ public sealed class ReviewEngine(
                 string originTip = originTipResult.StandardOutput.Trim();
                 string mergeBase = mergeBaseResult.StandardOutput.Trim();
                 mergeBaseForStuckRebase = mergeBase;
+                originTipForConflict = originTip;
                 if (mergeBase == originTip)
                 {
                     // origin/<base> has not moved past what this branch already contains (task:
@@ -2988,9 +3003,17 @@ public sealed class ReviewEngine(
         }
 
         // Reached only on a conflict: every other path above returns from inside the lock scope.
-        return await DispatchRebaseRecoverySessionAsync(context, run, humanGuidance: null, cancellationToken)
-            ? RebaseGateOutcome.LoopAgain
-            : RebaseGateOutcome.Stop;
+        // Before dispatching the recovery session unconditionally, this run's one read-only stack
+        // assessment gets its say first (task: a stacked checkpoint that would park for a human on
+        // a git shape first dispatches a read-only assessment run) — the mandatory final pass's own
+        // pre-flight rebase is exactly the "pre-final-pass rebase" the task names alongside the
+        // stacked checkpoint.
+        return await AssessOrParkAsync(
+            context, StackAssessmentParkKind.ReplayConflict, context.Run.Branch, string.Empty,
+            mergeBaseForStuckRebase ?? string.Empty, originTipForConflict ?? string.Empty,
+            "The mandatory final pass's own pre-flight rebase conflicted.",
+            (assessed, ct) => ActOnPreFinalPassAssessmentAsync(context, run, assessed, ct),
+            cancellationToken);
     }
 
     /// <summary>
@@ -3448,16 +3471,64 @@ public sealed class ReviewEngine(
 
         if (verdict.Action == StackedCheckpointAction.Park)
         {
-            await ParkAsync(
-                context.RunId, context.TaskId, verdict.Reason, cancellationToken: cancellationToken);
-            return RebaseGateOutcome.Stop;
+            // A spent rebase budget is a resource cap, not a git shape an assessment could ever
+            // resolve differently — the remaining three Park reasons StackedCheckpointPolicy
+            // hands back (ParentMergedElsewhere, ParentDead, ParentUnresolvable) are exactly the
+            // git shapes this task names, so only those earn the one read-only assessment this
+            // run gets before parking (task: a stacked checkpoint that would park for a human on
+            // a git shape first dispatches a read-only assessment run).
+            bool isGitShapePark = observation.Verdict is StackedParentVerdict.ParentMergedElsewhere
+                or StackedParentVerdict.ParentDead or StackedParentVerdict.ParentUnresolvable;
+            if (!isGitShapePark)
+            {
+                await ParkAsync(
+                    context.RunId, context.TaskId, verdict.Reason, cancellationToken: cancellationToken);
+                return RebaseGateOutcome.Stop;
+            }
+
+            StackAssessmentParkKind parkKind = observation.Verdict == StackedParentVerdict.ParentMergedElsewhere
+                ? StackAssessmentParkKind.ParentMergedElsewhere
+                : StackAssessmentParkKind.UndecidableBoundary;
+
+            return await AssessOrParkAsync(
+                context, parkKind, context.Run.Branch, parentBranch, currentBaseCommit, observation.OntoCommit,
+                verdict.Reason,
+                (assessed, ct) => ActOnStackAssessmentAsync(context, checkpoint, parentBranch, verdict.Reason, assessed, ct),
+                cancellationToken);
         }
 
-        // Everything past here is Replay. Written as early returns rather than a switch precisely
-        // so that reading is explicit — a switch statement's silent fall-through would route an
-        // action added later into the replay path by default (the identical argument
-        // CloseoutEngine.TryReplayStackedChildAsync's own early returns over its verdicts make).
-        ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
+        // Everything past here is Replay. The real, hardwired runner: this is the ORIGINAL first
+        // attempt every stacked checkpoint has always made, unchanged by this task, so the tests
+        // already written against it keep exercising real git — only the assessment-driven retry
+        // below (ActOnStackAssessmentAsync) uses the injected, fake-git-testable one.
+        return await ReplayCheckpointAsync(
+            context, checkpoint, parentBranch, verdict.UpstreamCommit, verdict.OntoCommit, verdict.Reason,
+            ExternalProcess.RunnerWithDeadline(GitDeadline), cancellationToken);
+    }
+
+    /// <summary>
+    /// Attempts a stacked checkpoint's mechanical replay — <c>git rebase --onto</c> from
+    /// <paramref name="upstreamCommit"/> onto <paramref name="ontoCommit"/> — and, on a conflict,
+    /// dispatches this run's one read-only stack assessment before parking (task: a stacked
+    /// checkpoint that would park for a human on a git shape first dispatches a read-only
+    /// assessment run) rather than the recovery session the unstacked pre-final-pass path
+    /// dispatches: <see cref="RebaseOntoStackedParentAsync"/>'s own doc gives the two reasons that
+    /// session is wrong for a stacked checkpoint, and an assessment's own <c>Replay</c> verdict
+    /// changes neither — it retries this exact method with its own boundary and onto instead, so a
+    /// second conflict lands on <see cref="AssessOrParkAsync"/>'s own no-loop guard and parks with
+    /// both diagnoses rather than dispatching anything a second time.
+    /// <para>
+    /// <paramref name="git"/> is caller-supplied rather than resolved here: the original,
+    /// pre-existing first attempt (<see cref="RebaseOntoStackedParentAsync"/>'s own call) always
+    /// passes the real, hardwired runner, unchanged from before this task — only the
+    /// assessment-driven retry (<see cref="ActOnStackAssessmentAsync"/>'s call) passes the
+    /// injected <c>processRunner</c> field, the one seam this task's own tests fake.
+    /// </para>
+    /// </summary>
+    internal async Task<RebaseGateOutcome> ReplayCheckpointAsync(
+        ReviewContext context, StackedCheckpoint checkpoint, string parentBranch, string upstreamCommit,
+        string ontoCommit, string reason, ProcessRunner git, CancellationToken cancellationToken)
+    {
         string worktreePath = context.Run.WorktreePath;
         string? preRebaseHead = null;
         await using (IAsyncDisposable repositoryLock =
@@ -3485,13 +3556,13 @@ public sealed class ReviewEngine(
                 // resolve>`: that fails in a way indistinguishable from a conflict, which would
                 // park a run over a missing object.
                 ProcessResult ontoPresent = await git(
-                    "git", ["rev-parse", "--verify", "--quiet", $"{verdict.OntoCommit}^{{commit}}"],
+                    "git", ["rev-parse", "--verify", "--quiet", $"{ontoCommit}^{{commit}}"],
                     worktreePath, cancellationToken);
                 if (ontoPresent.ExitCode != 0)
                 {
                     logger.LogWarning(
-                        "Run {RunId}: the stacked parent's observed head {OntoCommit} is not in this repository's object store, so the checkpoint {Checkpoint} replay cannot run — proceeding unrebased; closeout's own replay still covers a moved parent once this branch is pushed",
-                        context.RunId, ShortSha(verdict.OntoCommit), checkpoint.Value);
+                        "Run {RunId}: the commit {OntoCommit} named for the checkpoint {Checkpoint} replay is not in this repository's object store, so it cannot run — proceeding unrebased; closeout's own replay still covers a moved parent once this branch is pushed",
+                        context.RunId, ShortSha(ontoCommit), checkpoint.Value);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -3501,11 +3572,13 @@ public sealed class ReviewEngine(
                 // branch's copies of them, and the onto is the head the watch freshly observed
                 // rather than a ref that can move between the look and the rebase.
                 ProcessResult replay = await git(
-                    "git", ["rebase", "--onto", verdict.OntoCommit, verdict.UpstreamCommit],
-                    worktreePath, cancellationToken);
+                    "git", ["rebase", "--onto", ontoCommit, upstreamCommit], worktreePath, cancellationToken);
                 if (replay.ExitCode == 0)
                 {
-                    await RecordStackedCheckpointAsync(context, parentBranch, checkpoint, verdict, cancellationToken);
+                    await RecordStackedCheckpointAsync(
+                        context, parentBranch, checkpoint,
+                        new StackedCheckpointVerdict(StackedCheckpointAction.Replay, upstreamCommit, ontoCommit, reason),
+                        cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -3519,10 +3592,12 @@ public sealed class ReviewEngine(
             // EnsureRebasedBeforeFinalPassAsync's own identical catch does for its own rebase.
             catch (ProcessOutputStuckException exception) when (exception.ExitCode == 0)
             {
-                if (await RebaseActuallyLandedAsync(
-                    worktreePath, context.Run.Branch, verdict.OntoCommit, cancellationToken))
+                if (await RebaseActuallyLandedAsync(worktreePath, context.Run.Branch, ontoCommit, cancellationToken))
                 {
-                    await RecordStackedCheckpointAsync(context, parentBranch, checkpoint, verdict, cancellationToken);
+                    await RecordStackedCheckpointAsync(
+                        context, parentBranch, checkpoint,
+                        new StackedCheckpointVerdict(StackedCheckpointAction.Replay, upstreamCommit, ontoCommit, reason),
+                        cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -3545,18 +3620,56 @@ public sealed class ReviewEngine(
         }
 
         // Reached only on a conflict: every other path above returns from inside the lock scope.
-        // Parked rather than handed to the recovery session, for the two reasons this method's own
-        // doc gives — and parked with the worktree already restored to this branch's own tip, so
-        // the human inherits the branch as it was rather than a half-applied replay.
+        // The worktree is already restored to this branch's own tip, so a human (or the assessment
+        // run dispatched next) inherits the branch as it was rather than a half-applied replay.
+        string conflictReason =
+            $"This branch is stacked on {parentBranch} — but replaying this branch's own commits from "
+            + $"{ShortSha(upstreamCommit)} onto {ShortSha(ontoCommit)} conflicted, so the rebase owed before "
+            + $"{checkpoint.Describe()} needs a judgment this run will not make mechanically. The worktree is "
+            + $"back at this branch's own tip, unchanged. Rebase it by hand (`git rebase --onto {ontoCommit} "
+            + $"{upstreamCommit}`), then resolve with h9k review resolve — or hand the conflict to a fix "
+            + "session with h9k review resolve --needs-fixes \"<guidance>\".";
+
+        return await AssessOrParkAsync(
+            context, StackAssessmentParkKind.ReplayConflict, context.Run.Branch, parentBranch, upstreamCommit,
+            ontoCommit, conflictReason,
+            (assessed, ct) => ActOnStackAssessmentAsync(context, checkpoint, parentBranch, conflictReason, assessed, ct),
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// Acts on a stack assessment's verdict for a stacked checkpoint (task: a stacked checkpoint
+    /// that would park for a human on a git shape first dispatches a read-only assessment run):
+    /// aligned proceeds as the checkpoint's own aligned path, replay retries
+    /// <see cref="ReplayCheckpointAsync"/> with the verdict's own boundary and onto commit, and
+    /// undecidable parks with <paramref name="parkText"/> — the reason this checkpoint would have
+    /// parked with in the first place, so a human still reads what StackedParentWatch actually
+    /// observed (a dead parent, an unresolvable head, the conflicting commits) — with the
+    /// assessment's own evidence appended, never in its place.
+    /// </summary>
+    internal async Task<RebaseGateOutcome> ActOnStackAssessmentAsync(
+        ReviewContext context, StackedCheckpoint checkpoint, string parentBranch, string parkText,
+        StackAssessmentVerdict assessment, CancellationToken cancellationToken)
+    {
+        if (assessment.Kind == StackAssessmentVerdictKind.Aligned)
+        {
+            logger.LogInformation(
+                "Run {RunId}: the stack assessment found the checkpoint {Checkpoint} already aligned — {Evidence}",
+                context.RunId, checkpoint.Value, assessment.Evidence);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        if (assessment.Kind == StackAssessmentVerdictKind.Replay)
+        {
+            return await ReplayCheckpointAsync(
+                context, checkpoint, parentBranch, assessment.BoundaryCommit, assessment.OntoCommit,
+                $"stack assessment verdict: replay — {assessment.Evidence}", processRunner, cancellationToken);
+        }
+
         await ParkAsync(
             context.RunId, context.TaskId,
-            $"This branch is stacked on {parentBranch} and {observation.Detail} — but replaying this branch's "
-            + $"own commits from {ShortSha(verdict.UpstreamCommit)} onto {ShortSha(verdict.OntoCommit)} "
-            + $"conflicted, so the rebase owed before {checkpoint.Describe()} needs a judgment this run will "
-            + "not make mechanically. The worktree is back at this branch's own tip, unchanged. Rebase it by "
-            + $"hand (`git rebase --onto {verdict.OntoCommit} {verdict.UpstreamCommit}`), then resolve with "
-            + "h9k review resolve — or hand the conflict to a fix session with "
-            + "h9k review resolve --needs-fixes \"<guidance>\".",
+            $"{parkText} The read-only stack assessment dispatched before this park could not resolve it "
+            + $"either: {assessment.Evidence}",
             cancellationToken: cancellationToken);
         return RebaseGateOutcome.Stop;
     }
@@ -3582,6 +3695,405 @@ public sealed class ReviewEngine(
             decisionsLogRenumbered: false,
             forkPointAdvanced: false,
             cancellationToken);
+
+    /// <summary>
+    /// The one entry point every git-shape park goes through (task: a stacked checkpoint that
+    /// would park for a human on a git shape first dispatches a read-only assessment run):
+    /// dispatches this run's one read-only stack assessment if it has not already spent it, and
+    /// either hands the fresh verdict to <paramref name="actOnVerdict"/> or, if this run already
+    /// spent its one assessment, parks directly with both diagnoses attached rather than
+    /// dispatching a second one — the never-loop-twice-on-the-same-park rule, enforced by a fresh
+    /// read of <see cref="RunDetails.HasDispatchedStackAssessment"/> rather than a counter passed
+    /// down the call stack, so every caller (a checkpoint's own park, a checkpoint's replay
+    /// conflict, the pre-final-pass rebase's conflict) shares the identical one-shot guarantee
+    /// without having to reason about how many times it has already recursed.
+    /// </summary>
+    internal async Task<RebaseGateOutcome> AssessOrParkAsync(
+        ReviewContext context, StackAssessmentParkKind parkKind, string childBranch, string parentBranch,
+        string recordedForkPoint, string attemptedOntoCommit, string parkText,
+        Func<StackAssessmentVerdict, CancellationToken, Task<RebaseGateOutcome>> actOnVerdict,
+        CancellationToken cancellationToken)
+    {
+        RunDetails? run;
+        await using (IQuerySession query = store.QuerySession())
+        {
+            run = await query.LoadAsync<RunDetails>(context.RunId, cancellationToken);
+        }
+
+        if (run is not null && run.HasDispatchedStackAssessment)
+        {
+            await ParkAsync(
+                context.RunId, context.TaskId, BothDiagnosesParkReason(run, parkText),
+                cancellationToken: cancellationToken);
+            return RebaseGateOutcome.Stop;
+        }
+
+        StackAssessmentVerdict verdict = await DispatchStackAssessmentAsync(
+            context, parkKind, childBranch, parentBranch, recordedForkPoint, attemptedOntoCommit, parkText,
+            cancellationToken);
+        return await actOnVerdict(verdict, cancellationToken);
+    }
+
+    /// <summary>
+    /// What a second git-shape park on the same run reads, once this run has already spent its one
+    /// assessment. <see cref="RunDetails.LastStackAssessmentVerdict"/> can still be blank here — a
+    /// daemon restart between <see cref="Events.StackAssessmentDispatched"/> and
+    /// <see cref="Events.StackAssessmentCompleted"/> leaves exactly that gap on the stream — and
+    /// this never guesses at what the missing verdict might have been.
+    /// </summary>
+    internal static string BothDiagnosesParkReason(RunDetails run, string newParkText) =>
+        run.LastStackAssessmentVerdict.IsNotBlank()
+            ? $"{newParkText} This run already dispatched its one read-only stack assessment earlier and reached "
+              + $"'{run.LastStackAssessmentVerdict}': {run.LastStackAssessmentEvidence} That assessment is not "
+              + "spent twice — a human decides this with both diagnoses in hand rather than a second one being dispatched."
+            : $"{newParkText} This run already dispatched its one read-only stack assessment earlier, but it left "
+              + "no recorded verdict — most likely an interruption before it could finish. That assessment is not "
+              + "spent twice regardless; resolve this by hand rather than waiting on a second one.";
+
+    /// <summary>
+    /// Spawns this run's one read-only stack assessment session, waits for it (bounded twice over
+    /// by <see cref="DaemonOptions.StackAssessmentMaxTurns"/> and
+    /// <see cref="DaemonOptions.StackAssessmentTimeout"/>, the identical "narrow, mid-run,
+    /// synchronous spawn-and-wait" shape <c>VerificationRunner.RecoverUncommittedWorkOrExplainAsync</c>
+    /// already uses), parses its trailer, and records the outcome — never itself decides what the
+    /// caller does with the verdict. A spawn failure, an abandoned wait, or an unparseable trailer
+    /// all resolve to <see cref="StackAssessmentVerdictKind.Undecidable"/>, the same "a missing or
+    /// malformed trailer is undecidable" contract <see cref="StackAssessmentResultParser"/> already
+    /// keeps.
+    /// </summary>
+    internal async Task<StackAssessmentVerdict> DispatchStackAssessmentAsync(
+        ReviewContext context, StackAssessmentParkKind parkKind, string childBranch, string parentBranch,
+        string recordedForkPoint, string attemptedOntoCommit, string parkText, CancellationToken cancellationToken)
+    {
+        Guid sessionId = DomainId.New();
+        AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
+        string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.StackAssessment);
+
+        int? pullRequestNumber = null;
+        string pullRequestBase = string.Empty;
+        if (context.Task.PullRequestUrl.IsNotBlank())
+        {
+            try
+            {
+                PullRequestFacts facts = await new GitHubPullRequestProvider(processRunner).FetchFactsAsync(
+                    context.Task.PullRequestUrl!, context.Project.RepositoryPath, cancellationToken);
+                pullRequestNumber = facts.Number;
+                pullRequestBase = facts.BaseRefName;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    exception,
+                    "Run {RunId}: could not read the pull request's own GitHub facts before dispatching the stack assessment — the session can still read them itself",
+                    context.RunId);
+            }
+        }
+
+        string prompt = AgentPromptBuilder.BuildStackAssessment(
+            context.TaskId, childBranch, parentBranch, recordedForkPoint, attemptedOntoCommit, pullRequestNumber,
+            pullRequestBase, parkKind, parkText, commandTimeout: _options.VerifyGateTimeout);
+
+        // Saved before the spawn, not after: a daemon restart mid-wait must find this fact on the
+        // stream even though the spawn's own outcome is still unknown — the same "save the
+        // decision before the wait" discipline VerificationRunner's own recovery attempt follows,
+        // and what makes this run's one assessment genuinely one-shot even across a restart.
+        await using (IDocumentSession dispatchSession = store.LightweightSession())
+        {
+            RunAggregate dispatchRun = await LoadRunAsync(context.RunId, cancellationToken);
+            if (!await GenerationFence.AllowsAsync(
+                dispatchSession, logger, context.TaskId, context.RunId, dispatchRun.LeaseGeneration,
+                nameof(StackAssessmentDispatched), cancellationToken))
+            {
+                return StackAssessmentVerdict.Undecidable(
+                    "this run's own lease generation had already moved on by the time the stack assessment would have dispatched");
+            }
+
+            dispatchSession.Events.Append(context.RunId, new StackAssessmentDispatched(
+                context.RunId, parkKind, childBranch, parentBranch, recordedForkPoint, attemptedOntoCommit,
+                sessionId, model, DateTimeOffset.UtcNow, sessionName));
+            await dispatchSession.SaveChangesAsync(cancellationToken);
+        }
+
+        SpawnedAgent? unfinished = null;
+        AgentResult? result;
+        try
+        {
+            SpawnedAgent agent;
+            try
+            {
+                agent = await executor.SpawnAsync(new AgentSpawnRequest(
+                    context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt,
+                    context.Run.ExecutorMode, model, context.Project.SkipPermissions,
+                    SessionArtifactName: SessionRoleName.StackAssessment, MaxTurns: _options.StackAssessmentMaxTurns)
+                {
+                    SessionName = sessionName,
+                }, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(exception, "Run {RunId}: the stack assessment session could not be spawned", context.RunId);
+                return await RecordStackAssessmentCompletedAsync(
+                    context, parkKind, parentBranch, pullRequestBase, model,
+                    StackAssessmentVerdict.Undecidable($"the assessment session could not even be started ({exception.Message})"),
+                    result: null, cancellationToken);
+            }
+
+            unfinished = agent;
+            // Keyed by the session ARTIFACT name (SessionRoleName.StackAssessment), not sessionName:
+            // the stream file's own name never carries the task-id prefix SessionName does — the
+            // identical distinction DispatchRebaseRecoverySessionAsync's own artifactName/sessionName
+            // pair keeps, and the one a same-session mistake here would silently read as "died
+            // without a result" (independent self-review: File.Exists came back false against the
+            // prefixed name every production and scripted spawn actually writes to).
+            string runDirectory = RunPaths.ResolveCurrentDirectory(context.Run.RunDirectory);
+            string streamFile = RunPaths.SessionStreamFile(runDirectory, SessionRoleName.StackAssessment);
+
+            using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutSource.CancelAfter(_options.StackAssessmentTimeout);
+            try
+            {
+                SessionWaitResult wait = await SessionResultWaiter.WaitAsync(
+                    streamFile, agent.ProcessId, agent.StartedAt, processManager, onOutput: null, timeoutSource.Token);
+                unfinished = null;
+                result = wait.Result;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                processManager.Terminate(agent.ProcessId, agent.StartedAt);
+                unfinished = null;
+                logger.LogWarning(
+                    "Run {RunId}: the stack assessment session exceeded its {Timeout} bound and was terminated",
+                    context.RunId, _options.StackAssessmentTimeout);
+                result = null;
+            }
+        }
+        catch (Exception exception)
+        {
+            if (unfinished is { } orphan)
+            {
+                try
+                {
+                    processManager.Terminate(orphan.ProcessId, orphan.StartedAt);
+                }
+                catch (Exception terminateException)
+                {
+                    logger.LogWarning(
+                        terminateException, "Run {RunId}: could not terminate the abandoned stack assessment session (pid {ProcessId})",
+                        context.RunId, orphan.ProcessId);
+                }
+            }
+
+            if (exception is OperationCanceledException)
+            {
+                throw;
+            }
+
+            logger.LogWarning(exception, "Run {RunId}: the stack assessment session failed before it could finish", context.RunId);
+            return await RecordStackAssessmentCompletedAsync(
+                context, parkKind, parentBranch, pullRequestBase, model,
+                StackAssessmentVerdict.Undecidable($"the assessment session failed before it could finish ({exception.Message})"),
+                result: null, cancellationToken);
+        }
+
+        if (result?.IsError == true)
+        {
+            logger.LogWarning(
+                "Run {RunId}: the stack assessment session ended in error: {Summary}", context.RunId, result.Summary ?? "(no message)");
+        }
+
+        StackAssessmentVerdict verdict = StackAssessmentResultParser.Parse(result?.Summary);
+        return await RecordStackAssessmentCompletedAsync(
+            context, parkKind, parentBranch, pullRequestBase, model, verdict, result, cancellationToken);
+    }
+
+    /// <summary>
+    /// Records a stack assessment's own outcome (task: a stacked checkpoint that would park for a
+    /// human on a git shape first dispatches a read-only assessment run): the verdict itself, and
+    /// — for aligned or replay only — this run's own recorded fork point and base branch, moved to
+    /// what the assessment actually observed, so a later checkpoint on this same run reads the
+    /// updated values rather than the stale ones that caused the park (<see cref="Events.StackAssessmentCompleted"/>'s
+    /// own doc). The evidence is also appended to <see cref="RunPaths.StackAssessmentEvidenceFile"/>,
+    /// beside this run's own review findings, the same append-with-timestamp shape every other
+    /// run-scoped evidence file already uses.
+    /// </summary>
+    internal async Task<StackAssessmentVerdict> RecordStackAssessmentCompletedAsync(
+        ReviewContext context, StackAssessmentParkKind parkKind, string parentBranch, string pullRequestBase,
+        AgentModel model, StackAssessmentVerdict verdict, AgentResult? result, CancellationToken cancellationToken)
+    {
+        string resolvedBaseBranchName = string.Empty;
+        if (verdict.Kind != StackAssessmentVerdictKind.Undecidable && verdict.OntoCommit.IsNotBlank())
+        {
+            resolvedBaseBranchName = await ResolveOntoBranchNameAsync(
+                context.Run.WorktreePath, verdict.OntoCommit,
+                [context.Project.BaseBranch, parentBranch, pullRequestBase], cancellationToken);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(context.RunId, new StackAssessmentCompleted(
+                context.RunId, parkKind, verdict.Kind, verdict.BoundaryCommit, verdict.OntoCommit,
+                resolvedBaseBranchName, verdict.Evidence, DateTimeOffset.UtcNow));
+            if (result is not null)
+            {
+                session.Events.Append(context.RunId, result.ToTokensRecorded(context.RunId, DateTimeOffset.UtcNow, model));
+            }
+
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
+        string runDirectory = RunPaths.ResolveCurrentDirectory(context.Run.RunDirectory);
+        await RunPaths.AppendDisputePositionAsync(
+            RunPaths.StackAssessmentEvidenceFile(runDirectory), verdict.Evidence, cancellationToken);
+
+        return verdict;
+    }
+
+    /// <summary>
+    /// Confirms which named branch (if any) <paramref name="ontoCommit"/> is the current tip of,
+    /// checked only against the candidates the daemon already knows about — never derived by
+    /// walking git's own ref graph, since nothing in this codebase resolves a bare commit back to
+    /// a branch name (AGENTS.md's never-guess rule): a commit that matches none of them leaves the
+    /// run's recorded base branch exactly as it was, rather than a guess.
+    /// </summary>
+    internal async Task<string> ResolveOntoBranchNameAsync(
+        string worktreePath, string ontoCommit, IReadOnlyList<string> candidateBranches, CancellationToken cancellationToken)
+    {
+        if (ontoCommit.IsBlank())
+        {
+            return string.Empty;
+        }
+
+        ProcessRunner git = processRunner;
+        foreach (string candidate in candidateBranches.Where(branch => branch.IsNotBlank()).Distinct())
+        {
+            try
+            {
+                ProcessResult tip = await git(
+                    "git", ["rev-parse", "--verify", "--quiet", $"origin/{candidate}"], worktreePath, cancellationToken);
+                if (tip.ExitCode == 0 && tip.StandardOutput.Trim() == ontoCommit)
+                {
+                    return candidate;
+                }
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    exception, "Could not resolve the candidate branch {Candidate} while confirming a stack assessment's onto commit", candidate);
+            }
+        }
+
+        return string.Empty;
+    }
+
+    /// <summary>
+    /// Acts on a stack assessment's verdict for the mandatory final pass's own pre-flight rebase
+    /// (task: a stacked checkpoint that would park for a human on a git shape first dispatches a
+    /// read-only assessment run): aligned proceeds, replay retries the mechanical rebase once with
+    /// the verdict's own boundary and onto commit — dispatching the existing rebase-recovery
+    /// session with the verdict as its guidance if that retry also conflicts, rather than a second
+    /// assessment — and undecidable parks with the evidence appended.
+    /// </summary>
+    internal async Task<RebaseGateOutcome> ActOnPreFinalPassAssessmentAsync(
+        ReviewContext context, RunAggregate run, StackAssessmentVerdict assessment, CancellationToken cancellationToken)
+    {
+        if (assessment.Kind == StackAssessmentVerdictKind.Aligned)
+        {
+            logger.LogInformation(
+                "Run {RunId}: the stack assessment found the mandatory final pass's own pre-flight rebase already aligned — {Evidence}",
+                context.RunId, assessment.Evidence);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        if (assessment.Kind == StackAssessmentVerdictKind.Undecidable)
+        {
+            await ParkAsync(
+                context.RunId, context.TaskId,
+                "The mandatory final pass's own pre-flight rebase conflicted, and the read-only stack "
+                + $"assessment dispatched to judge it could not resolve it either: {assessment.Evidence} Decide "
+                + "the conflict yourself, then resolve with h9k review resolve --needs-fixes \"<your resolution>\".",
+                cancellationToken: cancellationToken);
+            return RebaseGateOutcome.Stop;
+        }
+
+        // Replay: one mechanical retry with the assessment's own boundary and onto commit. The
+        // injected processRunner, not ExternalProcess.RunnerWithDeadline — see ReplayCheckpointAsync's
+        // own comment on why this seam is the fake-git-testable one.
+        string worktreePath = context.Run.WorktreePath;
+        ProcessRunner git = processRunner;
+        string? preRebaseHead = null;
+        bool landedClean = false;
+        bool decisionsLogRenumbered = false;
+        await using (IAsyncDisposable repositoryLock =
+            await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
+        {
+            if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+            {
+                return RebaseGateOutcome.Stop;
+            }
+
+            try
+            {
+                ProcessResult headResult = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
+                preRebaseHead = headResult.ExitCode == 0 ? headResult.StandardOutput.Trim() : null;
+
+                ProcessResult ontoPresent = await git(
+                    "git", ["rev-parse", "--verify", "--quiet", $"{assessment.OntoCommit}^{{commit}}"],
+                    worktreePath, cancellationToken);
+                if (ontoPresent.ExitCode == 0)
+                {
+                    ProcessResult replay = await git(
+                        "git", ["rebase", "--onto", assessment.OntoCommit, assessment.BoundaryCommit],
+                        worktreePath, cancellationToken);
+                    if (replay.ExitCode == 0)
+                    {
+                        landedClean = true;
+
+                        // Renumbered here, still inside the repository lock, the same "before the
+                        // mandatory gate reads the tree" ordering EnsureRebasedBeforeFinalPassAsync's
+                        // own plain-rebase call already keeps — not after the lock releases, which
+                        // would let another worktree's own fetch or renumbering race this branch's
+                        // own commit against the shared bare repository.
+                        DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
+                            context, git, worktreePath, assessment.BoundaryCommit, assessment.OntoCommit, cancellationToken);
+                        decisionsLogRenumbered = renumberResult.Outcome == DecisionsLogRenumberOutcome.Renumbered;
+                    }
+                    else
+                    {
+                        await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+                    }
+                }
+            }
+            catch (Exception exception) when (exception is TimeoutException or ProcessOutputStuckException)
+            {
+                await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
+                logger.LogWarning(
+                    exception,
+                    "Run {RunId}: a git call failed replaying onto the commit the stack assessment named — dispatching the recovery session with its guidance instead",
+                    context.RunId);
+            }
+        }
+
+        if (landedClean)
+        {
+            await RecordRebaseOutcomeAsync(
+                context.RunId, assessment.BoundaryCommit, assessment.OntoCommit, wasNoOp: false,
+                recoveredByAgentSession: false,
+                "Rebased onto the commit a read-only stack assessment named (from "
+                + $"{ShortSha(assessment.BoundaryCommit)} to {ShortSha(assessment.OntoCommit)}): {assessment.Evidence}",
+                checkpointSpend: null, decisionsLogRenumbered: decisionsLogRenumbered, forkPointAdvanced: false, cancellationToken);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        string assessmentGuidance =
+            "A read-only stack assessment run (not a human) investigated this conflict before you were "
+            + $"dispatched and reached a replay verdict: replay from {ShortSha(assessment.BoundaryCommit)} onto "
+            + $"{ShortSha(assessment.OntoCommit)}. Its own evidence: {assessment.Evidence} A mechanical attempt "
+            + "at exactly that replay already conflicted once, so treat this as a real, undecided conflict "
+            + "needing your own judgment rather than assuming the verdict above resolves it.";
+        return await DispatchRebaseRecoverySessionAsync(context, run, humanGuidance: null, assessmentGuidance, cancellationToken)
+            ? RebaseGateOutcome.LoopAgain
+            : RebaseGateOutcome.Stop;
+    }
 
     /// <summary>
     /// A live <c>gh pr view</c> read of the task's own pull request's actual base — never the
@@ -3866,7 +4378,8 @@ public sealed class ReviewEngine(
     /// </para>
     /// </summary>
     private async Task<bool> DispatchRebaseRecoverySessionAsync(
-        ReviewContext context, RunAggregate run, string? humanGuidance, CancellationToken cancellationToken)
+        ReviewContext context, RunAggregate run, string? humanGuidance, string? assessmentGuidance,
+        CancellationToken cancellationToken)
     {
         if (run.RebaseRecoveryRounds >= MaxRebaseRecoveryRounds)
         {
@@ -3963,7 +4476,8 @@ public sealed class ReviewEngine(
         string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
             context.Task, context.Project, context.Run.Branch, commitStyle, context.Task.PullRequestUrl,
             humanGuidance, rebaseStillInProgress, baseBranch: context.BaseBranch,
-            commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill);
+            commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
+            assessmentGuidance: assessmentGuidance);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         string artifactName = RebaseRecoveryArtifactName(sessionId);
@@ -6384,7 +6898,10 @@ public sealed class ReviewEngine(
             context.RunId, context.TaskId);
     }
 
-    private async Task<ReviewContext?> LoadContextAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)
+    // internal, not private: tests build a ReviewContext through here rather than by hand, the
+    // same "no git integration tests" fake-git testability RebaseGateOutcome's own comment
+    // explains, without duplicating this method's own project/task/run load.
+    internal async Task<ReviewContext?> LoadContextAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         RunDetails? run = await query.LoadAsync<RunDetails>(runId, cancellationToken);
@@ -7566,7 +8083,11 @@ public sealed class ReviewEngine(
     /// rest of this context because it is a standing preference, not something a session can change
     /// mid-run. Null for an owner who named none, or whose record could not be read.
     /// </param>
-    private sealed record ReviewContext(
+    // internal, not private: tests construct one directly to exercise the stack-assessment methods
+    // below without needing the real-git-dependent machinery (StackedParentWatch, a plain `git
+    // rebase`) that gates their own only production call sites — see RebaseGateOutcome's own
+    // comment.
+    internal sealed record ReviewContext(
         Guid RunId, Guid TaskId, RunDetails Run, TaskDetails Task, ProjectDetails Project,
         IReadOnlyList<ReviewParkResolution> PriorRulings,
         IReadOnlyList<ExternalInteractionRecord> PriorHumanDirectedInteractions,
