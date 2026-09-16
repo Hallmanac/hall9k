@@ -333,12 +333,23 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             // still empty. Project-scoped, unlike the root file above: a root is owner-wide (every
             // project this owner joins shares one root.yaml lineage), but membership is this
             // project's own fact alone, so it is only ever written here, never elsewhere.
-            bool wroteGenesisMember = await EnsureGenesisMemberFileAsync(
-                ledger, project.RepositoryPath, claimedFingerprint, now, committer, signingKey, cancellationToken);
-            if (wroteGenesisMember)
+            //
+            // Never reached when this join carries an invite (idea 202383dc, T2 criterion 3): a
+            // join with an invite is by definition not this project's first member — someone
+            // already enrolled had to mint the secret it carries — so it must never self-claim
+            // genesis, whatever the members folder's own state happens to be (a project that
+            // predates the chain leaves it empty until its own owner's plain join lands). This
+            // node's own membership comes only from the minting node's own sweep vouch, once its
+            // proof appears in its node file below.
+            if (invite.IsBlank())
             {
-                session.Events.Append(
-                    project.Id, ProjectDecider.VouchMember(project.Id, claimedFingerprint, ProjectMemberRole.Owner, now));
+                bool wroteGenesisMember = await EnsureGenesisMemberFileAsync(
+                    ledger, project.RepositoryPath, claimedFingerprint, now, committer, signingKey, cancellationToken);
+                if (wroteGenesisMember)
+                {
+                    session.Events.Append(
+                        project.Id, ProjectDecider.VouchMember(project.Id, claimedFingerprint, ProjectMemberRole.Owner, now));
+                }
             }
         }
 

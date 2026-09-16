@@ -559,6 +559,71 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         joinOutcome.ClaimedOwnerFingerprint.Should().Be(joinOutcome.KeyFingerprint);
     }
 
+    /// <summary>
+    /// Idea 202383dc's T2 own adoption hazard (Brian's question of 2026-09-15): a project that
+    /// predates the chain leaves its <c>members/</c> folder entirely empty until its own owner's
+    /// plain join lands, and <see cref="ProjectJoinCommand.RunAsync"/> used to compute
+    /// <c>establishingRoot</c> from root state alone, so an invited join against that same empty
+    /// folder could still self-claim genesis. Reproduced exactly as the mint and the invited join
+    /// would really run, only the identity is doubled up (this test's one local Postgres identity
+    /// plays both the minting owner and the joiner, the constraint every other test in this file
+    /// already works around): the minter's own root claim lives only in Postgres
+    /// (<see cref="EstablishOwnRootAsync"/> never touches the ledger), so the project's own
+    /// <c>members/</c> folder is genuinely empty, the same shape a real adopted project has, when
+    /// the invited join runs.
+    /// </summary>
+    [Fact]
+    public async Task A_join_with_a_valid_invite_against_an_empty_members_folder_writes_no_members_file_and_the_later_sweep_vouch_does()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
+            [new ProjectMember(myRoot, MembershipRole.Owner, Now)]));
+
+        string secret;
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            int exitCode = await ProjectInviteCommand.RunAsync(
+                session, project, roleInput: "member", ledger, chainReader, new NodeKeyStore(), cts.Token);
+            exitCode.Should().Be(ExitCodes.Ok);
+
+            InviteDetails minted = (await session.Query<InviteDetails>().ToListAsync(cts.Token)).Single();
+            InviteAggregate aggregate = (await session.Events.AggregateStreamAsync<InviteAggregate>(minted.Id, token: cts.Token))!;
+            secret = aggregate.Secret;
+        }
+
+        (await ledger.HasAnyAsync(RepositoryPath, "refs/hall9k/ledger/members", "members/", cts.Token)).Should().BeFalse(
+            "test setup: this project's own ledger predates the chain — its members/ folder has never been written");
+
+        ProjectJoinCommand.JoinOutcome joinOutcome;
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            joinOutcome = await ProjectJoinCommand.RunAsync(
+                session, project, claimedOwnerOverride: null, invite: secret, ledger, new NodeKeyStore(),
+                GitHubAccessFakes.GrantingPush(), cts.Token);
+        }
+
+        ledger.Writes.Should().NotContain(
+            w => w.RefName == "refs/hall9k/ledger/members",
+            "an invited join is by definition not this project's first member, so it must never self-claim genesis (idea 202383dc, T2 criterion 3)");
+        (await ledger.HasAnyAsync(RepositoryPath, "refs/hall9k/ledger/members", "members/", cts.Token)).Should().BeFalse(
+            "the invited join must leave the members folder exactly as empty as it found it");
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+
+        InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
+        sweep.InvitesSpent.Should().Be(1, "the joiner's own proof, written by the join above, matches the one outstanding invite");
+
+        LedgerWriteRequest memberWrite = ledger.Writes.Single(w => w.RefName == "refs/hall9k/ledger/members");
+        memberWrite.Path.Should().Be($"members/{joinOutcome.ClaimedOwnerFingerprint}.yaml");
+        memberWrite.Content.Should().Contain($"role: \"{ProjectMemberRole.Member.Value}\"");
+    }
+
     [Fact]
     public async Task Project_invite_refuses_a_member_role_owner()
     {
@@ -578,6 +643,35 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*owner role*");
         ledger.Writes.Should().BeEmpty("a member-role owner is refused before any push");
+    }
+
+    /// <summary>
+    /// A project that predates the chain has no members file at all yet, so this node's own root
+    /// holds no membership here whatsoever, not merely the wrong role — <see cref="TrustChain.RoleOf"/>
+    /// returns null, the same refusal branch a member-role owner hits above. The refusal must name
+    /// h9k project join as the step that establishes genesis, so an owner adopting an existing
+    /// project can actually recover from reading it (idea 202383dc, T2's own owner-role-only rule).
+    /// </summary>
+    [Fact]
+    public async Task Project_invite_refused_with_no_recorded_membership_at_all_names_join_as_the_step_that_establishes_genesis()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
+
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
+            []));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        Func<Task> act = () => ProjectInviteCommand.RunAsync(
+            session, project, roleInput: null, ledger, chainReader, new NodeKeyStore(), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>())
+            .WithMessage($"*h9k project join {project.Name}*");
+        ledger.Writes.Should().BeEmpty("a node with no recorded membership is refused before any push");
     }
 
     [Fact]
