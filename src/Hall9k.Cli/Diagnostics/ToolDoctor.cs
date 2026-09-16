@@ -2,6 +2,7 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx;
@@ -50,7 +51,24 @@ public static class ToolDoctor
     private static readonly TimeSpan ProjectReadTimeout = TimeSpan.FromSeconds(3);
 
     public static Task RunAsync(CancellationToken cancellationToken) =>
-        RunAsync(ExternalProcess.Runner, cancellationToken);
+        RunAsync(GhAwareRunner(), cancellationToken);
+
+    /// <summary>
+    /// Dispatches "git" to the plain <see cref="ExternalProcess.Runner"/> and "gh" through
+    /// <see cref="ProjectGitHubClient.AmbientProcessRunner"/> — a version probe has no project and
+    /// no account to choose, the same ambient exception <c>UpdateCommand</c>'s release download
+    /// already takes, but it still funnels through the platform's one place that ever spawns
+    /// <c>gh</c> rather than a raw spawn of its own (independent pre-PR review, cycle 1,
+    /// conformance lens).
+    /// </summary>
+    private static ProcessRunner GhAwareRunner()
+    {
+        ProcessRunner ghRunner = new ProjectGitHubClient().AmbientProcessRunner;
+        return (fileName, arguments, workingDirectory, cancellationToken) =>
+            string.Equals(fileName, "gh", StringComparison.Ordinal)
+                ? ghRunner(fileName, arguments, workingDirectory, cancellationToken)
+                : ExternalProcess.Runner(fileName, arguments, workingDirectory, cancellationToken);
+    }
 
     internal static async Task RunAsync(ProcessRunner runner, CancellationToken cancellationToken)
     {
