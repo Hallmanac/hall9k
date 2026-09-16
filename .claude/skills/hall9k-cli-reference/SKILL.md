@@ -270,6 +270,15 @@ The edit-after-the-fact path is `unassign → draft → revise → publish → a
 explicit act. A dependency counts as met only at true closeout (the pull request merged and the
 closeout monitor observed it); TASK-MODEL.md §2.3 has the whole picture.
 
+A Copilot review that errors naming a quota refusal ("the user who requested the review has
+reached their quota limit") is accepted, not re-requested (Brian's ruling, 2026-09-16 morning):
+closeout records the refusal once on the run and proceeds on the remaining gates, so a
+pre-approved task with CI green, every thread resolved, and no outstanding human reviewer merges
+exactly as it would with a landed review. Every other errored review keeps the ordinary behavior:
+one re-request per errored review against the automatic budget, then a park naming it. `h9k task
+show` names the refusal on the run under its own "Copilot review" line; a task that merged this way
+simply leaves the board, the same as any other merge.
+
 An epic is a first-class named grouping of tasks (Decisions Log #100): its own id, title, and
 Open/Closed state, event-sourced like everything else. Membership is optional and no-ceremony —
 it rides the task's own stream, so the flat task model is undisturbed for everything ungrouped —
