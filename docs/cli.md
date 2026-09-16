@@ -550,12 +550,12 @@ reachable on disk, pushing a signed commit to the project's own remote. `join` a
 `--invite <secret>`, proving possession of a single-use secret from `h9k node invite` (a new node
 of an already-enrolled owner) or `h9k project invite` (a new project member); the minting node's
 own daemon sweep matches the proof and vouches it in with no further prompt (idea 202383dc, T2).
-Both `add` and plain `join` read this install's GitHub identity fresh from `gh` right before they
-need it (also refreshed once at every daemon start), and `join` additionally refuses before any key
-is generated or any ledger byte is written when the resolved GitHub account has no push on the
-repository, naming the repository and the rule. `owner show` lists every confirmed GitHub account
-linked to the owner (login and GitHub's own numeric id, or "unconfirmed" when `gh` has never
-answered for it). See [the project home](#the-project-home) below.
+Both `add` and `join` (invite or not) read this install's GitHub identity fresh from `gh` right
+before they need it (also refreshed once at every daemon start), and `join` additionally refuses
+before any key is generated or any ledger byte is written when the resolved GitHub account has no
+push on the repository, naming the repository and the rule. `owner show` lists every confirmed
+GitHub account linked to the owner (login and GitHub's own numeric id, or "unconfirmed" when `gh`
+has never answered for it). See [the project home](#the-project-home) below.
 
 `project remove` archives a project on this install: reversible, and nothing is deleted. The
 dispatcher stops claiming its tasks, the project-home render, closeout, and auto-pr-review sweeps skip it,
