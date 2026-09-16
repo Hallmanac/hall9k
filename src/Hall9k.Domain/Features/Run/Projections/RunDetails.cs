@@ -551,6 +551,16 @@ public sealed class RunDetails : IJsonOnDeserialized
     public string? FailureReason { get; set; }
 
     /// <summary>
+    /// Mirrors <see cref="Events.RunFailed.FailedDuringPullRequestOpen"/> — whether THIS run's own
+    /// failure was <c>PullRequestOpener</c>'s own (task: a run that
+    /// failed only at pull-request opening resumes at that step on retry). <c>RunLauncher</c> reads
+    /// it, on the run <see cref="Hall9k.Domain.Features.Tasks.Projections.TaskDetails.FailedRunId"/>
+    /// names, to decide whether a retry can skip straight to re-opening the pull request instead of
+    /// dispatching a fresh build and review pipeline over an unchanged, already-reviewed tree.
+    /// </summary>
+    public bool FailedDuringPullRequestOpen { get; set; }
+
+    /// <summary>
     /// The reason recorded when the closeout monitor observed this run's pull request closed
     /// without a merge. Named rather than written twice, because a reader has to be able to tell
     /// that case apart from every other way a run reaches <see cref="RunState.Failed"/>: it is the
@@ -1784,6 +1794,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         EndSessions(view);
         view.State = RunState.Failed;
         view.FailureReason = @event.Data.Reason;
+        view.FailedDuringPullRequestOpen = @event.Data.FailedDuringPullRequestOpen;
         view.FinishedAt = @event.Data.FailedAt;
     }
 
