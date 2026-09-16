@@ -105,17 +105,27 @@ public sealed class InviteDeciderTests
     }
 
     [Fact]
-    public void VouchProject_records_the_project_and_the_issued_at_it_used()
+    public void VouchProject_records_the_project_the_candidate_and_the_issued_at_it_used()
     {
         InviteAggregate invite = Minted();
         Guid projectId = DomainId.New();
+        Guid candidateNodeId = DomainId.New();
 
-        InviteProjectVouched vouched = InviteDecider.VouchProject(invite, projectId, Now.AddMinutes(1));
+        InviteProjectVouched vouched = InviteDecider.VouchProject(
+            invite, projectId, Now.AddMinutes(1), candidateNodeId, "key-fingerprint", "owner-fingerprint");
         invite.Apply(vouched);
 
         vouched.InviteId.Should().Be(invite.Id);
         vouched.ProjectId.Should().Be(projectId);
-        invite.VouchedProjects.Should().ContainKey(projectId).WhoseValue.Should().Be(Now.AddMinutes(1));
+        vouched.CandidateNodeId.Should().Be(candidateNodeId);
+        vouched.CandidateKeyFingerprint.Should().Be("key-fingerprint");
+        vouched.CandidateOwnerFingerprint.Should().Be("owner-fingerprint");
+
+        VouchedProjectRecord recorded = invite.VouchedProjects.Should().ContainKey(projectId).WhoseValue;
+        recorded.VouchedAt.Should().Be(Now.AddMinutes(1));
+        recorded.CandidateNodeId.Should().Be(candidateNodeId);
+        recorded.CandidateKeyFingerprint.Should().Be("key-fingerprint");
+        recorded.CandidateOwnerFingerprint.Should().Be("owner-fingerprint");
     }
 
     [Fact]
@@ -124,7 +134,8 @@ public sealed class InviteDeciderTests
         InviteAggregate invite = Minted();
         invite.Apply(InviteDecider.Spend(invite, DomainId.New(), "root-of-claimer", Now.AddMinutes(5)));
 
-        Action act = () => InviteDecider.VouchProject(invite, DomainId.New(), Now.AddMinutes(6));
+        Action act = () => InviteDecider.VouchProject(
+            invite, DomainId.New(), Now.AddMinutes(6), DomainId.New(), "key-fingerprint", "owner-fingerprint");
 
         act.Should().Throw<DomainValidationException>().WithMessage("*already spent*");
     }
@@ -134,7 +145,20 @@ public sealed class InviteDeciderTests
     {
         InviteAggregate invite = Minted();
 
-        Action act = () => InviteDecider.VouchProject(invite, Guid.Empty, Now.AddMinutes(1));
+        Action act = () => InviteDecider.VouchProject(
+            invite, Guid.Empty, Now.AddMinutes(1), DomainId.New(), "key-fingerprint", "owner-fingerprint");
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void VouchProject_refuses_a_blank_candidate_fingerprint()
+    {
+        InviteAggregate invite = Minted();
+        Guid projectId = DomainId.New();
+
+        Action act = () => InviteDecider.VouchProject(
+            invite, projectId, Now.AddMinutes(1), DomainId.New(), candidateKeyFingerprint: "", "owner-fingerprint");
 
         act.Should().Throw<DomainValidationException>();
     }

@@ -275,6 +275,74 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
     }
 
     [Fact]
+    public async Task A_later_tick_matching_a_different_candidate_never_rides_an_earlier_candidates_own_already_vouched_record()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger innerLedger = new();
+        (string root, Guid inviteId, string secret, _) = await MintNodeOfOwnerInviteAsSelfAsync(innerLedger, cts.Token);
+
+        Guid realNodeId = DomainId.New();
+        NodeSigningKey realKey = await new NodeKeyStore().EnsureAsync(realNodeId, cts.Token);
+        string realProof = InviteSecret.ComputeProof(secret, realKey.Fingerprint);
+        await WriteSelfAnnouncedNodeFileAsync(innerLedger, realNodeId, realKey, ownerFingerprint: root, inviteProof: realProof, cts.Token);
+
+        // Marking the invite spent in the ledger is made to fail once, so the invite stays
+        // outstanding after this tick even though the real candidate's own vouch write already
+        // landed — the exact partial-failure shape that leaves this node's own local
+        // InviteProjectVouched record for this project pointing at the real candidate.
+        string invitePath = InviteLedgerRecord.PathFor(root, inviteId);
+        FailFirstWriteLedger ledger = new(innerLedger, invitePath);
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+
+        InviteSweepResult firstTick = await engine.SweepOnceAsync(cts.Token);
+        firstTick.InvitesSpent.Should().Be(0, "marking the invite spent in the ledger failed, so this tick could not finish");
+
+        string vouchPath = $"owners/{root}/nodes/{realNodeId}.yaml";
+        innerLedger.Writes.Should().Contain(w => w.Path == vouchPath, "the real candidate's own vouch write already landed before the failure");
+
+        // Between ticks: an invite holder who still has the leaked secret pushes a different key
+        // onto this exact same candidate's own self-announced node ref (the node id itself never
+        // changes — only the key does) and computes a fresh, genuinely matching HMAC proof for
+        // that new key. This targets exactly the project slot the first tick already recorded as
+        // "already mine".
+        NodeSigningKey impostorKey = await new NodeKeyStore().EnsureAsync(DomainId.New(), cts.Token);
+        string impostorProof = InviteSecret.ComputeProof(secret, impostorKey.Fingerprint);
+        string nodeFileRef = $"refs/hall9k/ledger/nodes/{realNodeId}";
+        string nodeFilePath = $"nodes/{realNodeId}/node.yaml";
+        LedgerFile currentNodeFile = await innerLedger.ReadAsync(RepositoryPath, nodeFileRef, nodeFilePath, cts.Token);
+        await innerLedger.WriteAsync(
+            new LedgerWriteRequest(
+                RepositoryPath, nodeFileRef, nodeFilePath,
+                $"node_id: \"{realNodeId}\"\n"
+                + $"public_key: \"{impostorKey.PublicKeyLine}\"\n"
+                + $"key_fingerprint: \"{impostorKey.Fingerprint}\"\n"
+                + $"owner_fingerprint: \"{root}\"\n"
+                + "machine_name: \"impostor-machine\"\n"
+                + "operating_system: \"linux\"\n"
+                + $"joined_at: \"{Now:O}\"\n"
+                + $"invite_proof: \"{impostorProof}\"\n",
+                currentNodeFile.BlobId, "impostor overwrites the real candidate's own self-announced node file",
+                new LedgerCommitter("Test Node", "node@test.local"), new LedgerSigningKey("/does/not/matter/key")),
+            cts.Token);
+
+        InviteSweepResult secondTick = await engine.SweepOnceAsync(cts.Token);
+        secondTick.InvitesSpent.Should().Be(
+            0, "the collision guard must re-run for a candidate that differs from the one already recorded for this "
+            + "project, even though the project itself was already marked \"already mine\"");
+
+        LedgerFile vouchFile = await innerLedger.ReadAsync(RepositoryPath, $"refs/hall9k/ledger/owners/{root}", vouchPath, cts.Token);
+        vouchFile.Content.Should().Contain(
+            realKey.PublicKeyLine, "the real candidate's own key must survive — a later candidate sharing only its node id must never evict it");
+        vouchFile.Content.Should().NotContain(impostorKey.PublicKeyLine);
+
+        await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
+        InviteDetails after = (await assertSession.LoadAsync<InviteDetails>(inviteId, cts.Token))!;
+        after.Spent.Should().BeFalse("the invite stays outstanding rather than spending under a candidate the guard blocked");
+    }
+
+    [Fact]
     public async Task A_node_of_owner_invite_recognizes_a_same_key_manual_vouch_as_its_own_and_still_spends()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
@@ -633,6 +701,59 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         InviteDetails after = (await assertSession.LoadAsync<InviteDetails>(inviteId, cts.Token))!;
         after.Spent.Should().BeTrue();
         after.ClaimedByRootFingerprint.Should().Be(joinerKey.Fingerprint);
+    }
+
+    [Fact]
+    public async Task A_member_of_project_invite_never_records_a_member_vouch_locally_when_the_ledger_write_never_lands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger innerLedger = new();
+
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
+            [new ProjectMember(myRoot, MembershipRole.Owner, Now)]));
+
+        string secret;
+        Guid inviteId;
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            int exitCode = await ProjectInviteCommand.RunAsync(
+                session, project, roleInput: "member", innerLedger, chainReader, new NodeKeyStore(), cts.Token);
+            exitCode.Should().Be(ExitCodes.Ok);
+
+            InviteDetails minted = (await session.Query<InviteDetails>().ToListAsync(cts.Token)).Single();
+            inviteId = minted.Id;
+
+            InviteAggregate aggregate = (await session.Events.AggregateStreamAsync<InviteAggregate>(inviteId, token: cts.Token))!;
+            secret = aggregate.Secret;
+        }
+
+        Guid joinerNodeId = DomainId.New();
+        NodeSigningKey joinerKey = await new NodeKeyStore().EnsureAsync(joinerNodeId, cts.Token);
+        string proof = InviteSecret.ComputeProof(secret, joinerKey.Fingerprint);
+        await WriteSelfAnnouncedNodeFileAsync(innerLedger, joinerNodeId, joinerKey, ownerFingerprint: joinerKey.Fingerprint, inviteProof: proof, cts.Token);
+
+        // The member file's own ledger write never lands, however many times it is retried — the
+        // property this test exists to prove (independent pre-PR review, cycle 1, conformance
+        // lens, low) is that this node's own local read model of project membership
+        // (ProjectDetails.Members / ProjectAggregate.Members) must never claim a member landed
+        // that the ledger itself never actually received, unlike the sweep's own internal
+        // InviteProjectVouched retry guard, which is deliberately recorded before that same write
+        // is even attempted.
+        string memberPath = $"members/{joinerKey.Fingerprint}.yaml";
+        AlwaysFailWriteLedger brokenLedger = new(innerLedger, memberPath);
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        InviteSweepEngine engine = new(_postgres.Store, node, brokenLedger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+
+        (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(0, "the member write itself never lands, however many times it is retried");
+
+        await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
+        ProjectDetails projectAfter = (await assertSession.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
+        projectAfter.Members.Should().NotContainKey(
+            joinerKey.Fingerprint, "the local read model must never guess that a member landed when the ledger write describing it never did");
     }
 
     [Fact]
