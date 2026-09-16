@@ -106,11 +106,36 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
         // than Queued; no run dispatches until that blocker closes out (conformance review,
         // cycle 4).
         int unmetDependencyCount = task.UnmetDependencies.Count;
+        // Stated here, not verified: only RunLauncher's own live read of the branch — at the moment
+        // it actually matters, on both origin and the local ref in the reused worktree — can say
+        // the pushed tip still holds, and this command has no worktree of its own to ask (AGENTS.md's
+        // never-guess rule). It also can't observe whether the failed run's worktree still exists on
+        // whichever node dispatches next, or whether that run's own branch still names the retry
+        // branch — RunLauncher checks both before it ever reads a tip. What is observed already, on
+        // the stream, is the failed run's own step, this task's still-blank pull request, and the tip
+        // this task last pushed — enough to say which path the daemon means to take and why, with
+        // every condition this command cannot itself verify named alongside it as a caveat rather
+        // than asserted as fact (conformance review, cycle 1).
+        bool resumesAtPullRequestOpen = task.PullRequestUrl.IsBlank()
+            && previousRun?.FailedDuringPullRequestOpen == true
+            && branch is not null
+            && task.LastPushedBranch == branch
+            && task.LastPushedBranchTip is not null;
         if (unmetDependencyCount > 0)
         {
             string dependencyNoun = unmetDependencyCount == 1 ? "dependency" : "dependencies";
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Task {taskId} requeued, but {unmetDependencyCount} unmet {dependencyNoun} still name it Blocked — no run dispatches until those close out.[/]");
+        }
+        else if (resumesAtPullRequestOpen)
+        {
+            // "was pushed" deliberately does not say the FAILED run itself pushed it — the flag
+            // also covers a push refusal (conformance review, cycle 1, low): branch's own recorded
+            // tip can belong to an earlier run, with this one having failed before ever reaching
+            // origin. Either way, the tip named here is the one already on record and already
+            // reviewed, and that is what the next run re-opens against.
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} requeued — the last run failed only at opening the pull request, after branch {branch}'s build and review had already settled, so the next run means to re-attempt the pull-request open directly against that same branch, with no build or review session. That still depends on the failed run's worktree surviving, its own branch still matching, and the branch's tip not having moved on origin or in that worktree since — this command can't check any of those, so it falls back to a full build instead if one doesn't hold.[/]");
         }
         else if (branch is null)
         {
