@@ -178,7 +178,21 @@ public sealed class InviteSweepEngine(
                 // straight through what looked like a retry guard (independent pre-PR review,
                 // cycle 6, adversarial lens, high). This node's own event stream is not writable by
                 // an invite holder, so it is the only place "I already wrote this" can safely live.
-                bool alreadyVouched = aggregate.VouchedProjects.TryGetValue(project.Id, out DateTimeOffset vouchedAt);
+                //
+                // The record must also name WHICH candidate it was written for, not only the
+                // project: FindMatch is re-run from scratch every tick against whatever node refs
+                // exist right then, so a still-outstanding invite (another target project blocked
+                // last tick) can start matching a different candidate on a later tick — an invite
+                // holder who deletes their own node ref and forges a proof onto an already-enrolled
+                // node's own ref, for instance. Treating "this project" as "already mine" regardless
+                // of which candidate is asking would skip the collision guard below for a candidate
+                // that never earned this slot (independent pre-PR review, cycle 1, adversarial lens,
+                // medium). A mismatch simply falls through to the guard exactly as a brand-new
+                // candidate would.
+                bool alreadyVouched = aggregate.VouchedProjects.TryGetValue(project.Id, out VouchedProjectRecord? vouched)
+                    && vouched.CandidateNodeId == candidate.NodeId
+                    && string.Equals(vouched.CandidateKeyFingerprint, candidate.KeyFingerprint, StringComparison.Ordinal)
+                    && string.Equals(vouched.CandidateOwnerFingerprint, candidate.OwnerFingerprint, StringComparison.Ordinal);
 
                 // The collision guard runs — and can still refuse — before this node commits to
                 // anything, exactly as it always has. What changed (independent pre-PR review,
@@ -237,7 +251,7 @@ public sealed class InviteSweepEngine(
                     continue;
                 }
 
-                DateTimeOffset issuedAt = alreadyVouched ? vouchedAt : existingIssuedAt ?? now;
+                DateTimeOffset issuedAt = alreadyVouched ? vouched!.VouchedAt : existingIssuedAt ?? now;
 
                 // Committed to this node's own event stream BEFORE the ledger write it describes,
                 // not after: the guard above already ruled out a foreign collision, so from here
@@ -249,13 +263,10 @@ public sealed class InviteSweepEngine(
                 // (independent pre-PR review, cycle 7, adversarial lens, high).
                 if (!alreadyVouched)
                 {
-                    session.Events.Append(aggregate.Id, InviteDecider.VouchProject(aggregate, project.Id, issuedAt));
-                    if (aggregate.Claim == InviteClaimKind.MemberOfProject)
-                    {
-                        session.Events.Append(
-                            project.Id, ProjectDecider.VouchMember(project.Id, candidate.OwnerFingerprint, role!.Value, now));
-                    }
-
+                    session.Events.Append(
+                        aggregate.Id,
+                        InviteDecider.VouchProject(
+                            aggregate, project.Id, issuedAt, candidate.NodeId, candidate.KeyFingerprint, candidate.OwnerFingerprint));
                     await session.SaveChangesAsync(cancellationToken);
                 }
 
@@ -270,6 +281,18 @@ public sealed class InviteSweepEngine(
                     await WriteMemberVouchAsync(
                         project.RepositoryPath, candidate.OwnerFingerprint, role!.Value, issuedAt, committer, signingKey,
                         cancellationToken);
+
+                    // Appended only once the ledger write it describes has actually landed, unlike
+                    // InviteProjectVouched above: that record is this sweep's own internal retry
+                    // guard and is deliberately written before the ledger write is even attempted, but
+                    // this event feeds ProjectDetails.Members/ProjectAggregate.Members, a read model
+                    // of what the ledger actually holds. Recording it before the write that grounds it
+                    // would leave a member listed here forever if every retry of that write then failed
+                    // until the invite's own expiry dropped it from the outstanding query — guessing at
+                    // an unobserved fact (independent pre-PR review, cycle 1, conformance lens, low).
+                    session.Events.Append(
+                        project.Id, ProjectDecider.VouchMember(project.Id, candidate.OwnerFingerprint, role!.Value, now));
+                    await session.SaveChangesAsync(cancellationToken);
                 }
 
                 await MarkInviteSpentInLedgerAsync(
