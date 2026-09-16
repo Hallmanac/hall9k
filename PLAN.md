@@ -1690,7 +1690,7 @@ touches domain code or the P2P identity layer (§16 #38-#58).
 > Every citation of the placeholder elsewhere in this repository was rewritten to
 > `#201` in the same commit.
 
-201. **Every remaining direct `gh` call site funnels through
+202. **Every remaining direct `gh` call site funnels through
 `ProjectGitHubClient` too, so no call in the platform spawns `gh` without choosing the account it
 runs as.** Why: idea 202383dc (Hall9k for a distributed team), piece A2b's own migration item,
 ruled its own unstacked do-now task (Brian, 2026-09-12), blocked on the GitHub adapter (§16 #197)
@@ -1778,6 +1778,12 @@ changed; the P2P identity layer (§16 #38-#58) is untouched.
 > rebase step — the log's next free number once this branch was rebased onto its base.
 > Every citation of the placeholder elsewhere in this repository was rewritten to
 > `#201` in the same commit.
+
+> Renumbering placement note: this entry carried #201, which collided with
+> an entry that reached the base after this branch's own fork point. The mechanical
+> pre-final-pass rebase step reassigned it to **#202**, the log's next free number,
+> and rewrote every citation of #201 this branch itself had added since its
+> fork point to `#202` in the same commit.
 
 ---
 
