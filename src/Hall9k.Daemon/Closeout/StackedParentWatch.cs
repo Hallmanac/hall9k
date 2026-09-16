@@ -135,7 +135,8 @@ public sealed record StackedParentObservation(
     string ParentBranch,
     string BoundaryCommit,
     string OntoCommit,
-    string Detail)
+    string Detail,
+    string MergedIntoBranch = "")
 {
     public static StackedParentObservation Aligned(string detail) =>
         new(StackedParentVerdict.Aligned, string.Empty, string.Empty, string.Empty, detail);
@@ -154,10 +155,17 @@ public sealed record StackedParentObservation(
 
     /// <summary>
     /// Carries the parent's branch, unlike the two above: the park this verdict produces names the
-    /// stack the human has to finish by hand, and that branch is half of it.
+    /// stack the human has to finish by hand, and that branch is half of it. Also carries
+    /// <paramref name="mergedIntoBranch"/> — the branch the parent's own pull request actually
+    /// merged into, already resolved live (<see cref="ResolveActualMergedIntoAsync"/> or the remote
+    /// arm's own <c>RemoteBaseBranch</c> read) by the time this verdict is built — so a stack
+    /// assessment dispatched over this park can offer it as a known candidate when it resolves its
+    /// own ONTO commit back to a branch name, rather than leaving that branch unresolvable forever
+    /// because it is neither the project's base, this run's own recorded parent, nor a pull request
+    /// base that may not exist yet (independent pre-PR review, cycle 1, conformance lens).
     /// </summary>
-    public static StackedParentObservation ParentMergedElsewhere(string parentBranch, string detail) =>
-        new(StackedParentVerdict.ParentMergedElsewhere, parentBranch, string.Empty, string.Empty, detail);
+    public static StackedParentObservation ParentMergedElsewhere(string parentBranch, string mergedIntoBranch, string detail) =>
+        new(StackedParentVerdict.ParentMergedElsewhere, parentBranch, string.Empty, string.Empty, detail, mergedIntoBranch);
 
     /// <summary>Carries the parent's branch for the reason <see cref="ParentMergedElsewhere"/> gives.</summary>
     public static StackedParentObservation ParentDead(string parentBranch, string detail) =>
@@ -365,7 +373,7 @@ public sealed class StackedParentWatch(
             if (actualMergedInto != project.BaseBranch)
             {
                 return StackedParentObservation.ParentMergedElsewhere(
-                    parentBranch,
+                    parentBranch, actualMergedInto,
                     $"the parent task's pull request merged into {actualMergedInto} rather than the project's own "
                     + $"{project.BaseBranch} — it was itself stacked, so this pull request's base cannot be moved "
                     + "onto the project's base mechanically without dropping work that branch does not have");
@@ -450,7 +458,7 @@ public sealed class StackedParentWatch(
             && parent.RemoteBaseBranch != project.BaseBranch)
         {
             return StackedParentObservation.ParentMergedElsewhere(
-                parentBranch,
+                parentBranch, parent.RemoteBaseBranch,
                 $"pull request #{parentNumber}, the one this task is stacked on, merged into "
                 + $"{parent.RemoteBaseBranch} rather than the project's own {project.BaseBranch} — it was itself "
                 + "stacked, so this pull request's base cannot be moved onto the project's base mechanically "
