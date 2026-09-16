@@ -365,6 +365,25 @@ public sealed class DaemonOptions
     public TimeSpan UncommittedWorkRecoveryTimeout { get; set; } = TimeSpan.FromMinutes(15);
 
     /// <summary>
+    /// The turn cap the one read-only stack assessment session is spawned with (task: a stacked
+    /// checkpoint that would park for a human on a git shape first dispatches a read-only
+    /// assessment run), passed straight through as <c>claude -p --max-turns</c>. Bounded by
+    /// construction the same way <see cref="UncommittedWorkRecoveryMaxTurns"/> is: the session's
+    /// whole job is a handful of git and gh reads and a trailer, never a write of any kind, so a
+    /// small, fixed turn count is the right shape for it rather than a prompt's own promise to
+    /// stay quick.
+    /// </summary>
+    public int StackAssessmentMaxTurns { get; set; } = 15;
+
+    /// <summary>
+    /// The wall-clock ceiling on the same assessment session, on top of
+    /// <see cref="StackAssessmentMaxTurns"/> rather than instead of it — the same "bounded twice
+    /// over" pairing <see cref="UncommittedWorkRecoveryTimeout"/> gives its own turn cap, for the
+    /// identical reason: a turn cap bounds round trips, not how long any single one runs.
+    /// </summary>
+    public TimeSpan StackAssessmentTimeout { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
     /// Cycles the conformance track may run before the run parks for a human (Decisions Log
     /// #63). Conformance has no severity grades to gate on — a criterion is met or it is not —
     /// so its bound is simply "how many times may a machine be told the same thing". A
