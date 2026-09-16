@@ -701,6 +701,17 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         InviteDetails after = (await assertSession.LoadAsync<InviteDetails>(inviteId, cts.Token))!;
         after.Spent.Should().BeTrue();
         after.ClaimedByRootFingerprint.Should().Be(joinerKey.Fingerprint);
+
+        // The second tick's own retry must not re-append MemberVouched: the first tick already
+        // landed the member write and recorded its own InviteProjectVouched guard before the
+        // spend write failed, so the second tick's re-run of WriteMemberVouchAsync is a no-op and
+        // must not be treated as a fresh vouch (independent pre-PR review, cycle 2, adversarial
+        // lens, medium — an unconditional append here produced one fabricated MemberVouched per
+        // retried tick, each stamped with that tick's own now, until the spend write finally
+        // landed).
+        IReadOnlyList<JasperFx.Events.IEvent> projectEvents = await assertSession.Events.FetchStreamAsync(project.Id, token: cts.Token);
+        projectEvents.Select(e => e.Data).OfType<Hall9k.Domain.Features.Project.Events.MemberVouched>()
+            .Should().ContainSingle("only the first tick's own successful write may ever record a MemberVouched fact");
     }
 
     [Fact]

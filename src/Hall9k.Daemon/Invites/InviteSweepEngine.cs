@@ -290,9 +290,21 @@ public sealed class InviteSweepEngine(
                     // would leave a member listed here forever if every retry of that write then failed
                     // until the invite's own expiry dropped it from the outstanding query — guessing at
                     // an unobserved fact (independent pre-PR review, cycle 1, conformance lens, low).
-                    session.Events.Append(
-                        project.Id, ProjectDecider.VouchMember(project.Id, candidate.OwnerFingerprint, role!.Value, now));
-                    await session.SaveChangesAsync(cancellationToken);
+                    //
+                    // Gated on !alreadyVouched, the same as InviteProjectVouched above: without it, a
+                    // tick that lands this write (WriteMemberVouchAsync is retry-idempotent and no-ops
+                    // once the ledger already holds the target content) but then fails the later
+                    // MarkInviteSpentInLedgerAsync call left the invite outstanding with alreadyVouched
+                    // now true, so every following tick re-appended a fresh MemberVouched stamped with
+                    // that tick's own now — an unbounded run of duplicate events, each carrying a
+                    // fabricated issued_at that never matched when membership actually took effect
+                    // (independent pre-PR review, cycle 2, adversarial lens, medium).
+                    if (!alreadyVouched)
+                    {
+                        session.Events.Append(
+                            project.Id, ProjectDecider.VouchMember(project.Id, candidate.OwnerFingerprint, role!.Value, now));
+                        await session.SaveChangesAsync(cancellationToken);
+                    }
                 }
 
                 await MarkInviteSpentInLedgerAsync(
