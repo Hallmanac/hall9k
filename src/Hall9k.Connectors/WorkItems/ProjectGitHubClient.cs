@@ -34,12 +34,15 @@ public sealed record ProjectGitHubAccount(long Id, string Login);
 /// invocation alone. Nothing here runs <c>gh auth switch</c> or otherwise mutates the machine's
 /// login.
 /// <para>
-/// This is the one gh helper A2b's own calls (the push check, the access mirror) go through.
-/// Migrating the platform's other 17 direct <c>gh</c> call sites across 11 files onto it is its
-/// own, later, unstacked task (idea 202383dc, A2b item 4) — they are left exactly as they are for
-/// now. Account switching as a first-class feature, letting one owner's install hold two accounts
-/// side by side for every command, is parked (trigger: "first owner needing two accounts on one
-/// machine").
+/// This is the platform's one gh helper. Every direct <c>gh</c> call site the idea's own re-review
+/// counted (idea 202383dc, A2b item 4) is migrated onto it — through <c>ProjectScopedGitHubRunner</c>
+/// for the dozen connector and command call sites that already have a registered project's account
+/// to pin, and through this class's own ambient mode (<see cref="RunAmbientAsync"/>,
+/// <see cref="AmbientProcessRunner"/>, <see cref="AmbientIdentityReader"/>) for the handful — the
+/// release-download update check, bootstrap's own identity read, <c>h9k doctor</c>'s presence probe
+/// — that run before any project, or any account to pin, exists. Account switching as a first-class
+/// feature, letting one owner's install hold two accounts side by side for every command, is parked
+/// (trigger: "first owner needing two accounts on one machine").
 /// </para>
 /// </summary>
 public sealed class ProjectGitHubClient(
@@ -76,14 +79,18 @@ public sealed class ProjectGitHubClient(
     /// <see cref="DomainValidationException"/> the way <see cref="TokenAsync"/>'s own token read
     /// does: this same method is now every connector's shared <c>gh</c> seam, reached through
     /// <c>ProjectScopedGitHubRunner</c> by <c>GitHubWorkItemProvider</c>, <c>GitHubReviewThreads</c>,
-    /// <c>GitHubPullRequestSurface</c>, and the rest — each of which already wraps its own runner
-    /// call to turn a hang into a richer, per-operation message (which credential hint to give, an
-    /// exit-code-aware distinction between a hang and a failure whose output pipe stuck open, and
-    /// so on). A blanket catch here converted every one of those into this method's own generic
-    /// wording before any of that per-operation handling ever saw the exception (independent pre-PR
-    /// review, cycle 1, adversarial lens): a caller with no handling of its own for either type is
-    /// <see cref="ProjectGitHubAccessMirror.ObserveAsync"/>'s own <c>repo view</c> read, and that is
-    /// where the translation belongs instead.
+    /// <c>GitHubPullRequestSurface</c>, and the rest. Some of those (<c>GitHubWorkItemProvider</c>,
+    /// <c>GitHubPullRequestProvider</c>, <c>GitHubPullRequestSurface</c>, <c>GitHubReviewThreads</c>)
+    /// already wrap their own runner call to turn a hang into a richer, per-operation message (which
+    /// credential hint to give, an exit-code-aware distinction between a hang and a failure whose
+    /// output pipe stuck open, and so on); others (<c>GitHubReviewReplies</c>,
+    /// <c>GitHubReviewAssignments</c>) have no such handling today and let either exception escape
+    /// as-is, exactly as they did before this migration — unchanged behaviour, not a regression this
+    /// task introduced (independent pre-PR review, cycle 1, adversarial lens). A blanket catch here
+    /// would have converted every one of those into this method's own generic wording before any
+    /// per-operation handling that does exist ever saw the exception: a caller with no handling of
+    /// its own for either type is <see cref="ProjectGitHubAccessMirror.ObserveAsync"/>'s own
+    /// <c>repo view</c> read, and that is where the translation belongs instead.
     /// </para>
     /// </summary>
     public async Task<ProcessResult> RunAsync(
@@ -99,12 +106,18 @@ public sealed class ProjectGitHubClient(
     /// <summary>
     /// This client's <see cref="RunAsync"/>, closed over <paramref name="account"/>, in the plain
     /// <see cref="ProcessRunner"/> shape every existing GitHub connector class in the platform
-    /// already takes (<c>GitHubReviewAssignments</c>, <c>GitHubWorkItemProvider</c>, and the rest)
-    /// — so a caller that has already resolved an account can hand it to any of them unchanged,
-    /// rather than each one growing its own account-shaped constructor. <paramref name="fileName"/>
-    /// is asserted rather than silently ignored: every existing call site only ever passes "gh"
-    /// through this seam, and a caller that somehow passed anything else would otherwise have that
-    /// tool's invocation silently redirected to gh.
+    /// already takes (<c>GitHubReviewAssignments</c>, <c>GitHubWorkItemProvider</c>, and the rest).
+    /// No production caller resolves an account ahead of time and binds it this way today: every
+    /// real call site goes through <c>ProjectScopedGitHubRunner</c> instead, which resolves the
+    /// account fresh per call from the working directory it is given rather than once up front, so
+    /// this is exercised directly by <c>ProjectGitHubClientTests</c> rather than reached through
+    /// production wiring (independent pre-PR review, cycle 1, adversarial lens). Kept as the pinned
+    /// counterpart to <see cref="AmbientProcessRunner"/> for the same plain-<see cref="ProcessRunner"/>
+    /// shape, should a future caller resolve an account itself rather than through
+    /// <c>ProjectScopedGitHubRunner</c>. <paramref name="fileName"/> is asserted rather than silently
+    /// ignored: every existing call site only ever passes "gh" through this seam, and a caller that
+    /// somehow passed anything else would otherwise have that tool's invocation silently redirected
+    /// to gh.
     /// </summary>
     public ProcessRunner AsProcessRunner(ProjectGitHubAccount account) =>
         (fileName, arguments, workingDirectory, cancellationToken) =>

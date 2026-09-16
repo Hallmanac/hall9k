@@ -35,11 +35,13 @@ public sealed class NodeContext
     /// #110). <see cref="NodeBootstrap.GhIdentityReader"/> is the seam that lets a real daemon start
     /// opt in without dragging every test along with it.
     /// <para>
-    /// Bounded rather than blocking: the ambient reader <c>DispatchLoop</c> passes gives up after 3
-    /// seconds with both output streams drained on background callbacks, so a daemon start against
-    /// a gh that cannot answer at all still completes — this method's own callers
-    /// (<see cref="WaitForInitializationAsync"/>) wait at most that long longer than before, never
-    /// unboundedly.
+    /// Bounded rather than blocking: the ambient reader <c>DispatchLoop</c> passes gives up on gh
+    /// after a 3-second deadline, but a kill that does not take effect immediately can add
+    /// <see cref="Hall9k.Connectors.Processes.ExternalProcess"/>'s own termination grace on top, so
+    /// a daemon start against a gh wedged badly enough to survive the first kill attempt can take up
+    /// to roughly 8 seconds, not 3, before it still completes (independent pre-PR review, cycle 1,
+    /// adversarial lens) — this method's own callers (<see cref="WaitForInitializationAsync"/>) wait
+    /// at most that long longer than before, never unboundedly.
     /// </para>
     /// </summary>
     public async Task InitializeAsync(
