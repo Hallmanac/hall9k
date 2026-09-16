@@ -1721,7 +1721,13 @@ could run before any project — or any database — exists on a fresh install; 
 through `ProjectGitHubClient`, via a new `RunAmbientAsync`/`AmbientProcessRunner` pair that runs
 `gh` with no account pinned (gh's own ambient auth, the exact behavior this call always had), so
 the platform still has exactly one place that ever spawns `gh`, even for the one call with no
-account to choose. `NodeBootstrap`'s own `gh api user` read — what first confirms the very GitHub
+account to choose. `h9k doctor`'s own `gh --version` presence probe (`ToolDoctor.ProbeAsync`) takes
+the identical ambient route: a fix lap of this same task (independent pre-PR review, cycle 1,
+conformance lens) found it still spawning `gh` through the bare `ExternalProcess.Runner` outside
+the helper, so `ToolDoctor.RunAsync`'s public entry point now dispatches `"git"` to
+`ExternalProcess.Runner` unchanged and `"gh"` to a `new ProjectGitHubClient().AmbientProcessRunner`
+— a version check has no project and no account to choose either, the same category `UpdateCommand`
+already established. `NodeBootstrap`'s own `gh api user` read — what first confirms the very GitHub
 identity `ProjectGitHubClient.ResolveAccountAsync` later reads, so there is no account yet to
 choose — runs ambient through that same seam rather than a raw spawn of its own: a new
 `ProjectGitHubClient.AmbientIdentityReader`, bound to the identical 3-second deadline
