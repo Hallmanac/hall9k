@@ -240,8 +240,8 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         (string root, Guid inviteId, string secret, _) = await MintNodeOfOwnerInviteAsSelfAsync(ledger, cts.Token);
 
         // An existing enrolled node, vouched some other way (a direct h9k node vouch, or the plain
-        // join genesis path) — never through this or any invite, so its own file carries no
-        // invite_id tag.
+        // join genesis path) — never through this invite, so this invite's own local record never
+        // recorded this project as already vouched into.
         Guid victimNodeId = DomainId.New();
         const string victimPublicKeyLine = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAVICTIMKEYLINE victim";
         await ledger.WriteAsync(
@@ -526,10 +526,11 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         await WriteSelfAnnouncedNodeFileAsync(ledger, joinerNodeId, joinerKey, ownerFingerprint: joinerKey.Fingerprint, inviteProof: proof, cts.Token);
 
         // The member vouch itself lands for real; only the spend-record write that follows it
-        // fails — the exact partial-failure shape the member file's own invite_id tag exists to
-        // survive on retry, rather than reading its own prior write back as a foreign entry and
-        // wedging forever (independent pre-PR review, cycle 5, verify pass, medium — this shape
-        // had no regression test even though VouchMemberAsync's guard was rewritten for it).
+        // fails — the exact partial-failure shape this invite's own local InviteProjectVouched
+        // record exists to survive on retry, rather than reading its own prior write back as a
+        // foreign entry and wedging forever (independent pre-PR review, cycle 5, verify pass,
+        // medium — this shape had no regression test even though VouchMemberAsync's guard was
+        // rewritten for it).
         string memberPath = $"members/{joinerKey.Fingerprint}.yaml";
         string spendPath = InviteLedgerRecord.PathFor(myRoot, inviteId);
         FailFirstWriteLedger flakyLedger = new(ledger, spendPath);
@@ -545,7 +546,7 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         InviteSweepResult secondTick = await engine.SweepOnceAsync(cts.Token);
         secondTick.InvitesSpent.Should().Be(
-            1, "the retry must recognize its own already-landed member write by its invite_id tag rather than refusing it as a foreign entry");
+            1, "the retry must recognize its own already-landed member write by its own local InviteProjectVouched record rather than refusing it as a foreign entry");
 
         ledger.Writes.Where(w => w.Path == memberPath).Should().ContainSingle(
             "the retry's own member write reproduces byte-identical content and so never pushes a second, redundant commit");
