@@ -211,6 +211,31 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_forged_vouch_signed_by_a_stranger_is_named_as_an_unverified_write()
+    {
+        // independent pre-PR review, cycle 3, conformance and adversarial lenses, both high:
+        // ComputeOwnerChainAsync built this exact diagnostic but returned an empty list instead of
+        // it on its success path, so a forged vouch was refused correctly but never named anywhere
+        // a caller — h9k status, h9k project members — could see it.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity attacker = GenerateIdentity();
+
+        // The attacker pushes a node file into the owner's own namespace, signed with its own key
+        // — never the owner's, never any node the owner has enrolled.
+        await VouchAsync(ownerRepo, owner.Fingerprint, attacker, attacker);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains[owner.Fingerprint].Nodes.Should().NotContain(
+            node => node.NodeId == attacker.NodeId.ToString(), "the vouch was never signed by the root or any enrolled node");
+        chain.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "vouch" && write.Identifier == attacker.NodeId.ToString() && write.RootFingerprint == owner.Fingerprint,
+            "the forged vouch is named rather than silently discarded");
+    }
+
+    [Fact]
     public async Task A_revocation_voids_the_revoked_nodes_earlier_membership_writes()
     {
         // The walked model (team half, 2026-09-13; ruled by the window, 2026-09-13): a members-ref
