@@ -91,7 +91,10 @@ public sealed class ProjectInviteCommand : Hall9kAsyncCommand<ProjectInviteComma
             throw new DomainValidationException(
                 $"This node's own owner ({myRoot}) does not currently hold the owner role in "
                 + $"'{project.Name}' — only an owner-role member's own node may mint a member-of-project "
-                + "invite (idea 202383dc: \"owner role invites members\").");
+                + "invite (idea 202383dc: \"owner role invites members\"). On a project that predates "
+                + $"this chain, with no members yet recorded at all, h9k project join {project.Name} is "
+                + "the step that establishes this node's own root as genesis; only then does this node "
+                + "hold the owner role here and h9k project invite succeed.");
         }
 
         Guid inviteId = DomainId.New();
