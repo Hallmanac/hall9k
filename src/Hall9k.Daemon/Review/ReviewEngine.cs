@@ -5124,7 +5124,12 @@ public sealed class ReviewEngine(
     /// disputing session's own <paramref name="tokensRecorded"/>, appended together with whichever
     /// event below ends up deciding the outcome rather than in its own transaction ahead of the
     /// assessment this method's caller runs first — <see cref="RecordRebaseRecoveryResultAsync"/>'s
-    /// own doc gives the interruption window that ordering used to leave open.
+    /// own doc gives the interruption window that ordering used to leave open. The one exception is
+    /// the Replay branch's own mechanical retry finding the generation fence already refused
+    /// (<see cref="TryMechanicalReplayFromAssessmentAsync"/> returning null): that path already
+    /// retired the run with <see cref="RunSuperseded"/> in its own transaction, so there is no
+    /// phase-moving event left to append <paramref name="tokensRecorded"/> alongside, and it is
+    /// appended on its own instead of dropped.
     /// </summary>
     private async Task<RebaseGateOutcome> ActOnRebaseRecoveryDisputeAssessmentAsync(
         ReviewContext context, string disputeParkText, TokensRecorded tokensRecorded,
@@ -5156,6 +5161,19 @@ public sealed class ReviewEngine(
                 cancellationToken);
             if (replay is null)
             {
+                // The generation fence itself refused (EnsureCurrentGenerationAsync inside
+                // TryMechanicalReplayFromAssessmentAsync), which already retired this run with
+                // RunSuperseded in its own transaction — there is no longer a phase-moving event
+                // to append tokensRecorded alongside, the way every other exit on this path does.
+                // Appended here on its own rather than dropped, so the disputing session's token
+                // usage is never silently lost just because the run went stale mid-assessment
+                // (independent pre-PR review, cycle 2, adversarial lens).
+                await using (IDocumentSession tokensSession = store.LightweightSession())
+                {
+                    tokensSession.Events.Append(context.RunId, tokensRecorded);
+                    await tokensSession.SaveChangesAsync(cancellationToken);
+                }
+
                 return RebaseGateOutcome.Stop;
             }
 
