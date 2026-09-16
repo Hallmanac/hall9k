@@ -45,6 +45,7 @@ public sealed class RunLauncher(
     BlockerContextAssembler blockerContext,
     IPullRequestInspector inspector,
     CloseoutEngine closeout,
+    PullRequestOpener pullRequests,
     ProcessRunner processRunner,
     IOptions<DaemonOptions> options,
     ILogger<RunLauncher> logger)
@@ -107,6 +108,13 @@ public sealed class RunLauncher(
         {
             if (task.PullRequestUrl.IsNotBlank()
                 && await TryCloseOutMergedPullRequestAsync(
+                    task, project, taskId, runId, nodeId, ownerId, leaseGeneration, cancellationToken))
+            {
+                return;
+            }
+
+            if (task.PullRequestUrl.IsBlank()
+                && await TryResumeAtPullRequestOpenAsync(
                     task, project, taskId, runId, nodeId, ownerId, leaseGeneration, cancellationToken))
             {
                 return;
@@ -986,6 +994,176 @@ public sealed class RunLauncher(
         await closeout.ReconstructAndCompleteAsync(
             session, current.Task, project, runId, nodeId, ownerId, snapshot.MergedAt, now, cancellationToken);
         return true;
+    }
+
+    /// <summary>
+    /// True means "do not dispatch a build or review session": the failed run this task's own
+    /// retry resumes never reached the tree itself, only the pull-request open at the very end of
+    /// it (task: a run that failed only at pull-request opening resumes at that step on retry) —
+    /// the branch was already pushed and its review, if any, already settled, so the only thing
+    /// left owed is retrying <c>gh pr create</c> against the identical tip. Re-running the whole
+    /// build and review pipeline over a tree nothing has touched since would cost real tokens to
+    /// re-derive a verdict already on record.
+    /// <para>
+    /// Every condition this checks is load-bearing, not merely defensive: the failure must be
+    /// recorded as <see cref="RunDetails.FailedDuringPullRequestOpen"/> on the specific run
+    /// <see cref="TaskDetails.FailedRunId"/> names (a gate, review, or build failure never sets it,
+    /// so an ordinary retry falls straight through to the ordinary path below), and the branch's
+    /// tip must still match what that run pushed
+    /// (<see cref="TaskDetails.LastPushedBranchTip"/>) on BOTH origin and the local ref in the
+    /// reused worktree — read live, here, rather than trusted from the earlier record, because
+    /// anything could have moved this branch since (a human, a follow-up dispatched some other
+    /// way, a second retry racing this one, an interactive claim landing on the retained
+    /// worktree). Origin alone is not enough: <see cref="PullRequestOpener"/> pushes whatever the
+    /// local ref currently is, and its force-with-lease guard only refuses a tip outside the
+    /// allow-list, it never confirms the local ref hasn't moved past the recorded one. A tip that
+    /// moved, on either side, is not this method's problem to solve: it falls back to the ordinary
+    /// dispatch, which resumes the branch through the same <see cref="CheckoutFreshOrRetryAsync"/>
+    /// path any other retry does and lets a fresh build session decide what to make of whatever is
+    /// there now.
+    /// </para>
+    /// <para>
+    /// The run this method starts reuses the failed run's own <see cref="RunDetails.WorktreePath"/>
+    /// and <see cref="RunDetails.RunDirectory"/> rather than cutting anything fresh: no worktree
+    /// checkout runs, and reusing the run directory is what lets
+    /// <see cref="PullRequestOpener.CreateArgumentsAsync"/> still find the original build session's
+    /// <c>pr-summary.md</c> and closing stream — a pull request opened this way carries the exact
+    /// body it would have carried had <c>gh pr create</c> simply succeeded the first time, not a
+    /// skeleton fallback for a summary that still exists on disk.
+    /// </para>
+    /// </summary>
+    private async Task<bool> TryResumeAtPullRequestOpenAsync(
+        TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, Guid nodeId, Guid ownerId,
+        int leaseGeneration, CancellationToken cancellationToken)
+    {
+        if (task.Type == TaskType.PrReview
+            || task.RetryBranch.IsBlank()
+            || task.FailedRunId is not { } failedRunId
+            || task.LastPushedBranch != task.RetryBranch
+            || task.LastPushedBranchTip is not { } recordedTip)
+        {
+            return false;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        RunDetails? failedRun = await session.LoadAsync<RunDetails>(failedRunId, cancellationToken);
+        if (failedRun is null
+            || !failedRun.FailedDuringPullRequestOpen
+            || failedRun.Branch != task.RetryBranch
+            || failedRun.WorktreePath.IsBlank()
+            || !Directory.Exists(failedRun.WorktreePath))
+        {
+            return false;
+        }
+
+        string? originTip = await ReadRemoteBranchTipAsync(failedRun.WorktreePath, task.RetryBranch, cancellationToken);
+        if (originTip != recordedTip)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: branch {Branch}'s tip on origin no longer matches {RecordedTip}, the tip run "
+                + "{FailedRunId} pushed before failing at pull-request-open — dispatching a full build and "
+                + "review pipeline instead of resuming directly at the open",
+                taskId, task.RetryBranch, recordedTip, failedRunId);
+            return false;
+        }
+
+        // Origin matching the recorded tip is only half the story: PullRequestOpener.OpenAsync
+        // pushes whatever this worktree's LOCAL branch ref currently is, not the recorded tip
+        // itself — its force-with-lease guard only refuses a tip that ISN'T the recorded one
+        // in the allow-list, it never confirms the local ref hasn't moved past it. Between this
+        // run's own failure and this retry, the same worktree can pick up commits no gate or
+        // review ever saw — an interactive claim (h9k task work) landing on the retained
+        // worktree, or a full-build follow-up whose lease expired before it finished and got
+        // requeued without clearing FailedRunId/RetryBranch. Reading the local ref here, rather
+        // than trusting the failed run's own recorded tip, is what actually closes that gap
+        // (independent pre-PR review, cycle 1, adversarial lens).
+        string? localTip = await ReadLocalBranchTipAsync(failedRun.WorktreePath, task.RetryBranch, cancellationToken);
+        if (localTip != recordedTip)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: branch {Branch}'s local tip in {Worktree} no longer matches {RecordedTip}, the "
+                + "tip run {FailedRunId} pushed before failing at pull-request-open — dispatching a full build "
+                + "and review pipeline instead of resuming directly at the open",
+                taskId, task.RetryBranch, failedRun.WorktreePath, recordedTip, failedRunId);
+            return false;
+        }
+
+        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+            runId, taskId, nodeId, ownerId, leaseGeneration, DomainId.New(),
+            failedRun.WorktreePath, task.RetryBranch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
+            IsFollowUp: false, Model: failedRun.Model, RunDirectory: failedRun.RunDirectory,
+            SessionName: SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build),
+            ReviewStageComposition: ReviewStageComposition.None,
+            DispatchingNodeId: nodeId,
+            BaseBranch: failedRun.BaseBranch,
+            BaseCommit: failedRun.BaseCommit,
+            OpenedAgainstBaseBranch: failedRun.OpenedAgainstBaseBranch));
+        await session.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Task {TaskId}: run {RunId} resumes at pull-request-open only — branch {Branch}'s tip on origin "
+            + "still matches what run {FailedRunId} pushed before failing there, so no build or review session "
+            + "dispatches; the run re-attempts gh pr create against the same tip",
+            taskId, runId, task.RetryBranch, failedRunId);
+
+        await pullRequests.OpenAsync(runId, taskId, cancellationToken);
+        return true;
+    }
+
+    /// <summary>
+    /// Origin's current tip for <paramref name="branch"/>, read fresh rather than trusted from any
+    /// earlier record — the live half of <see cref="TryResumeAtPullRequestOpenAsync"/>'s own two-part
+    /// check. Null for every shape that is not "the ref exists and named exactly one commit": no
+    /// matching ref, a read failure, or an unreachable remote all collapse to the same answer here,
+    /// because every one of them fails <see cref="TryResumeAtPullRequestOpenAsync"/>'s own tip
+    /// comparison and falls back to the ordinary dispatch — the safe direction when origin cannot be
+    /// read is dispatching the full pipeline, never assuming the tip still matches.
+    /// </summary>
+    private async Task<string?> ReadRemoteBranchTipAsync(
+        string worktreePath, string branch, CancellationToken cancellationToken)
+    {
+        try
+        {
+            ProcessResult probe = await processRunner(
+                "git", ["ls-remote", "--exit-code", "origin", $"refs/heads/{branch}"], worktreePath, cancellationToken);
+            return probe.ExitCode == 0
+                ? probe.StandardOutput.Split('\t', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault()?.Trim()
+                : null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception, "Could not read branch {Branch}'s tip on origin in {Worktree}", branch, worktreePath);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// <paramref name="branch"/>'s own local ref, read fresh in <paramref name="worktreePath"/> —
+    /// the other half of <see cref="TryResumeAtPullRequestOpenAsync"/>'s tip check, alongside
+    /// <see cref="ReadRemoteBranchTipAsync"/>. Reading the ref by name rather than the worktree's
+    /// own <c>HEAD</c> is deliberate: a worktree's branch and its checked-out commit can only
+    /// diverge if something has switched it to a different ref entirely, and refs are shared
+    /// across every worktree in this repository, so this answers "what does the branch itself
+    /// point at right now" regardless of which worktree happens to have it checked out. Null,
+    /// exactly like the remote read, collapses every failure shape (missing ref, read failure) to
+    /// the same answer, and the caller's tip comparison already treats null as a mismatch.
+    /// </summary>
+    private async Task<string?> ReadLocalBranchTipAsync(
+        string worktreePath, string branch, CancellationToken cancellationToken)
+    {
+        try
+        {
+            ProcessResult probe = await processRunner(
+                "git", ["rev-parse", "--verify", "--quiet", $"refs/heads/{branch}"], worktreePath, cancellationToken);
+            return probe.ExitCode == 0 ? probe.StandardOutput.Trim() : null;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception, "Could not read branch {Branch}'s local tip in {Worktree}", branch, worktreePath);
+            return null;
+        }
     }
 
     /// <summary>

@@ -362,7 +362,8 @@ public sealed class AutoPrReviewMentionEngineTests(PostgresFixture postgres) : I
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, new FakeProcessManager(), Options.Create(new DaemonOptions())),
             new FakeProcessManager(), Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
         return new RunLauncher(
-            store, worktrees, executor, NewSupervisor(store, node), blockerContext, inspector, closeout, gh,
+            store, worktrees, executor, NewSupervisor(store, node), blockerContext, inspector, closeout,
+            new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance), gh,
             Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
     }
 

@@ -857,7 +857,8 @@ public sealed class PullRequestOpener(
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(runId, new RunFailed(runId, $"PR opening failed: {reason}", now));
+        session.Events.Append(
+            runId, new RunFailed(runId, $"PR opening failed: {reason}", now, FailedDuringPullRequestOpen: true));
 
         // LoadFencedAsync's read must happen before the AllowsAsync identity check below —
         // not after — so a reclaim landing between the two is caught by AllowsAsync's fresh

@@ -234,7 +234,8 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             processes, Options.Create(new DaemonOptions()), NullLogger<BlockerContextAssembler>.Instance);
         return new RunLauncher(
             store, new RefusingWorktreeManager(), new RefusingExecutor("The withdrawal/recall tests never dispatch a run — nothing here should ever spawn an agent."), supervisor, blockerContext, inspector,
-            closeout, RecordingProcessRunner.NeverInvoked(), Options.Create(new DaemonOptions()),
+            closeout, new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
+            RecordingProcessRunner.NeverInvoked(), Options.Create(new DaemonOptions()),
             NullLogger<RunLauncher>.Instance);
     }
 
