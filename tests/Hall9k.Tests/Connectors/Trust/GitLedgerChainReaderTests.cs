@@ -182,6 +182,35 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_roots_own_file_overwritten_with_a_mismatched_key_is_named_as_an_unverified_write()
+    {
+        // independent pre-PR review, cycle 1, conformance lens, medium: a self-certification
+        // failure used to drop the whole chain silently, with no UnverifiedLedgerWrite naming the
+        // offending commit — this proves the fix names it instead.
+        string hub = _repo.CreateHub();
+        GeneratedIdentity root = GenerateIdentity();
+        GeneratedIdentity attacker = GenerateIdentity();
+        string repo = _repo.CloneNode(hub);
+        await WriteRootFileAsync(repo, root);
+
+        // A second commit, on the same ref, replaces root.yaml's own declared key with the
+        // attacker's — self-certification must now fail (the currently-served key no longer
+        // fingerprints back to root's own namespace).
+        string refName = $"refs/hall9k/ledger/owners/{root.Fingerprint}";
+        string path = $"owners/{root.Fingerprint}/root.yaml";
+        string overwriteContent = BuildYaml(("public_key", attacker.PublicKeyLine), ("created_at", Now()));
+        await WriteAsync(repo, refName, path, overwriteContent, attacker);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().NotContainKey(root.Fingerprint, "the currently-served content no longer self-certifies");
+        chain.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "root" && write.RootFingerprint == root.Fingerprint,
+            "the offending commit is named rather than the chain silently vanishing with no diagnostic");
+    }
+
+    [Fact]
     public async Task A_later_revocation_never_retroactively_voids_an_earlier_membership_write()
     {
         // The point-in-time replay fix (independent pre-PR review, cycle 1, conformance and
@@ -216,6 +245,56 @@ public sealed class GitLedgerChainReaderTests : IDisposable
             "bob's removal was legitimately signed by the laptop while it was still enrolled; the "
             + "laptop's later revocation must not retroactively undo it");
         chain.IsAllowedSigner(laptop.Fingerprint).Should().BeFalse("the laptop is revoked as of the final read");
+    }
+
+    [Fact]
+    public async Task A_second_write_from_a_revoked_node_cannot_be_authorized_by_backdating_its_committer_date()
+    {
+        // The exact injection the independent pre-PR review reproduced (cycle 1, conformance and
+        // adversarial lenses, both high) against the pre-fix owner.AsOf(commitTime): a revoked
+        // node's own key, used once already for a legitimate write while still enrolled, tries a
+        // SECOND write after its own revocation, backdating GIT_COMMITTER_DATE to before that
+        // revocation. The first write from a node's own key still trusts its own claimed date (nothing
+        // else non-forgeable is available yet to bound it against — ComputeMembersAsync's own doc
+        // discloses this residual, single-use gap); this test proves the fix closes repeat abuse of
+        // the identical key once it has already spent that leniency.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity laptop = GenerateIdentity();
+        string laptopRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(laptopRepo, laptop, laptop);
+        await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
+
+        // The laptop's own FIRST members-ref write, while still enrolled — spends this specific
+        // node's own "first use" leniency.
+        GeneratedIdentity bob = GenerateIdentity();
+        await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "member", laptop);
+
+        await RevokeAsync(ownerRepo, owner.Fingerprint, laptop.NodeId, owner);
+
+        string membersRefName = "refs/hall9k/ledger/members";
+        await RunGitCaptureAsync(ownerRepo, ["fetch", "origin", $"+{membersRefName}:{membersRefName}"]);
+        string membersTip = await RunGitCaptureAsync(ownerRepo, ["rev-parse", "--verify", membersRefName]);
+
+        // The laptop, still holding its own key after revocation, crafts a SECOND members-ref
+        // commit, self-claiming owner role, and backdates it to land before the revocation above.
+        GeneratedIdentity attacker = GenerateIdentity();
+        string attackerPath = $"members/{attacker.Fingerprint}.yaml";
+        string attackerContent = BuildYaml(("root_fingerprint", attacker.Fingerprint), ("role", "owner"), ("issued_at", Now()));
+        string maliciousTree = await BuildTreeWithFileAsync(ownerRepo, membersTip, attackerPath, attackerContent);
+        string maliciousCommit = await CommitTreeAsync(
+            ownerRepo, maliciousTree, [membersTip], laptop, "self-promote via backdated commit",
+            committerDate: DateTimeOffset.UtcNow.AddMinutes(-30));
+        await RunGitCaptureAsync(ownerRepo, ["push", "origin", $"{maliciousCommit}:{membersRefName}"]);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.RoleOf(attacker.Fingerprint).Should().BeNull(
+            "the laptop is revoked, and a second write from its own key can no longer be authorized "
+            + "by claiming an earlier committer date");
+        chain.UnverifiedWrites.Should().Contain(write => write.Identifier == attacker.Fingerprint);
     }
 
     [Fact]
@@ -395,9 +474,13 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     /// <summary>A signed commit over an explicit parent list — the merge-commit test's own way to
-    /// build a two-parent commit, which no <see cref="ILedger"/> write ever produces.</summary>
+    /// build a two-parent commit, which no <see cref="ILedger"/> write ever produces.
+    /// <paramref name="committerDate"/>, when given, is what the backdating test needs: a committer
+    /// date the writer chooses freely, exactly as an attacker crafting a raw commit with
+    /// <c>GIT_COMMITTER_DATE</c> set would.</summary>
     private static async Task<string> CommitTreeAsync(
-        string repositoryPath, string treeId, IReadOnlyList<string> parents, GeneratedIdentity signer, string message)
+        string repositoryPath, string treeId, IReadOnlyList<string> parents, GeneratedIdentity signer, string message,
+        DateTimeOffset? committerDate = null)
     {
         List<string> arguments =
         [
@@ -419,11 +502,12 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         arguments.Add("-m");
         arguments.Add(message);
 
-        return await RunGitCaptureAsync(repositoryPath, arguments);
+        return await RunGitCaptureAsync(repositoryPath, arguments, committerDate: committerDate);
     }
 
     private static async Task<string> RunGitCaptureAsync(
-        string repositoryPath, IReadOnlyList<string> arguments, string? indexFile = null, string? standardInput = null)
+        string repositoryPath, IReadOnlyList<string> arguments, string? indexFile = null, string? standardInput = null,
+        DateTimeOffset? committerDate = null)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -444,6 +528,13 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         if (indexFile is not null)
         {
             process.StartInfo.Environment["GIT_INDEX_FILE"] = indexFile;
+        }
+
+        if (committerDate is { } date)
+        {
+            string formatted = date.ToString("o", CultureInfo.InvariantCulture);
+            process.StartInfo.Environment["GIT_COMMITTER_DATE"] = formatted;
+            process.StartInfo.Environment["GIT_AUTHOR_DATE"] = formatted;
         }
 
         process.Start();
