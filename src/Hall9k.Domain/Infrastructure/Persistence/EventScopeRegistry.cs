@@ -240,6 +240,7 @@ public static class EventScopeRegistry
         // ledger walk, never a team-visible fact replicated from here — every other node's own
         // sweep reaches the identical conclusion by reading the ledger itself.
         [typeof(UnverifiedLedgerWriteObserved)] = EventScope.NodeScoped,
+        [typeof(UnverifiedLedgerWriteResolved)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Connection — a node's own registered credential; never
         // replicated (Guid tokens and gh CLI logins are inherently local to the machine).

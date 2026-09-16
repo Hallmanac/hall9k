@@ -13,6 +13,7 @@ public sealed class UnverifiedLedgerWriteAggregate
     public string Reason { get; private set; } = string.Empty;
     public DateTimeOffset FirstSeenAt { get; private set; }
     public DateTimeOffset LastSeenAt { get; private set; }
+    public bool Resolved { get; private set; }
 
     public void Apply(UnverifiedLedgerWriteObserved @event)
     {
@@ -28,5 +29,11 @@ public sealed class UnverifiedLedgerWriteAggregate
         }
 
         LastSeenAt = @event.At;
+        Resolved = false;
+    }
+
+    public void Apply(UnverifiedLedgerWriteResolved @event)
+    {
+        Resolved = true;
     }
 }

@@ -254,15 +254,21 @@ public sealed class MessageSweepEngine(
     /// cycle 1, both lenses, medium). A changed <c>Reason</c> (a different offending commit now)
     /// or a <c>LastSeenAt</c> older than <see cref="UnverifiedWriteRefreshAge"/> still refreshes it.
     /// </para>
+    /// <para>
+    /// Also the only place a standing record ever clears: a writer this project has a live,
+    /// unresolved record for but that this sweep's own trust chain read no longer names among
+    /// <see cref="TrustChain.UnverifiedWrites"/> gets a <see cref="UnverifiedLedgerWriteResolved"/>
+    /// appended to its own stream, the identical "cleared on the read that stops naming it" rule
+    /// the envelope half of this same criterion already applies
+    /// (<see cref="Hall9k.Domain.Features.Message.InboxSenderVouched"/>) — without this, a resolved
+    /// writer (the offending node re-vouched, or a later commit correcting the bad write) would
+    /// stay in <c>h9k status</c> forever with no way to clear (independent pre-PR review, cycle 3,
+    /// conformance lens, medium).
+    /// </para>
     /// </summary>
     private async Task PersistUnverifiedWritesAsync(
         ProjectDetails project, TrustChain trustChain, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        if (trustChain.UnverifiedWrites.Count == 0)
-        {
-            return;
-        }
-
         Dictionary<Guid, UnverifiedLedgerWrite> distinctWrites = [];
         foreach (UnverifiedLedgerWrite write in trustChain.UnverifiedWrites)
         {
@@ -273,11 +279,24 @@ public sealed class MessageSweepEngine(
         try
         {
             await using IDocumentSession session = store.LightweightSession();
+
+            IReadOnlyList<UnverifiedLedgerWriteDetails> standing = await session.Query<UnverifiedLedgerWriteDetails>()
+                .Where(details => details.ProjectId == project.Id && !details.Resolved)
+                .ToListAsync(cancellationToken);
+            foreach (UnverifiedLedgerWriteDetails record in standing)
+            {
+                if (!distinctWrites.ContainsKey(record.Id))
+                {
+                    session.Events.Append(record.Id, UnverifiedLedgerWriteDecider.Resolve(now));
+                }
+            }
+
             foreach ((Guid streamId, UnverifiedLedgerWrite write) in distinctWrites)
             {
                 UnverifiedLedgerWriteAggregate? existing = await session.Events
                     .AggregateStreamAsync<UnverifiedLedgerWriteAggregate>(streamId, token: cancellationToken);
                 if (existing is not null
+                    && !existing.Resolved
                     && existing.Reason == write.Reason
                     && now - existing.LastSeenAt < UnverifiedWriteRefreshAge)
                 {

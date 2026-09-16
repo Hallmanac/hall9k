@@ -368,14 +368,29 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// store already has, the same "no git or network work in h9k status itself" rule every other
     /// pane in this command follows (independent pre-PR review, cycle 1, human resolution
     /// 2026-09-15). Silent when there is nothing to say, the same "a quiet pane says nothing"
-    /// posture the rest of this command already follows.
+    /// posture the rest of this command already follows. Resolved records — a writer this project
+    /// once had a standing record for but whose write became verifiable again — are never queried
+    /// here at all, the same "the sweep clears it, this pane just reads current state" reasoning
+    /// <c>MessageSweepEngine.PersistUnverifiedWritesAsync</c>'s own doc describes.
+    /// <para>
+    /// Bounded per project the same way <see cref="Section"/> bounds a task section: a hostile
+    /// pusher who floods a members or owner ref with many distinctly-identified forged writes opens
+    /// one standing record per identifier (each keyed by its own stream id), so nothing above this
+    /// caps how many of them exist — capping how many print here is what keeps this pane glanceable
+    /// regardless (independent pre-PR review, cycle 3, adversarial lens, medium). The full,
+    /// live-read list — including whatever this cap holds back — is always available via
+    /// <c>h9k project members</c>.
+    /// </para>
     /// </summary>
+    private const int MaxUnverifiedWritesPerProject = 10;
+
     internal static async Task WriteUnverifiedLedgerWritesAsync(IQuerySession session, CancellationToken cancellationToken)
     {
         try
         {
-            IReadOnlyList<UnverifiedLedgerWriteDetails> writes =
-                await session.Query<UnverifiedLedgerWriteDetails>().ToListAsync(cancellationToken);
+            IReadOnlyList<UnverifiedLedgerWriteDetails> writes = await session.Query<UnverifiedLedgerWriteDetails>()
+                .Where(write => !write.Resolved)
+                .ToListAsync(cancellationToken);
             if (writes.Count == 0)
             {
                 return;
@@ -388,10 +403,19 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 ProjectDetails? project = await session.LoadAsync<ProjectDetails>(byProject.Key, cancellationToken);
                 string projectName = project?.Name ?? byProject.Key.ToString();
 
-                foreach (UnverifiedLedgerWriteDetails write in byProject.OrderBy(write => write.FirstSeenAt))
+                IReadOnlyList<UnverifiedLedgerWriteDetails> ordered =
+                    [.. byProject.OrderByDescending(write => write.LastSeenAt)];
+                foreach (UnverifiedLedgerWriteDetails write in ordered.Take(MaxUnverifiedWritesPerProject))
                 {
                     AnsiConsole.MarkupLineInterpolated(
                         $"[yellow]unverifiable {write.Kind} by {write.Identifier.EscapeMarkup()}[/] in project '{projectName.EscapeMarkup()}' (under {write.RootFingerprint.EscapeMarkup()}) — {write.Reason.EscapeMarkup()} [dim](last seen {write.LastSeenAt:u})[/]");
+                }
+
+                int held = ordered.Count - Math.Min(ordered.Count, MaxUnverifiedWritesPerProject);
+                if (held > 0)
+                {
+                    AnsiConsole.MarkupLineInterpolated(
+                        $"[dim]  … and {held} more for '{projectName.EscapeMarkup()}' — see them all with:[/] h9k project members {projectName.EscapeMarkup()}");
                 }
             }
         }
