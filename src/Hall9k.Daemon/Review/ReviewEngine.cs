@@ -344,16 +344,29 @@ public sealed class ReviewEngine(
                     // run over (task: a checkpoint rebase is replay plus gates).
                     if (StackedParentWatch.IsStackedChild(context.Run, context.Project))
                     {
-                        // Proceed or Stop, never LoopAgain: a checkpoint conflict parks rather
-                        // than dispatching the recovery session whose completion is what asks a
-                        // caller to re-enter the loop (see the method's own doc). Nothing else
-                        // this arm could do with a LoopAgain is right either — the phase it would
-                        // re-enter at is this same one.
-                        if (await RebaseOntoStackedParentAsync(
-                                context, StackedCheckpoint.BeforeFirstReviewCycle, cancellationToken)
-                            is not RebaseGateOutcome.Proceed)
+                        // A checkpoint conflict either parks (Stop) or, since this task, can also
+                        // earn a dedicated fix session for a Replay verdict's own retry that still
+                        // conflicts (LoopAgain) — the session dispatched by
+                        // ActOnStackAssessmentAsync's own Replay branch, whose completion is what
+                        // asks a caller to re-enter the loop, exactly like every other LoopAgain
+                        // this switch already handles (the composition-none branch above, and the
+                        // Settling branch below): break out to the top of the outer while loop
+                        // rather than returning false, which would read as a park or failure this
+                        // run has not actually reached — the dispatched session is still running.
+                        bool stackedCheckpointLoopAgain = false;
+                        switch (await RebaseOntoStackedParentAsync(
+                            context, StackedCheckpoint.BeforeFirstReviewCycle, cancellationToken))
                         {
-                            return false;
+                            case RebaseGateOutcome.Stop:
+                                return false;
+                            case RebaseGateOutcome.LoopAgain:
+                                stackedCheckpointLoopAgain = true;
+                                break;
+                        }
+
+                        if (stackedCheckpointLoopAgain)
+                        {
+                            break;
                         }
 
                         // Reloaded so the gate check below sees a replay this same call just
@@ -3703,8 +3716,13 @@ public sealed class ReviewEngine(
             // this same run — ReplayCheckpointAsync's own callers), it is this exact verdict's own
             // retry failing, which earns a dedicated fix session rather than a park (task: the stack
             // assessment runs only where a checkpoint would otherwise park).
+            // renumberDecisionsLog: false — a stacked checkpoint's own placeholder is never
+            // renumbered by this run's replay, whether the first attempt (ReplayCheckpointAsync)
+            // or this assessment-driven retry: #162's documented scope limit applies identically
+            // to both, and RecordStackedCheckpointAsync below always records the unrenumbered fact.
             MechanicalReplayFromAssessmentResult? replay = await TryMechanicalReplayFromAssessmentAsync(
-                context, assessment.BoundaryCommit, assessment.OntoCommit, cancellationToken);
+                context, assessment.BoundaryCommit, assessment.OntoCommit, renumberDecisionsLog: false,
+                cancellationToken);
             if (replay is null)
             {
                 return RebaseGateOutcome.Stop;
@@ -4262,27 +4280,38 @@ public sealed class ReviewEngine(
     internal async Task<RebaseGateOutcome> ActOnPreFinalPassAssessmentAsync(
         ReviewContext context, RunAggregate run, StackAssessmentVerdict assessment, CancellationToken cancellationToken)
     {
+        // This method is reached only from DispatchRebaseRecoverySessionAsync's own round-cap
+        // check (see this method's own doc), which now redispatches a checkpoint-originated track
+        // (RebaseRecoveryNeeded's own carry-forward, or ActOnStackAssessmentAsync's Replay-failed
+        // dispatch) exactly as it redispatches the ordinary unstacked one — RebaseRecoveryBaseCommit
+        // is what tells the two apart. A checkpoint-originated track's placeholder must stay
+        // unrenumbered here too (#162), the identical scope limit
+        // TryMechanicalReplayFromAssessmentAsync's own doc gives.
+        bool renumberDecisionsLog = run.RebaseRecoveryBaseCommit is null;
         if (assessment.Kind == StackAssessmentVerdictKind.Aligned)
         {
             logger.LogInformation(
                 "Run {RunId}: the stack assessment found the mandatory final pass's own pre-flight rebase already aligned — {Evidence}",
                 context.RunId, assessment.Evidence);
 
-            string worktreePathForAligned = context.Run.WorktreePath;
-            ProcessRunner gitForAligned = gitProcessRunner;
-            bool decisionsLogRenumberedForAligned;
-            await using (IAsyncDisposable repositoryLock =
-                await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
+            bool decisionsLogRenumberedForAligned = false;
+            if (renumberDecisionsLog)
             {
-                if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+                string worktreePathForAligned = context.Run.WorktreePath;
+                ProcessRunner gitForAligned = gitProcessRunner;
+                await using (IAsyncDisposable repositoryLock =
+                    await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
                 {
-                    return RebaseGateOutcome.Stop;
-                }
+                    if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+                    {
+                        return RebaseGateOutcome.Stop;
+                    }
 
-                DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
-                    context, gitForAligned, worktreePathForAligned, assessment.BoundaryCommit, assessment.OntoCommit,
-                    cancellationToken);
-                decisionsLogRenumberedForAligned = renumberResult.Outcome == DecisionsLogRenumberOutcome.Renumbered;
+                    DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
+                        context, gitForAligned, worktreePathForAligned, assessment.BoundaryCommit, assessment.OntoCommit,
+                        cancellationToken);
+                    decisionsLogRenumberedForAligned = renumberResult.Outcome == DecisionsLogRenumberOutcome.Renumbered;
+                }
             }
 
             await RecordRebaseOutcomeAsync(
@@ -4316,7 +4345,7 @@ public sealed class ReviewEngine(
         // non-assessment path uses ExternalProcess.RunnerWithDeadline(GitDeadline) rather than the
         // short ExternalProcess.Deadline (independent pre-PR review, cycle 1, both lenses).
         MechanicalReplayFromAssessmentResult? replay = await TryMechanicalReplayFromAssessmentAsync(
-            context, assessment.BoundaryCommit, assessment.OntoCommit, cancellationToken);
+            context, assessment.BoundaryCommit, assessment.OntoCommit, renumberDecisionsLog, cancellationToken);
         if (replay is null)
         {
             return RebaseGateOutcome.Stop;
@@ -4347,21 +4376,25 @@ public sealed class ReviewEngine(
 
     /// <summary>
     /// The one mechanical <c>git rebase --onto</c> a Replay verdict earns, shared by
-    /// <see cref="ActOnPreFinalPassAssessmentAsync"/>'s own retry and
-    /// <see cref="ActOnRebaseRecoveryDisputeAssessmentAsync"/>'s identical one (task: the stack
-    /// assessment runs only where a checkpoint would otherwise park) — both reached only on the
-    /// pre-final-pass path, so both renumber this branch's own Decisions Log placeholder on a clean
-    /// land, the same "current with its base" obligation every other proceed exit on this path
-    /// already carries. Returns null when the generation fence itself refuses — the caller's own
-    /// <see cref="RebaseGateOutcome.Stop"/>, not a git outcome to report — otherwise whether the
-    /// rebase landed clean and whether it was actually attempted at all: an onto commit missing
-    /// from this repository's object store, or a git call that failed before the rebase itself
-    /// started, never attempts one (distinguished so a caller building guidance never tells its
-    /// dispatched session a mechanical attempt already conflicted when none ran — AGENTS.md's
-    /// never-guess rule).
+    /// <see cref="ActOnPreFinalPassAssessmentAsync"/>'s own retry, <see cref="ActOnRebaseRecoveryDisputeAssessmentAsync"/>'s
+    /// identical one, and <see cref="ActOnStackAssessmentAsync"/>'s own stacked-checkpoint retry
+    /// (task: the stack assessment runs only where a checkpoint would otherwise park). Only the
+    /// unstacked pre-final-pass callers renumber this branch's own Decisions Log placeholder on a
+    /// clean land — the "current with its base" obligation every other proceed exit on the
+    /// unstacked path already carries — controlled by <paramref name="renumberDecisionsLog"/>: a
+    /// stacked checkpoint's own placeholder stays unrenumbered until this task's branch is
+    /// retargeted onto main (#144/#153), the same documented scope limit
+    /// <see cref="ReplayCheckpointAsync"/>'s own doc gives. Returns null when the generation fence
+    /// itself refuses — the caller's own <see cref="RebaseGateOutcome.Stop"/>, not a git outcome to
+    /// report — otherwise whether the rebase landed clean and whether it was actually attempted at
+    /// all: an onto commit missing from this repository's object store, or a git call that failed
+    /// before the rebase itself started, never attempts one (distinguished so a caller building
+    /// guidance never tells its dispatched session a mechanical attempt already conflicted when none
+    /// ran — AGENTS.md's never-guess rule).
     /// </summary>
     private async Task<MechanicalReplayFromAssessmentResult?> TryMechanicalReplayFromAssessmentAsync(
-        ReviewContext context, string boundaryCommit, string ontoCommit, CancellationToken cancellationToken)
+        ReviewContext context, string boundaryCommit, string ontoCommit, bool renumberDecisionsLog,
+        CancellationToken cancellationToken)
     {
         string worktreePath = context.Run.WorktreePath;
         ProcessRunner git = gitProcessRunner;
@@ -4394,14 +4427,17 @@ public sealed class ReviewEngine(
                     {
                         landedClean = true;
 
-                        // Renumbered here, still inside the repository lock, the same "before the
-                        // mandatory gate reads the tree" ordering EnsureRebasedBeforeFinalPassAsync's
-                        // own plain-rebase call already keeps — not after the lock releases, which
-                        // would let another worktree's own fetch or renumbering race this branch's
-                        // own commit against the shared bare repository.
-                        DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
-                            context, git, worktreePath, boundaryCommit, ontoCommit, cancellationToken);
-                        decisionsLogRenumbered = renumberResult.Outcome == DecisionsLogRenumberOutcome.Renumbered;
+                        if (renumberDecisionsLog)
+                        {
+                            // Renumbered here, still inside the repository lock, the same "before the
+                            // mandatory gate reads the tree" ordering EnsureRebasedBeforeFinalPassAsync's
+                            // own plain-rebase call already keeps — not after the lock releases, which
+                            // would let another worktree's own fetch or renumbering race this branch's
+                            // own commit against the shared bare repository.
+                            DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
+                                context, git, worktreePath, boundaryCommit, ontoCommit, cancellationToken);
+                            decisionsLogRenumbered = renumberResult.Outcome == DecisionsLogRenumberOutcome.Renumbered;
+                        }
                     }
                     else
                     {
@@ -4845,7 +4881,8 @@ public sealed class ReviewEngine(
             context.Task, context.Project, context.Run.Branch, commitStyle, context.Task.PullRequestUrl,
             humanGuidance, rebaseStillInProgress, baseBranch: context.BaseBranch,
             commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
-            assessmentGuidance: assessmentGuidance, baseCommit: baseCommit);
+            assessmentGuidance: assessmentGuidance, baseCommit: baseCommit,
+            precedesFirstReviewCycle: precedesFirstReviewCycle);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         string artifactName = RebaseRecoveryArtifactName(sessionId);
@@ -4972,13 +5009,17 @@ public sealed class ReviewEngine(
                 logger.LogWarning(failure, "Could not write the pre-final-pass rebase dispute position to {FilePath}", disputeFile);
             }
 
-            // Owed regardless of what resolves the conflict next, so recorded on its own here
-            // rather than folded into whichever event below ends up deciding the outcome.
-            await using (IDocumentSession tokenSession = store.LightweightSession())
-            {
-                tokenSession.Events.Append(runId, result.ToTokensRecorded(runId, DateTimeOffset.UtcNow, model));
-                await tokenSession.SaveChangesAsync(cancellationToken);
-            }
+            // Owed regardless of what resolves the conflict next, but no longer appended in its
+            // own transaction here (independent pre-PR review, cycle 1, adversarial lens): the
+            // assessment this dispute now runs before parking can take minutes, and an
+            // interruption in that window used to leave this event on the stream with the run
+            // still AwaitingRebaseRecovery — the exact shape that makes a later adoption replay
+            // this same completed session's result and append a second one. Built once here and
+            // carried down to whichever event finally moves the phase off AwaitingRebaseRecovery
+            // (a resolved dispute, a final park, or an already-spent-assessment park), appended
+            // in that same transaction — the identical atomicity the non-disputed outcome below
+            // already keeps between its own TokensRecorded and PreFinalPassRebaseRecoveryCompleted.
+            TokensRecorded tokensRecorded = result.ToTokensRecorded(runId, DateTimeOffset.UtcNow, model);
 
             string disputeParkText = RebaseRecoveryDisputedParkReason(run);
             string sanitizedFrom = rebasedFromCommit == RunRebasedOntoBase.UnreadableCommit ? string.Empty : rebasedFromCommit;
@@ -4990,10 +5031,10 @@ public sealed class ReviewEngine(
             RebaseGateOutcome assessedOutcome = await AssessOrParkAsync(
                 context, StackAssessmentParkKind.ReplayConflict, context.Run.Branch, string.Empty,
                 sanitizedFrom, string.Empty, disputeParkText,
-                (assessed, ct) => ActOnRebaseRecoveryDisputeAssessmentAsync(context, disputeParkText, assessed, ct),
+                (assessed, ct) => ActOnRebaseRecoveryDisputeAssessmentAsync(context, disputeParkText, tokensRecorded, assessed, ct),
                 cancellationToken,
                 onAssessmentAlreadySpent: (freshRun, ct) => RecordRebaseRecoveryDisputedParkAsync(
-                    context, BothDiagnosesParkReason(freshRun, disputeParkText), ct));
+                    context, BothDiagnosesParkReason(freshRun, disputeParkText), tokensRecorded, ct));
             return assessedOutcome != RebaseGateOutcome.Stop;
         }
 
@@ -5049,14 +5090,21 @@ public sealed class ReviewEngine(
     /// already spent — the identical park <see cref="ActOnRebaseRecoveryDisputeAssessmentAsync"/>'s
     /// own doc gives for a fresh undecidable or failed-retry verdict, reached instead when there is
     /// no fresh verdict to add: <paramref name="parkText"/> already carries whatever an earlier park
-    /// on this run recorded (<see cref="BothDiagnosesParkReason"/>).
+    /// on this run recorded (<see cref="BothDiagnosesParkReason"/>). Still owes the disputing
+    /// session's own <paramref name="tokensRecorded"/> — appended together with the park's own
+    /// completion event, in the same transaction, so a daemon restart between the two never leaves
+    /// one without the other (independent pre-PR review, cycle 1, adversarial lens).
     /// </summary>
     private async Task<RebaseGateOutcome> RecordRebaseRecoveryDisputedParkAsync(
-        ReviewContext context, string parkText, CancellationToken cancellationToken)
+        ReviewContext context, string parkText, TokensRecorded tokensRecorded, CancellationToken cancellationToken)
     {
         await ParkAsync(
             context.RunId, context.TaskId, parkText,
-            precedingEvents: [new PreFinalPassRebaseRecoveryCompleted(context.RunId, ReviewFixOutcome.Disputed, DateTimeOffset.UtcNow)],
+            precedingEvents:
+            [
+                tokensRecorded,
+                new PreFinalPassRebaseRecoveryCompleted(context.RunId, ReviewFixOutcome.Disputed, DateTimeOffset.UtcNow),
+            ],
             cancellationToken: cancellationToken);
         return RebaseGateOutcome.Stop;
     }
@@ -5072,10 +5120,15 @@ public sealed class ReviewEngine(
     /// own dispute as final and parks with the assessment's evidence appended, via
     /// <paramref name="disputeParkText"/> plus the same "could not resolve it either" wording
     /// <see cref="ActOnStackAssessmentAsync"/>'s own park uses — never dispatching another recovery
-    /// session to re-litigate a conflict this run's one assessment already looked at.
+    /// session to re-litigate a conflict this run's one assessment already looked at. Also owes the
+    /// disputing session's own <paramref name="tokensRecorded"/>, appended together with whichever
+    /// event below ends up deciding the outcome rather than in its own transaction ahead of the
+    /// assessment this method's caller runs first — <see cref="RecordRebaseRecoveryResultAsync"/>'s
+    /// own doc gives the interruption window that ordering used to leave open.
     /// </summary>
     private async Task<RebaseGateOutcome> ActOnRebaseRecoveryDisputeAssessmentAsync(
-        ReviewContext context, string disputeParkText, StackAssessmentVerdict assessment, CancellationToken cancellationToken)
+        ReviewContext context, string disputeParkText, TokensRecorded tokensRecorded,
+        StackAssessmentVerdict assessment, CancellationToken cancellationToken)
     {
         if (assessment.Kind == StackAssessmentVerdictKind.Aligned)
         {
@@ -5083,14 +5136,24 @@ public sealed class ReviewEngine(
                 context, assessment.BoundaryCommit, assessment.OntoCommit, wasNoOp: true,
                 "the recovery session disputed this conflict, but a read-only stack assessment found it already "
                 + $"aligned: {assessment.Evidence}",
-                cancellationToken);
+                decisionsLogRenumbered: false, tokensRecorded, cancellationToken);
             return RebaseGateOutcome.Proceed;
         }
 
         if (assessment.Kind == StackAssessmentVerdictKind.Replay)
         {
+            // renumberDecisionsLog: true — this method is reached only through
+            // RecordRebaseRecoveryResultAsync's own AssessOrParkAsync call, which the one-shot
+            // assessment rule (AssessOrParkAsync's own doc) already refuses for any track whose
+            // assessment was dispatched earlier from a stacked checkpoint: HasDispatchedStackAssessment
+            // is set the moment that dispatch happens, before ActOnStackAssessmentAsync's own Replay
+            // branch ever runs, so a checkpoint-originated track's dispute always parks through
+            // onAssessmentAlreadySpent instead of ever reaching this branch. Only the ordinary,
+            // unstacked pre-final-pass dispute — which owes its placeholder the identical renumbering
+            // obligation ActOnPreFinalPassAssessmentAsync's own Replay branch carries — reaches here.
             MechanicalReplayFromAssessmentResult? replay = await TryMechanicalReplayFromAssessmentAsync(
-                context, assessment.BoundaryCommit, assessment.OntoCommit, cancellationToken);
+                context, assessment.BoundaryCommit, assessment.OntoCommit, renumberDecisionsLog: true,
+                cancellationToken);
             if (replay is null)
             {
                 return RebaseGateOutcome.Stop;
@@ -5102,7 +5165,7 @@ public sealed class ReviewEngine(
                     context, assessment.BoundaryCommit, assessment.OntoCommit, wasNoOp: false,
                     "the recovery session disputed this conflict, but a read-only stack assessment's own replay "
                     + $"verdict landed cleanly: {assessment.Evidence}",
-                    cancellationToken);
+                    decisionsLogRenumbered: replay.Value.DecisionsLogRenumbered, tokensRecorded, cancellationToken);
                 return RebaseGateOutcome.Proceed;
             }
         }
@@ -5111,7 +5174,11 @@ public sealed class ReviewEngine(
             context.RunId, context.TaskId,
             $"{disputeParkText} The read-only stack assessment dispatched before this park could not resolve it "
             + $"either: {assessment.Evidence}",
-            precedingEvents: [new PreFinalPassRebaseRecoveryCompleted(context.RunId, ReviewFixOutcome.Disputed, DateTimeOffset.UtcNow)],
+            precedingEvents:
+            [
+                tokensRecorded,
+                new PreFinalPassRebaseRecoveryCompleted(context.RunId, ReviewFixOutcome.Disputed, DateTimeOffset.UtcNow),
+            ],
             cancellationToken: cancellationToken);
         return RebaseGateOutcome.Stop;
     }
@@ -5126,14 +5193,26 @@ public sealed class ReviewEngine(
     /// showing a rebase it already recorded as landed while still "awaiting" a session that is long
     /// since gone.
     /// </summary>
+    /// <param name="decisionsLogRenumbered">
+    /// Whether the replay that resolved this dispute also committed a Decisions Log renumbering —
+    /// see <see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>'s own doc. False for the Aligned
+    /// verdict, which never rebases at all.
+    /// </param>
+    /// <param name="tokensRecorded">
+    /// The disputing session's own token usage — owed regardless of how the dispute resolves, and
+    /// appended in this same transaction rather than separately, the identical atomicity every
+    /// other exit on this path keeps (see <see cref="RecordRebaseRecoveryResultAsync"/>'s own doc).
+    /// </param>
     private async Task RecordRebaseRecoveryDisputeResolvedAsync(
         ReviewContext context, string boundaryCommit, string ontoCommit, bool wasNoOp, string detail,
-        CancellationToken cancellationToken)
+        bool decisionsLogRenumbered, TokensRecorded tokensRecorded, CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(context.RunId, tokensRecorded);
         session.Events.Append(context.RunId, new RunRebasedOntoBase(
-            context.RunId, boundaryCommit, ontoCommit, wasNoOp, RecoveredByAgentSession: false, detail, now));
+            context.RunId, boundaryCommit, ontoCommit, wasNoOp, RecoveredByAgentSession: false, detail, now,
+            DecisionsLogRenumbered: decisionsLogRenumbered));
         session.Events.Append(context.RunId, new PreFinalPassRebaseRecoveryCompleted(context.RunId, ReviewFixOutcome.Fixed, now));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
