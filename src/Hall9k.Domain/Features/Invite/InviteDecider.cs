@@ -76,7 +76,9 @@ public static class InviteDecider
         return new InviteSpent(invite.Id, claimedByNodeId, claimedByRootFingerprint, spentAt);
     }
 
-    public static InviteProjectVouched VouchProject(InviteAggregate invite, Guid projectId, DateTimeOffset vouchedAt)
+    public static InviteProjectVouched VouchProject(
+        InviteAggregate invite, Guid projectId, DateTimeOffset vouchedAt, Guid candidateNodeId,
+        string candidateKeyFingerprint, string candidateOwnerFingerprint)
     {
         if (invite.Spent)
         {
@@ -88,6 +90,13 @@ public static class InviteDecider
             throw new DomainValidationException("Recording an invite's vouch write needs the project it landed in.");
         }
 
-        return new InviteProjectVouched(invite.Id, projectId, vouchedAt);
+        if (candidateKeyFingerprint.IsBlank() || candidateOwnerFingerprint.IsBlank())
+        {
+            throw new DomainValidationException(
+                "Recording an invite's vouch write needs the candidate's own key and owner fingerprints, so a "
+                + "later sweep tick can tell this candidate apart from a different one matching the same invite.");
+        }
+
+        return new InviteProjectVouched(invite.Id, projectId, vouchedAt, candidateNodeId, candidateKeyFingerprint, candidateOwnerFingerprint);
     }
 }

@@ -50,6 +50,7 @@ public sealed class EventScopeRegistryTests
         "Hall9k.Domain.Features.Epic.EpicState",
         "Hall9k.Domain.Features.Idea.IdeaSeed",
         "Hall9k.Domain.Features.Idea.IdeaState",
+        "Hall9k.Domain.Features.Invite.VouchedProjectRecord",
         "Hall9k.Domain.Features.Message.MessageAudience",
         "Hall9k.Domain.Features.Message.MessageEnvelopeV1",
         "Hall9k.Domain.Features.Message.MessageKind",
