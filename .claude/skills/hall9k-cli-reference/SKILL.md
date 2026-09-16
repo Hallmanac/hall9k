@@ -534,6 +534,18 @@ for a recorded `h9k review proceed` or `h9k review resolve`, so a task started t
 longer the fire-and-forget dispatch it was before this flag existed. The same two ordinary exit
 doors, and the same `h9k task revise --clear-interactive-mode` fallback, turn it back off.
 
+`h9k task retry` on a Failed task ordinarily resumes the failed run's own branch (or starts clean
+from the base branch when nothing survives) and dispatches a fresh build session — but a run whose
+only failure was `PullRequestOpener` itself (the branch already pushed, its review already
+settled, and `gh pr create` or the push failing on something like a network timeout) resumes at
+that step alone instead: no build or review session dispatches, and the next run re-attempts the
+pull-request open directly against the same pushed tip, retargeting onto the base branch first if
+a stacked parent merged in the meantime, exactly as closeout would. This only applies while the
+branch's tip on origin still matches what that run pushed; the daemon reverifies this live at
+dispatch time, and a tip that moved since (another node, a human, a second retry) falls back to
+the ordinary full dispatch. `h9k task retry` itself states, right after requeuing, which of the two
+paths the next run means to take and why.
+
 ```bash
 h9k task start <id>                              # dispatch a Published, Queued, or already-Blocked task headless, on the spot, ceiling-exempt
 h9k task start <id> --acknowledge-unmet-dependencies   # start a task anyway, despite named open blockers
