@@ -50,13 +50,14 @@ public static class MessageEnvelopeCodec
         string? To,
         string? About,
         string? Kind,
-        string Body);
+        string Body,
+        string? ProjectKey = null);
 
     public static string Encode(MessageEnvelopeV1 envelope)
     {
         EnvelopeDto dto = new(
             MessageEnvelopeV1.Version, envelope.Seq, envelope.At, envelope.FromNode, envelope.FromOwner,
-            envelope.To.Value, envelope.About, envelope.Kind.Value, envelope.Body);
+            envelope.To.Value, envelope.About, envelope.Kind.Value, envelope.Body, envelope.ProjectKey);
         return JsonSerializer.Serialize(dto, Options);
     }
 
@@ -93,7 +94,8 @@ public static class MessageEnvelopeCodec
 
             MessageEnvelopeV1 envelope = new(
                 dto.Seq, dto.At, dto.FromNode, dto.FromOwner,
-                MessageAudience.Parse(dto.To), dto.About, MessageKind.Parse(dto.Kind ?? string.Empty), dto.Body);
+                MessageAudience.Parse(dto.To), dto.About, MessageKind.Parse(dto.Kind ?? string.Empty), dto.Body,
+                dto.ProjectKey);
             return DecodeResult.Parsed(envelope);
         }
         catch (Exception exception) when (

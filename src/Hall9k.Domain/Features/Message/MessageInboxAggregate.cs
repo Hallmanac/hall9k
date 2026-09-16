@@ -11,6 +11,10 @@ public sealed class MessageInboxAggregate
     public Guid Id { get; private set; }
 
     public Guid SenderNodeId { get; private set; }
+
+    /// <summary>This node's own local project id this cursor belongs to (idea 202383dc, M2).</summary>
+    public Guid ProjectId { get; private set; }
+
     public long HighestSeqReceived { get; private set; }
     public bool SenderIgnored { get; private set; }
     public string? IgnoredReason { get; private set; }
@@ -19,8 +23,9 @@ public sealed class MessageInboxAggregate
 
     public void Apply(InboxCursorAdvanced @event)
     {
-        Id = MessageStreamId.ForInbox(@event.SenderNodeId);
+        Id = MessageStreamId.ForInbox(@event.SenderNodeId, @event.ProjectId);
         SenderNodeId = @event.SenderNodeId;
+        ProjectId = @event.ProjectId;
         HighestSeqReceived = @event.Seq;
         SenderIgnored = false;
         IgnoredReason = null;
@@ -30,8 +35,9 @@ public sealed class MessageInboxAggregate
 
     public void Apply(InboxSenderIgnored @event)
     {
-        Id = MessageStreamId.ForInbox(@event.SenderNodeId);
+        Id = MessageStreamId.ForInbox(@event.SenderNodeId, @event.ProjectId);
         SenderNodeId = @event.SenderNodeId;
+        ProjectId = @event.ProjectId;
         SenderIgnored = true;
         IgnoredReason = @event.Reason;
         IgnoredForVerificationFailure = @event.VerificationFailed;
@@ -40,8 +46,9 @@ public sealed class MessageInboxAggregate
 
     public void Apply(InboxSenderVouched @event)
     {
-        Id = MessageStreamId.ForInbox(@event.SenderNodeId);
+        Id = MessageStreamId.ForInbox(@event.SenderNodeId, @event.ProjectId);
         SenderNodeId = @event.SenderNodeId;
+        ProjectId = @event.ProjectId;
         SenderIgnored = false;
         IgnoredReason = null;
         IgnoredForVerificationFailure = false;

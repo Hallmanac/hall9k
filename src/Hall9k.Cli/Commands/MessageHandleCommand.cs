@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Shared.Exceptions;
 using JasperFx.Events;
 using Marten;
@@ -19,6 +21,13 @@ public sealed class MessageHandleCommand : Hall9kAsyncCommand<MessageHandleComma
         [CommandArgument(0, "<ID>")]
         [Description("The message's own id, or an unambiguous fragment of one, as h9k messages prints it.")]
         public string Id { get; init; } = string.Empty;
+
+        [CommandOption("--project <PROJECT>")]
+        [Description(
+            "Narrows the id fragment match to one project's own received messages: its name, an "
+            + "unambiguous fragment of it, or its id (h9k project list shows them all). Only needed "
+            + "when the identical fragment matches messages from more than one project.")]
+        public string? Project { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -42,7 +51,14 @@ public sealed class MessageHandleCommand : Hall9kAsyncCommand<MessageHandleComma
             throw new DomainValidationException("An id is required — h9k messages prints one for every unread message.");
         }
 
-        MessageDetails details = await MessageIdResolver.ResolveReceivedAsync(session, settings.Id, cancellationToken);
+        Guid? projectId = null;
+        if (settings.Project.IsNotBlank())
+        {
+            ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
+            projectId = project.Id;
+        }
+
+        MessageDetails details = await MessageIdResolver.ResolveReceivedAsync(session, settings.Id, projectId, cancellationToken);
         if (details.HandledAt is not null)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]Already handled at {details.HandledAt:u}.[/]");
@@ -68,7 +84,9 @@ public sealed class MessageHandleCommand : Hall9kAsyncCommand<MessageHandleComma
                 "if it is still unhandled.");
         }
 
-        AnsiConsole.MarkupLineInterpolated($"[blue]Handled[/] message from {details.FromOwnerFingerprint}.");
+        string projectLabel = details.ProjectId == Guid.Empty ? string.Empty : $" ({TaskListCommand.ShortId(details.ProjectId)})";
+        AnsiConsole.MarkupLineInterpolated(
+            $"[blue]Handled[/] message from {details.FromOwnerFingerprint}{projectLabel}.");
         return ExitCodes.Ok;
     }
 }

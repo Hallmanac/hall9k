@@ -3,7 +3,9 @@ using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
 using Spectre.Console;
@@ -40,6 +42,14 @@ public sealed class MessageSendCommand : Hall9kAsyncCommand<MessageSendCommand.S
             "A task or idea id this note is about, carried through as-is for the reader to act on "
             + "(h9k messages prints it back). Optional.")]
         public string? About { get; init; }
+
+        [CommandOption("--project <PROJECT>")]
+        [Description(
+            "Project this note is queued for: its name, an unambiguous fragment of it, or its full "
+            + "id (h9k project list shows them all). Defaults to this node's only eligible project "
+            + "(not archived, with a repository) when there is exactly one; with more than one "
+            + "registered, this is required.")]
+        public string? Project { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -69,6 +79,7 @@ public sealed class MessageSendCommand : Hall9kAsyncCommand<MessageSendCommand.S
         }
 
         MessageAudience audience = MessageAudience.Parse(settings.To);
+        ProjectDetails project = await ResolveProjectAsync(session, settings.Project, cancellationToken);
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         await session.SaveChangesAsync(cancellationToken);
@@ -83,11 +94,45 @@ public sealed class MessageSendCommand : Hall9kAsyncCommand<MessageSendCommand.S
         }
 
         MessageEnvelopeV1 envelope = await MessageOutbox.QueueAsync(
-            session, context.NodeId, ownerRootFingerprint, audience, settings.About, MessageKind.Note,
+            session, context.NodeId, project.Id, ownerRootFingerprint, audience, settings.About, MessageKind.Note,
             settings.Text, DateTimeOffset.UtcNow, cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated(
-            $"[blue]Queued[/] to {audience.Value} [dim](seq {envelope.Seq})[/] — the daemon's next message sweep sends it.");
+            $"[blue]Queued[/] to {audience.Value} for {project.Name} [dim](seq {envelope.Seq})[/] — the daemon's next message sweep sends it.");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Explicit <c>--project</c> resolves the same way every other command's own resolves one
+    /// (name, fragment, or id — <see cref="ProjectResolver.ResolveAsync"/>), with no eligibility
+    /// check of its own: a project not yet eligible for messaging still queues fine, since queueing
+    /// never touches git (idea 202383dc, M1b) — only the daemon's own flush actually needs a
+    /// repository, and by then the project may well have one. The default-selection path is
+    /// narrower on purpose: defaulting to, or silently offering, a project the sweep can never
+    /// actually flush would only ever strand a message.
+    /// </summary>
+    private static async Task<ProjectDetails> ResolveProjectAsync(
+        IQuerySession session, string? projectOption, CancellationToken cancellationToken)
+    {
+        if (projectOption.IsNotBlank())
+        {
+            return await ProjectResolver.ResolveAsync(session, projectOption, cancellationToken);
+        }
+
+        IReadOnlyList<ProjectDetails> allProjects = await session.Query<ProjectDetails>().ToListAsync(cancellationToken);
+        List<ProjectDetails> eligible = [.. allProjects
+            .Where(candidate => candidate.IsEligibleForMessaging())
+            .OrderBy(candidate => candidate.Name, StringComparer.OrdinalIgnoreCase)];
+
+        return eligible switch
+        {
+            [ProjectDetails single] => single,
+            [] => throw new DomainValidationException(
+                "No eligible projects (not archived, with a repository) are registered yet. Register "
+                + "one: h9k project add --name <name> --repo <path>."),
+            _ => throw new DomainConflictException(
+                $"This node has {eligible.Count} eligible projects — pass --project to say which one "
+                + $"this message is for: {string.Join(", ", eligible.Select(candidate => candidate.Name))}."),
+        };
     }
 }

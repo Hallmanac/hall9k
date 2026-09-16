@@ -6,7 +6,6 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Trust;
-using Hall9k.Domain.Infrastructure.Extensions;
 using Marten;
 using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
@@ -19,16 +18,15 @@ namespace Hall9k.Daemon.Messaging;
 public sealed record MessageSweepResult(bool ActiveCadence, bool JustPushed);
 
 /// <summary>
-/// One tick of the message sweep (idea 202383dc, M1b): flush this node's own queued envelopes,
-/// probe for moved outboxes and read the ones that moved, then squash this node's own outbox by
-/// age. Scoped to a single project's own repository — the first non-archived registered project
-/// with a repository — not every registered project: the message domain (seq allocation, the
-/// per-sender cursor, <c>SentAt</c>) is keyed by sender node alone, with no project scoping at
-/// all, so sweeping more than one project's repository from the same node would let the first
-/// project's flush mark every queued envelope sent before a second project ever saw them. Fixing
-/// that needs project-scoped stream ids in the message feature itself (M1a's own schema), which is
-/// out of this task's scope; this sweep instead serves the one-project shape idea 202383dc was
-/// actually walked against (Brian's own two nodes, one shared project).
+/// One tick of the message sweep (idea 202383dc, M1b; project-scoped M2): flush this node's own
+/// queued envelopes, probe for moved outboxes and read the ones that moved, then squash this node's
+/// own outbox by age — for EVERY eligible project this node is registered to (not archived, with a
+/// repository — <see cref="ProjectEligibilityExtensions.IsEligibleForMessaging"/>), each one through
+/// its own repository, never just the first one found. The message domain's own seq allocation, the
+/// per-sender cursor, and <c>SentAt</c> are all scoped by local project id (M1a/M1b's own schema,
+/// extended by M2), so a project's own flush, read, and squash never touch another project's pending
+/// messages, cursors, or outbox ref — a failure in one project's own repository this tick never
+/// blocks or corrupts any other project's own sweep.
 /// </summary>
 public sealed class MessageSweepEngine(
     IDocumentStore store,
@@ -46,19 +44,13 @@ public sealed class MessageSweepEngine(
     /// re-reads every sender once, which is cheap and correct, never lossy.</summary>
     private readonly Dictionary<(string RepositoryPath, Guid SenderNodeId), string> _lastKnownTips = [];
 
-    /// <summary>Whether this process has already logged the ambiguous-project warning <see
-    /// cref="SweepOnceAsync"/> gives once this node has more than one eligible project — in-memory
-    /// and per-process by design, the same as <see cref="_lastKnownTips"/>: a restart re-warns
-    /// once, which is cheap and never lossy, rather than spamming it every tick forever.</summary>
-    private bool _loggedAmbiguousProjectChoice;
-
     public async Task<MessageSweepResult> SweepOnceAsync(CancellationToken cancellationToken)
     {
         Guid nodeId = node.NodeId;
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
         MessageNodeIdentity? identity;
-        ProjectDetails? project;
+        List<ProjectDetails> eligibleProjects;
         await using (IDocumentSession lookupSession = store.LightweightSession())
         {
             identity = await identityResolver.ResolveAsync(lookupSession, nodeId, node.OwnerId, cancellationToken);
@@ -71,58 +63,79 @@ public sealed class MessageSweepEngine(
 
             IReadOnlyList<ProjectDetails> allProjects =
                 await lookupSession.Query<ProjectDetails>().ToListAsync(cancellationToken);
-            List<ProjectDetails> eligibleProjects = [.. allProjects
-                .Where(candidate => !candidate.IsArchived && candidate.RepositoryPath.IsNotBlank())
+            eligibleProjects = [.. allProjects
+                .Where(candidate => candidate.IsEligibleForMessaging())
                 .OrderBy(candidate => candidate.Id)];
-            project = eligibleProjects.FirstOrDefault();
-
-            // The one-project scope itself (this class's own doc comment) is out of this sweep's
-            // control; picking silently among two or more is what independent pre-PR review, cycle
-            // 1, conformance lens flagged: whichever one this sweep does NOT pick may have no node
-            // file for this node at all, so every reader on that project ignores this node's own
-            // outbox with no error anywhere. Logged once per process, never per tick, so an operator
-            // troubleshooting undelivered messages has a lead without the log filling up with a
-            // warning this sweep repeats forever for a node whose registration never changes.
-            if (eligibleProjects.Count > 1 && !_loggedAmbiguousProjectChoice)
-            {
-                _loggedAmbiguousProjectChoice = true;
-                logger.LogWarning(
-                    "This node has {Count} eligible projects for the message sweep, which only ever sweeps one "
-                    + "(idea 202383dc, M1b's documented one-project scope): {Chosen} was picked, by lowest project "
-                    + "id. If this node's own node.yaml was written into a different project ({OtherProjects}), no "
-                    + "other node reading that project's ledger can vouch for it, and this node's messages will "
-                    + "never arrive. Run h9k project join against {ChosenAgain} to make sure this node's node file "
-                    + "actually lives there.",
-                    eligibleProjects.Count, eligibleProjects[0].Name,
-                    string.Join(", ", eligibleProjects.Skip(1).Select(candidate => candidate.Name)), eligibleProjects[0].Name);
-            }
         }
 
-        if (project is null)
+        if (eligibleProjects.Count == 0)
         {
             return new MessageSweepResult(ActiveCadence: false, JustPushed: false);
         }
 
-        bool justPushed = await FlushAsync(project, nodeId, identity, now, cancellationToken);
-        await ProbeAndReadAsync(project, nodeId, identity, now, cancellationToken);
-        await SquashAsync(project, nodeId, identity, now, cancellationToken);
+        // The one project a message queued before idea 202383dc's M2 shipped (still carrying
+        // Guid.Empty as its own ProjectId) is adopted into, the first time this sweep flushes it —
+        // the identical "lowest eligible project id" rule the old, single-project sweep always
+        // picked by, so nothing already queued before this change is lost, and only ONE project ever
+        // adopts a given legacy message (MessageOutbox.FlushAsync's own doc: once adopted, a message
+        // carries a real ProjectId forever, so no later tick — for this project or any other — ever
+        // re-adopts it).
+        Guid legacyAdoptingProjectId = eligibleProjects[0].Id;
+
+        bool anyJustPushed = false;
+        foreach (ProjectDetails project in eligibleProjects)
+        {
+            TrustChain trustChain;
+            try
+            {
+                trustChain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception, "Computing the trust chain failed for project {ProjectId}; this project's sweep "
+                    + "is skipped this tick and retried next sweep", project.Id);
+                continue;
+            }
+
+            await PersistUnverifiedWritesAsync(project, trustChain, now, cancellationToken);
+
+            // The project's own ledger-derived wire key (idea 202383dc, M2) — never a local project
+            // id, which differs per install for the identical shared project. Null only when this
+            // project's own ledger has never had a member written into it (h9k project join never
+            // ran there): nothing meaningful to flush or read as yet, so this project's sweep is
+            // skipped rather than stamping envelopes with a key that would never match what any
+            // other node on the same repository eventually computes.
+            if (trustChain.GenesisRootFingerprint is not { } projectKey)
+            {
+                continue;
+            }
+
+            bool adoptUnassigned = project.Id == legacyAdoptingProjectId;
+            bool justPushed = await FlushAsync(project, nodeId, identity, projectKey, adoptUnassigned, now, cancellationToken);
+            anyJustPushed |= justPushed;
+
+            await ProbeAndReadAsync(project, nodeId, identity, trustChain, now, cancellationToken);
+            await SquashAsync(project, nodeId, identity, now, cancellationToken);
+        }
 
         await using IDocumentSession finalSession = store.LightweightSession();
         bool hasUnflushedOrUnread = await HasUnflushedOrUnreadAsync(finalSession, nodeId, cancellationToken);
         bool hasActiveRun = await HasActiveRunAsync(finalSession, nodeId, cancellationToken);
         bool activeCadence = ComputeActiveCadence(hasUnflushedOrUnread, hasActiveRun);
-        return new MessageSweepResult(activeCadence, justPushed);
+        return new MessageSweepResult(activeCadence, anyJustPushed);
     }
 
     private async Task<bool> FlushAsync(
-        ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, DateTimeOffset now,
-        CancellationToken cancellationToken)
+        ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, string projectKey, bool adoptUnassigned,
+        DateTimeOffset now, CancellationToken cancellationToken)
     {
         try
         {
             await using IDocumentSession session = store.LightweightSession();
             MessageFlushResult flush = await outbox.FlushAsync(
-                session, project.RepositoryPath, nodeId, identity.Committer, identity.SigningKey, now, cancellationToken);
+                session, project.RepositoryPath, nodeId, project.Id, projectKey, adoptUnassigned, identity.Committer,
+                identity.SigningKey, now, cancellationToken);
             return flush.EnvelopesFlushed > 0;
         }
         catch (Exception exception)
@@ -133,7 +146,7 @@ public sealed class MessageSweepEngine(
     }
 
     private async Task ProbeAndReadAsync(
-        ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, DateTimeOffset now,
+        ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, TrustChain trustChain, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<MessageOutboxTip> tips;
@@ -148,36 +161,6 @@ public sealed class MessageSweepEngine(
         }
 
         IReadOnlyList<MessageOutboxTip> toRead = SendersToRead(tips, nodeId, project.RepositoryPath, _lastKnownTips);
-
-        // Computed once for the whole sweep, never per sender: every sender's own read otherwise
-        // repeated the full ledger chain walk (an ls-remote, a fetch per owner ref plus the members
-        // ref, and a signature check per candidate key), even though nothing about the chain changes
-        // between reads in the same tick (independent pre-PR review, cycle 1, conformance lens, low).
-        // Computed and persisted regardless of whether any sender's own outbox tip moved: a bad
-        // membership or owner-ref write can land while every outbox sits idle, and h9k status only
-        // ever reads this sweep's own persisted projection, never a live ledger walk of its own — an
-        // early return here on "nothing to read" left that write unobserved until some sender's mail
-        // eventually moved again, which could be never (independent review finding).
-        TrustChain? trustChain = null;
-        try
-        {
-            trustChain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
-        }
-        catch (Exception exception)
-        {
-            // Not fatal to this sweep: each per-sender read below falls back to computing its own
-            // chain fresh when none is supplied, the identical behavior this sweep always had before
-            // this cache existed.
-            logger.LogWarning(
-                exception, "Precomputing the trust chain failed for project {ProjectId}; each sender read "
-                + "this sweep will compute its own instead", project.Id);
-        }
-
-        if (trustChain is not null)
-        {
-            await PersistUnverifiedWritesAsync(project, trustChain, now, cancellationToken);
-        }
-
         if (toRead.Count == 0)
         {
             return;
@@ -199,8 +182,8 @@ public sealed class MessageSweepEngine(
                 // all, and costs this sender nothing but a retry next sweep.
                 await using IDocumentSession session = store.LightweightSession();
                 MessageInboxSweepResult read = await inbox.ReadFromAsync(
-                    session, project.RepositoryPath, tip.SenderNodeId, nodeId, identity.OwnerRootFingerprint, now,
-                    trustChain: trustChain, cancellationToken: cancellationToken);
+                    session, project.RepositoryPath, tip.SenderNodeId, project.Id, nodeId, identity.OwnerRootFingerprint,
+                    now, trustChain: trustChain, cancellationToken: cancellationToken);
 
                 // Never recorded on a read that came back not vouched or stalled: neither one
                 // actually looked at the sender's content, so caching the tip here would make this
@@ -351,8 +334,8 @@ public sealed class MessageSweepEngine(
         {
             await using IDocumentSession session = store.LightweightSession();
             await outbox.SquashAsync(
-                session, project.RepositoryPath, nodeId, options.Value.MessageRetention, identity.Committer,
-                identity.SigningKey, now, cancellationToken);
+                session, project.RepositoryPath, nodeId, project.Id, options.Value.MessageRetention,
+                identity.Committer, identity.SigningKey, now, cancellationToken);
         }
         catch (Exception exception)
         {
@@ -377,6 +360,9 @@ public sealed class MessageSweepEngine(
     internal static bool ComputeActiveCadence(bool hasUnflushedOrUnread, bool hasActiveRun) =>
         hasUnflushedOrUnread || hasActiveRun;
 
+    /// <summary>Deliberately unscoped by project (idea 202383dc, M2): this node's own active
+    /// cadence is driven by whether ANY of its eligible projects has something unflushed or unread,
+    /// not just the one this tick happened to look at last.</summary>
     private static Task<bool> HasUnflushedOrUnreadAsync(
         IDocumentSession session, Guid nodeId, CancellationToken cancellationToken) =>
         session.Query<MessageDetails>()

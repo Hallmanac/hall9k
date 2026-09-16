@@ -388,9 +388,9 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             try
             {
                 await MessageOutbox.QueueAsync(
-                    session, context.NodeId, claimedFingerprint, MessageAudience.Owner(inviteMinterRoot), about: null,
-                    MessageKind.Note, $"Invite proof written for node {context.NodeId} in '{project.Name}'.", now,
-                    cancellationToken);
+                    session, context.NodeId, project.Id, claimedFingerprint, MessageAudience.Owner(inviteMinterRoot),
+                    about: null, MessageKind.Note, $"Invite proof written for node {context.NodeId} in '{project.Name}'.",
+                    now, cancellationToken);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {

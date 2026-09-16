@@ -12,6 +12,10 @@ public sealed class MessageInboxDetails
 {
     public Guid Id { get; set; }
     public Guid SenderNodeId { get; set; }
+
+    /// <summary>This node's own local project id this cursor belongs to (idea 202383dc, M2).</summary>
+    public Guid ProjectId { get; set; }
+
     public long HighestSeqReceived { get; set; }
     public bool SenderIgnored { get; set; }
     public string? IgnoredReason { get; set; }
@@ -25,6 +29,7 @@ public sealed class MessageInboxDetailsProjection : SingleStreamProjection<Messa
     {
         Id = @event.StreamId,
         SenderNodeId = @event.Data.SenderNodeId,
+        ProjectId = @event.Data.ProjectId,
         HighestSeqReceived = @event.Data.Seq,
     };
 
@@ -32,6 +37,7 @@ public sealed class MessageInboxDetailsProjection : SingleStreamProjection<Messa
     {
         Id = @event.StreamId,
         SenderNodeId = @event.Data.SenderNodeId,
+        ProjectId = @event.Data.ProjectId,
         SenderIgnored = true,
         IgnoredReason = @event.Data.Reason,
         IgnoredForVerificationFailure = @event.Data.VerificationFailed,

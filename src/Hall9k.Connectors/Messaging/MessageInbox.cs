@@ -23,14 +23,30 @@ public sealed record MessageInboxSweepResult(
 
 /// <summary>
 /// The receiving half of the message seam (idea 202383dc, M1a): reads everything
-/// <c>senderNodeId</c>'s outbox holds since this node's own cursor for that sender, stores only
-/// what is addressed to this node, its owner, or the project, and always advances the cursor to the
-/// highest seq this sweep actually looked at — whether or not it was stored — so an envelope for
-/// someone else, an unrecognized kind, or an unsupported version is never re-fetched forever.
-/// Self-contained, the same reason <see cref="MessageOutbox"/> is: it saves its own session.
+/// <c>senderNodeId</c>'s outbox holds since this node's own cursor for that sender IN
+/// <paramref name="projectId"/>, stores only what is addressed to this node, its owner, or the
+/// project, and always advances that project's own cursor to the highest seq this sweep actually
+/// looked at — whether or not it was stored — so an envelope for someone else, an unrecognized
+/// kind, or an unsupported version is never re-fetched forever. Self-contained, the same reason
+/// <see cref="MessageOutbox"/> is: it saves its own session.
+/// <para>
+/// The cursor and every message this call stores are scoped to <paramref name="projectId"/> alone
+/// (idea 202383dc, M2) — this node's own local project id for whichever repository
+/// <paramref name="repositoryPath"/> names. Reading THIS project's own copy of
+/// <paramref name="senderNodeId"/>'s outbox never advances, skips, or ignores that same sender's
+/// standing in any other project this node also reads it through: each project keeps its own
+/// separate cursor stream (<see cref="MessageStreamId.ForInbox"/>) and its own separate message
+/// streams (<see cref="MessageStreamId.ForMessage"/>), so a sender common to two projects never
+/// collides between them.
+/// </para>
 /// </summary>
 public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInbox>? logger = null)
 {
+    /// <param name="projectId">
+    /// This node's own local project id for <paramref name="repositoryPath"/> — never the sender's
+    /// own local project id (a different install's Guid for what may be the identical shared
+    /// project) and never the wire's ledger-derived project key. See this class's own doc.
+    /// </param>
     /// <param name="sinceSeqOverride">
     /// Reads from an explicit position instead of this node's own persisted cursor for the sender —
     /// a re-fetch (a manual re-sync, a lower bound forced after some outage) rather than this
@@ -54,6 +70,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         IDocumentSession session,
         string repositoryPath,
         Guid senderNodeId,
+        Guid projectId,
         Guid myNodeId,
         string myOwnerFingerprint,
         DateTimeOffset now,
@@ -61,7 +78,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         TrustChain? trustChain = null,
         CancellationToken cancellationToken = default)
     {
-        Guid inboxStreamId = MessageStreamId.ForInbox(senderNodeId);
+        Guid inboxStreamId = MessageStreamId.ForInbox(senderNodeId, projectId);
         MessageInboxAggregate? inbox =
             await session.Events.AggregateStreamAsync<MessageInboxAggregate>(inboxStreamId, token: cancellationToken);
         long persistedCursor = inbox?.HighestSeqReceived ?? 0;
@@ -82,7 +99,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 string reason = read.NotVouchedReason ?? "no node file vouches for this sender's outbox";
                 AppendInboxEvents(
                     session, inboxStreamId, inbox is not null,
-                    [MessageInboxDecider.IgnoreSender(senderNodeId, reason, verificationFailed: false, now)]);
+                    [MessageInboxDecider.IgnoreSender(senderNodeId, projectId, reason, verificationFailed: false, now)]);
                 await session.SaveChangesAsync(cancellationToken);
             }
 
@@ -152,17 +169,17 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 continue;
             }
 
-            Guid messageStreamId = MessageStreamId.ForMessage(senderNodeId, envelope.Seq);
+            Guid messageStreamId = MessageStreamId.ForMessage(senderNodeId, projectId, envelope.Seq);
             MessageAggregate? message =
                 await session.Events.AggregateStreamAsync<MessageAggregate>(messageStreamId, token: cancellationToken);
             if (message?.ReceivedAt is not null)
             {
                 // Already recorded — a re-fetch (a reset cursor, an overlapping read) never
-                // double-records the same (sender, seq) message.
+                // double-records the same (sender, project, seq) message.
                 continue;
             }
 
-            MessageReceived receivedEvent = MessageDecider.Receive(senderNodeId, envelope, now);
+            MessageReceived receivedEvent = MessageDecider.Receive(senderNodeId, projectId, envelope, now);
             if (message is null)
             {
                 session.Events.StartStream<MessageAggregate>(messageStreamId, receivedEvent);
@@ -188,7 +205,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         List<object> inboxEvents = [];
         if (cursorAdvanced)
         {
-            inboxEvents.Add(MessageInboxDecider.AdvanceCursor(senderNodeId, highestSeqConsidered, now));
+            inboxEvents.Add(MessageInboxDecider.AdvanceCursor(senderNodeId, projectId, highestSeqConsidered, now));
         }
 
         if (envelopeVerificationFailed)
@@ -200,7 +217,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
             string reason = read.RejectedSeqs.Count == 1
                 ? $"envelope verification failed for seq {read.RejectedSeqs[0]}"
                 : $"envelope verification failed for seqs {string.Join(", ", read.RejectedSeqs)}";
-            inboxEvents.Add(MessageInboxDecider.IgnoreSender(senderNodeId, reason, verificationFailed: true, now));
+            inboxEvents.Add(MessageInboxDecider.IgnoreSender(senderNodeId, projectId, reason, verificationFailed: true, now));
         }
         // This sweep read the sender's outbox successfully but found nothing new to advance the
         // cursor to — without this, a prior "not vouched at all" ignored mark would never clear on
@@ -211,7 +228,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         // cursor advance past it does (MessageInboxDecider.ConfirmVouched's own doc).
         else if (inbox is not null && inbox.SenderIgnored && !inbox.IgnoredForVerificationFailure)
         {
-            inboxEvents.Add(MessageInboxDecider.ConfirmVouched(senderNodeId, now));
+            inboxEvents.Add(MessageInboxDecider.ConfirmVouched(senderNodeId, projectId, now));
         }
 
         if (inboxEvents.Count > 0)

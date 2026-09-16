@@ -6,6 +6,8 @@ using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
@@ -29,8 +31,14 @@ namespace Hall9k.Tests.Integration;
 [Trait("Category", "RequiresDocker")]
 public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
-    private const string RepositoryPath = "repo-under-test";
+    private const string RepositoryPath = "/repo-under-test";
     private static readonly DateTimeOffset Now = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
+
+    /// <summary>The one local project every scenario in this file queues, flushes, and reads
+    /// through — these tests predate idea 202383dc's M2 per-project scoping and never needed a
+    /// second one; <see cref="MessageProjectScopingTests"/> is where two distinct projects actually
+    /// matter.</summary>
+    private static readonly Guid ProjectId = Guid.Parse("99999999-9999-9999-9999-999999999999");
 
     private readonly PostgresFixture _postgres;
 
@@ -61,16 +69,16 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, ownerA, MessageAudience.Node(nodeB), about: null, MessageKind.Note,
+                sendSession, nodeA, ProjectId, ownerA, MessageAudience.Node(nodeB), about: null, MessageKind.Note,
                 "hello from A", Now, cts.Token);
-            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
         }
 
         MessageInboxSweepResult sweepAtB;
         await using (IDocumentSession readSession = _postgres.Store.LightweightSession())
         {
             sweepAtB = await inbox.ReadFromAsync(
-                readSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+                readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
         }
 
         sweepAtB.SenderIgnored.Should().BeFalse();
@@ -80,7 +88,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession assertSession = _postgres.Store.LightweightSession())
         {
             MessageDetails? received = await assertSession.LoadAsync<MessageDetails>(
-                MessageStreamId.ForMessage(nodeA, 1), cts.Token);
+                MessageStreamId.ForMessage(nodeA, ProjectId, 1), cts.Token);
             received.Should().NotBeNull();
             received!.Body.Should().Be("hello from A");
             received.ReceivedAt.Should().NotBeNull();
@@ -89,23 +97,23 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeB, ownerB, MessageAudience.Node(nodeA), about: null, MessageKind.Note,
+                sendSession, nodeB, ProjectId, ownerB, MessageAudience.Node(nodeA), about: null, MessageKind.Note,
                 "hello back from B", Now.AddSeconds(2), cts.Token);
-            await outbox.FlushAsync(sendSession, RepositoryPath, nodeB, committerB, signingKeyB, Now.AddSeconds(2), cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeB, ProjectId, "shared-project-key", adoptUnassigned: false, committerB, signingKeyB, Now.AddSeconds(2), cts.Token);
         }
 
         MessageInboxSweepResult sweepAtA;
         await using (IDocumentSession readSession = _postgres.Store.LightweightSession())
         {
             sweepAtA = await inbox.ReadFromAsync(
-                readSession, RepositoryPath, nodeB, nodeA, ownerA, Now.AddSeconds(3), cancellationToken: cts.Token);
+                readSession, RepositoryPath, nodeB, ProjectId, nodeA, ownerA, Now.AddSeconds(3), cancellationToken: cts.Token);
         }
 
         sweepAtA.EnvelopesStored.Should().Be(1);
 
         await using IDocumentSession finalAssert = _postgres.Store.LightweightSession();
         MessageDetails? reply = await finalAssert.LoadAsync<MessageDetails>(
-            MessageStreamId.ForMessage(nodeB, 1), cts.Token);
+            MessageStreamId.ForMessage(nodeB, ProjectId, 1), cts.Token);
         reply.Should().NotBeNull();
         reply!.Body.Should().Be("hello back from B");
     }
@@ -128,15 +136,15 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
                 "only once", Now, cts.Token);
-            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
         }
 
         await using (IDocumentSession firstRead = _postgres.Store.LightweightSession())
         {
             MessageInboxSweepResult first = await inbox.ReadFromAsync(
-                firstRead, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+                firstRead, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
             first.EnvelopesStored.Should().Be(1);
         }
 
@@ -145,7 +153,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession secondRead = _postgres.Store.LightweightSession())
         {
             MessageInboxSweepResult second = await inbox.ReadFromAsync(
-                secondRead, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(2), sinceSeqOverride: 0, cancellationToken: cts.Token);
+                secondRead, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(2), sinceSeqOverride: 0, cancellationToken: cts.Token);
 
             second.EnvelopesConsidered.Should().Be(1, "the transport handed the same envelope back again");
             second.EnvelopesStored.Should().Be(0, "the message aggregate's own duplicate check ignored it");
@@ -153,7 +161,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
         MessageDetails? message = await assertSession.LoadAsync<MessageDetails>(
-            MessageStreamId.ForMessage(nodeA, 1), cts.Token);
+            MessageStreamId.ForMessage(nodeA, ProjectId, 1), cts.Token);
         message!.Body.Should().Be("only once");
     }
 
@@ -175,9 +183,9 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
                 "seq one", Now, cts.Token);
-            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
         }
 
         // An override far past anything the sender has actually sent — the transport correctly
@@ -186,7 +194,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession overriddenRead = _postgres.Store.LightweightSession())
         {
             MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-                overriddenRead, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), sinceSeqOverride: 100, cancellationToken: cts.Token);
+                overriddenRead, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), sinceSeqOverride: 100, cancellationToken: cts.Token);
 
             sweep.EnvelopesConsidered.Should().Be(0);
             sweep.EnvelopesStored.Should().Be(0);
@@ -196,7 +204,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         // cursor never silently jumped past it.
         await using IDocumentSession ordinaryRead = _postgres.Store.LightweightSession();
         MessageInboxSweepResult ordinarySweep = await inbox.ReadFromAsync(
-            ordinaryRead, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(2), cancellationToken: cts.Token);
+            ordinaryRead, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(2), cancellationToken: cts.Token);
 
         ordinarySweep.EnvelopesStored.Should().Be(1, "the override must never have advanced the cursor past unread content");
     }
@@ -219,15 +227,15 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
                 "seq one", Now, cts.Token);
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
                 "seq two", Now.AddSeconds(1), cts.Token);
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
                 "seq three", Now.AddSeconds(2), cts.Token);
-            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now.AddSeconds(2), cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now.AddSeconds(2), cts.Token);
         }
 
         // An override past the persisted cursor (0) that skips straight to seq 2 and does find real
@@ -237,7 +245,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession overriddenRead = _postgres.Store.LightweightSession())
         {
             MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-                overriddenRead, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(3), sinceSeqOverride: 2, cancellationToken: cts.Token);
+                overriddenRead, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(3), sinceSeqOverride: 2, cancellationToken: cts.Token);
 
             sweep.EnvelopesConsidered.Should().Be(1, "only seq 3 sits past the override");
             sweep.EnvelopesStored.Should().Be(1);
@@ -247,7 +255,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         // override skipped over — proving the cursor never silently jumped to seq 3.
         await using IDocumentSession ordinaryRead = _postgres.Store.LightweightSession();
         MessageInboxSweepResult ordinarySweep = await inbox.ReadFromAsync(
-            ordinaryRead, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(4), cancellationToken: cts.Token);
+            ordinaryRead, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(4), cancellationToken: cts.Token);
 
         ordinarySweep.EnvelopesConsidered.Should().Be(3, "seq 1 through 3 must all still be reachable");
         ordinarySweep.EnvelopesStored.Should().Be(2, "seq 1 and 2 were never stored by the skipping override; seq 3 is a re-fetch");
@@ -272,15 +280,15 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeC), null, MessageKind.Note,
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeC), null, MessageKind.Note,
                 "for C, not B", Now, cts.Token);
-            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
         }
 
         await using (IDocumentSession firstRead = _postgres.Store.LightweightSession())
         {
             MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-                firstRead, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+                firstRead, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
 
             sweep.EnvelopesConsidered.Should().Be(1);
             sweep.EnvelopesStored.Should().Be(0, "this envelope is addressed to node C, not this reader");
@@ -291,14 +299,14 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
                 "for B this time", Now.AddSeconds(2), cts.Token);
-            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now.AddSeconds(2), cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now.AddSeconds(2), cts.Token);
         }
 
         await using IDocumentSession secondRead = _postgres.Store.LightweightSession();
         MessageInboxSweepResult secondSweep = await inbox.ReadFromAsync(
-            secondRead, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(3), cancellationToken: cts.Token);
+            secondRead, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(3), cancellationToken: cts.Token);
 
         secondSweep.EnvelopesConsidered.Should().Be(1, "the cursor already advanced past the envelope addressed to C");
         secondSweep.EnvelopesStored.Should().Be(1);
@@ -322,19 +330,19 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null,
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null,
                 MessageKind.Parse("bookmark-announcement"), "a kind this version never learned", Now, cts.Token);
-            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
         }
 
         await using IDocumentSession readSession = _postgres.Store.LightweightSession();
         MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-            readSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+            readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
 
         sweep.EnvelopesStored.Should().Be(1, "an unknown kind is stored, never refused");
 
         MessageDetails? message = await readSession.LoadAsync<MessageDetails>(
-            MessageStreamId.ForMessage(nodeA, 1), cts.Token);
+            MessageStreamId.ForMessage(nodeA, ProjectId, 1), cts.Token);
         message!.Kind.Should().Be("bookmark-announcement");
     }
 
@@ -363,13 +371,13 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession readSession = _postgres.Store.LightweightSession();
         MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-            readSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(2), cancellationToken: cts.Token);
+            readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(2), cancellationToken: cts.Token);
 
         sweep.EnvelopesConsidered.Should().Be(2, "the unsupported version never fails the reader");
         sweep.EnvelopesStored.Should().Be(1, "only the version-1 envelope is stored");
 
         MessageDetails? stored = await readSession.LoadAsync<MessageDetails>(
-            MessageStreamId.ForMessage(nodeA, 2), cts.Token);
+            MessageStreamId.ForMessage(nodeA, ProjectId, 2), cts.Token);
         stored!.Body.Should().Be("seq two");
     }
 
@@ -400,13 +408,13 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession readSession = _postgres.Store.LightweightSession();
         MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-            readSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(2), cancellationToken: cts.Token);
+            readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(2), cancellationToken: cts.Token);
 
         sweep.EnvelopesConsidered.Should().Be(2, "the malformed envelope never fails the reader");
         sweep.EnvelopesStored.Should().Be(1, "only the routable envelope is stored");
 
         MessageDetails? stored = await readSession.LoadAsync<MessageDetails>(
-            MessageStreamId.ForMessage(nodeA, 2), cts.Token);
+            MessageStreamId.ForMessage(nodeA, ProjectId, 2), cts.Token);
         stored!.Body.Should().Be("seq two");
     }
 
@@ -438,13 +446,13 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession readSession = _postgres.Store.LightweightSession();
         MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-            readSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(2), cancellationToken: cts.Token);
+            readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(2), cancellationToken: cts.Token);
 
         sweep.EnvelopesConsidered.Should().Be(2, "the mismatched envelope never fails the reader");
         sweep.EnvelopesStored.Should().Be(1, "only the envelope whose own seq matches its transport position is stored");
 
         MessageDetails? atPositionOne = await readSession.LoadAsync<MessageDetails>(
-            MessageStreamId.ForMessage(nodeA, 1), cts.Token);
+            MessageStreamId.ForMessage(nodeA, ProjectId, 1), cts.Token);
         atPositionOne.Should().BeNull("the mismatched envelope must never be recorded under the position it was found at");
     }
 
@@ -463,13 +471,13 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-            session, RepositoryPath, nodeA, nodeB, ownerB, Now, cancellationToken: cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now, cancellationToken: cts.Token);
 
         sweep.EnvelopesConsidered.Should().Be(1, "the rejected candidate was still inspected");
         sweep.EnvelopesStored.Should().Be(0);
 
         MessageInboxDetails? inboxDoc = await session.LoadAsync<MessageInboxDetails>(
-            MessageStreamId.ForInbox(nodeA), cts.Token);
+            MessageStreamId.ForInbox(nodeA, ProjectId), cts.Token);
         inboxDoc!.HighestSeqReceived.Should().Be(
             5, "the cursor must move past a rejected candidate, or the identical rejection repeats every sweep");
     }
@@ -487,12 +495,12 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-            session, RepositoryPath, nodeA, nodeB, ownerB, Now, cancellationToken: cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now, cancellationToken: cts.Token);
 
         sweep.SenderIgnored.Should().BeTrue("an envelope failing sender verification must be visible to h9k status");
 
         MessageInboxDetails? inboxDoc = await session.LoadAsync<MessageInboxDetails>(
-            MessageStreamId.ForInbox(nodeA), cts.Token);
+            MessageStreamId.ForInbox(nodeA, ProjectId), cts.Token);
         inboxDoc!.SenderIgnored.Should().BeTrue(
             "the cursor advancing past a rejected candidate must never be read as this sender being fine");
         inboxDoc.HighestSeqReceived.Should().Be(5, "the cursor still moves past the rejected candidate");
@@ -505,7 +513,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         Guid nodeA = DomainId.New();
         Guid nodeB = DomainId.New();
         const string ownerB = "owner-b-fingerprint";
-        Guid inboxStreamId = MessageStreamId.ForInbox(nodeA);
+        Guid inboxStreamId = MessageStreamId.ForInbox(nodeA, ProjectId);
 
         RejectingMessageTransport rejecting = new(HighestSeqInspected: 5, RejectedSeqs: [5]);
         MessageInbox inboxOverRejecting = new(rejecting);
@@ -513,7 +521,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession firstSession = _postgres.Store.LightweightSession())
         {
             await inboxOverRejecting.ReadFromAsync(
-                firstSession, RepositoryPath, nodeA, nodeB, ownerB, Now, cancellationToken: cts.Token);
+                firstSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now, cancellationToken: cts.Token);
         }
 
         // The next sweep finds the sender vouched and nothing new past the cursor — no rejection
@@ -529,7 +537,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
             // (MessageInboxSweepResult.SenderIgnored is this sweep's own verdict, not the
             // persisted mark) — the fix is about the standing, persisted state asserted below.
             MessageInboxSweepResult second = await inboxOverClean.ReadFromAsync(
-                secondSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+                secondSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
             second.SenderIgnored.Should().BeFalse("this sweep itself rejected nothing");
         }
 
@@ -546,7 +554,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         Guid nodeA = DomainId.New();
         Guid nodeB = DomainId.New();
         const string ownerB = "owner-b-fingerprint";
-        Guid inboxStreamId = MessageStreamId.ForInbox(nodeA);
+        Guid inboxStreamId = MessageStreamId.ForInbox(nodeA, ProjectId);
 
         RejectingMessageTransport rejecting = new(HighestSeqInspected: 5, RejectedSeqs: [5]);
         MessageInbox inboxOverRejecting = new(rejecting);
@@ -554,7 +562,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession firstSession = _postgres.Store.LightweightSession())
         {
             await inboxOverRejecting.ReadFromAsync(
-                firstSession, RepositoryPath, nodeA, nodeB, ownerB, Now, cancellationToken: cts.Token);
+                firstSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now, cancellationToken: cts.Token);
         }
 
         // A later sweep that genuinely advances the cursor past the rejected candidate — real
@@ -566,7 +574,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession secondSession = _postgres.Store.LightweightSession())
         {
             MessageInboxSweepResult second = await inboxOverAdvanced.ReadFromAsync(
-                secondSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+                secondSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
             second.SenderIgnored.Should().BeFalse();
         }
 
@@ -604,13 +612,13 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         // the sender genuinely has nothing to deliver.
         await using IDocumentSession readSession = _postgres.Store.LightweightSession();
         MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-            readSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(2), cancellationToken: cts.Token);
+            readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(2), cancellationToken: cts.Token);
 
         sweep.EnvelopesStored.Should().Be(0, "seq 2 sits past a gap the reader has not resolved yet");
         sweep.StalledAtSeq.Should().Be(2, "seq 2 is the first seq this sweep could not reach");
 
         MessageInboxDetails? inboxDoc = await readSession.LoadAsync<MessageInboxDetails>(
-            MessageStreamId.ForInbox(nodeA), cts.Token);
+            MessageStreamId.ForInbox(nodeA, ProjectId), cts.Token);
         inboxDoc.Should().BeNull("a stall alone never advances or creates a persisted cursor");
     }
 
@@ -620,7 +628,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid nodeA = DomainId.New();
         Guid nodeB = DomainId.New();
-        Guid inboxStreamId = MessageStreamId.ForInbox(nodeA);
+        Guid inboxStreamId = MessageStreamId.ForInbox(nodeA, ProjectId);
 
         // Deliberately no node file for nodeA yet.
         FakeLedger ledger = new();
@@ -630,7 +638,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession firstSession = _postgres.Store.LightweightSession())
         {
             MessageInboxSweepResult first = await inbox.ReadFromAsync(
-                firstSession, RepositoryPath, nodeA, nodeB, "owner-b-fingerprint", Now, cancellationToken: cts.Token);
+                firstSession, RepositoryPath, nodeA, ProjectId, nodeB, "owner-b-fingerprint", Now, cancellationToken: cts.Token);
             first.SenderIgnored.Should().BeTrue();
         }
 
@@ -641,7 +649,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession secondSession = _postgres.Store.LightweightSession())
         {
             MessageInboxSweepResult second = await inbox.ReadFromAsync(
-                secondSession, RepositoryPath, nodeA, nodeB, "owner-b-fingerprint", Now.AddSeconds(1), cancellationToken: cts.Token);
+                secondSession, RepositoryPath, nodeA, ProjectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(1), cancellationToken: cts.Token);
             second.SenderIgnored.Should().BeFalse();
             second.EnvelopesConsidered.Should().Be(0);
         }
@@ -665,7 +673,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-            session, RepositoryPath, nodeA, nodeB, "owner-b-fingerprint", Now, cancellationToken: cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, nodeB, "owner-b-fingerprint", Now, cancellationToken: cts.Token);
 
         sweep.SenderIgnored.Should().BeTrue();
         sweep.EnvelopesStored.Should().Be(0);
@@ -675,7 +683,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
             + "this sender until it next pushes or the process restarts");
 
         MessageInboxDetails? inboxDoc = await session.LoadAsync<MessageInboxDetails>(
-            MessageStreamId.ForInbox(nodeA), cts.Token);
+            MessageStreamId.ForInbox(nodeA, ProjectId), cts.Token);
         inboxDoc.Should().NotBeNull("h9k status (M1b) names an ignored sender from this");
         inboxDoc!.SenderIgnored.Should().BeTrue();
     }
@@ -686,7 +694,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         Guid nodeA = DomainId.New();
         Guid nodeB = DomainId.New();
-        Guid inboxStreamId = MessageStreamId.ForInbox(nodeA);
+        Guid inboxStreamId = MessageStreamId.ForInbox(nodeA, ProjectId);
 
         // Deliberately no node file for nodeA on every sweep below — nothing about this sender
         // ever changes between them.
@@ -697,13 +705,13 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession firstSession = _postgres.Store.LightweightSession())
         {
             await inbox.ReadFromAsync(
-                firstSession, RepositoryPath, nodeA, nodeB, "owner-b-fingerprint", Now, cancellationToken: cts.Token);
+                firstSession, RepositoryPath, nodeA, ProjectId, nodeB, "owner-b-fingerprint", Now, cancellationToken: cts.Token);
         }
 
         await using (IDocumentSession secondSession = _postgres.Store.LightweightSession())
         {
             await inbox.ReadFromAsync(
-                secondSession, RepositoryPath, nodeA, nodeB, "owner-b-fingerprint", Now.AddSeconds(1), cancellationToken: cts.Token);
+                secondSession, RepositoryPath, nodeA, ProjectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(1), cancellationToken: cts.Token);
         }
 
         await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
@@ -728,16 +736,16 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         await MessageOutbox.QueueAsync(
-            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "one", Now, cts.Token);
+            session, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "one", Now, cts.Token);
         await MessageOutbox.QueueAsync(
-            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "two",
+            session, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "two",
             Now.AddSeconds(1), cts.Token);
         await MessageOutbox.QueueAsync(
-            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "three",
+            session, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "three",
             Now.AddSeconds(2), cts.Token);
 
         MessageFlushResult flush = await outbox.FlushAsync(
-            session, RepositoryPath, nodeA, committerA, signingKeyA, Now.AddSeconds(3), cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now.AddSeconds(3), cts.Token);
 
         flush.EnvelopesFlushed.Should().Be(3, "one flush call lands every envelope queued since the last flush");
 
@@ -752,7 +760,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         foreach (long seq in new[] { 1L, 2L, 3L })
         {
-            MessageDetails? message = await session.LoadAsync<MessageDetails>(MessageStreamId.ForMessage(nodeA, seq), cts.Token);
+            MessageDetails? message = await session.LoadAsync<MessageDetails>(MessageStreamId.ForMessage(nodeA, ProjectId, seq), cts.Token);
             message!.SentAt.Should().NotBeNull();
         }
     }
@@ -781,23 +789,23 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendOldSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendOldSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "old",
+                sendOldSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "old",
                 oldSentAt, cts.Token);
-            await outbox.FlushAsync(sendOldSession, RepositoryPath, nodeA, committerA, signingKeyA, oldSentAt, cts.Token);
+            await outbox.FlushAsync(sendOldSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, oldSentAt, cts.Token);
         }
 
         await using (IDocumentSession sendYoungSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendYoungSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "young",
+                sendYoungSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "young",
                 youngSentAt, cts.Token);
-            await outbox.FlushAsync(sendYoungSession, RepositoryPath, nodeA, committerA, signingKeyA, youngSentAt, cts.Token);
+            await outbox.FlushAsync(sendYoungSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, youngSentAt, cts.Token);
         }
 
         await using (IDocumentSession readSession = _postgres.Store.LightweightSession())
         {
             MessageInboxSweepResult sweep = await inbox.ReadFromAsync(
-                readSession, RepositoryPath, nodeA, nodeB, ownerB, youngSentAt.AddSeconds(1), cancellationToken: cts.Token);
+                readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, youngSentAt.AddSeconds(1), cancellationToken: cts.Token);
             sweep.EnvelopesStored.Should().Be(2);
         }
 
@@ -808,7 +816,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession squashSession = _postgres.Store.LightweightSession())
         {
             squash = await outbox.SquashAsync(
-                squashSession, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA, squashNow, cts.Token);
+                squashSession, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, squashNow, cts.Token);
         }
 
         squash.EnvelopesKept.Should().Be(1, "only the envelope sent within the last 48 hours is still within the retention window");
@@ -826,11 +834,11 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         // read finds nothing new to store, proving no double-record and no corruption.
         await using IDocumentSession finalSession = _postgres.Store.LightweightSession();
         MessageInboxAggregate? cursor = await finalSession.Events.AggregateStreamAsync<MessageInboxAggregate>(
-            MessageStreamId.ForInbox(nodeA), token: cts.Token);
+            MessageStreamId.ForInbox(nodeA, ProjectId), token: cts.Token);
         cursor!.HighestSeqReceived.Should().Be(2);
 
         MessageInboxSweepResult afterSweep = await inbox.ReadFromAsync(
-            finalSession, RepositoryPath, nodeA, nodeB, ownerB, squashNow.AddSeconds(1), cancellationToken: cts.Token);
+            finalSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, squashNow.AddSeconds(1), cancellationToken: cts.Token);
         afterSweep.EnvelopesConsidered.Should().Be(0, "the cursor already covers both original envelopes, squashed or not");
     }
 
@@ -857,12 +865,12 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         await MessageOutbox.QueueAsync(
-            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "delayed",
+            session, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "delayed",
             queuedAt, cts.Token);
-        await outbox.FlushAsync(session, RepositoryPath, nodeA, committerA, signingKeyA, sentAt, cts.Token);
+        await outbox.FlushAsync(session, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, sentAt, cts.Token);
 
         MessageSquashResult squash = await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA, sentAt.AddSeconds(5), cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, sentAt.AddSeconds(5), cts.Token);
 
         squash.EnvelopesKept.Should().Be(
             1, "retention is measured from when the envelope was actually sent, never from how long it sat queued");
@@ -887,9 +895,9 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         await MessageOutbox.QueueAsync(
-            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "hello",
+            session, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "hello",
             Now, cts.Token);
-        await outbox.FlushAsync(session, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+        await outbox.FlushAsync(session, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
 
         IReadOnlyList<MessageOutboxTip> tipsBeforeSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
         string tipBeforeSquash = tipsBeforeSquash.Single(tip => tip.SenderNodeId == nodeA).Tip;
@@ -897,9 +905,9 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         // A squash immediately after, and again a day later — both still well within the 48-hour
         // retention window, so nothing has aged out either time.
         await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA, Now.AddSeconds(1), cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, Now.AddSeconds(1), cts.Token);
         await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA, Now.AddHours(24), cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, Now.AddHours(24), cts.Token);
 
         IReadOnlyList<MessageOutboxTip> tipsAfterSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
         string tipAfterSquash = tipsAfterSquash.Single(tip => tip.SenderNodeId == nodeA).Tip;
@@ -928,13 +936,13 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         await MessageOutbox.QueueAsync(
-            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "old", Now,
+            session, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "old", Now,
             cts.Token);
-        await outbox.FlushAsync(session, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+        await outbox.FlushAsync(session, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
 
         DateTimeOffset firstSquashNow = Now.AddHours(48).AddMinutes(1);
         MessageSquashResult firstSquash = await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow, cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow, cts.Token);
         firstSquash.EnvelopesKept.Should().Be(0, "the only envelope sent has aged out of the retention window");
 
         IReadOnlyList<MessageOutboxTip> tipsAfterFirstSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
@@ -944,7 +952,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         // still the only row SquashAsync's own query ever sees, exactly the shape that used to
         // force a fresh push every time.
         MessageSquashResult secondSquash = await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow.AddMinutes(1),
+            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow.AddMinutes(1),
             cts.Token);
         secondSquash.EnvelopesKept.Should().Be(0);
 
@@ -976,13 +984,13 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         await MessageOutbox.QueueAsync(
-            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "old", Now,
+            session, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "old", Now,
             cts.Token);
-        await outbox.FlushAsync(session, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+        await outbox.FlushAsync(session, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
 
         DateTimeOffset firstSquashNow = Now.AddHours(48).AddMinutes(1);
         MessageSquashResult firstSquash = await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow, cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow, cts.Token);
         firstSquash.EnvelopesKept.Should().Be(0, "the only envelope sent so far has aged out of the retention window");
 
         IReadOnlyList<MessageOutboxTip> tipsAfterFirstSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
@@ -993,16 +1001,16 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         // already aged out before. The flush itself is expected to move the tip; only the squash
         // that follows it must not move it again.
         await MessageOutbox.QueueAsync(
-            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "new",
+            session, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "new",
             firstSquashNow, cts.Token);
-        await outbox.FlushAsync(session, RepositoryPath, nodeA, committerA, signingKeyA, firstSquashNow, cts.Token);
+        await outbox.FlushAsync(session, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, firstSquashNow, cts.Token);
 
         IReadOnlyList<MessageOutboxTip> tipsAfterFlush = await transport.ProbeAsync(RepositoryPath, cts.Token);
         string tipAfterFlush = tipsAfterFlush.Single(tip => tip.SenderNodeId == nodeA).Tip;
         tipAfterFlush.Should().NotBe(tipAfterFirstSquash, "the flush itself must move the tip, or the assertion below would be vacuous");
 
         MessageSquashResult secondSquash = await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, TimeSpan.FromHours(48), committerA, signingKeyA,
+            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA,
             firstSquashNow.AddMinutes(1), cts.Token);
         secondSquash.EnvelopesKept.Should().Be(1, "the newly sent envelope is still within the retention window");
 
@@ -1030,18 +1038,18 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         await MessageOutbox.QueueAsync(
-            session, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "hello", Now,
+            session, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "hello", Now,
             cts.Token);
 
         for (int attempt = 0; attempt < 3; attempt++)
         {
             Func<Task> flush = () => outbox.FlushAsync(
-                session, RepositoryPath, nodeA, committerA, signingKeyA, Now.AddSeconds(attempt), cts.Token);
+                session, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now.AddSeconds(attempt), cts.Token);
             await flush.Should().ThrowAsync<LedgerPushRejectedException>();
         }
 
         IReadOnlyList<JasperFx.Events.IEvent> events = await session.Events.FetchStreamAsync(
-            MessageStreamId.ForMessage(nodeA, 1), token: cts.Token);
+            MessageStreamId.ForMessage(nodeA, ProjectId, 1), token: cts.Token);
         events.Count(@event => @event.Data is MessageSendFailed).Should().Be(
             1, "the message was already SendFailed after the first rejection, so later rejections must not append again");
     }
@@ -1078,6 +1086,15 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
             OwnerAggregate owner = await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(ownerId, token: cts.Token)
                 ?? throw new InvalidOperationException("Expected the owner stream bootstrap just started to exist.");
             claimSession.Events.Append(ownerId, OwnerDecider.ClaimRoot(owner, "owner-a-fingerprint", verified: true, Now));
+
+            // h9k project add is what actually registers this — MessageSendCommand.RunAsync's own
+            // --project resolution needs at least one eligible (not archived, with a repository)
+            // project to default to when, as here, none is passed explicitly. Registered under this
+            // file's own shared ProjectId, so this test's later stream-id assertions (computed from
+            // that same constant) actually match what the command itself queued under.
+            claimSession.Events.StartStream<ProjectAggregate>(
+                ProjectId,
+                ProjectDecider.Register(ProjectId, ownerId, DomainId.New(), "smoke", RepositoryPath, null, null, Now));
             await claimSession.SaveChangesAsync(cts.Token);
         }
 
@@ -1108,18 +1125,18 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         // The daemon's own flush is what actually lands it — MessageSendCommand.RunAsync only queues.
         await using (IDocumentSession flushSession = _postgres.Store.LightweightSession())
         {
-            await outbox.FlushAsync(flushSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+            await outbox.FlushAsync(flushSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
         }
 
         // The daemon's own probe+read is what makes it visible to node B at all.
         await using (IDocumentSession readSession = _postgres.Store.LightweightSession())
         {
-            await inbox.ReadFromAsync(readSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+            await inbox.ReadFromAsync(readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
         }
 
         // h9k message handle <id>: MessageHandleCommand.RunAsync itself, including its
         // already-handled early return and its own append onto the same stream id.
-        string shortId = TaskListCommand.ShortId(MessageStreamId.ForMessage(nodeA, 1));
+        string shortId = TaskListCommand.ShortId(MessageStreamId.ForMessage(nodeA, ProjectId, 1));
         await using (IDocumentSession handleSession = _postgres.Store.LightweightSession())
         {
             MessageHandleCommand.Settings handleSettings = new() { Id = shortId };
@@ -1129,7 +1146,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         await using (IDocumentSession assertSession = _postgres.Store.LightweightSession())
         {
-            MessageDetails? handled = await assertSession.LoadAsync<MessageDetails>(MessageStreamId.ForMessage(nodeA, 1), cts.Token);
+            MessageDetails? handled = await assertSession.LoadAsync<MessageDetails>(MessageStreamId.ForMessage(nodeA, ProjectId, 1), cts.Token);
             handled!.About.Should().Be("task-9");
             handled.HandledAt.Should().NotBeNull();
         }
@@ -1140,7 +1157,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         int secondExitCode = await MessageHandleCommand.RunAsync(secondHandleSession, secondHandleSettings, cts.Token);
         secondExitCode.Should().Be(ExitCodes.Ok);
         IReadOnlyList<JasperFx.Events.IEvent> events = await secondHandleSession.Events.FetchStreamAsync(
-            MessageStreamId.ForMessage(nodeA, 1), token: cts.Token);
+            MessageStreamId.ForMessage(nodeA, ProjectId, 1), token: cts.Token);
         events.Count(@event => @event.Data is MessageHandled).Should().Be(
             1, "handling an already-handled message must take the early return, not append a second MessageHandled event");
     }
@@ -1169,27 +1186,27 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "resolve me",
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "resolve me",
                 Now, cts.Token);
-            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
         }
 
         await using (IDocumentSession readSession = _postgres.Store.LightweightSession())
         {
-            await inbox.ReadFromAsync(readSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+            await inbox.ReadFromAsync(readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
         }
 
-        Guid receivedId = MessageStreamId.ForMessage(nodeA, 1);
+        Guid receivedId = MessageStreamId.ForMessage(nodeA, ProjectId, 1);
         await using IDocumentSession session = _postgres.Store.LightweightSession();
 
-        MessageDetails resolved = await MessageIdResolver.ResolveReceivedAsync(session, receivedId.ToString(), cts.Token);
+        MessageDetails resolved = await MessageIdResolver.ResolveReceivedAsync(session, receivedId.ToString(), projectId: null, cts.Token);
         resolved.Id.Should().Be(receivedId);
 
-        Guid queuedButNeverReceivedId = MessageStreamId.ForMessage(nodeB, 1);
-        Func<Task> unreceived = () => MessageIdResolver.ResolveReceivedAsync(session, queuedButNeverReceivedId.ToString(), cts.Token);
+        Guid queuedButNeverReceivedId = MessageStreamId.ForMessage(nodeB, ProjectId, 1);
+        Func<Task> unreceived = () => MessageIdResolver.ResolveReceivedAsync(session, queuedButNeverReceivedId.ToString(), projectId: null, cts.Token);
         await unreceived.Should().ThrowAsync<DomainNotFoundException>("that id was never received by this node");
 
-        Func<Task> unknown = () => MessageIdResolver.ResolveReceivedAsync(session, DomainId.New().ToString(), cts.Token);
+        Func<Task> unknown = () => MessageIdResolver.ResolveReceivedAsync(session, DomainId.New().ToString(), projectId: null, cts.Token);
         await unknown.Should().ThrowAsync<DomainNotFoundException>("that id names no message stream at all");
     }
 
@@ -1221,17 +1238,17 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "race me",
+                sendSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "race me",
                 Now, cts.Token);
-            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+            await outbox.FlushAsync(sendSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, Now, cts.Token);
         }
 
         await using (IDocumentSession readSession = _postgres.Store.LightweightSession())
         {
-            await inbox.ReadFromAsync(readSession, RepositoryPath, nodeA, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+            await inbox.ReadFromAsync(readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
         }
 
-        Guid streamId = MessageStreamId.ForMessage(nodeA, 1);
+        Guid streamId = MessageStreamId.ForMessage(nodeA, ProjectId, 1);
 
         // Two daemons — or two CLI invocations — reading the same received-but-unhandled message
         // before either one appends, exactly what a genuine race looks like.

@@ -9,6 +9,11 @@ public sealed class MessageDetails
     public Guid FromNodeId { get; set; }
     public long Seq { get; set; }
 
+    /// <summary>This install's own local project id — <see cref="Guid.Empty"/> only for a message
+    /// queued before idea 202383dc's M2 shipped and not yet flushed under it (see
+    /// <see cref="MessageQueued"/>'s own doc).</summary>
+    public Guid ProjectId { get; set; }
+
     /// <summary>The envelope's own timestamp — see <see cref="MessageAggregate.QueuedAt"/>'s own doc.</summary>
     public DateTimeOffset QueuedAt { get; set; }
 
@@ -49,6 +54,7 @@ public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDet
         Id = @event.StreamId,
         FromNodeId = @event.Data.FromNodeId,
         Seq = @event.Data.Seq,
+        ProjectId = @event.Data.ProjectId,
         QueuedAt = @event.Data.At,
         FromOwnerFingerprint = @event.Data.FromOwner,
         To = @event.Data.To,
@@ -62,6 +68,7 @@ public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDet
         Id = @event.StreamId,
         FromNodeId = @event.Data.FromNodeId,
         Seq = @event.Data.Seq,
+        ProjectId = @event.Data.ProjectId,
         SentAt = @event.Data.At,
     };
 
@@ -70,6 +77,7 @@ public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDet
         Id = @event.StreamId,
         FromNodeId = @event.Data.FromNodeId,
         Seq = @event.Data.Seq,
+        ProjectId = @event.Data.ProjectId,
         SendFailed = true,
         SendFailureReason = @event.Data.Reason,
         FromOwnerFingerprint = @event.Data.FromOwner,
@@ -84,6 +92,7 @@ public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDet
         Id = @event.StreamId,
         FromNodeId = @event.Data.FromNodeId,
         Seq = @event.Data.Seq,
+        ProjectId = @event.Data.ProjectId,
         SentAt = @event.Data.SentAt,
         ReceivedAt = @event.Data.ReceivedAt,
         FromOwnerFingerprint = @event.Data.FromOwnerFingerprint,
@@ -95,6 +104,7 @@ public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDet
 
     public void Apply(IEvent<MessageSent> @event, MessageDetails view)
     {
+        view.ProjectId = @event.Data.ProjectId;
         view.SentAt = @event.Data.At;
         view.SendFailed = false;
         view.SendFailureReason = null;
@@ -102,6 +112,7 @@ public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDet
 
     public void Apply(IEvent<MessageSendFailed> @event, MessageDetails view)
     {
+        view.ProjectId = @event.Data.ProjectId;
         view.SendFailed = true;
         view.SendFailureReason = @event.Data.Reason;
         view.FromOwnerFingerprint = @event.Data.FromOwner;
@@ -121,6 +132,7 @@ public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDet
 
     public void Apply(IEvent<MessageReceived> @event, MessageDetails view)
     {
+        view.ProjectId = @event.Data.ProjectId;
         view.SentAt = @event.Data.SentAt;
         view.ReceivedAt = @event.Data.ReceivedAt;
         view.FromOwnerFingerprint = @event.Data.FromOwnerFingerprint;
