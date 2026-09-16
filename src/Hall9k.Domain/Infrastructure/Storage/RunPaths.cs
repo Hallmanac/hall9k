@@ -355,6 +355,17 @@ public static class RunPaths
         Path.Combine(runDirectory, "pre-final-pass-rebase-dispute.md");
 
     /// <summary>
+    /// The one read-only stack-assessment session's own evidence, stored beside
+    /// <see cref="ReviewFindingsFile"/> the same way every other run-scoped evidence file is
+    /// (task: a stacked checkpoint that would park for a human on a git shape first dispatches a
+    /// read-only assessment run) — appended, not overwritten, via
+    /// <see cref="AppendDisputePositionAsync"/>, though a run only ever earns one assessment, so
+    /// in practice this file holds exactly one entry.
+    /// </summary>
+    public static string StackAssessmentEvidenceFile(string runDirectory) =>
+        Path.Combine(runDirectory, "stack-assessment-evidence.md");
+
+    /// <summary>
     /// Which of the three follow-up dispute files a park's positions belong in, chosen from the
     /// follow-up kind that asked the question. One implementation rather than a conditional at
     /// each site: three places decide this — the park itself (<c>RunSupervisor</c>, twice, for the

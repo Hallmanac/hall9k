@@ -241,6 +241,24 @@ public sealed class RunAggregate
     /// </summary>
     public int RebaseRecoveryRounds { get; private set; }
 
+    /// <summary>
+    /// True once this run has dispatched its one read-only stack-assessment session (task: a
+    /// stacked checkpoint that would park for a human on a git shape first dispatches a
+    /// read-only assessment run). A run earns at most one across its whole lifetime — a second
+    /// park on a git shape after this is true goes straight to the human, with
+    /// <see cref="LastStackAssessmentEvidence"/> attached rather than a second dispatch.
+    /// </summary>
+    public bool HasDispatchedStackAssessment { get; private set; }
+
+    /// <summary>Which git-shape park the one stack assessment this run ever dispatches was raised for. See <see cref="Events.StackAssessmentDispatched"/>.</summary>
+    public string? LastStackAssessmentParkKind { get; private set; }
+
+    /// <summary>The verdict the assessment reached: aligned, replay, or undecidable. See <see cref="Events.StackAssessmentCompleted"/>.</summary>
+    public string? LastStackAssessmentVerdict { get; private set; }
+
+    /// <summary>The assessment's own evidence block, attached to a second park's reason text on the same run rather than a second dispatch.</summary>
+    public string? LastStackAssessmentEvidence { get; private set; }
+
     /// <summary>The in-flight Settling-gate repair session, cleared when its outcome is recorded. Identity for adoption.</summary>
     public Guid? ActiveSettlingGateRepairSessionId { get; private set; }
     public int? ActiveSettlingGateRepairProcessId { get; private set; }
@@ -1968,6 +1986,35 @@ public sealed class RunAggregate
         if (@event.RecoveredByAgentSession)
         {
             PreFinalPassRebaseAwaitingReview = true;
+        }
+    }
+
+    public void Apply(StackAssessmentDispatched @event)
+    {
+        HasDispatchedStackAssessment = true;
+        LastStackAssessmentParkKind = @event.ParkKind;
+    }
+
+    public void Apply(StackAssessmentCompleted @event)
+    {
+        LastStackAssessmentVerdict = @event.Verdict;
+        LastStackAssessmentEvidence = @event.Evidence;
+
+        // Undecidable names nothing worth trusting over what this run already had — see this
+        // event's own doc for why only aligned and replay move the recorded fork point and base.
+        if ((StackAssessmentVerdictKind)@event.Verdict == StackAssessmentVerdictKind.Undecidable)
+        {
+            return;
+        }
+
+        if (@event.BoundaryCommit.IsNotBlank())
+        {
+            BaseCommit = @event.BoundaryCommit;
+        }
+
+        if (@event.ResolvedBaseBranchName.IsNotBlank())
+        {
+            BaseBranch = @event.ResolvedBaseBranchName;
         }
     }
 

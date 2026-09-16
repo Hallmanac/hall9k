@@ -295,6 +295,14 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// reached, cleared once the park resolves.
     /// </summary>
     public bool ParkedOnSettlingGateRepairCap { get; set; }
+    /// <summary>True once this run has dispatched its one read-only stack-assessment session. See <see cref="RunAggregate.HasDispatchedStackAssessment"/>'s own doc.</summary>
+    public bool HasDispatchedStackAssessment { get; set; }
+    /// <summary>Which git-shape park the one stack assessment this run ever dispatches was raised for. See <see cref="Events.StackAssessmentDispatched"/>.</summary>
+    public string? LastStackAssessmentParkKind { get; set; }
+    /// <summary>The verdict the assessment reached: aligned, replay, or undecidable. See <see cref="Events.StackAssessmentCompleted"/>.</summary>
+    public string? LastStackAssessmentVerdict { get; set; }
+    /// <summary>The assessment's own evidence block, attached to a second park's reason text on the same run rather than a second dispatch.</summary>
+    public string? LastStackAssessmentEvidence { get; set; }
     /// <summary>
     /// Whether the current park is a changes-requested lap's disagreement park (task: a
     /// changes-requested pull-request review from a human becomes a fix lap) — mirrors
@@ -1515,6 +1523,36 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         if ((!@event.Data.WasNoOp || @event.Data.ForkPointAdvanced) && @event.Data.OntoCommitObserved)
         {
             view.BaseCommit = @event.Data.RebasedOntoCommit;
+        }
+    }
+
+    public void Apply(IEvent<StackAssessmentDispatched> @event, RunDetails view)
+    {
+        view.HasDispatchedStackAssessment = true;
+        view.LastStackAssessmentParkKind = @event.Data.ParkKind;
+    }
+
+    public void Apply(IEvent<StackAssessmentCompleted> @event, RunDetails view)
+    {
+        view.LastStackAssessmentVerdict = @event.Data.Verdict;
+        view.LastStackAssessmentEvidence = @event.Data.Evidence;
+
+        // Mirrors RunAggregate.Apply(StackAssessmentCompleted): undecidable names nothing worth
+        // trusting over what this run already had, so only aligned and replay move the recorded
+        // fork point and base.
+        if ((StackAssessmentVerdictKind)@event.Data.Verdict == StackAssessmentVerdictKind.Undecidable)
+        {
+            return;
+        }
+
+        if (@event.Data.BoundaryCommit.IsNotBlank())
+        {
+            view.BaseCommit = @event.Data.BoundaryCommit;
+        }
+
+        if (@event.Data.ResolvedBaseBranchName.IsNotBlank())
+        {
+            view.BaseBranch = @event.Data.ResolvedBaseBranchName;
         }
     }
 
