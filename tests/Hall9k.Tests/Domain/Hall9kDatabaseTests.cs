@@ -78,8 +78,9 @@ public sealed class Hall9kDatabaseTests : IDisposable
     public void An_unreadable_existing_config_file_resolves_as_unreadable_not_a_raw_io_exception()
     {
         string path = Path.Combine(home, "config.json");
-        File.WriteAllText(path, "{}");
-        using FileStream exclusive = new(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        using FileStream exclusive = new(path, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+        exclusive.Write("{}"u8);
+        exclusive.Flush();
 
         ConnectionStringResolution resolution = Hall9kDatabase.Resolve(startDirectory: home);
 
@@ -234,8 +235,9 @@ public sealed class Hall9kDatabaseTests : IDisposable
     public void An_unreadable_config_file_reports_unreadable_rather_than_malformed()
     {
         string path = Path.Combine(home, "config.json");
-        File.WriteAllText(path, "{}");
-        using FileStream exclusive = new(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        using FileStream exclusive = new(path, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+        exclusive.Write("{}"u8);
+        exclusive.Flush();
 
         Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().State.Should().Be(
             ConfigFileConnectionStringState.Unreadable,
