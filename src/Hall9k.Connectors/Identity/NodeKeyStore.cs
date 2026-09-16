@@ -170,7 +170,13 @@ public sealed partial class NodeKeyStore(ProcessRunner? runner = null)
     /// <summary>
     /// Hall9k's own fingerprint for a public key line (<c>"ssh-ed25519 &lt;base64&gt; comment"</c>):
     /// the lowercase hex SHA-256 of the decoded key blob. See <see cref="NodeSigningKey"/> for why
-    /// this is not OpenSSH's own <c>SHA256:</c> fingerprint format.
+    /// this is not OpenSSH's own <c>SHA256:</c> fingerprint format. Every way a caller-supplied
+    /// line can fail to parse — too few fields, or a field that is not valid base64 — surfaces as
+    /// the identical <see cref="DomainValidationException"/> rather than letting a raw
+    /// <see cref="FormatException"/> escape: every caller of this method already catches the
+    /// former as "this key is malformed, refuse it", and a second, undocumented exception type
+    /// would keep slipping past that catch for a ledger-supplied key nobody signing this line ever
+    /// validated on the way in.
     /// </summary>
     public static string Fingerprint(string publicKeyLine)
     {
@@ -182,7 +188,18 @@ public sealed partial class NodeKeyStore(ProcessRunner? runner = null)
                 + "'<type> <base64> [comment]').");
         }
 
-        byte[] blob = Convert.FromBase64String(fields[1]);
+        byte[] blob;
+        try
+        {
+            blob = Convert.FromBase64String(fields[1]);
+        }
+        catch (FormatException exception)
+        {
+            throw new DomainValidationException(
+                $"'{publicKeyLine}' is not a public key line Hall9k can fingerprint (its key data "
+                + $"is not valid base64: {exception.Message}).");
+        }
+
         byte[] hash = SHA256.HashData(blob);
         return Convert.ToHexString(hash).ToLowerInvariant();
     }
