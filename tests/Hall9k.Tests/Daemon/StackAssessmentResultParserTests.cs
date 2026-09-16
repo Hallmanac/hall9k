@@ -105,6 +105,39 @@ public sealed class StackAssessmentResultParserTests
         verdict.Evidence.Should().Contain("malformed");
     }
 
+    /// <summary>
+    /// The template shows <c>BOUNDARY: none</c> only as the value for an undecidable verdict — an
+    /// aligned or replay verdict that names it anyway (or any other non-SHA value: a branch name,
+    /// a short mnemonic, an option-looking string) is not trusted as a commit, the same as a
+    /// missing BOUNDARY: line (independent pre-PR review, cycle 1, conformance and adversarial
+    /// lenses: an unverified, non-SHA value reaching `git rebase --onto` as a bare revision
+    /// argument is exactly the shape this guards against).
+    /// </summary>
+    [Theory]
+    [InlineData("none")]
+    [InlineData("main")]
+    [InlineData("-x")]
+    [InlineData("--upload-pack=evil")]
+    [InlineData("not-a-sha")]
+    public void A_replay_verdict_with_a_non_sha_boundary_is_undecidable(string nonShaBoundary)
+    {
+        StackAssessmentVerdict verdict = StackAssessmentResultParser.Parse(
+            $"STACK ASSESSMENT VERDICT: replay\nBOUNDARY: {nonShaBoundary}\nONTO: {Onto}\nEVIDENCE:\nSome evidence.");
+
+        verdict.Kind.Should().Be(StackAssessmentVerdictKind.Undecidable);
+        verdict.Evidence.Should().Contain("malformed");
+    }
+
+    [Fact]
+    public void An_aligned_verdict_with_a_non_sha_onto_is_undecidable()
+    {
+        StackAssessmentVerdict verdict = StackAssessmentResultParser.Parse(
+            $"STACK ASSESSMENT VERDICT: aligned\nBOUNDARY: {Boundary}\nONTO: none\nEVIDENCE:\nSome evidence.");
+
+        verdict.Kind.Should().Be(StackAssessmentVerdictKind.Undecidable);
+        verdict.Evidence.Should().Contain("malformed");
+    }
+
     [Fact]
     public void An_unrecognized_verdict_value_is_undecidable()
     {
