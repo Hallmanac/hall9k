@@ -1142,6 +1142,51 @@ public sealed class TaskPhaseSurfaceTests
             .Phase.Detail.Should().Be("no confirmed review observation recorded; its checks may still be reporting");
     }
 
+    /// <summary>
+    /// The quota-refusal arm (task: a Copilot review refused for quota is treated as review
+    /// unavailable). Two things distinguish it from the "Landed"/"None" pair above: whether the
+    /// platform itself proceeds depends on the task's own pre-approval (only
+    /// <c>CloseoutEngine.TryAutoMergeAsync</c> ever runs on its own, and only for a pre-approved
+    /// task), and it hedges on <see cref="RunDetails.ExternalReviewChecksPending"/> the same way
+    /// the "None" arm does — neither claim is true while a check is still reporting (independent
+    /// pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public void A_quota_refusal_names_whose_hand_the_remaining_gates_are_in()
+    {
+        Guid runId = DomainId.New();
+        string pullRequest = "https://github.com/x/y/pull/24";
+
+        RunDetails unavailable = StatusFixtures.Run(runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        unavailable.ExternalReviewState = ExternalReviewState.Unavailable;
+
+        // Not pre-approved: the daemon never merges on its own, so the human's own merge is what
+        // is left, the same as the "None" arm's own wording for that case.
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), unavailable)
+            .Phase.Text.Should().Be("watching PR #24 — Copilot review unavailable");
+        StatusFixtures.Compose(StatusFixtures.Task(TaskState.Done, runId, pullRequest), unavailable)
+            .Phase.Detail.Should().Be("refused for quota; accepted, and the merge is yours without it");
+
+        // Pre-approved: CloseoutEngine.TryAutoMergeAsync is the one path that actually proceeds
+        // on its own here, so this is the one case the "proceeding on the remaining gates"
+        // wording is true for.
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproval: PreApprovalMode.On), unavailable)
+            .Phase.Detail.Should().Be("refused for quota; accepted, and proceeding on the remaining gates without it");
+
+        // A check still reporting means neither claim is true yet, whichever hand the gates end
+        // up in once it settles — the same hedge the "None" arm gives a quiet pull request.
+        RunDetails unavailableChecksPending = StatusFixtures.Run(
+            runId, RunState.AwaitingReview, sessionProcessId: null, pullRequestNumber: 24);
+        unavailableChecksPending.ExternalReviewState = ExternalReviewState.Unavailable;
+        unavailableChecksPending.ExternalReviewChecksPending = true;
+        unavailableChecksPending.ExternalReviewChecksPendingSince = StatusFixtures.Now.AddMinutes(-12);
+        StatusFixtures.Compose(
+                StatusFixtures.Task(TaskState.Done, runId, pullRequest, preApproval: PreApprovalMode.On),
+                unavailableChecksPending)
+            .Phase.Detail.Should().Be("refused for quota; accepted, and a check has been pending 12m");
+    }
+
     [Fact]
     public void Rows_with_no_live_machinery_carry_no_phase_at_all()
     {
