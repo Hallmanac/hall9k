@@ -47,9 +47,14 @@ gate and pass read the rebased tree and the pull request that opens afterward is
 arrival. A no-op rebase and a clean rebase both still run one mechanical step first: reassigning
 the log's own tail placeholder (PLAN.md §16, Decisions Log #162) its real number
 and rewriting every citation of it, committed on its own before the mandatory gate reruns. Beyond
-that step, neither costs anything extra; a conflict is handed to a narrow recovery session
-dispatched inside the same run (never a task reopen), and only a conflict that session cannot
-honestly resolve parks for a human (PLAN.md Decisions Log #138). A rebase that applies cleanly but
+that step, neither costs anything extra; a conflict first dispatches this run's own one read-only
+stack assessment (PLAN.md §16, Decisions Log #PLACEHOLDER-b7c78678), a structured verdict —
+aligned, replay from a boundary onto a commit, or undecidable — that the run acts on rather than a
+human ever seeing: an aligned or replay verdict is retried mechanically, and only a genuinely
+undecidable one, or a retried replay that still conflicts, falls through to the narrow recovery
+session dispatched inside the same run (never a task reopen); only a conflict that session cannot
+honestly resolve, or the exhaustion of its own round cap, parks for a human (PLAN.md Decisions Log
+#138). A rebase that applies cleanly but
 leaves that mandatory gate itself failing gets the same shape of second chance rather than failing
 the run outright: one narrow repair session dispatched inside the same run, carrying the gate's own
 output, bounded by its own round cap distinct from the rebase-recovery session's — and a repair
