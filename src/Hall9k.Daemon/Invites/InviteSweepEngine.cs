@@ -149,24 +149,6 @@ public sealed class InviteSweepEngine(
         if (aggregate.Claim == InviteClaimKind.MemberOfProject)
         {
             role = aggregate.Role ?? throw new InvalidOperationException($"Invite {aggregate.Id} is member-of-project but carries no role.");
-
-            // The candidate's own owner_fingerprint field is self-declared in its node file, never
-            // verified against anything this sweep can check — the HMAC proof binds only the
-            // candidate's key fingerprint, never that claim. Refusing to grant membership at a
-            // fingerprint that is already a member is what stands between that unverified claim and
-            // an invite holder silently overwriting (and so demoting) an existing owner or member —
-            // a member-of-project invite is for a NEW member, never a route to rewrite an existing
-            // one (independent pre-PR review, cycle 1, adversarial lens, high).
-            ProjectDetails targetProject = projects[0];
-            if (await ledger.HasAnyAsync(
-                targetProject.RepositoryPath, MembersRefName, $"members/{candidate.OwnerFingerprint}.yaml", cancellationToken))
-            {
-                logger.LogWarning(
-                    "Invite {InviteId} matched a proof claiming owner fingerprint {OwnerFingerprint}, which is already a "
-                    + "member of project {ProjectId} — refusing to overwrite an existing member; will retry next sweep.",
-                    aggregate.Id, candidate.OwnerFingerprint, targetProject.Id);
-                return false;
-            }
         }
 
         // Written into every target project, not only the one the match happened to be found in —
@@ -174,24 +156,70 @@ public sealed class InviteSweepEngine(
         // is registered to, so leaving the others unspent lets a leaked secret still be honored
         // there (independent pre-PR review, cycle 1, conformance and adversarial lenses, both
         // medium). Left unspent locally until every target project has actually landed the write:
-        // a partial failure this tick is retried next tick rather than abandoned, and re-running an
-        // already-succeeded project is a cheap no-op — WriteWithRetryAsync's own read-before-write
-        // short-circuits once the content already matches.
+        // a partial failure this tick is retried next tick rather than abandoned. Re-running an
+        // already-succeeded project really is a cheap no-op: VouchNodeAsync/VouchMemberAsync tag
+        // their own write with this invite's own id and reuse whatever issued_at a matching prior
+        // write already carries, so a retry reproduces byte-identical content and
+        // WriteWithRetryAsync's own read-before-write short-circuits rather than pushing a
+        // redundant commit (independent pre-PR review, cycle 4, adversarial lens, medium — the
+        // claim was false while issued_at was stamped fresh on every attempt).
         int wroteInto = 0;
         foreach (ProjectDetails project in projects)
         {
             try
             {
+                bool proceeded;
                 if (aggregate.Claim == InviteClaimKind.NodeOfOwner)
                 {
-                    await VouchNodeAsync(
-                        project.RepositoryPath, aggregate.MinterOwnerFingerprint, candidate.NodeId, candidate.PublicKeyLine,
-                        now, committer, signingKey, cancellationToken);
+                    proceeded = await VouchNodeAsync(
+                        project.RepositoryPath, aggregate.Id, aggregate.MinterOwnerFingerprint, candidate.NodeId,
+                        candidate.PublicKeyLine, now, committer, signingKey, cancellationToken);
+                    if (!proceeded)
+                    {
+                        // Mirrors the member-of-project guard just below: the candidate's own ref
+                        // name (so its node id) is self-chosen, never verified against anything this
+                        // sweep can check, so accepting it unconditionally would let an invite
+                        // holder plant their own key under an already-enrolled node's own id and
+                        // silently evict it — a node-of-owner invite is for a NEW node, never a
+                        // route to rewrite an existing one (independent pre-PR review, cycle 4,
+                        // adversarial lens, medium).
+                        logger.LogWarning(
+                            "Invite {InviteId} matched a proof claiming node id {NodeId}, which is already enrolled "
+                            + "under a different key in project {ProjectId} — refusing to overwrite an existing "
+                            + "node; will retry next sweep.",
+                            aggregate.Id, candidate.NodeId, project.Id);
+                        continue;
+                    }
                 }
                 else
                 {
-                    await VouchMemberAsync(
-                        project.RepositoryPath, candidate.OwnerFingerprint, role!.Value, now, committer, signingKey, cancellationToken);
+                    // The candidate's own owner_fingerprint field is self-declared in its node
+                    // file, never verified against anything this sweep can check — the HMAC proof
+                    // binds only the candidate's key fingerprint, never that claim. Refusing to
+                    // grant membership at a fingerprint that is already a member (under a different
+                    // invite, or none at all) is what stands between that unverified claim and an
+                    // invite holder silently overwriting (and so demoting) an existing owner or
+                    // member — a member-of-project invite is for a NEW member, never a route to
+                    // rewrite an existing one (independent pre-PR review, cycle 1, adversarial
+                    // lens, high). Tagging the write with this invite's own id, rather than merely
+                    // checking whether the path exists, is what lets a later retry of this exact
+                    // invite's own earlier, partially-completed attempt tell "I already wrote this"
+                    // apart from "someone else already owns this" — a blind existence check wedges
+                    // permanently the moment its own successful write is what it then sees on retry
+                    // (independent pre-PR review, cycle 4, both lenses, high/medium).
+                    proceeded = await VouchMemberAsync(
+                        project.RepositoryPath, aggregate.Id, candidate.OwnerFingerprint, role!.Value, now, committer,
+                        signingKey, cancellationToken);
+                    if (!proceeded)
+                    {
+                        logger.LogWarning(
+                            "Invite {InviteId} matched a proof claiming owner fingerprint {OwnerFingerprint}, which is "
+                            + "already a member of project {ProjectId} — refusing to overwrite an existing member; "
+                            + "will retry next sweep.",
+                            aggregate.Id, candidate.OwnerFingerprint, project.Id);
+                        continue;
+                    }
+
                     session.Events.Append(
                         project.Id, ProjectDecider.VouchMember(project.Id, candidate.OwnerFingerprint, role.Value, now));
                 }
@@ -349,29 +377,73 @@ public sealed class InviteSweepEngine(
         return null;
     }
 
-    private async Task VouchNodeAsync(
-        string repositoryPath, string rootFingerprint, Guid candidateNodeId, string publicKeyLine, DateTimeOffset now,
-        LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
+    /// <summary>
+    /// Writes (or, on a retry of this exact invite's own earlier attempt, cheaply confirms)
+    /// <c>owners/&lt;rootFingerprint&gt;/nodes/&lt;candidateNodeId&gt;.yaml</c>. Returns <c>false</c>,
+    /// writing nothing, when a file already lives at that path and its own <c>invite_id</c> field
+    /// does not name <paramref name="inviteId"/> — an already-enrolled node under this id, vouched
+    /// by anything other than this exact invite (a different invite, a direct <c>h9k node vouch</c>,
+    /// or the plain join genesis path, none of which stamp that field). The tag, not a bare
+    /// existence check, is what tells "this invite already wrote this" apart from "something else
+    /// owns this": a bare existence check sees an identical file either way, and so would refuse
+    /// its own successful prior write forever on retry (independent pre-PR review, cycle 4, both
+    /// lenses, high/medium).
+    /// </summary>
+    private async Task<bool> VouchNodeAsync(
+        string repositoryPath, Guid inviteId, string rootFingerprint, Guid candidateNodeId, string publicKeyLine,
+        DateTimeOffset now, LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
     {
         string refName = $"refs/hall9k/ledger/owners/{rootFingerprint}";
         string path = $"owners/{rootFingerprint}/nodes/{candidateNodeId}.yaml";
+        LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
+        if (current.Exists && current.Content is { } existing
+            && ExtractQuotedYamlValue(existing, "invite_id") != inviteId.ToString())
+        {
+            return false;
+        }
+
+        // Reuses whatever issued_at a matching prior write of this exact invite already carries,
+        // rather than always stamping DateTimeOffset.UtcNow: a fresh timestamp on every retry made
+        // the content differ from what a previous, successful tick already wrote, defeating
+        // WriteWithRetryAsync's own read-before-write short-circuit and pushing a redundant signed
+        // commit every 20 seconds until the invite expired (independent pre-PR review, cycle 4,
+        // adversarial lens, medium).
+        string issuedAt = current.Content is { } reused
+            ? ExtractQuotedYamlValue(reused, "issued_at") ?? now.ToString("o", CultureInfo.InvariantCulture)
+            : now.ToString("o", CultureInfo.InvariantCulture);
         string content = BuildYaml(
             ("node_id", candidateNodeId.ToString()),
             ("public_key", publicKeyLine),
-            ("issued_at", now.ToString("o", CultureInfo.InvariantCulture)));
+            ("issued_at", issuedAt),
+            ("invite_id", inviteId.ToString()));
         await WriteWithRetryAsync(repositoryPath, refName, path, content, $"Vouch node {candidateNodeId} (invite)", committer, signingKey, cancellationToken);
+        return true;
     }
 
-    private async Task VouchMemberAsync(
-        string repositoryPath, string candidateOwnerFingerprint, ProjectMemberRole role, DateTimeOffset now,
+    /// <summary>Mirrors <see cref="VouchNodeAsync"/>'s own invite-id tag, idempotency, and doc
+    /// comment, for <c>members/&lt;candidateOwnerFingerprint&gt;.yaml</c> instead.</summary>
+    private async Task<bool> VouchMemberAsync(
+        string repositoryPath, Guid inviteId, string candidateOwnerFingerprint, ProjectMemberRole role, DateTimeOffset now,
         LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
     {
         string path = $"members/{candidateOwnerFingerprint}.yaml";
+        LedgerFile current = await ledger.ReadAsync(repositoryPath, MembersRefName, path, cancellationToken);
+        if (current.Exists && current.Content is { } existing
+            && ExtractQuotedYamlValue(existing, "invite_id") != inviteId.ToString())
+        {
+            return false;
+        }
+
+        string issuedAt = current.Content is { } reused
+            ? ExtractQuotedYamlValue(reused, "issued_at") ?? now.ToString("o", CultureInfo.InvariantCulture)
+            : now.ToString("o", CultureInfo.InvariantCulture);
         string content = BuildYaml(
             ("root_fingerprint", candidateOwnerFingerprint),
             ("role", role.Value),
-            ("issued_at", now.ToString("o", CultureInfo.InvariantCulture)));
+            ("issued_at", issuedAt),
+            ("invite_id", inviteId.ToString()));
         await WriteWithRetryAsync(repositoryPath, MembersRefName, path, content, $"Vouch member {candidateOwnerFingerprint} (invite)", committer, signingKey, cancellationToken);
+        return true;
     }
 
     private async Task MarkInviteSpentInLedgerAsync(
