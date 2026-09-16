@@ -1742,7 +1742,21 @@ first pass because the fix is real refactor, not a documentation-only rewording:
 missed that `NodeBootstrap.RunQuick`'s own `gh api user` case is not actually circular the way it
 first looked (that read confirms an *account*, not a *process seam* — the seam it needs already
 existed) and shipped it as a documented exception instead (independent pre-PR review, cycle 1,
-human verdict, 2026-09-15). **Enforcement.** Two source-scanning guard
+human verdict, 2026-09-15). **A named consequence, not a fix.** `EnsureAsync`'s roughly forty other
+call sites — every `h9k` command besides `project add`/`project join` — never pass a reader at all,
+so on a fresh install whose first command is one of those, the bootstrap GitHub connection records
+`ExternalAccountId` as `Environment.UserName` rather than gh's own confirmed login, and nothing
+after ever rewrites that field once `ConnectionGitHubIdentityObserved` starts recording
+`GitHubAccountId`/`GitHubLogin` instead: `h9k connection list` and `h9k project show` show the
+operating-system username for that connection's life on that install. Display drift only —
+`ProjectGitHubClient.ResolveAccountAsync` reads `GitHubLogin`, never `ExternalAccountId`, so no gh
+call ever runs as the wrong account over this — and an unavoidable consequence of the human's own
+ruling above, not a gap in it (independent pre-PR review, cycle 1, conformance lens). Bounded rather
+than the flat 3 seconds `NodeContext`'s own doc once claimed: `ExternalProcess.RunAsync`'s
+termination path awaits its own 5-second grace before giving up on an unresponsive kill, so a `gh`
+wedged badly enough to survive the first `TerminateAsync` call can hold a bootstrap identity read
+for up to roughly 8 seconds, not 3 (independent pre-PR review, cycle 1, adversarial lens) —
+still bounded, never unbounded, just not the number the comment named. **Enforcement.** Two source-scanning guard
 tests (`GitHubSpawnSeamGuardTests`, following the existing `ContainerRoutingGuardTests`/
 `ProcessTerminationGuardTests` pattern and their shared `TestSourceTree` helper): no file outside
 `ExternalProcess.cs` builds a raw `ProcessStartInfo` naming `gh` directly, and no GitHub-or-tracker
