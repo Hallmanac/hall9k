@@ -42,9 +42,18 @@ internal static partial class StackAssessmentResultParser
                 "the assessment run produced no summary at all, so no STACK ASSESSMENT VERDICT trailer could be read");
         }
 
-        string? verdictValue = LastMarkerValue(summary, VerdictMarker);
-        string? boundary = LastMarkerValue(summary, BoundaryMarker);
-        string? onto = LastMarkerValue(summary, OntoMarker);
+        // The trailer contract's own fixed order (stack-assessment.md) puts EVIDENCE: last, so the
+        // marker search is bounded to everything before it — otherwise a line inside the evidence
+        // block itself that happens to start with one of these markers (an agent quoting a
+        // rejected candidate, e.g. "Onto: <sha the agent ruled out>") would be read as the LAST,
+        // and therefore winning, match under the tolerant "last marker wins" rule below
+        // (independent pre-PR review, cycle 1, conformance lens).
+        int evidenceMarkerIndex = summary.LastIndexOf(EvidenceMarker, StringComparison.OrdinalIgnoreCase);
+        string trailerSection = evidenceMarkerIndex < 0 ? summary : summary[..evidenceMarkerIndex];
+
+        string? verdictValue = LastMarkerValue(trailerSection, VerdictMarker);
+        string? boundary = LastMarkerValue(trailerSection, BoundaryMarker);
+        string? onto = LastMarkerValue(trailerSection, OntoMarker);
         string evidence = EvidenceBlock(summary);
 
         if (verdictValue.IsBlank())

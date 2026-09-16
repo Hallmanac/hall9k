@@ -168,4 +168,17 @@ public sealed class StackAssessmentResultParserTests
         verdict.Kind.Should().Be(StackAssessmentVerdictKind.Aligned);
         verdict.BoundaryCommit.Should().Be(Boundary);
     }
+
+    [Fact]
+    public void A_marker_shaped_line_inside_the_evidence_block_never_overrides_the_real_trailer_value()
+    {
+        string rejectedOnto = "3333333333333333333333333333333333cccc";
+        StackAssessmentVerdict verdict = StackAssessmentResultParser.Parse(
+            $"STACK ASSESSMENT VERDICT: replay\nBOUNDARY: {Boundary}\nONTO: {Onto}\n"
+            + $"EVIDENCE:\nChecked candidate boundaries. Onto: {rejectedOnto} was ruled out because it "
+            + "belongs to an unrelated branch; the real target is the one named above.");
+
+        verdict.Kind.Should().Be(StackAssessmentVerdictKind.Replay);
+        verdict.OntoCommit.Should().Be(Onto);
+    }
 }
