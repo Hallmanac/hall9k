@@ -75,12 +75,20 @@ public sealed class MessageSweepEngine(
 
         // The one project a message queued before idea 202383dc's M2 shipped (still carrying
         // Guid.Empty as its own ProjectId) is adopted into, the first time this sweep flushes it —
-        // the identical "lowest eligible project id" rule the old, single-project sweep always
-        // picked by, so nothing already queued before this change is lost, and only ONE project ever
-        // adopts a given legacy message (MessageOutbox.FlushAsync's own doc: once adopted, a message
-        // carries a real ProjectId forever, so no later tick — for this project or any other — ever
-        // re-adopts it).
-        Guid legacyAdoptingProjectId = eligibleProjects[0].Id;
+        // in principle the lowest eligible project id (LegacyMessageAdoption's own rule, the
+        // identical one the old, single-project sweep always picked by), so nothing already queued
+        // before this change is lost. In practice, whichever eligible project reaches the flush step
+        // FIRST this tick claims the adoption instead of that fixed choice: if the lowest-id
+        // project's own trust chain read or genesis check keeps failing, pinning adoption to it
+        // forever would leave every legacy message pending forever too, even though a healthier
+        // eligible project sits right behind it in the loop (independent pre-PR review, cycle 1,
+        // both lenses, medium — "the old sweep flushed without needing either"). Only ONE project
+        // ever actually adopts a given legacy message regardless of which one gets there first: the
+        // adoption query itself is what is idempotent (MessageOutbox.FlushAsync's own doc — once
+        // adopted, a message carries a real ProjectId forever, so no later project this tick, or any
+        // project on a later tick, ever re-adopts it), so racing every eligible project at the flush
+        // step for the same still-Guid.Empty batch is safe by construction, never a double-adopt.
+        bool legacyAlreadyClaimedThisTick = false;
 
         bool anyJustPushed = false;
         foreach (ProjectDetails project in eligibleProjects)
@@ -111,12 +119,13 @@ public sealed class MessageSweepEngine(
                 continue;
             }
 
-            bool adoptUnassigned = project.Id == legacyAdoptingProjectId;
+            bool adoptUnassigned = !legacyAlreadyClaimedThisTick;
+            legacyAlreadyClaimedThisTick = true;
             bool justPushed = await FlushAsync(project, nodeId, identity, projectKey, adoptUnassigned, now, cancellationToken);
             anyJustPushed |= justPushed;
 
             await ProbeAndReadAsync(project, nodeId, identity, trustChain, now, cancellationToken);
-            await SquashAsync(project, nodeId, identity, now, cancellationToken);
+            await SquashAsync(project, nodeId, identity, projectKey, now, cancellationToken);
         }
 
         await using IDocumentSession finalSession = store.LightweightSession();
@@ -327,14 +336,14 @@ public sealed class MessageSweepEngine(
                 || knownTip != tip.Tip))];
 
     private async Task SquashAsync(
-        ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, DateTimeOffset now,
+        ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, string projectKey, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         try
         {
             await using IDocumentSession session = store.LightweightSession();
             await outbox.SquashAsync(
-                session, project.RepositoryPath, nodeId, project.Id, options.Value.MessageRetention,
+                session, project.RepositoryPath, nodeId, project.Id, projectKey, options.Value.MessageRetention,
                 identity.Committer, identity.SigningKey, now, cancellationToken);
         }
         catch (Exception exception)

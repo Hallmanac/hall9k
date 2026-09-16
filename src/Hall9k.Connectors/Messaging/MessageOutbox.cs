@@ -208,12 +208,20 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// the rest of the node's life. Skipping again once nothing that survived the last real push has
     /// since aged out is what actually stops that (independent pre-PR review, cycle 1, both lenses).
     /// </para>
+    /// <para>
+    /// <paramref name="projectKey"/> is stamped onto every survivor the same way <see cref="FlushAsync"/>
+    /// stamps it at flush time: a squash rebuilds each surviving envelope from <see cref="MessageDetails"/>'s
+    /// own stored fields via <see cref="ToEnvelope"/>, which carries no project key of its own, so
+    /// without this every squashed ref would silently drop the key a reader still expects on it
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium).
+    /// </para>
     /// </summary>
     public async Task<MessageSquashResult> SquashAsync(
         IDocumentSession session,
         string repositoryPath,
         Guid fromNodeId,
         Guid projectId,
+        string projectKey,
         TimeSpan retention,
         LedgerCommitter committer,
         LedgerSigningKey signingKey,
@@ -241,7 +249,8 @@ public sealed class MessageOutbox(IMessageTransport transport)
         }
 
         List<TransportEnvelope> batch = [.. survivors.Select(
-            message => new TransportEnvelope(message.Seq, MessageEnvelopeCodec.Encode(ToEnvelope(message))))];
+            message => new TransportEnvelope(
+                message.Seq, MessageEnvelopeCodec.Encode(ToEnvelope(message) with { ProjectKey = projectKey })))];
         await transport.SquashAsync(repositoryPath, fromNodeId, batch, committer, signingKey, cancellationToken);
         _lastSquashedSurvivorSeqs[key] = survivorSeqs;
         return new MessageSquashResult(survivors.Count);
@@ -274,29 +283,26 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// (<c>GitLedgerMessageTransport.ReadSinceAsync</c>) would then stall a reader at the very first
     /// one forever.
     /// <para>
-    /// Known, accepted limitation: this scoping deliberately excludes <see cref="Guid.Empty"/>-project
-    /// messages (queued before M2 shipped) from the max it computes, even for the one project a
-    /// sweep later adopts them into — considering them for every project would reintroduce exactly
-    /// the stall above for any brand-new project's own first-ever message, which is the worse of the
-    /// two failure modes. Whichever project ends up adopting legacy messages could in principle
-    /// already hold ALREADY-SENT history under this same node from before M2 (seq 1..N, physically
-    /// on that project's own wire ref) that this query cannot see, since only a pending message's own
-    /// <see cref="MessageSendFailed"/>/<see cref="MessageSent"/> ever backfills a real project id —
-    /// an already-sent legacy message never does (its own history stays <see cref="Guid.Empty"/>
-    /// forever, per this task's own scope decision). A message newly queued for that same project
-    /// could then be allocated a seq that collides with one already physically written to that
-    /// project's own ref, and a batched flush would silently overwrite it. Accepted rather than
-    /// solved here because this task's own acceptance criteria name continuity only for a message
-    /// "queued before this change but not yet sent," never for one already sent, and no production
-    /// deployment of this pre-M2 feature is known to have sent one; closing this fully would need
-    /// either backfilling every historical message's project id (not only pending ones) or tracking
-    /// each message's own repository path directly, both out of this task's own scope.
+    /// For <paramref name="projectId"/>'s own local project id, when it is currently the adopting
+    /// project (<see cref="LegacyMessageAdoption"/>), this also folds in every <see cref="Guid.Empty"/>-project
+    /// message this node has ever recorded — pending or already sent — into the same max: a legacy
+    /// message queued before M2 shipped but not yet sent shares that project's own outbox ref the
+    /// moment <see cref="FlushAsync"/> adopts it, and an already-sent legacy message (never
+    /// re-stamped with a real project id — see <see cref="FlushAsync"/>'s own doc) may still be
+    /// physically present on that same ref within <c>MessageRetention</c>. Either way, a seq this
+    /// node already used once on that ref must never be handed out again for a different envelope, or
+    /// a later flush silently overwrites it (independent pre-PR review, cycle 1, both lenses,
+    /// medium). Every other eligible project's own first-ever message still starts contiguous at 1,
+    /// unaffected, since only the one project <see cref="LegacyMessageAdoption"/> names is ever
+    /// offset here.
     /// </para>
     /// </summary>
     private static async Task<long> NextSeqAsync(IDocumentSession session, Guid fromNodeId, Guid projectId, CancellationToken cancellationToken)
     {
+        bool isAdoptingProject = await LegacyMessageAdoption.IsAdoptingProjectAsync(session, projectId, cancellationToken);
         MessageDetails? highest = await session.Query<MessageDetails>()
-            .Where(message => message.FromNodeId == fromNodeId && message.ProjectId == projectId)
+            .Where(message => message.FromNodeId == fromNodeId
+                && (message.ProjectId == projectId || (isAdoptingProject && message.ProjectId == Guid.Empty)))
             .OrderByDescending(message => message.Seq)
             .FirstOrDefaultAsync(cancellationToken);
         return (highest?.Seq ?? 0) + 1;

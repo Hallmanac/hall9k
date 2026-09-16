@@ -436,6 +436,215 @@ public sealed class MessageProjectScopingTests : IClassFixture<PostgresFixture>,
         queued.ProjectId.Should().Be(betaProjectId, "the 'bet' fragment unambiguously names the beta project");
     }
 
+    [Fact]
+    public async Task A_new_send_never_reuses_a_seq_a_still_pending_legacy_message_already_holds()
+    {
+        // Simulates a node that had a message queued before idea 202383dc's M2 shipped (still
+        // carrying Guid.Empty as its own ProjectId, per MessageQueued's own doc) and never sent —
+        // origin unreachable, say. Before the fix, NextSeqAsync ignored it entirely, so the very
+        // next send under M2 also got seq 1, and the next flush that adopts both would silently
+        // overwrite one with the other on the wire (independent pre-PR review, cycle 1, conformance
+        // lens, medium).
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid projectA = await RegisterEligibleProjectAsync("solo", RepositoryX, cts.Token);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.StartStream<MessageAggregate>(
+            MessageStreamId.ForMessage(nodeA, Guid.Empty, 1),
+            new MessageQueued(
+                nodeA, 1, "owner-a-fingerprint", MessageAudience.Node(nodeB).Value, null, MessageKind.Note.Value,
+                "legacy pending", Now, Guid.Empty));
+        await session.SaveChangesAsync(cts.Token);
+
+        MessageEnvelopeV1 queued = await MessageOutbox.QueueAsync(
+            session, nodeA, projectA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+            "post-upgrade", Now.AddSeconds(1), cts.Token);
+
+        queued.Seq.Should().Be(2, "seq 1 is still held by the pending legacy message this project will adopt on its next flush");
+    }
+
+    [Fact]
+    public async Task A_new_send_never_reuses_a_seq_an_already_sent_legacy_message_still_holds_on_the_wire()
+    {
+        // The already-sent counterpart to the pending case above: legacy seqs 1-3 were sent under
+        // the old, single-project system (SentAt already set, ProjectId still Guid.Empty forever —
+        // an already-sent legacy message is never backfilled with a real project id) and are still
+        // physically present on the adopting project's own ref within MessageRetention. Before the
+        // fix, a post-upgrade send restarted at seq 1 and a later flush silently overwrote that
+        // still-live wire content (independent pre-PR review, cycle 1, adversarial lens, medium).
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid projectA = await RegisterEligibleProjectAsync("solo", RepositoryX, cts.Token);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        foreach (long seq in new[] { 1L, 2L, 3L })
+        {
+            session.Events.StartStream<MessageAggregate>(
+                MessageStreamId.ForMessage(nodeA, Guid.Empty, seq),
+                new MessageQueued(
+                    nodeA, seq, "owner-a-fingerprint", MessageAudience.Node(nodeB).Value, null, MessageKind.Note.Value,
+                    $"legacy sent {seq}", Now, Guid.Empty));
+        }
+
+        await session.SaveChangesAsync(cts.Token);
+        foreach (long seq in new[] { 1L, 2L, 3L })
+        {
+            session.Events.Append(MessageStreamId.ForMessage(nodeA, Guid.Empty, seq), new MessageSent(nodeA, seq, Now, Guid.Empty));
+        }
+
+        await session.SaveChangesAsync(cts.Token);
+
+        MessageEnvelopeV1 queued = await MessageOutbox.QueueAsync(
+            session, nodeA, projectA, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+            "post-upgrade", Now.AddSeconds(1), cts.Token);
+
+        queued.Seq.Should().Be(4, "seqs 1-3 are already physically written to this project's own ref by the legacy sender");
+    }
+
+    [Fact]
+    public async Task Only_the_lowest_id_eligible_project_gets_the_legacy_seq_offset_a_second_project_still_starts_at_one()
+    {
+        // A pending legacy message only ever collides with whichever project actually adopts it —
+        // LegacyMessageAdoption's own rule, the lowest-id eligible project. Every OTHER eligible
+        // project's own first-ever message must still start contiguous at 1, or a brand-new reader
+        // of that project's own ref stalls forever looking for a seq 1 that will never come
+        // (MessageOutbox.NextSeqAsync's own doc).
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid lowestIdProject = await RegisterEligibleProjectAsync("lowest", RepositoryX, cts.Token);
+        Guid higherIdProject = await RegisterEligibleProjectAsync("higher", RepositoryY, cts.Token);
+        lowestIdProject.CompareTo(higherIdProject).Should().BeLessThan(
+            0, "UUIDv7 ids mint in creation order, so registering \"lowest\" first must keep it the lower of the two");
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.StartStream<MessageAggregate>(
+            MessageStreamId.ForMessage(nodeA, Guid.Empty, 1),
+            new MessageQueued(
+                nodeA, 1, "owner-a-fingerprint", MessageAudience.Node(nodeB).Value, null, MessageKind.Note.Value,
+                "legacy pending", Now, Guid.Empty));
+        await session.SaveChangesAsync(cts.Token);
+
+        MessageEnvelopeV1 queuedForHigher = await MessageOutbox.QueueAsync(
+            session, nodeA, higherIdProject, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+            "post-upgrade for the other project", Now.AddSeconds(1), cts.Token);
+
+        queuedForHigher.Seq.Should().Be(
+            1, "this project never adopts the legacy batch, so its own first-ever message must still start contiguous at 1");
+    }
+
+    [Fact]
+    public async Task SquashAsync_stamps_the_ledger_derived_project_key_onto_every_surviving_envelope()
+    {
+        // ToEnvelope (SquashAsync's own rebuild of each survivor from MessageDetails) carries no
+        // project key of its own — before the fix, every squashed ref silently dropped the key
+        // FlushAsync had originally stamped (independent pre-PR review, cycle 1, adversarial lens,
+        // medium).
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, RepositoryX, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        Guid projectId = DomainId.New();
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await MessageOutbox.QueueAsync(
+            session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+            "surviving", Now, cts.Token);
+        await outbox.FlushAsync(
+            session, RepositoryX, nodeA, projectId, ProjectKeyX, adoptUnassigned: false, committerA, signingKeyA, Now,
+            cts.Token);
+
+        DateTimeOffset squashNow = Now.AddHours(1);
+        await outbox.SquashAsync(
+            session, RepositoryX, nodeA, projectId, ProjectKeyX, TimeSpan.FromHours(48), committerA, signingKeyA, squashNow,
+            cts.Token);
+
+        TransportReadResult afterSquash = await transport.ReadSinceAsync(RepositoryX, nodeA, sinceSeq: 0, cts.Token);
+        MessageEnvelopeCodec.DecodeResult decoded = MessageEnvelopeCodec.Decode(afterSquash.Envelopes.Single().Content);
+        decoded.Envelope!.ProjectKey.Should().Be(ProjectKeyX, "a squash must stamp the identical project key a flush would have");
+    }
+
+    [Fact]
+    public async Task A_first_per_project_read_by_the_adopting_project_inherits_the_pre_upgrade_cursor_instead_of_restarting_at_zero()
+    {
+        // Simulates a receiver that had already read and handled a sender's first three envelopes
+        // before idea 202383dc's M2 shipped, recorded on the old, unscoped inbox stream. Before the
+        // fix, the adopting project's own brand-new per-project cursor started at 0 regardless, so
+        // its first read re-fetched and re-stored every envelope already handled under the old
+        // stream ids (independent pre-PR review, cycle 1, conformance lens, medium).
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        const string ownerB = "owner-b-fingerprint";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, RepositoryX, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        MessageInbox inbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        Guid senderProjectId = DomainId.New();
+        await using IDocumentSession sendSession = _postgres.Store.LightweightSession();
+        foreach (int i in Enumerable.Range(0, 3))
+        {
+            await MessageOutbox.QueueAsync(
+                sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, null, MessageKind.Note,
+                $"pre-upgrade {i}", Now.AddSeconds(i), cts.Token);
+        }
+
+        await outbox.FlushAsync(
+            sendSession, RepositoryX, nodeA, senderProjectId, ProjectKeyX, adoptUnassigned: false, committerA, signingKeyA,
+            Now, cts.Token);
+
+        // The receiver's own pre-M2 cursor for this sender, already advanced past the three
+        // envelopes above under the old, unscoped stream id.
+        sendSession.Events.StartStream<MessageInboxAggregate>(
+            MessageStreamId.ForInboxBeforeProjectScoping(nodeA), new InboxCursorAdvanced(nodeA, Guid.Empty, 3, Now));
+        await sendSession.SaveChangesAsync(cts.Token);
+
+        await MessageOutbox.QueueAsync(
+            sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, null, MessageKind.Note,
+            "post-upgrade", Now.AddSeconds(10), cts.Token);
+        await outbox.FlushAsync(
+            sendSession, RepositoryX, nodeA, senderProjectId, ProjectKeyX, adoptUnassigned: false, committerA, signingKeyA,
+            Now.AddSeconds(10), cts.Token);
+
+        Guid localProjectAtB = await RegisterEligibleProjectAsync("adopting", RepositoryX, cts.Token);
+        await using IDocumentSession readSession = _postgres.Store.LightweightSession();
+        MessageInboxSweepResult read = await inbox.ReadFromAsync(
+            readSession, RepositoryX, nodeA, localProjectAtB, nodeB, ownerB, Now.AddSeconds(11), cancellationToken: cts.Token);
+
+        read.EnvelopesStored.Should().Be(1, "the pre-upgrade cursor already covers the first three envelopes");
+
+        MessageInboxDetails? newCursor = await readSession.LoadAsync<MessageInboxDetails>(
+            MessageStreamId.ForInbox(nodeA, localProjectAtB), cts.Token);
+        newCursor!.HighestSeqReceived.Should().Be(4, "the new per-project cursor picks up exactly where the pre-upgrade one left off");
+    }
+
+    /// <summary>Registers a fresh, eligible (not archived, with a repository) project under a
+    /// throwaway owner and connection id — enough for <c>LegacyMessageAdoption</c>'s own eligibility
+    /// query, with no need for the owner-bootstrap machinery <see cref="MessageSendCommand"/>'s own
+    /// tests exercise separately.</summary>
+    private async Task<Guid> RegisterEligibleProjectAsync(string name, string repositoryPath, CancellationToken cancellationToken)
+    {
+        Guid projectId = DomainId.New();
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.StartStream<ProjectAggregate>(
+            projectId,
+            ProjectDecider.Register(projectId, DomainId.New(), DomainId.New(), name, repositoryPath, null, null, Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return projectId;
+    }
+
     /// <summary>Seeds the sender's own self-announced node file into ONE specific repository — a
     /// node file written into project X's own repository is invisible to a read against project
     /// Y's, the identical isolation a real, separate remote would give two genuinely different

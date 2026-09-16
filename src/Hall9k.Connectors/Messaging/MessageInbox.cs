@@ -82,6 +82,24 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         MessageInboxAggregate? inbox =
             await session.Events.AggregateStreamAsync<MessageInboxAggregate>(inboxStreamId, token: cancellationToken);
         long persistedCursor = inbox?.HighestSeqReceived ?? 0;
+
+        // A fresh per-project cursor (inbox is null — this project has never read this sender
+        // before under the M2 stream shape) for the one project LegacyMessageAdoption names falls
+        // back to the pre-M2 cursor, when one exists, instead of 0: that old, unscoped stream is the
+        // one this node actually advanced reading this same sender before this change, through the
+        // identical repository the adopting project now owns, so starting over at 0 would re-fetch
+        // and re-store every envelope already handled under the old stream ids (independent pre-PR
+        // review, cycle 1, conformance lens, medium). Only the adopting project ever takes this
+        // fallback — any other eligible project's own first read of this sender is genuinely new,
+        // never a continuation of pre-M2 history, and must still start at 0.
+        if (inbox is null && await LegacyMessageAdoption.IsAdoptingProjectAsync(session, projectId, cancellationToken))
+        {
+            Guid legacyInboxStreamId = MessageStreamId.ForInboxBeforeProjectScoping(senderNodeId);
+            MessageInboxAggregate? legacyInbox = await session.Events
+                .AggregateStreamAsync<MessageInboxAggregate>(legacyInboxStreamId, token: cancellationToken);
+            persistedCursor = legacyInbox?.HighestSeqReceived ?? 0;
+        }
+
         long readFrom = sinceSeqOverride ?? persistedCursor;
 
         TransportReadResult read = await transport.ReadSinceAsync(repositoryPath, senderNodeId, readFrom, cancellationToken, trustChain);
