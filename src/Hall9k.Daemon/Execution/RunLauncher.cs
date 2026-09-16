@@ -1045,6 +1045,27 @@ public sealed class RunLauncher(
             return false;
         }
 
+        // A pending operator reason — an `h9k task retry --reason` or an `h9k task handback`
+        // note not yet consumed by a build session — is an instruction for the build itself
+        // (WorkPromptBuilder.AppendOperatorGuidanceSection and its handback-causeless sibling
+        // above it in that file are the only things that ever render it). This shortcut
+        // dispatches no build session at all, only PullRequestOpener, so a real reason here
+        // would silently go unread and the same `gh pr create` failure would repeat on every
+        // later retry for as long as the tip stays put (independent pre-PR review, cycle 1,
+        // adversarial lens). The default filler text `h9k task retry` writes with no `--reason`
+        // asserts nothing to prioritize, so it does not disqualify the shortcut.
+        if (task.RetryPending
+            && task.RetryReason.IsNotBlank()
+            && (task.RetryReasonIsHandback || task.RetryReason != TaskDecider.DefaultRetryReason))
+        {
+            logger.LogInformation(
+                "Task {TaskId}: a pending operator reason is waiting for a build session to read — "
+                + "dispatching a full build and review pipeline instead of resuming directly at "
+                + "pull-request-open",
+                taskId);
+            return false;
+        }
+
         await using IDocumentSession session = store.LightweightSession();
         RunDetails? failedRun = await session.LoadAsync<RunDetails>(failedRunId, cancellationToken);
         if (failedRun is null

@@ -583,8 +583,12 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 aggregate.Apply(pushed);
                 var failed = TaskDecider.Fail(aggregate, failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10));
                 aggregate.Apply(failed);
+                // The default filler text, not an operator's own words: a real --reason would be
+                // an unread instruction for a build session the shortcut never dispatches, which
+                // is its own separate guard and test below (independent pre-PR review, cycle 1,
+                // adversarial lens).
                 var retried = TaskDecider.Retry(
-                    aggregate, failedRunId, worktree.Branch, "gh timed out, retry", Now.AddMinutes(-5), node.OwnerId);
+                    aggregate, failedRunId, worktree.Branch, TaskDecider.DefaultRetryReason, Now.AddMinutes(-5), node.OwnerId);
                 aggregate.Apply(retried);
                 var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
                 aggregate.Apply(retryClaim);
@@ -703,7 +707,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 var failed = TaskDecider.Fail(aggregate, failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10));
                 aggregate.Apply(failed);
                 var retried = TaskDecider.Retry(
-                    aggregate, failedRunId, worktree.Branch, "gh timed out, retry", Now.AddMinutes(-5), node.OwnerId);
+                    aggregate, failedRunId, worktree.Branch, TaskDecider.DefaultRetryReason, Now.AddMinutes(-5), node.OwnerId);
                 aggregate.Apply(retried);
                 var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
                 aggregate.Apply(retryClaim);
@@ -1038,7 +1042,134 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// The control on the three tests above: a retry after a failure anywhere but pull-request
+    /// The other half of the safety valve, alongside the two tip checks above (independent pre-PR
+    /// review, cycle 1, adversarial lens): even when the tip hasn't moved anywhere, a pending
+    /// operator reason from <c>h9k task retry --reason</c> is an instruction only a build session
+    /// ever reads (<see cref="Hall9k.Connectors.Prompts.WorkPromptBuilder.AppendOperatorGuidanceSection"/>)
+    /// — the resume-at-open shortcut dispatches no build session at all, only
+    /// <see cref="PullRequestOpener"/> again, so trusting it here would silently drop the
+    /// operator's own words and repeat the identical <c>gh pr create</c> failure on every later
+    /// retry for as long as the tip stays put.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_a_pull_request_open_failure_falls_back_when_an_operator_reason_is_pending()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-reason-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        // Isolated from the real platform home: PullRequestOpener resolves a blank
+        // RunDirectory through RunPaths.GlobalDirectory, which reads HALL9K_HOME directly —
+        // this test must not write into whatever real home this machine has configured
+        // (HomeEnvironmentIsolationTests's own guard is what caught this).
+        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        try
+        {
+            string originPath = Path.Combine(root, "github.com-origin.git");
+            string repoPath = Path.Combine(root, "repo");
+            await TestGit.RunAsync(root, ["init", "--bare", "-q", "-b", "main", originPath], cts.Token);
+            await TestGit.RunAsync(root, ["clone", "-q", originPath, repoPath], cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(repoPath, "README.md"), "# resume at open, pending reason\n", cts.Token);
+            await TestGit.RunAsync(repoPath, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(repoPath, TestGit.CommitAs("commit", "-qm", "init"), cts.Token);
+            await TestGit.RunAsync(repoPath, ["push", "-q", "origin", "main"], cts.Token);
+
+            Guid taskId = DomainId.New();
+            Guid projectId = DomainId.New();
+            Guid failedRunId = DomainId.New();
+            Guid retriedRunId = DomainId.New();
+
+            GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+            Worktree worktree = await worktrees.CreateAsync(
+                new WorktreeRequest(repoPath, "main", taskId, failedRunId, "Resume at pull-request-open, pending reason",
+                    BranchNameTemplate.Default, ExternalReference: null),
+                cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(worktree.Path, "WORK.md"), "agent output\n", cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(worktree.Path, TestGit.CommitAs("commit", "-qm", "Add WORK.md"), cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["push", "-q", "origin", worktree.Branch], cts.Token);
+            string pushedTip = (await TestGit.CaptureAsync(worktree.Path, ["rev-parse", "HEAD"], cts.Token)).Trim();
+
+            Directory.CreateDirectory(RunPaths.GlobalDirectory(failedRunId));
+
+            TaskAggregate aggregate;
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                var registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"resume-open-reason-{taskId:N}", repoPath, null, "main", Now);
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                object[] lifecycle;
+                (aggregate, lifecycle) = TaskSeed.Start(
+                    TaskDecider.Add(
+                        taskId, projectId, "Resume at pull-request-open, pending reason",
+                        ["falls back to a full build when an operator reason is pending"],
+                        TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                    node.OwnerId, Now.AddHours(-1));
+                var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, failedRunId, Now.AddMinutes(-30));
+                aggregate.Apply(firstClaim);
+                TaskBranchPushed pushed = new(taskId, worktree.Branch, pushedTip, Now.AddMinutes(-20));
+                aggregate.Apply(pushed);
+                var failed = TaskDecider.Fail(aggregate, failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10));
+                aggregate.Apply(failed);
+                // A real operator reason — not the default filler TaskDecider.DefaultRetryReason —
+                // is exactly what the new guard looks for; the tip below never moves, so this is
+                // the only thing that can send this retry down the ordinary path.
+                var retried = TaskDecider.Retry(
+                    aggregate, failedRunId, worktree.Branch,
+                    "the base branch was renamed, rebase onto main and rewrite the summary",
+                    Now.AddMinutes(-5), node.OwnerId);
+                aggregate.Apply(retried);
+                var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
+                aggregate.Apply(retryClaim);
+
+                session.Events.StartStream<TaskAggregate>(
+                    taskId, [.. lifecycle, firstClaim, pushed, failed, retried, retryClaim]);
+                session.Store(new TaskLease
+                {
+                    Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+                });
+
+                session.Events.StartStream<RunAggregate>(failedRunId,
+                    new RunDispatched(failedRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                        worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now.AddMinutes(-30)),
+                    new RunFailed(
+                        failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10),
+                        FailedDuringPullRequestOpen: true));
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            CapturingExecutor executor = new();
+            NotMergedInspector inspector = new();
+            RunLauncher launcher = new(store, worktrees, executor,
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), ExternalProcess.Runner,
+                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+            await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+            executor.Request.Should().NotBeNull(
+                "a pending operator reason from --reason is an instruction only a build session reads, so "
+                + "the shortcut must not dispatch straight to PullRequestOpener and drop it silently");
+
+            await using IQuerySession query = store.QuerySession();
+            TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            task.State.Value.Should().Be("Claimed", "the ordinary dispatch proceeded — this never reopened the pull request");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The control on the four tests above: a retry after a failure anywhere but pull-request
     /// opening — here, a gate failure, which by construction never reaches
     /// <see cref="PullRequestOpener"/> and so never pushes a branch at all — behaves exactly as it
     /// always has: the ordinary dispatch resumes the failed run's branch and spawns a fresh

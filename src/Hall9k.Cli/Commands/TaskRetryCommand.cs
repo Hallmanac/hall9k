@@ -116,11 +116,20 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
         // this task last pushed — enough to say which path the daemon means to take and why, with
         // every condition this command cannot itself verify named alongside it as a caveat rather
         // than asserted as fact (conformance review, cycle 1).
+        // A --reason given here is an instruction for a build session to read
+        // (WorkPromptBuilder.AppendOperatorGuidanceSection) — the resume-at-open shortcut
+        // dispatches no build session at all, so RunLauncher itself refuses the shortcut
+        // whenever one is pending (independent pre-PR review, cycle 1, adversarial lens).
+        // Known here without asking the daemon: this command just recorded settings.Reason
+        // as the task's own live RetryReason above.
+        bool hasPendingOperatorReason = settings.Reason.IsNotBlank()
+            && settings.Reason != TaskDecider.DefaultRetryReason;
         bool resumesAtPullRequestOpen = task.PullRequestUrl.IsBlank()
             && previousRun?.FailedDuringPullRequestOpen == true
             && branch is not null
             && task.LastPushedBranch == branch
-            && task.LastPushedBranchTip is not null;
+            && task.LastPushedBranchTip is not null
+            && !hasPendingOperatorReason;
         if (unmetDependencyCount > 0)
         {
             string dependencyNoun = unmetDependencyCount == 1 ? "dependency" : "dependencies";
@@ -136,6 +145,15 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
             // reviewed, and that is what the next run re-opens against.
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Task {taskId} requeued — the last run failed only at opening the pull request, after branch {branch}'s build and review had already settled, so the next run means to re-attempt the pull-request open directly against that same branch, with no build or review session. That still depends on the failed run's worktree surviving, its own branch still matching, and the branch's tip not having moved on origin or in that worktree since — this command can't check any of those, so it falls back to a full build instead if one doesn't hold.[/]");
+        }
+        else if (hasPendingOperatorReason && previousRun?.FailedDuringPullRequestOpen == true)
+        {
+            // Named explicitly rather than folded into the generic "resumes branch" message
+            // below: without this, --reason would look silently accepted even though it is
+            // exactly what forces the full build instead of the cheaper pull-request-open-only
+            // retry this failure would otherwise qualify for.
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} requeued — the last run failed only at opening the pull request, but --reason was given, so the next run reads it and re-runs the full build and review pipeline against branch {branch} instead of re-attempting the pull-request open directly.[/]");
         }
         else if (branch is null)
         {
