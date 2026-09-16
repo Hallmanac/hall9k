@@ -76,6 +76,15 @@ public static class SessionRoleName
     /// </summary>
     public const string CommitRecovery = "commit-recovery";
 
+    /// <summary>
+    /// The one read-only stack-assessment session a stacked checkpoint or the pre-final-pass
+    /// rebase dispatches before parking for a human on a git shape (task: a stacked checkpoint
+    /// that would park for a human on a git shape first dispatches a read-only assessment run) —
+    /// a plain constant, not a per-dispatch name like <see cref="PreFinalPassRebase"/>'s own,
+    /// since a run earns at most one of these across its whole lifetime.
+    /// </summary>
+    public const string StackAssessment = "stack-assessment";
+
     /// A narrow recovery session resolving a conflict the pre-final-pass rebase check hit (task:
     /// a run rebases its branch onto the current base branch) — dispatched inside the build run
     /// itself, unlike <see cref="Rebase"/>'s own post-PR follow-up. The one shared prefix both

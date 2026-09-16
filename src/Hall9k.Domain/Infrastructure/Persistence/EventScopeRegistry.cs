@@ -168,6 +168,8 @@ public static class EventScopeRegistry
         [typeof(SettlingGateRepairCapReached)] = EventScope.NodeScoped,
         [typeof(SettlingGateRepairCompleted)] = EventScope.NodeScoped,
         [typeof(SettlingGateRepairDispatched)] = EventScope.NodeScoped,
+        [typeof(StackAssessmentCompleted)] = EventScope.NodeScoped,
+        [typeof(StackAssessmentDispatched)] = EventScope.NodeScoped,
         [typeof(StackedPullRequestRetargeted)] = EventScope.ProjectScoped,
         [typeof(TokensRecorded)] = EventScope.ProjectScoped,
         [typeof(VerificationFailed)] = EventScope.ProjectScoped,
