@@ -222,6 +222,75 @@ public sealed class StatusCommandMergedWithoutCopilotReviewTests(PostgresFixture
     }
 
     /// <summary>
+    /// The run that observed the landed review need not be the run that records the refusal or
+    /// the merge either: the daemon's own closeout engine returns from its merged-run branch
+    /// before ever recording an external-review observation on the run doing the merging, so a
+    /// landed review seen on an earlier, unrelated run of the same task is the only place it is
+    /// ever recorded. The exclusion must still find it there (independent pre-PR review, cycle 4,
+    /// adversarial lens, medium).
+    /// </summary>
+    [Fact]
+    public async Task A_landed_review_recorded_on_a_different_run_than_the_refusal_or_the_merge_still_excludes_the_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid secondRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const int pullRequestNumber = 413;
+        const string pullRequestUrl = "https://github.com/example/repo/pull/413";
+
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "An earlier run already saw Copilot land its review", ["merged"], TaskType.Chore,
+            null, null, null, Now, ownerId);
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, ownerId, Now);
+        TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, firstRunId, Now);
+        task.Apply(claimed);
+        TaskCompleted completed = TaskDecider.Complete(task, secondRunId, pullRequestUrl, MergedAt);
+        task.Apply(completed);
+
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed, completed]);
+
+        const string reason = "Copilot was unable to review this pull request because the user who "
+            + "requested the review has reached their quota limit.";
+        session.Events.StartStream<RunAggregate>(
+            firstRunId,
+            new RunDispatched(
+                firstRunId, taskId, nodeId, ownerId, 1, DomainId.New(), "/does/not/matter", "task/branch",
+                ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(firstRunId, Now),
+            new VerificationPassed(firstRunId, Now),
+            new PullRequestOpened(firstRunId, pullRequestUrl, pullRequestNumber, Now),
+            new ExternalReviewObserved(
+                firstRunId, ExternalReviewState.Landed, 0, false, MergedAt.AddMinutes(-30), "APPROVED"));
+        session.Events.StartStream<RunAggregate>(
+            secondRunId,
+            new RunDispatched(
+                secondRunId, taskId, nodeId, ownerId, 1, DomainId.New(), "/does/not/matter", "task/branch",
+                ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(secondRunId, Now),
+            new VerificationPassed(secondRunId, Now),
+            new CopilotReviewUnavailable(
+                secondRunId, "copilot-pull-request-reviewer", $"{pullRequestUrl}#pullrequestreview-2", reason, Now),
+            new PullRequestMerged(secondRunId, MergedAt, MergedAt),
+            new RunCompleted(secondRunId, MergedAt));
+        await session.SaveChangesAsync(cts.Token);
+
+        string output;
+        await using (IQuerySession query = postgres.Store.QuerySession())
+        {
+            output = await CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(query, cts.Token));
+        }
+
+        output.Should().NotContain(
+            "PR #413", "an earlier run of the same task saw Copilot's review land before the merge, "
+            + "so the merge did not happen without it");
+    }
+
+    /// <summary>
     /// Seeds a task and run identically to the merged branch of <see cref="SeedMergedTaskAsync"/>,
     /// except the merge event carries a null <c>MergedAt</c> — exactly what
     /// <c>CloseoutEngine.TryAutoMergeAsync</c> actually appends, rather than the non-null timestamp
