@@ -4,24 +4,25 @@ namespace Hall9k.Domain.Features.Message;
 
 public static class MessageInboxDecider
 {
-    public static InboxCursorAdvanced AdvanceCursor(Guid senderNodeId, long seq, DateTimeOffset at)
+    public static InboxCursorAdvanced AdvanceCursor(Guid senderNodeId, Guid projectId, long seq, DateTimeOffset at)
     {
         if (seq < 1)
         {
             throw new DomainValidationException("A cursor advances to a real seq, at least 1.");
         }
 
-        return new InboxCursorAdvanced(senderNodeId, seq, at);
+        return new InboxCursorAdvanced(senderNodeId, projectId, seq, at);
     }
 
-    public static InboxSenderIgnored IgnoreSender(Guid senderNodeId, string reason, bool verificationFailed, DateTimeOffset at)
+    public static InboxSenderIgnored IgnoreSender(
+        Guid senderNodeId, Guid projectId, string reason, bool verificationFailed, DateTimeOffset at)
     {
         if (reason.IsBlank())
         {
             throw new DomainValidationException("Ignoring a sender needs the reason it was ignored.");
         }
 
-        return new InboxSenderIgnored(senderNodeId, reason, verificationFailed, at);
+        return new InboxSenderIgnored(senderNodeId, projectId, reason, verificationFailed, at);
     }
 
     /// <summary>A sweep read this sender's outbox successfully but found nothing new to advance the
@@ -30,6 +31,6 @@ public static class MessageInboxDecider
     /// is true: a specific envelope failing verification is a standing fact about that envelope, not
     /// about whether the sender is vouched for right now, so only a genuine cursor advance past it
     /// clears that one.</summary>
-    public static InboxSenderVouched ConfirmVouched(Guid senderNodeId, DateTimeOffset at) =>
-        new(senderNodeId, at);
+    public static InboxSenderVouched ConfirmVouched(Guid senderNodeId, Guid projectId, DateTimeOffset at) =>
+        new(senderNodeId, projectId, at);
 }

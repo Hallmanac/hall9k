@@ -7,23 +7,30 @@ namespace Hall9k.Cli.Commands;
 /// <summary>Resolves a message's own short id (<see cref="TaskListCommand.ShortId"/> of its stream
 /// id) back to the full <see cref="MessageDetails"/> row, scoped to messages this node has actually
 /// received — <c>h9k message handle</c> is the only caller, and handling a message this node never
-/// received makes no sense. Mirrors <see cref="TaskIdResolver"/>'s own fragment-match shape.</summary>
+/// received makes no sense. Mirrors <see cref="TaskIdResolver"/>'s own fragment-match shape.
+/// <paramref name="projectId"/> (idea 202383dc, M2), when given, narrows the fragment-match
+/// candidate set to one project — useful when the identical short fragment matches messages from
+/// more than one project.</summary>
 internal static class MessageIdResolver
 {
     public static async Task<MessageDetails> ResolveReceivedAsync(
-        IQuerySession session, string idOrFragment, CancellationToken cancellationToken)
+        IQuerySession session, string idOrFragment, Guid? projectId, CancellationToken cancellationToken)
     {
         if (Guid.TryParse(idOrFragment, out Guid id))
         {
             MessageDetails? message = await session.LoadAsync<MessageDetails>(id, cancellationToken);
-            return message is { ReceivedAt: not null }
+            return message is { ReceivedAt: not null } && (projectId is null || message.ProjectId == projectId)
                 ? message
                 : throw new DomainNotFoundException($"No received message '{idOrFragment}'.");
         }
 
-        IReadOnlyList<MessageDetails> received = await session.Query<MessageDetails>()
-            .Where(message => message.ReceivedAt != null)
-            .ToListAsync(cancellationToken);
+        IQueryable<MessageDetails> receivedQuery = session.Query<MessageDetails>().Where(message => message.ReceivedAt != null);
+        if (projectId is { } filterProjectId)
+        {
+            receivedQuery = receivedQuery.Where(message => message.ProjectId == filterProjectId);
+        }
+
+        IReadOnlyList<MessageDetails> received = await receivedQuery.ToListAsync(cancellationToken);
 
         string fragment = idOrFragment.Replace("-", "");
         if (fragment.Length == 0)

@@ -43,16 +43,20 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// <c>MessageSweepEngine._lastKnownTips</c>: a restart costs at most one redundant squash, never
     /// a forever-repeating one.
     /// </summary>
-    private readonly Dictionary<(string RepositoryPath, Guid FromNodeId), IReadOnlySet<long>> _lastSquashedSurvivorSeqs = [];
+    private readonly Dictionary<(string RepositoryPath, Guid FromNodeId, Guid ProjectId), IReadOnlySet<long>> _lastSquashedSurvivorSeqs = [];
 
     /// <summary>
     /// Static, unlike every other method here: queueing never touches <see cref="IMessageTransport"/>
     /// at all, so a caller with no transport to hand — <c>h9k message send</c>, which never waits on
     /// git or a network — needs no <see cref="MessageOutbox"/> instance either.
+    /// <paramref name="projectId"/> is this install's own local project id (idea 202383dc, M2) — never
+    /// <see cref="Guid.Empty"/>, per <c>MessageDecider.Queue</c>'s own validation: every message
+    /// queued going forward records the project it belongs to.
     /// </summary>
     public static async Task<MessageEnvelopeV1> QueueAsync(
         IDocumentSession session,
         Guid fromNodeId,
+        Guid projectId,
         string fromOwnerFingerprint,
         MessageAudience to,
         string? about,
@@ -61,35 +65,59 @@ public sealed class MessageOutbox(IMessageTransport transport)
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        long seq = await NextSeqAsync(session, fromNodeId, cancellationToken);
+        long seq = await NextSeqAsync(session, fromNodeId, projectId, cancellationToken);
         MessageEnvelopeV1 envelope = new(seq, now, fromNodeId, fromOwnerFingerprint, to, about, kind, body);
-        Guid streamId = MessageStreamId.ForMessage(fromNodeId, seq);
+        Guid streamId = MessageStreamId.ForMessage(fromNodeId, projectId, seq);
 
         session.Events.StartStream<MessageAggregate>(
-            streamId, MessageDecider.Queue(fromNodeId, seq, fromOwnerFingerprint, to, about, kind, body, now));
+            streamId, MessageDecider.Queue(fromNodeId, seq, projectId, fromOwnerFingerprint, to, about, kind, body, now));
         await session.SaveChangesAsync(cancellationToken);
         return envelope;
     }
 
     /// <summary>
-    /// Every envelope this node has queued but not yet landed (<c>SentAt is null</c> — true for a
-    /// fresh queue and for one whose last flush attempt failed alike) goes into ONE transport call,
-    /// which either lands all of them in a single commit or lands none: a push either reaches
-    /// origin or it does not, and there is no partial-batch outcome to record. A failed push
-    /// re-throws after marking every envelope in the batch failed, so the caller (the daemon's own
-    /// sweep) can log it and simply try again next tick — nothing here retries on its own.
+    /// Every envelope this node has queued for <paramref name="projectId"/> but not yet landed
+    /// (<c>SentAt is null</c> — true for a fresh queue and for one whose last flush attempt failed
+    /// alike) goes into ONE transport call against <paramref name="repositoryPath"/>, which either
+    /// lands all of them in a single commit or lands none: a push either reaches origin or it does
+    /// not, and there is no partial-batch outcome to record. A failed push re-throws after marking
+    /// every envelope in the batch failed, so the caller (the daemon's own sweep) can log it and
+    /// simply try again next tick — nothing here retries on its own, and a failure flushing THIS
+    /// project never touches any other project's own pending messages (idea 202383dc, M2: each
+    /// project's own flush is scoped to that project's own query, session, and transport call).
+    /// <para>
+    /// <paramref name="projectKey"/> is stamped onto every envelope this call builds — the project's
+    /// own ledger-derived wire key (<c>Hall9k.Connectors.Trust.TrustChain.GenesisRootFingerprint</c>),
+    /// recomputed fresh by the caller every tick from the live ledger rather than persisted: the
+    /// underlying genesis fact never changes once established, so re-deriving it costs nothing and a
+    /// retried flush always stamps the identical value a first attempt would have.
+    /// </para>
+    /// <para>
+    /// <paramref name="adoptUnassigned"/> is true only for the one project a sweep resolves as the
+    /// legacy fallback (idea 202383dc, M2's migration rule: "the project the old, single-project
+    /// sweep would have picked") — when true, this call also picks up every pending message still
+    /// carrying <see cref="Guid.Empty"/> as its own <see cref="MessageDetails.ProjectId"/> (queued
+    /// before M2 shipped) and flushes them alongside this project's own, stamping each one's real
+    /// <see cref="MessageSent"/>/<see cref="MessageSendFailed"/> with <paramref name="projectId"/> —
+    /// the first and only place that sentinel is ever resolved, so every later flush finds it already
+    /// scoped like any other message and never re-adopts it.
+    /// </para>
     /// </summary>
     public async Task<MessageFlushResult> FlushAsync(
         IDocumentSession session,
         string repositoryPath,
         Guid fromNodeId,
+        Guid projectId,
+        string projectKey,
+        bool adoptUnassigned,
         LedgerCommitter committer,
         LedgerSigningKey signingKey,
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         IReadOnlyList<MessageDetails> pending = await session.Query<MessageDetails>()
-            .Where(message => message.FromNodeId == fromNodeId && message.SentAt == null)
+            .Where(message => message.FromNodeId == fromNodeId && message.SentAt == null
+                && (message.ProjectId == projectId || (adoptUnassigned && message.ProjectId == Guid.Empty)))
             .OrderBy(message => message.Seq)
             .ToListAsync(cancellationToken);
 
@@ -99,7 +127,8 @@ public sealed class MessageOutbox(IMessageTransport transport)
         }
 
         List<TransportEnvelope> batch = [.. pending.Select(
-            message => new TransportEnvelope(message.Seq, MessageEnvelopeCodec.Encode(ToEnvelope(message))))];
+            message => new TransportEnvelope(
+                message.Seq, MessageEnvelopeCodec.Encode(ToEnvelope(message) with { ProjectKey = projectKey })))];
 
         try
         {
@@ -116,8 +145,8 @@ public sealed class MessageOutbox(IMessageTransport transport)
             // here needs a second event to say so again.
             foreach (MessageDetails message in pending.Where(message => !message.SendFailed))
             {
-                Guid failedStreamId = MessageStreamId.ForMessage(fromNodeId, message.Seq);
-                session.Events.Append(failedStreamId, MessageDecider.FailSend(ToEnvelope(message), exception.Message, now));
+                session.Events.Append(
+                    message.Id, MessageDecider.FailSend(ToEnvelope(message), projectId, exception.Message, now));
             }
 
             await session.SaveChangesAsync(cancellationToken);
@@ -126,18 +155,17 @@ public sealed class MessageOutbox(IMessageTransport transport)
 
         foreach (MessageDetails message in pending)
         {
-            Guid streamId = MessageStreamId.ForMessage(fromNodeId, message.Seq);
             if (message.SendFailed)
             {
                 MessageAggregate aggregate = await session.Events.AggregateStreamAsync<MessageAggregate>(
-                    streamId, token: cancellationToken)
+                    message.Id, token: cancellationToken)
                     ?? throw new InvalidOperationException(
                         $"Message {fromNodeId}/{message.Seq} has no stream to flush a resend onto.");
-                session.Events.Append(streamId, MessageDecider.Resend(aggregate, now));
+                session.Events.Append(message.Id, MessageDecider.Resend(aggregate, now));
             }
             else
             {
-                session.Events.Append(streamId, MessageDecider.Send(fromNodeId, message.Seq, now));
+                session.Events.Append(message.Id, MessageDecider.Send(fromNodeId, message.Seq, projectId, now));
             }
         }
 
@@ -147,12 +175,15 @@ public sealed class MessageOutbox(IMessageTransport transport)
 
     /// <summary>
     /// Squashes this node's own outbox to envelopes sent within <paramref name="retention"/>
-    /// (idea 202383dc, M1b's retention rule) — reads only <c>SentAt is not null</c> messages
-    /// (anything still pending a flush is not physically in the ref yet, so it is never a squash
-    /// candidate at all) and rewrites the transport's own copy to hold exactly the survivors.
-    /// Touches nothing in the local event store: a message's own history — sent, resent, received,
-    /// handled — is a fact this node already recorded, and squashing the outbox never un-happens
-    /// it, it only stops re-shipping old bytes over the wire.
+    /// (idea 202383dc, M1b's retention rule) — reads only <paramref name="projectId"/>'s own
+    /// <c>SentAt is not null</c> messages (idea 202383dc, M2: a message sent to a different project
+    /// lives in a different repository's own ref entirely, and must never be counted here or
+    /// force-pushed into THIS project's own outbox) — anything still pending a flush is not
+    /// physically in the ref yet, so it is never a squash candidate at all — and rewrites the
+    /// transport's own copy to hold exactly the survivors. Touches nothing in the local event store:
+    /// a message's own history — sent, resent, received, handled — is a fact this node already
+    /// recorded, and squashing the outbox never un-happens it, it only stops re-shipping old bytes
+    /// over the wire.
     /// <para>
     /// The cutoff is measured against <see cref="MessageDetails.SentAt"/>, never
     /// <see cref="MessageDetails.QueuedAt"/>: a node that could not reach origin for longer than
@@ -182,6 +213,7 @@ public sealed class MessageOutbox(IMessageTransport transport)
         IDocumentSession session,
         string repositoryPath,
         Guid fromNodeId,
+        Guid projectId,
         TimeSpan retention,
         LedgerCommitter committer,
         LedgerSigningKey signingKey,
@@ -190,7 +222,7 @@ public sealed class MessageOutbox(IMessageTransport transport)
     {
         DateTimeOffset cutoff = now - retention;
         IReadOnlyList<MessageDetails> sent = await session.Query<MessageDetails>()
-            .Where(message => message.FromNodeId == fromNodeId && message.SentAt != null)
+            .Where(message => message.FromNodeId == fromNodeId && message.ProjectId == projectId && message.SentAt != null)
             .OrderBy(message => message.Seq)
             .ToListAsync(cancellationToken);
 
@@ -201,7 +233,7 @@ public sealed class MessageOutbox(IMessageTransport transport)
 
         List<MessageDetails> survivors = [.. sent.Where(message => message.SentAt >= cutoff)];
         HashSet<long> survivorSeqs = [.. survivors.Select(message => message.Seq)];
-        (string RepositoryPath, Guid FromNodeId) key = (repositoryPath, fromNodeId);
+        (string RepositoryPath, Guid FromNodeId, Guid ProjectId) key = (repositoryPath, fromNodeId, projectId);
         if (_lastSquashedSurvivorSeqs.TryGetValue(key, out IReadOnlySet<long>? previousSurvivorSeqs)
             && previousSurvivorSeqs.IsSubsetOf(survivorSeqs))
         {
@@ -234,12 +266,37 @@ public sealed class MessageOutbox(IMessageTransport transport)
         message.Body ?? throw new InvalidOperationException(
             $"Message {message.FromNodeId}/{message.Seq} is pending flush but has no Body."));
 
-    /// <summary>Seq is monotonic per node, from this node's own store — never from the ledger,
-    /// never from any caller-supplied counter.</summary>
-    private static async Task<long> NextSeqAsync(IDocumentSession session, Guid fromNodeId, CancellationToken cancellationToken)
+    /// <summary>Seq is monotonic per node and per project (idea 202383dc, M2), from this node's own
+    /// store — never from the ledger, never from any caller-supplied counter. Scoped by project so
+    /// each project's own outbox ref, in its own repository, always starts contiguous at 1: a global
+    /// counter shared across every project would leave gaps in any one project's own ref whenever a
+    /// send interleaved with another project's, and the transport's own gap-stop rule
+    /// (<c>GitLedgerMessageTransport.ReadSinceAsync</c>) would then stall a reader at the very first
+    /// one forever.
+    /// <para>
+    /// Known, accepted limitation: this scoping deliberately excludes <see cref="Guid.Empty"/>-project
+    /// messages (queued before M2 shipped) from the max it computes, even for the one project a
+    /// sweep later adopts them into — considering them for every project would reintroduce exactly
+    /// the stall above for any brand-new project's own first-ever message, which is the worse of the
+    /// two failure modes. Whichever project ends up adopting legacy messages could in principle
+    /// already hold ALREADY-SENT history under this same node from before M2 (seq 1..N, physically
+    /// on that project's own wire ref) that this query cannot see, since only a pending message's own
+    /// <see cref="MessageSendFailed"/>/<see cref="MessageSent"/> ever backfills a real project id —
+    /// an already-sent legacy message never does (its own history stays <see cref="Guid.Empty"/>
+    /// forever, per this task's own scope decision). A message newly queued for that same project
+    /// could then be allocated a seq that collides with one already physically written to that
+    /// project's own ref, and a batched flush would silently overwrite it. Accepted rather than
+    /// solved here because this task's own acceptance criteria name continuity only for a message
+    /// "queued before this change but not yet sent," never for one already sent, and no production
+    /// deployment of this pre-M2 feature is known to have sent one; closing this fully would need
+    /// either backfilling every historical message's project id (not only pending ones) or tracking
+    /// each message's own repository path directly, both out of this task's own scope.
+    /// </para>
+    /// </summary>
+    private static async Task<long> NextSeqAsync(IDocumentSession session, Guid fromNodeId, Guid projectId, CancellationToken cancellationToken)
     {
         MessageDetails? highest = await session.Query<MessageDetails>()
-            .Where(message => message.FromNodeId == fromNodeId)
+            .Where(message => message.FromNodeId == fromNodeId && message.ProjectId == projectId)
             .OrderByDescending(message => message.Seq)
             .FirstOrDefaultAsync(cancellationToken);
         return (highest?.Seq ?? 0) + 1;

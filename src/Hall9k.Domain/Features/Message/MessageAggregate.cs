@@ -15,6 +15,11 @@ public sealed class MessageAggregate
     public Guid FromNodeId { get; private set; }
     public long Seq { get; private set; }
 
+    /// <summary>This install's own local project id — <see cref="Guid.Empty"/> only for a message
+    /// queued before idea 202383dc's M2 shipped and not yet flushed or received under it (see
+    /// <see cref="MessageQueued"/>'s own doc).</summary>
+    public Guid ProjectId { get; private set; }
+
     /// <summary>
     /// The envelope's own timestamp — set once, at <see cref="Apply(MessageQueued)"/>, and never
     /// moved by a later flush attempt or retry: the wire content a flush re-encodes must stay
@@ -46,9 +51,10 @@ public sealed class MessageAggregate
 
     public void Apply(MessageQueued @event)
     {
-        Id = MessageStreamId.ForMessage(@event.FromNodeId, @event.Seq);
+        Id = MessageStreamId.ForMessage(@event.FromNodeId, @event.ProjectId, @event.Seq);
         FromNodeId = @event.FromNodeId;
         Seq = @event.Seq;
+        ProjectId = @event.ProjectId;
         QueuedAt = @event.At;
         FromOwnerFingerprint = @event.FromOwner;
         To = @event.To;
@@ -59,9 +65,10 @@ public sealed class MessageAggregate
 
     public void Apply(MessageSent @event)
     {
-        Id = MessageStreamId.ForMessage(@event.FromNodeId, @event.Seq);
+        Id = MessageStreamId.ForMessage(@event.FromNodeId, @event.ProjectId, @event.Seq);
         FromNodeId = @event.FromNodeId;
         Seq = @event.Seq;
+        ProjectId = @event.ProjectId;
         SentAt = @event.At;
         SendFailed = false;
         SendFailureReason = null;
@@ -69,9 +76,10 @@ public sealed class MessageAggregate
 
     public void Apply(MessageSendFailed @event)
     {
-        Id = MessageStreamId.ForMessage(@event.FromNodeId, @event.Seq);
+        Id = MessageStreamId.ForMessage(@event.FromNodeId, @event.ProjectId, @event.Seq);
         FromNodeId = @event.FromNodeId;
         Seq = @event.Seq;
+        ProjectId = @event.ProjectId;
         SendFailed = true;
         SendFailureReason = @event.Reason;
         FromOwnerFingerprint = @event.FromOwner;
@@ -91,9 +99,10 @@ public sealed class MessageAggregate
 
     public void Apply(MessageReceived @event)
     {
-        Id = MessageStreamId.ForMessage(@event.FromNodeId, @event.Seq);
+        Id = MessageStreamId.ForMessage(@event.FromNodeId, @event.ProjectId, @event.Seq);
         FromNodeId = @event.FromNodeId;
         Seq = @event.Seq;
+        ProjectId = @event.ProjectId;
         SentAt = @event.SentAt;
         ReceivedAt = @event.ReceivedAt;
         FromOwnerFingerprint = @event.FromOwnerFingerprint;

@@ -71,18 +71,23 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         await SeedNodeFileAsync(ledger, nodeA, cts.Token);
         CountingMessageTransport transport = new(new InMemoryMessageTransport(ledger));
         MessageOutbox senderOutbox = new(transport);
+        Guid senderProjectId = DomainId.New();
         (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = (
             new LedgerCommitter("node-a", "node-a@hall9k.local"), new LedgerSigningKey("/dev/null/node-a"));
 
         // Node A queues and flushes one project-broadcast envelope directly against the shared
         // transport, standing in for a daemon sweep on node A's own machine — this test cares only
-        // about node B's own sweep, reading it.
+        // about node B's own sweep, reading it. senderProjectId is node A's OWN local project id,
+        // used only to scope its own local queue/flush — never compared to node B's own local id
+        // for the identical shared project (MessageStreamId's own doc).
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Project, about: null, MessageKind.Note,
-                "only once", Now, cts.Token);
-            await senderOutbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+                sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Note, "only once", Now, cts.Token);
+            await senderOutbox.FlushAsync(
+                sendSession, RepositoryPath, nodeA, senderProjectId, "shared-project-key", adoptUnassigned: false,
+                committerA, signingKeyA, Now, cts.Token);
         }
 
         NodeContext nodeB = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
@@ -103,7 +108,8 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
 
         MessageSweepEngine engine = new(
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
-            new FakeLedgerChainReader(TrustChain.Empty), new MessageNodeIdentityResolver(new NodeKeyStore()),
+            new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], GenesisRootFingerprint: "shared-project-key")),
+            new MessageNodeIdentityResolver(new NodeKeyStore()),
             Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
 
         await engine.SweepOnceAsync(cts.Token);
@@ -112,7 +118,14 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
 
         await using (IDocumentSession verifySession = _postgres.Store.LightweightSession())
         {
-            int received = await verifySession.Query<MessageDetails>().CountAsync(cts.Token);
+            // Filtered to ReceivedAt, never a bare document count: node A's own local queue/flush
+            // above and node B's own receive below now land on genuinely distinct local streams
+            // (idea 202383dc, M2 — each keyed by its own install's own local project id), so this
+            // one shared Postgres schema standing in for two separate nodes' own separate databases
+            // (this class's own doc) legitimately holds two rows for the identical envelope, one
+            // per side, where the pre-M2 scheme happened to collapse them into one by sharing an
+            // identical (sender, seq) stream id.
+            int received = await verifySession.Query<MessageDetails>().Where(message => message.ReceivedAt != null).CountAsync(cts.Token);
             received.Should().Be(1, "the first sweep actually stored node A's envelope, not merely probed it");
         }
 
@@ -139,6 +152,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         await SeedNodeFileAsync(ledger, nodeA, cts.Token);
         InMemoryMessageTransport transport = new(ledger);
         MessageOutbox senderOutbox = new(transport);
+        Guid senderProjectId = DomainId.New();
         (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = (
             new LedgerCommitter("node-a", "node-a@hall9k.local"), new LedgerSigningKey("/dev/null/node-a"));
 
@@ -149,9 +163,11 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         await using (IDocumentSession sendSession = _postgres.Store.LightweightSession())
         {
             await MessageOutbox.QueueAsync(
-                sendSession, nodeA, "owner-a-fingerprint", MessageAudience.Project, about: null, MessageKind.Note,
-                "only once", Now, cts.Token);
-            await senderOutbox.FlushAsync(sendSession, RepositoryPath, nodeA, committerA, signingKeyA, Now, cts.Token);
+                sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Note, "only once", Now, cts.Token);
+            await senderOutbox.FlushAsync(
+                sendSession, RepositoryPath, nodeA, senderProjectId, "shared-project-key", adoptUnassigned: false,
+                committerA, signingKeyA, Now, cts.Token);
         }
 
         NodeContext nodeB = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);

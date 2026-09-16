@@ -9,15 +9,17 @@ public sealed class MessageDeciderTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 14, 12, 0, 0, TimeSpan.Zero);
     private static readonly Guid FromNode = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid ProjectId = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
     [Fact]
     public void Queue_ProducesAQueuedEventCarryingTheEnvelopesOwnContent()
     {
         MessageQueued @event = MessageDecider.Queue(
-            FromNode, 1, "fingerprint-1", MessageAudience.Project, "idea-9", MessageKind.Note, "hello", Now);
+            FromNode, 1, ProjectId, "fingerprint-1", MessageAudience.Project, "idea-9", MessageKind.Note, "hello", Now);
 
         @event.FromNodeId.Should().Be(FromNode);
         @event.Seq.Should().Be(1);
+        @event.ProjectId.Should().Be(ProjectId);
         @event.FromOwner.Should().Be("fingerprint-1");
         @event.To.Should().Be("project");
         @event.About.Should().Be("idea-9");
@@ -30,7 +32,16 @@ public sealed class MessageDeciderTests
     public void Queue_RefusesASeqBelowOne()
     {
         Action act = () => MessageDecider.Queue(
-            FromNode, 0, "fingerprint-1", MessageAudience.Project, null, MessageKind.Note, "hello", Now);
+            FromNode, 0, ProjectId, "fingerprint-1", MessageAudience.Project, null, MessageKind.Note, "hello", Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void Queue_RefusesAnEmptyProjectId()
+    {
+        Action act = () => MessageDecider.Queue(
+            FromNode, 1, Guid.Empty, "fingerprint-1", MessageAudience.Project, null, MessageKind.Note, "hello", Now);
 
         act.Should().Throw<DomainValidationException>();
     }
@@ -38,17 +49,18 @@ public sealed class MessageDeciderTests
     [Fact]
     public void Send_ProducesASentEventCarryingTheNodeAndSeq()
     {
-        MessageSent @event = MessageDecider.Send(FromNode, 1, Now);
+        MessageSent @event = MessageDecider.Send(FromNode, 1, ProjectId, Now);
 
         @event.FromNodeId.Should().Be(FromNode);
         @event.Seq.Should().Be(1);
+        @event.ProjectId.Should().Be(ProjectId);
         @event.At.Should().Be(Now);
     }
 
     [Fact]
     public void Send_RefusesASeqBelowOne()
     {
-        Action act = () => MessageDecider.Send(FromNode, 0, Now);
+        Action act = () => MessageDecider.Send(FromNode, 0, ProjectId, Now);
 
         act.Should().Throw<DomainValidationException>();
     }
@@ -58,7 +70,7 @@ public sealed class MessageDeciderTests
     {
         MessageEnvelopeV1 envelope = new(1, Now, FromNode, "fp", MessageAudience.Project, null, MessageKind.Note, "hi");
 
-        Action act = () => MessageDecider.FailSend(envelope, string.Empty, Now);
+        Action act = () => MessageDecider.FailSend(envelope, ProjectId, string.Empty, Now);
 
         act.Should().Throw<DomainValidationException>();
     }
@@ -70,10 +82,11 @@ public sealed class MessageDeciderTests
             Seq: 1, At: Now, FromNode: FromNode, FromOwner: "fingerprint-1",
             To: MessageAudience.Project, About: "idea-9", Kind: MessageKind.Note, Body: "hello");
 
-        MessageSendFailed @event = MessageDecider.FailSend(envelope, "push rejected", Now);
+        MessageSendFailed @event = MessageDecider.FailSend(envelope, ProjectId, "push rejected", Now);
 
         @event.FromNodeId.Should().Be(FromNode);
         @event.Seq.Should().Be(1);
+        @event.ProjectId.Should().Be(ProjectId);
         @event.FromOwner.Should().Be("fingerprint-1");
         @event.To.Should().Be("project");
         @event.About.Should().Be("idea-9");
@@ -86,7 +99,7 @@ public sealed class MessageDeciderTests
     public void Resend_RefusesAMessageThatHasNotFailed()
     {
         MessageAggregate message = new();
-        message.Apply(MessageDecider.Send(FromNode, 1, Now));
+        message.Apply(MessageDecider.Send(FromNode, 1, ProjectId, Now));
 
         Action act = () => MessageDecider.Resend(message, Now.AddMinutes(1));
 
@@ -98,7 +111,7 @@ public sealed class MessageDeciderTests
     {
         MessageEnvelopeV1 envelope = new(1, Now, FromNode, "fp", MessageAudience.Project, null, MessageKind.Note, "hi");
         MessageAggregate message = new();
-        message.Apply(MessageDecider.FailSend(envelope, "push rejected", Now));
+        message.Apply(MessageDecider.FailSend(envelope, ProjectId, "push rejected", Now));
 
         message.Apply(MessageDecider.Resend(message, Now.AddMinutes(1)));
 
@@ -115,10 +128,11 @@ public sealed class MessageDeciderTests
             Seq: 2, At: Now, FromNode: FromNode, FromOwner: "fingerprint-1",
             To: MessageAudience.Project, About: "idea-9", Kind: MessageKind.Note, Body: "hello");
 
-        MessageReceived @event = MessageDecider.Receive(FromNode, envelope, Now.AddSeconds(5));
+        MessageReceived @event = MessageDecider.Receive(FromNode, ProjectId, envelope, Now.AddSeconds(5));
 
         @event.FromNodeId.Should().Be(FromNode);
         @event.Seq.Should().Be(2);
+        @event.ProjectId.Should().Be(ProjectId);
         @event.SentAt.Should().Be(Now);
         @event.FromOwnerFingerprint.Should().Be("fingerprint-1");
         @event.To.Should().Be("project");
@@ -129,10 +143,20 @@ public sealed class MessageDeciderTests
     }
 
     [Fact]
+    public void Receive_RefusesAnEmptyProjectId()
+    {
+        MessageEnvelopeV1 envelope = new(1, Now, FromNode, "fp", MessageAudience.Project, null, MessageKind.Note, "hi");
+
+        Action act = () => MessageDecider.Receive(FromNode, Guid.Empty, envelope, Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
     public void Handle_RefusesAMessageThatHasNotBeenReceived()
     {
         MessageAggregate message = new();
-        message.Apply(MessageDecider.Send(FromNode, 1, Now));
+        message.Apply(MessageDecider.Send(FromNode, 1, ProjectId, Now));
 
         Action act = () => MessageDecider.Handle(message, Now);
 
@@ -144,7 +168,7 @@ public sealed class MessageDeciderTests
     {
         MessageEnvelopeV1 envelope = new(1, Now, FromNode, "fp", MessageAudience.Project, null, MessageKind.Note, "hi");
         MessageAggregate message = new();
-        message.Apply(MessageDecider.Receive(FromNode, envelope, Now));
+        message.Apply(MessageDecider.Receive(FromNode, ProjectId, envelope, Now));
 
         message.Apply(MessageDecider.Handle(message, Now.AddMinutes(1)));
 
