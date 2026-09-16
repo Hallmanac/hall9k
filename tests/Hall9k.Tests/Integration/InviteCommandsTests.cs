@@ -275,6 +275,83 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
     }
 
     [Fact]
+    public async Task A_node_of_owner_invite_recognizes_a_same_key_manual_vouch_as_its_own_and_still_spends()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+        (string root, Guid inviteId, string secret, _) = await MintNodeOfOwnerInviteAsSelfAsync(ledger, cts.Token);
+
+        Guid joinerNodeId = DomainId.New();
+        NodeSigningKey joinerKey = await new NodeKeyStore().EnsureAsync(joinerNodeId, cts.Token);
+        string proof = InviteSecret.ComputeProof(secret, joinerKey.Fingerprint);
+        await WriteSelfAnnouncedNodeFileAsync(ledger, joinerNodeId, joinerKey, ownerFingerprint: root, inviteProof: proof, cts.Token);
+
+        // Before any sweep ever runs, the owner hand-runs h9k node vouch for this exact candidate —
+        // the identical node_id/public_key/issued_at shape NodeVouchCommand itself writes, carrying
+        // no invite marker either way. This is this candidate's own key, not a foreign takeover of
+        // its node id, so the sweep must recognize it as satisfied rather than refuse forever
+        // (independent pre-PR review, cycle 7, adversarial lens, medium).
+        string vouchPath = $"owners/{root}/nodes/{joinerNodeId}.yaml";
+        DateTimeOffset manualVouchAt = Now.AddMinutes(-5);
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                RepositoryPath, $"refs/hall9k/ledger/owners/{root}", vouchPath,
+                $"node_id: \"{joinerNodeId}\"\npublic_key: \"{joinerKey.PublicKeyLine}\"\nissued_at: \"{manualVouchAt:O}\"\n",
+                ExpectedBlobId: null, "manual h9k node vouch", new LedgerCommitter("Test Node", "node@test.local"),
+                new LedgerSigningKey("/does/not/matter/key")),
+            cts.Token);
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        InviteSweepEngine engine = new(_postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+
+        InviteSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
+        sweep.InvitesSpent.Should().Be(
+            1, "a same-key manual vouch is this candidate's own prior write, not a foreign takeover, so the invite still reaches Spent");
+
+        ledger.Writes.Where(w => w.Path == vouchPath).Should().ContainSingle(
+            "the manual vouch's own write is already correct, so the sweep never needs to push a redundant commit over it");
+
+        await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
+        InviteDetails after = (await assertSession.LoadAsync<InviteDetails>(inviteId, cts.Token))!;
+        after.Spent.Should().BeTrue();
+        after.ClaimedByRootFingerprint.Should().Be(root);
+    }
+
+    [Fact]
+    public async Task A_local_vouch_record_lands_before_the_ledger_write_it_describes_even_when_that_write_never_lands()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+        (string root, Guid inviteId, string secret, _) = await MintNodeOfOwnerInviteAsSelfAsync(ledger, cts.Token);
+
+        Guid joinerNodeId = DomainId.New();
+        NodeSigningKey joinerKey = await new NodeKeyStore().EnsureAsync(joinerNodeId, cts.Token);
+        string proof = InviteSecret.ComputeProof(secret, joinerKey.Fingerprint);
+        await WriteSelfAnnouncedNodeFileAsync(ledger, joinerNodeId, joinerKey, ownerFingerprint: root, inviteProof: proof, cts.Token);
+
+        string vouchPath = $"owners/{root}/nodes/{joinerNodeId}.yaml";
+        AlwaysFailWriteLedger brokenLedger = new(ledger, vouchPath);
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        InviteSweepEngine engine = new(_postgres.Store, node, brokenLedger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+
+        (await engine.SweepOnceAsync(cts.Token)).InvitesSpent.Should().Be(
+            0, "the vouch write itself never lands, however many times it is retried");
+
+        // The property this test exists to prove (independent pre-PR review, cycle 7, adversarial
+        // lens, high): this node's own local InviteProjectVouched record is committed to Postgres
+        // BEFORE the ledger write it describes is even attempted, not after. A crash or a failed
+        // flush of that exact SaveChangesAsync can then never straddle a ledger write that already
+        // landed, because nothing external has happened yet at the point that commit lands — unlike
+        // the old ordering, where the local record only followed a ledger write that had already
+        // succeeded, leaving a crash of just the local flush permanently unrecoverable.
+        await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
+        InviteAggregate aggregate = (await assertSession.Events.AggregateStreamAsync<InviteAggregate>(inviteId, token: cts.Token))!;
+        aggregate.VouchedProjects.Should().HaveCount(
+            1, "this node's own local record of the attempt lands independently of whether the ledger write it describes ever succeeds");
+    }
+
+    [Fact]
     public async Task A_spent_invite_is_refused_at_join_and_ignored_at_the_next_sweep()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
@@ -724,6 +801,36 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
             {
                 _alreadyFailed = true;
                 throw new LedgerPushRejectedException(request.RefName, attempts: 5, gitError: "simulated transient push failure");
+            }
+
+            return inner.WriteAsync(request, cancellationToken);
+        }
+
+        public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
+            inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
+            inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
+    }
+
+    /// <summary>An <see cref="ILedger"/> that throws <see cref="LedgerPushRejectedException"/> on
+    /// every single attempt to write to <paramref name="failPath"/>, never succeeding — unlike
+    /// <see cref="FailFirstWriteLedger"/>'s one-shot transient failure, this stands in for a write
+    /// that is never going to land, so a test can observe what this node's own local bookkeeping
+    /// does independently of that write's own outcome.</summary>
+    private sealed class AlwaysFailWriteLedger(ILedger inner, string failPath) : ILedger
+    {
+        public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken) =>
+            inner.ReadAsync(repositoryPath, refName, path, cancellationToken);
+
+        public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken)
+        {
+            if (request.Path == failPath)
+            {
+                throw new LedgerPushRejectedException(request.RefName, attempts: 5, gitError: "simulated permanent push failure");
             }
 
             return inner.WriteAsync(request, cancellationToken);
