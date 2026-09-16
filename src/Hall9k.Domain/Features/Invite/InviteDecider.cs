@@ -75,4 +75,19 @@ public static class InviteDecider
 
         return new InviteSpent(invite.Id, claimedByNodeId, claimedByRootFingerprint, spentAt);
     }
+
+    public static InviteProjectVouched VouchProject(InviteAggregate invite, Guid projectId, DateTimeOffset vouchedAt)
+    {
+        if (invite.Spent)
+        {
+            throw new DomainValidationException($"Invite {invite.Id} is already spent — single use, idea 202383dc T2.");
+        }
+
+        if (projectId == Guid.Empty)
+        {
+            throw new DomainValidationException("Recording an invite's vouch write needs the project it landed in.");
+        }
+
+        return new InviteProjectVouched(invite.Id, projectId, vouchedAt);
+    }
 }

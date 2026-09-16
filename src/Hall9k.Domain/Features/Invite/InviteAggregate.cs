@@ -20,6 +20,14 @@ public sealed class InviteAggregate
     public Guid? ClaimedByNodeId { get; private set; }
     public string? ClaimedByRootFingerprint { get; private set; }
 
+    /// <summary>Every project this invite's own vouch write already landed into, and the
+    /// <c>issued_at</c> that write actually used — this node's own sole record of "already mine",
+    /// checked instead of anything read back from ledger content (independent pre-PR review,
+    /// cycle 6, adversarial lens, high).</summary>
+    public IReadOnlyDictionary<Guid, DateTimeOffset> VouchedProjects => _vouchedProjects;
+
+    private readonly Dictionary<Guid, DateTimeOffset> _vouchedProjects = [];
+
     public void Apply(InviteMinted @event)
     {
         Id = @event.InviteId;
@@ -41,5 +49,10 @@ public sealed class InviteAggregate
         SpentAt = @event.SpentAt;
         ClaimedByNodeId = @event.ClaimedByNodeId;
         ClaimedByRootFingerprint = @event.ClaimedByRootFingerprint;
+    }
+
+    public void Apply(InviteProjectVouched @event)
+    {
+        _vouchedProjects[@event.ProjectId] = @event.VouchedAt;
     }
 }
