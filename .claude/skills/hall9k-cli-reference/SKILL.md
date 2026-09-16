@@ -162,11 +162,14 @@ never merely per fingerprint). Nothing writes a member file after that today: ad
 yet built, and waits on the invite flow (T2). `Hall9k.Connectors.Trust.
 GitLedgerChainReader` is the one place this is computed: it walks every owner root a project's
 ledger has ever seen, resolves each root's own chain independent of membership, then replays the
-members ref against those chains, checking each write's signer against that chain's own state at
-the time the write landed, not its current state (so a later revocation never retroactively voids
-an earlier, legitimately signed write). A stranger's own internally self-consistent root and node
-file count for nothing anywhere in this project, because they were never made a member; an
-unverifiable write is recorded, and named by `h9k project members`, rather than silently dropped.
+members ref against those chains, checking each write's signer against that chain's own live state
+at read time, never a snapshot pinned to the write's own claimed committer date. Accepted
+consequence: a revocation retroactively voids every membership write the revoked node ever signed,
+and a later re-vouch of that node restores them on the next read, the same latest-of-vouch-or-
+revocation rule the owner chain itself already applies. A stranger's own internally self-consistent
+root and node file count for nothing anywhere in this project, because they were never made a
+member; an unverifiable write is recorded, and named by `h9k project members`, rather than silently
+dropped.
 The same chain now gates node-to-node message reads too: a sender's key still comes from its own
 self-announced node file, but it also has to be currently allowed by the chain, bound to that exact
 sender's own node id, before its commit signature is ever checked (idea 202383dc, M1a's node-level
