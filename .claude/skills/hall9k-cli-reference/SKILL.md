@@ -540,11 +540,16 @@ only failure was `PullRequestOpener` itself (the branch already pushed, its revi
 settled, and `gh pr create` or the push failing on something like a network timeout) resumes at
 that step alone instead: no build or review session dispatches, and the next run re-attempts the
 pull-request open directly against the same pushed tip, retargeting onto the base branch first if
-a stacked parent merged in the meantime, exactly as closeout would. This only applies while the
-branch's tip on origin still matches what that run pushed; the daemon reverifies this live at
-dispatch time, and a tip that moved since (another node, a human, a second retry) falls back to
-the ordinary full dispatch. `h9k task retry` itself states, right after requeuing, which of the two
-paths the next run means to take and why.
+a stacked parent merged in the meantime, exactly as closeout would. That resumed run also carries
+the failed run's own settled review (composition, residual and ride-along findings, and its
+whole-run token totals) forward, so `h9k task show` and the pull request body still report the
+branch's real review outcome instead of an empty one. This only applies while the failed run's own
+worktree still exists, its branch still matches, and the branch's tip hasn't moved on either
+origin or the local ref in that worktree since — the daemon reverifies all of that live at
+dispatch time — and while no operator reason from `--reason` or a handback is still pending
+unread, since a build session is the only thing that ever reads one. Any of those failing falls
+back to the ordinary full dispatch. `h9k task retry` itself states, right after requeuing, which
+of the paths the next run means to take and why.
 
 ```bash
 h9k task start <id>                              # dispatch a Published, Queued, or already-Blocked task headless, on the spot, ceiling-exempt
