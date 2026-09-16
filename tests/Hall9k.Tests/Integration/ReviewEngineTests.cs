@@ -2636,6 +2636,85 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// The end-to-end sibling of <see cref="A_stacked_checkpoint_replay_verdict_that_still_conflicts_dispatches_the_guided_fix_session"/>
+    /// (independent pre-PR review, cycle 2, conformance lens): that test calls
+    /// <c>ActOnStackAssessmentAsync</c> directly and stops at the dispatch event. This one drives
+    /// the identical shape through <c>ReviewAsync</c> against a real conflict, a real assessment
+    /// verdict whose own mechanical retry genuinely conflicts too, and a real guided fix session
+    /// that resolves it by hand — proving the wiring into <c>ReviewPhase.Reverify</c>'s own review
+    /// cycles actually runs a review pass, not just that the dispatch event is appended.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_checkpoints_guided_fix_session_is_followed_by_a_real_first_review_cycle()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
+
+        // The parent's lap touches the very file this child added, differently: the checkpoint's
+        // own first mechanical replay attempt conflicts, exactly the shape
+        // A_stacked_checkpoint_replay_that_conflicts_parks_with_the_branch_restored's own fixture uses.
+        string parentNewHead = PushToOriginBranch(
+            fixture.OriginPath, fixture.ParentBranch, "Widget.cs", "class Widget { int parent; }\n");
+
+        ScriptedExecutor executor = new(
+            "The checkpoint's own conflict is real; the branch still needs replaying onto the parent's new "
+            + "head.\n\n"
+            + $"STACK ASSESSMENT VERDICT: replay\nBOUNDARY: {fixture.ParentHeadCommit}\nONTO: {parentNewHead}\n"
+            + "EVIDENCE:\ngit log confirmed the branch's own commit still needs replaying onto the parent's new "
+            + "head; the conflict is genuine content disagreement, not a stale recorded fork point.",
+            "Rebased onto the parent's new head and resolved the conflict by hand.\n\nRESOLUTION: fixed",
+            "Nothing to fix.\n\nVERDICT: merge-ready",
+            "Nothing to fix either.\n\nVERDICT: merge-ready");
+        executor.OnSpawnByIndex[1] = () =>
+        {
+            Git(fixture.WorktreePath, "fetch -q origin");
+            TryGit(fixture.WorktreePath, $"rebase --onto {parentNewHead} {fixture.ParentHeadCommit}").Should().NotBe(
+                0, "the guided fix session hits the same genuine conflict the assessment's own retry hit");
+            File.WriteAllText(
+                Path.Combine(fixture.WorktreePath, "Widget.cs"), "class Widget { int parent; int childOwn; }\n");
+            Git(fixture.WorktreePath, "add -A");
+            Git(
+                fixture.WorktreePath,
+                "-c user.name=Test -c user.email=test@test -c core.editor=true -c commit.gpgsign=false "
+                + "rebase --continue");
+        };
+
+        bool mergeReady = await NewEngine(
+                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 },
+                ExternalProcess.Runner, ExternalProcess.Runner)
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeTrue(
+            "the guided fix session resolved the conflict by hand, and the review cycles this checkpoint "
+            + "precedes then ran and found nothing to fix");
+        executor.Spawns.Should().HaveCount(4,
+            "the one read-only assessment, one guided fix session, and a genuine first review cycle's two "
+            + "lenses — never a second assessment or a bare park");
+        File.ReadAllText(Path.Combine(fixture.WorktreePath, "Widget.cs")).Should().Contain(
+            "childOwn", "the guided fix session's own resolution is what landed, not the checkpoint's own broken retry");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+        runEvents.OfType<ReviewParked>().Should().BeEmpty(
+            "the guided fix session's own resolution is what carries this run past the checkpoint, never a park");
+        PreFinalPassRebaseRecoveryDispatched dispatched =
+            runEvents.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().ContainSingle().Subject;
+        dispatched.PrecedesFirstReviewCycle.Should().BeTrue(
+            "so the fix session's own completion lands on Reverify's review cycles, not Settling");
+        dispatched.BaseCommit.Should().Be(
+            fixture.ParentHeadCommit, "the assessment verdict's own boundary is this fix session's fork point");
+        runEvents.OfType<PreFinalPassRebaseRecoveryCompleted>().Should().ContainSingle()
+            .Which.Outcome.Should().Be(ReviewFixOutcome.Fixed);
+        runEvents.OfType<RunRebasedOntoBase>().Should().ContainSingle(
+            e => !e.WasNoOp, "the guided fix session's own rebase is recorded exactly like any other resolved recovery");
+
+        List<object> taskEvents = [.. (await query.Events.FetchStreamAsync(fixture.TaskId, token: cts.Token)).Select(e => e.Data)];
+        taskEvents.OfType<StackedCheckpointRebased>().Should().BeEmpty(
+            "a guided fix session's own resolution is recorded on the run, not as the checkpoint's own mechanical replay");
+    }
+
+    /// <summary>
     /// The 2026-09-14 shape (task 450b9d84): the checkpoint's own first replay attempt genuinely
     /// conflicts — the parent's merge and a later, unrelated commit on the base both touch the same
     /// file this child's own commit touches — so it parks for a human exactly as designed. A fix
