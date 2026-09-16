@@ -273,7 +273,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        return (new TrustedOwner(root, publicKeyLine, [.. nodes.Values]), []);
+        return (new TrustedOwner(root, publicKeyLine, [.. nodes.Values]), unverified);
     }
 
     /// <summary>
