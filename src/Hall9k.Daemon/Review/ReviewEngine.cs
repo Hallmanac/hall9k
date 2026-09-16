@@ -3669,7 +3669,7 @@ public sealed class ReviewEngine(
         // The worktree is already restored to this branch's own tip, so a human (or the assessment
         // run dispatched next) inherits the branch as it was rather than a half-applied replay.
         string conflictReason =
-            $"This branch is stacked on {parentBranch} — but replaying this branch's own commits from "
+            $"This branch is stacked on {parentBranch} and {reason} — but replaying this branch's own commits from "
             + $"{ShortSha(upstreamCommit)} onto {ShortSha(ontoCommit)} conflicted, so the rebase owed before "
             + $"{checkpoint.Describe()} needs a judgment this run will not make mechanically. The worktree is "
             + $"back at this branch's own tip, unchanged. Rebase it by hand (`git rebase --onto {ontoCommit} "
