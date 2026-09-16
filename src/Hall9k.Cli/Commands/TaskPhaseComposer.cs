@@ -1,3 +1,4 @@
+using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
@@ -53,7 +54,7 @@ internal static class TaskPhaseComposer
     {
         if (state == LifecycleState.Working)
         {
-            return Working(task, run, session);
+            return Working(task, run, session, now);
         }
 
         if (state == LifecycleState.Waiting)
@@ -120,7 +121,7 @@ internal static class TaskPhaseComposer
     /// while a fix session edits the worktree, and while nothing at all is running, and only the
     /// recorded session says which.
     /// </summary>
-    private static TaskPhase Working(TaskListItem task, RunDetails? run, SessionLiveness session)
+    private static TaskPhase Working(TaskListItem task, RunDetails? run, SessionLiveness session, DateTimeOffset now)
     {
         // A claim whose run document has not committed yet: the dispatch handoff, mid-step.
         if (run is null)
@@ -269,9 +270,7 @@ internal static class TaskPhaseComposer
         {
             "Dispatched" => new TaskPhase("starting up", session, "worktree and prompt being prepared"),
             "Running" => new TaskPhase("building", session, SessionGap(session)),
-            // The gates run inside the daemon's own process, so there is no agent session to
-            // observe and the line says nothing about one.
-            "Verifying" => new TaskPhase("gates", SessionLiveness.NotApplicable, "build and test running"),
+            "Verifying" => VerifyingPhase(run, session, now),
             "UnderReview" => Review(run, session),
             "ReviewParked" => new TaskPhase("review parked", SessionLiveness.NotApplicable,
                 "the worktree is yours until you resolve it"),
@@ -295,6 +294,21 @@ internal static class TaskPhaseComposer
             _ => new TaskPhase("working", session),
         };
     }
+
+    /// <summary>
+    /// The gate actually running, named and timed (task: a run whose verification gate is
+    /// executing is reported as live work in progress, never as stalled with no session
+    /// recorded) — <paramref name="session"/> already folds the gate's own process into its
+    /// answer (<c>TaskStatusComposer.Observe</c>), so a gate whose process has actually died
+    /// reads "the recorded process is gone" here exactly as a dead agent session already does,
+    /// rather than the unqualified "gates" line a Verifying run used to show regardless of
+    /// whether anything was still running. Falls back to that same unqualified line for a run
+    /// recorded between two gates, or one whose stream predates this field.
+    /// </summary>
+    private static TaskPhase VerifyingPhase(RunDetails run, SessionLiveness session, DateTimeOffset now) =>
+        run.ActiveGate is { } gate
+            ? new TaskPhase($"gate '{gate.GateName}'", session, $"running {DurationFormat.Short(now - gate.StartedAt)}")
+            : new TaskPhase("gates", SessionLiveness.NotApplicable, "build and test running");
 
     /// <summary>
     /// Which round of review, and which leg of it. The cycle cap now resolves task &gt; project &gt;
@@ -436,7 +450,7 @@ internal static class TaskPhaseComposer
 
         if (task.State == TaskState.Claimed || task.State == TaskState.NeedsHuman)
         {
-            TaskPhase working = Working(task, run, session);
+            TaskPhase working = Working(task, run, session, now);
             return WithChecksPendingDetail(
                 WithTriageDetail(working with { Text = $"follow-up on {pullRequest}: {working.Text}" }, run),
                 task, now);
