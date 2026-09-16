@@ -1083,8 +1083,11 @@ half of identity is built too (idea 202383dc, T1): vouches and revocations
 (`owners/<root>/nodes/<node-id>.yaml`, `owners/<root>/revoked/<node-id>.yaml`) let one owner's
 already-enrolled node admit another of that owner's own nodes into the fleet, `h9k node
 vouch`/`revoke`; project membership (`refs/hall9k/ledger/members`) is its own ledger ref, one
-`members/<root>.yaml` per member, genesis self-written by the first join once that ref's own
-`members/` folder is entirely empty, `h9k project members`/`member remove`; and `GitLedgerChainReader`
+`members/<root>.yaml` per member, genesis self-written by the first plain join (no `--owner`, no
+`--invite`) once that ref's own `members/` folder is entirely empty — a join carrying an invite
+never self-writes it, whatever the folder's own state, since an invite is by definition not this
+project's first member (idea 202383dc, T2 criterion 3) — `h9k project members`/`member remove`;
+and `GitLedgerChainReader`
 recomputes, on every read of every ledger and messages ref, exactly which signers a project's own
 chain currently trusts, each write checked against the signing chain's own live state at read time,
 never a snapshot pinned to that write's own claimed committer date. A stranger's own self-consistent
