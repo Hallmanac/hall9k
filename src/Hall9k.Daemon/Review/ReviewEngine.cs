@@ -3539,7 +3539,10 @@ public sealed class ReviewEngine(
                 context, parkKind, context.Run.Branch, parentBranch, currentBaseCommit, observation.OntoCommit,
                 verdict.Reason,
                 (assessed, ct) => ActOnStackAssessmentAsync(context, checkpoint, parentBranch, verdict.Reason, assessed, ct),
-                cancellationToken);
+                cancellationToken,
+                additionalCandidateBranches: observation.MergedIntoBranch.IsNotBlank()
+                    ? [observation.MergedIntoBranch]
+                    : null);
         }
 
         // Everything past here is Replay. The real, hardwired runner: this is the ORIGINAL first
@@ -3767,12 +3770,21 @@ public sealed class ReviewEngine(
     /// capping the pre-existing recovery budget at whatever round the assessment happened to spend
     /// (independent pre-PR review, cycle 1, both lenses).
     /// </param>
+    /// <param name="additionalCandidateBranches">
+    /// Extra branch names <see cref="ResolveOntoBranchNameAsync"/> may match an aligned or replay
+    /// verdict's own ONTO commit against, beyond the project's base, <paramref name="parentBranch"/>
+    /// and this run's own pull request base — a branch the daemon already resolved live before ever
+    /// dispatching the assessment (<see cref="StackedParentObservation.MergedIntoBranch"/> for a
+    /// <c>ParentMergedElsewhere</c> park), not one it is guessing at (independent pre-PR review,
+    /// cycle 1, conformance lens).
+    /// </param>
     internal async Task<RebaseGateOutcome> AssessOrParkAsync(
         ReviewContext context, StackAssessmentParkKind parkKind, string childBranch, string parentBranch,
         string recordedForkPoint, string attemptedOntoCommit, string parkText,
         Func<StackAssessmentVerdict, CancellationToken, Task<RebaseGateOutcome>> actOnVerdict,
         CancellationToken cancellationToken,
-        Func<RunDetails, CancellationToken, Task<RebaseGateOutcome>>? onAssessmentAlreadySpent = null)
+        Func<RunDetails, CancellationToken, Task<RebaseGateOutcome>>? onAssessmentAlreadySpent = null,
+        IReadOnlyList<string>? additionalCandidateBranches = null)
     {
         RunDetails? run;
         await using (IQuerySession query = store.QuerySession())
@@ -3795,7 +3807,7 @@ public sealed class ReviewEngine(
 
         StackAssessmentVerdict verdict = await DispatchStackAssessmentAsync(
             context, parkKind, childBranch, parentBranch, recordedForkPoint, attemptedOntoCommit, parkText,
-            cancellationToken);
+            cancellationToken, additionalCandidateBranches);
         return await actOnVerdict(verdict, cancellationToken);
     }
 
@@ -3828,7 +3840,8 @@ public sealed class ReviewEngine(
     /// </summary>
     internal async Task<StackAssessmentVerdict> DispatchStackAssessmentAsync(
         ReviewContext context, StackAssessmentParkKind parkKind, string childBranch, string parentBranch,
-        string recordedForkPoint, string attemptedOntoCommit, string parkText, CancellationToken cancellationToken)
+        string recordedForkPoint, string attemptedOntoCommit, string parkText, CancellationToken cancellationToken,
+        IReadOnlyList<string>? additionalCandidateBranches = null)
     {
         Guid sessionId = DomainId.New();
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
@@ -3901,7 +3914,7 @@ public sealed class ReviewEngine(
                 return await RecordStackAssessmentCompletedAsync(
                     context, parkKind, parentBranch, pullRequestBase, model,
                     StackAssessmentVerdict.Undecidable($"the assessment session could not even be started ({exception.Message})"),
-                    result: null, cancellationToken);
+                    result: null, cancellationToken, additionalCandidateBranches);
             }
 
             unfinished = agent;
@@ -3958,7 +3971,7 @@ public sealed class ReviewEngine(
             return await RecordStackAssessmentCompletedAsync(
                 context, parkKind, parentBranch, pullRequestBase, model,
                 StackAssessmentVerdict.Undecidable($"the assessment session failed before it could finish ({exception.Message})"),
-                result: null, cancellationToken);
+                result: null, cancellationToken, additionalCandidateBranches);
         }
 
         if (result?.IsError == true)
@@ -3969,7 +3982,7 @@ public sealed class ReviewEngine(
 
         StackAssessmentVerdict verdict = StackAssessmentResultParser.Parse(result?.Summary);
         return await RecordStackAssessmentCompletedAsync(
-            context, parkKind, parentBranch, pullRequestBase, model, verdict, result, cancellationToken);
+            context, parkKind, parentBranch, pullRequestBase, model, verdict, result, cancellationToken, additionalCandidateBranches);
     }
 
     /// <summary>
@@ -3980,7 +3993,10 @@ public sealed class ReviewEngine(
     /// updated values rather than the stale ones that caused the park (<see cref="Events.StackAssessmentCompleted"/>'s
     /// own doc). The evidence is also appended to <see cref="RunPaths.StackAssessmentEvidenceFile"/>,
     /// beside this run's own review findings, the same append-with-timestamp shape every other
-    /// run-scoped evidence file already uses.
+    /// run-scoped evidence file already uses. <paramref name="additionalCandidateBranches"/> widens
+    /// <see cref="ResolveOntoBranchNameAsync"/>'s own candidate set beyond the project's base,
+    /// <paramref name="parentBranch"/> and <paramref name="pullRequestBase"/> — see
+    /// <see cref="AssessOrParkAsync"/>'s own doc for what a caller may honestly add there.
     /// <para>
     /// An aligned or replay verdict's own <see cref="StackAssessmentVerdict.BoundaryCommit"/> AND
     /// <see cref="StackAssessmentVerdict.OntoCommit"/> are each confirmed to resolve in this
@@ -3999,7 +4015,8 @@ public sealed class ReviewEngine(
     /// </summary>
     internal async Task<StackAssessmentVerdict> RecordStackAssessmentCompletedAsync(
         ReviewContext context, StackAssessmentParkKind parkKind, string parentBranch, string pullRequestBase,
-        AgentModel model, StackAssessmentVerdict verdict, AgentResult? result, CancellationToken cancellationToken)
+        AgentModel model, StackAssessmentVerdict verdict, AgentResult? result, CancellationToken cancellationToken,
+        IReadOnlyList<string>? additionalCandidateBranches = null)
     {
         if (verdict.Kind != StackAssessmentVerdictKind.Undecidable
             && !await CommitResolvesAsync(context.Run.WorktreePath, verdict.BoundaryCommit, cancellationToken))
@@ -4019,13 +4036,32 @@ public sealed class ReviewEngine(
                 + $"{verdict.Evidence}");
         }
 
+        // An aligned verdict is trusted with no mechanical rebase behind it at all — the caller
+        // proceeds straight from it — so it is the one verdict a wrong "aligned" answer can land
+        // uncaught: a well-formed, resolvable ONTO commit is not the same claim as "this branch's
+        // own HEAD already contains it", and every caller reaches this verdict already knowing HEAD
+        // does NOT (an aligned dispatch only ever follows a park or a conflict). Confirmed the same
+        // way ReplayCheckpointAsync confirms a landed replay, `git merge-base --is-ancestor <onto>
+        // HEAD`, before either caller trusts it enough to renumber the Decisions Log placeholder and
+        // proceed on a tree that may still be stale (independent pre-PR review, cycle 1, adversarial
+        // lens).
+        if (verdict.Kind == StackAssessmentVerdictKind.Aligned
+            && !await CommitIsAncestorOfHeadAsync(context.Run.WorktreePath, verdict.OntoCommit, cancellationToken))
+        {
+            verdict = StackAssessmentVerdict.Undecidable(
+                $"the assessment declared aligned with an ONTO commit ({verdict.OntoCommit}) that this branch's "
+                + "own HEAD does not actually contain, so it is not trusted as already caught up. Its own "
+                + $"evidence: {verdict.Evidence}");
+        }
+
         string resolvedBaseBranchName = string.Empty;
         bool ontoIsProjectBaseBranch = false;
         if (verdict.Kind != StackAssessmentVerdictKind.Undecidable && verdict.OntoCommit.IsNotBlank())
         {
             resolvedBaseBranchName = await ResolveOntoBranchNameAsync(
                 context.Run.WorktreePath, verdict.OntoCommit,
-                [context.Project.BaseBranch, parentBranch, pullRequestBase], cancellationToken);
+                [context.Project.BaseBranch, parentBranch, pullRequestBase, .. additionalCandidateBranches ?? []],
+                cancellationToken);
 
             // Blank, not the project's own base branch spelled out: BaseBranch's own invariant
             // (RunDetails.StackedOnBranch's doc) is that blank means "the project's own base
@@ -4092,6 +4128,37 @@ public sealed class ReviewEngine(
         {
             logger.LogWarning(
                 exception, "Could not verify whether the stack assessment's boundary commit {Commit} resolves in this repository", commit);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Whether this branch's own checked-out HEAD already contains <paramref name="commit"/> — the
+    /// one check that tells an aligned verdict's own claim ("nothing needs to move") apart from a
+    /// resolvable-but-not-yet-merged commit, which <see cref="CommitResolvesAsync"/> alone cannot:
+    /// a commit can exist in this repository's object store without HEAD having merged it, and every
+    /// caller of <see cref="RecordStackAssessmentCompletedAsync"/> reaches an aligned verdict already
+    /// knowing HEAD does not (an aligned dispatch only ever follows a park or a conflict). A read
+    /// failure resolves to false, the same "never guess at unobserved facts" stance
+    /// <see cref="CommitResolvesAsync"/> already takes.
+    /// </summary>
+    private async Task<bool> CommitIsAncestorOfHeadAsync(string worktreePath, string commit, CancellationToken cancellationToken)
+    {
+        if (commit.IsBlank())
+        {
+            return false;
+        }
+
+        try
+        {
+            ProcessResult result = await processRunner(
+                "git", ["merge-base", "--is-ancestor", commit, "HEAD"], worktreePath, cancellationToken);
+            return result.ExitCode == 0;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception, "Could not verify whether the stack assessment's onto commit {Commit} is contained in this branch's own HEAD", commit);
             return false;
         }
     }

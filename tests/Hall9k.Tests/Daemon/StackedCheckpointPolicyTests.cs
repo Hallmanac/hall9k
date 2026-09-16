@@ -96,7 +96,7 @@ public sealed class StackedCheckpointPolicyTests
     public void A_parent_that_merged_somewhere_other_than_the_base_parks()
     {
         StackedCheckpointVerdict verdict = Decide(StackedParentObservation.ParentMergedElsewhere(
-            ParentBranch, "the parent task's pull request merged into task/grandparent"));
+            ParentBranch, "task/grandparent", "the parent task's pull request merged into task/grandparent"));
 
         verdict.Action.Should().Be(StackedCheckpointAction.Park);
         verdict.Reason.Should().Contain("task/grandparent");

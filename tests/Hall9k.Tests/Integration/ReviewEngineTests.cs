@@ -10390,10 +10390,14 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// by shape rather than by call order: a rebase from <paramref name="conflictingUpstream"/>
     /// conflicts (if named), one from <paramref name="cleanUpstream"/> lands clean (if named), and
     /// every candidate branch in <paramref name="branchTips"/> answers a rev-parse with its own tip.
+    /// <paramref name="nonAncestorOnto"/> answers <c>RecordStackAssessmentCompletedAsync</c>'s own
+    /// <c>merge-base --is-ancestor &lt;onto&gt; HEAD</c> containment check with "not an ancestor" for
+    /// that one commit — every other commit answers it as contained, the same "everything this fake
+    /// is handed exists/lands" default every other check here already takes.
     /// </summary>
     private static RecordingProcessRunner FakeCheckpointGit(
         string? conflictingUpstream = null, string? cleanUpstream = null,
-        IReadOnlyDictionary<string, string>? branchTips = null)
+        IReadOnlyDictionary<string, string>? branchTips = null, string? nonAncestorOnto = null)
     {
         branchTips ??= new Dictionary<string, string>();
         return new RecordingProcessRunner(arguments =>
@@ -10416,6 +10420,14 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
                 // "<commit>^{commit}" presence checks: every commit this fake is handed exists.
                 return new ProcessResult(0, string.Empty, string.Empty);
+            }
+
+            if (arguments.Count >= 3 && arguments[0] == "merge-base" && arguments[1] == "--is-ancestor")
+            {
+                string candidate = arguments[2];
+                return candidate == nonAncestorOnto
+                    ? new ProcessResult(1, string.Empty, "not an ancestor")
+                    : new ProcessResult(0, string.Empty, string.Empty);
             }
 
             if (arguments.Count >= 4 && arguments[0] == "rebase" && arguments[1] == "--onto")
@@ -10492,6 +10504,95 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
         File.ReadAllText(RunPaths.StackAssessmentEvidenceFile(RunPaths.GlobalDirectory(runId)))
             .Should().Contain("already contains main's tip");
+    }
+
+    /// <summary>
+    /// An aligned verdict is trusted with no mechanical rebase behind it — the caller proceeds
+    /// straight from it — so a wrong "aligned" answer naming a resolvable but not-yet-merged ONTO
+    /// commit is the one shape <c>CommitResolvesAsync</c> alone cannot catch: the commit exists in
+    /// this repository's object store, but this branch's own HEAD never actually merged it
+    /// (independent pre-PR review, cycle 1, adversarial lens). <c>RecordStackAssessmentCompletedAsync</c>
+    /// downgrades exactly this shape to undecidable rather than recording the fork point and base
+    /// branch it named and proceeding on a tree that is still, in fact, behind.
+    /// </summary>
+    [Fact]
+    public async Task An_aligned_verdict_whose_onto_commit_this_branchs_own_head_does_not_contain_is_downgraded_to_undecidable()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token, baseBranch: "task/parent-branch");
+
+        ScriptedExecutor executor = new(
+            "Checked containment; the branch already accounts for everything main has merged.\n\n"
+            + $"STACK ASSESSMENT VERDICT: aligned\nBOUNDARY: {ScriptedBoundary}\nONTO: {ScriptedOnto}\n"
+            + "EVIDENCE:\ngit merge-base --is-ancestor confirmed the recorded fork point already contains main's tip.");
+        RecordingProcessRunner git = FakeCheckpointGit(
+            conflictingUpstream: "originalupstream1111111111111111111111",
+            branchTips: new Dictionary<string, string> { ["main"] = ScriptedOnto },
+            nonAncestorOnto: ScriptedOnto);
+
+        ReviewEngine engine = NewEngine(store, executor, new DaemonOptions(), git.Runner);
+        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
+        RunDetails before = (await store.QuerySession().LoadAsync<RunDetails>(runId, cts.Token))!;
+
+        ReviewEngine.RebaseGateOutcome outcome = await engine.ReplayCheckpointAsync(
+            context, StackedCheckpoint.BeforeFirstReviewCycle, "task/parent-branch",
+            "originalupstream1111111111111111111111", "originalonto22222222222222222222222222",
+            "a stacked checkpoint's own decision", git.Runner, cts.Token);
+
+        outcome.Should().Be(ReviewEngine.RebaseGateOutcome.Stop, "a falsely aligned verdict downgrades to undecidable and parks");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.LastStackAssessmentVerdict.Should().Be("undecidable");
+        run.BaseCommit.Should().Be(
+            before.BaseCommit, "an undecidable verdict must never move this run's own recorded fork point");
+        run.BaseBranch.Should().Be(
+            before.BaseBranch, "an undecidable verdict must never move this run's own recorded base branch");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<StackAssessmentCompleted>().Should().ContainSingle(
+            e => e.Verdict == "undecidable" && e.Evidence.Contains("does not actually contain"));
+        events.OfType<RunRebasedOntoBase>().Should().BeEmpty("nothing was ever trusted enough to record as landed");
+    }
+
+    /// <summary>
+    /// A <c>ParentMergedElsewhere</c> park's own onto commit names the branch the parent's pull
+    /// request actually merged into — a mid-stack merge, so neither the project's base branch, the
+    /// recorded (now-dead) parent, nor a pull request base this fresh run does not have yet. Without
+    /// the branch <see cref="StackedParentWatch.ResolveActualMergedIntoAsync"/> already resolved
+    /// live threaded through as an additional candidate, this onto commit would never resolve to a
+    /// name at all, leaving <c>BaseBranch</c> stuck on the dead parent forever (independent pre-PR
+    /// review, cycle 1, conformance lens).
+    /// </summary>
+    [Fact]
+    public async Task An_additional_candidate_branch_resolves_a_parent_merged_elsewhere_ontos_actual_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token, baseBranch: "task/parent-branch");
+
+        RecordingProcessRunner git = FakeCheckpointGit(
+            branchTips: new Dictionary<string, string> { ["task/grandparent"] = ScriptedOnto });
+
+        ReviewEngine engine = NewEngine(store, new ScriptedExecutor(), new DaemonOptions(), git.Runner);
+        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
+
+        StackAssessmentVerdict verdict = StackAssessmentVerdict.Replay(
+            ScriptedBoundary, ScriptedOnto, "the parent's own pull request merged into task/grandparent.");
+
+        await engine.RecordStackAssessmentCompletedAsync(
+            context, StackAssessmentParkKind.ParentMergedElsewhere, "task/parent-branch", pullRequestBase: string.Empty,
+            AgentModel.Sonnet, verdict, result: null, cts.Token, additionalCandidateBranches: ["task/grandparent"]);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.BaseBranch.Should().Be(
+            "task/grandparent",
+            "the additional candidate is what let the onto commit resolve to the branch it actually merged into");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<StackAssessmentCompleted>().Should().ContainSingle(e => e.ResolvedBaseBranchName == "task/grandparent");
     }
 
     /// <summary>
