@@ -276,8 +276,10 @@ closeout records the refusal once on the run and proceeds on the remaining gates
 pre-approved task with CI green, every thread resolved, and no outstanding human reviewer merges
 exactly as it would with a landed review. Every other errored review keeps the ordinary behavior:
 one re-request per errored review against the automatic budget, then a park naming it. `h9k task
-show` names the refusal on the run under its own "Copilot review" line; a task that merged this way
-simply leaves the board, the same as any other merge.
+show` names the refusal on the run under its own "Copilot review" line. A task that merged this way
+leaves the board's per-task sections, the same as any other merge, but `h9k status` still names it
+under its own "merged without Copilot review" line, since that fact does not otherwise survive the
+task leaving the board.
 
 An epic is a first-class named grouping of tasks (Decisions Log #100): its own id, title, and
 Open/Closed state, event-sourced like everything else. Membership is optional and no-ceremony —

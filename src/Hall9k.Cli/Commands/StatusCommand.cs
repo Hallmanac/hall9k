@@ -4,7 +4,9 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -67,6 +69,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await WriteIdentityLineAsync(session, cancellationToken);
         await WriteMessagesLineAsync(session, cancellationToken);
         await WriteUnverifiedLedgerWritesAsync(session, cancellationToken);
+        await WriteMergedWithoutCopilotReviewAsync(session, cancellationToken);
 
         IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
             session, DateTimeOffset.UtcNow, cancellationToken);
@@ -422,6 +425,61 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]unverifiable ledger writes: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>Rows this pane shows before it points at the run that merged more of them.</summary>
+    private const int MaxMergedWithoutCopilotReviewShown = 10;
+
+    /// <summary>
+    /// A pull request that merged while Copilot's review sat unavailable (task: a Copilot review
+    /// refused for quota is treated as review unavailable) — printed here because a task that
+    /// merged this way is Done, and a Done task earns no row of its own in the sections below by
+    /// this pane's own design (Decisions Log #66: the pane is what needs you, not a browse
+    /// surface). <see cref="RunDetails.CopilotReviewUnavailableAt"/> is the durable, never-cleared
+    /// record that makes this readable after the row that carried it is gone; pairing it with
+    /// <see cref="RunDetails.PullRequestMergedAt"/> is what scopes this line to the fact this
+    /// pane owes a reader — that the merge actually happened without Copilot's review — rather
+    /// than every refusal ever observed, most of which a landed re-review or a human merge
+    /// already resolved. Degraded rather than fatal on a database hiccup, the same as the panes
+    /// above.
+    /// </summary>
+    internal static async Task WriteMergedWithoutCopilotReviewAsync(
+        IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<RunDetails> merged = await session.Query<RunDetails>()
+                .Where(run => run.CopilotReviewUnavailableAt != null && run.PullRequestMergedAt != null)
+                .ToListAsync(cancellationToken);
+            if (merged.Count == 0)
+            {
+                return;
+            }
+
+            IReadOnlyList<RunDetails> ordered = [.. merged.OrderByDescending(run => run.PullRequestMergedAt)];
+            foreach (RunDetails run in ordered.Take(MaxMergedWithoutCopilotReviewShown))
+            {
+                TaskListItem? task = await session.LoadAsync<TaskListItem>(run.TaskId, cancellationToken);
+                string label = task is null
+                    ? TaskListCommand.ShortId(run.TaskId)
+                    : $"{TaskListCommand.ShortId(task.Id)} {ExternalText.OneLineMarkup(task.Objective)}";
+                string pullRequest = run.PullRequestNumber is { } number ? $"PR #{number}" : "its pull request";
+                AnsiConsole.MarkupLine(
+                    $"[yellow]merged without Copilot review[/] — {label} [dim]({pullRequest}, "
+                    + $"{run.PullRequestMergedAt!.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
+            }
+
+            int held = ordered.Count - Math.Min(ordered.Count, MaxMergedWithoutCopilotReviewShown);
+            if (held > 0)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[dim]  … and {held} more — see them all with:[/] h9k task list --state done");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]merged without Copilot review: unavailable ({exception.Message})[/]");
         }
     }
 
