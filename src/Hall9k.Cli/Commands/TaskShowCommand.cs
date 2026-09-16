@@ -589,6 +589,14 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                 .OrderByDescending(r => r.LastAutoMergeAttemptedAt)
                 .FirstOrDefault();
             WriteAutoMergeOutcome(autoMergeRun);
+            // Selected across every run the same defensive way as the outcomes above: the run
+            // that observed the refusal need not be the run that later merged (task: a Copilot
+            // review refused for quota is treated as review unavailable).
+            RunDetails? copilotReviewUnavailableRun = runDetailsById.Values
+                .Where(r => r.CopilotReviewUnavailableAt is not null)
+                .OrderByDescending(r => r.CopilotReviewUnavailableAt)
+                .FirstOrDefault();
+            WriteCopilotReviewUnavailableOutcome(copilotReviewUnavailableRun);
             await WriteSessionsAsync(session, runs, runDetailsById, cancellationToken);
             await WriteGateDurationAnomaliesAsync(session, details.ProjectId, runs[^1], cancellationToken);
         }
@@ -1533,6 +1541,26 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         AnsiConsole.MarkupLine(
             $"\n[bold]Auto-merge[/]  {outcome} "
             + $"[dim]({run.LastAutoMergeAttemptedAt.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
+    }
+
+    /// <summary>
+    /// Copilot's own quota refusal (task: a Copilot review refused for quota is treated as review
+    /// unavailable; Brian's ruling, 2026-09-16 morning): the closeout accepted it and proceeded on
+    /// the remaining gates — merging, if the task was pre-approved and every other gate was
+    /// clear, or leaving the merge to a human otherwise — rather than spend the automatic budget
+    /// re-requesting a review that would keep refusing for the identical reason.
+    /// </summary>
+    private static void WriteCopilotReviewUnavailableOutcome(RunDetails? run)
+    {
+        if (run is not { CopilotReviewUnavailableAt: not null })
+        {
+            return;
+        }
+
+        string reason = ExternalText.OneLineMarkup(run.CopilotReviewUnavailableReason ?? "reason not recorded");
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Copilot review[/]  [yellow]unavailable, accepted[/] [dim]— {reason}[/] "
+            + $"[dim]({run.CopilotReviewUnavailableAt.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
     }
 
     /// <summary>
