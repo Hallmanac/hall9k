@@ -1794,10 +1794,17 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
-        (NodeContext node, Guid _, Guid runIdA) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
-        (NodeContext _, Guid _, Guid runIdB) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
+
+        // A node minted just for this test (NodeBootstrapSeed.NewIsolatedNodeAsync), not the one
+        // class-shared node every other test in this file resolves and reuses: the ceiling below
+        // is measured, then relied on again moments later inside SweepOnceAsync's own independent
+        // re-count, so nothing outside this test's own two seeded runs may be able to move it in
+        // between. A_hold_probe_stops_at_the_nodes_own_concurrency_ceiling names the concrete
+        // failure this closes for both of this pair's tests.
+        NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(store, cts.Token);
+        (NodeContext _, Guid _, Guid runIdA) = await SeedClaimedTaskWithProjectAsync(store, node, cts.Token);
+        (NodeContext _, Guid _, Guid runIdB) = await SeedClaimedTaskWithProjectAsync(store, node, cts.Token);
         LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
-        await RetireLeftoverLaunchHeldRunsAsync(store, launchHold, node, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -1808,12 +1815,9 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             await session.SaveChangesAsync(cts.Token);
         }
 
-        // This class shares one node across every test (its own DisposeAsync doc), and a handful
-        // of siblings deliberately leave a live run behind — a long-paused fake session whose own
-        // CancellationTokenSource is cancelled rather than driven to a terminal state. Measured
-        // fresh here, with A and B already LaunchHeld rather than counted while still Dispatched,
-        // so the ceiling this test sets admits exactly one slot beyond whatever the node already
-        // happens to carry.
+        // With A and B already LaunchHeld rather than counted while still Dispatched, this node's
+        // own live count is zero — it carries nothing but this test's own two runs, both now held
+        // — so the ceiling this test sets admits exactly one slot.
         int liveBeforeThisTest = await CountLiveRunsAsync(store, node.NodeId, cts.Token);
 
         ScriptedResumeExecutor resumeExecutor = new(ResultLine);
@@ -1847,10 +1851,30 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
-        (NodeContext node, Guid _, Guid heldRunId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
-        (NodeContext _, Guid _, Guid liveRunId) = await SeedClaimedTaskWithProjectAsync(store, cts.Token);
+
+        // Evidence (task d697f76a, run 01a0a9c2-73b9-76ec-99a0-4f30ab1daa76, 2026-09-16 06:55 EDT):
+        // this test failed once under three concurrent test gates on this machine, with
+        // resumeExecutor.Spawns holding an unexpected AgentSpawnRequest even though nothing this
+        // test itself did should have opened a slot. Root cause, confirmed by reading the
+        // production and test code rather than assumed: this whole class shares one
+        // machine-name-keyed node across every test in it (NodeBootstrapSeed.NewNodeAsync's own
+        // doc), and several sibling tests deliberately leave a fire-and-forget
+        // RunSupervisor.StartMonitoring loop running past their own return, joined by nothing and
+        // cancelled only cooperatively (a simulated daemon crash/restart, not a real process
+        // death). Under enough machine contention, one of those orphaned loops can still land a
+        // state-changing write against the shared node between this test's own live-run snapshot
+        // below and LaunchHoldMonitor.SweepOnceAsync's own independent re-count moments later,
+        // dropping the live count out from under the ceiling this test configured and opening the
+        // very slot the assertion below says must stay closed. A node minted just for this test
+        // (NodeBootstrapSeed.NewIsolatedNodeAsync) carries no run any other test could ever have
+        // touched, so nothing but this test's own two seeded runs can move the count between the
+        // snapshot and the sweep. A_sweep_resuming_every_held_run_stops_at_the_nodes_own_concurrency_ceiling
+        // is the one sibling with the same shape (a live count sizing a ceiling this class's shared
+        // node could move) and gets the same treatment.
+        NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(store, cts.Token);
+        (NodeContext _, Guid _, Guid heldRunId) = await SeedClaimedTaskWithProjectAsync(store, node, cts.Token);
+        (NodeContext _, Guid _, Guid liveRunId) = await SeedClaimedTaskWithProjectAsync(store, node, cts.Token);
         LaunchHoldEngine launchHold = new(store, NullLogger<LaunchHoldEngine>.Instance);
-        await RetireLeftoverLaunchHeldRunsAsync(store, launchHold, node, cts.Token);
 
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -3057,10 +3081,20 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     /// so nothing this file's tests do ever launches a real, billable <c>claude</c> process.
     /// </para>
     /// </summary>
+    private Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedTaskWithProjectAsync(
+        DocumentStore store, CancellationToken cancellationToken) =>
+        SeedClaimedTaskWithProjectAsync(store, node: null, cancellationToken);
+
+    /// <summary>
+    /// <paramref name="node"/> lets a caller pin every seeded task onto one node it already
+    /// minted itself — an isolated one from <see cref="NodeBootstrapSeed.NewIsolatedNodeAsync"/>,
+    /// for a test whose own concurrency ceiling must rest on runs it alone owns — rather than the
+    /// class-shared node <see langword="null"/> resolves via <see cref="NodeBootstrapSeed.NewNodeAsync"/>.
+    /// </summary>
     private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedTaskWithProjectAsync(
-        DocumentStore store, CancellationToken cancellationToken)
+        DocumentStore store, NodeContext? node, CancellationToken cancellationToken)
     {
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+        node ??= await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
 
         Guid projectId = DomainId.New();
         Guid taskId = DomainId.New();
