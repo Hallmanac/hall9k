@@ -340,8 +340,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             int unread = await session.Query<MessageDetails>()
                 .Where(message => message.ReceivedAt != null && message.HandledAt == null)
                 .CountAsync(cancellationToken);
+            // ProjectId == Guid.Empty excludes a mark left on the pre-M2, unscoped inbox stream: M2's
+            // per-project stream ids mean nothing ever writes to that old stream again, so a mark
+            // there can never clear the way every other one does once the sender is vouched again —
+            // showing it forever, unlabeled as to which project it even belongs to, would be actively
+            // misleading rather than merely stale (independent pre-PR review, cycle 1, conformance
+            // lens, low).
             IReadOnlyList<MessageInboxDetails> ignored = await session.Query<MessageInboxDetails>()
-                .Where(inbox => inbox.SenderIgnored)
+                .Where(inbox => inbox.SenderIgnored && inbox.ProjectId != Guid.Empty)
                 .ToListAsync(cancellationToken);
 
             if (unread > 0)
