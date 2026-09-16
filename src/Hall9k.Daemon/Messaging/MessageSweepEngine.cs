@@ -223,15 +223,37 @@ public sealed class MessageSweepEngine(
         }
     }
 
+    /// <summary>How stale <see cref="UnverifiedLedgerWriteAggregate.LastSeenAt"/> is allowed to get
+    /// before an otherwise-unchanged sighting still refreshes it — long enough that a project with
+    /// one standing bad write appends on the order of tens of events a year, not thousands a day,
+    /// while <c>h9k status</c> still shows a recent-enough "last seen" for an operator to trust it
+    /// reflects the current sweep, not a stale one from hours ago.</summary>
+    private static readonly TimeSpan UnverifiedWriteRefreshAge = TimeSpan.FromHours(1);
+
     /// <summary>
     /// Persists every writer this sweep's own trust chain read found it could not verify
     /// (<see cref="TrustChain.UnverifiedWrites"/>) as a standing, per-project record
     /// (<see cref="UnverifiedLedgerWriteDetails"/>) — the acceptance criterion "the writer is
     /// named in h9k status" (idea 202383dc, T1 criterion 3) is settled by that pane reading this
-    /// record, never by a live ledger walk from h9k status itself. One event per observed writer
-    /// per tick, folded by <see cref="UnverifiedLedgerWriteStreamId.For"/> into a single standing
-    /// fact rather than growing without bound: the identical writer seen again only advances its
-    /// own <c>LastSeenAt</c> (independent pre-PR review, human resolution 2026-09-15).
+    /// record, never by a live ledger walk from h9k status itself.
+    /// <para>
+    /// Folded by <see cref="UnverifiedLedgerWriteStreamId.For"/> into one standing fact per
+    /// (kind, identifier, root) rather than one row per sweep tick that observed it, two ways:
+    /// first, <paramref name="trustChain"/> itself can name the identical writer more than once in
+    /// a single tick (a revoked node pushing a correction over its own earlier bad commit, say),
+    /// collapsed here to the last-observed one <em>before</em> the store is ever touched — an
+    /// earlier version called <c>AggregateStreamAsync</c> then <c>StartStream</c> per element with
+    /// no such de-duplication, so two entries sharing a stream id in the same tick called
+    /// <c>StartStream</c> twice for the same id in one session and <c>SaveChangesAsync</c> failed
+    /// the whole batch, silently dropping every writer that tick was supposed to persist, including
+    /// the distinct ones (independent pre-PR review, cycle 1, adversarial lens, medium). Second,
+    /// nothing is appended at all when the sighting has not meaningfully changed — the offending
+    /// ledger commit never goes away on its own, so a project with one bad write would otherwise
+    /// grow this stream by one identical event every tick, forever, with <c>AggregateStreamAsync</c>
+    /// replaying the whole thing again on every single one of them (independent pre-PR review,
+    /// cycle 1, both lenses, medium). A changed <c>Reason</c> (a different offending commit now)
+    /// or a <c>LastSeenAt</c> older than <see cref="UnverifiedWriteRefreshAge"/> still refreshes it.
+    /// </para>
     /// </summary>
     private async Task PersistUnverifiedWritesAsync(
         ProjectDetails project, TrustChain trustChain, DateTimeOffset now, CancellationToken cancellationToken)
@@ -241,14 +263,27 @@ public sealed class MessageSweepEngine(
             return;
         }
 
+        Dictionary<Guid, UnverifiedLedgerWrite> distinctWrites = [];
+        foreach (UnverifiedLedgerWrite write in trustChain.UnverifiedWrites)
+        {
+            Guid streamId = UnverifiedLedgerWriteStreamId.For(project.Id, write.Kind, write.Identifier, write.RootFingerprint);
+            distinctWrites[streamId] = write;
+        }
+
         try
         {
             await using IDocumentSession session = store.LightweightSession();
-            foreach (UnverifiedLedgerWrite write in trustChain.UnverifiedWrites)
+            foreach ((Guid streamId, UnverifiedLedgerWrite write) in distinctWrites)
             {
-                Guid streamId = UnverifiedLedgerWriteStreamId.For(project.Id, write.Kind, write.Identifier, write.RootFingerprint);
                 UnverifiedLedgerWriteAggregate? existing = await session.Events
                     .AggregateStreamAsync<UnverifiedLedgerWriteAggregate>(streamId, token: cancellationToken);
+                if (existing is not null
+                    && existing.Reason == write.Reason
+                    && now - existing.LastSeenAt < UnverifiedWriteRefreshAge)
+                {
+                    continue;
+                }
+
                 UnverifiedLedgerWriteObserved observed = UnverifiedLedgerWriteDecider.Observe(
                     project.Id, write.Kind, write.Identifier, write.RootFingerprint, write.Reason, now);
                 if (existing is null)
