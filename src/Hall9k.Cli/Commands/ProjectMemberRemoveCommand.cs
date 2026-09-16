@@ -75,13 +75,45 @@ public sealed class ProjectMemberRemoveCommand : Hall9kAsyncCommand<ProjectMembe
             owner.Email.IsNotBlank() ? owner.Email : $"{context.NodeId}@hall9k.local");
         LedgerSigningKey signingKey = new(key.PrivateKeyPath);
 
-        TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+        TrustChain chain;
+        try
+        {
+            chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+        }
+        // GitLedgerChainReader throws on a genuine network or credential failure rather than
+        // folding it into an empty chain — reported here with the real cause, the identical
+        // handling ProjectMembersCommand's own read already applies (independent pre-PR review,
+        // cycle 1, adversarial lens, medium: this call sat outside any catch, so the process died
+        // on an unhandled exception instead of a mapped exit code and an explanation).
+        catch (InvalidOperationException exception)
+        {
+            throw new DomainValidationException(
+                $"Could not read '{project.Name}'s own ledger chain: {exception.Message} Re-run "
+                + $"h9k project member remove {project.Name} {settings.Fingerprint} once the remote "
+                + "is reachable again.");
+        }
+
         if (chain.RoleOf(myRoot) != MembershipRole.Owner || !chain.IsEnrolledInOwner(key.Fingerprint, myRoot))
         {
             throw new DomainValidationException(
                 $"This node's own owner ({myRoot}) does not currently hold the owner role in "
                 + $"'{project.Name}' — only an owner-role member's own node may remove a member "
                 + "(idea 202383dc: \"written by a node whose owner holds the owner role\").");
+        }
+
+        // Refused before any push: removing the project's only owner-role member would leave no
+        // signer able to authorize any future members-ref write at all — every subsequent write,
+        // including a replacement owner, fails ComputeMembersAsync's own authorization loop for
+        // want of any Owner-role member left to check against, freezing membership permanently
+        // with no recovery path through this CLI (independent pre-PR review, cycle 1, adversarial
+        // lens, medium).
+        if (chain.RoleOf(settings.Fingerprint) == MembershipRole.Owner
+            && chain.Members.Count(member => member.Role == MembershipRole.Owner) == 1)
+        {
+            throw new DomainValidationException(
+                $"'{settings.Fingerprint}' is '{project.Name}'s only owner-role member — removing it "
+                + "would leave no owner-role member able to authorize any future write to the members "
+                + "ref, permanently freezing project membership. Make another root an owner first.");
         }
 
         string refName = "refs/hall9k/ledger/members";
