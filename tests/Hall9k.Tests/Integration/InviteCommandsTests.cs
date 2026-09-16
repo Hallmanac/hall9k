@@ -193,6 +193,46 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
     }
 
     [Fact]
+    public async Task A_candidate_whose_vouch_write_failed_is_still_offered_on_the_same_engines_next_sweep()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+        (string root, Guid inviteId, string secret, _) = await MintNodeOfOwnerInviteAsSelfAsync(ledger, cts.Token);
+
+        Guid joinerNodeId = DomainId.New();
+        NodeSigningKey joinerKey = await new NodeKeyStore().EnsureAsync(joinerNodeId, cts.Token);
+        string proof = InviteSecret.ComputeProof(secret, joinerKey.Fingerprint);
+        await WriteSelfAnnouncedNodeFileAsync(ledger, joinerNodeId, joinerKey, ownerFingerprint: root, inviteProof: proof, cts.Token);
+
+        // The vouch write fails exactly once — a transient push rejection, the same kind
+        // InviteSweepEngine's own catch clause treats as "retry next sweep" rather than abandon.
+        // The joiner's own node ref never moves again after this: its tip is exactly what a
+        // singleton-lifetime engine would have already cached from this first, failed tick.
+        string vouchPath = $"owners/{root}/nodes/{joinerNodeId}.yaml";
+        FailFirstWriteLedger flakyLedger = new(ledger, vouchPath);
+
+        // One engine instance for both ticks — InviteSweepEngine is registered AddSingleton in
+        // Program.cs, so this is the shape a real process actually runs, unlike every other test
+        // in this file, which builds a fresh engine (and so a fresh, empty candidate-tip cache)
+        // per sweep.
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        InviteSweepEngine engine = new(_postgres.Store, node, flakyLedger, new NodeKeyStore(), NullLogger<InviteSweepEngine>.Instance);
+
+        InviteSweepResult firstTick = await engine.SweepOnceAsync(cts.Token);
+        firstTick.InvitesSpent.Should().Be(0, "the vouch write failed partway through, so this tick could not spend the invite");
+
+        InviteSweepResult secondTick = await engine.SweepOnceAsync(cts.Token);
+        secondTick.InvitesSpent.Should().Be(
+            1, "the candidate's node ref tip never moved between ticks, but a read that fully failed to land must still be retried");
+
+        ledger.Writes.Should().Contain(w => w.Path == vouchPath);
+
+        await using IDocumentSession assertSession = _postgres.Store.LightweightSession();
+        InviteDetails after = (await assertSession.LoadAsync<InviteDetails>(inviteId, cts.Token))!;
+        after.Spent.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task A_spent_invite_is_refused_at_join_and_ignored_at_the_next_sweep()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
@@ -557,5 +597,38 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         await projectSession.SaveChangesAsync(cancellationToken);
 
         return (await projectSession.LoadAsync<ProjectDetails>(projectId, cancellationToken))!;
+    }
+
+    /// <summary>An <see cref="ILedger"/> that throws <see cref="LedgerPushRejectedException"/> the
+    /// first time (and only the first time) anything writes to <paramref name="failPath"/>, then
+    /// delegates every call, including that same path's own retry, straight to
+    /// <paramref name="inner"/> — the "transient push failure, succeeds on retry" shape
+    /// <see cref="InviteSweepEngine"/>'s own catch clause is written to tolerate.</summary>
+    private sealed class FailFirstWriteLedger(ILedger inner, string failPath) : ILedger
+    {
+        private bool _alreadyFailed;
+
+        public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken) =>
+            inner.ReadAsync(repositoryPath, refName, path, cancellationToken);
+
+        public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken)
+        {
+            if (!_alreadyFailed && request.Path == failPath)
+            {
+                _alreadyFailed = true;
+                throw new LedgerPushRejectedException(request.RefName, attempts: 5, gitError: "simulated transient push failure");
+            }
+
+            return inner.WriteAsync(request, cancellationToken);
+        }
+
+        public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
+            inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
+            inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
     }
 }
