@@ -72,6 +72,10 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Value.Should().Be("Verifying", "VerificationPassed does not transition; the PR step does");
         run.FailedGates.Should().BeEmpty();
+        // task: a run whose verification gate is executing is reported as live work in progress,
+        // never as stalled with no session recorded — both gates ran to completion, so the last
+        // GateEnded clears the field and no gate is left recorded as still attached.
+        run.ActiveGate.Should().BeNull("both gates ran to completion and each recorded its own end");
 
         File.ReadAllText(Path.Combine(RunPaths.GlobalDirectory(runId), "verify-hello.log"))
             .Should().Contain("hello-from-gate");
@@ -87,8 +91,67 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             gate.Duration.Should().BeGreaterThanOrEqualTo(TimeSpan.Zero);
         });
 
+        // The daemon side of the same task: RunGateAsync brackets each gate's own process with
+        // GateStarted/GateEnded (independent pre-PR review, cycle 1, adversarial finding — the
+        // display-side fix had four tests and the event-recording side underneath it had none).
+        // One pair per gate, each GateStarted naming the gate the display later reads off
+        // RunDetails.ActiveGate, and every started gate also ended: nothing here is left running.
+        List<GateStarted> started = [.. events.Select(e => e.Data).OfType<GateStarted>()];
+        List<GateEnded> ended = [.. events.Select(e => e.Data).OfType<GateEnded>()];
+        started.Should().HaveCount(2);
+        started.Select(gate => gate.GateName).Should().Equal("hello", "truth");
+        started.Should().AllSatisfy(gate => gate.ProcessId.Should().BeGreaterThan(0));
+        ended.Should().HaveCount(2, "every gate this run started also confirmed its own end");
+
         RunListItem listItem = (await query.LoadAsync<RunListItem>(runId, cts.Token))!;
         listItem.GateDurations.Should().NotBeNull().And.HaveCount(2, "h9k task show reads the lean row's own copy");
+    }
+
+    /// <summary>
+    /// The daemon itself shutting down mid-gate (independent pre-PR review, cycle 1, adversarial
+    /// finding, low: nothing checked that <c>RunGateAsync</c>'s own shutdown path — the
+    /// <c>gateAttemptConfirmedEnded = false</c> branch just above its <c>finally</c> — actually
+    /// leaves <c>GateEnded</c> unwritten). <see cref="RunDetails.ActiveGate"/> staying set is what
+    /// the whole display-side fix (task: a run whose verification gate is executing is reported as
+    /// live work in progress, never as stalled with no session recorded) reads to tell a live gate
+    /// apart from one nobody is watching any more, so a regression here — appending
+    /// <c>GateEnded</c> on the cancellation path, or dropping the flag check — would leave every
+    /// gate on record as permanently running with nothing to ever catch it; the full suite would
+    /// still pass.
+    /// <para>
+    /// The outer token is cancelled a moment after the gate starts, the same margin
+    /// <see cref="Overrunning_gate_times_out_as_a_failure_not_a_hang"/> already relies on for its
+    /// own real subprocess: the gate pauses 30 seconds and the cancellation fires after 1, so the
+    /// process is still running (never confirmed exited) when the outer token cuts in.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task Daemon_shutdown_mid_gate_leaves_GateEnded_unwritten_and_the_gate_still_recorded_active()
+    {
+        using CancellationTokenSource hardStop = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId) = await SeedAsync(
+            store, [new VerifyCommand("slow", GateScript.New().Pause(TimeSpan.FromSeconds(30)).Command)], hardStop.Token);
+
+        using CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(hardStop.Token);
+        shutdown.CancelAfter(TimeSpan.FromSeconds(1));
+
+        Func<Task> act = () =>
+            NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, shutdown.Token);
+
+        await act.Should().ThrowAsync<OperationCanceledException>(
+            "a genuine daemon-shutdown cancellation propagates rather than being swallowed as a gate failure");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, hardStop.Token))!;
+        run.ActiveGate.Should().NotBeNull(
+            "the daemon never confirmed the gate's own process dead, so the record must still show it attached");
+        run.ActiveGate!.GateName.Should().Be("slow");
+
+        var events = await query.Events.FetchStreamAsync(runId, token: hardStop.Token);
+        events.Select(e => e.Data).OfType<GateStarted>().Should().ContainSingle();
+        events.Select(e => e.Data).OfType<GateEnded>().Should().BeEmpty(
+            "the process was never confirmed dead, so GateEnded must not be appended for it");
     }
 
     [Fact]
