@@ -115,7 +115,7 @@ public sealed class RunLauncher(
 
             if (task.PullRequestUrl.IsBlank()
                 && await TryResumeAtPullRequestOpenAsync(
-                    task, project, taskId, runId, nodeId, ownerId, leaseGeneration, cancellationToken))
+                    task, taskId, runId, nodeId, ownerId, leaseGeneration, cancellationToken))
             {
                 return;
             }
@@ -1033,7 +1033,7 @@ public sealed class RunLauncher(
     /// </para>
     /// </summary>
     private async Task<bool> TryResumeAtPullRequestOpenAsync(
-        TaskDetails task, ProjectDetails project, Guid taskId, Guid runId, Guid nodeId, Guid ownerId,
+        TaskDetails task, Guid taskId, Guid runId, Guid nodeId, Guid ownerId,
         int leaseGeneration, CancellationToken cancellationToken)
     {
         if (task.Type == TaskType.PrReview
