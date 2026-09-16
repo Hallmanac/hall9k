@@ -177,7 +177,7 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length > 0;
     }
 
-    public async Task<IReadOnlyList<string>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken)
     {
         RequireRegistered(refPrefix);
 
@@ -189,13 +189,13 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                 $"git ls-remote origin {refPrefix}* failed in {repositoryPath}: {error.Trim()}");
         }
 
-        List<string> refs = [];
+        List<LedgerRef> refs = [];
         foreach (string line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             string[] parts = line.Split('\t', 2);
             if (parts.Length == 2 && parts[1].Trim().StartsWith(refPrefix, StringComparison.Ordinal))
             {
-                refs.Add(parts[1].Trim());
+                refs.Add(new LedgerRef(parts[1].Trim(), parts[0].Trim()));
             }
         }
 
