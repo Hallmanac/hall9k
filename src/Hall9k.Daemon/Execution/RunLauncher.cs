@@ -1093,11 +1093,21 @@ public sealed class RunLauncher(
             failedRun.WorktreePath, task.RetryBranch, ExecutorMode.Subscription, DateTimeOffset.UtcNow,
             IsFollowUp: false, Model: failedRun.Model, RunDirectory: failedRun.RunDirectory,
             SessionName: SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build),
-            ReviewStageComposition: ReviewStageComposition.None,
+            // The failed run's OWN composition, not None: this run dispatches no reviewer of its
+            // own, but the pull request it opens and h9k task show both report the composition
+            // the branch's settled review actually ran under (independent pre-PR review, cycle 3,
+            // both lenses — see ResumedReviewSettlement's own doc).
+            ReviewStageComposition: failedRun.ReviewStageComposition,
             DispatchingNodeId: nodeId,
             BaseBranch: failedRun.BaseBranch,
             BaseCommit: failedRun.BaseCommit,
-            OpenedAgainstBaseBranch: failedRun.OpenedAgainstBaseBranch));
+            OpenedAgainstBaseBranch: failedRun.OpenedAgainstBaseBranch,
+            ResumedReviewSettlement: new ResumedReviewSettlement(
+                failedRun.ReviewSettlement, failedRun.ReviewResidualsFixed, failedRun.ReviewResidualsRouted,
+                failedRun.ReviewResidualsRoutingFailed, failedRun.ReviewResidualsRideAlong,
+                failedRun.ReviewRideAlongFindings, failedRun.ReviewResidualsUnfixed, failedRun.ReviewUnfixedFindings,
+                failedRun.InputTokens, failedRun.CacheReadInputTokens, failedRun.CacheCreationInputTokens,
+                failedRun.OutputTokens)));
         await session.SaveChangesAsync(cancellationToken);
 
         logger.LogInformation(

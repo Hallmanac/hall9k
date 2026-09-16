@@ -992,6 +992,22 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         IsFollowUp = @event.Data.IsFollowUp,
         IsDeliberateHeadlessStart = @event.Data.IsDeliberateHeadlessStart,
         OpeningReviewSinceSha = @event.Data.OpeningReviewSinceSha,
+        // A run resumed straight at pull-request-open never settles a review of its own — see
+        // RunDispatched.ResumedReviewSettlement's own doc. Every field below stays at its
+        // ordinary default (Unknown/0/empty) for every other dispatch shape, exactly as it did
+        // before this field existed.
+        ReviewSettlement = @event.Data.ResumedReviewSettlement?.Settlement ?? ReviewSettlement.Unknown,
+        ReviewResidualsFixed = @event.Data.ResumedReviewSettlement?.ResidualsFixed ?? 0,
+        ReviewResidualsRouted = @event.Data.ResumedReviewSettlement?.ResidualsRouted ?? 0,
+        ReviewResidualsRoutingFailed = @event.Data.ResumedReviewSettlement?.ResidualsRoutingFailed ?? 0,
+        ReviewResidualsRideAlong = @event.Data.ResumedReviewSettlement?.ResidualsRideAlong ?? 0,
+        ReviewRideAlongFindings = [.. @event.Data.ResumedReviewSettlement?.RideAlongFindings ?? []],
+        ReviewResidualsUnfixed = @event.Data.ResumedReviewSettlement?.ResidualsUnfixed ?? 0,
+        ReviewUnfixedFindings = [.. @event.Data.ResumedReviewSettlement?.UnfixedFindings ?? []],
+        InputTokens = @event.Data.ResumedReviewSettlement?.InputTokens ?? 0,
+        CacheReadInputTokens = @event.Data.ResumedReviewSettlement?.CacheReadInputTokens ?? 0,
+        CacheCreationInputTokens = @event.Data.ResumedReviewSettlement?.CacheCreationInputTokens ?? 0,
+        OutputTokens = @event.Data.ResumedReviewSettlement?.OutputTokens ?? 0,
     };
 
     /// <summary>See the event's own doc: a reconstructed stream for a run that never actually dispatched.</summary>

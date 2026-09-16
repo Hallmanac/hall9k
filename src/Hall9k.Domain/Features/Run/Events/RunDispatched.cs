@@ -101,6 +101,17 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// ordinary daemon dispatch, so <see cref="Hall9k.Daemon.Execution.RunSupervisor"/>'s own
 /// unattended-exit sweep - the one reader of this field - never widens past the two commands this
 /// exists for.
+/// ResumedReviewSettlement carries the failed run's own settled review forward, for a run that
+/// resumes directly at pull-request-open (task: a run that failed only at pull-request opening
+/// resumes at that step on retry) — see <see cref="ResumedReviewSettlement"/>'s own doc for why:
+/// that resumed run never dispatches a reviewer of its own, so without this its residual counts
+/// and findings would read as though the original review left nothing behind. The resumed run's
+/// own <see cref="ReviewStageComposition"/> above is set to the failed run's, not
+/// <see cref="Run.ReviewStageComposition.None"/>, for the matching reason: the composition a
+/// pull request's own body and <c>h9k task show</c> report is the one the branch's settled
+/// review actually ran under, not "no review dispatches from this particular resumed run",
+/// which is true but not the question either of those is answering. Null for every other
+/// dispatch shape.
 /// OpenedAgainstBaseBranch carries the PREVIOUS run's own
 /// <see cref="Hall9k.Domain.Features.Run.Projections.RunDetails.OpenedAgainstBaseBranch"/> forward
 /// onto a run that resumes an existing branch, exactly as <see cref="BaseBranch"/> and
@@ -136,4 +147,5 @@ public sealed record RunDispatched(
     string BaseCommit = "",
     bool IsDeliberateHeadlessStart = false,
     string? PrReviewMentionCommentId = null,
-    string? OpenedAgainstBaseBranch = null);
+    string? OpenedAgainstBaseBranch = null,
+    ResumedReviewSettlement? ResumedReviewSettlement = null);

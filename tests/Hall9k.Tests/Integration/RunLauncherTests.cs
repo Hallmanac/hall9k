@@ -634,6 +634,146 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 3, conformance and adversarial findings: the resumed run
+    /// used to record <see cref="ReviewStageComposition.None"/> and none of the failed run's own
+    /// settled review, so the pull request <see cref="PullRequestOpener"/> built from it falsely
+    /// claimed a reduced or skipped review and dropped every finding the original review had left
+    /// on record for the owner to see. This pins the fix: the resumed run's own record, and the
+    /// pull request body built from it, carry the failed run's settled composition and residual
+    /// findings forward instead.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_a_pull_request_open_failure_carries_the_failed_runs_settled_review_onto_the_pull_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-review-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        try
+        {
+            string originPath = Path.Combine(root, "github.com-origin.git");
+            string repoPath = Path.Combine(root, "repo");
+            await TestGit.RunAsync(root, ["init", "--bare", "-q", "-b", "main", originPath], cts.Token);
+            await TestGit.RunAsync(root, ["clone", "-q", originPath, repoPath], cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(repoPath, "README.md"), "# resume at open\n", cts.Token);
+            await TestGit.RunAsync(repoPath, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(repoPath, TestGit.CommitAs("commit", "-qm", "init"), cts.Token);
+            await TestGit.RunAsync(repoPath, ["push", "-q", "origin", "main"], cts.Token);
+
+            Guid taskId = DomainId.New();
+            Guid projectId = DomainId.New();
+            Guid failedRunId = DomainId.New();
+            Guid retriedRunId = DomainId.New();
+
+            GitWorktreeManager seedingWorktrees = new(NullLogger<GitWorktreeManager>.Instance);
+            Worktree worktree = await seedingWorktrees.CreateAsync(
+                new WorktreeRequest(repoPath, "main", taskId, failedRunId, "Resume at pull-request-open",
+                    BranchNameTemplate.Default, ExternalReference: null),
+                cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(worktree.Path, "WORK.md"), "agent output\n", cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(worktree.Path, TestGit.CommitAs("commit", "-qm", "Add WORK.md"), cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["push", "-q", "origin", worktree.Branch], cts.Token);
+            string pushedTip = (await TestGit.CaptureAsync(worktree.Path, ["rev-parse", "HEAD"], cts.Token)).Trim();
+
+            // The opener writes pr-body.md here, and would read a build session's own pr-summary.md
+            // from here too, had one run — this bare event-seeded run never creates it on its own.
+            Directory.CreateDirectory(RunPaths.GlobalDirectory(failedRunId));
+
+            TaskAggregate aggregate;
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                var registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"resume-open-review-{taskId:N}", repoPath, null, "main", Now);
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                object[] lifecycle;
+                (aggregate, lifecycle) = TaskSeed.Start(
+                    TaskDecider.Add(
+                        taskId, projectId, "Resume at pull-request-open", ["opens with the settled review intact"],
+                        TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                    node.OwnerId, Now.AddHours(-1));
+                var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, failedRunId, Now.AddMinutes(-30));
+                aggregate.Apply(firstClaim);
+                TaskBranchPushed pushed = new(taskId, worktree.Branch, pushedTip, Now.AddMinutes(-20));
+                aggregate.Apply(pushed);
+                var failed = TaskDecider.Fail(aggregate, failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10));
+                aggregate.Apply(failed);
+                var retried = TaskDecider.Retry(
+                    aggregate, failedRunId, worktree.Branch, "gh timed out, retry", Now.AddMinutes(-5), node.OwnerId);
+                aggregate.Apply(retried);
+                var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
+                aggregate.Apply(retryClaim);
+
+                session.Events.StartStream<TaskAggregate>(
+                    taskId, [.. lifecycle, firstClaim, pushed, failed, retried, retryClaim]);
+                session.Store(new TaskLease
+                {
+                    Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+                });
+
+                // The failed run's own settled review — a non-default composition on purpose, so
+                // this test cannot pass by coincidence with a resumed run that simply defaults to
+                // the same value the failed run happens to have picked.
+                session.Events.StartStream<RunAggregate>(failedRunId,
+                    new RunDispatched(failedRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                        worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now.AddMinutes(-30),
+                        ReviewStageComposition: ReviewStageComposition.AdversarialOnly),
+                    new ReviewSettled(
+                        failedRunId, Cycle: 2, ReviewSettlement.Settled,
+                        ResidualsFixed: 0, ResidualsRouted: 0, ResidualsRoutingFailed: 0, Now.AddMinutes(-15),
+                        ResidualsRideAlong: 1,
+                        RideAlongFindings: [new ReviewRideAlongFinding(ReviewSeverity.Low, "src/Foo.cs:12")],
+                        ResidualsUnfixed: 1,
+                        UnfixedFindings: [new ReviewUnfixedFinding(ReviewSeverity.Medium, "src/Bar.cs:34")]),
+                    new RunFailed(
+                        failedRunId, "PR opening failed: gh timed out", Now.AddMinutes(-10),
+                        FailedDuringPullRequestOpen: true));
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            RecordingProcessRunner gh = RecordingProcessRunner.Succeeding("https://github.com/x/y/pull/88\n");
+            PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance, inspector: null, processRunner: gh.Runner);
+            NotMergedInspector inspector = new();
+            RefusingWorktreeManager worktrees = new();
+            RunLauncher launcher = new(store, worktrees, new RefusingExecutor(),
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), opener, ExternalProcess.Runner,
+                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+            await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails resumedRun = (await query.LoadAsync<RunDetails>(retriedRunId, cts.Token))!;
+            resumedRun.ReviewStageComposition.Should().Be(ReviewStageComposition.AdversarialOnly,
+                "the pull request and h9k task show must report the composition the branch's settled review "
+                + "actually ran under, not that this particular resumed run skipped review");
+            resumedRun.ReviewResidualsUnfixed.Should().Be(1);
+            resumedRun.ReviewUnfixedFindings.Should().ContainSingle(finding => finding.Location == "src/Bar.cs:34");
+            resumedRun.ReviewResidualsRideAlong.Should().Be(1);
+            resumedRun.ReviewRideAlongFindings.Should().ContainSingle(finding => finding.Location == "src/Foo.cs:12");
+
+            string body = await File.ReadAllTextAsync(
+                Path.Combine(RunPaths.GlobalDirectory(failedRunId), "pr-body.md"), cts.Token);
+            body.Should().Contain("AdversarialOnly",
+                "the reduced composition the branch's review actually ran under, not a false `None`");
+            body.Should().Contain("Left unfixed").And.Contain("src/Bar.cs:34");
+            body.Should().Contain("Review ride-alongs").And.Contain("src/Foo.cs:12");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
     /// The safety valve on the resume-at-open path: something pushed to the branch on origin
     /// after this task's own recorded tip (another node, a human, a second retry) — the live check
     /// must not trust the stale record and must fall back to the ordinary dispatch, which resumes
