@@ -338,25 +338,43 @@ internal static class TaskStatusComposer
     /// prevent, told backwards. Where the passes disagree the more cautious reading wins —
     /// unobserved outranks gone, because a pid this machine cannot answer for is not evidence
     /// of a death.
+    /// <para>
+    /// A running gate (task: a run whose verification gate is executing is reported as live work
+    /// in progress, never as stalled with no session recorded) is folded in on the same terms:
+    /// it is not an agent session, but it is exactly as real a process, and a Verifying run's own
+    /// <see cref="RunDetails.ActiveSessions"/> is always empty by the time a gate runs (the agent
+    /// session that dispatched it has already completed), so there is never a conflict between
+    /// the two to resolve — only ever one or the other actually recorded at a time.
+    /// </para>
     /// </summary>
     private static SessionLiveness Observe(RunDetails? run, bool onThisMachine, ISessionObserver observer, string machineName)
     {
-        if (run is null || run.ActiveSessions.Count == 0)
+        if (run is null)
         {
             return SessionLiveness.NotApplicable;
         }
 
-        SessionLiveness[] observed = [.. run.ActiveSessions.Select(
+        List<SessionLiveness> observed = [.. run.ActiveSessions.Select(
             session => observer.Observe(
                 session.ProcessId, session.StartedAt, SessionOnThisMachine(session, onThisMachine, machineName)))];
+        if (run.ActiveGate is { } gate)
+        {
+            observed.Add(observer.Observe(gate.ProcessId, gate.StartedAt, onThisMachine));
+        }
+
+        if (observed.Count == 0)
+        {
+            return SessionLiveness.NotApplicable;
+        }
+
         if (observed.Contains(SessionLiveness.Alive))
         {
             return SessionLiveness.Alive;
         }
 
-        // Every recorded session answered, and none of them is there. NotApplicable cannot
-        // reach here: a recorded session always carries a pid, so the observer only ever
-        // returns it for the no-session case handled above.
+        // Every recorded session or gate answered, and none of them is there. NotApplicable
+        // cannot reach here: a recorded session or gate always carries a pid, so the observer
+        // only ever returns it for the nothing-recorded case handled above.
         return observed.Contains(SessionLiveness.Unobserved)
             ? SessionLiveness.Unobserved
             : SessionLiveness.Gone;
@@ -533,6 +551,21 @@ internal static class TaskStatusComposer
             return run.ActiveSessions.Any(activeSession => activeSession.Role == AgentRole.Interactive)
                 ? (false, string.Empty)
                 : (true, "process gone");
+        }
+
+        // A gate (build or test) runs inside the daemon's own process and never writes to the
+        // agent stream at all (task: a run whose verification gate is executing is reported as
+        // live work in progress, never as stalled with no session recorded) — so the
+        // stream-silence clock below, which measures exactly that, would otherwise start ticking
+        // the moment the agent session that dispatched the gate ended and keep ticking for the
+        // gate's whole run, eventually reporting a live gate as a silent stream. Its own process
+        // (already folded into `session` above by Observe) is the liveness that matters here
+        // instead: Gone is handled by the branch just above — with nothing else running for it
+        // to explain away, it always reports the gate itself gone — so reaching this line with a
+        // gate still recorded means the clock never starts at all.
+        if (run.ActiveGate is not null)
+        {
+            return (false, string.Empty);
         }
 
         if (!context.Activity.TryGetValue(run.Id, out RunActivity? activity))

@@ -183,7 +183,7 @@ internal static class AttentionComposer
 
         if (stalled)
         {
-            return new TaskAttention(AttentionLevel.NeedsYou, StallCause(phase), $"h9k logs {id}");
+            return new TaskAttention(AttentionLevel.NeedsYou, StallCause(phase, run), $"h9k logs {id}");
         }
 
         // A Jira write is stuck on a rejected credential (Brian's design, 2026-08-28; the write
@@ -1053,12 +1053,18 @@ internal static class AttentionComposer
     /// <summary>
     /// A stalled row's cause is whatever the phase already observed: a process that is gone is a
     /// different problem from a process that is alive and quiet, and they take different levers.
+    /// A gate's own dead process (task: a run whose verification gate is executing is reported as
+    /// live work in progress, never as stalled with no session recorded) is named rather than
+    /// folded into the generic "a session" wording — there never was an agent session for this
+    /// row to lose, so the accurate lever is "the gate died", not "the agent went quiet".
     /// </summary>
-    private static string StallCause(TaskPhase phase) => phase.Liveness switch
+    private static string StallCause(TaskPhase phase, RunDetails? run) => (phase.Liveness, run?.ActiveGate) switch
     {
-        SessionLiveness.Gone =>
+        (SessionLiveness.Gone, { } gate) =>
+            $"the run believes gate '{gate.GateName}' is running and its process is gone",
+        (SessionLiveness.Gone, null) =>
             "the run believes a session is running and its process is gone",
-        SessionLiveness.Alive =>
+        (SessionLiveness.Alive, _) =>
             "the session is alive but its stream has been silent past the stall threshold",
         _ => "the agent stream has been silent past the stall threshold",
     };

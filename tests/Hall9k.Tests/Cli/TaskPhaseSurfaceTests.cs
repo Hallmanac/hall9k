@@ -1267,4 +1267,108 @@ public sealed class TaskPhaseSurfaceTests
                 StatusFixtures.Task(TaskState.Done, watchedRunId, "https://github.com/x/y/pull/24"), watched)
             .Phase.Detail.Should().Be("still eligible for closeout's merge observation");
     }
+
+    /// <summary>
+    /// Origin incident (2026-09-16 12:38 EDT, task b7c78678, run 01a0aa6c): the mandatory
+    /// final-pass test gate had been running for 13 minutes (ps still showed the live `dotnet
+    /// test` process) while h9k status read the row Stalled — "no session recorded as running"
+    /// and "the agent stream has been silent past the stall threshold" — because a gate writes
+    /// nothing to the agent stream the silence clock measures, and that clock had been ticking
+    /// since the agent session that dispatched the gate ended. The gate's own recorded process
+    /// is what the fix checks instead, so a live gate reads Working with the gate named and
+    /// timed, whatever the frozen agent stream says.
+    /// </summary>
+    [Fact]
+    public void A_running_gate_process_is_reported_as_working_with_the_gate_named_and_timed()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Verifying, sessionProcessId: null);
+        run.ActiveGate = new ActiveGate("test", 9001, StatusFixtures.Now.AddMinutes(-97));
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId),
+            run,
+            // The agent stream itself has been frozen for three hours — well past the stall
+            // threshold — which is exactly the shape that misfiled the origin incident: this
+            // proves the gate's own liveness is what the fix reads instead of that frozen clock.
+            silentSince: StatusFixtures.Now.AddHours(-3),
+            livenessByProcess: new Dictionary<int, SessionLiveness> { [9001] = SessionLiveness.Alive });
+
+        row.Group.Should().Be(AttentionBucket.Working);
+        row.Stalled.Should().BeFalse();
+        row.Phase.Text.Should().Be("gate 'test'");
+        row.Phase.Detail.Should().Be("running 1h37m");
+        row.Phase.Liveness.Should().Be(SessionLiveness.Alive);
+        row.Attention.NeedsYou.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The sibling live shape (task: a run whose verification gate is executing is reported as
+    /// live work in progress, never as stalled with no session recorded, criterion 2): an agent
+    /// session still answers exactly as it always has, unaffected by folding the gate's own
+    /// liveness into the same observation.
+    /// </summary>
+    [Fact]
+    public void A_running_agent_session_is_reported_as_working_not_stalled()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Running);
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId), run, silentSince: StatusFixtures.Now.AddMinutes(-5));
+
+        row.Group.Should().Be(AttentionBucket.Working);
+        row.Stalled.Should().BeFalse();
+        row.Phase.Liveness.Should().Be(SessionLiveness.Alive);
+    }
+
+    /// <summary>
+    /// The threshold clock starts only once neither an agent session nor a gate process is
+    /// attached to the run (task: a run whose verification gate is executing is reported as live
+    /// work in progress, never as stalled with no session recorded, criterion 2) — a run recorded
+    /// between two gates, or on a stream written before this field existed, has nothing left to
+    /// explain a frozen agent stream away, and stays measured against it exactly as before.
+    /// </summary>
+    [Fact]
+    public void Neither_a_gate_nor_an_agent_session_running_past_the_threshold_is_stalled()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Verifying, sessionProcessId: null);
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId), run, silentSince: StatusFixtures.Now.AddHours(-2));
+
+        row.Group.Should().Be(AttentionBucket.Stalled);
+        row.Stalled.Should().BeTrue();
+        row.Attention.Cause.Should().Contain("silent past the stall threshold");
+    }
+
+    /// <summary>
+    /// The other half of the fix (task: a run whose verification gate is executing is reported as
+    /// live work in progress, never as stalled with no session recorded, criterion 3): a gate
+    /// process that has actually died — the daemon crashing mid-gate, or between the gate exiting
+    /// and the daemon recording its result — is still reported stalled, immediately rather than
+    /// after an hour, with the gate itself named in the needs-you line rather than the generic
+    /// "a session" wording an agent's own dead process gets.
+    /// </summary>
+    [Fact]
+    public void A_gate_process_that_has_actually_exited_is_reported_as_stalled_naming_the_gate()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.Verifying, sessionProcessId: null);
+        run.ActiveGate = new ActiveGate("test", 9002, StatusFixtures.Now.AddHours(-3));
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId),
+            run,
+            livenessByProcess: new Dictionary<int, SessionLiveness> { [9002] = SessionLiveness.Gone });
+
+        row.Group.Should().Be(AttentionBucket.Stalled);
+        row.Stalled.Should().BeTrue();
+        row.Phase.Text.Should().Be("gate 'test'");
+        row.Phase.Liveness.Should().Be(SessionLiveness.Gone);
+        row.Attention.Cause.Should().Contain("gate 'test'").And.Contain("process is gone");
+        row.Attention.Cause.Should().NotContain("silent");
+        row.Attention.Lever.Should().Be($"h9k logs {TaskListCommand.ShortId(row.TaskId)}");
+    }
 }
