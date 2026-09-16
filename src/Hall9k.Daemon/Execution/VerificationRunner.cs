@@ -277,7 +277,7 @@ public sealed partial class VerificationRunner(
 
             Stopwatch gateStopwatch = Stopwatch.StartNew();
             (bool passed, string summary, bool isInfrastructureFailure, string? excerpt, bool fellBackToFull) =
-                await RunGateAsync(runDirectory, run.WorktreePath, gate, scope, cancellationToken);
+                await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, cancellationToken);
             TimeSpan gateElapsed = gateStopwatch.Elapsed;
             bool gateFellBackToFull = fellBackToFull;
             if (passed)
@@ -334,7 +334,7 @@ public sealed partial class VerificationRunner(
 
             Stopwatch retryStopwatch = Stopwatch.StartNew();
             (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _, bool retryFellBackToFull) =
-                await RunGateAsync(runDirectory, run.WorktreePath, gate, scope, cancellationToken);
+                await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, cancellationToken);
             TimeSpan totalGateElapsed = gateElapsed + retryStopwatch.Elapsed;
 
             // The retry's own outcome replaces the first attempt's, not OR's with it (adversarial
@@ -1009,7 +1009,8 @@ public sealed partial class VerificationRunner(
 
     private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt, bool FellBackToFull)>
         RunGateAsync(
-        string runDirectory, string worktreePath, VerifyCommand gate, TestGateScope? scope, CancellationToken cancellationToken)
+        Guid runId, string runDirectory, string worktreePath, VerifyCommand gate, TestGateScope? scope,
+        CancellationToken cancellationToken)
     {
         string logFile = Path.Combine(runDirectory, $"verify-{Sanitize(gate.Name)}.log");
         Directory.CreateDirectory(runDirectory);
@@ -1134,125 +1135,161 @@ public sealed partial class VerificationRunner(
             return (false, startFailure, true, null, false);
         }
 
-        using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(options.Value.VerifyGateTimeout);
+        // Recorded the instant the process is actually up, so a display reading this run mid-gate
+        // sees the same identity this method is about to wait on (task: a run whose verification
+        // gate is executing is reported as live work in progress, never as stalled with no
+        // session recorded) — the gate's own pid-plus-start-time, the identical shape an agent
+        // session already carries (the PID-reuse guard, log #2).
+        await RecordGateStartedAsync(runId, gate.Name, process.Id, ReadProcessStartedAt(process), cancellationToken);
+
+        // Whether this attempt's own end is safe to record: every path below that actually waits
+        // for the process (the timeout branch's own kill-and-wait, or an ordinary exit) confirms
+        // its death and leaves this true, its default. Only the one path that does neither — the
+        // daemon itself shutting down mid-wait, caught below — turns it off, so a run whose gate
+        // process this method never actually confirmed dead keeps reading as still attached to it
+        // rather than as idle (see GateEnded's own doc for why that matters more than tidiness).
+        bool gateAttemptConfirmedEnded = true;
         try
         {
-            await process.WaitForExitAsync(timeout.Token);
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            process.Kill(entireProcessTree: true);
-
-            // Kill only ASKS the operating system to terminate the tree; it returns before the
-            // tree is actually gone (Process.Kill's own documented contract). The classification
-            // just below reads what the gate wrote, so reading here — while the gate's own shell
-            // still holds the redirected log and may still be writing its last line into it —
-            // reads a file mid-teardown. Waiting for the root's own exit first is what makes
-            // "what the gate wrote before it was killed" a settled fact rather than a race,
-            // bounded so a process the operating system cannot reap never wedges the run.
-            await WaitForKilledProcessAsync(process, cancellationToken);
-
-            string timeoutFailure = $"Gate '{gate.Name}' exceeded the {options.Value.VerifyGateTimeout.TotalMinutes:0}-minute timeout.";
-
-            // A hang classifies on what the gate actually wrote before it was killed, not on
-            // this synthetic message — the message never carries a marker, so a container that
-            // never comes up (a startup hang, not a non-zero exit) would otherwise be silently
-            // unclassifiable and blamed on the agent's work (adversarial review, cycle 2).
-            // A log nobody could read is not the same as a gate that printed nothing: it is an
-            // unobserved fact, so it classifies as infrastructure rather than being pinned on
-            // work this run never got to look at (see UnreadableGateLog).
-            string? timeoutOutput = ReadFullOutput(logFile);
-            bool timeoutIsInfrastructureFailure =
-                timeoutOutput is null || GateInfrastructureFailureClassifier.IsInfrastructureFailure(timeoutOutput);
-            string? timeoutExcerpt = timeoutOutput is null
-                ? null
-                : GateInfrastructureFailureClassifier.MatchingExcerpt(timeoutOutput);
-            if (timeoutOutput is null)
+            using CancellationTokenSource timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(options.Value.VerifyGateTimeout);
+            try
             {
-                timeoutFailure =
-                    $"{timeoutFailure} Also {UnreadableGateLog(logFile)}, so nothing is known about what it " +
-                    "wrote before it was killed.";
+                await process.WaitForExitAsync(timeout.Token);
             }
-
-            // A gate whose own permit wait is still unresolved at the moment of the kill is a
-            // second, distinct shape of infrastructure timeout: the process never got past
-            // CrossProcessContainerGate.AcquireAsync's own unbounded wait (PLAN.md §16 #132), so
-            // it never even reached the agent's own tests, and VerifyGateTimeout's budget — sized
-            // for one process's own tier duration — can legitimately be
-            // outlasted by ordinary cross-process contention under a raised node ceiling or a
-            // concurrent foreground run. Read from gateWaitDirectory, never the gate's own
-            // captured console output (see GateInfrastructureFailureClassifier.
-            // IsUnresolvedGateWaitTimeout's own comment for why that can never be relied on here).
-            if (!timeoutIsInfrastructureFailure &&
-                GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(gateWaitDirectory, options.Value.VerifyGateTimeout))
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
-                timeoutIsInfrastructureFailure = true;
-                timeoutExcerpt = GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(
-                    gateWaitDirectory, options.Value.VerifyGateTimeout);
-            }
+                process.Kill(entireProcessTree: true);
 
-            return (false, timeoutFailure, timeoutIsInfrastructureFailure, timeoutExcerpt, false);
-        }
+                // Kill only ASKS the operating system to terminate the tree; it returns before the
+                // tree is actually gone (Process.Kill's own documented contract). The classification
+                // just below reads what the gate wrote, so reading here — while the gate's own shell
+                // still holds the redirected log and may still be writing its last line into it —
+                // reads a file mid-teardown. Waiting for the root's own exit first is what makes
+                // "what the gate wrote before it was killed" a settled fact rather than a race,
+                // bounded so a process the operating system cannot reap never wedges the run.
+                await WaitForKilledProcessAsync(process, cancellationToken);
 
-        if (process.ExitCode == 0)
-        {
-            if (scope is { IsScoped: true } && IsDotnetTestGate(gate.Command))
-            {
-                // The scoped filter combined with whatever filter the gate already carried (this
-                // repo's own CI filter, `Category!=RequiresDocker`, among them) can intersect to
-                // nothing even though TestScopeResolver mapped at least one class from the fix's
-                // own commits — VSTest's default (`TreatNoTestsAsError=false`) exits 0 on "no test
-                // matches the given testcase filter", which would otherwise stand a run that
-                // executed nothing in for a passed one (independent pre-PR review, cycle 1),
-                // exactly what TestGateScope's own contract promises never happens. Falling back
-                // to a full, unscoped run of this one gate costs the rare intersect-to-zero case
-                // a second gate run rather than a silent false green or a spurious failure of a
-                // perfectly good fix.
-                // A log nobody could read cannot show a VSTest summary either, and TestGateScope's
-                // own contract is that a run which executed nothing never stands in for a passed
-                // one — so an unreadable log takes the fallback rather than being assumed to have
-                // executed tests. It costs one extra full gate run in a case that should not
-                // happen at all now that the read tolerates a concurrent writer.
-                string? scopedOutput = ReadFullOutput(logFile);
-                if (scopedOutput is null || ScopedRunExecutedNoTests(scopedOutput))
+                string timeoutFailure = $"Gate '{gate.Name}' exceeded the {options.Value.VerifyGateTimeout.TotalMinutes:0}-minute timeout.";
+
+                // A hang classifies on what the gate actually wrote before it was killed, not on
+                // this synthetic message — the message never carries a marker, so a container that
+                // never comes up (a startup hang, not a non-zero exit) would otherwise be silently
+                // unclassifiable and blamed on the agent's work (adversarial review, cycle 2).
+                // A log nobody could read is not the same as a gate that printed nothing: it is an
+                // unobserved fact, so it classifies as infrastructure rather than being pinned on
+                // work this run never got to look at (see UnreadableGateLog).
+                string? timeoutOutput = ReadFullOutput(logFile);
+                bool timeoutIsInfrastructureFailure =
+                    timeoutOutput is null || GateInfrastructureFailureClassifier.IsInfrastructureFailure(timeoutOutput);
+                string? timeoutExcerpt = timeoutOutput is null
+                    ? null
+                    : GateInfrastructureFailureClassifier.MatchingExcerpt(timeoutOutput);
+                if (timeoutOutput is null)
                 {
-                    string vacuityDescription = scopedOutput is null
-                        ? $"{UnreadableGateLog(logFile)}, so whether the scoped run executed any tests is unknown"
-                        : DescribeScopedRunVacuity(scopedOutput);
-                    logger.LogWarning(
-                        "Gate '{Gate}': {Description} (filter \"{Filter}\" combined with the gate's own " +
-                        "configured filter); falling back to a full run of this gate",
-                        gate.Name, vacuityDescription, scope.FilterExpression);
-                    (bool fallbackPassed, string fallbackSummary, bool fallbackIsInfrastructureFailure, string? fallbackExcerpt, _) =
-                        await RunGateAsync(
-                            runDirectory, worktreePath, gate,
-                            TestGateScope.Full($"{vacuityDescription} ({scope.Reason})"),
-                            cancellationToken);
-                    return (fallbackPassed, fallbackSummary, fallbackIsInfrastructureFailure, fallbackExcerpt, true);
+                    timeoutFailure =
+                        $"{timeoutFailure} Also {UnreadableGateLog(logFile)}, so nothing is known about what it " +
+                        "wrote before it was killed.";
                 }
+
+                // A gate whose own permit wait is still unresolved at the moment of the kill is a
+                // second, distinct shape of infrastructure timeout: the process never got past
+                // CrossProcessContainerGate.AcquireAsync's own unbounded wait (PLAN.md §16 #132), so
+                // it never even reached the agent's own tests, and VerifyGateTimeout's budget — sized
+                // for one process's own tier duration — can legitimately be
+                // outlasted by ordinary cross-process contention under a raised node ceiling or a
+                // concurrent foreground run. Read from gateWaitDirectory, never the gate's own
+                // captured console output (see GateInfrastructureFailureClassifier.
+                // IsUnresolvedGateWaitTimeout's own comment for why that can never be relied on here).
+                if (!timeoutIsInfrastructureFailure &&
+                    GateInfrastructureFailureClassifier.IsUnresolvedGateWaitTimeout(gateWaitDirectory, options.Value.VerifyGateTimeout))
+                {
+                    timeoutIsInfrastructureFailure = true;
+                    timeoutExcerpt = GateInfrastructureFailureClassifier.UnresolvedGateWaitExcerpt(
+                        gateWaitDirectory, options.Value.VerifyGateTimeout);
+                }
+
+                return (false, timeoutFailure, timeoutIsInfrastructureFailure, timeoutExcerpt, false);
             }
 
-            return (true, "ok", false, null, false);
-        }
+            if (process.ExitCode == 0)
+            {
+                if (scope is { IsScoped: true } && IsDotnetTestGate(gate.Command))
+                {
+                    // The scoped filter combined with whatever filter the gate already carried (this
+                    // repo's own CI filter, `Category!=RequiresDocker`, among them) can intersect to
+                    // nothing even though TestScopeResolver mapped at least one class from the fix's
+                    // own commits — VSTest's default (`TreatNoTestsAsError=false`) exits 0 on "no test
+                    // matches the given testcase filter", which would otherwise stand a run that
+                    // executed nothing in for a passed one (independent pre-PR review, cycle 1),
+                    // exactly what TestGateScope's own contract promises never happens. Falling back
+                    // to a full, unscoped run of this one gate costs the rare intersect-to-zero case
+                    // a second gate run rather than a silent false green or a spurious failure of a
+                    // perfectly good fix.
+                    // A log nobody could read cannot show a VSTest summary either, and TestGateScope's
+                    // own contract is that a run which executed nothing never stands in for a passed
+                    // one — so an unreadable log takes the fallback rather than being assumed to have
+                    // executed tests. It costs one extra full gate run in a case that should not
+                    // happen at all now that the read tolerates a concurrent writer.
+                    string? scopedOutput = ReadFullOutput(logFile);
+                    if (scopedOutput is null || ScopedRunExecutedNoTests(scopedOutput))
+                    {
+                        string vacuityDescription = scopedOutput is null
+                            ? $"{UnreadableGateLog(logFile)}, so whether the scoped run executed any tests is unknown"
+                            : DescribeScopedRunVacuity(scopedOutput);
+                        logger.LogWarning(
+                            "Gate '{Gate}': {Description} (filter \"{Filter}\" combined with the gate's own " +
+                            "configured filter); falling back to a full run of this gate",
+                            gate.Name, vacuityDescription, scope.FilterExpression);
+                        (bool fallbackPassed, string fallbackSummary, bool fallbackIsInfrastructureFailure, string? fallbackExcerpt, _) =
+                            await RunGateAsync(
+                                runId, runDirectory, worktreePath, gate,
+                                TestGateScope.Full($"{vacuityDescription} ({scope.Reason})"),
+                                cancellationToken);
+                        return (fallbackPassed, fallbackSummary, fallbackIsInfrastructureFailure, fallbackExcerpt, true);
+                    }
+                }
 
-        // Classification reads the gate's whole output, never just the truncated tail kept
-        // for the summary: a marker logged early in a large `dotnet test` run must not be
-        // pushed out of a fixed-size window and go unclassified (adversarial review, cycle 1).
-        // A log that could not be read at all is the unobserved case, not the empty one, and is
-        // classified as infrastructure for the reason UnreadableGateLog spells out.
-        string? fullOutput = ReadFullOutput(logFile);
-        if (fullOutput is null)
+                return (true, "ok", false, null, false);
+            }
+
+            // Classification reads the gate's whole output, never just the truncated tail kept
+            // for the summary: a marker logged early in a large `dotnet test` run must not be
+            // pushed out of a fixed-size window and go unclassified (adversarial review, cycle 1).
+            // A log that could not be read at all is the unobserved case, not the empty one, and is
+            // classified as infrastructure for the reason UnreadableGateLog spells out.
+            string? fullOutput = ReadFullOutput(logFile);
+            if (fullOutput is null)
+            {
+                return (false,
+                    $"Gate '{gate.Name}' exited {process.ExitCode}, and {UnreadableGateLog(logFile)}, so nothing " +
+                    "is known about why it failed.",
+                    true, null, false);
+            }
+
+            bool isInfrastructureFailure = GateInfrastructureFailureClassifier.IsInfrastructureFailure(fullOutput);
+            string summary = $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {TailOf(fullOutput)}";
+            return (false, summary, isInfrastructureFailure, GateInfrastructureFailureClassifier.MatchingExcerpt(fullOutput), false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            return (false,
-                $"Gate '{gate.Name}' exited {process.ExitCode}, and {UnreadableGateLog(logFile)}, so nothing " +
-                "is known about why it failed.",
-                true, null, false);
+            // The daemon itself is shutting down mid-gate: this method neither waited for the
+            // process to exit nor killed and confirmed it, so there is nothing observed here to
+            // call an ending. Left standing, the same as a session process daemon shutdown leaves
+            // running unattended — a restart's own adoption (or the next h9k status) checks this
+            // recorded identity against the operating system fresh and reports honestly on
+            // whatever it actually finds, rather than being told by this method that a process it
+            // never confirmed dead has ended.
+            gateAttemptConfirmedEnded = false;
+            throw;
         }
-
-        bool isInfrastructureFailure = GateInfrastructureFailureClassifier.IsInfrastructureFailure(fullOutput);
-        string summary = $"Gate '{gate.Name}' exited {process.ExitCode}. Output: {TailOf(fullOutput)}";
-        return (false, summary, isInfrastructureFailure, GateInfrastructureFailureClassifier.MatchingExcerpt(fullOutput), false);
+        finally
+        {
+            if (gateAttemptConfirmedEnded)
+            {
+                await RecordGateEndedAsync(runId, cancellationToken);
+            }
+        }
     }
 
     /// <summary>
@@ -1528,6 +1565,44 @@ public sealed partial class VerificationRunner(
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new GateRetried(runId, gate, cause, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task RecordGateStartedAsync(
+        Guid runId, string gateName, int processId, DateTimeOffset startedAt, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new GateStarted(runId, gateName, processId, startedAt, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task RecordGateEndedAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new GateEnded(runId, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// A just-started gate process's own start time, the other half of the identity a display
+    /// checks its liveness against later (the PID-reuse guard, log #2) — mirrors
+    /// <c>ProcessManagerBase.ReadStartedAt</c>'s own tolerance for the identical race on a process
+    /// this method just started itself: a command that exits before this runs leaves the OS
+    /// nothing left to report. <see cref="DateTimeOffset.MinValue"/> is recorded rather than a
+    /// plausible-looking guess (AGENTS.md's never-guess rule) — a sentinel that can never match a
+    /// real process's start time, so a gate process already gone by the time this reads it stays
+    /// reported as gone rather than silently reading as whatever the OS happens to answer for a
+    /// reused pid.
+    /// </summary>
+    private static DateTimeOffset ReadProcessStartedAt(Process process)
+    {
+        try
+        {
+            return new DateTimeOffset(process.StartTime.ToUniversalTime(), TimeSpan.Zero);
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return DateTimeOffset.MinValue;
+        }
     }
 
     /// <summary>
