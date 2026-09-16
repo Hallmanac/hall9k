@@ -33,6 +33,25 @@ internal static class NodeBootstrapSeed
     }
 
     /// <summary>
+    /// Mints a node genuinely private to the caller rather than the one <see cref="NewNodeAsync"/>
+    /// resolves and reuses for the rest of the database (<c>NodeBootstrap.EnsureAsync</c> looks a
+    /// node up by machine name, so every ordinary call in one test class or one Postgres database
+    /// finds and shares the same row). A synthetic, per-call machine name forces a fresh node
+    /// instead — for a test whose own ceiling or expectation must rest on state it alone owns,
+    /// immune to a sibling test's leftover live run, or an orphaned, never-awaited monitor
+    /// <c>Task</c> still mutating one, on whatever node every other test in the class shares.
+    /// </summary>
+    public static async Task<NodeContext> NewIsolatedNodeAsync(IDocumentStore store, CancellationToken cancellationToken)
+    {
+        await SeedGitHubConnectionAsync(store, cancellationToken);
+
+        NodeContext node = new();
+        await node.InitializeAsync(
+            store, cancellationToken, machineNameOverride: $"test-isolated-node-{Guid.NewGuid():N}");
+        return node;
+    }
+
+    /// <summary>
     /// The half of <see cref="NewNodeAsync"/> that matters for gh-safety, split out for a test
     /// that needs to call <see cref="NodeContext.InitializeAsync"/> directly (deferred, to
     /// exercise the loop's pre-bootstrap window) rather than through <see cref="NewNodeAsync"/>
