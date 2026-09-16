@@ -892,6 +892,13 @@ internal static class AttentionComposer
             $"Copilot reviewed an earlier commit and the review is stale ({StaleThreadCountText(run)}) "
             + "— read its checks, then the merge is yours",
             run.PullRequestUrl ?? string.Empty),
+        // A quota refusal is accepted, not chased (Brian's ruling, 2026-09-16 morning): the cause
+        // says so plainly rather than falling to the generic "no confirmed review activity" the
+        // default arm gives an ordinary errored review, since nothing here is going to be
+        // re-requested — the merge is the human's, without Copilot's review.
+        "Unavailable" => new TaskAttention(AttentionLevel.NeedsYou,
+            "Copilot's review was refused for quota — accepted, and the merge is yours without it",
+            run.PullRequestUrl ?? string.Empty),
         // "None" is a sweep that looked and found nothing. Once that same sweep's checks read
         // was also complete (RunDetails.ExternalReviewChecksPending), there is nothing left
         // unresolved on this row and the cause says so plainly — the same split

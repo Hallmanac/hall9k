@@ -593,6 +593,15 @@ internal static class TaskPhaseComposer
         // cycle 6), so it gets its own text and the same thread-count detail a landed review gets.
         "Stale" => new TaskPhase($"watching {pullRequest} — Copilot reviewed an earlier commit",
             SessionLiveness.NotApplicable, $"the review is stale; {CopilotThreadsDetail(run, now)}"),
+        // A quota refusal is accepted, not chased (Brian's ruling, 2026-09-16 morning): it must
+        // not read as the generic "no confirmed review observation" the default arm gives an
+        // ordinary errored review, since there is nothing left to wait on here — the merge (or
+        // the remaining gates) proceeds without Copilot rather than a re-request ever landing.
+        // Self-corrects on its own the next sweep a real review lands, since ExternalReviewState
+        // is recomputed fresh every time rather than carried forward.
+        "Unavailable" => new TaskPhase($"watching {pullRequest} — Copilot review unavailable",
+            SessionLiveness.NotApplicable,
+            "refused for quota; accepted, and proceeding on the remaining gates without it"),
         // No external review activity does not automatically mean a human's merge is the only
         // thing left: a pending check holds the merge on its own (the merge bar is unchanged by
         // Decisions Log #164), so a run whose CI picture was still incomplete as
