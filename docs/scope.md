@@ -48,7 +48,7 @@ arrival. A no-op rebase and a clean rebase both still run one mechanical step fi
 the log's own tail placeholder (PLAN.md §16, Decisions Log #162) its real number
 and rewriting every citation of it, committed on its own before the mandatory gate reruns. Beyond
 that step, neither costs anything extra; a conflict first dispatches this run's own one read-only
-stack assessment (PLAN.md §16, Decisions Log #203), a structured verdict —
+stack assessment (PLAN.md §16, Decisions Log #205), a structured verdict —
 aligned, replay from a boundary onto a commit, or undecidable — that the run acts on rather than a
 human ever seeing: an aligned or replay verdict is retried mechanically, and only a genuinely
 undecidable one, or a retried replay that still conflicts, falls through to the narrow recovery
@@ -279,7 +279,7 @@ past its cap. A parent that merged into something other than the base branch (a 
 merged by hand while still aimed at its own parent) parks the child untouched rather than retarget
 it, which is the pairwise edges declining to guess at the multi-level ordering below — a child still
 mid-run first dispatches this run's one read-only stack assessment (PLAN.md §16, Decisions Log
-#203) and parks only on an undecidable verdict, while a child whose pull request is already open —
+#205) and parks only on an undecidable verdict, while a child whose pull request is already open —
 the closeout watcher's own sweep, a separate monitor this assessment does not reach — parks
 directly.
 
@@ -289,7 +289,7 @@ first review cycle and immediately before the mandatory final full pass, and now
 Each catch-up is mechanical — the same replay, plus the gates, no review cycle — spending the same
 rebase budget and parking past the same cap. A conflict at a checkpoint first dispatches that same
 one read-only stack assessment; the branch is restored and only an undecidable verdict parks for a
-human (PLAN.md §16, Decisions Log #203). A parent that has died terminally (abandoned, `Failed`, or
+human (PLAN.md §16, Decisions Log #205). A parent that has died terminally (abandoned, `Failed`, or
 Done having never delivered a pull request that can merge) does the same for a child still
 mid-run — assessed first, parking only on an undecidable verdict — while a child whose pull request
 is already open parks directly, under the closeout watcher's own separate sweep.
