@@ -75,6 +75,199 @@ public sealed class StatusCommandMergedWithoutCopilotReviewTests(PostgresFixture
     }
 
     /// <summary>
+    /// The daemon's own pre-approved auto-merge (<c>CloseoutEngine.TryAutoMergeAsync</c>) always
+    /// appends <c>PullRequestMerged</c> with a null <c>MergedAt</c> — nothing re-reads GitHub's own
+    /// merge timestamp after the merge call. This is the exact case the task's own acceptance
+    /// criterion named (a pre-approved pull request merging on the remaining gates after a quota
+    /// refusal), so it must render exactly like a merge that did carry GitHub's own timestamp
+    /// (independent pre-PR review, cycle 3, both lenses, high).
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_auto_merge_with_no_GitHub_timestamp_still_renders()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await SeedAutoMergedTaskAsync(
+            "Auto-merge on the remaining gates", 410, "https://github.com/example/repo/pull/410", cts.Token);
+
+        string output;
+        await using (IQuerySession session = postgres.Store.QuerySession())
+        {
+            output = await CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(session, cts.Token));
+        }
+
+        output.Should().Contain("merged without Copilot review")
+            .And.Contain("Auto-merge on the remaining gates")
+            .And.Contain("PR #410");
+    }
+
+    /// <summary>
+    /// A refusal recorded, then a real Copilot review landing before the merge, must not render —
+    /// Copilot did in fact review the pull request before it merged, so "merged without Copilot
+    /// review" would be false (independent pre-PR review, cycle 3, adversarial lens, medium).
+    /// </summary>
+    [Fact]
+    public async Task A_refusal_superseded_by_a_landed_review_before_merging_renders_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const int pullRequestNumber = 411;
+        const string pullRequestUrl = "https://github.com/example/repo/pull/411";
+
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Copilot came back before the merge", ["merged"], TaskType.Chore, null, null, null,
+            Now, ownerId);
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, ownerId, Now);
+        TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, runId, Now);
+        task.Apply(claimed);
+        TaskCompleted completed = TaskDecider.Complete(task, runId, pullRequestUrl, MergedAt);
+        task.Apply(completed);
+
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed, completed]);
+
+        const string reason = "Copilot was unable to review this pull request because the user who "
+            + "requested the review has reached their quota limit.";
+        session.Events.StartStream<RunAggregate>(
+            runId,
+            new RunDispatched(
+                runId, taskId, nodeId, ownerId, 1, DomainId.New(), "/does/not/matter", "task/branch",
+                ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now),
+            new PullRequestOpened(runId, pullRequestUrl, pullRequestNumber, Now),
+            new CopilotReviewUnavailable(
+                runId, "copilot-pull-request-reviewer", $"{pullRequestUrl}#pullrequestreview-1", reason, Now),
+            new ExternalReviewObserved(
+                runId, ExternalReviewState.Landed, 0, false, MergedAt.AddMinutes(-10), "APPROVED"),
+            new PullRequestMerged(runId, MergedAt, MergedAt),
+            new RunCompleted(runId, MergedAt));
+        await session.SaveChangesAsync(cts.Token);
+
+        string output;
+        await using (IQuerySession query = postgres.Store.QuerySession())
+        {
+            output = await CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(query, cts.Token));
+        }
+
+        output.Should().NotContain("PR #411", "Copilot's review landed before the merge, so the merge did not happen without it");
+    }
+
+    /// <summary>
+    /// The run that observed the refusal need not be the run whose own merge landed — a
+    /// review-feedback follow-up run can be the one that actually merges. The line must still find
+    /// this task by reading across every one of its runs (independent pre-PR review, cycle 3,
+    /// conformance lens, medium).
+    /// </summary>
+    [Fact]
+    public async Task A_refusal_on_one_run_and_a_merge_on_a_later_run_of_the_same_task_still_renders()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid taskId = DomainId.New();
+        Guid firstRunId = DomainId.New();
+        Guid secondRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        const int pullRequestNumber = 412;
+        const string pullRequestUrl = "https://github.com/example/repo/pull/412";
+
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "A follow-up run finishes the merge", ["merged"], TaskType.Chore, null, null, null,
+            Now, ownerId);
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, ownerId, Now);
+        TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, firstRunId, Now);
+        task.Apply(claimed);
+        TaskCompleted completed = TaskDecider.Complete(task, secondRunId, pullRequestUrl, MergedAt);
+        task.Apply(completed);
+
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed, completed]);
+
+        const string reason = "Copilot was unable to review this pull request because the user who "
+            + "requested the review has reached their quota limit.";
+        session.Events.StartStream<RunAggregate>(
+            firstRunId,
+            new RunDispatched(
+                firstRunId, taskId, nodeId, ownerId, 1, DomainId.New(), "/does/not/matter", "task/branch",
+                ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(firstRunId, Now),
+            new VerificationPassed(firstRunId, Now),
+            new PullRequestOpened(firstRunId, pullRequestUrl, pullRequestNumber, Now),
+            new CopilotReviewUnavailable(
+                firstRunId, "copilot-pull-request-reviewer", $"{pullRequestUrl}#pullrequestreview-1", reason, Now));
+        session.Events.StartStream<RunAggregate>(
+            secondRunId,
+            new RunDispatched(
+                secondRunId, taskId, nodeId, ownerId, 1, DomainId.New(), "/does/not/matter", "task/branch",
+                ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(secondRunId, Now),
+            new VerificationPassed(secondRunId, Now),
+            new PullRequestMerged(secondRunId, MergedAt, MergedAt),
+            new RunCompleted(secondRunId, MergedAt));
+        await session.SaveChangesAsync(cts.Token);
+
+        string output;
+        await using (IQuerySession query = postgres.Store.QuerySession())
+        {
+            output = await CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(query, cts.Token));
+        }
+
+        output.Should().Contain("merged without Copilot review")
+            .And.Contain("A follow-up run finishes the merge")
+            .And.Contain("PR #412");
+    }
+
+    /// <summary>
+    /// Seeds a task and run identically to the merged branch of <see cref="SeedMergedTaskAsync"/>,
+    /// except the merge event carries a null <c>MergedAt</c> — exactly what
+    /// <c>CloseoutEngine.TryAutoMergeAsync</c> actually appends, rather than the non-null timestamp
+    /// the hand-built merge case above uses.
+    /// </summary>
+    private async Task<(Guid TaskId, Guid RunId)> SeedAutoMergedTaskAsync(
+        string objective, int pullRequestNumber, string pullRequestUrl, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid nodeId = DomainId.New();
+
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, objective, ["merged"], TaskType.Chore, null, null, null, Now, ownerId);
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, ownerId, Now);
+
+        TaskClaimed claimed = TaskDecider.Claim(task, nodeId, ownerId, runId, Now);
+        task.Apply(claimed);
+        TaskCompleted completed = TaskDecider.Complete(task, runId, pullRequestUrl, MergedAt);
+        task.Apply(completed);
+
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed, completed]);
+
+        const string reason = "Copilot was unable to review this pull request because the user who "
+            + "requested the review has reached their quota limit.";
+        session.Events.StartStream<RunAggregate>(
+            runId,
+            new RunDispatched(
+                runId, taskId, nodeId, ownerId, 1, DomainId.New(), "/does/not/matter", "task/branch",
+                ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now),
+            new PullRequestOpened(runId, pullRequestUrl, pullRequestNumber, Now),
+            new CopilotReviewUnavailable(
+                runId, "copilot-pull-request-reviewer", $"{pullRequestUrl}#pullrequestreview-1", reason, Now),
+            new PullRequestMerged(runId, null, MergedAt),
+            new RunCompleted(runId, MergedAt));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (taskId, runId);
+    }
+
+    /// <summary>
     /// Builds a task through the same lifecycle the CLI walks a human through (<see cref="TaskSeed"/>)
     /// and a run through the pipeline's own events, ending either in a real merge plus the quota
     /// refusal (<paramref name="merged"/> true) or with the refusal recorded but no merge yet.

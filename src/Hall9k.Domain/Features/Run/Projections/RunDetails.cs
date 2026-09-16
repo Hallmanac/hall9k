@@ -128,6 +128,21 @@ public sealed class RunDetails : IJsonOnDeserialized
     public DateTimeOffset? PullRequestPushedAt { get; set; }
     public DateTimeOffset? PullRequestMergedAt { get; set; }
 
+    /// <summary>
+    /// When this run's pull request was recorded merged, using GitHub's own timestamp when it
+    /// reported one (<see cref="PullRequestMergedAt"/>) and falling back to this node's own
+    /// observation time when it did not — the same <c>MergedAt ?? ObservedAt</c> fallback
+    /// <see cref="Hall9k.Domain.Features.Tasks.Queries.TaskPassageQuery"/> already uses. A
+    /// pre-approved run's own automatic merge always appends <see cref="Events.PullRequestMerged"/>
+    /// with a null <c>MergedAt</c> (nothing re-reads GitHub's timestamp after the merge call), so
+    /// <see cref="PullRequestMergedAt"/> alone cannot answer "did this run's pull request merge" —
+    /// only "did GitHub report when". This field always gets a value the moment a
+    /// <see cref="Events.PullRequestMerged"/> event lands, which is what lets a display that only
+    /// needs to know a merge happened, not GitHub's exact timestamp for it, find the case this
+    /// pane exists for (independent pre-PR review, cycle 3, both lenses).
+    /// </summary>
+    public DateTimeOffset? PullRequestMergeObservedAt { get; set; }
+
     /// <summary>The cycle the review loop was in when <see cref="Events.ReviewEndedByMerge"/> observed the pull request already merged — null for every run that never short-circuited this way.</summary>
     public int? ReviewEndedByMergeAtCycle { get; set; }
 
@@ -1660,8 +1675,11 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     public void Apply(IEvent<CloseoutBudgetGranted> @event, RunDetails view) =>
         view.HumanGrantedAt = @event.Data.GrantedAt;
 
-    public void Apply(IEvent<PullRequestMerged> @event, RunDetails view) =>
+    public void Apply(IEvent<PullRequestMerged> @event, RunDetails view)
+    {
         view.PullRequestMergedAt = @event.Data.MergedAt;
+        view.PullRequestMergeObservedAt = @event.Data.MergedAt ?? @event.Data.ObservedAt;
+    }
 
     public void Apply(IEvent<ReviewEndedByMerge> @event, RunDetails view)
     {
