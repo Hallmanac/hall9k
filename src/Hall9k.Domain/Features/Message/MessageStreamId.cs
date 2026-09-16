@@ -42,6 +42,17 @@ public static class MessageStreamId
     public static Guid ForInbox(Guid senderNodeId, Guid projectId) =>
         Derive("hall9k-message-inbox", senderNodeId.ToString("N"), projectId.ToString("N"));
 
+    /// <summary>The pre-M2 shape of <see cref="ForInbox"/>, before a local project id was ever part
+    /// of the key — never used to read or write a live cursor going forward, only by
+    /// <c>Hall9k.Connectors.Messaging.MessageInbox.ReadFromAsync</c>'s own migration fallback
+    /// (<c>Hall9k.Connectors.Messaging.LegacyMessageAdoption</c>) to find a cursor a node may have
+    /// advanced before this change, so the adopting project's first per-project read of a sender does
+    /// not re-read and re-store content it already handled under the old, unscoped stream
+    /// (independent pre-PR review, cycle 1, conformance lens, medium).
+    /// </summary>
+    public static Guid ForInboxBeforeProjectScoping(Guid senderNodeId) =>
+        Derive("hall9k-message-inbox", senderNodeId.ToString("N"));
+
     private static Guid Derive(params string[] parts)
     {
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', parts)));

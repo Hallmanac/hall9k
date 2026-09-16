@@ -816,7 +816,8 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession squashSession = _postgres.Store.LightweightSession())
         {
             squash = await outbox.SquashAsync(
-                squashSession, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, squashNow, cts.Token);
+                squashSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
+                squashNow, cts.Token);
         }
 
         squash.EnvelopesKept.Should().Be(1, "only the envelope sent within the last 48 hours is still within the retention window");
@@ -870,7 +871,8 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await outbox.FlushAsync(session, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, sentAt, cts.Token);
 
         MessageSquashResult squash = await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, sentAt.AddSeconds(5), cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
+            sentAt.AddSeconds(5), cts.Token);
 
         squash.EnvelopesKept.Should().Be(
             1, "retention is measured from when the envelope was actually sent, never from how long it sat queued");
@@ -905,9 +907,11 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         // A squash immediately after, and again a day later — both still well within the 48-hour
         // retention window, so nothing has aged out either time.
         await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, Now.AddSeconds(1), cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
+            Now.AddSeconds(1), cts.Token);
         await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, Now.AddHours(24), cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
+            Now.AddHours(24), cts.Token);
 
         IReadOnlyList<MessageOutboxTip> tipsAfterSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
         string tipAfterSquash = tipsAfterSquash.Single(tip => tip.SenderNodeId == nodeA).Tip;
@@ -942,7 +946,8 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         DateTimeOffset firstSquashNow = Now.AddHours(48).AddMinutes(1);
         MessageSquashResult firstSquash = await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow, cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
+            firstSquashNow, cts.Token);
         firstSquash.EnvelopesKept.Should().Be(0, "the only envelope sent has aged out of the retention window");
 
         IReadOnlyList<MessageOutboxTip> tipsAfterFirstSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
@@ -952,8 +957,8 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         // still the only row SquashAsync's own query ever sees, exactly the shape that used to
         // force a fresh push every time.
         MessageSquashResult secondSquash = await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow.AddMinutes(1),
-            cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
+            firstSquashNow.AddMinutes(1), cts.Token);
         secondSquash.EnvelopesKept.Should().Be(0);
 
         IReadOnlyList<MessageOutboxTip> tipsAfterSecondSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
@@ -990,7 +995,8 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         DateTimeOffset firstSquashNow = Now.AddHours(48).AddMinutes(1);
         MessageSquashResult firstSquash = await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA, firstSquashNow, cts.Token);
+            session, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
+            firstSquashNow, cts.Token);
         firstSquash.EnvelopesKept.Should().Be(0, "the only envelope sent so far has aged out of the retention window");
 
         IReadOnlyList<MessageOutboxTip> tipsAfterFirstSquash = await transport.ProbeAsync(RepositoryPath, cts.Token);
@@ -1010,7 +1016,7 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         tipAfterFlush.Should().NotBe(tipAfterFirstSquash, "the flush itself must move the tip, or the assertion below would be vacuous");
 
         MessageSquashResult secondSquash = await outbox.SquashAsync(
-            session, RepositoryPath, nodeA, ProjectId, TimeSpan.FromHours(48), committerA, signingKeyA,
+            session, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
             firstSquashNow.AddMinutes(1), cts.Token);
         secondSquash.EnvelopesKept.Should().Be(1, "the newly sent envelope is still within the retention window");
 

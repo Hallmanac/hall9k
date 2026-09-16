@@ -296,6 +296,107 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         }
     }
 
+    /// <summary>
+    /// The resilience fix for the fixed-adopter bug (independent pre-PR review, cycle 1, both
+    /// lenses, medium): before the fix, a pending legacy message (idea 202383dc, M2's migration
+    /// rule — still carrying <see cref="Guid.Empty"/> as its own ProjectId) was only ever adopted by
+    /// <c>eligibleProjects[0]</c>, and only on a tick where that SPECIFIC project's own trust chain
+    /// read succeeded — if it never did, the message stayed pending forever even with a second,
+    /// perfectly healthy eligible project sitting right behind it. This node registers two eligible
+    /// projects, the lower-id one wired to a chain reader that always throws, and proves the legacy
+    /// message still flushes — through the SECOND project's own repository, never the first's.
+    /// </summary>
+    [Fact]
+    public async Task A_pending_legacy_message_still_flushes_through_a_second_project_when_the_lowest_id_ones_chain_read_keeps_failing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        const string FailingRepositoryPath = "/does/not/matter/on/a/fake/ledger-failing";
+        const string HealthyRepositoryPath = "/does/not/matter/on/a/fake/ledger-healthy";
+        const string HealthyProjectKey = "healthy-project-key";
+
+        FakeLedger ledger = new();
+        InMemoryMessageTransport transport = new(ledger);
+
+        NodeContext nodeB = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+
+        // The healthy project's own repository needs node B's self-announced node file too — the
+        // transport's own read-side vouch check (InMemoryMessageTransport.ReadSinceAsync), never
+        // required for the flush this test actually cares about, only for this test's own
+        // after-the-fact read verifying what landed on the wire.
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                HealthyRepositoryPath, $"refs/hall9k/ledger/nodes/{nodeB.NodeId}", $"nodes/{nodeB.NodeId}/node.yaml",
+                $"node_id: \"{nodeB.NodeId}\"\npublic_key: \"ssh-ed25519 AAAAFAKE{nodeB.NodeId:N} test\"\n",
+                ExpectedBlobId: null, "seed node file", new LedgerCommitter("seed", "seed@hall9k.local"),
+                new LedgerSigningKey("/dev/null/seed")),
+            cts.Token);
+
+        Guid failingProjectId = DomainId.New();
+        Guid healthyProjectId = DomainId.New();
+        await using (IDocumentSession claimSession = _postgres.Store.LightweightSession())
+        {
+            OwnerAggregate owner =
+                (await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(nodeB.OwnerId, token: cts.Token))!;
+            claimSession.Events.Append(
+                nodeB.OwnerId, OwnerDecider.ClaimRoot(owner, "owner-b-root-fingerprint", verified: true, Now));
+
+            // Registered in this order so failingProjectId (UUIDv7, minted first) sorts lower —
+            // exactly the "lowest eligible project id" LegacyMessageAdoption and the old, fixed
+            // eligibleProjects[0] rule both pick by.
+            claimSession.Events.StartStream<ProjectAggregate>(
+                failingProjectId,
+                ProjectDecider.Register(
+                    failingProjectId, nodeB.OwnerId, DomainId.New(), "failing", FailingRepositoryPath, null, null, Now));
+            claimSession.Events.StartStream<ProjectAggregate>(
+                healthyProjectId,
+                ProjectDecider.Register(
+                    healthyProjectId, nodeB.OwnerId, DomainId.New(), "healthy", HealthyRepositoryPath, null, null, Now));
+
+            // The pending legacy message: node B's own outbox item queued before idea 202383dc's M2
+            // shipped, still carrying Guid.Empty as its own ProjectId (MessageQueued's own doc).
+            claimSession.Events.StartStream<MessageAggregate>(
+                MessageStreamId.ForMessage(nodeB.NodeId, Guid.Empty, 1),
+                new MessageQueued(
+                    nodeB.NodeId, 1, "owner-b-root-fingerprint", MessageAudience.Project.Value, null, MessageKind.Note.Value,
+                    "legacy pending on node B", Now, Guid.Empty));
+
+            await claimSession.SaveChangesAsync(cts.Token);
+        }
+
+        MessageSweepEngine engine = new(
+            _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            new AlwaysThrowingForOneRepositoryChainReader(FailingRepositoryPath, HealthyRepositoryPath, HealthyProjectKey),
+            new MessageNodeIdentityResolver(new NodeKeyStore()), Options.Create(new DaemonOptions()),
+            NullLogger<MessageSweepEngine>.Instance);
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        await using (IDocumentSession verifySession = _postgres.Store.LightweightSession())
+        {
+            MessageDetails? legacy = await verifySession.LoadAsync<MessageDetails>(
+                MessageStreamId.ForMessage(nodeB.NodeId, Guid.Empty, 1), cts.Token);
+            legacy!.SentAt.Should().NotBeNull("the healthy project's own flush must adopt it even though the lowest-id project's chain read keeps failing");
+            legacy.ProjectId.Should().Be(healthyProjectId, "the healthy project is the one that actually adopted it");
+        }
+
+        TransportReadResult fromHealthy = await transport.ReadSinceAsync(HealthyRepositoryPath, nodeB.NodeId, sinceSeq: 0, cts.Token);
+        fromHealthy.Envelopes.Should().ContainSingle(envelope => envelope.Content.Contains("legacy pending on node B"));
+    }
+
+    /// <summary>An <see cref="ILedgerChainReader"/> that throws for one specific repository path
+    /// (standing in for a chain read that genuinely keeps failing, not merely an absent genesis) and
+    /// returns a real, usable <see cref="TrustChain"/> for another.</summary>
+    private sealed class AlwaysThrowingForOneRepositoryChainReader(
+        string failingRepositoryPath, string healthyRepositoryPath, string healthyProjectKey) : ILedgerChainReader
+    {
+        public Task<TrustChain> ComputeAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            repositoryPath == failingRepositoryPath
+                ? throw new InvalidOperationException("Simulated: this project's own trust chain read never succeeds.")
+                : repositoryPath == healthyRepositoryPath
+                    ? Task.FromResult(new TrustChain(new Dictionary<string, TrustedOwner>(), [], GenesisRootFingerprint: healthyProjectKey))
+                    : Task.FromResult(TrustChain.Empty);
+    }
+
     /// <summary>Shared setup <see cref="A_sweep_persists_a_dropped_unverifiable_vouch_its_trust_chain_observed"/>
     /// also inlines: a fresh node claims an owner root and registers one project, so a
     /// <see cref="MessageSweepEngine"/> built against it has somewhere to persist an unverified
