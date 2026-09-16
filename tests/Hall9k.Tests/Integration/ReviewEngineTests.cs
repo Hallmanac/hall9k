@@ -3038,11 +3038,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\nDefect: needs work.\n\nVERDICT: needs-fixes",
             "Fixed it.\n\nRESOLUTION: fixed",
             "The fix holds.\n\nVERDICT: merge-ready",
-            ScriptedReplayAssessmentThatStillConflicts,
             "Resolved the conflict by keeping both intents.\n\nRESOLUTION: fixed",
             "FINDING: severity=low; scope=in-scope; at=Widget.cs:1\nDefect: minor.\n\nVERDICT: merge-ready",
             "Still holds.\n\nVERDICT: merge-ready");
-        executor.OnSpawnByIndex[5] = () =>
+        executor.OnSpawnByIndex[4] = () =>
         {
             Git(worktreePath, "fetch -q origin");
             TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
@@ -3054,13 +3053,14 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 + "rebase --continue");
         };
 
-        bool mergeReady = await NewEngine(
-                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 }, ReplayRetryConflictsRunner().Runner)
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
             .ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Should().HaveCount(
-            8, "the conflict earns one read-only assessment and exactly one narrow recovery session, not an extra review cycle");
+            7, "the conflict dispatches straight to the recovery session — no assessment for a fresh conflict "
+            + "(task: the stack assessment runs only where a checkpoint would otherwise park) — and earns exactly "
+            + "one recovery session, not an extra review cycle");
         File.ReadAllText(Path.Combine(worktreePath, "Widget.cs")).Should().Contain("resolved");
 
         await using IQuerySession query = store.QuerySession();
@@ -3070,6 +3070,8 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             e => e.Outcome == ReviewFixOutcome.Fixed);
         events.OfType<RunRebasedOntoBase>().Should().ContainSingle(
             e => e.RecoveredByAgentSession && !e.WasNoOp);
+        events.OfType<StackAssessmentDispatched>().Should().BeEmpty(
+            "a conflict the recovery session goes on to resolve is not one of this path's two park points");
 
         // The loop returns straight to Settling once the recovery completes, whose own rebase
         // check runs again immediately and finds nothing left to do — that trailing no-op must not
@@ -3106,11 +3108,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         ScriptedExecutor executor = new(
             "Nothing to fix.\n\nVERDICT: merge-ready",
             "Nothing to fix either.\n\nVERDICT: merge-ready",
-            ScriptedReplayAssessmentThatStillConflicts,
             "Resolved the conflict by keeping both intents.\n\nRESOLUTION: fixed",
             "Nothing new to flag.\n\nVERDICT: merge-ready",
             "Still holds.\n\nVERDICT: merge-ready");
-        executor.OnSpawnByIndex[3] = () =>
+        executor.OnSpawnByIndex[2] = () =>
         {
             Git(worktreePath, "fetch -q origin");
             TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
@@ -3122,13 +3123,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 + "rebase --continue");
         };
 
-        bool mergeReady = await NewEngine(
-                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 }, ReplayRetryConflictsRunner().Runner)
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
             .ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Should().HaveCount(
-            6, "both lenses converged clean at cycle 1 (nothing owed), plus the read-only assessment and the recovery session, " +
+            5, "both lenses converged clean at cycle 1 (nothing owed), plus the recovery session (no assessment for "
+            + "a fresh conflict — task: the stack assessment runs only where a checkpoint would otherwise park), " +
             "plus the mandatory final pass the recovered conflict now earns even on that path");
         File.ReadAllText(Path.Combine(worktreePath, "Widget.cs")).Should().Contain("resolved");
 
@@ -3165,7 +3166,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             "The fix holds.\n\nVERDICT: merge-ready",
             "Nothing new to flag.\n\nVERDICT: merge-ready",
             "FINDING: severity=low; scope=in-scope; at=Widget.cs:1\nDefect: minor.\n\nVERDICT: merge-ready",
-            ScriptedReplayAssessmentThatStillConflicts,
             "Resolved the conflict by keeping both intents.\n\nRESOLUTION: fixed",
             "Still nothing to flag.\n\nVERDICT: merge-ready",
             "Still just the minor nit.\n\nVERDICT: merge-ready");
@@ -3177,7 +3177,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         // A_conflicting_pre_final_pass_rebase_is_resolved_by_a_narrow_recovery_session_inside_the_same_run).
         executor.OnSpawnByIndex[5] = () =>
             PushToOrigin(originPath, "Widget.cs", "class Widget { /* from main */ }\n", "add Widget from main");
-        executor.OnSpawnByIndex[7] = () =>
+        executor.OnSpawnByIndex[6] = () =>
         {
             Git(worktreePath, "fetch -q origin");
             TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
@@ -3189,16 +3189,15 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 + "rebase --continue");
         };
 
-        bool mergeReady = await NewEngine(
-                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 }, ReplayRetryConflictsRunner().Runner)
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
             .ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Should().HaveCount(
-            10, "the first final pass's own merge-ready-with-a-ride-along verdict must not settle " +
+            9, "the first final pass's own merge-ready-with-a-ride-along verdict must not settle " +
             "through the severity bar while a just-recovered rebase conflict has never been read by " +
-            "a fresh-context reviewer — a second final pass (indexes 8-9) is owed, on top of the " +
-            "read-only assessment (index 6) and the recovery session (index 7)");
+            "a fresh-context reviewer — a second final pass (indexes 7-8) is owed, on top of the " +
+            "recovery session (index 6, no assessment for a fresh conflict)");
         File.ReadAllText(Path.Combine(worktreePath, "Widget.cs")).Should().Contain("resolved");
 
         await using IQuerySession query = store.QuerySession();
@@ -3213,7 +3212,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// <summary>
     /// Task: a run rebases its branch onto the current base branch. When the recovery session
     /// cannot honestly resolve the conflict, the run parks for a human — the same shape a
-    /// disputed rebase park takes today — rather than failing the run or reopening the task.
+    /// disputed rebase park takes today — rather than failing the run or reopening the task. A
+    /// dispute is now one of this path's own two park points (task: the stack assessment runs only
+    /// where a checkpoint would otherwise park): this run's one read-only assessment gets its say
+    /// right there, after the dispute, and — reaching undecidable here too — still lands the run on
+    /// the identical park, with its own evidence appended.
     /// </summary>
     [Fact]
     public async Task A_disputed_pre_final_pass_rebase_conflict_parks_the_run_for_a_human()
@@ -3230,30 +3233,37 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\nDefect: needs work.\n\nVERDICT: needs-fixes",
             "Fixed it.\n\nRESOLUTION: fixed",
             "The fix holds.\n\nVERDICT: merge-ready",
-            ScriptedReplayAssessmentThatStillConflicts,
-            "Both sides change Widget.cs's own behavior — I cannot honestly pick.\n\nRESOLUTION: disputed");
-        executor.OnSpawnByIndex[5] = () =>
+            "Both sides change Widget.cs's own behavior — I cannot honestly pick.\n\nRESOLUTION: disputed",
+            "Checked the dispute from a fresh angle; both sides still look equally valid.\n\n"
+            + "STACK ASSESSMENT VERDICT: undecidable\nBOUNDARY: none\nONTO: none\n"
+            + "EVIDENCE:\ngit log confirmed both Widget.cs versions change the same class's own behavior; "
+            + "neither is provably the one to keep.");
+        executor.OnSpawnByIndex[4] = () =>
         {
             Git(worktreePath, "fetch -q origin");
             TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
             Git(worktreePath, "rebase --abort");
         };
 
-        bool mergeReady = await NewEngine(
-                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 }, ReplayRetryConflictsRunner().Runner)
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
             .ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeFalse("a disputed conflict parks the run rather than settling");
-        executor.Spawns.Should().HaveCount(6, "the loop stops at the recovery session's own dispute, after the read-only assessment that preceded it");
+        executor.Spawns.Should().HaveCount(
+            6, "the loop reaches the recovery session's own dispute with no assessment before it, then dispatches " +
+            "this run's one read-only assessment right there — still undecidable — before it finally parks");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.ReviewParked);
         run.ParkedReason.Should().Contain("pre-flight rebase conflicted");
+        run.ParkedReason.Should().Contain(
+            "could not resolve it either", "the assessment's own evidence rides along, not just the session's own dispute position");
         run.ParkedOnRebaseRecoveryDispute.Should().BeTrue(
             "the attention pane's lever must offer --needs-fixes, never --merge-ready, for this park");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<StackAssessmentDispatched>().Should().ContainSingle("the dispute earns exactly one assessment");
         events.OfType<PreFinalPassRebaseRecoveryCompleted>().Should().ContainSingle(
             e => e.Outcome == ReviewFixOutcome.Disputed);
         events.OfType<RunRebasedOntoBase>().Should().BeEmpty("nothing was actually resolved");
@@ -3269,21 +3279,15 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// to the identical conflict every time Settling is re-entered.
     /// <para>
     /// That loop is bounded by <see cref="MaxRebaseRecoveryRounds"/> — three automatic recovery
-    /// sessions, then a park — exactly as it was before the stack-assessment feature (task: a
-    /// stacked checkpoint that would park for a human on a git shape first dispatches a read-only
-    /// assessment run) existed. The run's own one read-only assessment still intercepts the very
-    /// first conflict, and its own no-loop guard (<c>AssessOrParkAsync</c>) still means a SECOND
-    /// conflict never dispatches a second assessment — but it still owes this pre-final-pass path
-    /// its ordinary recovery rounds, so the second and third conflicts dispatch recovery rounds 2
-    /// and 3 the same as they always did, and only the FOURTH conflict — the round cap itself,
-    /// not the spent assessment — parks (independent pre-PR review, cycle 1, both lenses: an
-    /// earlier shape collapsed the round cap to 1 by parking directly the moment the assessment was
-    /// spent, losing two of the three recovery rounds a fully automatic loop like this one used to
-    /// get).
+    /// sessions, then a park. None of the first three conflicts earns an assessment at all (task:
+    /// the stack assessment runs only where a checkpoint would otherwise park): the fourth attempt,
+    /// which would otherwise park outright on the round cap, is this path's OTHER park point, so it
+    /// dispatches this run's one read-only assessment before parking — still undecidable here — and
+    /// its evidence rides along with the round-cap reason rather than replacing it.
     /// </para>
     /// </summary>
     [Fact]
-    public async Task A_second_automatic_conflict_after_the_one_assessment_is_spent_still_gets_its_ordinary_recovery_rounds()
+    public async Task The_round_cap_runs_exactly_one_assessment_before_parking()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
@@ -3297,31 +3301,34 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         ScriptedExecutor executor = new(
             "Nothing to fix.\n\nVERDICT: merge-ready",
             "Nothing to fix either.\n\nVERDICT: merge-ready",
-            ScriptedReplayAssessmentThatStillConflicts,
             "Claiming this is resolved without touching the worktree (round 1).\n\nRESOLUTION: fixed",
             "Claiming this is resolved without touching the worktree (round 2).\n\nRESOLUTION: fixed",
-            "Claiming this is resolved without touching the worktree (round 3).\n\nRESOLUTION: fixed");
+            "Claiming this is resolved without touching the worktree (round 3).\n\nRESOLUTION: fixed",
+            "Checked the round-cap conflict from a fresh angle; still cannot tell which side should win.\n\n"
+            + "STACK ASSESSMENT VERDICT: undecidable\nBOUNDARY: none\nONTO: none\n"
+            + "EVIDENCE:\ngit log confirmed the same add/add conflict on every round; neither side is provably "
+            + "the one to keep.");
 
-        bool mergeReady = await NewEngine(
-                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 }, ReplayRetryConflictsRunner().Runner)
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
             .ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeFalse("the round cap is reached without ever landing cleanly");
         executor.Spawns.Should().HaveCount(
-            6, "two lenses converging clean, the one read-only assessment, and all three ordinary recovery " +
-            "rounds — the assessment being spent caps ASSESSMENTS at one, never the pre-existing recovery budget");
+            6, "two lenses converging clean, all three ordinary recovery rounds with no assessment ahead of any "
+            + "of them, and the one read-only assessment the round cap itself earns before it parks");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.State.Should().Be(RunState.ReviewParked);
         run.ParkedReason.Should().Contain(
-            "needed a recovery session", "the fourth conflict parks on the ordinary round cap, not on the spent assessment");
+            "needed a recovery session", "the round-cap reason survives, not just the assessment's own evidence");
+        run.ParkedReason.Should().Contain(
+            "neither side is provably the one to keep", "the assessment's own evidence rides along with the round-cap reason");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<StackAssessmentDispatched>().Should().ContainSingle("never a second assessment");
+        events.OfType<StackAssessmentDispatched>().Should().ContainSingle("the round cap earns exactly one assessment");
         events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().HaveCount(
-            3, "a later, different conflict still owes this pre-final-pass path its own three recovery rounds "
-            + "even after this run's one assessment is spent");
+            3, "the round cap is reached after exactly the three ordinary recovery rounds it always was");
     }
 
     /// <summary>
@@ -3399,16 +3406,18 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\nDefect: needs work.\n\nVERDICT: needs-fixes",
             "Fixed it.\n\nRESOLUTION: fixed",
             "The fix holds.\n\nVERDICT: merge-ready",
-            ScriptedReplayAssessmentThatStillConflicts,
-            "Both sides change Widget.cs's own behavior — I cannot honestly pick.\n\nRESOLUTION: disputed");
-        firstAttempt.OnSpawnByIndex[5] = () =>
+            "Both sides change Widget.cs's own behavior — I cannot honestly pick.\n\nRESOLUTION: disputed",
+            "Checked the dispute from a fresh angle; both sides still look equally valid.\n\n"
+            + "STACK ASSESSMENT VERDICT: undecidable\nBOUNDARY: none\nONTO: none\n"
+            + "EVIDENCE:\ngit log confirmed both Widget.cs versions change the same class's own behavior; "
+            + "neither is provably the one to keep.");
+        firstAttempt.OnSpawnByIndex[4] = () =>
         {
             Git(worktreePath, "fetch -q origin");
             TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
             Git(worktreePath, "rebase --abort");
         };
-        bool firstMergeReady = await NewEngine(
-                store, firstAttempt, new DaemonOptions { MaxComplianceReviewCycles = 3 }, ReplayRetryConflictsRunner().Runner)
+        bool firstMergeReady = await NewEngine(store, firstAttempt, new DaemonOptions { MaxComplianceReviewCycles = 3 })
             .ReviewAsync(runId, taskId, cts.Token);
         firstMergeReady.Should().BeFalse("the first attempt disputes and parks");
 
@@ -3852,12 +3861,11 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         ScriptedExecutor executor = new(
             "Nothing to fix.\n\nVERDICT: merge-ready",
             "Nothing to fix either.\n\nVERDICT: merge-ready",
-            ScriptedReplayAssessmentThatStillConflicts,
             "Resolved the conflict by keeping both intents.\n\nRESOLUTION: fixed",
             "Found what the rebase left broken and fixed it.",
             "Nothing new to flag.\n\nVERDICT: merge-ready",
             "Still holds.\n\nVERDICT: merge-ready");
-        executor.OnSpawnByIndex[3] = () =>
+        executor.OnSpawnByIndex[2] = () =>
         {
             Git(worktreePath, "fetch -q origin");
             TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
@@ -3868,17 +3876,17 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 "-c user.name=Test -c user.email=test@test -c core.editor=true -c commit.gpgsign=false "
                 + "rebase --continue");
         };
-        executor.OnSpawnByIndex[4] = () => File.WriteAllText(markerPath, "fixed\n");
+        executor.OnSpawnByIndex[3] = () => File.WriteAllText(markerPath, "fixed\n");
 
-        bool mergeReady = await NewEngine(
-                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 }, ReplayRetryConflictsRunner().Runner)
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
             .ReviewAsync(runId, taskId, cts.Token);
 
         mergeReady.Should().BeTrue();
         executor.Spawns.Should().HaveCount(
-            7, "two review passes, the read-only assessment, the rebase-recovery session for the conflict, " +
+            6, "two review passes, the rebase-recovery session for the conflict (no assessment for a fresh " +
+            "conflict — task: the stack assessment runs only where a checkpoint would otherwise park), " +
             "the Settling-gate repair session, and the mandatory final pass the recovered conflict earns even on the nothing-owed path");
-        executor.Spawns[4].Prompt.Should().Contain(
+        executor.Spawns[3].Prompt.Should().Contain(
             "needed a narrow recovery session's own judgment to resolve a real conflict",
             "the repair prompt must say a recovery rebase preceded it, not a clean one");
 
@@ -3923,20 +3931,20 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         ScriptedExecutor executor = new(
             "Nothing to fix.\n\nVERDICT: merge-ready",
             "Nothing to fix either.\n\nVERDICT: merge-ready",
-            // spawn 2: the read-only stack assessment this conflict now earns first.
-            ScriptedReplayAssessmentThatStillConflicts,
-            // spawn 3: the rebase-recovery session — resolves the conflict but leaves a stray edit.
+            // spawn 2: the rebase-recovery session — resolves the conflict but leaves a stray edit
+            // (no assessment ahead of it — task: the stack assessment runs only where a checkpoint
+            // would otherwise park).
             "Resolved the conflict by keeping both intents.\n\nRESOLUTION: fixed",
-            // spawn 4: the automatic recovery the rebase-recovery leg's dirty ending earns.
+            // spawn 3: the automatic recovery the rebase-recovery leg's dirty ending earns.
             "Committed the stray edit the recovery session left behind.",
-            // spawn 5: the Settling-gate repair session — never fixes the build, and ALSO leaves a
+            // spawn 4: the Settling-gate repair session — never fixes the build, and ALSO leaves a
             // stray edit of its own, on its own leg.
             "Looked, but could not find the build issue.",
-            // spawn 6: the automatic recovery the repair session's own dirty ending earns — only
+            // spawn 5: the automatic recovery the repair session's own dirty ending earns — only
             // reachable at all if it reads its own leg rather than the rebase-recovery leg's
             // already-spent one.
             "Committed the stray edit the repair session left behind.");
-        executor.OnSpawnByIndex[3] = () =>
+        executor.OnSpawnByIndex[2] = () =>
         {
             Git(worktreePath, "fetch -q origin");
             TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
@@ -3950,21 +3958,20 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             // than it committed.
             File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { /* resolved, plus a stray edit */ }\n");
         };
-        executor.OnSpawnByIndex[4] = () =>
+        executor.OnSpawnByIndex[3] = () =>
         {
             Git(worktreePath, "add -A");
             Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"commit the rebase recovery's stray edit\"");
         };
-        executor.OnSpawnByIndex[5] = () =>
+        executor.OnSpawnByIndex[4] = () =>
             File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { /* still broken, repair left it dirty too */ }\n");
-        executor.OnSpawnByIndex[6] = () =>
+        executor.OnSpawnByIndex[5] = () =>
         {
             Git(worktreePath, "add -A");
             Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"commit the repair session's stray edit\"");
         };
 
-        bool mergeReady = await NewEngine(
-                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 }, ReplayRetryConflictsRunner().Runner)
+        bool mergeReady = await NewEngine(store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 })
             .ReviewAsync(runId, taskId, cts.Token);
 
         // The repair round still never actually fixes the build (the marker is never created), so
@@ -9881,39 +9888,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         return (taskId, runId, projectId, worktreePath);
     }
 
-    /// <summary>
-    /// The scripted stack-assessment response every pre-final-pass rebase conflict test below now
-    /// consumes one extra spawn for (task: a stacked checkpoint that would park for a human on a
-    /// git shape first dispatches a read-only assessment run): a well-formed replay verdict, so
-    /// the mechanical retry it drives still reaches the recovery session these tests were written
-    /// to exercise, rather than a verdict this file's other tests already cover on its own terms
-    /// (<see cref="An_aligned_verdict_proceeds_and_updates_this_runs_recorded_fork_point_and_base_branch"/>,
-    /// <see cref="An_undecidable_verdict_parks_with_the_evidence_appended_to_the_park_text"/>, and their
-    /// siblings below).
-    /// </summary>
-    private const string ScriptedReplayAssessmentThatStillConflicts =
-        "Fetched origin and confirmed the boundary; a mechanical replay should land cleanly.\n\n"
-        + "STACK ASSESSMENT VERDICT: replay\n"
-        + "BOUNDARY: 3333333333333333333333333333333333cccc\n"
-        + "ONTO: 4444444444444444444444444444444444dddd\n"
-        + "EVIDENCE:\ngit merge-base --is-ancestor confirmed containment; git rev-parse verified both commits.";
-
-    /// <summary>
-    /// Answers the mechanical retry <see cref="ScriptedReplayAssessmentThatStillConflicts"/>'s own
-    /// verdict drives (<c>ReviewEngine.ActOnPreFinalPassAssessmentAsync</c>): the retry's own
-    /// `git rebase --onto` conflicts too, so the caller falls through to dispatching the recovery
-    /// session — the same "one honest attempt, then a human or a fix session" shape these tests
-    /// were written around before this feature's own extra assessment spawn existed.
-    /// </summary>
-    private static RecordingProcessRunner ReplayRetryConflictsRunner() => new(arguments =>
-        arguments.Count >= 2 && arguments[0] == "rebase" && arguments[1] == "--onto"
-            ? new ProcessResult(1, string.Empty, "CONFLICT (add/add): Merge conflict in Widget.cs")
-            : arguments is ["rev-parse", "HEAD"]
-                ? new ProcessResult(0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n", string.Empty)
-                : arguments.Count >= 2 && arguments[0] == "rev-parse" && arguments[1] == "--verify"
-                    ? new ProcessResult(0, string.Empty, string.Empty)
-                    : new ProcessResult(0, string.Empty, string.Empty));
-
     private static ReviewEngine NewEngine(DocumentStore store, ScriptedExecutor executor) =>
         NewEngine(store, executor, new DaemonOptions());
 
@@ -10762,6 +10736,55 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
         List<object> events = [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// The stacked-checkpoint sibling of <see cref="A_replay_verdict_that_still_conflicts_dispatches_the_fix_session_with_the_verdict_as_guidance"/>
+    /// (task: the stack assessment runs only where a checkpoint would otherwise park): a replay
+    /// verdict's own mechanical retry conflicting on a checkpoint that precedes this run's first
+    /// review cycle dispatches a guided fix session — never the ordinary rebase-recovery park
+    /// <see cref="ActOnStackAssessmentAsync"/>'s own no-loop guard would otherwise take — carrying
+    /// the verdict's boundary, onto commit and evidence, and marks the dispatch so its own
+    /// completion continues through Reverify's review cycles rather than landing on Settling.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_checkpoint_replay_verdict_that_still_conflicts_dispatches_the_guided_fix_session()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token, baseBranch: "task/parent-branch");
+
+        StackAssessmentVerdict verdict = StackAssessmentVerdict.Replay(
+            ScriptedBoundary, ScriptedOnto, "a mechanical replay should land, but has not been retried yet");
+        RecordingProcessRunner git = FakeCheckpointGit(conflictingUpstream: ScriptedBoundary);
+
+        ScriptedExecutor executor = new("The conflict needs real judgment.\n\nRESOLUTION: disputed");
+        ReviewEngine engine = NewEngine(store, executor, new DaemonOptions(), git.Runner);
+        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
+
+        ReviewEngine.RebaseGateOutcome outcome = await engine.ActOnStackAssessmentAsync(
+            context, StackedCheckpoint.BeforeFirstReviewCycle, "task/parent-branch",
+            "this checkpoint's own park text", verdict, cts.Token);
+
+        outcome.Should().Be(ReviewEngine.RebaseGateOutcome.LoopAgain, "the guided fix session was dispatched; the loop re-enters once it completes");
+        executor.Spawns.Should().ContainSingle("no second assessment, no bare park — one guided fix session");
+        executor.Spawns[0].Prompt.Should().Contain(
+            "A read-only stack assessment run (not a human)", "the fix session must be told plainly this guidance is not a human's own decision");
+        executor.Spawns[0].Prompt.Should().Contain(ShortShaFor(ScriptedBoundary));
+        executor.Spawns[0].Prompt.Should().Contain(ShortShaFor(ScriptedOnto));
+        executor.Spawns[0].Prompt.Should().Contain("a mechanical replay should land, but has not been retried yet");
+        executor.Spawns[0].Prompt.Should().Contain(
+            "task/parent-branch", "the checkpoint's own stacked replay mechanics, not the plain unstacked rebase");
+
+        List<object> events = [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        PreFinalPassRebaseRecoveryDispatched dispatched = events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().ContainSingle().Subject;
+        dispatched.PrecedesFirstReviewCycle.Should().BeTrue(
+            "so its own completion lands on Reverify (the review cycles this checkpoint precedes), not Settling");
+        dispatched.BaseCommit.Should().Be(ScriptedBoundary, "the verdict's own boundary is this fix session's fork point");
+
+        RunAggregate run = await store.QuerySession().Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token)
+            ?? throw new InvalidOperationException("run stream must exist");
+        run.RebaseRecoveryPrecedesFirstReviewCycle.Should().BeTrue();
     }
 
     /// <summary>A short SHA the way <c>ReviewEngine.ShortSha</c> renders one, for asserting on a prompt's own text.</summary>
