@@ -3856,7 +3856,7 @@ public sealed class ReviewEngine(
 
         string prompt = AgentPromptBuilder.BuildStackAssessment(
             context.TaskId, childBranch, parentBranch, recordedForkPoint, attemptedOntoCommit, pullRequestNumber,
-            pullRequestBase, parkKind, parkText, commandTimeout: _options.VerifyGateTimeout);
+            pullRequestBase, parkKind.Describe(), parkText, commandTimeout: _options.VerifyGateTimeout);
 
         // Saved before the spawn, not after: a daemon restart mid-wait must find this fact on the
         // stream even though the spawn's own outcome is still unknown — the same "save the
@@ -3981,16 +3981,19 @@ public sealed class ReviewEngine(
     /// beside this run's own review findings, the same append-with-timestamp shape every other
     /// run-scoped evidence file already uses.
     /// <para>
-    /// An aligned or replay verdict's own <see cref="StackAssessmentVerdict.BoundaryCommit"/> is
-    /// confirmed to resolve in this repository before it is ever trusted as this run's own fork
-    /// point — the parser's own format check (<see cref="StackAssessmentResultParser"/>) only says
-    /// the value looks like a SHA, never that this repository actually holds it, and a truncated
-    /// or hallucinated SHA recorded as <c>BaseCommit</c> would feed a later
-    /// `git rebase --onto &lt;onto&gt; &lt;boundary&gt;` an upstream git cannot resolve — the "must
-    /// never happen" shape <see cref="ReplayCheckpointAsync"/>'s own doc names, because it fails in
-    /// a way indistinguishable from a conflict (independent pre-PR review, cycle 1, conformance
-    /// lens). A boundary that does not resolve downgrades the verdict to undecidable here, before
-    /// anything is persisted, rather than recording it and letting a later caller discover the gap.
+    /// An aligned or replay verdict's own <see cref="StackAssessmentVerdict.BoundaryCommit"/> AND
+    /// <see cref="StackAssessmentVerdict.OntoCommit"/> are each confirmed to resolve in this
+    /// repository before either is ever trusted — the parser's own format check
+    /// (<see cref="StackAssessmentResultParser"/>) only says the value looks like a SHA, never that
+    /// this repository actually holds it, and a truncated or hallucinated SHA recorded as
+    /// <c>BaseCommit</c>, or handed to a later `git rebase --onto &lt;onto&gt; &lt;boundary&gt;`,
+    /// would reach git in a way indistinguishable from a conflict — the "must never happen" shape
+    /// <see cref="ReplayCheckpointAsync"/>'s own doc names (independent pre-PR review, cycle 1,
+    /// conformance lens, and cycle 3, both lenses, for the ONTO half). Either commit failing to
+    /// resolve downgrades the verdict to undecidable here, before anything is persisted, rather
+    /// than recording it and letting a later caller — <see cref="ActOnStackAssessmentAsync"/> or
+    /// <see cref="ActOnPreFinalPassAssessmentAsync"/> — discover the gap and silently proceed
+    /// unrebased instead of taking the park or the recovery session this verdict was meant to earn.
     /// </para>
     /// </summary>
     internal async Task<StackAssessmentVerdict> RecordStackAssessmentCompletedAsync(
@@ -4006,7 +4009,17 @@ public sealed class ReviewEngine(
                 + $"{verdict.Evidence}");
         }
 
+        if (verdict.Kind != StackAssessmentVerdictKind.Undecidable
+            && !await CommitResolvesAsync(context.Run.WorktreePath, verdict.OntoCommit, cancellationToken))
+        {
+            verdict = StackAssessmentVerdict.Undecidable(
+                $"the assessment declared {verdict.Kind} with an ONTO commit ({verdict.OntoCommit}) this "
+                + $"repository cannot resolve, so it is not trusted as a rebase target. Its own evidence: "
+                + $"{verdict.Evidence}");
+        }
+
         string resolvedBaseBranchName = string.Empty;
+        bool ontoIsProjectBaseBranch = false;
         if (verdict.Kind != StackAssessmentVerdictKind.Undecidable && verdict.OntoCommit.IsNotBlank())
         {
             resolvedBaseBranchName = await ResolveOntoBranchNameAsync(
@@ -4018,9 +4031,13 @@ public sealed class ReviewEngine(
             // branch", which is what every other writer of this field already holds — writing the
             // name out here instead would make a run that is not stacked at all read back as
             // stacked on its own base (independent pre-PR review, cycle 1, both lenses).
+            // OntoIsProjectBaseBranch carries the actual signal for the event's own apply, since
+            // this blank is indistinguishable from "no candidate matched" otherwise (independent
+            // pre-PR review, cycle 3, both lenses).
             if (resolvedBaseBranchName == context.Project.BaseBranch)
             {
                 resolvedBaseBranchName = string.Empty;
+                ontoIsProjectBaseBranch = true;
             }
         }
 
@@ -4028,7 +4045,7 @@ public sealed class ReviewEngine(
         {
             session.Events.Append(context.RunId, new StackAssessmentCompleted(
                 context.RunId, parkKind, verdict.Kind, verdict.BoundaryCommit, verdict.OntoCommit,
-                resolvedBaseBranchName, verdict.Evidence, DateTimeOffset.UtcNow));
+                resolvedBaseBranchName, ontoIsProjectBaseBranch, verdict.Evidence, DateTimeOffset.UtcNow));
             if (result is not null)
             {
                 session.Events.Append(context.RunId, result.ToTokensRecorded(context.RunId, DateTimeOffset.UtcNow, model));
@@ -4052,10 +4069,10 @@ public sealed class ReviewEngine(
 
     /// <summary>
     /// Whether <paramref name="commit"/> resolves to a real commit in this repository — the check
-    /// <see cref="RecordStackAssessmentCompletedAsync"/> runs over an assessment's own BOUNDARY
-    /// before ever trusting it as this run's recorded fork point. A read failure resolves to
-    /// false, the same "never guess at unobserved facts" stance every other presence check in this
-    /// class already takes.
+    /// <see cref="RecordStackAssessmentCompletedAsync"/> runs over both an assessment's own
+    /// BOUNDARY, before ever trusting it as this run's recorded fork point, and its ONTO, before
+    /// ever trusting it as a rebase target. A read failure resolves to false, the same "never guess
+    /// at unobserved facts" stance every other presence check in this class already takes.
     /// </summary>
     private async Task<bool> CommitResolvesAsync(string worktreePath, string commit, CancellationToken cancellationToken)
     {
@@ -4084,6 +4101,16 @@ public sealed class ReviewEngine(
     /// walking git's own ref graph, since nothing in this codebase resolves a bare commit back to
     /// a branch name (AGENTS.md's never-guess rule): a commit that matches none of them leaves the
     /// run's recorded base branch exactly as it was, rather than a guess.
+    /// <para>
+    /// Each candidate's own tip (always git's full, canonical SHA, from <c>rev-parse</c>) is
+    /// compared against <paramref name="ontoCommit"/> with a case-insensitive prefix match rather
+    /// than exact ordinal equality: the trailer parser deliberately accepts a 7-to-40-character
+    /// abbreviation (<see cref="StackAssessmentResultParser"/>), and an exact match against
+    /// <c>rev-parse</c>'s own always-full output would silently never match a legal abbreviated or
+    /// differently-cased value — a comparison this method fails rather than a caller ever
+    /// distinguishing "no candidate matched" from "the value was too short to compare" (independent
+    /// pre-PR review, cycle 3, adversarial lens).
+    /// </para>
     /// </summary>
     internal async Task<string> ResolveOntoBranchNameAsync(
         string worktreePath, string ontoCommit, IReadOnlyList<string> candidateBranches, CancellationToken cancellationToken)
@@ -4093,6 +4120,7 @@ public sealed class ReviewEngine(
             return string.Empty;
         }
 
+        string trimmedOnto = ontoCommit.Trim();
         ProcessRunner git = processRunner;
         foreach (string candidate in candidateBranches.Where(branch => branch.IsNotBlank()).Distinct())
         {
@@ -4100,7 +4128,8 @@ public sealed class ReviewEngine(
             {
                 ProcessResult tip = await git(
                     "git", ["rev-parse", "--verify", "--quiet", $"origin/{candidate}"], worktreePath, cancellationToken);
-                if (tip.ExitCode == 0 && tip.StandardOutput.Trim() == ontoCommit)
+                if (tip.ExitCode == 0
+                    && tip.StandardOutput.Trim().StartsWith(trimmedOnto, StringComparison.OrdinalIgnoreCase))
                 {
                     return candidate;
                 }
@@ -4189,6 +4218,7 @@ public sealed class ReviewEngine(
         ProcessRunner git = gitProcessRunner;
         string? preRebaseHead = null;
         bool landedClean = false;
+        bool rebaseAttempted = false;
         bool decisionsLogRenumbered = false;
         await using (IAsyncDisposable repositoryLock =
             await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
@@ -4208,6 +4238,7 @@ public sealed class ReviewEngine(
                     worktreePath, cancellationToken);
                 if (ontoPresent.ExitCode == 0)
                 {
+                    rebaseAttempted = true;
                     ProcessResult replay = await git(
                         "git", ["rebase", "--onto", assessment.OntoCommit, assessment.BoundaryCommit],
                         worktreePath, cancellationToken);
@@ -4251,12 +4282,23 @@ public sealed class ReviewEngine(
             return RebaseGateOutcome.Proceed;
         }
 
-        string assessmentGuidance =
-            "A read-only stack assessment run (not a human) investigated this conflict before you were "
-            + $"dispatched and reached a replay verdict: replay from {ShortSha(assessment.BoundaryCommit)} onto "
-            + $"{ShortSha(assessment.OntoCommit)}. Its own evidence: {assessment.Evidence} A mechanical attempt "
-            + "at exactly that replay already conflicted once, so treat this as a real, undecided conflict "
-            + "needing your own judgment rather than assuming the verdict above resolves it.";
+        // rebaseAttempted distinguishes an actual conflict from a replay that never ran at all (the
+        // onto commit was missing, or a git call threw before the rebase itself): telling the
+        // recovery session a mechanical attempt already conflicted when none ran hands it a guessed,
+        // unobserved fact it will reason from as though it were true (AGENTS.md's never-guess rule;
+        // independent pre-PR review, cycle 3, both lenses).
+        string assessmentGuidance = rebaseAttempted
+            ? "A read-only stack assessment run (not a human) investigated this conflict before you were "
+              + $"dispatched and reached a replay verdict: replay from {ShortSha(assessment.BoundaryCommit)} onto "
+              + $"{ShortSha(assessment.OntoCommit)}. Its own evidence: {assessment.Evidence} A mechanical attempt "
+              + "at exactly that replay already conflicted once, so treat this as a real, undecided conflict "
+              + "needing your own judgment rather than assuming the verdict above resolves it."
+            : "A read-only stack assessment run (not a human) investigated this conflict before you were "
+              + $"dispatched and reached a replay verdict: replay from {ShortSha(assessment.BoundaryCommit)} onto "
+              + $"{ShortSha(assessment.OntoCommit)}. Its own evidence: {assessment.Evidence} No mechanical replay "
+              + "actually ran — the onto commit was not found in this repository's object store, or a git call "
+              + "failed before the rebase itself started — so treat this as an unattempted replay rather than an "
+              + "observed conflict, and use your own judgment on whether the verdict above still applies.";
         return await DispatchRebaseRecoverySessionAsync(context, run, humanGuidance: null, assessmentGuidance, cancellationToken)
             ? RebaseGateOutcome.LoopAgain
             : RebaseGateOutcome.Stop;

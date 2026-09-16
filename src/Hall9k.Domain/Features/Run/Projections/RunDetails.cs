@@ -1550,7 +1550,13 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
             view.BaseCommit = @event.Data.BoundaryCommit;
         }
 
-        if (@event.Data.ResolvedBaseBranchName.IsNotBlank())
+        // OntoIsProjectBaseBranch clears unconditionally — see RunAggregate.Apply(StackAssessmentCompleted)'s
+        // own comment for why ResolvedBaseBranchName's blank cannot also mean "clear it".
+        if (@event.Data.OntoIsProjectBaseBranch)
+        {
+            view.BaseBranch = string.Empty;
+        }
+        else if (@event.Data.ResolvedBaseBranchName.IsNotBlank())
         {
             view.BaseBranch = @event.Data.ResolvedBaseBranchName;
         }

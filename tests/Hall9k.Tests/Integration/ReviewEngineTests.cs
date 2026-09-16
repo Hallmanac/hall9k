@@ -10450,7 +10450,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
-        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+        // Seeded non-blank so BaseBranch.Should().BeEmpty() below actually exercises the clear
+        // rather than passing on the seeded value regardless of whether the code clears anything
+        // (independent pre-PR review, cycle 3, both lenses).
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token, baseBranch: "task/parent-branch");
 
         ScriptedExecutor executor = new(
             "Checked containment; the branch already accounts for everything main has merged.\n\n"
@@ -10537,7 +10540,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
-        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+        // Seeded non-blank so BaseBranch.Should().BeEmpty() below actually exercises the clear
+        // rather than passing on the seeded value regardless of whether the code clears anything
+        // (independent pre-PR review, cycle 3, both lenses).
+        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token, baseBranch: "task/parent-branch");
 
         ScriptedExecutor executor = new(
             "gh pr view confirms the parent's own pull request retargeted onto main after it merged mid-stack; "
@@ -10811,7 +10817,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
                 DomainId.New(), null, DateTimeOffset.UtcNow, "review-me-stack-assessment"));
             session.Events.Append(runId, new StackAssessmentCompleted(
                 runId, StackAssessmentParkKind.ReplayConflict, "undecidable", string.Empty, string.Empty,
-                string.Empty, "the first conflict already reached an undecidable verdict", DateTimeOffset.UtcNow));
+                string.Empty, false, "the first conflict already reached an undecidable verdict", DateTimeOffset.UtcNow));
             await session.SaveChangesAsync(cts.Token);
         }
 
