@@ -54,6 +54,14 @@ public sealed record LedgerWriteOutcome(LedgerWriteVerdict Verdict, string? Comm
 }
 
 /// <summary>
+/// One ref <see cref="ILedger.ListRefsAsync"/> found on origin, paired with its current tip commit
+/// SHA — <c>git ls-remote</c> already returns this alongside the ref name, so a caller scanning
+/// many refs on a cadence (idea 202383dc, T2's own invite sweep) can tell an unmoved ref apart from
+/// one worth a real <see cref="ILedger.ReadAsync"/> fetch without paying for that fetch first.
+/// </summary>
+public sealed record LedgerRef(string RefName, string Sha);
+
+/// <summary>
 /// A push kept losing the race for <see cref="Attempts"/> tries in a row on a path that was never
 /// itself in conflict (the retry loop's own re-fetch found <c>LedgerWriteRequest.Path</c> still
 /// matched <c>LedgerWriteRequest.ExpectedBlobId</c> every time) — something is keeping the ref
@@ -127,17 +135,19 @@ public interface ILedger
     Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Every ref name currently on origin that starts with <paramref name="refPrefix"/> — the
-    /// "list refs", not "list paths inside one ref", primitive: a caller enumerating a prefix
-    /// registered as <see cref="LedgerRefKind.Prefix"/> (one ref per node id, one per owner root)
-    /// has no other way to discover which concrete ref names exist at all, unlike
-    /// <see cref="HasAnyAsync"/>, which only ever answers about paths inside a single, already-known
-    /// ref (idea 202383dc, T2's invite sweep: which node refs carry a candidate proof to check).
+    /// Every ref currently on origin that starts with <paramref name="refPrefix"/>, each paired
+    /// with its own current tip SHA (<see cref="LedgerRef"/>) — the "list refs", not "list paths
+    /// inside one ref", primitive: a caller enumerating a prefix registered as
+    /// <see cref="LedgerRefKind.Prefix"/> (one ref per node id, one per owner root) has no other
+    /// way to discover which concrete ref names exist at all, unlike <see cref="HasAnyAsync"/>,
+    /// which only ever answers about paths inside a single, already-known ref (idea 202383dc, T2's
+    /// invite sweep: which node refs carry a candidate proof to check, and — via the tip SHA — which
+    /// of those actually changed since the sweep's own last look).
     /// Mirrors <c>GitLedgerChainReader.DiscoverOwnerRootsAsync</c>'s own private
     /// <c>git ls-remote</c> technique, duplicated onto this seam rather than shared across it: that
     /// class deliberately bypasses <see cref="ILedger"/> entirely for its own reasons (its own doc
     /// comment), so this is the first caller that actually needs the "list refs" shape through the
     /// ordinary seam every fake and every other caller already uses.
     /// </summary>
-    Task<IReadOnlyList<string>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken);
+    Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken);
 }

@@ -17,6 +17,11 @@ internal sealed class FakeLedger : ILedger
 
     private readonly Dictionary<(string Repository, string RefName, string Path), StoredFile> _files = [];
 
+    /// <summary>A fake stand-in for a ref's own tip commit SHA, advanced on every write or delete
+    /// that lands on it — real enough for <see cref="ListRefsAsync"/>'s own tip-caching contract
+    /// without a real git repository underneath.</summary>
+    private readonly Dictionary<(string Repository, string RefName), string> _refTips = [];
+
     /// <summary>Every write this fake actually accepted, in order — what a test asserts against
     /// (content, committer, signing key) rather than re-deriving from <see cref="ReadAsync"/>.</summary>
     public List<LedgerWriteRequest> Writes { get; } = [];
@@ -60,6 +65,7 @@ internal sealed class FakeLedger : ILedger
         Writes.Add(request);
         string blobId = Guid.NewGuid().ToString("N");
         _files[key] = new StoredFile(request.Content, blobId);
+        _refTips[(request.RepositoryPath, request.RefName)] = blobId;
         return Task.FromResult(LedgerWriteOutcome.Written(blobId));
     }
 
@@ -78,7 +84,9 @@ internal sealed class FakeLedger : ILedger
 
         Deletes.Add(request);
         _files.Remove(key);
-        return Task.FromResult(LedgerWriteOutcome.Written(Guid.NewGuid().ToString("N")));
+        string tipSha = Guid.NewGuid().ToString("N");
+        _refTips[(request.RepositoryPath, request.RefName)] = tipSha;
+        return Task.FromResult(LedgerWriteOutcome.Written(tipSha));
     }
 
     public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
@@ -90,13 +98,14 @@ internal sealed class FakeLedger : ILedger
         return Task.FromResult(any);
     }
 
-    public Task<IReadOnlyList<string>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken)
+    public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken)
     {
         RequireRegistered(refPrefix);
-        IReadOnlyList<string> refs = [.. _files.Keys
+        IReadOnlyList<LedgerRef> refs = [.. _files.Keys
             .Where(key => key.Repository == repositoryPath && key.RefName.StartsWith(refPrefix, StringComparison.Ordinal))
             .Select(key => key.RefName)
-            .Distinct()];
+            .Distinct()
+            .Select(refName => new LedgerRef(refName, _refTips.GetValueOrDefault((repositoryPath, refName), string.Empty)))];
         return Task.FromResult(refs);
     }
 
