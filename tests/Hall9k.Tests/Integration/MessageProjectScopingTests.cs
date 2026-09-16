@@ -537,6 +537,124 @@ public sealed class MessageProjectScopingTests : IClassFixture<PostgresFixture>,
     }
 
     [Fact]
+    public async Task A_persisted_adoption_decision_wins_over_the_static_lowest_id_guess_for_a_new_send()
+    {
+        // Independent pre-PR review, cycle 2, verify pass (medium): before this fix,
+        // LegacyMessageAdoption.IsAdoptingProjectAsync always recomputed the static "lowest
+        // eligible project id" guess, so it could permanently disagree with whichever project
+        // MessageSweepEngine's own dynamic per-tick fallback actually used once the lowest-id
+        // project's own trust chain read started failing tick after tick — reintroducing the
+        // exact silent-overwrite defect the seq fix above was meant to close, for as long as
+        // that failure lasted. LegacyMessageAdoption.AssignAsync (called by the sweep only once
+        // its own adopting flush actually succeeds) is what closes it: once persisted, every
+        // later NextSeqAsync call must agree with the real answer, never the static guess, even
+        // though "lowest" would still win the static guess on its own.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid lowestIdProject = await RegisterEligibleProjectAsync("lowest", RepositoryX, cts.Token);
+        Guid higherIdProject = await RegisterEligibleProjectAsync("higher", RepositoryY, cts.Token);
+        lowestIdProject.CompareTo(higherIdProject).Should().BeLessThan(
+            0, "UUIDv7 ids mint in creation order, so registering \"lowest\" first must keep it the lower of the two");
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+
+        // Stands in for MessageSweepEngine having already pinned "higher" as the real adopter on
+        // an earlier tick, because "lowest"'s own trust chain read keeps failing.
+        await LegacyMessageAdoption.AssignAsync(session, higherIdProject, Now, cts.Token);
+
+        session.Events.StartStream<MessageAggregate>(
+            MessageStreamId.ForMessage(nodeA, Guid.Empty, 1),
+            new MessageQueued(
+                nodeA, 1, "owner-a-fingerprint", MessageAudience.Node(nodeB).Value, null, MessageKind.Note.Value,
+                "legacy pending", Now, Guid.Empty));
+        await session.SaveChangesAsync(cts.Token);
+
+        MessageEnvelopeV1 queuedForHigher = await MessageOutbox.QueueAsync(
+            session, nodeA, higherIdProject, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+            "post-upgrade for the real adopter", Now.AddSeconds(1), cts.Token);
+
+        queuedForHigher.Seq.Should().Be(
+            2,
+            "the persisted decision names \"higher\" as the real adopter, so its own next send must fold in the "
+            + "still-pending legacy seq 1 even though \"lowest\" would win the static guess alone");
+    }
+
+    [Fact]
+    public async Task A_persisted_adoption_decision_wins_over_the_static_lowest_id_guess_for_a_new_senders_first_read()
+    {
+        // The read-side counterpart to the test above (independent pre-PR review, cycle 2, verify
+        // pass, low): MessageInbox.ReadFromAsync's own pre-upgrade-cursor fallback calls the
+        // identical LegacyMessageAdoption.IsAdoptingProjectAsync, so it shared the identical
+        // static-vs-persisted mismatch.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        const string ownerB = "owner-b-fingerprint";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, RepositoryX, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        MessageInbox inbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        // "lowest" is wired to project Y's own repository, never seeded with node A's node file,
+        // so a read through it would refuse the sender outright — proof enough on its own that
+        // this test's read must go through "higher" (project X's own repository) to succeed at
+        // all, but the persisted decision is what makes that the CORRECT project too, not just
+        // the only one that happens to work here.
+        Guid lowestIdProject = await RegisterEligibleProjectAsync("lowest", RepositoryY, cts.Token);
+        Guid higherIdProject = await RegisterEligibleProjectAsync("higher", RepositoryX, cts.Token);
+        lowestIdProject.CompareTo(higherIdProject).Should().BeLessThan(
+            0, "UUIDv7 ids mint in creation order, so registering \"lowest\" first must keep it the lower of the two");
+
+        Guid senderProjectId = DomainId.New();
+        await using IDocumentSession sendSession = _postgres.Store.LightweightSession();
+        foreach (int i in Enumerable.Range(0, 3))
+        {
+            await MessageOutbox.QueueAsync(
+                sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, null, MessageKind.Note,
+                $"pre-upgrade {i}", Now.AddSeconds(i), cts.Token);
+        }
+
+        await outbox.FlushAsync(
+            sendSession, RepositoryX, nodeA, senderProjectId, ProjectKeyX, adoptUnassigned: false, committerA, signingKeyA,
+            Now, cts.Token);
+
+        // The receiver's own pre-M2 cursor for this sender, already advanced past the three
+        // envelopes above under the old, unscoped stream id.
+        sendSession.Events.StartStream<MessageInboxAggregate>(
+            MessageStreamId.ForInboxBeforeProjectScoping(nodeA), new InboxCursorAdvanced(nodeA, Guid.Empty, 3, Now));
+
+        // Stands in for MessageSweepEngine having already pinned "higher" as the real adopter on
+        // an earlier tick, because "lowest"'s own trust chain read keeps failing.
+        await LegacyMessageAdoption.AssignAsync(sendSession, higherIdProject, Now, cts.Token);
+        await sendSession.SaveChangesAsync(cts.Token);
+
+        await MessageOutbox.QueueAsync(
+            sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, null, MessageKind.Note,
+            "post-upgrade", Now.AddSeconds(10), cts.Token);
+        await outbox.FlushAsync(
+            sendSession, RepositoryX, nodeA, senderProjectId, ProjectKeyX, adoptUnassigned: false, committerA, signingKeyA,
+            Now.AddSeconds(10), cts.Token);
+
+        await using IDocumentSession readSession = _postgres.Store.LightweightSession();
+        MessageInboxSweepResult read = await inbox.ReadFromAsync(
+            readSession, RepositoryX, nodeA, higherIdProject, nodeB, ownerB, Now.AddSeconds(11), cancellationToken: cts.Token);
+
+        read.EnvelopesStored.Should().Be(
+            1,
+            "the persisted decision names \"higher\" as the real adopter, so its own first read of this sender "
+            + "inherits the pre-upgrade cursor and finds only the post-upgrade envelope past it, even though "
+            + "\"lowest\" would win the static guess alone");
+
+        MessageInboxDetails? newCursor = await readSession.LoadAsync<MessageInboxDetails>(
+            MessageStreamId.ForInbox(nodeA, higherIdProject), cts.Token);
+        newCursor!.HighestSeqReceived.Should().Be(4, "the new per-project cursor picks up exactly where the pre-upgrade one left off");
+    }
+
+    [Fact]
     public async Task SquashAsync_stamps_the_ledger_derived_project_key_onto_every_surviving_envelope()
     {
         // ToEnvelope (SquashAsync's own rebuild of each survivor from MessageDetails) carries no

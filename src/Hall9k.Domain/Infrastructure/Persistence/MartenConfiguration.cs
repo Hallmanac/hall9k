@@ -62,6 +62,7 @@ public static class MartenConfiguration
         opts.Projections.Add<RunListItemProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<MessageDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<MessageInboxDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<LegacyMessageAdoptionDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<UnverifiedLedgerWriteDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<InviteDetailsProjection>(ProjectionLifecycle.Inline);
     }

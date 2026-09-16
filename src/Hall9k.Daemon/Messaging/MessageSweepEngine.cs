@@ -88,6 +88,13 @@ public sealed class MessageSweepEngine(
         // adopted, a message carries a real ProjectId forever, so no later project this tick, or any
         // project on a later tick, ever re-adopts it), so racing every eligible project at the flush
         // step for the same still-Guid.Empty batch is safe by construction, never a double-adopt.
+        // FlushAsync below permanently records whichever project this tick's own election lands on
+        // (LegacyMessageAdoption.AssignAsync, called only after that project's own flush is known to
+        // have actually succeeded) — the first such recording ever wins and is never displaced by a
+        // later tick's own election, which is what lets MessageOutbox.NextSeqAsync and
+        // MessageInbox.ReadFromAsync agree with THIS sweep's own dynamic choice instead of silently
+        // recomputing the static lowest-id guess forever (independent pre-PR review, cycle 2, verify
+        // pass, medium and low).
         bool legacyAlreadyClaimedThisTick = false;
 
         bool anyJustPushed = false;
@@ -145,6 +152,21 @@ public sealed class MessageSweepEngine(
             MessageFlushResult flush = await outbox.FlushAsync(
                 session, project.RepositoryPath, nodeId, project.Id, projectKey, adoptUnassigned, identity.Committer,
                 identity.SigningKey, now, cancellationToken);
+
+            // Only reached once this exact flush call is known to have actually succeeded — a
+            // chain read that succeeded but a push that then failed must never pin this project as
+            // the permanent legacy adopter (LegacyMessageAdoption.AssignAsync's own doc). Recording
+            // this the moment adoption is actually live, rather than leaving every reader to
+            // recompute the static lowest-id guess forever, is what keeps MessageOutbox.NextSeqAsync
+            // and MessageInbox.ReadFromAsync agreeing with the sweep's own dynamic per-tick fallback
+            // once it has actually kicked in (independent pre-PR review, cycle 2, verify pass,
+            // medium and low).
+            if (adoptUnassigned)
+            {
+                await LegacyMessageAdoption.AssignAsync(session, project.Id, now, cancellationToken);
+                await session.SaveChangesAsync(cancellationToken);
+            }
+
             return flush.EnvelopesFlushed > 0;
         }
         catch (Exception exception)

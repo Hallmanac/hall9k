@@ -377,6 +377,19 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
                 MessageStreamId.ForMessage(nodeB.NodeId, Guid.Empty, 1), cts.Token);
             legacy!.SentAt.Should().NotBeNull("the healthy project's own flush must adopt it even though the lowest-id project's chain read keeps failing");
             legacy.ProjectId.Should().Be(healthyProjectId, "the healthy project is the one that actually adopted it");
+
+            // Independent pre-PR review, cycle 2, verify pass (medium, low): before this fix,
+            // nothing durably recorded which project actually claimed the adoption, so
+            // LegacyMessageAdoption.IsAdoptingProjectAsync kept recomputing the static "lowest
+            // eligible project id" guess forever, permanently disagreeing with this sweep's own
+            // real, dynamic choice for as long as the lowest-id project's chain read kept
+            // failing. This is the persisted fact that closes that gap.
+            LegacyMessageAdoptionDetails? adoption = await verifySession.LoadAsync<LegacyMessageAdoptionDetails>(
+                MessageStreamId.ForLegacyAdoption(), cts.Token);
+            adoption.Should().NotBeNull("the sweep's own successful adopting flush must permanently record who the real adopter is");
+            adoption!.ProjectId.Should().Be(
+                healthyProjectId,
+                "the persisted decision must name the project that actually adopted, never the lowest-id project the static guess alone would have named");
         }
 
         TransportReadResult fromHealthy = await transport.ReadSinceAsync(HealthyRepositoryPath, nodeB.NodeId, sinceSeq: 0, cts.Token);
