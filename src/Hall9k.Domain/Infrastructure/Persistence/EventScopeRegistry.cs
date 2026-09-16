@@ -105,7 +105,12 @@ public static class EventScopeRegistry
         [typeof(CopilotReviewUnavailable)] = EventScope.ProjectScoped,
         [typeof(ExternalInteractionLogged)] = EventScope.ProjectScoped,
         [typeof(ExternalReviewObserved)] = EventScope.ProjectScoped,
+        // A gate's own process identity, the identical liveness-marker shape RunProcessStarted
+        // and GateRetried already stay node-scoped for: no other node has any use for which pid
+        // this node's own build or test process is running under.
+        [typeof(GateEnded)] = EventScope.NodeScoped,
         [typeof(GateRetried)] = EventScope.NodeScoped,
+        [typeof(GateStarted)] = EventScope.NodeScoped,
         [typeof(HumanThreadReplyParked)] = EventScope.ProjectScoped,
         [typeof(InteractiveSessionEnded)] = EventScope.NodeScoped,
         [typeof(InteractiveSessionStarted)] = EventScope.NodeScoped,
