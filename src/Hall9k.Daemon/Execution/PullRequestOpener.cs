@@ -564,8 +564,16 @@ public sealed class PullRequestOpener(
         // same origin remote, so pointing this call at the project's repository instead changes
         // nothing about which repository or branches gh acts on.
         ProcessResult result = await processRunner("gh", arguments, repositoryPath, cancellationToken);
+        // Joined with a newline, not concatenated raw: gh's own stdout already ends with one after
+        // the URL, but relying on that would still glue a stderr warning onto the URL line whenever
+        // stdout doesn't end in one. gh writes an ungated "Warning: N uncommitted change(s)" line to
+        // stderr on a successful create whenever this directory's own git status is non-empty, and
+        // this call runs from the project's RepositoryPath, an ordinary working tree for a project
+        // registered against a repository elsewhere rather than a home-materialised bare clone — so
+        // a real uncommitted or untracked file there previously corrupted the parsed URL (independent
+        // pre-PR review, cycle 1, adversarial lens).
         string output = result.ExitCode == 0
-            ? result.StandardOutput.Trim() + result.StandardError.Trim()
+            ? result.StandardOutput + "\n" + result.StandardError
             : throw new InvalidOperationException(
                 $"gh {string.Join(' ', arguments)} exited {result.ExitCode}: {result.StandardError.Trim()}");
 
