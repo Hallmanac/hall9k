@@ -1247,6 +1247,131 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// Isolates <see cref="RunDetails.FailedDuringPullRequestOpen"/> itself, unlike the gate-failure
+    /// test above: every other condition <see cref="RunLauncher.TryResumeAtPullRequestOpenAsync"/>
+    /// checks is satisfied here exactly as the happy-path resume test satisfies it — a real worktree,
+    /// a recorded push whose tip still matches on both origin and the local ref, and the retry's
+    /// default filler reason rather than a real operator one — so the flag being false on the failed
+    /// run is the only thing standing between this retry and the shortcut. A follow-up full build
+    /// that fails a gate without ever moving the pushed tip, then a bare `h9k task retry`, reaches
+    /// exactly this shape (independent pre-PR review, cycle 1, conformance lens): the gate-failure
+    /// test above cannot catch a regression here, because it never pushes a branch at all and so
+    /// already falls back on <see cref="TaskDetails.LastPushedBranch"/> alone.
+    /// </summary>
+    [Fact]
+    public async Task A_retry_after_a_gate_failure_still_dispatches_a_session_even_with_a_matching_pushed_tip()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        string root = Path.Combine(Path.GetTempPath(), $"hall9k-gate-failure-matching-tip-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        // Isolated from the real platform home, the same reason every resume-at-open test is
+        // (HomeEnvironmentIsolationTests's own guard is what caught this).
+        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        try
+        {
+            string originPath = Path.Combine(root, "github.com-origin.git");
+            string repoPath = Path.Combine(root, "repo");
+            await TestGit.RunAsync(root, ["init", "--bare", "-q", "-b", "main", originPath], cts.Token);
+            await TestGit.RunAsync(root, ["clone", "-q", originPath, repoPath], cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(repoPath, "README.md"), "# gate failure, matching tip\n", cts.Token);
+            await TestGit.RunAsync(repoPath, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(repoPath, TestGit.CommitAs("commit", "-qm", "init"), cts.Token);
+            await TestGit.RunAsync(repoPath, ["push", "-q", "origin", "main"], cts.Token);
+
+            Guid taskId = DomainId.New();
+            Guid projectId = DomainId.New();
+            Guid failedRunId = DomainId.New();
+            Guid retriedRunId = DomainId.New();
+
+            GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+            Worktree worktree = await worktrees.CreateAsync(
+                new WorktreeRequest(repoPath, "main", taskId, failedRunId, "Gate failure, matching tip",
+                    BranchNameTemplate.Default, ExternalReference: null),
+                cts.Token);
+            await File.WriteAllTextAsync(Path.Combine(worktree.Path, "WORK.md"), "agent output\n", cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["add", "-A"], cts.Token);
+            await TestGit.RunAsync(worktree.Path, TestGit.CommitAs("commit", "-qm", "Add WORK.md"), cts.Token);
+            await TestGit.RunAsync(worktree.Path, ["push", "-q", "origin", worktree.Branch], cts.Token);
+            string pushedTip = (await TestGit.CaptureAsync(worktree.Path, ["rev-parse", "HEAD"], cts.Token)).Trim();
+
+            Directory.CreateDirectory(RunPaths.GlobalDirectory(failedRunId));
+
+            TaskAggregate aggregate;
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                var registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"gate-failure-matching-tip-{taskId:N}", repoPath, null,
+                    "main", Now);
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                object[] lifecycle;
+                (aggregate, lifecycle) = TaskSeed.Start(
+                    TaskDecider.Add(
+                        taskId, projectId, "Gate failure, matching tip",
+                        ["a gate failure that never touched the pushed tip still dispatches a full build on retry"],
+                        TaskType.Chore, null, null, null, Now.AddHours(-1), node.OwnerId),
+                    node.OwnerId, Now.AddHours(-1));
+                var firstClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, failedRunId, Now.AddMinutes(-30));
+                aggregate.Apply(firstClaim);
+                TaskBranchPushed pushed = new(taskId, worktree.Branch, pushedTip, Now.AddMinutes(-20));
+                aggregate.Apply(pushed);
+                // A gate failure, not a pull-request-open one: FailedDuringPullRequestOpen defaults
+                // to false below. Everything else — the pushed tip, the worktree, the retry reason —
+                // is identical to the happy-path resume test, so this flag alone must be what falls
+                // this retry back to the ordinary dispatch.
+                var failed = TaskDecider.Fail(aggregate, failedRunId, "Verification failed: build broke", Now.AddMinutes(-10));
+                aggregate.Apply(failed);
+                var retried = TaskDecider.Retry(
+                    aggregate, failedRunId, worktree.Branch, TaskDecider.DefaultRetryReason, Now.AddMinutes(-5), node.OwnerId);
+                aggregate.Apply(retried);
+                var retryClaim = TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, retriedRunId, Now);
+                aggregate.Apply(retryClaim);
+
+                session.Events.StartStream<TaskAggregate>(
+                    taskId, [.. lifecycle, firstClaim, pushed, failed, retried, retryClaim]);
+                session.Store(new TaskLease
+                {
+                    Id = taskId, NodeId = node.NodeId, LeaseGeneration = aggregate.LeaseGeneration, HeartbeatAt = Now,
+                });
+
+                session.Events.StartStream<RunAggregate>(failedRunId,
+                    new RunDispatched(failedRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                        worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now.AddMinutes(-30)),
+                    new RunFailed(failedRunId, "Verification failed: build broke", Now.AddMinutes(-10)));
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            CapturingExecutor executor = new();
+            NotMergedInspector inspector = new();
+            RunLauncher launcher = new(store, worktrees, executor,
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), ExternalProcess.Runner,
+                Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+            await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
+
+            executor.Request.Should().NotBeNull(
+                "the failed run's own FailedDuringPullRequestOpen is false, so the shortcut must not trigger "
+                + "purely because the pushed tip happens to still match");
+
+            await using IQuerySession query = store.QuerySession();
+            TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            task.State.Value.Should().Be("Claimed", "the ordinary dispatch proceeded");
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+            if (Directory.Exists(root))
+            {
+                Directory.Delete(root, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
     /// The sibling of the test above: an ordinary follow-up dispatch that was never retried
     /// carries no operator-guidance section at all — the section only ever appears with a
     /// recorded reason behind it, never as boilerplate every follow-up prompt always shows.
