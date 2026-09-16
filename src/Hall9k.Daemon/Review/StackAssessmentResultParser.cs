@@ -1,3 +1,5 @@
+using System.Text.RegularExpressions;
+
 namespace Hall9k.Daemon.Review;
 
 /// <summary>
@@ -9,12 +11,28 @@ namespace Hall9k.Daemon.Review;
 /// agent's answer could not be read", and treating the two the same is what makes this parser
 /// honest: it never invents a boundary or an onto commit an assessment did not actually name.
 /// </summary>
-internal static class StackAssessmentResultParser
+internal static partial class StackAssessmentResultParser
 {
     internal const string VerdictMarker = "STACK ASSESSMENT VERDICT:";
     internal const string BoundaryMarker = "BOUNDARY:";
     internal const string OntoMarker = "ONTO:";
     internal const string EvidenceMarker = "EVIDENCE:";
+
+    /// <summary>
+    /// What <see cref="BoundaryMarker"/> and <see cref="OntoMarker"/> are allowed to hold for an
+    /// <c>aligned</c> or <c>replay</c> verdict: a git commit SHA, 7 to 40 hex characters, and
+    /// nothing else — never the literal <c>none</c> the template shows only for
+    /// <c>undecidable</c>, never a branch name, and never a value that could reach a git
+    /// subcommand as an option rather than a revision (independent pre-PR review, cycle 1,
+    /// adversarial lens: the shape this guards against is `git rebase --onto &lt;a value starting
+    /// with `-`&gt; ...`). This is a format check only — it says nothing about whether the commit
+    /// actually exists in this repository, which is <see cref="ReviewEngine.RecordStackAssessmentCompletedAsync"/>'s
+    /// own job.
+    /// </summary>
+    [GeneratedRegex("^[0-9a-fA-F]{7,40}$")]
+    private static partial Regex CommitShaPattern();
+
+    private static bool LooksLikeCommitSha(string value) => CommitShaPattern().IsMatch(value.Trim());
 
     public static StackAssessmentVerdict Parse(string? summary)
     {
@@ -37,14 +55,18 @@ internal static class StackAssessmentResultParser
 
         return verdictValue.Trim().ToLowerInvariant() switch
         {
-            "aligned" => boundary.IsNotBlank() && onto.IsNotBlank() && evidence.IsNotBlank()
+            "aligned" => boundary.IsNotBlank() && onto.IsNotBlank() && LooksLikeCommitSha(boundary)
+                    && LooksLikeCommitSha(onto) && evidence.IsNotBlank()
                 ? StackAssessmentVerdict.Aligned(boundary.Trim(), onto.Trim(), evidence)
                 : StackAssessmentVerdict.Undecidable(Malformed(
-                    "declared aligned without a well-formed BOUNDARY:, ONTO:, and EVIDENCE: block", evidence)),
-            "replay" => boundary.IsNotBlank() && onto.IsNotBlank() && evidence.IsNotBlank()
+                    "declared aligned without a well-formed BOUNDARY:, ONTO:, and EVIDENCE: block — BOUNDARY: and "
+                    + "ONTO: must each be a commit SHA, never \"none\" or a branch name", evidence)),
+            "replay" => boundary.IsNotBlank() && onto.IsNotBlank() && LooksLikeCommitSha(boundary)
+                    && LooksLikeCommitSha(onto) && evidence.IsNotBlank()
                 ? StackAssessmentVerdict.Replay(boundary.Trim(), onto.Trim(), evidence)
                 : StackAssessmentVerdict.Undecidable(Malformed(
-                    "declared replay without a well-formed BOUNDARY:, ONTO:, and EVIDENCE: block", evidence)),
+                    "declared replay without a well-formed BOUNDARY:, ONTO:, and EVIDENCE: block — BOUNDARY: and "
+                    + "ONTO: must each be a commit SHA, never \"none\" or a branch name", evidence)),
             "undecidable" => StackAssessmentVerdict.Undecidable(
                 evidence.IsNotBlank() ? evidence : Malformed("declared undecidable with no EVIDENCE: block", evidence)),
             _ => StackAssessmentVerdict.Undecidable(
