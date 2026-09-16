@@ -3586,6 +3586,54 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await RetireWatchAsync(store, runId, cts.Token);
     }
 
+    /// <summary>
+    /// The adversarial half of the refusal path's own regression (independent pre-PR review,
+    /// cycle 1): the quota-refused review sits in <c>latestReviews</c> under Copilot's own login,
+    /// so a follow-up run's countersign (<see cref="CloseoutEngine"/>'s own
+    /// <c>RerequestReviewAfterFixesAsync</c>, driven by <c>ReviewersBehindTheHead</c>) must not
+    /// read that stale commit as Copilot still owing an answer — that would re-request the exact
+    /// review this ruling exists to stop.
+    /// </summary>
+    [Fact]
+    public async Task A_quota_refused_Copilot_review_is_never_countersigned_by_a_follow_up_s_own_review_rerequest()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, asFollowUp: true);
+        await EnableReviewRerequestAsync(store, node.OwnerId, onTheOwner: true, cts.Token);
+
+        ErroredReview quotaRefused = new(
+            "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", IsQuotaRefusal: true,
+            Body: "Copilot was unable to review this pull request because the user who requested the "
+                + "review has reached their quota limit.");
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with
+            {
+                ErroredReview = quotaRefused,
+                HeadCommit = "cafe123",
+                Reviewers = [new PullRequestReviewer(
+                    "copilot-pull-request-reviewer", ReviewerKind.Bot, LastReviewedCommit: "stale-head")],
+            },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().BeEmpty(
+            "the quota refusal was just accepted, not re-answered, so the countersign has nothing "
+            + "left to ask Copilot for");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<RunDetails>(runId, cts.Token))!.ReviewRerequestsAfterFixes.Should().Be(
+            0, "no countersign pass was spent chasing a reviewer the refusal already answered for");
+
+        await RetireWatchAsync(store, runId, cts.Token);
+        await ClearOwnerReviewRerequestAsync(store, node.OwnerId, cts.Token);
+    }
+
     [Fact]
     public async Task A_spent_automatic_budget_parks_the_closeout_instead_of_looping()
     {
