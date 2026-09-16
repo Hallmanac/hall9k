@@ -1158,7 +1158,19 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
-        if (snapshot.ErroredReview is { } erroredReview)
+        if (snapshot.ErroredReview is { IsQuotaRefusal: true } quotaRefusedReview)
+        {
+            // Brian's ruling, 2026-09-16 morning: once Copilot says the quota is out, accept it
+            // and keep going — record the refusal once and let the remaining gates decide,
+            // rather than spend the automatic budget re-requesting a review that will keep
+            // refusing for the identical reason (origin: five PRs parked overnight 02:16-08:55,
+            // each after six re-requests that could never have succeeded). Unlike an ordinary
+            // errored review, this falls through rather than returning: the countersign and the
+            // pre-approved merge gate below decide the closeout exactly as they would with a
+            // landed review.
+            await RecordCopilotReviewUnavailableAsync(session, run, quotaRefusedReview, now, cancellationToken);
+        }
+        else if (snapshot.ErroredReview is { } erroredReview)
         {
             await RerequestReviewOrParkAsync(
                 session, task, run, project.RepositoryPath, task.PullRequestUrl,
@@ -1845,6 +1857,40 @@ public sealed class CloseoutEngine(
             "Run {RunId}: Copilot review errored ({Url}); re-requested review from {Reviewer} (action {Action}/{Max})",
             run.Id, erroredReview.Url, erroredReview.Reviewer,
             automaticActionsSpent + 1, _options.MaxAutomaticCloseoutRuns);
+    }
+
+    /// <summary>
+    /// Copilot's own quota refusal is accepted, not re-requested (Brian's ruling, 2026-09-16
+    /// morning): once the reviewer's quota is spent, a re-request only spends the automatic
+    /// budget on a call that cannot succeed — the quota does not refill because this platform
+    /// asked again. Recorded once per errored review url, the same dedup key
+    /// <see cref="RerequestReviewOrParkAsync"/> uses for an ordinary errored review, and draws
+    /// nothing from the automatic budget: nothing here calls the provider at all.
+    /// </summary>
+    private async Task RecordCopilotReviewUnavailableAsync(
+        IDocumentSession session,
+        RunDetails run,
+        ErroredReview erroredReview,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        // Already recorded for this exact errored review; nothing new to say until either a
+        // fresh error (a new review url) or a real review lands.
+        if (erroredReview.Url == run.CopilotReviewUnavailableUrl)
+        {
+            return;
+        }
+
+        string reason = erroredReview.Body.IsNotBlank()
+            ? erroredReview.Body
+            : "Copilot's review errored with a quota-limit refusal.";
+        session.Events.Append(run.Id, new CopilotReviewUnavailable(
+            run.Id, erroredReview.Reviewer, erroredReview.Url, reason, now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        logger.LogInformation(
+            "Run {RunId}: Copilot review refused for quota ({Url}); accepted, proceeding on the remaining gates",
+            run.Id, erroredReview.Url);
     }
 
     /// <summary>

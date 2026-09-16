@@ -102,6 +102,7 @@ public static class EventScopeRegistry
         [typeof(CloseoutParked)] = EventScope.ProjectScoped,
         [typeof(ContextSynthesisCompleted)] = EventScope.ProjectScoped,
         [typeof(ContextSynthesisDispatched)] = EventScope.ProjectScoped,
+        [typeof(CopilotReviewUnavailable)] = EventScope.ProjectScoped,
         [typeof(ExternalInteractionLogged)] = EventScope.ProjectScoped,
         [typeof(ExternalReviewObserved)] = EventScope.ProjectScoped,
         [typeof(GateRetried)] = EventScope.NodeScoped,

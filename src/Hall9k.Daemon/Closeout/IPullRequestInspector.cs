@@ -111,7 +111,16 @@ public sealed record PullRequestReviewer(
 /// Url identifies the exact errored review (the monitor's dedup key, and what a park
 /// reason names for the human).
 /// </summary>
-public sealed record ErroredReview(string Reviewer, string Url);
+/// <param name="IsQuotaRefusal">
+/// Whether the error body names a quota refusal specifically — "the user who requested the
+/// review has reached their quota limit" — rather than a generic or transient failure. Brian's
+/// ruling, 2026-09-16 morning: a quota refusal is accepted rather than re-requested, so the
+/// closeout engine branches on this to skip <c>RerequestReviewOrParkAsync</c> entirely and
+/// record <see cref="Hall9k.Domain.Features.Run.Events.CopilotReviewUnavailable"/> instead.
+/// Every other errored review keeps today's behavior unchanged.
+/// </param>
+/// <param name="Body">The error review's own body, verbatim — what the recorded reason names, rather than a canned sentence guessed at from the marker alone.</param>
+public sealed record ErroredReview(string Reviewer, string Url, bool IsQuotaRefusal = false, string? Body = null);
 
 /// <summary>
 /// One unresolved review thread a PERSON opened, read whole enough to decide whether anybody is
