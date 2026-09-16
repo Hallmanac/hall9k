@@ -1768,12 +1768,30 @@ public sealed class CloseoutEngine(
     /// may be up to date costs a pass, while skipping one who is not loses the countersign the
     /// option was turned on for.
     /// </para>
+    /// <para>
+    /// A reviewer whose CURRENT errored review is a quota refusal is dropped even though its
+    /// commit predates the head, the same reading <see cref="InspectAndActAsync"/> already gives
+    /// it: that refusal was just accepted, not answered, and asking again is exactly the
+    /// re-request the quota branch exists to skip (independent pre-PR review, cycle 1,
+    /// adversarial finding). Every other errored review still leaves its reviewer in the list —
+    /// <see cref="InspectAndActAsync"/> returns before reaching this call for any of those.
+    /// </para>
     /// </summary>
-    private static IReadOnlyList<PullRequestReviewer> ReviewersBehindTheHead(PullRequestSnapshot snapshot) =>
-        snapshot.HeadCommit.IsBlank()
+    private static IReadOnlyList<PullRequestReviewer> ReviewersBehindTheHead(PullRequestSnapshot snapshot)
+    {
+        IEnumerable<PullRequestReviewer> behind = snapshot.HeadCommit.IsBlank()
             ? snapshot.Reviewers
-            : [.. snapshot.Reviewers.Where(reviewer =>
-                !string.Equals(reviewer.LastReviewedCommit, snapshot.HeadCommit, StringComparison.OrdinalIgnoreCase))];
+            : snapshot.Reviewers.Where(reviewer =>
+                !string.Equals(reviewer.LastReviewedCommit, snapshot.HeadCommit, StringComparison.OrdinalIgnoreCase));
+
+        if (snapshot.ErroredReview is { IsQuotaRefusal: true } quotaRefusal)
+        {
+            behind = behind.Where(reviewer =>
+                !string.Equals(reviewer.Login, quotaRefusal.Reviewer, StringComparison.OrdinalIgnoreCase));
+        }
+
+        return [.. behind];
+    }
 
     /// <summary>
     /// Countersign passes spent on this task, summed over every run that carried its pull
