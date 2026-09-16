@@ -217,6 +217,34 @@ public sealed class TemplatePublisherTests : IDisposable
         stillPresent.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// The stack-assessment prompt template (task: a stacked checkpoint that would park for a
+    /// human on a git shape first dispatches a read-only assessment run) is a file in this
+    /// checkout's real <c>.claude/templates/agent-prompt-builder</c> package, not a synthetic
+    /// fixture — this is the one test in the file that publishes the actual source tree rather
+    /// than a package built for the test, so a file <see cref="TemplatePublisher"/>'s own
+    /// auto-discovery would silently miss (a typo'd directory name, a file saved outside
+    /// <c>.claude/templates</c> entirely) fails here rather than only at the next `h9k install`.
+    /// </summary>
+    [Fact]
+    public void The_stack_assessment_template_is_published_from_this_checkouts_own_source()
+    {
+        string repositoryTemplates = Path.Combine(PublishTestSupport.FindRepositoryRoot(), ".claude", "templates");
+
+        SkillPublication publication = TemplatePublisher.PublishCanonical(repositoryTemplates);
+
+        publication.Published.Should().Contain("agent-prompt-builder");
+        string published = Path.Combine(
+            TemplateLibraryPaths.CanonicalDirectory, "agent-prompt-builder", "stack-assessment.md");
+        File.Exists(published).Should().BeTrue();
+        string content = File.ReadAllText(published);
+        content.Should().Contain("{{VerdictMarker}}");
+        content.Should().Contain("{{BoundaryMarker}}");
+        content.Should().Contain("{{OntoMarker}}");
+        content.Should().Contain("{{EvidenceMarker}}");
+        content.Should().Contain("read-only");
+    }
+
     private void WriteSourcePackage(string packageName, string fileName, string content)
     {
         string package = Path.Combine(_source, packageName);

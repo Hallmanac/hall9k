@@ -19,6 +19,14 @@ A previous attempt at this rebase hit a conflict it could not honestly resolve
 and parked for a human. Apply their decision below instead of re-litigating it;
 only raise a new dispute if you hit a DIFFERENT conflict that is genuinely
 undecidable.
+===assessment-guidance-heading===
+## A read-only assessment's own verdict on this conflict
+===assessment-guidance-intro===
+Before you were dispatched, a read-only assessment run — not a human — inspected
+this same conflict and reported the verdict below, including a mechanical replay
+attempt at the boundary and onto commit it named, which already conflicted once.
+Read it as a lead, not a settled ruling: it never touched the worktree itself, so
+verify it against what you actually find rather than assuming it is correct.
 ===original-objective-heading===
 ## Original objective (context, already implemented)
 ===project-links-heading===

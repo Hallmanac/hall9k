@@ -141,6 +141,23 @@ public static class AgentPromptBuilder
     public const string ResolvedMarker = "RESOLUTION: fixed";
 
     /// <summary>
+    /// The stack assessment run's own verdict line, the first of its fixed trailer
+    /// (<see cref="Hall9k.Daemon.Review.StackAssessmentResultParser"/> owns the matching parse-side
+    /// constant separately, the same DisputeMarker/RESOLUTION: precedent above of a shared literal
+    /// rather than a cross-reference between the prompt and parser halves).
+    /// </summary>
+    public const string StackAssessmentVerdictMarker = "STACK ASSESSMENT VERDICT:";
+
+    /// <summary>The stack assessment trailer's boundary-commit line.</summary>
+    public const string StackAssessmentBoundaryMarker = "BOUNDARY:";
+
+    /// <summary>The stack assessment trailer's onto-commit line.</summary>
+    public const string StackAssessmentOntoMarker = "ONTO:";
+
+    /// <summary>The stack assessment trailer's evidence-block marker.</summary>
+    public const string StackAssessmentEvidenceMarker = "EVIDENCE:";
+
+    /// <summary>
     /// The follow-up variant (PR closeout, Decisions Log #20): the agent resumes the task's
     /// existing PR branch to resolve review feedback via the repo-resident
     /// resolve-review-threads skill. How the fixes land is the commit style's call
@@ -933,6 +950,71 @@ public static class AgentPromptBuilder
     }
 
     /// <summary>
+    /// The one read-only assessment session a stacked checkpoint or the pre-final-pass rebase
+    /// dispatches before parking for a human on a git shape (task: a stacked checkpoint that would
+    /// park for a human on a git shape first dispatches a read-only assessment run). Every
+    /// placeholder is a fact the daemon already observed at the moment it decided to park — never
+    /// re-derived here — so the session's own job is to verify or overturn them against the real
+    /// worktree and GitHub, not to trust them at face value.
+    /// </summary>
+    public static string BuildStackAssessment(
+        Guid taskId, string childBranch, string parentBranch, string recordedForkPoint,
+        string attemptedOntoCommit, int? pullRequestNumber, string pullRequestBase,
+        string parkKind, string parkText, TimeSpan? commandTimeout = null)
+    {
+        const string file = $"{TemplateDirectory}/stack-assessment.md";
+        StringBuilder prompt = new();
+        prompt.AppendLine(Fragment(file, "heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "read-only-declaration");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "context-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "context",
+            ("ChildBranch", childBranch),
+            ("ParentBranch", parentBranch.IsNotBlank() ? parentBranch : "(none — this is the pre-final-pass rebase, not a stacked checkpoint)"),
+            ("RecordedForkPoint", recordedForkPoint.IsNotBlank() ? recordedForkPoint : "(none recorded)"),
+            ("AttemptedOntoCommit", attemptedOntoCommit.IsNotBlank() ? attemptedOntoCommit : "(none recorded)"),
+            ("PullRequestNumber", pullRequestNumber is { } number ? $"#{number}" : "(not yet opened)"),
+            ("PullRequestBase", pullRequestBase.IsNotBlank() ? pullRequestBase : "(unknown — no pull request yet)"),
+            ("ParkKind", parkKind),
+            ("ParkText", parkText));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "task-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "task");
+        AppendFragment(prompt, file, "shape-aligned");
+        AppendFragment(prompt, file, "shape-replay");
+        AppendFragment(prompt, file, "shape-undecidable");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "verification-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "verification",
+            ("ChildBranch", childBranch),
+            ("RecordedForkPoint", recordedForkPoint.IsNotBlank() ? recordedForkPoint : "HEAD"),
+            ("PullRequestNumber", pullRequestNumber is { } prNumber ? prNumber.ToString(CultureInfo.InvariantCulture) : string.Empty));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "trailer-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "trailer-contract",
+            ("VerdictMarker", StackAssessmentVerdictMarker),
+            ("BoundaryMarker", StackAssessmentBoundaryMarker),
+            ("OntoMarker", StackAssessmentOntoMarker),
+            ("EvidenceMarker", StackAssessmentEvidenceMarker));
+        prompt.AppendLine();
+        AppendSharedRepositoryHistorySafetyRule(prompt);
+        AppendForegroundGatesRule(
+            prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout, sessionRunsGates: false);
+        AppendExternalInteractionLoggingRule(prompt, taskId);
+        AppendFragment(prompt, file, "closing");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
     /// A narrow, mid-run recovery session (task: a run rebases its branch onto the current base
     /// branch): dispatched inside the build run's own lifecycle — no task reopen — after a plain
     /// <c>git rebase</c> onto the base branch conflicted immediately before the mandatory final
@@ -965,7 +1047,8 @@ public static class AgentPromptBuilder
     public static string BuildPreFinalPassRebase(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
         string? pullRequestUrl, string? humanResolution = null, bool rebaseStillInProgress = false,
-        string? baseBranch = null, TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null)
+        string? baseBranch = null, TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null,
+        string? assessmentGuidance = null)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         const string file = $"{TemplateDirectory}/pre-final-pass-rebase.md";
@@ -992,6 +1075,16 @@ public static class AgentPromptBuilder
             AppendFragment(prompt, file, "human-decision-intro");
             prompt.AppendLine();
             prompt.AppendLine(humanResolution);
+            prompt.AppendLine();
+        }
+
+        if (assessmentGuidance.IsNotBlank())
+        {
+            prompt.AppendLine(Fragment(file, "assessment-guidance-heading"));
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "assessment-guidance-intro");
+            prompt.AppendLine();
+            prompt.AppendLine(assessmentGuidance);
             prompt.AppendLine();
         }
 
