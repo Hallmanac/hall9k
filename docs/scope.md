@@ -47,14 +47,15 @@ gate and pass read the rebased tree and the pull request that opens afterward is
 arrival. A no-op rebase and a clean rebase both still run one mechanical step first: reassigning
 the log's own tail placeholder (PLAN.md §16, Decisions Log #162) its real number
 and rewriting every citation of it, committed on its own before the mandatory gate reruns. Beyond
-that step, neither costs anything extra; a conflict first dispatches this run's own one read-only
-stack assessment (PLAN.md §16, Decisions Log #205), a structured verdict —
-aligned, replay from a boundary onto a commit, or undecidable — that the run acts on rather than a
-human ever seeing: an aligned or replay verdict is retried mechanically, and only a genuinely
-undecidable one, or a retried replay that still conflicts, falls through to the narrow recovery
-session dispatched inside the same run (never a task reopen); only a conflict that session cannot
-honestly resolve, or the exhaustion of its own round cap, parks for a human (PLAN.md Decisions Log
-#138). A rebase that applies cleanly but
+that step, neither costs anything extra; a conflict dispatches straight to the narrow recovery
+session inside the same run (never a task reopen). This run's own one read-only stack assessment
+(PLAN.md §16, Decisions Log #205) gets its say only at that session's own two park points: a
+dispute it cannot honestly resolve, or the exhaustion of its own round cap, never on the first
+conflict the session is about to attempt. It reaches a structured verdict, aligned, replay from a
+boundary onto a commit, or undecidable, that the run acts on rather than a human ever seeing. An
+aligned verdict, or a replay whose own one mechanical retry lands, overrides the session's outcome
+as resolved; only a genuinely undecidable verdict, or a replay whose retry also fails, still parks
+for a human (PLAN.md Decisions Log #138). A rebase that applies cleanly but
 leaves that mandatory gate itself failing gets the same shape of second chance rather than failing
 the run outright: one narrow repair session dispatched inside the same run, carrying the gate's own
 output, bounded by its own round cap distinct from the rebase-recovery session's — and a repair
@@ -279,20 +280,24 @@ past its cap. A parent that merged into something other than the base branch (a 
 merged by hand while still aimed at its own parent) parks the child untouched rather than retarget
 it, which is the pairwise edges declining to guess at the multi-level ordering below — a child still
 mid-run first dispatches this run's one read-only stack assessment (PLAN.md §16, Decisions Log
-#205) and parks only on an undecidable verdict, while a child whose pull request is already open —
-the closeout watcher's own sweep, a separate monitor this assessment does not reach — parks
-directly.
+#205); only an undecidable verdict parks it outright, since a replay verdict whose own mechanical
+retry also conflicts earns a guided fix session instead of a park (PLAN.md §16, Decisions Log
+#PLACEHOLDER-4785f496). A child whose pull request is already open (the closeout watcher's own
+sweep, a separate monitor this assessment does not reach) parks directly.
 
 The parent's post-delivery churn is absorbed at **two checkpoints** rather than chased push by push
 (#146): a child still in flight catches up to its parent's current head immediately before its own
 first review cycle and immediately before the mandatory final full pass, and nowhere in between.
 Each catch-up is mechanical — the same replay, plus the gates, no review cycle — spending the same
 rebase budget and parking past the same cap. A conflict at a checkpoint first dispatches that same
-one read-only stack assessment; the branch is restored and only an undecidable verdict parks for a
-human (PLAN.md §16, Decisions Log #205). A parent that has died terminally (abandoned, `Failed`, or
-Done having never delivered a pull request that can merge) does the same for a child still
-mid-run — assessed first, parking only on an undecidable verdict — while a child whose pull request
-is already open parks directly, under the closeout watcher's own separate sweep.
+one read-only stack assessment; the branch is restored, and only an undecidable verdict parks for a
+human outright. A replay verdict whose own mechanical retry also conflicts earns a guided fix
+session instead, one whose own completion still routes the run through the review cycles a
+checkpoint before cycle one exists to precede (PLAN.md §16, Decisions Log #205,
+#PLACEHOLDER-4785f496). A parent that has died terminally (abandoned, `Failed`, or Done having
+never delivered a pull request that can merge) does the same for a child still mid-run, assessed
+first on the identical terms, while a child whose pull request is already open parks directly,
+under the closeout watcher's own separate sweep.
 
 The parent can also be a pull request **another install owns** —
 `h9k task add --stacked-on-pull-request <number>` (#153), the form a reviewer on her own node needs,
