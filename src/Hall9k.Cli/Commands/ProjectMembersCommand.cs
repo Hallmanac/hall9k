@@ -76,10 +76,10 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
                 : [];
             string nodesCell = nodes.Count == 0
                 ? "[dim]none vouched yet[/]"
-                : string.Join("\n", nodes.Select(node => node.NodeId));
+                : string.Join("\n", nodes.Select(node => node.NodeId.EscapeMarkup()));
 
             table.AddRow(
-                member.RootFingerprint,
+                member.RootFingerprint.EscapeMarkup(),
                 login,
                 member.Role == MembershipRole.Owner ? "owner" : "member",
                 nodesCell,
