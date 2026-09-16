@@ -1077,18 +1077,23 @@ recomputes, on every read of every ledger and messages ref, exactly which signer
 chain currently trusts, each write checked against the signing chain's own live state at read time,
 never a snapshot pinned to that write's own claimed committer date. A stranger's own self-consistent
 root and node file are ignored everywhere they were never made a member, and recorded rather than
-silently dropped. **Still not built**: no node discovery, no gossip, no event replication (M2, the
-one thing a message is deliberately never trusted with), and no invite flow yet: a *second* human's
-node joining an owner's root today still needs a hand-run `h9k node vouch` from an already-enrolled
-node (T2, the invite mint-and-sweep round trip, is the next piece in the ruled chain). **Two known,
-accepted limits.** A force-push over a ledger ref still rewrites trust history along with everything
-else in it; nothing here detects or prevents that rewrite before the later relay replaces git as the
-carrier: every ledger and chain fetch is a forced update with no ancestry check, so a rewritten trust
-ref is accepted silently. Separately, because a membership write is judged against the owner chain's
-own live state rather than any point-in-time snapshot, a revocation retroactively voids every
-membership write the revoked node ever signed, and a later re-vouch of that node restores them on
-the next read — accepted as the correct behavior of the walked latest-of-vouch-or-revocation model,
-not a design gap.
+silently dropped. Invites close the hand-run gap (idea 202383dc, T2): `h9k node invite`/`h9k project
+invite [--role]` mint a single-use secret (`owners/<root>/invites/<invite-id>.yaml`, holding the
+secret's own hash, claim, role, expiry, and spent flag, never the secret itself, which stays only in
+the minting node's own local store), `h9k project join --invite <secret>` proves possession by
+writing `HMAC(secret, this node's own key fingerprint)` into its own node file, and the minting
+node's own daemon sweep matches the proof against its outstanding invites and vouches the node or
+member in with no further prompt: a second human's node joining an owner's root no longer needs a
+hand-run `h9k node vouch` at all. **Still not built**: no node discovery, no gossip, no event
+replication (M2, the one thing a message is deliberately never trusted with). **Two known, accepted
+limits.** A force-push over a ledger ref still rewrites trust history along with everything else in
+it; nothing here detects or prevents that rewrite before the later relay replaces git as the carrier:
+every ledger and chain fetch is a forced update with no ancestry check, so a rewritten trust ref is
+accepted silently. Separately, because a membership write is judged against the owner chain's own
+live state rather than any point-in-time snapshot, a revocation retroactively voids every membership
+write the revoked node ever signed, and a later re-vouch of that node restores them on the next read
+— accepted as the correct behavior of the walked latest-of-vouch-or-revocation model, not a design
+gap.
 
 The peer-to-peer branch has a full design (identity as a two-tier key hierarchy, mDNS on the LAN,
 hole punching, a relay on 443, QUIC throughout) in
