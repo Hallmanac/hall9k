@@ -199,6 +199,113 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         }
     }
 
+    /// <summary>
+    /// Two commits touching the identical (kind, identifier, root) — a revoked node correcting its
+    /// own earlier bad commit over the same node id, say — collapse to the same
+    /// <see cref="UnverifiedLedgerWriteStreamId"/>. Before the fix, <c>PersistUnverifiedWritesAsync</c>
+    /// called <c>AggregateStreamAsync</c> then <c>StartStream</c> per element with no
+    /// de-duplication, so two entries sharing a stream id in one tick called <c>StartStream</c>
+    /// twice for the same id in the same session and <c>SaveChangesAsync</c> failed the whole
+    /// batch — silently dropping every writer that tick was supposed to persist, this one included
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium).
+    /// </summary>
+    [Fact]
+    public async Task A_sweep_collapses_two_unverified_writes_sharing_a_stream_id_in_one_tick()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+
+        FakeLedger ledger = new();
+        InMemoryMessageTransport transport = new(ledger);
+
+        (NodeContext nodeB, Guid projectId) = await SeedOwnerAndProjectAsync(_postgres.Store, "smoke-duplicate-unverified", cts.Token);
+        Guid nodeA = DomainId.New();
+
+        UnverifiedLedgerWrite firstCommit = new(
+            "vouch", nodeA.ToString(), "owner-a-fingerprint", "commit aaaaaaa is not signed by anyone currently trusted");
+        UnverifiedLedgerWrite secondCommit = new(
+            "vouch", nodeA.ToString(), "owner-a-fingerprint", "commit bbbbbbb is not signed by anyone currently trusted");
+        TrustChain chainWithDuplicateWrites = new(new Dictionary<string, TrustedOwner>(), [], [firstCommit, secondCommit]);
+
+        MessageSweepEngine engine = new(
+            _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            new FakeLedgerChainReader(chainWithDuplicateWrites), new MessageNodeIdentityResolver(new NodeKeyStore()),
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        await using (IDocumentSession verifySession = _postgres.Store.LightweightSession())
+        {
+            IReadOnlyList<UnverifiedLedgerWriteDetails> observed =
+                await verifySession.Query<UnverifiedLedgerWriteDetails>().ToListAsync(cts.Token);
+            observed.Should().ContainSingle(write =>
+                write.ProjectId == projectId && write.Kind == "vouch" && write.Identifier == nodeA.ToString());
+            observed.Single().Reason.Should().Be(secondCommit.Reason, "the last-observed commit in this tick wins");
+        }
+    }
+
+    /// <summary>
+    /// The identical writer, still there, unchanged, across two ticks close enough together that
+    /// neither sits past the refresh age — before the fix this appended a fresh, identical event on
+    /// every single tick, forever, for as long as the offending ledger commit sat in the ref
+    /// (independent pre-PR review, cycle 1, both lenses, medium).
+    /// </summary>
+    [Fact]
+    public async Task A_second_sweep_with_an_unchanged_unverified_write_does_not_append_another_event()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+
+        FakeLedger ledger = new();
+        InMemoryMessageTransport transport = new(ledger);
+
+        (NodeContext nodeB, Guid projectId) = await SeedOwnerAndProjectAsync(_postgres.Store, "smoke-repeat-unverified", cts.Token);
+        Guid nodeA = DomainId.New();
+
+        UnverifiedLedgerWrite standingWrite = new(
+            "vouch", nodeA.ToString(), "owner-a-fingerprint", "commit ccccccc is not signed by anyone currently trusted");
+        TrustChain chainWithStandingWrite = new(new Dictionary<string, TrustedOwner>(), [], [standingWrite]);
+
+        MessageSweepEngine engine = new(
+            _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            new FakeLedgerChainReader(chainWithStandingWrite), new MessageNodeIdentityResolver(new NodeKeyStore()),
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
+
+        await engine.SweepOnceAsync(cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+
+        Guid streamId = UnverifiedLedgerWriteStreamId.For(projectId, "vouch", nodeA.ToString(), "owner-a-fingerprint");
+        await using (IDocumentSession verifySession = _postgres.Store.LightweightSession())
+        {
+            IReadOnlyList<JasperFx.Events.IEvent> events = await verifySession.Events.FetchStreamAsync(streamId, token: cts.Token);
+            events.Should().ContainSingle("the second sweep saw the identical, unchanged writer and must not append again");
+        }
+    }
+
+    /// <summary>Shared setup <see cref="A_sweep_persists_a_dropped_unverifiable_vouch_its_trust_chain_observed"/>
+    /// also inlines: a fresh node claims an owner root and registers one project, so a
+    /// <see cref="MessageSweepEngine"/> built against it has somewhere to persist an unverified
+    /// write.</summary>
+    private static async Task<(NodeContext NodeB, Guid ProjectId)> SeedOwnerAndProjectAsync(
+        IDocumentStore store, string projectName, CancellationToken cancellationToken)
+    {
+        NodeContext nodeB = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession claimSession = store.LightweightSession())
+        {
+            OwnerAggregate owner =
+                (await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(nodeB.OwnerId, token: cancellationToken))!;
+            claimSession.Events.Append(
+                nodeB.OwnerId, OwnerDecider.ClaimRoot(owner, "owner-b-root-fingerprint", verified: true, Now));
+
+            claimSession.Events.StartStream<ProjectAggregate>(
+                projectId,
+                ProjectDecider.Register(
+                    projectId, nodeB.OwnerId, DomainId.New(), projectName, RepositoryPath, null, null, Now));
+            await claimSession.SaveChangesAsync(cancellationToken);
+        }
+
+        return (nodeB, projectId);
+    }
+
     private static async Task SeedNodeFileAsync(FakeLedger ledger, Guid nodeId, CancellationToken cancellationToken)
     {
         LedgerCommitter committer = new("seed", "seed@hall9k.local");
