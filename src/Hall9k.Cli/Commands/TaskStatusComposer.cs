@@ -563,7 +563,16 @@ internal static class TaskStatusComposer
         // instead: Gone is handled by the branch just above — with nothing else running for it
         // to explain away, it always reports the gate itself gone — so reaching this line with a
         // gate still recorded means the clock never starts at all.
-        if (run.ActiveGate is not null)
+        //
+        // Gated on no agent session also being recorded (adversarial review, cycle 1, low): the
+        // daemon deliberately never writes GateEnded across its own shutdown mid-gate, so a
+        // restart that leaves no further gate for this run can strand ActiveGate set for the
+        // rest of the run's life. Bypassing the clock unconditionally on that stale record would
+        // hide a later agent session — recovery or review — that is genuinely alive but has gone
+        // quiet, exactly the silence this clock exists to catch. A gate actually running never
+        // has an agent session recorded alongside it (VerifyingPhase's own doc), so this narrows
+        // nothing for the live case the fix above was written for.
+        if (run.ActiveGate is not null && run.ActiveSessions.Count == 0)
         {
             return (false, string.Empty);
         }

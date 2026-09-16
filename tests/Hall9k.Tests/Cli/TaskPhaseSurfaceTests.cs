@@ -1371,4 +1371,97 @@ public sealed class TaskPhaseSurfaceTests
         row.Attention.Cause.Should().NotContain("silent");
         row.Attention.Lever.Should().Be($"h9k logs {TaskListCommand.ShortId(row.TaskId)}");
     }
+
+    /// <summary>
+    /// The same origin incident's own shape (task: a run whose verification gate is executing is
+    /// reported as live work in progress, never as stalled with no session recorded), but for the
+    /// gate that actually caused it: the mandatory final-full-pass gate and the fix-lap reverify
+    /// gate both run while the run is UnderReview, between one review session ending and the next
+    /// one starting (<c>ReviewEngine.VerifyForSettlingAsync</c> and its reverify sibling) — not
+    /// only while Verifying. Before the fix, <c>Review()</c> never looked at
+    /// <c>RunDetails.ActiveGate</c> at all, so this exact run read "review cycle N (final full
+    /// pass) · no session recorded as running" whatever the gate's own process was doing
+    /// (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public void A_running_gate_between_review_passes_is_reported_as_working_with_the_gate_named_and_timed()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.UnderReview, sessionProcessId: null);
+        run.ReviewCycle = 3;
+        run.ReviewCycleMode = ReviewMode.FinalFullPass;
+        run.ActiveGate = new ActiveGate("test", 9101, StatusFixtures.Now.AddHours(-1).AddMinutes(-13));
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId),
+            run,
+            // The agent stream froze the moment the last review session ended, which is exactly
+            // the shape that misfiled the origin incident: this proves the gate's own liveness is
+            // read instead of that frozen clock, the same as VerifyingPhase's own test above.
+            silentSince: StatusFixtures.Now.AddHours(-3),
+            livenessByProcess: new Dictionary<int, SessionLiveness> { [9101] = SessionLiveness.Alive });
+
+        row.Group.Should().Be(AttentionBucket.Working);
+        row.Stalled.Should().BeFalse();
+        row.Phase.Text.Should().Be("gate 'test'");
+        row.Phase.Detail.Should().Be("running 1h13m");
+        row.Phase.Liveness.Should().Be(SessionLiveness.Alive);
+        row.Attention.NeedsYou.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The dead-process half of the same UnderReview gap (task: a run whose verification gate is
+    /// executing is reported as live work in progress, never as stalled with no session recorded,
+    /// criterion 3): before the fix, <c>Review()</c>'s fallback forced <c>Liveness</c> to
+    /// <see cref="SessionLiveness.NotApplicable"/>, so <c>AttentionComposer.StallCause</c>'s
+    /// <c>(SessionLiveness.Gone, {gate})</c> arm could never match here and the row read the
+    /// generic "the agent stream has been silent past the stall threshold" instead of naming the
+    /// gate.
+    /// </summary>
+    [Fact]
+    public void A_gate_process_that_died_between_review_passes_is_reported_as_stalled_naming_the_gate()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.UnderReview, sessionProcessId: null);
+        run.ReviewCycle = 3;
+        run.ActiveGate = new ActiveGate("test", 9102, StatusFixtures.Now.AddHours(-3));
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId),
+            run,
+            livenessByProcess: new Dictionary<int, SessionLiveness> { [9102] = SessionLiveness.Gone });
+
+        row.Group.Should().Be(AttentionBucket.Stalled);
+        row.Stalled.Should().BeTrue();
+        row.Phase.Text.Should().Be("gate 'test'");
+        row.Phase.Liveness.Should().Be(SessionLiveness.Gone);
+        row.Attention.Cause.Should().Contain("gate 'test'").And.Contain("process is gone");
+        row.Attention.Cause.Should().NotContain("silent");
+    }
+
+    /// <summary>
+    /// The ride-along fix to <c>Silence</c>'s own gate bypass (adversarial review, cycle 1, low):
+    /// the daemon deliberately never writes <c>GateEnded</c> across its own shutdown mid-gate
+    /// (<c>VerificationRunner.RunGateAsync</c>'s own doc), so a run can carry a stale
+    /// <see cref="RunDetails.ActiveGate"/> for the rest of its life once the pipeline moves on to
+    /// a session instead of another gate. Before the fix, the bypass fired unconditionally on that
+    /// stale record and hid a later agent session that is genuinely alive but has gone silent past
+    /// the stall threshold — exactly the silence this clock exists to catch.
+    /// </summary>
+    [Fact]
+    public void A_stale_active_gate_no_longer_hides_a_live_but_silent_agent_session()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.UnderReview, sessionRole: AgentRole.Review);
+        run.ActiveGate = new ActiveGate("test", 9103, StatusFixtures.Now.AddHours(-5));
+
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, runId),
+            run,
+            silentSince: StatusFixtures.Now.AddHours(-2));
+
+        row.Group.Should().Be(AttentionBucket.Stalled);
+        row.Stalled.Should().BeTrue();
+        row.Attention.Cause.Should().Contain("silent past the stall threshold");
+    }
 }

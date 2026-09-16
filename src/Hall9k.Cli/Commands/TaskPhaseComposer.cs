@@ -271,7 +271,7 @@ internal static class TaskPhaseComposer
             "Dispatched" => new TaskPhase("starting up", session, "worktree and prompt being prepared"),
             "Running" => new TaskPhase("building", session, SessionGap(session)),
             "Verifying" => VerifyingPhase(run, session, now),
-            "UnderReview" => Review(run, session),
+            "UnderReview" => Review(run, session, now),
             "ReviewParked" => new TaskPhase("review parked", SessionLiveness.NotApplicable,
                 "the worktree is yours until you resolve it"),
             // Parked on the clock rather than on a person (backlog 40). The session that
@@ -307,8 +307,21 @@ internal static class TaskPhaseComposer
     /// </summary>
     private static TaskPhase VerifyingPhase(RunDetails run, SessionLiveness session, DateTimeOffset now) =>
         run.ActiveGate is { } gate
-            ? new TaskPhase($"gate '{gate.GateName}'", session, $"running {DurationFormat.Short(now - gate.StartedAt)}")
+            ? GatePhase(gate, session, now)
             : new TaskPhase("gates", SessionLiveness.NotApplicable, "build and test running");
+
+    /// <summary>
+    /// The gate named and timed, shared by every run state a gate can actually be executing
+    /// under — not only Verifying (task: a run whose verification gate is executing is reported
+    /// as live work in progress, never as stalled with no session recorded). The mandatory
+    /// final-full-pass gate and the fix-lap reverify gate both run while the run is UnderReview
+    /// (<c>ReviewEngine.VerifyForSettlingAsync</c> and its reverify sibling), between the review
+    /// sessions ending and the next one starting, so <see cref="Review"/> reads through here too
+    /// rather than only ever seeing "no session recorded as running" over a gate that is, in
+    /// fact, running (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    private static TaskPhase GatePhase(ActiveGate gate, SessionLiveness session, DateTimeOffset now) =>
+        new($"gate '{gate.GateName}'", session, $"running {DurationFormat.Short(now - gate.StartedAt)}");
 
     /// <summary>
     /// Which round of review, and which leg of it. The cycle cap now resolves task &gt; project &gt;
@@ -318,8 +331,19 @@ internal static class TaskPhaseComposer
     /// cycle the run is on and leaves the cap to <c>h9k task show</c>'s own override row and
     /// <c>h9k config show</c>/<c>h9k project show</c> rather than guessing or re-deriving it here.
     /// </summary>
-    private static TaskPhase Review(RunDetails run, SessionLiveness session)
+    private static TaskPhase Review(RunDetails run, SessionLiveness session, DateTimeOffset now)
     {
+        // A gate running between review passes — the mandatory final-full-pass gate, or a
+        // fix-lap's own reverify — leaves the run UnderReview with no session recorded at all
+        // (task: a run whose verification gate is executing is reported as live work in
+        // progress, never as stalled with no session recorded). Checked ahead of ActiveRole
+        // below, which would otherwise read Unknown for exactly this run and fall to the
+        // "no session recorded as running" default the gate is live proof against.
+        if (run.ActiveGate is { } gate)
+        {
+            return GatePhase(gate, session, now);
+        }
+
         // Named only past Discovery (task: review cycles after the first): Discovery is the shape
         // review always had, so calling it out on every cycle 1 would just be noise, while Verify
         // and FinalFullPass are the new shapes a reader needs told apart from an ordinary cycle.
