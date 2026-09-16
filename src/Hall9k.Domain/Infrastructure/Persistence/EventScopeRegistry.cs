@@ -242,6 +242,13 @@ public static class EventScopeRegistry
         [typeof(InboxSenderIgnored)] = EventScope.NodeScoped,
         [typeof(InboxSenderVouched)] = EventScope.NodeScoped,
 
+        // This install's own permanent legacy-adoption decision (LegacyMessageAdoptionAssigned's
+        // own doc) — a purely local migration bookkeeping fact about which of THIS node's own
+        // projects claimed the pre-M2 backlog, never a team-visible fact another node's own sweep
+        // would reach identically, the identical reasoning every other message event above already
+        // carries.
+        [typeof(LegacyMessageAdoptionAssigned)] = EventScope.NodeScoped,
+
         // Hall9k.Domain.Features.Trust — this node's own message sweep's own sighting of a
         // writer its ledger chain read could not verify (idea 202383dc, T1 criterion 3). The
         // identical reasoning the message events just above already carry: this is a local

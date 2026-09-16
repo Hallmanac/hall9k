@@ -53,6 +53,12 @@ public static class MessageStreamId
     public static Guid ForInboxBeforeProjectScoping(Guid senderNodeId) =>
         Derive("hall9k-message-inbox", senderNodeId.ToString("N"));
 
+    /// <summary>This install's single, permanent record of which eligible project actually adopted
+    /// the pre-M2 <see cref="Guid.Empty"/>-project backlog (<see cref="LegacyMessageAdoptionAssigned"/>'s
+    /// own doc) — no key beyond the fixed tag, since one install only ever needs one answer to "which
+    /// project is the legacy adopter."</summary>
+    public static Guid ForLegacyAdoption() => Derive("hall9k-legacy-message-adoption");
+
     private static Guid Derive(params string[] parts)
     {
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', parts)));
