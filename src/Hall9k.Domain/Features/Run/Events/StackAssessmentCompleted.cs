@@ -25,6 +25,16 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// daemon against the candidate branches it already knew about (the project's base branch, the
 /// parent branch, the pull request's own GitHub-reported base) — never guessed when none of them
 /// match, in which case this is blank and the run's recorded base branch is left exactly as it was.
+/// Also blank when the matched candidate is the project's own base branch — see
+/// <see cref="OntoIsProjectBaseBranch"/>, the field that actually carries that case, since this
+/// field's own blank already means "leave the record alone" and cannot also mean "clear it".
+/// </param>
+/// <param name="OntoIsProjectBaseBranch">
+/// True when <see cref="OntoCommit"/> was confirmed to be the project's own base branch's tip —
+/// the one case that must clear a run's recorded <c>BaseBranch</c> back to blank (the same
+/// invariant <see cref="StackedPullRequestRetargeted"/>'s own apply already holds), which
+/// <see cref="ResolvedBaseBranchName"/> alone cannot signal since its blank is already spoken for
+/// by "no candidate matched, leave the record alone".
 /// </param>
 /// <param name="Evidence">The assessment's own evidence block, verbatim — also appended to this run's own evidence file beside its review findings.</param>
 public sealed record StackAssessmentCompleted(
@@ -34,5 +44,6 @@ public sealed record StackAssessmentCompleted(
     string BoundaryCommit,
     string OntoCommit,
     string ResolvedBaseBranchName,
+    bool OntoIsProjectBaseBranch,
     string Evidence,
     DateTimeOffset CompletedAt);

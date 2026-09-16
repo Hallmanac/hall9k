@@ -2012,7 +2012,17 @@ public sealed class RunAggregate
             BaseCommit = @event.BoundaryCommit;
         }
 
-        if (@event.ResolvedBaseBranchName.IsNotBlank())
+        // OntoIsProjectBaseBranch is checked first and unconditionally clears: ResolvedBaseBranchName
+        // is blank in that case too (its own doc), and a plain IsNotBlank() check here would leave a
+        // genuinely stacked run's recorded parent branch stuck forever, since the field could then
+        // only ever be overwritten with another branch name and never reset — the same shape
+        // Apply(StackedPullRequestRetargeted) above already clears unconditionally on its own
+        // positive signal (independent pre-PR review, cycle 3, both lenses).
+        if (@event.OntoIsProjectBaseBranch)
+        {
+            BaseBranch = string.Empty;
+        }
+        else if (@event.ResolvedBaseBranchName.IsNotBlank())
         {
             BaseBranch = @event.ResolvedBaseBranchName;
         }
