@@ -38,7 +38,8 @@ public delegate string? GhIdentityReader();
 public static class NodeBootstrap
 {
     public static async Task<BootstrapContext> EnsureAsync(
-        IDocumentSession session, CancellationToken cancellationToken, GhIdentityReader? ghIdentityReader = null)
+        IDocumentSession session, CancellationToken cancellationToken, GhIdentityReader? ghIdentityReader = null,
+        string? machineNameOverride = null)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
@@ -55,7 +56,11 @@ public static class NodeBootstrap
             session.Events.StartStream<OwnerAggregate>(ownerId, registered);
         }
 
-        string machineName = Environment.MachineName;
+        // machineNameOverride exists solely so a test can mint a node genuinely private to
+        // itself (NodeBootstrapSeed.NewIsolatedNodeAsync) rather than the one every ordinary call
+        // resolves and reuses for the life of the real machine; every production caller leaves it
+        // null and gets the real Environment.MachineName exactly as before.
+        string machineName = machineNameOverride ?? Environment.MachineName;
         NodeDetails? node = (await session.Query<NodeDetails>()
             .Where(n => n.MachineName == machineName)
             .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();

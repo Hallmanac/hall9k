@@ -43,12 +43,20 @@ public sealed class NodeContext
     /// adversarial lens) — this method's own callers (<see cref="WaitForInitializationAsync"/>) wait
     /// at most that long longer than before, never unboundedly.
     /// </para>
+    /// <para>
+    /// <paramref name="machineNameOverride"/> is <see langword="null"/> for every real caller, which
+    /// resolves against the real <c>Environment.MachineName</c> exactly as before. It exists only
+    /// for <c>NodeBootstrapSeed.NewIsolatedNodeAsync</c>, which passes a synthetic, per-call name so
+    /// a test gets a node genuinely private to itself rather than the one every other bootstrap call
+    /// in the same database resolves and reuses.
+    /// </para>
     /// </summary>
     public async Task InitializeAsync(
-        IDocumentStore store, CancellationToken cancellationToken, GhIdentityReader? ghIdentityReader = null)
+        IDocumentStore store, CancellationToken cancellationToken, GhIdentityReader? ghIdentityReader = null,
+        string? machineNameOverride = null)
     {
         await using IDocumentSession session = store.LightweightSession();
-        _context = await NodeBootstrap.EnsureAsync(session, cancellationToken, ghIdentityReader);
+        _context = await NodeBootstrap.EnsureAsync(session, cancellationToken, ghIdentityReader, machineNameOverride);
         await session.SaveChangesAsync(cancellationToken);
 
         if (ghIdentityReader is not null)

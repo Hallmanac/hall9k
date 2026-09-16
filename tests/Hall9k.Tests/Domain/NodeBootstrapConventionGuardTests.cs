@@ -32,8 +32,8 @@ namespace Hall9k.Tests.Domain;
 /// <para>
 /// Three files are exempt, by repository-relative path exactly like
 /// <see cref="ContainerRoutingGuardTests"/>'s single exemption:
-/// <see cref="Hall9k.Tests.Fakes.NodeBootstrapSeed"/> itself, which is where the one legitimate
-/// direct construction lives, and two files whose own tests exercise a hosted service's
+/// <see cref="Hall9k.Tests.Fakes.NodeBootstrapSeed"/> itself, which is where the legitimate
+/// direct constructions live, and two files whose own tests exercise a hosted service's
 /// pre-bootstrap window — <c>tests/Hall9k.Tests/Integration/RenderSweepTests.cs</c>'s
 /// <c>The_loop_waits_for_this_node_to_have_an_identity_before_its_first_sweep</c> and
 /// <c>tests/Hall9k.Tests/Integration/PrReviewTaskEngineTests.cs</c>'s
@@ -93,7 +93,10 @@ public sealed class NodeBootstrapConventionGuardTests
         // here rather than quietly carrying a licence it no longer uses.
         Dictionary<string, int> allowedDirectConstructions = new(StringComparer.Ordinal)
         {
-            [Path.Combine("tests", "Hall9k.Tests", "Fakes", "NodeBootstrapSeed.cs")] = 1,
+            // Two direct constructions now: NewNodeAsync's original shared-node bootstrap, and
+            // NewIsolatedNodeAsync's own private one (a test-only seam for a test whose ceiling or
+            // expectation must rest on state it alone owns).
+            [Path.Combine("tests", "Hall9k.Tests", "Fakes", "NodeBootstrapSeed.cs")] = 2,
             [Path.Combine("tests", "Hall9k.Tests", "Integration", "RenderSweepTests.cs")] = 1,
             [Path.Combine("tests", "Hall9k.Tests", "Integration", "PrReviewTaskEngineTests.cs")] = 1,
             // NewUnusedCloseoutEngine's own stand-in: ReviewEngine's constructor requires a
