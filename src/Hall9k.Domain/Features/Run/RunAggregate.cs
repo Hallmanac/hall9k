@@ -1943,7 +1943,7 @@ public sealed class RunAggregate
         // tried here, means a recovery session's own unverified "RESOLUTION: fixed" claim resets
         // the count on the very dispatch it should have been counted against, so a session that
         // repeats the identical false claim every round never trips MaxRebaseRecoveryRounds at
-        // all — caught by A_rebase_recovery_session_that_never_actually_resolves_parks_once_the_round_cap_is_spent,
+        // all — caught by A_second_automatic_conflict_after_the_one_assessment_is_spent_still_gets_its_ordinary_recovery_rounds,
         // which exists specifically to prove that cap holds). Reset the same way a human's fresh
         // grant already does in Apply(ReviewParkResolved), so a run whose conflicts genuinely keep
         // resolving does not creep toward the cap over defects that never actually recur.

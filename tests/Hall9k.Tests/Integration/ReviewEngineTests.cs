@@ -9887,7 +9887,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// git shape first dispatches a read-only assessment run): a well-formed replay verdict, so
     /// the mechanical retry it drives still reaches the recovery session these tests were written
     /// to exercise, rather than a verdict this file's other tests already cover on its own terms
-    /// (<c>StackAssessmentDispatchTests</c>).
+    /// (<see cref="An_aligned_verdict_proceeds_and_updates_this_runs_recorded_fork_point_and_base_branch"/>,
+    /// <see cref="An_undecidable_verdict_parks_with_the_evidence_appended_to_the_park_text"/>, and their
+    /// siblings below).
     /// </summary>
     private const string ScriptedReplayAssessmentThatStillConflicts =
         "Fetched origin and confirmed the boundary; a mechanical replay should land cleanly.\n\n"
