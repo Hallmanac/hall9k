@@ -411,7 +411,6 @@ public sealed class UninstallCommandTests : IDisposable
         string binDirectory = Path.Combine(home, "bin");
         Directory.CreateDirectory(binDirectory);
         string locked = Path.Combine(binDirectory, "h9k");
-        File.WriteAllText(locked, "cli\n");
         File.WriteAllText(Path.Combine(home, "h9kd.log"), "log\n");
 
         if (OperatingSystem.IsWindows())
@@ -428,7 +427,9 @@ public sealed class UninstallCommandTests : IDisposable
             // Bin_locked_on_Windows_is_relocated_outside_home_instead_of_left_behind for that
             // path's own dedicated coverage; this test's Windows branch only needs to show the
             // relocation keeps the rest of the removal honest.
-            using FileStream lockHandle = new(locked, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+            using FileStream lockHandle = new(locked, FileMode.Create, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete);
+            lockHandle.Write("cli\n"u8);
+            lockHandle.Flush();
 
             List<string> stillPresent = [];
             stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(
@@ -442,6 +443,8 @@ public sealed class UninstallCommandTests : IDisposable
         }
         else
         {
+            File.WriteAllText(locked, "cli\n");
+
             if (!MadeUnwritable(binDirectory))
             {
                 return;
@@ -602,13 +605,14 @@ public sealed class UninstallCommandTests : IDisposable
         string binDirectory = Path.Combine(home, "bin");
         Directory.CreateDirectory(binDirectory);
         string locked = Path.Combine(binDirectory, "h9k");
-        File.WriteAllText(locked, "cli\n");
 
         // The OS loader maps a running executable's image with FILE_SHARE_DELETE granted, which
         // is exactly what lets an app rename its own containing directory while it runs — the
         // lock has to include FileShare.Delete to model that; see the sibling test above for the
         // full explanation of why a plain FileShare.Read handle would be stricter than reality.
-        using FileStream lockHandle = new(locked, FileMode.Open, FileAccess.Read, FileShare.Read | FileShare.Delete);
+        using FileStream lockHandle = new(locked, FileMode.Create, FileAccess.ReadWrite, FileShare.Read | FileShare.Delete);
+        lockHandle.Write("cli\n"u8);
+        lockHandle.Flush();
 
         List<string> stillPresent = [];
         stillPresent.AddRange(UninstallCommand.RemoveInstallOwnedEntries(

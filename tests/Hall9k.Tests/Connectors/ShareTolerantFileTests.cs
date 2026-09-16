@@ -40,8 +40,9 @@ public sealed class ShareTolerantFileTests : IDisposable
     public void A_file_held_exclusively_reads_as_unobserved_rather_than_as_empty()
     {
         string path = Path.Combine(_directory, "verify-gate.log");
-        File.WriteAllText(path, "Npgsql.NpgsqlException: Connection refused");
-        using FileStream exclusive = new(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        using FileStream exclusive = new(path, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+        exclusive.Write("Npgsql.NpgsqlException: Connection refused"u8);
+        exclusive.Flush();
 
         ShareTolerantFile.TryReadAllText(path).Should().BeNull(
             "null is the honest answer for a file that exists and could not be read — a caller "

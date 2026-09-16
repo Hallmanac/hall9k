@@ -137,8 +137,9 @@ public sealed class ToolDoctorTests : IDisposable
     public async Task An_unreadable_platform_config_file_reports_gh_as_unconfirmed_rather_than_not_needed()
     {
         string path = Path.Combine(home, "config.json");
-        File.WriteAllText(path, """{"connectionString": "config-value"}""");
-        using FileStream lockHandle = new(path, FileMode.Open, FileAccess.Read, FileShare.None);
+        using FileStream lockHandle = new(path, FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+        lockHandle.Write("""{"connectionString": "config-value"}"""u8);
+        lockHandle.Flush();
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding(string.Empty);
 
         string output = await CaptureAsync(() => ToolDoctor.RunAsync(runner.Runner, CancellationToken.None));
