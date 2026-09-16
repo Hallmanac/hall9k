@@ -97,8 +97,13 @@ public sealed class NodeRevokeCommand : Hall9kAsyncCommand<NodeRevokeCommand.Set
             // project alone, never abort a revocation that already landed in an earlier one.
             catch (DomainValidationException exception)
             {
+                // Never a hardcoded "not enrolled there" suffix: RevokeInProjectAsync only throws
+                // this for genuine non-enrollment today, but exception.Message already states the
+                // real reason, so nothing here needs to restate — and this stays correct even if a
+                // second cause is ever added, the identical sibling gap independent pre-PR review
+                // (cycle 1, conformance lens, low) found in NodeVouchCommand's own identical catch.
                 AnsiConsole.MarkupLine(
-                    $"[yellow]Could not revoke in '{project.Name.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}) — skipped: not enrolled there.[/]");
+                    $"[yellow]Could not revoke in '{project.Name.EscapeMarkup()}' — skipped ({exception.Message.EscapeMarkup()}).[/]");
             }
             // Same reasoning as NodeVouchCommand's identical catch: a push rejection, a
             // network/credential failure, or exhausted conflict retries means the revocation was

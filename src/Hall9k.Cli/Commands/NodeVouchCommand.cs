@@ -108,8 +108,12 @@ public sealed class NodeVouchCommand : Hall9kAsyncCommand<NodeVouchCommand.Setti
             // appended (blast-radius sweep finding).
             catch (DomainValidationException exception)
             {
+                // Never a hardcoded "not enrolled there": VouchInProjectAsync also throws this same
+                // type for a malformed target public key, and exception.Message already states
+                // whichever reason actually applies — a fixed suffix here would misname the cause
+                // for the second one (independent pre-PR review, cycle 1, conformance lens, low).
                 AnsiConsole.MarkupLine(
-                    $"[yellow]Could not vouch in '{project.Name.EscapeMarkup()}' ({exception.Message.EscapeMarkup()}) — skipped: not enrolled there.[/]");
+                    $"[yellow]Could not vouch in '{project.Name.EscapeMarkup()}' — skipped ({exception.Message.EscapeMarkup()}).[/]");
             }
             // A push rejection, a network/credential failure, or a conflict this project's own
             // retries never resolved is not an authorization refusal — the vouch was supposed to

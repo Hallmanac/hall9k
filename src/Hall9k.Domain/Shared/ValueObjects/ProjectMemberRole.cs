@@ -8,7 +8,8 @@ namespace Hall9k.Domain.Shared.ValueObjects;
 /// are owner and member only"). Value object per the house type discipline (TASK-MODEL.md §8):
 /// the closed set is defined once, serializes as its bare lowercase string — the same string the
 /// ledger's own <c>members/&lt;root&gt;.yaml</c> file carries in its <c>role</c> field — and an
-/// unrecognized value round-trips as itself rather than failing.
+/// unrecognized value collapses to <see cref="Unknown"/> (serializing as an empty string) rather
+/// than failing, since owner and member are the only two real values this closed pair ever holds.
 /// </summary>
 [JsonConverter(typeof(ProjectMemberRoleJsonConverter))]
 public sealed record ProjectMemberRole
