@@ -201,6 +201,81 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     }
 
     /// <summary>
+    /// gh writes an ungated "Warning: N uncommitted change(s)" line to stderr on a successful
+    /// <c>gh pr create</c> whenever the working directory's own git status is non-empty — exactly
+    /// the state <c>CreatePullRequestAsync</c> can now find in a project's <c>RepositoryPath</c>
+    /// after the sibling test above moved that call off the worktree. Concatenating stdout and
+    /// stderr without a newline between them glued that warning onto the URL line and corrupted
+    /// the parsed pull request URL (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    [Fact]
+    public async Task Creating_a_pull_request_parses_the_url_even_when_gh_also_writes_to_stderr()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "github.com-origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# stderr warning test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, runId, "Open a PR despite a stderr warning", BranchNameTemplate.Default, ExternalReference: null), cts.Token);
+
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Open a PR despite a stderr warning", ["gh's stderr warning does not corrupt the URL"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = claimed.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(runId, taskId, claimed.NodeId, ownerId, 1, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(runId, Now),
+                new VerificationPassed(runId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Directory.CreateDirectory(RunPaths.GlobalDirectory(runId));
+
+        // No trailing newline on stdout, and a non-empty stderr — the shape that corrupted the
+        // parsed URL before the fix.
+        RecordingProcessRunner gh = new(() =>
+            new Hall9k.Connectors.Processes.ProcessResult(
+                0, "https://github.com/x/y/pull/43", "Warning: 1 uncommitted change"));
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance, inspector: null, processRunner: gh.Runner);
+        await opener.OpenAsync(runId, taskId, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task2.State.Value.Should().Be("Done");
+        task2.PullRequestUrl.Should().Be("https://github.com/x/y/pull/43");
+    }
+
+    /// <summary>
     /// The generation fence (backlog 39): a requeue-and-reclaim moved the task on to
     /// generation 2 under a fresh run while this run — still generation 1 — reached the
     /// push step. The origin incident's exact shape: a stale lane's push must not complete
