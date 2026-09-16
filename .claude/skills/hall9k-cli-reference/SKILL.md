@@ -199,7 +199,7 @@ for node-of-owner, `members/<root>.yaml` for member-of-project), marks the invit
 ledger, and records it locally; no further prompt is needed. `h9k project join --invite` also
 queues an optional note-kind message toward the minting node's owner, but the joining node is not
 yet vouched anywhere at that point, so the minting node's own message transport always reads it as
-not-yet-vouched and drops it — it never actually arrives before the sweep's own vouch, only after,
+not-yet-vouched and drops it: it never actually arrives before the sweep's own vouch, only after,
 when it adds nothing. The sweep never depends on it either way: it finds the proof on its own
 regardless.
 
