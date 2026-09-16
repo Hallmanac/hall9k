@@ -561,6 +561,22 @@ public sealed class RunDetails : IJsonOnDeserialized
     public bool FailedDuringPullRequestOpen { get; set; }
 
     /// <summary>
+    /// True when THIS run itself is the shortcut dispatch <see cref="Events.RunDispatched.ResumedReviewSettlement"/>
+    /// marks (task: a run that failed only at pull-request opening resumes at that step on retry) —
+    /// a run that never spawns a build session at all and goes straight to
+    /// <see cref="Hall9k.Daemon.Execution.PullRequestOpener"/>. <c>RunSupervisor.AdoptOrphansAsync</c>
+    /// reads it to tell this shape apart from an ordinary dispatch that crashed before
+    /// <c>RunProcessStarted</c> ever recorded a process: both read as
+    /// <see cref="RunState.Dispatched"/> with a null <see cref="ProcessId"/>, but only the ordinary
+    /// shape actually needs the full build-and-review pipeline redone — this one needs the same
+    /// <see cref="FailedDuringPullRequestOpen"/> flag its own failure would have carried had
+    /// <c>OpenAsync</c> itself recorded it, so the next retry can still take the shortcut instead of
+    /// losing it to a daemon restart (independent pre-PR review, cycle 1, adversarial lens). False
+    /// for every other dispatch shape, including a stream written before this field existed.
+    /// </summary>
+    public bool ResumedAtPullRequestOpen { get; set; }
+
+    /// <summary>
     /// The reason recorded when the closeout monitor observed this run's pull request closed
     /// without a merge. Named rather than written twice, because a reader has to be able to tell
     /// that case apart from every other way a run reaches <see cref="RunState.Failed"/>: it is the
@@ -1015,6 +1031,7 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         CacheReadInputTokens = @event.Data.ResumedReviewSettlement?.CacheReadInputTokens ?? 0,
         CacheCreationInputTokens = @event.Data.ResumedReviewSettlement?.CacheCreationInputTokens ?? 0,
         OutputTokens = @event.Data.ResumedReviewSettlement?.OutputTokens ?? 0,
+        ResumedAtPullRequestOpen = @event.Data.ResumedReviewSettlement is not null,
     };
 
     /// <summary>See the event's own doc: a reconstructed stream for a run that never actually dispatched.</summary>
