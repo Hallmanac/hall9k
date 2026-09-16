@@ -995,7 +995,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         // A run resumed straight at pull-request-open never settles a review of its own — see
         // RunDispatched.ResumedReviewSettlement's own doc. Every field below stays at its
         // ordinary default (Unknown/0/empty) for every other dispatch shape, exactly as it did
-        // before this field existed.
+        // before this field existed. LastReviewVerdict is carried as MergeReady alongside it —
+        // ResumedReviewSettlement.Settlement is only ever Clean or Settled, both of which only
+        // exist because the failed run's own review already concluded merge-ready — so
+        // `h9k task show` (WriteReviewOutcome) reports the carried settlement instead of
+        // silently dropping the outcome line for this run.
+        LastReviewVerdict = @event.Data.ResumedReviewSettlement is null
+            ? ReviewVerdict.Unknown
+            : ReviewVerdict.MergeReady,
         ReviewSettlement = @event.Data.ResumedReviewSettlement?.Settlement ?? ReviewSettlement.Unknown,
         ReviewResidualsFixed = @event.Data.ResumedReviewSettlement?.ResidualsFixed ?? 0,
         ReviewResidualsRouted = @event.Data.ResumedReviewSettlement?.ResidualsRouted ?? 0,

@@ -748,6 +748,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
             await using IQuerySession query = store.QuerySession();
             RunDetails resumedRun = (await query.LoadAsync<RunDetails>(retriedRunId, cts.Token))!;
+            resumedRun.LastReviewVerdict.Should().Be(ReviewVerdict.MergeReady,
+                "ResumedReviewSettlement.Settlement is only ever recorded for a review that already "
+                + "concluded merge-ready, and h9k task show's WriteReviewOutcome only prints the carried "
+                + "settlement when LastReviewVerdict says MergeReady (independent pre-PR review, cycle 1, "
+                + "conformance lens)");
             resumedRun.ReviewStageComposition.Should().Be(ReviewStageComposition.AdversarialOnly,
                 "the pull request and h9k task show must report the composition the branch's settled review "
                 + "actually ran under, not that this particular resumed run skipped review");
