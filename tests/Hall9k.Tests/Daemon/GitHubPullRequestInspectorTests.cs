@@ -960,6 +960,49 @@ public sealed class GitHubPullRequestInspectorTests
     }
 
     /// <summary>
+    /// A quota refusal is the narrower marker inside an errored review's own body (Brian's
+    /// ruling, 2026-09-16 morning) — distinct from a generic or transient errored review, since
+    /// the closeout engine accepts it instead of re-requesting. The observed instance: "Copilot
+    /// was unable to review this pull request because the user who requested the review has
+    /// reached their quota limit."
+    /// </summary>
+    [Fact]
+    public void A_quota_refused_Copilot_review_is_marked_as_such_and_carries_its_own_body()
+    {
+        const string body =
+            "Copilot was unable to review this pull request because the user who requested the "
+            + "review has reached their quota limit.";
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1", body: body));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.ErroredReview.Should().NotBeNull();
+        observation.ErroredReview!.IsQuotaRefusal.Should().BeTrue();
+        observation.ErroredReview.Body.Should().Be(body);
+        observation.CopilotReviewState.Should().Be(
+            ExternalReviewState.Unavailable,
+            "a quota refusal is a settled fact, not the generic unclassified Unknown an ordinary errored review reads as");
+    }
+
+    /// <summary>An ordinary errored review, with no quota wording, must not be misread as a refusal.</summary>
+    [Fact]
+    public void A_non_quota_errored_Copilot_review_is_not_marked_as_a_quota_refusal()
+    {
+        string json = Payload(
+            Actor("hallmanac", "User"), "cafe1", "",
+            Review(Actor("copilot-pull-request-reviewer", "Bot"), "cafe1",
+                "Copilot encountered an error and was unable to review this pull request."));
+
+        GitHubPullRequestInspector.ReviewObservation observation = GitHubPullRequestInspector.ParseReviews(json);
+
+        observation.ErroredReview.Should().NotBeNull();
+        observation.ErroredReview!.IsQuotaRefusal.Should().BeFalse();
+        observation.CopilotReviewState.Should().Be(ExternalReviewState.Unknown);
+    }
+
+    /// <summary>
     /// "Landed with its comment-thread count" names every thread the currently-landed review
     /// itself opened, not only the ones still unresolved — distinct from
     /// <see cref="ReviewObservation.UnresolvedThreads"/>, which only ever renders once a finding

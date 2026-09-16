@@ -145,6 +145,18 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
     public string? ErroredReviewUrl { get; set; }
     /// <summary>
+    /// The last quota-refused Copilot review observed — the monitor's dedup key: recorded once,
+    /// never re-requested (Brian's ruling, 2026-09-16 morning). <c>ExternalReviewState.Unavailable</c>
+    /// is the self-correcting live read for the Delivered phase and attention lines; this field is
+    /// the durable one <c>h9k task show</c> names on the run, and never clears once set, exactly
+    /// like <see cref="ErroredReviewUrl"/> never does.
+    /// </summary>
+    public string? CopilotReviewUnavailableUrl { get; set; }
+    /// <summary>Copilot's own reason text for the refusal named by <see cref="CopilotReviewUnavailableUrl"/>.</summary>
+    public string? CopilotReviewUnavailableReason { get; set; }
+    /// <summary>When the refusal named by <see cref="CopilotReviewUnavailableUrl"/> was first recorded; null until one is.</summary>
+    public DateTimeOffset? CopilotReviewUnavailableAt { get; set; }
+    /// <summary>
     /// The post-PR review watcher's latest read of Copilot's review state (Landed,
     /// RequestedPending, Stale, None, or Unknown) — what the Delivered phase line names as
     /// "awaiting Copilot review", "Copilot review landed", "Copilot reviewed an earlier
@@ -1406,6 +1418,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ErroredReviewUrl = @event.Data.ReviewUrl;
         view.State = RunState.ReviewPending;
+    }
+
+    // State-free by design — see RunAggregate.Apply(CopilotReviewUnavailable).
+    public void Apply(IEvent<CopilotReviewUnavailable> @event, RunDetails view)
+    {
+        view.CopilotReviewUnavailableUrl = @event.Data.ReviewUrl;
+        view.CopilotReviewUnavailableReason = @event.Data.Reason;
+        view.CopilotReviewUnavailableAt = @event.Data.ObservedAt;
     }
 
     // Informational only — see RunAggregate.Apply(ExternalReviewObserved).

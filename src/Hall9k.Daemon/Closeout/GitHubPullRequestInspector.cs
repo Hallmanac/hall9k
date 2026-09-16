@@ -44,6 +44,17 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
     // opinion as an outage.
     private const string ErroredReviewBodyMarker = "unable to review";
 
+    // The narrower marker inside an errored review's own body that names a quota refusal
+    // specifically (Brian's ruling, 2026-09-16 morning), rather than a transient or generic
+    // failure: "Copilot was unable to review this pull request because the user who requested
+    // the review has reached their quota limit." Observed on five PRs (#401, #402, #404, #405,
+    // #407) parked overnight 2026-09-16 02:16-08:55, each after six automatic re-requests that
+    // could never have succeeded — the quota does not refill on a re-request.
+    private const string QuotaLimitBodyMarker = "reached their quota limit";
+
+    private static bool IsQuotaRefusalBody(string body) =>
+        body.Contains(QuotaLimitBodyMarker, StringComparison.OrdinalIgnoreCase);
+
     // first: 100 is a deliberate cap, not missing pagination: threads past it read as
     // quiet, so a monster PR simply waits for a human instead of dispatching follow-ups
     // from an incomplete picture. A PR carrying 100+ review threads has left the range
@@ -748,6 +759,7 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
 
         string? staleReviewId = null;
         bool unclassifiedReviewSeen = false;
+        bool quotaRefusalSeen = false;
         if (pullRequest.TryGetProperty("latestReviews", out JsonElement latest))
         {
             foreach (JsonElement review in latest.GetProperty("nodes").EnumerateArray())
@@ -763,7 +775,18 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
                     // An errored review is review activity that happened and produced no verdict —
                     // it must not fall through to None below, the same claim-no-absence reasoning
                     // as the uncomparable-commit case just below (independent pre-PR review, cycle 1).
-                    unclassifiedReviewSeen = true;
+                    // A quota refusal specifically (Brian's ruling, 2026-09-16 morning) is a settled
+                    // fact rather than unclassified evidence, so it reports its own state below
+                    // instead of the generic Unknown a transient error still falls back to.
+                    if (IsQuotaRefusalBody(body))
+                    {
+                        quotaRefusalSeen = true;
+                    }
+                    else
+                    {
+                        unclassifiedReviewSeen = true;
+                    }
+
                     continue;
                 }
 
@@ -801,9 +824,11 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
 
         return staleReviewId is not null
             ? (ExternalReviewState.Stale, staleReviewId)
-            : unclassifiedReviewSeen
-                ? (ExternalReviewState.Unknown, null)
-                : (ExternalReviewState.None, null);
+            : quotaRefusalSeen
+                ? (ExternalReviewState.Unavailable, null)
+                : unclassifiedReviewSeen
+                    ? (ExternalReviewState.Unknown, null)
+                    : (ExternalReviewState.None, null);
     }
 
     /// <summary>
@@ -1217,7 +1242,9 @@ public sealed class GitHubPullRequestInspector(ProcessRunner? runner = null) : I
             string body = review.GetProperty("body").GetString() ?? "";
             if (body.Contains(ErroredReviewBodyMarker, StringComparison.OrdinalIgnoreCase))
             {
-                return new ErroredReview(reviewer.Login, review.GetProperty("url").GetString() ?? "");
+                bool isQuotaRefusal = IsQuotaRefusalBody(body);
+                return new ErroredReview(
+                    reviewer.Login, review.GetProperty("url").GetString() ?? "", isQuotaRefusal, body);
             }
         }
 

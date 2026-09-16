@@ -41,6 +41,19 @@ public sealed record ExternalReviewState
     public static readonly ExternalReviewState None = new("None");
 
     /// <summary>
+    /// Copilot's latest review is an error placeholder naming a quota refusal — "the user who
+    /// requested the review has reached their quota limit" — rather than a transient failure.
+    /// Brian's ruling, 2026-09-16 morning: once Copilot says the quota is out, accept it and
+    /// keep going, so this reads as a settled fact for the Delivered phase and its attention
+    /// line, not as unclassified evidence the way an ordinary errored review does (<see
+    /// cref="Unknown"/>). Self-corrects: a later sweep that reads a real review off the same
+    /// pull request reclassifies it as <see cref="Landed"/> or <see cref="Stale"/> exactly as any
+    /// other transition here does, since this is recomputed fresh every sweep from the provider's
+    /// own current answer, never carried forward from an earlier one.
+    /// </summary>
+    public static readonly ExternalReviewState Unavailable = new("Unavailable");
+
+    /// <summary>
     /// No classifiable observation: not recognized, a run recorded before this observation
     /// existed, a sweep that has not landed yet, or a sweep that read a Copilot review it could
     /// not compare against the head commit. Serializes as an empty string.

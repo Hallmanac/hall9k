@@ -3496,6 +3496,96 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         task.FollowUpKind.Should().Be(FollowUpKind.ReviewFeedback);
     }
 
+    /// <summary>
+    /// The refusal path (task: a Copilot review refused for quota is treated as review
+    /// unavailable; Brian's ruling, 2026-09-16 morning): a quota-refused errored review is
+    /// accepted rather than re-requested, so a pre-approved task with every other gate clean —
+    /// CI green, no threads, no outstanding human reviewer — merges exactly as it would with a
+    /// landed review, never re-requesting and never parking.
+    /// </summary>
+    [Fact]
+    public async Task A_quota_refused_Copilot_review_merges_a_pre_approved_task_on_the_remaining_gates()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
+
+        ErroredReview quotaRefused = new(
+            "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", IsQuotaRefusal: true,
+            Body: "Copilot was unable to review this pull request because the user who requested the "
+                + "review has reached their quota limit.");
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { ErroredReview = quotaRefused, HeadCommit = "cafe123" },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.ReviewRerequests.Should().BeEmpty("a quota refusal is accepted, never re-requested");
+        inspector.MergeAttempts.Should().Be(1, "every other gate read clean, so the daemon merges exactly as it would with a landed review");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.Completed);
+        run.CopilotReviewUnavailableUrl.Should().Be(quotaRefused.Url);
+        run.CopilotReviewUnavailableReason.Should().Be(quotaRefused.Body);
+
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "merged without Copilot review, exactly as it would with a landed one");
+
+        Directory.Exists(worktree.Path).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The other half of the refusal path: a task with no pre-approval never merges on its own,
+    /// so the same quota-refused review is read sweep after sweep. It must be recorded once, not
+    /// once per sweep, and never re-requested at all — the ordinary errored-review budget never
+    /// even starts spending.
+    /// </summary>
+    [Fact]
+    public async Task A_quota_refused_Copilot_review_is_recorded_once_across_repeated_sweeps_and_never_rerequested()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, _) = await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
+
+        ErroredReview quotaRefused = new(
+            "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", IsQuotaRefusal: true,
+            Body: "Copilot was unable to review this pull request because the user who requested the "
+                + "review has reached their quota limit.");
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { ErroredReview = quotaRefused } };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees, maxAutomaticCloseoutRuns: 2);
+
+        for (int sweep = 1; sweep <= 3; sweep++)
+        {
+            await engine.PollOnceAsync(cts.Token);
+        }
+
+        inspector.ReviewRerequests.Should().BeEmpty("a quota refusal is accepted, never re-requested");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.AwaitingReview, "nothing here holds the run at ReviewPending or parks it — no automatic budget is ever spent");
+        run.ParkedReason.Should().BeNull();
+        run.CopilotReviewUnavailableUrl.Should().Be(quotaRefused.Url);
+
+        (await query.Events.FetchStreamAsync(runId, token: cts.Token))
+            .Count(e => e.Data is CopilotReviewUnavailable)
+            .Should().Be(1, "the same errored review url is recorded once, not once per sweep");
+
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
+            TaskState.Done, "no automatic action was ever dispatched or spent");
+
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
     [Fact]
     public async Task A_spent_automatic_budget_parks_the_closeout_instead_of_looping()
     {

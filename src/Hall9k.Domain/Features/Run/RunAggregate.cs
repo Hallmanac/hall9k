@@ -90,6 +90,9 @@ public sealed class RunAggregate
     /// <summary>The last errored review observed — the monitor's dedup key: one re-request per errored review.</summary>
     public string? ErroredReviewUrl { get; private set; }
 
+    /// <summary>The last quota-refused Copilot review observed — the monitor's dedup key: recorded once, never re-requested (Brian's ruling, 2026-09-16 morning).</summary>
+    public string? CopilotReviewUnavailableUrl { get; private set; }
+
     /// <summary>
     /// The post-PR review watcher's latest read of Copilot's review state (Landed,
     /// RequestedPending, Stale, None, or Unknown) — read only by the Delivered phase line,
@@ -1842,6 +1845,15 @@ public sealed class RunAggregate
     {
         ErroredReviewUrl = @event.ReviewUrl;
         State = RunState.ReviewPending;
+    }
+
+    // State-free by design (see the event's own doc): a quota refusal is treated as
+    // review-unavailable rather than an obstruction, so the run stays exactly where the
+    // remaining gates leave it — unlike Apply(ReviewErrored) above, which holds the run at
+    // ReviewPending for an ordinary errored review.
+    public void Apply(CopilotReviewUnavailable @event)
+    {
+        CopilotReviewUnavailableUrl = @event.ReviewUrl;
     }
 
     // Informational only: the phase line reads all three fields, but the run's own state

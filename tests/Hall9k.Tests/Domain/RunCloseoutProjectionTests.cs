@@ -108,6 +108,32 @@ public sealed class RunCloseoutProjectionTests
     }
 
     /// <summary>
+    /// A quota refusal (task: a Copilot review refused for quota is treated as review
+    /// unavailable; Brian's ruling, 2026-09-16 morning) is state-free, unlike
+    /// <see cref="ReviewErrored"/>: the run stays exactly where it was rather than moving to
+    /// ReviewPending, so the remaining gates decide the closeout as they would with a landed
+    /// review.
+    /// </summary>
+    [Fact]
+    public void Copilot_review_unavailable_records_the_refusal_without_moving_state()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = AwaitingReviewRun(projection, id);
+
+        const string reason =
+            "Copilot was unable to review this pull request because the user who requested the "
+            + "review has reached their quota limit.";
+        projection.Apply(new FakeEvent<CopilotReviewUnavailable>(new CopilotReviewUnavailable(
+            id, "copilot-pull-request-reviewer", $"{PullRequestUrl}#pullrequestreview-1", reason, Now)), view);
+
+        view.State.Should().Be(RunState.AwaitingReview, "a quota refusal is accepted, not an obstruction that holds the run");
+        view.CopilotReviewUnavailableUrl.Should().Be($"{PullRequestUrl}#pullrequestreview-1");
+        view.CopilotReviewUnavailableReason.Should().Be(reason);
+        view.CopilotReviewUnavailableAt.Should().Be(Now);
+    }
+
+    /// <summary>
     /// An observation written before reviewers other than Copilot were counted never looked at
     /// authorship, so it replays as unknown rather than as "no humans" (Decisions Log #62, and
     /// the never-guess rule).
