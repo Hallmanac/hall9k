@@ -15,6 +15,25 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// </summary>
 /// <param name="RebasedFromCommit">The base commit this branch was built against before this attempt.</param>
 /// <param name="RebasedOntoCommit">The base branch's tip this attempt is rebasing onto.</param>
+/// <param name="PrecedesFirstReviewCycle">
+/// True only when this session was dispatched from a stacked checkpoint's own replay retry
+/// (<c>ReviewEngine.ActOnStackAssessmentAsync</c>'s <c>Replay</c> branch) that precedes this run's
+/// first review cycle (<c>StackedCheckpoint.BeforeFirstReviewCycle</c>) — read back by
+/// <see cref="RunAggregate.Apply(PreFinalPassRebaseRecoveryCompleted)"/> to land a non-disputed
+/// completion on <c>ReviewPhase.Reverify</c> (so the review cycles this checkpoint precedes still
+/// run) rather than <c>ReviewPhase.Settling</c>, the ordinary pre-final-pass and
+/// <c>StackedCheckpoint.BeforeFinalPass</c> destination. False for every other dispatch, including
+/// a redispatch of an already-checkpoint-originated track (carried forward from
+/// <see cref="RunAggregate.RebaseRecoveryPrecedesFirstReviewCycle"/> rather than recomputed).
+/// </param>
+/// <param name="BaseCommit">
+/// The stacked parent's fork point this session should replay from, when one applies — the
+/// assessment verdict's own <c>BoundaryCommit</c> on a fresh checkpoint-originated dispatch, or the
+/// same track's carried-forward <see cref="RunAggregate.RebaseRecoveryBaseCommit"/> on a
+/// human-resolved redispatch. Null for the ordinary, unstacked pre-final-pass path, which needs no
+/// fork point at all (<see cref="Hall9k.Daemon.Execution.AgentPromptBuilder.BuildPreFinalPassRebase"/>'s
+/// own <c>isStacked</c> check is false whenever this is null or the run is not currently stacked).
+/// </param>
 public sealed record PreFinalPassRebaseRecoveryDispatched(
     Guid Id,
     Guid SessionId,
@@ -24,4 +43,6 @@ public sealed record PreFinalPassRebaseRecoveryDispatched(
     AgentModel? Model,
     string RebasedFromCommit,
     string RebasedOntoCommit,
-    string SessionName);
+    string SessionName,
+    bool PrecedesFirstReviewCycle = false,
+    string? BaseCommit = null);

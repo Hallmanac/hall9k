@@ -230,6 +230,30 @@ public sealed class RunAggregate
     public string? ActiveRebaseRecoveryFromCommit { get; private set; }
 
     /// <summary>
+    /// True for the whole lifetime of a rebase-recovery track dispatched from a stacked
+    /// checkpoint's own replay retry that precedes this run's first review cycle (task: the stack
+    /// assessment runs only where a checkpoint would otherwise park). Set from
+    /// <see cref="Events.PreFinalPassRebaseRecoveryDispatched.PrecedesFirstReviewCycle"/> on every
+    /// dispatch — including a human-resolved redispatch of the same track, which forwards this same
+    /// value rather than recomputing it — and read by <see cref="Apply(Events.PreFinalPassRebaseRecoveryCompleted)"/>
+    /// to land a non-disputed completion on <see cref="ReviewPhase.Reverify"/> instead of the
+    /// ordinary <see cref="ReviewPhase.Settling"/>, so the review cycles this checkpoint precedes
+    /// still run rather than being skipped the way landing straight on Settling always would.
+    /// Deliberately never reset: a later, unrelated pre-final-pass conflict on the same run always
+    /// passes its own fresh value on dispatch, overwriting whatever this held before.
+    /// </summary>
+    public bool RebaseRecoveryPrecedesFirstReviewCycle { get; private set; }
+
+    /// <summary>
+    /// The stacked parent's fork point the current (or most recently dispatched)
+    /// checkpoint-originated recovery track should replay from, carried across a dispute-and-resolve
+    /// round trip the same way <see cref="PendingRebaseRecoveryGuidance"/> is — see
+    /// <see cref="Events.PreFinalPassRebaseRecoveryDispatched.BaseCommit"/>. Null for the ordinary,
+    /// unstacked pre-final-pass path.
+    /// </summary>
+    public string? RebaseRecoveryBaseCommit { get; private set; }
+
+    /// <summary>
     /// How many pre-final-pass rebase-recovery sessions this run has dispatched in a row without
     /// ever reaching a clean rebase (task: a run rebases its branch onto the current base branch)
     /// — the independent bound <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s dispatch checks
@@ -2047,6 +2071,8 @@ public sealed class RunAggregate
         ActiveRebaseRecoveryProcessStartedAt = @event.ProcessStartedAt;
         ActiveRebaseRecoveryModel = @event.Model ?? AgentModel.Unknown;
         ActiveRebaseRecoveryFromCommit = @event.RebasedFromCommit;
+        RebaseRecoveryPrecedesFirstReviewCycle = @event.PrecedesFirstReviewCycle;
+        RebaseRecoveryBaseCommit = @event.BaseCommit;
         ReviewPhase = ReviewPhase.AwaitingRebaseRecovery;
         State = RunState.UnderReview;
         RebaseRecoveryRounds++;
@@ -2057,14 +2083,17 @@ public sealed class RunAggregate
         ClearActiveRebaseRecoverySession();
         PendingRebaseRecoveryGuidance = null;
         // Resolved (or undeclared — treated optimistically, the same as an ordinary fix session's
-        // Unknown outcome) returns straight to Settling: the loop's own next check re-reads the
-        // worktree, finds the base already merged, and proceeds to the mandatory gate and pass
-        // exactly as a clean rebase would have. Disputed parks instead — see
-        // ReviewPhase.RebaseRecoveryDisputed's own doc for why this is a phase of its own rather
-        // than a reuse of Disputed.
+        // Unknown outcome) returns to Settling ordinarily, or to Reverify when this track was
+        // dispatched from a stacked checkpoint that precedes cycle 1 (task: the stack assessment
+        // runs only where a checkpoint would otherwise park) — Settling there would skip the review
+        // cycles that checkpoint exists to precede, while Reverify's own cycle-0 branch dispatches
+        // Discovery exactly as this run's opening entry always has. Either way the loop's own next
+        // check re-reads the worktree, finds the base already merged, and proceeds accordingly.
+        // Disputed parks instead — see ReviewPhase.RebaseRecoveryDisputed's own doc for why this is
+        // a phase of its own rather than a reuse of Disputed.
         ReviewPhase = @event.Outcome == ReviewFixOutcome.Disputed
             ? ReviewPhase.RebaseRecoveryDisputed
-            : ReviewPhase.Settling;
+            : RebaseRecoveryPrecedesFirstReviewCycle ? ReviewPhase.Reverify : ReviewPhase.Settling;
     }
 
     public void Apply(SettlingGateRepairDispatched @event)

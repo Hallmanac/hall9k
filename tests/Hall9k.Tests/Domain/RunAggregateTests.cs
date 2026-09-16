@@ -1587,6 +1587,66 @@ public sealed class RunAggregateTests
     }
 
     /// <summary>
+    /// A recovery session dispatched from a stacked checkpoint that precedes this run's first
+    /// review cycle (task: the stack assessment runs only where a checkpoint would otherwise park)
+    /// lands a non-disputed completion on Reverify, not the ordinary Settling every other
+    /// pre-final-pass recovery track reaches — Settling here would carry the checkpoint straight
+    /// past the review cycles it exists to precede. A disputed completion still lands on
+    /// RebaseRecoveryDisputed regardless of the checkpoint origin: that park's own resolve routing
+    /// is origin-agnostic.
+    /// </summary>
+    [Fact]
+    public void A_checkpoint_originated_recovery_sessions_resolved_completion_lands_on_reverify_not_settling()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new PreFinalPassRebaseRecoveryDispatched(
+            id, DomainId.New(), 5002, Now, Now, AgentModel.Unknown, "abc1234", "def5678", "rebase-recovery",
+            PrecedesFirstReviewCycle: true, BaseCommit: "abc1234"));
+
+        run.RebaseRecoveryPrecedesFirstReviewCycle.Should().BeTrue();
+        run.RebaseRecoveryBaseCommit.Should().Be("abc1234");
+
+        run.Apply(new PreFinalPassRebaseRecoveryCompleted(id, ReviewFixOutcome.Fixed, Now));
+
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.Reverify, "Settling here would skip the review cycles this checkpoint precedes");
+    }
+
+    /// <summary>
+    /// The disputed sibling of <see cref="A_checkpoint_originated_recovery_sessions_resolved_completion_lands_on_reverify_not_settling"/>:
+    /// a checkpoint-originated track's own dispute still parks through the identical
+    /// RebaseRecoveryDisputed phase every other pre-final-pass dispute reaches, never Reverify —
+    /// a genuinely undecided conflict is not "resolved" just because of where its recovery session
+    /// was dispatched from.
+    /// </summary>
+    [Fact]
+    public void A_checkpoint_originated_recovery_sessions_disputed_completion_still_lands_on_rebase_recovery_disputed()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), 1, DomainId.New(),
+            "/wt/x", "task/x", ExecutorMode.Subscription, Now));
+        run.Apply(new RunProcessStarted(id, 4482, Now));
+        run.Apply(new AgentSessionCompleted(id, Now));
+        run.Apply(new VerificationPassed(id, Now));
+        run.Apply(new PreFinalPassRebaseRecoveryDispatched(
+            id, DomainId.New(), 5002, Now, Now, AgentModel.Unknown, "abc1234", "def5678", "rebase-recovery",
+            PrecedesFirstReviewCycle: true, BaseCommit: "abc1234"));
+
+        run.Apply(new PreFinalPassRebaseRecoveryCompleted(id, ReviewFixOutcome.Disputed, Now));
+
+        run.ReviewPhase.Should().Be(ReviewPhase.RebaseRecoveryDisputed);
+    }
+
+    /// <summary>
     /// The Settling-gate repair session's own mirror of the rebase-recovery test just above (task:
     /// a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a repair lap
     /// inside the same run instead of failing it) — same shape, same historical bug class this
