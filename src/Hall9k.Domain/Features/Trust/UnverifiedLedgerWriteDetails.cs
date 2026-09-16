@@ -19,6 +19,8 @@ public sealed class UnverifiedLedgerWriteDetails
     public string Reason { get; set; } = string.Empty;
     public DateTimeOffset FirstSeenAt { get; set; }
     public DateTimeOffset LastSeenAt { get; set; }
+    public bool Resolved { get; set; }
+    public DateTimeOffset? ResolvedAt { get; set; }
 }
 
 public sealed class UnverifiedLedgerWriteDetailsProjection : SingleStreamProjection<UnverifiedLedgerWriteDetails, Guid>
@@ -39,5 +41,13 @@ public sealed class UnverifiedLedgerWriteDetailsProjection : SingleStreamProject
     {
         view.Reason = @event.Data.Reason;
         view.LastSeenAt = @event.Data.At;
+        view.Resolved = false;
+        view.ResolvedAt = null;
+    }
+
+    public void Apply(IEvent<UnverifiedLedgerWriteResolved> @event, UnverifiedLedgerWriteDetails view)
+    {
+        view.Resolved = true;
+        view.ResolvedAt = @event.Data.At;
     }
 }

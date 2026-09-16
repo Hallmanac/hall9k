@@ -30,4 +30,9 @@ public static class UnverifiedLedgerWriteDecider
 
         return new UnverifiedLedgerWriteObserved(projectId, kind, identifier, rootFingerprint, reason, at);
     }
+
+    /// <summary>A sweep whose trust chain read no longer names this stream's own writer among the
+    /// unverifiable ones — the identical writer this stream was raised for became verifiable again.
+    /// </summary>
+    public static UnverifiedLedgerWriteResolved Resolve(DateTimeOffset at) => new(at);
 }
