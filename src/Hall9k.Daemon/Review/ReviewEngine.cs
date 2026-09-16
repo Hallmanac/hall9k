@@ -3889,7 +3889,8 @@ public sealed class ReviewEngine(
                 agent = await executor.SpawnAsync(new AgentSpawnRequest(
                     context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt,
                     context.Run.ExecutorMode, model, context.Project.SkipPermissions,
-                    SessionArtifactName: SessionRoleName.StackAssessment, MaxTurns: _options.StackAssessmentMaxTurns)
+                    SessionArtifactName: SessionRoleName.StackAssessment, MaxTurns: _options.StackAssessmentMaxTurns,
+                    GuardsReviewThreadReplies: context.Run.IsFollowUp)
                 {
                     SessionName = sessionName,
                 }, cancellationToken);
