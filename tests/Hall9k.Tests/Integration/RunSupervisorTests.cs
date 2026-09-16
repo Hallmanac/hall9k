@@ -256,6 +256,61 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// The resume-at-pull-request-open shortcut (task: a run that failed only at pull-request
+    /// opening resumes at that step on retry) never spawns a build session or records a process at
+    /// all — it goes straight to <see cref="PullRequestOpener.OpenAsync"/> — so a daemon restart
+    /// mid-open reaches this run looking exactly like an ordinary dispatch that crashed before
+    /// <c>RunProcessStarted</c> ever landed. Without carrying <see cref="RunDetails.ResumedAtPullRequestOpen"/>
+    /// into the failure, the next retry would see <see cref="RunDetails.FailedDuringPullRequestOpen"/>
+    /// false and fall back to a full build and review over an unchanged, already-reviewed tree
+    /// (independent pre-PR review, cycle 1, adversarial lens). This pins that the flag survives.
+    /// </summary>
+    [Fact]
+    public async Task Startup_adoption_of_a_resumed_pull_request_open_that_never_started_keeps_the_shortcuts_flag()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid resumedRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, DomainId.New(), "Resume at pull-request-open, then the daemon dies",
+                    ["carries the shortcut's own flag through an interrupted restart"],
+                    TaskType.Chore, null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, resumedRunId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+            // "/tmp/wt-test-resume-open" is never created, the same reason SeedClaimedTaskAsync's
+            // own worktree isn't: nothing here reaches far enough to touch it before this run dies
+            // with the daemon, unrecorded process and all.
+            session.Events.StartStream<RunAggregate>(resumedRunId, new RunDispatched(
+                resumedRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                "/tmp/wt-test-resume-open", "task/test-resume-open", ExecutorMode.Subscription, Now,
+                ResumedReviewSettlement: new ResumedReviewSettlement(
+                    ReviewSettlement.Settled, ResidualsFixed: 0, ResidualsRouted: 0, ResidualsRoutingFailed: 0,
+                    ResidualsRideAlong: 0, RideAlongFindings: [], ResidualsUnfixed: 0, UnfixedFindings: [],
+                    InputTokens: 0, CacheReadInputTokens: 0, CacheCreationInputTokens: 0, OutputTokens: 0)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunSupervisor supervisor = NewSupervisor(store, node, new FakeProcessManager());
+        await supervisor.AdoptOrphansAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails resumed = (await query.LoadAsync<RunDetails>(resumedRunId, cts.Token))!;
+        resumed.State.Should().Be(RunState.Failed, "this run has no process of its own, so adoption fails it honestly");
+        resumed.FailedDuringPullRequestOpen.Should().BeTrue(
+            "the run resumed directly at pull-request-open, so its own failure must carry the same flag "
+            + "PullRequestOpener's own failure path would have recorded, or the next retry loses the shortcut");
+    }
+
+    /// <summary>
     /// The good path (task: a do-now session launched by h9k task start is caught within
     /// seconds): a deliberate headless start's session exits with nobody watching, but the
     /// worktree it left behind is clean with a commit beyond its base branch — so the platform

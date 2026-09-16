@@ -422,7 +422,18 @@ public sealed class RunSupervisor(
 
             if (run.ProcessId is null || run.ProcessStartedAt is null)
             {
-                await FailRunAsync(run.Id, run.TaskId, "Dispatched but never started before the daemon stopped.", cancellationToken);
+                // A run that resumes directly at pull-request-open (task: a run that failed only at
+                // pull-request opening resumes at that step on retry) never spawns a build session
+                // or records a process at all — it goes straight to PullRequestOpener.OpenAsync — so
+                // it reaches here looking exactly like an ordinary dispatch that crashed before
+                // RunProcessStarted landed. Failing it without FailedDuringPullRequestOpen would
+                // silently drop the shortcut this run existed to take: the next retry would see a
+                // failed run with the flag unset and fall through to a full build and review over an
+                // unchanged, already-reviewed tree (independent pre-PR review, cycle 1, adversarial
+                // lens). Carrying the flag here keeps that retry's shortcut alive instead.
+                await FailRunAsync(
+                    run.Id, run.TaskId, "Dispatched but never started before the daemon stopped.", cancellationToken,
+                    failedDuringPullRequestOpen: run.ResumedAtPullRequestOpen);
                 failed++;
                 continue;
             }
@@ -2363,7 +2374,9 @@ public sealed class RunSupervisor(
             run.Id, run.State.Value);
     }
 
-    private async Task FailRunAsync(Guid runId, Guid taskId, string reason, CancellationToken cancellationToken)
+    private async Task FailRunAsync(
+        Guid runId, Guid taskId, string reason, CancellationToken cancellationToken,
+        bool failedDuringPullRequestOpen = false)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
@@ -2383,7 +2396,7 @@ public sealed class RunSupervisor(
             return;
         }
 
-        session.Events.Append(runId, new RunFailed(runId, reason, now));
+        session.Events.Append(runId, new RunFailed(runId, reason, now, failedDuringPullRequestOpen));
         await AppendFencedTaskFailureAsync(session, runId, taskId, reason, now, cancellationToken);
         try
         {
