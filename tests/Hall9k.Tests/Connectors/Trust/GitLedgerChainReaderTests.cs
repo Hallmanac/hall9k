@@ -211,11 +211,13 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
-    public async Task A_later_revocation_never_retroactively_voids_an_earlier_membership_write()
+    public async Task A_revocation_voids_the_revoked_nodes_earlier_membership_writes()
     {
-        // The point-in-time replay fix (independent pre-PR review, cycle 1, conformance and
-        // adversarial lenses, medium and high): a member write's signer is checked against the
-        // owner chain as it stood WHEN THAT WRITE LANDED, never the chain's own final state.
+        // The walked model (team half, 2026-09-13; ruled by the window, 2026-09-13): a members-ref
+        // write is authorized against the owner chain's own live state at read time, never a
+        // snapshot pinned to that write's own claimed committer date. Accepted consequence: once a
+        // node is revoked, a membership write it made earlier — even while it was still legitimately
+        // enrolled — is no longer authorized on the next read.
         string hub = _repo.CreateHub();
         (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
 
@@ -224,61 +226,88 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         await WriteNodeFileAsync(laptopRepo, laptop, laptop);
         await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
 
-        GeneratedIdentity bob = GenerateIdentity();
-        await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "member", owner);
-
-        // The laptop, still enrolled at this point, removes bob's membership.
-        await DeleteMemberFileAsync(ownerRepo, bob.Fingerprint, laptop);
-
-        // git's own commit timestamp is second-resolution, so the revocation below needs to land in
-        // a provably later second than the removal above, or the two could tie and the assertion
-        // below would no longer isolate what this test exists to prove.
-        await Task.Delay(TimeSpan.FromSeconds(1.1));
-
-        // The laptop is revoked only afterward.
-        await RevokeAsync(ownerRepo, owner.Fingerprint, laptop.NodeId, owner);
-
-        string readerRepo = _repo.CloneNode(hub);
-        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
-
-        chain.RoleOf(bob.Fingerprint).Should().BeNull(
-            "bob's removal was legitimately signed by the laptop while it was still enrolled; the "
-            + "laptop's later revocation must not retroactively undo it");
-        chain.IsAllowedSigner(laptop.Fingerprint).Should().BeFalse("the laptop is revoked as of the final read");
-    }
-
-    [Fact]
-    public async Task A_second_write_from_a_revoked_node_cannot_be_authorized_by_backdating_its_committer_date()
-    {
-        // The exact injection the independent pre-PR review reproduced (cycle 1, conformance and
-        // adversarial lenses, both high) against the pre-fix owner.AsOf(commitTime): a revoked
-        // node's own key, used once already for a legitimate write while still enrolled, tries a
-        // SECOND write after its own revocation, backdating GIT_COMMITTER_DATE to before that
-        // revocation. The first write from a node's own key still trusts its own claimed date (nothing
-        // else non-forgeable is available yet to bound it against — ComputeMembersAsync's own doc
-        // discloses this residual, single-use gap); this test proves the fix closes repeat abuse of
-        // the identical key once it has already spent that leniency.
-        string hub = _repo.CreateHub();
-        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
-
-        GeneratedIdentity laptop = GenerateIdentity();
-        string laptopRepo = _repo.CloneNode(hub);
-        await WriteNodeFileAsync(laptopRepo, laptop, laptop);
-        await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
-
-        // The laptop's own FIRST members-ref write, while still enrolled — spends this specific
-        // node's own "first use" leniency.
+        // The laptop, while still enrolled, adds bob as a member.
         GeneratedIdentity bob = GenerateIdentity();
         await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "member", laptop);
 
+        string readerBeforeRevoke = _repo.CloneNode(hub);
+        (await _chainReader.ComputeAsync(readerBeforeRevoke, CancellationToken.None))
+            .RoleOf(bob.Fingerprint).Should().Be(MembershipRole.Member, "the laptop was enrolled when it signed this write");
+
+        // The laptop is revoked afterward.
+        await RevokeAsync(ownerRepo, owner.Fingerprint, laptop.NodeId, owner);
+
+        string readerAfterRevoke = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerAfterRevoke, CancellationToken.None);
+
+        chain.RoleOf(bob.Fingerprint).Should().BeNull(
+            "the laptop's revocation voids every membership write it ever signed, including this "
+            + "earlier one made while it was still enrolled");
+        chain.IsAllowedSigner(laptop.Fingerprint).Should().BeFalse("the laptop is revoked as of this read");
+    }
+
+    [Fact]
+    public async Task A_re_vouch_restores_a_revoked_nodes_earlier_membership_writes()
+    {
+        // The other half of the same rule: since a membership write is authorized against the
+        // owner chain's own live state at read time, restoring the node to that live state (a
+        // re-vouch) restores every membership write it ever signed, exactly the latest-of-vouch-or-
+        // revocation rule the owner chain itself already applies to enrollment.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity laptop = GenerateIdentity();
+        string laptopRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(laptopRepo, laptop, laptop);
+        await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
+
+        GeneratedIdentity bob = GenerateIdentity();
+        await WriteMemberFileAsync(ownerRepo, bob.Fingerprint, "member", laptop);
+
+        await RevokeAsync(ownerRepo, owner.Fingerprint, laptop.NodeId, owner);
+
+        string readerAfterRevoke = _repo.CloneNode(hub);
+        (await _chainReader.ComputeAsync(readerAfterRevoke, CancellationToken.None))
+            .RoleOf(bob.Fingerprint).Should().BeNull("the laptop is revoked");
+
+        // The laptop is vouched again — a surviving node undoing a bad revocation.
+        await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
+
+        string readerAfterReVouch = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerAfterReVouch, CancellationToken.None);
+
+        chain.RoleOf(bob.Fingerprint).Should().Be(
+            MembershipRole.Member, "the re-vouch restores the laptop to the owner chain's live state, "
+            + "which restores every membership write it ever signed, this one included");
+        chain.IsAllowedSigner(laptop.Fingerprint).Should().BeTrue("the laptop is enrolled again as of this read");
+    }
+
+    [Fact]
+    public async Task A_revoked_nodes_backdated_committer_date_cannot_authorize_a_membership_write()
+    {
+        // The adversarial lens's own injection (cycle 1, both high) against the pre-fix
+        // owner.AsOf(commitTime): a revoked node crafts a members-ref commit and backdates
+        // GIT_COMMITTER_DATE to before its own revocation, hoping to be judged against the chain as
+        // it stood at that claimed date rather than as it stands now. The fix (ruled by the window,
+        // 2026-09-13) removed committer-date pinning from the authorization rule entirely, so a
+        // members-ref write is judged solely against the owner chain's own live state — a claimed
+        // date, true or forged, is never consulted at all, and this test proves backdating buys the
+        // revoked node nothing.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity laptop = GenerateIdentity();
+        string laptopRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(laptopRepo, laptop, laptop);
+        await VouchAsync(ownerRepo, owner.Fingerprint, laptop, owner);
         await RevokeAsync(ownerRepo, owner.Fingerprint, laptop.NodeId, owner);
 
         string membersRefName = "refs/hall9k/ledger/members";
         await RunGitCaptureAsync(ownerRepo, ["fetch", "origin", $"+{membersRefName}:{membersRefName}"]);
         string membersTip = await RunGitCaptureAsync(ownerRepo, ["rev-parse", "--verify", membersRefName]);
 
-        // The laptop, still holding its own key after revocation, crafts a SECOND members-ref
-        // commit, self-claiming owner role, and backdates it to land before the revocation above.
+        // The laptop, still holding its own key after revocation, crafts a members-ref commit,
+        // self-claiming owner role, and backdates it to well before its own revocation above.
         GeneratedIdentity attacker = GenerateIdentity();
         string attackerPath = $"members/{attacker.Fingerprint}.yaml";
         string attackerContent = BuildYaml(("root_fingerprint", attacker.Fingerprint), ("role", "owner"), ("issued_at", Now()));
@@ -292,7 +321,7 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
 
         chain.RoleOf(attacker.Fingerprint).Should().BeNull(
-            "the laptop is revoked, and a second write from its own key can no longer be authorized "
+            "the laptop is revoked, and a write from its own key can no longer be authorized "
             + "by claiming an earlier committer date");
         chain.UnverifiedWrites.Should().Contain(write => write.Identifier == attacker.Fingerprint);
     }

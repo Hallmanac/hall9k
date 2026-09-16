@@ -1074,16 +1074,21 @@ vouch`/`revoke`; project membership (`refs/hall9k/ledger/members`) is its own le
 `members/<root>.yaml` per member, genesis self-written by the first join once that ref's own
 `members/` folder is entirely empty, `h9k project members`/`member remove`; and `GitLedgerChainReader`
 recomputes, on every read of every ledger and messages ref, exactly which signers a project's own
-chain currently trusts, each write checked against the signing chain's own state at the time that
-write landed. A stranger's own self-consistent root and node file are ignored everywhere they were
-never made a member, and recorded rather than silently dropped. **Still not built**: no node
-discovery, no gossip, no event replication (M2, the one thing a message is deliberately never
-trusted with), and no invite flow yet: a *second* human's node joining an owner's root today still
-needs a hand-run `h9k node vouch` from an already-enrolled node (T2, the invite mint-and-sweep round
-trip, is the next piece in the ruled chain). A force-push over a ledger ref still rewrites trust
-history along with everything else in it; nothing here detects or prevents that rewrite before the
-later relay replaces git as the carrier: every ledger and chain fetch is a forced update with no
-ancestry check, so a rewritten trust ref is accepted silently.
+chain currently trusts, each write checked against the signing chain's own live state at read time,
+never a snapshot pinned to that write's own claimed committer date. A stranger's own self-consistent
+root and node file are ignored everywhere they were never made a member, and recorded rather than
+silently dropped. **Still not built**: no node discovery, no gossip, no event replication (M2, the
+one thing a message is deliberately never trusted with), and no invite flow yet: a *second* human's
+node joining an owner's root today still needs a hand-run `h9k node vouch` from an already-enrolled
+node (T2, the invite mint-and-sweep round trip, is the next piece in the ruled chain). **Two known,
+accepted limits.** A force-push over a ledger ref still rewrites trust history along with everything
+else in it; nothing here detects or prevents that rewrite before the later relay replaces git as the
+carrier: every ledger and chain fetch is a forced update with no ancestry check, so a rewritten trust
+ref is accepted silently. Separately, because a membership write is judged against the owner chain's
+own live state rather than any point-in-time snapshot, a revocation retroactively voids every
+membership write the revoked node ever signed, and a later re-vouch of that node restores them on
+the next read — accepted as the correct behavior of the walked latest-of-vouch-or-revocation model,
+not a design gap.
 
 The peer-to-peer branch has a full design (identity as a two-tier key hierarchy, mDNS on the LAN,
 hole punching, a relay on 443, QUIC throughout) in

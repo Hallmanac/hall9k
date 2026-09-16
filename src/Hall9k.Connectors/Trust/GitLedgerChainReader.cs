@@ -16,13 +16,18 @@ namespace Hall9k.Connectors.Trust;
 /// its self-certified key plus every node currently vouched into it, latest of vouch or
 /// revocation winning in ref commit order — independent of project membership, then replays
 /// <c>refs/hall9k/ledger/members</c> against those chains: the very first commit ever touching a
-/// members file is genesis (self-written, unconditional), every later one needs a signer already
-/// recognized as an Owner-role member's own key <em>at the time that members-ref commit itself
-/// landed</em> — never against an owner chain's own final state, which would let a later
-/// revocation retroactively void an earlier, legitimately signed membership write (independent
-/// pre-PR review, cycle 1, conformance and adversarial lenses, medium and high). A write whose
-/// signer cannot be verified this way is silently ignored — never a thrown exception — so a
-/// stranger's self-consistent root and node files simply never enter
+/// members file is genesis (self-written, unconditional), every later one needs a signer that is,
+/// as of this read, an Owner-role member's own root key or a node currently in that root's own
+/// chain — the chain's live state, recomputed fresh on every call, never a snapshot pinned to any
+/// commit's own claimed committer date, which is a field its writer freely chooses and so is never
+/// a trustworthy anchor for anything (independent pre-PR review, cycle 1; ruled by the window,
+/// 2026-09-13: one rule, checked against the chain as it stands right now, no committer-timestamp
+/// pinning and no first-write exception). Consequence, accepted rather than deferred: a revocation
+/// retroactively voids every membership write the revoked node ever signed, and a later re-vouch of
+/// that same node restores them on the very next read — the identical latest-of-vouch-or-revocation
+/// rule the owner chain itself already applies, extended to the membership writes that chain in
+/// turn authorizes. A write whose signer cannot be verified this way is silently ignored — never a
+/// thrown exception — so a stranger's self-consistent root and node files simply never enter
 /// <see cref="TrustChain.OwnerChains"/>'s membership-restricted view; it is instead recorded in
 /// <see cref="TrustChain.UnverifiedWrites"/>, so a caller can name the writer rather than let it
 /// vanish without a trace.
@@ -72,24 +77,21 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     {
         IReadOnlyList<string> roots = await DiscoverOwnerRootsAsync(repositoryPath, cancellationToken);
 
-        Dictionary<string, OwnerChainTimeline> timelines = [];
+        Dictionary<string, TrustedOwner> ownerChains = [];
         List<UnverifiedLedgerWrite> unverified = [];
         foreach (string root in roots)
         {
-            (OwnerChainTimeline? timeline, IReadOnlyList<UnverifiedLedgerWrite> rootUnverified) =
+            (TrustedOwner? chain, IReadOnlyList<UnverifiedLedgerWrite> rootUnverified) =
                 await ComputeOwnerChainAsync(repositoryPath, root, cancellationToken);
             unverified.AddRange(rootUnverified);
-            if (timeline is not null)
+            if (chain is not null)
             {
-                timelines[root] = timeline;
-                unverified.AddRange(timeline.Unverified);
+                ownerChains[root] = chain;
             }
         }
 
-        Dictionary<string, TrustedOwner> ownerChains = timelines.ToDictionary(pair => pair.Key, pair => pair.Value.Final);
-
         (IReadOnlyList<ProjectMember> members, IReadOnlyList<UnverifiedLedgerWrite> memberUnverified) =
-            await ComputeMembersAsync(repositoryPath, timelines, cancellationToken);
+            await ComputeMembersAsync(repositoryPath, ownerChains, cancellationToken);
         unverified.AddRange(memberUnverified);
 
         return new TrustChain(ownerChains, members, unverified);
@@ -129,60 +131,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         return roots;
     }
 
-    /// <summary>One owner-ref commit's own effect on the chain being built: a vouch adds
-    /// <see cref="Node"/> under <see cref="NodeId"/>, a revocation removes it — <see cref="Time"/>
-    /// is that commit's own committer timestamp, what <see cref="OwnerChainTimeline.AsOf"/> folds
-    /// against to answer "what did this chain look like at some other, earlier point".</summary>
-    private sealed record OwnerChainEvent(DateTimeOffset Time, string NodeId, bool IsRevoke, TrustedNode? Node);
-
-    /// <summary>
-    /// One root's own chain, kept as a timeline rather than only its final state: every vouch and
-    /// revocation this walk accepted, in ref order, each carrying the committer timestamp of the
-    /// commit that made it. <see cref="Final"/> is the ordinary "what does this chain look like
-    /// right now" reading; <see cref="AsOf"/> is what <see cref="ComputeMembersAsync"/> uses
-    /// instead, so a members-ref write's own signer is checked against the owner chain as it stood
-    /// when that write itself landed, not against whatever the chain has become since (a later
-    /// revocation must never retroactively void an earlier, legitimately signed write — independent
-    /// pre-PR review, cycle 1, conformance and adversarial lenses, medium and high).
-    /// </summary>
-    private sealed record OwnerChainTimeline(
-        string RootFingerprint,
-        string RootPublicKeyLine,
-        IReadOnlyList<OwnerChainEvent> Events,
-        IReadOnlyList<UnverifiedLedgerWrite> Unverified)
-    {
-        public TrustedOwner Final => AsOf(DateTimeOffset.MaxValue);
-
-        public TrustedOwner AsOf(DateTimeOffset time)
-        {
-            Dictionary<string, TrustedNode> nodes = [];
-            foreach (OwnerChainEvent change in Events)
-            {
-                if (change.Time > time)
-                {
-                    continue;
-                }
-
-                if (change.IsRevoke)
-                {
-                    nodes.Remove(change.NodeId);
-                }
-                else
-                {
-                    nodes[change.NodeId] = change.Node!;
-                }
-            }
-
-            return new TrustedOwner(RootFingerprint, RootPublicKeyLine, [.. nodes.Values]);
-        }
-    }
-
     /// <summary>
     /// One root's own chain: self-certification (the ref name, the declared public key's own
     /// fingerprint, and the commit that currently produces that content must all agree), then every
     /// vouch or revocation in the ref's own history, oldest first, each one accepted only when its
     /// signer is already a member of the chain being built at that point — the root's own key from
-    /// the start, and every node this same walk has already vouched in. Returns a null timeline
+    /// the start, and every node this same walk has already vouched in. Returns a null chain
     /// when the root cannot be self-certified at all: nothing about it is trusted, root key
     /// included — paired with an unverified-write diagnostic naming the specific offending commit
     /// whenever one exists to name, rather than the whole chain silently vanishing with no
@@ -190,7 +144,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// misreporting the honest genesis writer as the cause (independent pre-PR review, cycle 1,
     /// conformance lens, medium).
     /// </summary>
-    private async Task<(OwnerChainTimeline? Timeline, IReadOnlyList<UnverifiedLedgerWrite> Unverified)> ComputeOwnerChainAsync(
+    private async Task<(TrustedOwner? Chain, IReadOnlyList<UnverifiedLedgerWrite> Unverified)> ComputeOwnerChainAsync(
         string repositoryPath, string root, CancellationToken cancellationToken)
     {
         string refName = $"{OwnersRefPrefix}{root}";
@@ -242,13 +196,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         }
 
         Dictionary<string, TrustedNode> nodes = [];
-        List<OwnerChainEvent> events = [];
         List<UnverifiedLedgerWrite> unverified = [];
         string nodesPrefix = $"owners/{root}/nodes/";
         string revokedPrefix = $"owners/{root}/revoked/";
 
-        IReadOnlyList<(string Sha, DateTimeOffset Time)> allCommits = await CommitsOldestFirstAsync(repositoryPath, tip, cancellationToken);
-        foreach ((string commit, DateTimeOffset commitTime) in allCommits)
+        IReadOnlyList<string> allCommits = await CommitsOldestFirstAsync(repositoryPath, tip, cancellationToken);
+        foreach (string commit in allCommits)
         {
             foreach (string path in await ChangedPathsAsync(repositoryPath, commit, cancellationToken))
             {
@@ -301,7 +254,6 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 if (isRevoke)
                 {
                     nodes.Remove(nodeId);
-                    events.Add(new OwnerChainEvent(commitTime, nodeId, IsRevoke: true, Node: null));
                     continue;
                 }
 
@@ -317,13 +269,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 // processes commits oldest to newest and simply overwrites whichever state a
                 // node-id last held, so a surviving node vouching again after a bad revocation
                 // restores it here exactly as idea 202383dc's own model describes.
-                TrustedNode node = new(nodeId, nodePublicKey, nodeFingerprint, issuedAt);
-                nodes[nodeId] = node;
-                events.Add(new OwnerChainEvent(commitTime, nodeId, IsRevoke: false, Node: node));
+                nodes[nodeId] = new TrustedNode(nodeId, nodePublicKey, nodeFingerprint, issuedAt);
             }
         }
 
-        return (new OwnerChainTimeline(root, publicKeyLine, events, unverified), []);
+        return (new TrustedOwner(root, publicKeyLine, [.. nodes.Values]), []);
     }
 
     /// <summary>
@@ -331,38 +281,26 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// own history ever holds that touches a <c>members/*.yaml</c> path is genesis: accepted only
     /// when self-written (the writer's key traces to the very root fingerprint the file names),
     /// unconditionally the project's first owner-role member either way — win or lose, that slot is
-    /// spent once. Every later write needs its signer to already belong to a currently Owner-role
-    /// member's own chain.
+    /// spent once. Every later write needs its signer to belong, right now, to a currently
+    /// Owner-role member's own chain (<see cref="IsAuthorizedByOwnerChainAsync"/>) — the chain's
+    /// live state at read time, the one <paramref name="ownerChains"/> already holds, never a
+    /// snapshot pinned to this commit's own claimed committer date. That date is a field its writer
+    /// freely chooses, so it is never a trustworthy anchor for anything (independent pre-PR review,
+    /// cycle 1; ruled by the window, 2026-09-13): a members-ref write is authorized or refused by
+    /// one and the same rule regardless of when it landed, first from a given node's key or
+    /// hundredth. Consequence, accepted rather than deferred: once a node is revoked, every
+    /// membership write it ever signed — including one made while it was still legitimately
+    /// enrolled — stops being authorized on the next read, and a later re-vouch of that same node
+    /// restores them all again, exactly the latest-of-vouch-or-revocation rule the owner chain
+    /// itself already applies.
     /// <para>
-    /// <em>Which point in that chain "already belong" is checked against</em>, for a signer that is
-    /// a vouched node rather than the root key itself, depends on whether this is the first
-    /// authorized (non-genesis) write this walk has accepted from that specific node's own key,
-    /// tracked as we go by <see cref="IsAuthorizedByOwnerChainAsync"/> — never the whole owner
-    /// chain, and never the root key, which self-certifies once and is never subject to revocation
-    /// the way a vouched node is: the first write from a given node's key is checked against the
-    /// chain <em>as it stood when this commit itself landed</em> (<see cref="OwnerChainTimeline.AsOf"/>,
-    /// keyed by this commit's own claimed committer date) — never the chain's own final state,
-    /// which would let a node revoked after the fact retroactively void a write it made while still
-    /// legitimately enrolled (independent pre-PR review, cycle 1, conformance and adversarial
-    /// lenses, medium and high). Every write after that node's first one is checked against the
-    /// chain's own current, live state instead (<see cref="OwnerChainTimeline.Final"/>), never
-    /// <c>AsOf</c> again: a members-ref commit's own committer date is a field its writer freely
-    /// chooses, so trusting it lets a revoked node keep re-authorizing itself indefinitely by
-    /// backdating a fresh commit to precede its own real revocation (independent pre-PR review,
-    /// cycle 1, conformance and adversarial lenses, both high) — closed for every write after that
-    /// node's first, real one, which nothing forges. The first write from a node that has never yet
-    /// written to the members ref keeps trusting its own claimed date, because nothing else
-    /// non-forgeable is available yet to bound it against; fully closing that narrower, single-use
-    /// race needs a trusted anchor this reader does not have (a persisted, writer-independent
-    /// observation time, or a witnessed owner-chain commitment made at write time), not a change to
-    /// this replay — flagged in this task's own PR summary for human judgment on the residual risk.
-    /// </para>
     /// Anything unauthorized is ignored, including a later self-claimed owner with no vouch (idea
     /// 202383dc, T1 criterion 2) — and recorded in the returned unverified list rather than silently
     /// dropped.
+    /// </para>
     /// </summary>
     private async Task<(IReadOnlyList<ProjectMember> Members, IReadOnlyList<UnverifiedLedgerWrite> Unverified)> ComputeMembersAsync(
-        string repositoryPath, IReadOnlyDictionary<string, OwnerChainTimeline> timelines, CancellationToken cancellationToken)
+        string repositoryPath, IReadOnlyDictionary<string, TrustedOwner> ownerChains, CancellationToken cancellationToken)
     {
         await FetchRefAsync(repositoryPath, MembersRefName, cancellationToken);
 
@@ -376,16 +314,9 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         const string suffix = ".yaml";
         Dictionary<string, ProjectMember> current = [];
         List<UnverifiedLedgerWrite> unverified = [];
-
-        // Every vouched-node fingerprint that has already had one members-ref write accepted
-        // through this walk, scoped to the specific key — never the whole owner chain, which a
-        // legitimate root key or a second, still-enrolled node under the same owner would wrongly
-        // penalize for a first, unrelated node's own earlier write (IsAuthorizedByOwnerChainAsync's
-        // own doc explains why).
-        HashSet<string> nodesWithAuthorizedWrite = [];
         bool genesisDecided = false;
 
-        foreach ((string commit, DateTimeOffset commitTime) in await CommitsOldestFirstAsync(repositoryPath, tip, cancellationToken))
+        foreach (string commit in await CommitsOldestFirstAsync(repositoryPath, tip, cancellationToken))
         {
             foreach (string path in await ChangedPathsAsync(repositoryPath, commit, cancellationToken))
             {
@@ -407,7 +338,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 {
                     genesisDecided = true;
                     if (!isDeletion
-                        && timelines.TryGetValue(fingerprint, out OwnerChainTimeline? selfOwner)
+                        && ownerChains.TryGetValue(fingerprint, out TrustedOwner? selfOwner)
                         && await IsSignedByAsync(repositoryPath, commit, selfOwner.RootPublicKeyLine, cancellationToken))
                     {
                         current[fingerprint] = new ProjectMember(fingerprint, MembershipRole.Owner, ParseIssuedAt(content));
@@ -432,13 +363,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                         continue;
                     }
 
-                    if (!timelines.TryGetValue(member.RootFingerprint, out OwnerChainTimeline? owner))
+                    if (!ownerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner))
                     {
                         continue;
                     }
 
-                    if (await IsAuthorizedByOwnerChainAsync(
-                        repositoryPath, commit, owner, commitTime, nodesWithAuthorizedWrite, cancellationToken))
+                    if (await IsAuthorizedByOwnerChainAsync(repositoryPath, commit, owner, cancellationToken))
                     {
                         authorized = true;
                         break;
@@ -449,8 +379,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 {
                     unverified.Add(new UnverifiedLedgerWrite(
                         "membership", fingerprint, fingerprint,
-                        $"commit {commit} is not signed by any currently owner-role member's own chain, "
-                        + "as that chain stood when this commit landed"));
+                        $"commit {commit} is not signed by any currently owner-role member's own chain"));
                     continue;
                 }
 
@@ -481,60 +410,29 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
 
     /// <summary>
     /// Whether <paramref name="commit"/>, a members-ref write, is authorized by <paramref name="owner"/>'s
-    /// own chain — the root's own key always qualifies, unconditionally, since it self-certifies
-    /// once and is never itself subject to revocation the way a vouched node is. A vouched node's
-    /// key is judged against <see cref="OwnerChainTimeline.AsOf"/>, pinned to <paramref name="commitTime"/>
-    /// (this write's own claimed committer date, freely chosen by whoever signs it), only the first
-    /// time this walk has ever accepted a write from that specific node's own key — recorded into
-    /// <paramref name="nodesWithAuthorizedWrite"/> the moment it does. Every write after that node's
-    /// first one is judged against the chain's own current, live state (<see cref="OwnerChainTimeline.Final"/>)
-    /// instead, never <paramref name="commitTime"/> again: trusting a freely-chosen date more than
-    /// once per node is what let a revoked node keep re-authorizing itself indefinitely by
-    /// backdating a fresh commit ahead of its own real revocation (independent pre-PR review, cycle
-    /// 1, conformance and adversarial lenses, both high) — <see cref="ComputeMembersAsync"/>'s own
-    /// doc discloses the residual, single-use gap this narrows the exploit down to, rather than
-    /// closes outright.
+    /// own chain, as that chain stands right now: signed by the root's own key, or by any node
+    /// <paramref name="owner"/> currently has enrolled. One rule, unconditionally, for every write
+    /// regardless of when it landed or whether this is that signer's first accepted write or its
+    /// hundredth — never a members-ref commit's own claimed committer date, which is a field its
+    /// writer freely chooses and so is never a trustworthy anchor for anything (independent pre-PR
+    /// review, cycle 1; ruled by the window, 2026-09-13). <see cref="ComputeMembersAsync"/>'s own doc
+    /// names the accepted consequence: a revoked node's earlier, legitimately signed writes stop
+    /// being authorized the moment it is revoked, and a later re-vouch restores them again.
     /// </summary>
     private async Task<bool> IsAuthorizedByOwnerChainAsync(
-        string repositoryPath, string commit, OwnerChainTimeline owner, DateTimeOffset commitTime,
-        HashSet<string> nodesWithAuthorizedWrite, CancellationToken cancellationToken)
+        string repositoryPath, string commit, TrustedOwner owner, CancellationToken cancellationToken)
     {
         if (await IsSignedByAsync(repositoryPath, commit, owner.RootPublicKeyLine, cancellationToken))
         {
             return true;
         }
 
-        TrustedOwner finalOwner = owner.Final;
-        TrustedOwner asOfOwner = owner.AsOf(commitTime);
-        Dictionary<string, TrustedNode> everSeenNodes = [];
-        foreach (TrustedNode node in finalOwner.Nodes)
+        foreach (TrustedNode node in owner.Nodes)
         {
-            everSeenNodes[node.Fingerprint] = node;
-        }
-
-        foreach (TrustedNode node in asOfOwner.Nodes)
-        {
-            everSeenNodes.TryAdd(node.Fingerprint, node);
-        }
-
-        foreach (TrustedNode node in everSeenNodes.Values)
-        {
-            if (!await IsSignedByAsync(repositoryPath, commit, node.PublicKeyLine, cancellationToken))
+            if (await IsSignedByAsync(repositoryPath, commit, node.PublicKeyLine, cancellationToken))
             {
-                continue;
+                return true;
             }
-
-            bool enrolledNow = finalOwner.Nodes.Any(candidate => candidate.Fingerprint == node.Fingerprint);
-            bool enrolledThen = asOfOwner.Nodes.Any(candidate => candidate.Fingerprint == node.Fingerprint);
-            bool authorizedHere = nodesWithAuthorizedWrite.Contains(node.Fingerprint) ? enrolledNow : enrolledThen;
-            if (authorizedHere)
-            {
-                nodesWithAuthorizedWrite.Add(node.Fingerprint);
-            }
-
-            // The signing key was found — no other node under this owner could also match the
-            // identical signature, so there is nothing left to gain by checking the rest.
-            return authorizedHere;
         }
 
         return false;
@@ -614,32 +512,18 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         return tip.IsBlank() ? null : tip;
     }
 
-    /// <summary>Every commit reachable from <paramref name="tip"/>, oldest first, paired with its
-    /// own committer timestamp — <c>--topo-order --first-parent</c> so replay follows the actual
-    /// mainline commit graph rather than committer-date order (freely chosen by whoever signs a
-    /// commit) and never descends into a merge's second parent at all, closing the path a
-    /// backdated, merged-in commit would otherwise use to reorder itself earlier in ref history
-    /// (independent pre-PR review, cycle 1, adversarial lens, medium).</summary>
-    private async Task<IReadOnlyList<(string Sha, DateTimeOffset Time)>> CommitsOldestFirstAsync(
+    /// <summary>Every commit reachable from <paramref name="tip"/>, oldest first —
+    /// <c>--topo-order --first-parent</c> so replay follows the actual mainline commit graph rather
+    /// than committer-date order (freely chosen by whoever signs a commit, and never consulted
+    /// anywhere in this walk) and never descends into a merge's second parent at all, closing the
+    /// path a backdated, merged-in commit would otherwise use to reorder itself earlier in ref
+    /// history (independent pre-PR review, cycle 1, adversarial lens, medium).</summary>
+    private async Task<IReadOnlyList<string>> CommitsOldestFirstAsync(
         string repositoryPath, string tip, CancellationToken cancellationToken)
     {
         string output = await RunGitCaptureOrThrowAsync(
-            repositoryPath, ["log", "--format=%H%x09%cI", "--reverse", "--topo-order", "--first-parent", tip], cancellationToken);
-
-        List<(string, DateTimeOffset)> commits = [];
-        foreach (string line in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-        {
-            string[] parts = line.Split('\t', 2);
-            if (parts.Length != 2
-                || !DateTimeOffset.TryParse(parts[1].Trim(), CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset time))
-            {
-                continue;
-            }
-
-            commits.Add((parts[0].Trim(), time));
-        }
-
-        return commits;
+            repositoryPath, ["log", "--format=%H", "--reverse", "--topo-order", "--first-parent", tip], cancellationToken);
+        return [.. output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(line => line.Trim())];
     }
 
     /// <summary>Every commit reachable from <paramref name="tip"/> (mainline only —
