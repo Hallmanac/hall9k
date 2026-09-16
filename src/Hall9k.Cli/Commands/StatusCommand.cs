@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -437,44 +438,80 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// merged this way is Done, and a Done task earns no row of its own in the sections below by
     /// this pane's own design (Decisions Log #66: the pane is what needs you, not a browse
     /// surface). <see cref="RunDetails.CopilotReviewUnavailableAt"/> is the durable, never-cleared
-    /// record that makes this readable after the row that carried it is gone; pairing it with
-    /// <see cref="RunDetails.PullRequestMergedAt"/> is what scopes this line to the fact this
-    /// pane owes a reader — that the merge actually happened without Copilot's review — rather
-    /// than every refusal ever observed, most of which a landed re-review or a human merge
-    /// already resolved. Degraded rather than fatal on a database hiccup, the same as the panes
-    /// above.
+    /// record that makes this readable after the row that carried it is gone.
+    /// <para>
+    /// Read across every run of a task, not one row: the run that observed the refusal need not
+    /// be the run whose own <c>PullRequestMerged</c> event landed (the same reason
+    /// <c>h9k task show</c>'s own <c>WriteCopilotReviewUnavailableOutcome</c> selection reads
+    /// across every run instead of one), and <see cref="RunDetails.PullRequestMergeObservedAt"/>
+    /// rather than <see cref="RunDetails.PullRequestMergedAt"/> is what answers "did this task's
+    /// pull request actually merge" — the daemon's own pre-approved auto-merge always appends
+    /// that event with a null GitHub timestamp, and
+    /// <see cref="RunDetails.PullRequestMergedAt"/> alone would silently drop the exact case this
+    /// pane exists for (independent pre-PR review, cycle 3, both lenses, high). A task where any
+    /// run's <see cref="RunDetails.ExternalReviewState"/> ever read
+    /// <see cref="ExternalReviewState.Landed"/> is excluded even when a refusal and a merge both
+    /// happened, because a landed review means Copilot did in fact review it before it merged
+    /// (independent pre-PR review, cycle 3, adversarial lens, medium). Degraded rather than fatal
+    /// on a database hiccup, the same as the panes above.
+    /// </para>
     /// </summary>
     internal static async Task WriteMergedWithoutCopilotReviewAsync(
         IQuerySession session, CancellationToken cancellationToken)
     {
         try
         {
-            IReadOnlyList<RunDetails> merged = await session.Query<RunDetails>()
-                .Where(run => run.CopilotReviewUnavailableAt != null && run.PullRequestMergedAt != null)
+            IReadOnlyList<RunDetails> candidates = await session.Query<RunDetails>()
+                .Where(run => run.CopilotReviewUnavailableAt != null || run.PullRequestMergeObservedAt != null)
                 .ToListAsync(cancellationToken);
+            if (candidates.Count == 0)
+            {
+                return;
+            }
+
+            List<(Guid TaskId, DateTimeOffset MergedAt, int? PullRequestNumber)> merged = [];
+            foreach (IGrouping<Guid, RunDetails> byTask in candidates.GroupBy(run => run.TaskId))
+            {
+                bool everRefused = byTask.Any(run => run.CopilotReviewUnavailableAt != null);
+                bool everLanded = byTask.Any(run => run.ExternalReviewState == ExternalReviewState.Landed);
+                DateTimeOffset? mergedAt = byTask.Max(run => run.PullRequestMergeObservedAt);
+                if (!everRefused || everLanded || mergedAt is not { } resolvedMergedAt)
+                {
+                    continue;
+                }
+
+                int? pullRequestNumber = byTask
+                    .Where(run => run.PullRequestNumber is not null)
+                    .OrderByDescending(run => run.PullRequestMergeObservedAt ?? DateTimeOffset.MinValue)
+                    .Select(run => run.PullRequestNumber)
+                    .FirstOrDefault();
+                merged.Add((byTask.Key, resolvedMergedAt, pullRequestNumber));
+            }
+
             if (merged.Count == 0)
             {
                 return;
             }
 
-            IReadOnlyList<RunDetails> ordered = [.. merged.OrderByDescending(run => run.PullRequestMergedAt)];
-            foreach (RunDetails run in ordered.Take(MaxMergedWithoutCopilotReviewShown))
+            List<(Guid TaskId, DateTimeOffset MergedAt, int? PullRequestNumber)> ordered =
+                [.. merged.OrderByDescending(entry => entry.MergedAt)];
+            foreach ((Guid taskId, DateTimeOffset mergedAt, int? pullRequestNumber) in ordered.Take(MaxMergedWithoutCopilotReviewShown))
             {
-                TaskListItem? task = await session.LoadAsync<TaskListItem>(run.TaskId, cancellationToken);
+                TaskListItem? task = await session.LoadAsync<TaskListItem>(taskId, cancellationToken);
                 string label = task is null
-                    ? TaskListCommand.ShortId(run.TaskId)
+                    ? TaskListCommand.ShortId(taskId)
                     : $"{TaskListCommand.ShortId(task.Id)} {ExternalText.OneLineMarkup(task.Objective)}";
-                string pullRequest = run.PullRequestNumber is { } number ? $"PR #{number}" : "its pull request";
+                string pullRequest = pullRequestNumber is { } number ? $"PR #{number}" : "its pull request";
                 AnsiConsole.MarkupLine(
                     $"[yellow]merged without Copilot review[/] — {label} [dim]({pullRequest}, "
-                    + $"{run.PullRequestMergedAt!.Value.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
+                    + $"{mergedAt.ToLocalTime().ToString("g").EscapeMarkup()})[/]");
             }
 
             int held = ordered.Count - Math.Min(ordered.Count, MaxMergedWithoutCopilotReviewShown);
             if (held > 0)
             {
                 AnsiConsole.MarkupLine(
-                    $"[dim]  … and {held} more — see them all with:[/] h9k task list --state done");
+                    $"[dim]  … and {held} more; browse every done task, these included, with:[/] h9k task list --state done");
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
