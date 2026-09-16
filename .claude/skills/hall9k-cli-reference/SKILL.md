@@ -18,7 +18,7 @@ h9k daemon start|stop|status # the CLI-owned daemon lifecycle (Decisions Log #31
 h9k config show|set          # the daemon's durable operating settings: node ceiling (--max-concurrent-task-runs), the per-run session cap default (--session-cap-per-run), model-by-role, interactive-claim-stale-after-days, review-cycle caps, the review stage composition (--review-stage-composition, --accept-reduced-review to degrade it), a periodic token-spend budget (--spend-budget, --spend-period; backlog 59, Decisions Log #103, #111, #112, #120, #129), the message sweep's active/idle poll ranges (--message-poll-active-min/-max, --message-poll-idle-min/-max, seconds; idea 202383dc M1b)
 h9k doctor [--yes]           # diagnose the database situation and what to do about it; --yes remediates non-interactively, for scripts and dispatched agents (Decisions Log #73, #74, #118)
 h9k project add --name <n> --repo-url <url>   # register a project and create its home directory; offers to reactivate or rename an archived project whose name it collides with (--reactivate-archived, --rename-archived-to <NAME>) (Decisions Log #182); also runs h9k project join once the repository is reachable on disk, reporting plainly if it could not (§16 #190); refused up front when this install has no confirmed GitHub account (gh reported no login) — a Jira connection alone tracks cards, not repository access, so it is not enough on its own (idea 202383dc, A2b, §16 #197)
-h9k project join <name> [--owner <fingerprint>]   # establish or confirm this node's identity in a project's ledger: generates this node's ed25519 key once under ~/.hall9k/keys/<node-id>, then writes its node file signed with it; the first join naming no --owner establishes this owner's root and that fingerprint becomes the owner id everywhere in Hall9k (h9k owner show <fingerprint>, h9k task assign --owner <fingerprint>), recorded on the Owner stream, and a later plain join keeps whatever root is already claimed; --owner <fingerprint> claims an existing root instead, unverified until the team half's vouch (not yet built); re-runnable to change the claim, retiring a self-created root (required in the project being joined, best-effort in every other reachable, non-archived project that holds it) when this node turns out to belong to another one (idea 202383dc, A2a, §16 #190); refused before any key is generated or any ledger byte is written when the project's own GitHub account has no push on the repository, naming the repository and the rule (idea 202383dc, A2b, §16 #197)
+h9k project join <name> [--owner <fingerprint>]   # establish or confirm this node's identity in a project's ledger: generates this node's ed25519 key once under ~/.hall9k/keys/<node-id>, then writes its node file signed with it; the first join naming no --owner establishes this owner's root and that fingerprint becomes the owner id everywhere in Hall9k (h9k owner show <fingerprint>, h9k task assign --owner <fingerprint>), recorded on the Owner stream, and a later plain join keeps whatever root is already claimed; --owner <fingerprint> claims an existing root instead, unverified until an already-enrolled node of that owner confirms it (h9k node vouch, or a matched h9k node invite); re-runnable to change the claim, retiring a self-created root (required in the project being joined, best-effort in every other reachable, non-archived project that holds it) when this node turns out to belong to another one (idea 202383dc, A2a, §16 #190); refused before any key is generated or any ledger byte is written when the project's own GitHub account has no push on the repository, naming the repository and the rule (idea 202383dc, A2b, §16 #197)
 h9k project init <name>      # create, repair or refresh a project's home; idempotent
 h9k project list [--include-archived]   # every project with its tasks counted by attention bucket; archived ones are hidden unless asked for (Decisions Log #182)
 h9k project show <name>      # one project: home, registration, settings, rollup, newest tasks
@@ -158,8 +158,8 @@ undoes a bad revocation by vouching again. Project membership is its own ref,
 `refs/hall9k/ledger/members`, one `members/<root-fingerprint>.yaml` per member (root fingerprint,
 role owner or member, issued at); `h9k project join` writes the first one itself, self-signed, the
 moment it finds that ref's own `members/` folder entirely empty (genesis is spent once, project-wide,
-never merely per fingerprint). Nothing writes a member file after that today: adding a member is not
-yet built, and waits on the invite flow (T2). `Hall9k.Connectors.Trust.
+never merely per fingerprint). Adding a member after genesis goes through the invite flow below (T2).
+`Hall9k.Connectors.Trust.
 GitLedgerChainReader` is the one place this is computed: it walks every owner root a project's
 ledger has ever seen, resolves each root's own chain independent of membership, then replays the
 members ref against those chains, checking each write's signer against that chain's own live state
@@ -180,6 +180,31 @@ h9k node vouch <node-id>              # vouch a node into this owner's own fleet
 h9k node revoke <node-id>             # revoke a node from this owner's own fleet; a later h9k node vouch for the identical id restores it
 h9k project members <name>            # this project's current members: root, login when known locally, role, vouched nodes, verified state
 h9k project member remove <name> <fingerprint>   # remove a root's project membership (deletes the file); refused unless this node's own root holds the owner role here
+```
+
+**Invites** (idea 202383dc, T2): an enrolled node mints a single-use secret for a new node of its
+own owner, or an owner-role member mints one for a new member of the project; either way it writes
+`owners/<minter-root>/invites/<invite-id>.yaml` (the secret's own hash, the claim, the role, the
+expiry, and whether it is spent, never the secret itself), prints the secret exactly once, and
+keeps it only in the minting node's own local store. Default expiry is 72 hours
+(`h9k config set --invite-expiry-hours`). `h9k project join --invite <secret>` proves possession by
+writing `HMAC(secret, this node's own key fingerprint)` into its own node file's `invite_proof`
+field: a node-of-owner invite claims that invite's own owner (like `--owner`, but read from the
+secret, and refused together with it) and creates no root; a member-of-project invite creates this
+node's own root when it has none yet, the same as an ordinary `--owner`-less join. A spent or
+expired invite is refused at join. The minting node's own daemon sweep, on its own cadence, scans
+every candidate node file for a proof that actually matches one of its outstanding invites (a
+wrong proof never vouches anything), and on a match writes the vouch (`owners/<root>/nodes/<id>.yaml`
+for node-of-owner, `members/<root>.yaml` for member-of-project), marks the invite spent in the
+ledger, and records it locally; no further prompt is needed. An optional note-kind message nudges
+the minting node's owner when a proof appears, but the sweep never depends on it: it finds the
+proof on its own regardless.
+
+```bash
+h9k node invite                                   # mint a node-of-owner invite, written into every project this owner is registered to; prints the secret once
+h9k project invite <name>                         # mint a member-of-project invite (owner role only); defaults the new member's own role to member
+h9k project invite <name> --role owner            # same, but the new member claims the owner role once vouched in
+h9k project join <name> --invite <secret>          # prove possession of a minted secret; the minting node's own sweep vouches it in automatically
 ```
 
 Ideas come before tasks (Decisions Log #35, redesigned by backlog 31). An idea undergoes
