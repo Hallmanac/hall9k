@@ -35,13 +35,20 @@ public sealed class InviteSweepEngine(
     private const string NodesRefPrefix = "refs/hall9k/ledger/nodes/";
     private const string MembersRefName = "refs/hall9k/ledger/members";
 
-    /// <summary>Every node ref's own tip as of this node's last look, so a sweep that finds an
-    /// unmoved tip skips reading it entirely — the same reasoning as <c>MessageSweepEngine</c>'s own
-    /// <c>_lastKnownTips</c>. In-memory and per-process by design: a restart just re-reads every
-    /// node ref once, which is cheap and correct, never lossy (independent pre-PR review, cycle 1,
+    /// <summary>Every node ref's own tip as of this node's last look, together with whatever
+    /// candidate that read produced (or <c>null</c> if it carried none) — so a sweep that finds an
+    /// unmoved tip skips re-reading the file but still re-offers the same candidate, rather than
+    /// dropping it. In-memory and per-process by design: a restart just re-reads every node ref
+    /// once, which is cheap and correct, never lossy (independent pre-PR review, cycle 1,
     /// conformance and adversarial lenses, both medium: an outstanding invite otherwise re-fetches
-    /// every node ref in every target project, once per invite, on every tick).</summary>
-    private readonly Dictionary<(string RepositoryPath, string RefName), string> _lastKnownTips = [];
+    /// every node ref in every target project, once per invite, on every tick). Caching the
+    /// candidate itself, not only the tip, is what independent pre-PR review, cycle 2, adversarial
+    /// lens, high flagged: recording only the tip made a candidate whose vouch/spend write failed
+    /// partway through a tick vanish from every later tick's own candidate list forever, because its
+    /// node ref's tip never moves again after the join — the same failure mode
+    /// <c>MessageSweepEngine</c>'s own doc comment on <c>StalledAtSeq</c> warns against, but for a
+    /// read that fully succeeded rather than one that did not.</summary>
+    private readonly Dictionary<(string RepositoryPath, string RefName), (string Sha, CandidateNode? Candidate)> _lastKnownRefs = [];
 
     private sealed record CandidateNode(Guid NodeId, string KeyFingerprint, string OwnerFingerprint, string PublicKeyLine, string Proof);
 
@@ -253,10 +260,15 @@ public sealed class InviteSweepEngine(
     /// Every node ref in <paramref name="repositoryPath"/> that actually carries a usable candidate
     /// — a well-formed <c>invite_proof</c>, <c>public_key</c>, and <c>owner_fingerprint</c> — scanned
     /// at most once per sweep tick regardless of how many outstanding invites target this project
-    /// (the cache in <see cref="SweepOnceAsync"/>), and skipping the fetch entirely for any node ref
-    /// whose tip <see cref="_lastKnownTips"/> already saw unchanged: that ref's content, and so
-    /// whatever proof it does or does not carry, cannot have changed either (independent pre-PR
-    /// review, cycle 1, conformance and adversarial lenses, both medium).
+    /// (the cache in <see cref="SweepOnceAsync"/>), and skipping the file fetch for any node ref
+    /// whose tip <see cref="_lastKnownRefs"/> already saw unchanged, reusing that ref's own
+    /// previously-resolved candidate (or lack of one) instead: that ref's content, and so whatever
+    /// proof it does or does not carry, cannot have changed either (independent pre-PR review,
+    /// cycle 1, conformance and adversarial lenses, both medium). Reusing the cached candidate
+    /// rather than treating an unmoved tip as "nothing here" is what keeps a candidate whose earlier
+    /// vouch/spend write failed partway through still offered to every later tick — its node ref's
+    /// tip never moves again after the join, so a naive skip would otherwise drop it forever
+    /// (independent pre-PR review, cycle 2, adversarial lens, high).
     /// </summary>
     private async Task<IReadOnlyList<CandidateNode>> GetProjectCandidatesAsync(
         string repositoryPath, Dictionary<string, IReadOnlyList<CandidateNode>> cache, CancellationToken cancellationToken)
@@ -276,16 +288,21 @@ public sealed class InviteSweepEngine(
             }
 
             (string RepositoryPath, string RefName) tipKey = (repositoryPath, nodeRef.RefName);
-            if (_lastKnownTips.TryGetValue(tipKey, out string? knownSha) && knownSha == nodeRef.Sha)
+            if (_lastKnownRefs.TryGetValue(tipKey, out (string Sha, CandidateNode? Candidate) known) && known.Sha == nodeRef.Sha)
             {
+                if (known.Candidate is { } cachedCandidate)
+                {
+                    candidates.Add(cachedCandidate);
+                }
+
                 continue;
             }
 
             string path = $"nodes/{candidateNodeId}/node.yaml";
             LedgerFile file = await ledger.ReadAsync(repositoryPath, nodeRef.RefName, path, cancellationToken);
-            _lastKnownTips[tipKey] = nodeRef.Sha;
             if (!file.Exists || file.Content is not { } content)
             {
+                _lastKnownRefs[tipKey] = (nodeRef.Sha, null);
                 continue;
             }
 
@@ -294,6 +311,7 @@ public sealed class InviteSweepEngine(
             string? ownerFingerprint = ExtractQuotedYamlValue(content, "owner_fingerprint");
             if (proof.IsBlank() || publicKeyLine.IsBlank() || ownerFingerprint.IsBlank())
             {
+                _lastKnownRefs[tipKey] = (nodeRef.Sha, null);
                 continue;
             }
 
@@ -305,10 +323,13 @@ public sealed class InviteSweepEngine(
             // must never be handed to a ledger path unvalidated (adversarial lens, high).
             if (!TryFingerprint(publicKeyLine, out string candidateFingerprint) || !NodeKeyStore.IsFingerprint(ownerFingerprint))
             {
+                _lastKnownRefs[tipKey] = (nodeRef.Sha, null);
                 continue;
             }
 
-            candidates.Add(new CandidateNode(candidateNodeId, candidateFingerprint, ownerFingerprint, publicKeyLine, proof));
+            CandidateNode candidate = new(candidateNodeId, candidateFingerprint, ownerFingerprint, publicKeyLine, proof);
+            _lastKnownRefs[tipKey] = (nodeRef.Sha, candidate);
+            candidates.Add(candidate);
         }
 
         cache[repositoryPath] = candidates;
