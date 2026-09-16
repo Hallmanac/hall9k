@@ -104,6 +104,41 @@ public sealed class InviteDeciderTests
         act.Should().Throw<DomainValidationException>().WithMessage("*already spent*");
     }
 
+    [Fact]
+    public void VouchProject_records_the_project_and_the_issued_at_it_used()
+    {
+        InviteAggregate invite = Minted();
+        Guid projectId = DomainId.New();
+
+        InviteProjectVouched vouched = InviteDecider.VouchProject(invite, projectId, Now.AddMinutes(1));
+        invite.Apply(vouched);
+
+        vouched.InviteId.Should().Be(invite.Id);
+        vouched.ProjectId.Should().Be(projectId);
+        invite.VouchedProjects.Should().ContainKey(projectId).WhoseValue.Should().Be(Now.AddMinutes(1));
+    }
+
+    [Fact]
+    public void VouchProject_refuses_an_already_spent_invite()
+    {
+        InviteAggregate invite = Minted();
+        invite.Apply(InviteDecider.Spend(invite, DomainId.New(), "root-of-claimer", Now.AddMinutes(5)));
+
+        Action act = () => InviteDecider.VouchProject(invite, DomainId.New(), Now.AddMinutes(6));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*already spent*");
+    }
+
+    [Fact]
+    public void VouchProject_refuses_an_empty_project_id()
+    {
+        InviteAggregate invite = Minted();
+
+        Action act = () => InviteDecider.VouchProject(invite, Guid.Empty, Now.AddMinutes(1));
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
     private static InviteAggregate Minted()
     {
         InviteAggregate invite = new();
