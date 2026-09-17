@@ -17,6 +17,14 @@ public sealed class TaskAggregate
     public ExternalReference? ExternalReference { get; private set; }
 
     /// <summary>
+    /// A second external item, shown and linked but never gating or written to (task: a task may
+    /// link to both a GitHub issue and a Jira card). <see cref="ExternalReference"/> is the primary
+    /// and does every job — the claim gate, the branch key, publish, closeout close, and every
+    /// tracker write — so every reader of this field is display-only.
+    /// </summary>
+    public ExternalReference? SecondaryExternalReference { get; private set; }
+
+    /// <summary>
     /// The system a publication session is outstanding for, or null when none is (backlog 18).
     /// Set by the request and cleared when the session ends, so the daemon's publication loop
     /// can tell work still to do from work already done without a second document.
@@ -738,6 +746,7 @@ public sealed class TaskAggregate
         AgentContext = @event.AgentContext;
         Constraints = @event.Constraints;
         ExternalReference = @event.ExternalReference;
+        SecondaryExternalReference = @event.SecondaryExternalReference;
         Model = @event.Model ?? AgentModel.Unknown;
         AddedAt = @event.AddedAt;
         AddedByOwnerId = @event.AddedByOwnerId;

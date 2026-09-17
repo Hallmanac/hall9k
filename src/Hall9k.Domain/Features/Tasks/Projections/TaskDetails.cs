@@ -28,6 +28,12 @@ public sealed class TaskDetails
     public string? AgentContext { get; set; }
     public TaskConstraints? Constraints { get; set; }
     public string? ExternalReference { get; set; }
+    /// <summary>
+    /// A second external item, shown and linked but never gating or written to (task: a task may
+    /// link to both a GitHub issue and a Jira card). <see cref="ExternalReference"/> is the primary
+    /// and does every job; this field is display-only.
+    /// </summary>
+    public string? SecondaryExternalReference { get; set; }
     /// <summary>What the external system said the item's status was when Hall9k last read it; never refreshed.</summary>
     public string? ExternalStatusObserved { get; set; }
     /// <summary>When that reading happened — the stamp that makes the status above history rather than a claim.</summary>
@@ -419,6 +425,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         AgentContext = @event.Data.AgentContext,
         Constraints = @event.Data.Constraints,
         ExternalReference = @event.Data.ExternalReference?.ToString(),
+        SecondaryExternalReference = @event.Data.SecondaryExternalReference?.ToString(),
         Model = @event.Data.Model ?? AgentModel.Unknown,
         AddedAt = @event.Data.AddedAt,
         AddedByOwnerId = @event.Data.AddedByOwnerId,

@@ -44,6 +44,60 @@ public sealed class TaskLifecycleProjectionTests
         details.AssignedOwnerId.Should().Be(ownerId);
     }
 
+    /// <summary>
+    /// A task may link to both a GitHub issue and a Jira card (task: a task may link to both):
+    /// both projections carry the secondary reference alongside the primary, and a task with only
+    /// one reference carries no secondary at all — the byte-for-byte case every task added before
+    /// this feature existed replays as.
+    /// </summary>
+    [Fact]
+    public void Both_projections_carry_a_secondary_reference_alongside_the_primary()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        ExternalReference primary = new(WorkItemProvider.GitHub, "Hallmanac/hall9k#42");
+        ExternalReference secondary = new(WorkItemProvider.Jira, "PROJ-123");
+
+        TaskAdded added = new(
+            id, DomainId.New(), "Adopt both trackers", ["it links both"], TaskType.Feature,
+            null, null, primary, Now, ownerId, StartsAsDraft: true,
+            SecondaryExternalReference: secondary);
+
+        TaskAggregate aggregate = new();
+        aggregate.Apply(added);
+        aggregate.ExternalReference.Should().Be(primary);
+        aggregate.SecondaryExternalReference.Should().Be(secondary);
+
+        TaskListItem list = new TaskListItemProjection().Create(new FakeEvent<TaskAdded>(added));
+        list.ExternalReference.Should().Be(primary.ToString());
+        list.SecondaryExternalReference.Should().Be(secondary.ToString());
+
+        TaskDetails details = new TaskDetailsProjection().Create(new FakeEvent<TaskAdded>(added));
+        details.ExternalReference.Should().Be(primary.ToString());
+        details.SecondaryExternalReference.Should().Be(secondary.ToString());
+    }
+
+    [Fact]
+    public void A_task_with_one_reference_carries_no_secondary()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        ExternalReference primary = new(WorkItemProvider.GitHub, "Hallmanac/hall9k#42");
+
+        TaskAdded added = new(
+            id, DomainId.New(), "Adopt one tracker", ["it links one"], TaskType.Feature,
+            null, null, primary, Now, ownerId, StartsAsDraft: true);
+
+        TaskAggregate aggregate = new();
+        aggregate.Apply(added);
+        aggregate.SecondaryExternalReference.Should().BeNull();
+
+        new TaskListItemProjection().Create(new FakeEvent<TaskAdded>(added))
+            .SecondaryExternalReference.Should().BeNull();
+        new TaskDetailsProjection().Create(new FakeEvent<TaskAdded>(added))
+            .SecondaryExternalReference.Should().BeNull();
+    }
+
     [Fact]
     public void The_list_row_walks_draft_published_blocked_and_queued()
     {

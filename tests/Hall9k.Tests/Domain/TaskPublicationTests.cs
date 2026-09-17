@@ -27,12 +27,13 @@ public sealed class TaskPublicationTests
     private static readonly Guid Owner = DomainId.New();
     private static readonly ExternalReference Card = new(WorkItemProvider.Jira, "PROJ-123");
 
-    private static TaskAggregate Draft(ExternalReference? adopted = null)
+    private static TaskAggregate Draft(ExternalReference? adopted = null, ExternalReference? secondary = null)
     {
         TaskAggregate task = new();
         task.Apply(TaskDecider.Add(
             DomainId.New(), DomainId.New(), "Connect Jira as a work-item source", ["It imports a card"],
-            TaskType.Feature, agentContext: null, constraints: null, adopted, Now, Owner));
+            TaskType.Feature, agentContext: null, constraints: null, adopted, Now, Owner,
+            secondaryExternalReference: secondary));
         return task;
     }
 
@@ -75,6 +76,45 @@ public sealed class TaskPublicationTests
         Action publish = () => Request(adopted);
 
         publish.Should().Throw<DomainConflictException>().WithMessage("*already linked to github:o/r#42*");
+    }
+
+    /// <summary>
+    /// The primary keeps the publish gate exactly as it does with no secondary at all (task: a
+    /// task may link to both a GitHub issue and a Jira card): the refusal names the primary, and
+    /// the secondary — carried alongside — never enters into it.
+    /// </summary>
+    [Fact]
+    public void A_task_with_a_secondary_reference_is_still_gated_on_the_primary_alone()
+    {
+        TaskAggregate adopted = Draft(
+            new ExternalReference(WorkItemProvider.GitHub, "o/r#42"),
+            secondary: new ExternalReference(WorkItemProvider.Jira, "PROJ-9"));
+
+        Action publish = () => Request(adopted);
+
+        publish.Should().Throw<DomainConflictException>().WithMessage("*already linked to github:o/r#42*");
+        adopted.ExternalReference.Should().Be(new ExternalReference(WorkItemProvider.GitHub, "o/r#42"));
+        adopted.SecondaryExternalReference.Should().Be(new ExternalReference(WorkItemProvider.Jira, "PROJ-9"));
+    }
+
+    /// <summary>A secondary reference is a companion to a primary, never a standalone.</summary>
+    [Fact]
+    public void A_secondary_reference_with_no_primary_is_refused()
+    {
+        Action add = () => Draft(adopted: null, secondary: new ExternalReference(WorkItemProvider.Jira, "PROJ-9"));
+
+        add.Should().Throw<DomainValidationException>().WithMessage("*needs a primary*");
+    }
+
+    /// <summary>A secondary reference names the OTHER tracker, never a second item on the same one.</summary>
+    [Fact]
+    public void A_secondary_reference_on_the_same_provider_as_the_primary_is_refused()
+    {
+        Action add = () => Draft(
+            new ExternalReference(WorkItemProvider.GitHub, "o/r#42"),
+            secondary: new ExternalReference(WorkItemProvider.GitHub, "o/r#43"));
+
+        add.Should().Throw<DomainValidationException>().WithMessage("*both*github*");
     }
 
     [Fact]

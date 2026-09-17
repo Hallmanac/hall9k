@@ -37,11 +37,33 @@ public static class TaskDecider
         Guid? stackedOnTaskId = null,
         int? stackedOnPullRequestNumber = null,
         PreApprovalMode? preApproval = null,
-        TaskOrigin? origin = null)
+        TaskOrigin? origin = null,
+        ExternalReference? secondaryExternalReference = null)
     {
         if (projectId == Guid.Empty)
         {
             throw new DomainValidationException("A task belongs to a project.");
+        }
+
+        // A secondary reference is a companion to the primary, never a standalone (task: a task
+        // may link to both a GitHub issue and a Jira card): it needs a primary to sit beside, and
+        // the two must name different providers, or "primary" and "secondary" would be two labels
+        // for the same fact.
+        if (secondaryExternalReference is { } secondary)
+        {
+            if (externalReference is null)
+            {
+                throw new DomainValidationException(
+                    "A secondary external reference needs a primary one to sit beside — pass "
+                    + "--from-issue and --from-jira together, not --from-jira alone with a secondary.");
+            }
+
+            if (secondary.Provider == externalReference.Provider)
+            {
+                throw new DomainValidationException(
+                    $"The primary and secondary references are both {secondary.Provider.Value}. "
+                    + "A task's secondary reference names the OTHER tracker, not a second item on the same one.");
+            }
         }
 
         if (objective.IsBlank())
@@ -78,7 +100,8 @@ public static class TaskDecider
             PreApproved: preApprovalGranted.LegacyPreApproved,
             Origin: origin,
             PreApproval: preApprovalGranted,
-            StackedOnPullRequestNumber: stackedOn.PullRequestNumber);
+            StackedOnPullRequestNumber: stackedOn.PullRequestNumber,
+            SecondaryExternalReference: secondaryExternalReference);
     }
 
     /// <summary>
