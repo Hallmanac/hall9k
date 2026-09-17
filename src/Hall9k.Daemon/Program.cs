@@ -60,17 +60,31 @@ if (OperatingSystem.IsWindows()
     }
     catch (IOException exception)
     {
-        // Losing the replacement handle only costs rotation fidelity — the log may read
-        // back padded with NULs if DaemonLogRotation truncates it out from under the
-        // inherited cmd.exe handle mid-run (see WindowsAppendOnlyLog's own doc comment).
-        // That is strictly better than the alternative of letting this throw unhandled
+        // Losing the replacement handle only costs the log's size budget while this daemon
+        // runs: the same share mode that refuses this open refuses DaemonLogRotation's own
+        // ReadWrite open too, so nothing truncates the log under the inherited cmd.exe
+        // handle and LogRotationService logs the refusal on its five-minute tick until the
+        // next h9k daemon start rolls the log with nothing holding it — and on a node that comes
+        // up solely through the logon autostart task, which never runs the CLI's start path, the
+        // budget is never enforced at all (see WindowsAppendOnlyLog's own
+        // doc comment). That is strictly better than the alternative of letting this throw unhandled
         // above the host builder and above DaemonLogging.Configure: nothing would catch
         // it, the process would exit before logging its own diagnosis, and an autostarted
         // daemon would burn its whole RestartOnFailure budget leaving the machine with no
         // daemon at all. The inherited handles still work for this fallback line itself.
+        //
+        // The second sentence is there because both reports on mailbox issue #1 read this
+        // fallback as a blinding — the Windows project window concluded the node's
+        // orchestrator window had lost sight of its own daemon log. It never had: the
+        // inherited handles are cmd.exe's own `>>` redirect onto this very file, so every
+        // subsequent line still lands in h9kd.log and every reader following it still sees
+        // them. What this costs is the size budget above, and nothing else.
         Console.Error.WriteLine(
             $"Could not open {DaemonRuntime.LogFile} for append-only logging ({exception.Message}); "
-            + "continuing on the inherited console handles. The log may be padded with NULs after the next rotation.");
+            + "continuing on the inherited console handles. Every line still lands in this same log, "
+            + "and a reader following that log still sees them all; what is lost is the log's size "
+            + "budget while this daemon runs, since rotation cannot truncate the log either while "
+            + "that handle holds it.");
     }
 
     // Cleared from this process's own environment the moment it has been acted on: a

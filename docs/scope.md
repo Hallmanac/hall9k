@@ -1011,7 +1011,21 @@ split so that the lifecycle code, its tests, and CI are checkable here, while th
 Brian's own acceptance step once a release exists to walk from — not something a dispatched run
 can demonstrate for itself.
 
-See `SLICE-1.md` S1-14, Decisions Log #3, #78, #85.
+One named Windows gap rides along with that lifecycle. Both launch paths start the daemon as
+`cmd.exe /c "h9kd < NUL >> h9kd.log 2>&1"`, and cmd.exe holds an append redirect's target with
+`FILE_SHARE_READ` only for the whole run — readers welcome, a second writer refused. So the
+daemon's own attempt to take over its log with a rotation-safe append handle is always refused on
+Windows, and it says so, naming the holder, before continuing on the inherited handles. Nothing an
+operator watches is lost by that (those handles are the same `h9kd.log`, and a `Get-Content -Wait`
+reader is unaffected either way), but the same share mode also refuses the log rotation's own
+open, so the 8 MB budget goes unenforced while a Windows daemon runs and is applied only when the
+CLI's own start path next runs: `h9k daemon start`, or an `h9k install` or `h9k update` that
+restarts the daemon. That path is the only Windows one that rotates, so a node that comes up
+solely through the logon autostart task (`wscript.exe` to cmd.exe to h9kd, never through the CLI)
+never enforces the budget at all. The fix is a launcher-supplied inheritable append handle in
+place of the redirect; it is unbuilt.
+
+See `SLICE-1.md` S1-14, Decisions Log #3, #78, #85, #PLACEHOLDER-3abf032d.
 
 ### Token visibility and exhaustion
 
