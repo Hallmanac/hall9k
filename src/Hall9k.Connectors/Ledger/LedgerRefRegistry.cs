@@ -69,11 +69,26 @@ public static class LedgerRefRegistry
     private static readonly ConcurrentDictionary<LedgerRefEntry, byte> Entries = new();
 
     /// <summary>
-    /// The records ref (A3, not yet built): one file per task record, holder included. Registered
-    /// here from A1's own first commit, even though nothing yet reads or writes its content — the
-    /// ref name belongs to the ledger's own namespace, not to whichever later task first calls it.
+    /// The records ref (A3a): one file per task record, holder block included (empty until A3b's
+    /// holder lock writes it). Registered here from A1's own first commit, before A3a ever read or
+    /// wrote its content — the ref name belongs to the ledger's own namespace, not to whichever
+    /// later task first calls it.
     /// </summary>
     public static readonly LedgerRefEntry Records = RegisterExact("refs/hall9k/ledger/records");
+
+    /// <summary>
+    /// The path prefix every task record lives under inside <see cref="Records"/>. Named here,
+    /// beside the ref itself, so the two halves of "where a task's record lives" are never declared
+    /// in two different places (idea 202383dc, A3a's own criterion 1).
+    /// </summary>
+    public const string RecordsPathPrefix = "records/";
+
+    /// <summary>
+    /// The exact path one task's own record lives at: <c>records/&lt;task-id&gt;.yaml</c>, keyed by
+    /// task id because ids are the same on every node (Brian, 2026-09-13) — unlike a tracker key,
+    /// which differs per provider and is absent for a task with no tracker item at all.
+    /// </summary>
+    public static string RecordPath(Guid taskId) => $"{RecordsPathPrefix}{taskId}.yaml";
 
     /// <summary>
     /// Every node's own outbox (messages, not yet built): <c>refs/hall9k/messages/&lt;node-id&gt;</c>,

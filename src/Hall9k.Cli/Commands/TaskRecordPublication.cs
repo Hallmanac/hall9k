@@ -1,64 +1,65 @@
+using Hall9k.Connectors.Identity;
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Epic;
-using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
-using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Bootstrap;
+using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Writes the machine-readable task record into the GitHub issue a published task is tracked by,
-/// and rewrites it when the task changes (task: a published task's GitHub issue carries the whole
-/// task record). One writer for both moments, so publish and revise cannot drift into writing two
-/// different records.
+/// Writes a task's record into the ledger (idea 202383dc, A3a) — <c>records/&lt;task-id&gt;.yaml</c>
+/// on <c>refs/hall9k/ledger/records</c> (<see cref="LedgerRefRegistry.RecordPath"/>) — on publish and
+/// on every revise that changes anything the record carries. One writer for both moments, so
+/// publish and revise cannot drift into writing two different records.
 /// <para>
-/// It always reads the issue's current body before writing, and replaces only the record section
-/// inside it. That is the whole promise the feature makes to a human editing the issue on GitHub:
-/// the prose above the record is theirs, and nothing here composes a body from scratch. The
-/// checklist is regenerated only when the criteria actually changed, for the same reason.
+/// The record is a PROJECTION, composed fresh from the task's current state every time
+/// (<see cref="ComposeAsync"/>): it is rebuildable from the events at any time and is never itself
+/// the event log. The one field this never composes is <see cref="TaskRecordHolder"/> — the holder
+/// lock A3b writes — which is read back from whatever the ledger already held for this task and
+/// carried through unchanged, so a publish or a revise can never invent or clear a claim that is
+/// not its own to make.
 /// </para>
 /// <para>
-/// The record is written after the issue is created and linked rather than as part of the create
-/// body, and that ordering is load-bearing: the branch name in the record renders through the
-/// project's own branch template, whose <c>{key}</c> token is the linked item's key — unknown until
-/// the issue exists. Composed into the create body, a project templating <c>{key}</c> would publish
-/// a record naming a branch nobody will ever cut.
+/// A task adopted from a GitHub issue or a Jira card once carried this whole record inside a
+/// collapsed section of the issue's own body; that section is retired (idea 202383dc, A3a, ruled
+/// 2026-09-12): the issue keeps only the human text it always had, and the record lives here
+/// instead, readable by every node that shares the project rather than only by whichever install
+/// happens to read that one tracker item.
 /// </para>
 /// </summary>
 internal static class TaskRecordPublication
 {
+    /// <summary>How many times a conflicting ledger write retries against a fresh read before giving up.</summary>
+    private const int MaxConflictRetries = 5;
+
     /// <summary>
     /// What writing the record came to, for a caller that has to decide what to print.
-    /// <see cref="NotTracked"/> covers every task with no GitHub issue to write into, which is the
-    /// ordinary case for a project on backlog policy none.
+    /// <see cref="Mirror"/> covers every task whose record belongs to the install that published
+    /// it, never to a copy adopted here (task.Origin is not null) — this install's own copy would
+    /// otherwise overwrite the origin's record with stale local facts.
     /// </summary>
     internal enum WriteOutcome
     {
-        NotTracked,
+        Mirror,
         Written,
     }
 
     /// <summary>
-    /// Compose the record for <paramref name="task"/> and rewrite it into its linked issue, leaving
-    /// everything above the record section alone. Answers <see cref="WriteOutcome.NotTracked"/> —
-    /// rather than throwing — whenever this task is not one whose record this install maintains, so
-    /// every caller can call it unconditionally and none of them owns a copy of the rule.
+    /// Compose the record for <paramref name="task"/> and write it to the ledger, preserving
+    /// whatever holder block the record already carried. Answers <see cref="WriteOutcome.Mirror"/> —
+    /// rather than throwing — for a task this install never published, so every caller can call
+    /// this unconditionally and none of them owns a copy of the mirror rule.
     /// <para>
-    /// Three conditions, and the last two are the ones worth stating. The project's backlog policy
-    /// has to be <c>github-issues</c>: an adopted issue is routinely somebody else's, and a project
-    /// that tracks nothing has said nothing about wanting hall9k to write into it. And the task must
-    /// carry no <see cref="TaskOrigin"/> — a MIRROR never writes the record. Its issue belongs to
-    /// the install that published it, and a mirror rewriting that block would overwrite the origin's
-    /// own record with its local copy, wiping the origin fields every other install adopts by. One
-    /// record, one writer, and the writer is whoever published the work.
-    /// </para>
-    /// <para>
-    /// <paramref name="criteriaChanged"/> is the one thing this cannot work out for itself: the
-    /// record always carries the current criteria, but the human-readable checklist above it is
-    /// regenerated only when a revision actually replaced the set.
+    /// Every project gets a record for every task it publishes, regardless of whether or how it
+    /// tracks its backlog (Brian, 2026-09-13: "a task with no tracker item gets a record too") —
+    /// unlike the retired issue-block writer, there is no backlog-policy gate here at all, only the
+    /// mirror check above.
     /// </para>
     /// </summary>
     public static async Task<WriteOutcome> WriteAsync(
@@ -67,61 +68,71 @@ internal static class TaskRecordPublication
         ProjectDetails project,
         Guid nodeId,
         string nodeName,
+        string ownerFingerprint,
         DateTimeOffset now,
-        bool criteriaChanged,
-        GitHubWorkItemProvider provider,
+        ILedger ledger,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
         CancellationToken cancellationToken = default)
     {
-        if (task.ExternalReference is not { } reference || reference.Provider != WorkItemProvider.GitHub
-            || project.BacklogPolicy != BacklogPolicy.GitHubIssues
-            || task.Origin is not null)
+        if (task.Origin is not null)
         {
-            return WriteOutcome.NotTracked;
+            return WriteOutcome.Mirror;
         }
 
-        ImportedWorkItem issue = await provider.ImportAsync(
-            new WorkItemImportRequest(WorkItemProvider.GitHub, reference.Reference, project.RepositoryPath),
-            cancellationToken);
+        string refName = LedgerRefRegistry.Records.RefspecSource;
+        string path = LedgerRefRegistry.RecordPath(task.Id);
 
-        DateTimeOffset publishedAt = PublishStamp(issue.Body, now);
-        TaskRecord record = await ComposeAsync(
-            session, task, project, nodeId, nodeName, publishedAt, cancellationToken);
-        string body = criteriaChanged
-            ? GitHubIssueBody.WithCriteriaChecklist(issue.Body, task.AcceptanceCriteria)
-            : issue.Body ?? string.Empty;
+        for (int attempt = 1; attempt <= MaxConflictRetries; attempt++)
+        {
+            LedgerFile current = await ledger.ReadAsync(project.RepositoryPath, refName, path, cancellationToken);
+            TaskRecord? existing = TaskRecord.TryParse(current.Content);
+            DateTimeOffset publishedAt = PublishStamp(existing, now);
+            TaskRecord record = await ComposeAsync(
+                session, task, project, nodeId, nodeName, ownerFingerprint, publishedAt, existing?.Holder,
+                cancellationToken);
+            string content = record.ToYaml();
+            if (current.Content == content)
+            {
+                return WriteOutcome.Written;
+            }
 
-        await provider.UpdateBodyAsync(
-            reference, GitHubIssueBody.WithRecord(body, record), project.RepositoryPath, cancellationToken);
-        return WriteOutcome.Written;
+            LedgerWriteOutcome outcome = await ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    project.RepositoryPath, refName, path, content, current.BlobId,
+                    current.Exists ? $"Revise task record {task.Id}" : $"Publish task record {task.Id}",
+                    committer, signingKey),
+                cancellationToken);
+            if (outcome.Verdict == LedgerWriteVerdict.Written)
+            {
+                return WriteOutcome.Written;
+            }
+        }
+
+        throw new DomainConflictException(
+            $"{path} kept changing out from under this write after {MaxConflictRetries} attempts — "
+            + "something else is writing this task's record at the same time. Re-run once that settles.");
     }
 
     /// <summary>
-    /// The publish stamp the record about to be written should carry: the one the issue already
-    /// says, or <paramref name="now"/> when there is none to keep.
+    /// The publish stamp the record about to be written should carry: the one the existing ledger
+    /// record already says, or <paramref name="now"/> when there is none to keep.
     /// <para>
     /// The stamp is the origin's, not this write's: a revision that rewrites the record has not
-    /// republished the task, and moving the stamp would tell the next install to read this copy as
-    /// newer work than it is. "None to keep" covers two shapes, though — an issue with no record
-    /// section at all, and a record whose <c>published</c> line is missing or unreadable, which is
-    /// what a hand-written block has. <see cref="TaskRecord.TryParse"/> answers
-    /// <see cref="DateTimeOffset.MinValue"/> for the second shape because a READER must not claim
-    /// it observed a publish time it never saw; carrying that value into a write would stamp the
-    /// issue <c>published: 0001-01-01 00:00:00Z</c>, which is a false observation rather than an
-    /// absent one (AGENTS.md, never guess at unobserved facts — external review on PR #276 caught
-    /// the write). A writer is in the opposite position from a reader: this install is the one
-    /// publishing, so the moment it writes is something it actually observed.
+    /// republished the task, and moving the stamp would tell another node this copy is newer work
+    /// than it is. <see cref="DateTimeOffset.MinValue"/> is what a reader answers for a stamp it
+    /// never actually observed (<c>TaskRecord</c>'s own <c>Stamp(string?)</c> doc), so it is never
+    /// carried forward as though it had been.
     /// </para>
     /// </summary>
-    internal static DateTimeOffset PublishStamp(string? body, DateTimeOffset now) =>
-        TaskRecord.TryParse(GitHubIssueBody.TryReadRecordYaml(body))?.Origin.PublishedAt is { } stamped
-        && stamped != DateTimeOffset.MinValue
-            ? stamped
-            : now;
+    internal static DateTimeOffset PublishStamp(TaskRecord? existing, DateTimeOffset now) =>
+        existing?.Origin.PublishedAt is { } stamped && stamped != DateTimeOffset.MinValue ? stamped : now;
 
     /// <summary>
     /// The record as it stands for this task right now: the readiness contract, the agent context,
-    /// the caps this task overrode, the epic by title, the dependency edges as issue numbers, and
-    /// where it came from.
+    /// the caps this task overrode, the epic by id and title, the dependency edges by task id, and
+    /// where it came from. <paramref name="holder"/> is carried through verbatim — see this type's
+    /// own remarks on why the writer never composes one itself.
     /// </summary>
     public static async Task<TaskRecord> ComposeAsync(
         IQuerySession session,
@@ -129,17 +140,17 @@ internal static class TaskRecordPublication
         ProjectDetails project,
         Guid nodeId,
         string nodeName,
+        string ownerFingerprint,
         DateTimeOffset publishedAt,
+        TaskRecordHolder? holder,
         CancellationToken cancellationToken)
     {
         EpicDetails? epic = task.EpicId is { } epicId
             ? await session.LoadAsync<EpicDetails>(epicId, cancellationToken)
             : null;
 
-        (IReadOnlyList<int> issues, int withoutIssues) =
-            await DependencyIssuesAsync(session, task, cancellationToken);
-
         return new TaskRecord(
+            task.Id,
             project.Name,
             task.Type.Value,
             task.Objective,
@@ -147,13 +158,9 @@ internal static class TaskRecordPublication
             task.AgentContext,
             task.Model == AgentModel.Unknown ? null : task.Model.Value,
             task.PreApproval,
-            issues,
-            withoutIssues,
+            task.ExternalReference,
+            [.. task.BlockedBy],
             epic?.Title,
-            // The epic's own id travels beside the title as provenance only. It names nothing on the
-            // adopting install — epics are local records with local ids — and adoption maps by title
-            // or names the command that creates one (task 247 on 2026-09-07 is what asked for this:
-            // the Windows window had to create the matching epic by hand).
             epic?.Id,
             new TaskRecordCaps(
                 task.MaxComplianceReviewCycles,
@@ -161,76 +168,30 @@ internal static class TaskRecordPublication
                 task.MaxFinalFullPassRounds,
                 task.LifetimeReviewCycleBudget,
                 task.SessionCap),
-            new TaskOrigin(nodeId, nodeName, task.Id, Branch(task, project), publishedAt));
+            ownerFingerprint,
+            new TaskOrigin(nodeId, nodeName, task.Id, Branch(task, project), publishedAt),
+            holder);
     }
 
     /// <summary>
-    /// This task's dependencies as issue numbers in the repository its own issue lives in, plus a
-    /// count of the ones that could not be named that way at all.
-    /// <para>
-    /// A number alone only means something inside one repository, so a dependency tracked in a
-    /// different one — or tracked nowhere, which is every unpublished or untracked blocker — is
-    /// counted rather than written. Counting rather than dropping silently is the whole point: the
-    /// adopting install can say "the origin had two more blockers it could not name here", which is
-    /// a true statement, where a shorter list would be a false one.
-    /// </para>
+    /// This node's own identity for a ledger commit — its committer line, its signing key, and the
+    /// owner fingerprint a record's <c>origin-owner-fingerprint</c> names — gathered the one way
+    /// <c>h9k project join</c> already does it (<c>ProjectJoinCommand.RunAsync</c>'s own committer
+    /// and <c>claimedFingerprint</c>): the owner's own name and email when known, the node's key
+    /// falling back to standing in for the fingerprint when this owner has not claimed a root yet.
+    /// Both <see cref="TaskPublishCommand"/> and <see cref="TaskReviseCommand"/> need exactly this
+    /// before they can call <see cref="WriteAsync"/>, so it lives here rather than being copied
+    /// twice.
     /// </summary>
-    private static async Task<(IReadOnlyList<int> Issues, int WithoutIssues)> DependencyIssuesAsync(
-        IQuerySession session, TaskAggregate task, CancellationToken cancellationToken)
+    public static async Task<(LedgerCommitter Committer, LedgerSigningKey SigningKey, string OwnerFingerprint)>
+        ResolveIdentityAsync(IQuerySession session, BootstrapContext context, CancellationToken cancellationToken)
     {
-        if (task.BlockedBy.Count == 0)
-        {
-            return ([], 0);
-        }
-
-        string? repository = Repository(task.ExternalReference);
-        Dictionary<Guid, TaskDetails> blockers =
-            (await session.LoadManyAsync<TaskDetails>(cancellationToken, task.BlockedBy))
-            .ToDictionary(blocker => blocker.Id);
-        List<int> issues = [];
-        int withoutIssues = 0;
-        // One round trip for the whole set, then the edges are worked out in memory — but still in
-        // BlockedBy's own order, so rewriting the record of a task nobody changed produces the same
-        // list of numbers rather than a reshuffled one (external review on PR #276 asked for the
-        // single load; the ordering is why it is a lookup rather than a projection of the results).
-        // A blocker with no document loads to nothing and counts as one that cannot be named here,
-        // which is the same answer the per-dependency load gave.
-        foreach (Guid dependencyId in task.BlockedBy)
-        {
-            TaskDetails? dependency = blockers.GetValueOrDefault(dependencyId);
-            ExternalReference? reference = dependency?.ExternalReference.IsNotBlank() == true
-                ? ExternalReference.Parse(dependency.ExternalReference)
-                : null;
-            if (reference is not null && reference.Provider == WorkItemProvider.GitHub
-                && Repository(reference) == repository
-                && int.TryParse(reference.Key, out int number) && number > 0)
-            {
-                issues.Add(number);
-                continue;
-            }
-
-            withoutIssues++;
-        }
-
-        return (issues, withoutIssues);
-    }
-
-    /// <summary>
-    /// The repository half of a GitHub reference — the <c>owner/repo</c> in
-    /// <c>owner/repo#42</c> — or null when the reference carries none.
-    /// <see cref="ExternalReference.Key"/> is the other half; this is deliberately not a property
-    /// on that type, because "the part before the #" is only a repository for GitHub and is nothing
-    /// at all for a Jira key.
-    /// </summary>
-    internal static string? Repository(ExternalReference? reference)
-    {
-        if (reference is null)
-        {
-            return null;
-        }
-
-        int hash = reference.Reference.LastIndexOf('#');
-        return hash <= 0 ? null : reference.Reference[..hash];
+        OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(context.OwnerId, cancellationToken);
+        NodeSigningKey key = await new NodeKeyStore().EnsureAsync(context.NodeId, cancellationToken);
+        LedgerCommitter committer = new(
+            owner?.Name.IsNotBlank() == true ? owner.Name : Environment.UserName,
+            owner?.Email.IsNotBlank() == true ? owner.Email : $"{context.NodeId}@hall9k.local");
+        return (committer, new LedgerSigningKey(key.PrivateKeyPath), owner?.RootFingerprint ?? key.Fingerprint);
     }
 
     /// <summary>
@@ -246,7 +207,7 @@ internal static class TaskRecordPublication
             return project.BranchNameTemplate.Render(
                 task.Id, task.Objective, task.ExternalReference?.Key);
         }
-        catch (Domain.Shared.Exceptions.DomainException)
+        catch (DomainException)
         {
             return null;
         }

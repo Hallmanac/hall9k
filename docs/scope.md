@@ -372,43 +372,42 @@ state: the write is recorded pending, `h9k status` surfaces a needs-you row poin
 `h9k connection add jira` to refresh it, and the daemon retries the identical write automatically
 once the connection is fixed.
 
-#### The task record on a published issue
+#### The task record in the ledger
 
-A task published under `github-issues` carries its whole self in the issue: below the
-human-readable objective and criteria checklist, a collapsed **Hall9k task record** section holds
-one fenced YAML block in the same shape `h9k task add --file` accepts — project, type, objective,
-criteria, model, epic (by title, beside the origin's own epic id), the agent context, plus
-pre-approval, any review-cycle or session cap the task overrode, the origin install's node id, task
-id and branch name, and the publish time. Dependencies are written as **issue numbers**, never as
-the origin's task ids: ids differ per install by design and an issue number is the one identifier
-that means the same thing on both. `h9k task revise` rewrites only that block, so a human's edits
-to the issue's prose survive, and the checklist above it is regenerated only when the criteria
-actually changed — and then only the checklist itself, item lines and the blank lines between them,
-so a note somebody wrote under the list with no heading of its own is left where it is. The
-confirmation says which of the two it rewrote.
+A published task's whole self lives in the project's own ledger (idea 202383dc, A3a), not in its
+tracker item: `records/<task-id>.yaml` on `refs/hall9k/ledger/records`, one file per task, keyed by
+task id because ids are the same on every node (2026-09-13 ruling) — a tracker key differs per
+provider and is absent for a task with no tracker item at all. The record carries project, type,
+objective, criteria, model, the agent context, the epic by id and title, pre-approval, any
+review-cycle or session cap the task overrode, its external reference when it has one, its
+dependencies **by task id** (ids are shared across every node, so the old issue-number convention
+that workaround needed no longer applies), the publishing owner's root fingerprint and node, the
+branch name, the publish time, and a holder block that stays empty until A3b's claim lock writes
+it. `h9k task publish` and `h9k task revise` are its one writer (`TaskRecordPublication.WriteAsync`,
+called through `ILedger`): it composes the record fresh from the task's current state every time — a
+projection, never the event log — and carries whatever holder block already existed straight
+through unchanged, never inventing or clearing a claim that is not its own. Every published,
+non-mirror task gets a record, regardless of backlog policy; a task adopted from elsewhere never
+writes its own copy of the origin's record.
 
-`h9k task add --from-issue` reads the record when one is there and reconstructs the whole draft
-from it — criteria become criteria rather than context, the context body becomes the agent context,
-type/model/caps carry over, each blocked-by issue number resolves to the local task that already
-adopted that issue or is reported as an unresolved edge naming the command that adopts the parent
-first, and the epic maps to the local epic of that title or names the command that creates one. An
-issue with no record adopts exactly as it always did. A field this build cannot use — because a
-later build wrote it, or because somebody hand-wrote the block — degrades rather than failing the
-adoption, and the output names the value it dropped: a `type` this build has never heard of, a
-`model` it will not spawn, a cap outside its own floors each leave the draft on the local default
-and cost that one field and nothing else. A record naming type `pr-review` is the one refusal,
-since that work reviews a pull request rather than an issue. The record is read once and never
-re-checked
-(#60): the adopting install owns its copy from then on, and the origin's later revisions reach it
-only by adopting again. Pre-approval is the one field that deliberately does not carry: the record
-states the **origin's** answer, and the adopting install gives its own with `--pre-approved`
-(default off), which the adoption output names. The adopted task records the origin's node id and
-task id, and `h9k task show` says which install published it and under what id.
+The GitHub issue itself carries none of this: the collapsed **Hall9k task record** section this
+used to be is retired outright. The issue keeps its human-readable objective and, when criteria
+change, its acceptance-criteria checklist regenerated through its own write — a separate concern
+from the record now, no longer piggybacking on the same gh round trip. Jira cards were never
+touched by the record either way and remain untouched.
 
-**Jira is the next provider to carry the same record**, in the same shape — the record's own class
-is provider-neutral and only where the YAML sits inside an item (a collapsed `<details>` section, in
-GitHub's case) is provider business. Nothing about the record touches the Jira write path today: a
-Jira card's content is still composed by an agent and executed only through `h9k task write-jira`.
+`h9k task add --from-issue`/`--from-jira` on an item the local store already holds by external
+reference is refused exactly as it always was. When that lookup misses, adoption falls back to
+scanning the ledger's own records for one naming the reference — the shape a node still catching up
+on event replication is in. A record naming a task id this store already holds reports that task
+and creates nothing, the same "already adopted" refusal by a second route; a record naming a task
+id this store does not hold yet reports the task as published elsewhere and creates nothing, rather
+than reconstructing a draft from the record's own fields — full event replication means a record
+found in the ledger always names a task that either already exists here or is on its way, never one
+to be seeded from a stale snapshot, and the events-request that actually catches the stream up is
+event catch-up's own job (idea 202383dc, task 9408d525). An item with no record anywhere and no
+local task adopts exactly as it always did: title to objective, body to context, criteria typed by
+hand.
 
 ### Pull-request review
 

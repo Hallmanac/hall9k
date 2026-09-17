@@ -202,6 +202,38 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         return refs;
     }
 
+    public async Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(
+        string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
+    {
+        RequireRegistered(refName);
+        await FetchRefAsync(repositoryPath, refName, cancellationToken);
+        string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+        if (tip is null)
+        {
+            return [];
+        }
+
+        (int exitCode, string output, string error) = await RunGitAsync(
+            repositoryPath, ["ls-tree", "-r", "--name-only", tip, "--", pathPrefix], null, null, cancellationToken);
+        if (exitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git ls-tree -r {tip} -- {pathPrefix} failed in {repositoryPath}: {error.Trim()}");
+        }
+
+        List<LedgerEntry> entries = [];
+        foreach (string path in output.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            LedgerFile file = await ReadAtTipAsync(repositoryPath, tip, path, cancellationToken);
+            if (file.Exists)
+            {
+                entries.Add(new LedgerEntry(path, file.Content ?? string.Empty, file.BlobId!));
+            }
+        }
+
+        return entries;
+    }
+
     private static void RequireRegistered(string refName)
     {
         if (!LedgerRefRegistry.IsRegistered(refName))

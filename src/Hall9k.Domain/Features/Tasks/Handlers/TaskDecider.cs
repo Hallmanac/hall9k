@@ -955,14 +955,11 @@ public static class TaskDecider
     /// The three cap floors above, asked as questions rather than enforced as refusals — the same
     /// floors, from the same place, so the two readings can never disagree.
     /// <para>
-    /// Public for a reason the throwing setters cannot serve: a cap can arrive from OUTSIDE this
-    /// install, in the task record on a published issue that <c>h9k task add --from-issue</c>
-    /// adopts, and a value that install's own build never validated (a hand-written block) must
-    /// degrade to "no override" with the adoption saying so — never wall the whole adoption with a
-    /// message quoting a flag the operator never passed, which is exactly what feeding it straight
-    /// into <see cref="OverrideSessionCap"/> and <see cref="OverrideReviewCaps"/> used to do
-    /// (independent pre-PR review, cycle 1, both lenses; the same failure class
-    /// <c>TaskRecordAdoption.VetType</c> already answers for the type field).
+    /// Public so a caller with a value this install's own setters never produced — a hand-written
+    /// value, say — can ask whether it is usable before ever reaching <see cref="OverrideSessionCap"/>
+    /// or <see cref="OverrideReviewCaps"/>, rather than feeding it straight in and having those
+    /// throwing setters wall the whole caller off with a message quoting a flag it may never have
+    /// passed itself.
     /// </para>
     /// </summary>
     public static bool IsUsableSessionCap(int cap) => ReviewCapValidation.IsPositive(cap);

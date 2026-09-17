@@ -112,11 +112,39 @@ the one place every ref this platform ever touches under that namespace is named
 `git fetch origin` never brings one down, and nothing uses a `refs/hall9k/` ref this registry does
 not already know about. A write is conditional on the
 blob the caller last read there (`Conflict` comes back rather than clobbering someone else's), and
-every commit is signed per invocation once a caller has a key. `refs/hall9k/ledger/records` (the
-task-record holder lock, not yet built) and the `refs/hall9k/messages/<node-id>` prefix are the
-first two registered refs; the messages prefix is the node-to-node message transport (idea
-202383dc, A2a/M1a/M1b), one outbox ref per node, each envelope a versioned JSON file signed by that
-node's own key.
+every commit is signed per invocation once a caller has a key. `ReadAllAsync` reads every file
+under a path prefix inside one ref's tree, for a caller keyed on something other than the path
+itself — a task record's own path is its task id, but adoption is only ever handed the tracker
+reference, so finding one that way means reading every record rather than one already-known path.
+`refs/hall9k/ledger/records` and the `refs/hall9k/messages/<node-id>` prefix are the first two
+registered refs; the messages prefix is the node-to-node message transport (idea 202383dc,
+A2a/M1a/M1b), one outbox ref per node, each envelope a versioned JSON file signed by that node's
+own key.
+
+**A task's record lives there too** (idea 202383dc, A3a): `records/<task-id>.yaml` on
+`refs/hall9k/ledger/records`, one file per task, keyed by task id because ids are the same on
+every node (Brian, 2026-09-13) — a tracker key differs per provider and is absent for a task with
+no tracker item at all. `Hall9k.Cli.Commands.TaskRecordPublication.WriteAsync` is the one writer,
+called from `h9k task publish` and `h9k task revise`: it composes the record fresh from the
+task's current state every time (a projection, never the event log) and carries through, unchanged,
+whatever holder block the record already had — the claim lock A3b adds, empty until that task
+writes it. The record carries the readiness contract, the agent context, the caps this task
+overrode, its external reference (absent when the task has none), its dependencies and its epic by
+task id, and where it was published from (node, owner root fingerprint, branch, when). A task
+adopted from elsewhere (`task.Origin is not null`) never writes its own copy of the origin's
+record. The GitHub issue's own body carries none of this any more — the collapsed record block
+this used to be written into is retired; the issue keeps only its human text and, when criteria
+change, its acceptance-criteria checklist. `h9k task add --from-issue`/`--from-jira` on an item
+the local store already holds by external reference is refused exactly as it always was; new is
+`TaskRecordAdoption.LocateAsync`, which the same command falls back to when that lookup misses —
+scanning the ledger's own records for one naming the reference, for the node still catching up on
+replication. A record naming a task id this store already holds reports that task and creates
+nothing (a second route to the same "already adopted" refusal); one naming a task id this store
+does not hold yet reports the task as published elsewhere and creates nothing rather than
+fabricating a copy from the record's own fields — the events-request that actually catches the
+stream up is event catch-up's own job (idea 202383dc, task 9408d525). An item with no record
+anywhere and no local task adopts exactly as it always did: title to objective, body to context,
+criteria typed by hand.
 
 Node-to-node messages: a note one node sends another, an owner, or the whole project, the first
 payload kind, replacing `notes/node-mailbox.md`'s GitHub-issue workaround for that traffic (that
