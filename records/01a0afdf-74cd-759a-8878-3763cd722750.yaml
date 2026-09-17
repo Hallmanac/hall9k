@@ -1,0 +1,31 @@
+hall9k-task-record: 1
+task-id: 01a0afdf-74cd-759a-8878-3763cd722750
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#449
+objective: The designer persona's review reads a pull request for user experience, conformance to the proposed design, motion, CSS practice, accessibility, look and feel, and the design system, drives the running product through browser automation when the project's design-review-drive setting is on (the default), and ends with the offer to run the branch locally for the reviewer
+criteria:
+  - The persona registry gains designer, mapped to a design review prompt shipped as its own template directory under .claude/templates with the review-lap fragment layout, loaded through PromptTemplates and golden-tested; with the project's design-review-drive setting on (default on; h9k project set --design-review-drive on|off, printed by project show, sharing piece 2's mechanism) and a run skill on the ledger, the session launches the product on the worktree on an ephemeral port it reports and tears down, drives the changed user-facing flows through browser automation, and the report cites each screenshot beside the finding it supports in a Driven section; with the setting off or no run skill, the review is code-and-design-file only and the report says so
+  - |-
+    The report has one section per lens in a fixed order: user experience, conformance to the proposed design, motion (transitions and animations), CSS practice, accessibility, look and feel, design system; a lens that does not apply to the change says so in one line rather than being omitted
+  - The proposed design is a Figma link, an image set, or a prototype named on the linked task or issue or in the pull request body; when none is named the conformance lens reports 'no reference supplied' as its finding and judges nothing against imagination
+  - The session looks for a design system in the repository (tokens, a component library, a documented system) and names what it found or that there is none; design-system findings cite the token or component they concern
+  - When the session drives the product, the accessibility lens runs an automated audit on each walked screen and reports its results beside its own judgment; when it does not drive, the lens reads the markup and marks its findings static
+  - The report ends with the offer to run the branch locally so the reviewer can walk it in person, present whenever the project has a run skill on the ledger, whether or not the session drove the product itself; the offer is a question in the report, never an action
+  - |-
+    Tests: the registry maps designer to the prompt; the prompt is golden-tested; a fake diff with no user-facing change yields not-applicable lenses; no reference yields the conformance finding; the setting off yields a static report; the setting on with a run skill yields the Driven section and screenshots; the offer is present with a run skill and absent without
+  - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each, the log recording the two drive settings and their defaults (qa off, design on; Brian, 2026-09-17)
+dependencies: [01a0afc1-fc97-73b5-836e-39b8ec35ceca]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/cd722750-the-designer-persona-s-review
+published: 2026-09-17 14:57:37Z
+context: |-
+  Review personas: extend the pr-review task into QA review and design review, chosen by the assignee's declared persona(s). Today anyone assigned a pull request gets the engineer's PR review (code, logic, functionality). A QA persona gets a QA review: compliance and functionality through the lens of blast radius (what changed, what adjacent behavior to regression-test, what new automated end-to-end tests are owed), mostly by running the end-to-end suite locally, with the ability to launch the application locally to confirm as needed. A designer persona gets a design review: user experience, conformance to the proposed design (Figma or a working prototype), transitions and animations, CSS best practice, accessibility, look and feel, and compliance with the project's design system if one exists, again with the ability to launch the product locally and use the feature. A team member declares zero, one, or several personas (engineer, QA, designer); no persona means the plain PR review; several personas mean every matching review runs on that assignment. All reviews for one pull request share the one worktree and branch the pr-review task already creates, but run separate agents with persona-specific prompts and criteria.
+
+  Idea b9b09779 (review personas), piece 3 of 6: the design persona. Walked with Brian 2026-09-17 (criterion 1 singly, amended with the design-review-drive setting default on; 2 to 7 in a batch; the in-person offer made explicit at his ask). Stacked on piece 1 ec35ceca beside piece 2 b1b20c23. Rulings in the idea's workspace/journal.md. Code seams: the persona registry, the QA piece's drive mechanism and run-skill precondition, browser automation available to sessions (Chrome tooling), PromptTemplates. Published unassigned on Brian's word.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/b9b09779-review-personas-extend-the-pr-review-task-into-qa-review-and/workspace
