@@ -1,0 +1,24 @@
+hall9k-task-record: 1
+task-id: 01a0b00f-562a-7624-b214-e5f3cc5b6c45
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#455
+objective: |-
+  No test in the suite can observe process-global state another test set: the container-gate wait notice never reaches a captured Console.Error, the tool doctor under test never reads the machine's real platform config or database, and every capture of console, environment, current directory, or config path is scoped per test, so the full suite passes with two gates running in parallel on a memory-bound machine
+criteria:
+  - The cross-process container-gate wait notice (Waiting on cross-process container gate ... max concurrent) is written through a channel a test cannot capture with Console.SetError (the xUnit diagnostic sink, ITestOutputHelper of the waiting fixture, or a dedicated trace source), never to the process-wide Console.Error
+  - Every test that captures Console.Error or Console.Out does so through a scoped per-test writer other tests' output cannot enter; a helper in the test project replaces the raw Console.SetError and Console.SetOut pattern and TrackerAssignmentTests uses it; a sweep of the suite finds and converts every other raw use
+  - The tool doctor takes its platform config path and database connection from an injected source the test controls; no code path under test falls back to the process environment or the user's home directory; ToolDoctorTests' unreachable-database and malformed-config cases run against that source and a test proves that with the real config present the doctor under test still reports the unreachable case
+  - A sweep of the test project names every remaining process-wide mutation (Environment.SetEnvironmentVariable, Directory.SetCurrentDirectory, static caches, config path statics) and either scopes it per test or moves the test to a serial collection with the reason in a comment; the decision log entry lists what was found
+  - |-
+    A test proves the two original shapes: a simulated gate wait emitted while a capturing test runs leaves the capturing test's buffer empty; the doctor with the real config present still reports the unreachable case
+  - The full suite passes run in parallel; the container cap of 4 is not changed (it is an OOM guard); dotnet build and dotnet test pass; the decision log carries one entry
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/cc5b6c45-no-test-in-the-suite-can-obser
+published: 2026-09-17 15:49:53Z
+context: |-
+  Cut 2026-09-17 12:0x EDT in the hall9k project window on Brian's placement: build this on Windows so the Mac stays on the distributed-team chain, as one task for the pattern rather than two patches. It folds the Mac's two held drafts, which stay as evidence and are not to be published: e6349a90 (run 01a0ad80, 2026-09-17 03:25 EDT, TrackerAssignmentTests.Assign_records_what_the_tracker_showed_when_the_gate_passes(github) failed because its captured Console.Error held the harness's 'Waiting on cross-process container gate /tmp/hall9k-postgres-container-gate (127s elapsed, 4 max concurrent)' notice from another test while a second full gate ran in parallel; the same tip passed the suite alone) and 0abfedb7 (run 01a0af3c, 2026-09-17 11:15 EDT, ToolDoctorTests.An_unreachable_configured_database_reports_gh_as_unconfirmed_rather_than_silently_skipped failed because the doctor connected to the real local Postgres and printed live 'merged without Copilot review' rows despite the test's unreachable configuration; one failure of 6089). Both cost the chain a retry and a full gate. Related but different: Windows's own #453 (RunLauncherTests teardown of git-init'd temp roots, Windows-only); build this after #453 merges to avoid touching test support twice at once. Lineage: the container cap of 2026-09-08 and the doctor's config resolution; not a fix of a fix. Testing rule (Brian, 2026-09-13): no test touches the project's repository or any remote.
