@@ -17,6 +17,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -115,6 +116,12 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
             await session.SaveChangesAsync(cts.Token);
         }
 
+        // TaskRecordPublication.WriteAsync only writes a Draft's first record once the ledger
+        // already carries one for it — a fresh Draft (still unpublished here) never gets one
+        // invented for it (independent pre-PR review, cycle 1, both lenses) — so this test, like
+        // the real h9k task publish, actually publishes before writing the record.
+        await PublishAsync(store, origin, taskId, cts.Token);
+
         FakeLedger ledger = new();
         TaskRecordPublication.WriteOutcome outcome = await WriteRecordAsync(store, origin, taskId, ledger, cts.Token);
 
@@ -164,6 +171,7 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         Guid taskId = await AddTaskAsync(
             store, origin, "The first objective", ["The first criterion"], null, cts.Token);
         await LinkIssueAsync(store, taskId, 2266, cts.Token);
+        await PublishAsync(store, origin, taskId, cts.Token);
 
         FakeLedger ledger = new();
         (await WriteRecordAsync(store, origin, taskId, ledger, cts.Token))
@@ -171,6 +179,18 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         string firstContent = (await ledger.ReadAsync(
             RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token))
             .Content!;
+
+        // A published task can revise a record-carrying field only after returning to Draft
+        // (Decisions Log #34; TaskDecider.Revise's own Draft-only gate) — its existing record is
+        // what tells TaskRecordPublication.WriteAsync this Draft has been published before, so the
+        // rewrite below still lands rather than being skipped as an unpublished draft's own.
+        await using (IDocumentSession returnSession = store.LightweightSession())
+        {
+            TaskAggregate published = (await returnSession.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, token: cts.Token))!;
+            returnSession.Events.Append(taskId, TaskDecider.ReturnToDraft(published, null, Now, origin.OwnerId));
+            await returnSession.SaveChangesAsync(cts.Token);
+        }
 
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -231,6 +251,110 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
     }
 
     /// <summary>
+    /// The routed defect this fix closes (independent pre-PR review, cycle 1, both lenses): a
+    /// Draft this install has never published has no record yet, and h9k task revise touches a
+    /// record-carrying field only while a task is Draft (TaskDecider.Revise's own Draft-only
+    /// gate) — so before this fix, every such revision invented a ledger record for a task that
+    /// was never offered, stamped with a "published" time that never happened.
+    /// </summary>
+    [Fact]
+    public async Task An_unpublished_drafts_revision_writes_no_record()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Install install = await SeedAsync(store, cts.Token);
+        Guid taskId = await AddTaskAsync(
+            store, install, "Never published", ["Something"], null, cts.Token);
+
+        FakeLedger ledger = new();
+        TaskRecordPublication.WriteOutcome outcome = await WriteRecordAsync(store, install, taskId, ledger, cts.Token);
+
+        outcome.Should().Be(TaskRecordPublication.WriteOutcome.NotYetPublished);
+        ledger.Writes.Should().BeEmpty(
+            "a Draft nobody has published yet has no record for a revision to keep in sync, and writing "
+            + "one now would stamp a publish time that never happened");
+        (await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token))
+            .Exists.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// The other half of the same fix: a task returned to Draft after it was already published
+    /// (h9k task draft, Decisions Log #34) already has a ledger record, and revising it must keep
+    /// writing to that record rather than being read as though it were never published at all —
+    /// state alone cannot tell the two Drafts apart, only the ledger's own answer can.
+    /// </summary>
+    [Fact]
+    public async Task A_returned_to_draft_tasks_revision_still_rewrites_its_existing_record()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Install install = await SeedAsync(store, cts.Token);
+        Guid taskId = await AddTaskAsync(
+            store, install, "Published, then returned to draft", ["Something"], null, cts.Token);
+        await PublishAsync(store, install, taskId, cts.Token);
+
+        FakeLedger ledger = new();
+        (await WriteRecordAsync(store, install, taskId, ledger, cts.Token))
+            .Should().Be(TaskRecordPublication.WriteOutcome.Written);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate published = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.ReturnToDraft(published, null, Now, install.OwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        TaskRecordPublication.WriteOutcome outcome = await WriteRecordAsync(store, install, taskId, ledger, cts.Token);
+
+        outcome.Should().Be(TaskRecordPublication.WriteOutcome.Written,
+            "this Draft's own record already exists — it was published before, so its record must keep " +
+            "tracking it rather than being skipped as though it were a fresh, unpublished draft");
+    }
+
+    /// <summary>
+    /// The one field <see cref="TaskRecordPublication.WriteAsync"/> never composes itself
+    /// (its own doc comment): the holder lock A3b will write. A revise or a republish has to
+    /// carry it through unchanged rather than clearing it, since neither one is the act that
+    /// claims or releases a task.
+    /// </summary>
+    [Fact]
+    public async Task WriteAsync_preserves_an_existing_holder_when_rewriting_the_record()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Install install = await SeedAsync(store, cts.Token);
+        Guid taskId = await AddTaskAsync(
+            store, install, "Claimed for review", ["Something"], null, cts.Token);
+        await PublishAsync(store, install, taskId, cts.Token);
+
+        FakeLedger ledger = new();
+        TaskRecordHolder holder = new("holder-fingerprint", DomainId.New(), "HOLDER-NODE", Now.AddMinutes(-5));
+        await SeedRecordWithHolderAsync(ledger, taskId, holder, cts.Token);
+
+        (await WriteRecordAsync(store, install, taskId, ledger, cts.Token))
+            .Should().Be(TaskRecordPublication.WriteOutcome.Written);
+
+        LedgerFile rewritten = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token);
+        TaskRecord.TryParse(rewritten.Content)!.Holder.Should().Be(holder,
+            "the write composes every other field fresh from the task, but the holder is never its own to invent or clear");
+    }
+
+    /// <summary>Writes a record carrying <paramref name="holder"/> directly to <paramref name="ledger"/>, at the task's own path — the seam the holder carry-through test reads back through.</summary>
+    private static async Task SeedRecordWithHolderAsync(
+        FakeLedger ledger, Guid taskId, TaskRecordHolder holder, CancellationToken cancellationToken)
+    {
+        TaskRecord record = SomeRecord() with { TaskId = taskId, Holder = holder };
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId),
+                record.ToYaml(), null, "seed", Committer, SigningKey),
+            cancellationToken);
+    }
+
+    /// <summary>
     /// Brian, 2026-09-13: "a task with no tracker item gets a record too" — unlike the retired
     /// issue-block writer, which wrote a record only under the github-issues backlog policy, the
     /// ledger record has no backlog-policy gate at all (<see cref="TaskRecordPublication.WriteAsync"/>'s
@@ -243,6 +367,7 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         DocumentStore store = postgres.Store;
         Install install = await SeedAsync(store, cts.Token, BacklogPolicy.None);
         Guid taskId = await AddTaskAsync(store, install, "Local work", ["Something"], null, cts.Token);
+        await PublishAsync(store, install, taskId, cts.Token);
 
         FakeLedger ledger = new();
         TaskRecordPublication.WriteOutcome outcome = await WriteRecordAsync(store, install, taskId, ledger, cts.Token);
@@ -330,11 +455,13 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
     /// An item with no record anywhere and no local task adopts exactly as it always did — the
     /// plain "title becomes objective, body becomes context" path
     /// <c>TaskAddCommand.ExecuteAsync</c> falls through to once neither
-    /// <c>RefuseSecondAdoptionAsync</c> nor <c>RefuseIfRecordedElsewhereAsync</c> objects. That plain
-    /// path itself is unaffected by this feature (a plain, unpublished issue never had a record to
-    /// begin with) and is already covered elsewhere in the suite — <c>RepeatPullRequestAdoptionTests</c>
-    /// and the ordinary <c>--from-issue</c>/<c>--from-jira</c> adoption tests exercise it; this test
-    /// only pins <see cref="TaskRecordAdoption.LocateAsync"/>'s own half of "nothing found".
+    /// <c>RefuseSecondAdoptionAsync</c> nor <c>RefuseIfRecordedElsewhereAsync</c> objects. This test
+    /// only pins <see cref="TaskRecordAdoption.LocateAsync"/>'s own half of "nothing found"; the
+    /// fresh-adoption composition itself (title to objective, body to context, a fresh id) is
+    /// pinned by <see cref="A_bare_adoption_seeds_the_objective_and_context_from_the_imported_item_with_a_fresh_id"/>
+    /// below, using the exact functions <c>TaskAddCommand.ExecuteAsync</c> composes a bare
+    /// adoption from — no end-to-end <c>--from-issue</c> test drives <c>gh</c> itself, since this
+    /// repository's test suite has no seam for that yet.
     /// </summary>
     [Fact]
     public async Task LocateAsync_with_no_record_anywhere_reports_none()
@@ -350,6 +477,96 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
 
         located.Outcome.Should().Be(TaskRecordAdoption.LocateOutcome.NoRecord);
         located.TaskId.Should().Be(Guid.Empty);
+    }
+
+    /// <summary>
+    /// Regression guard for the retired collapsed-record reconstruction (this class's own doc
+    /// comment): once <see cref="TaskAddCommand.RefuseSecondAdoptionAsync"/> and
+    /// <see cref="TaskAddCommand.RefuseIfRecordedElsewhereAsync"/> both pass, a bare adoption's
+    /// objective and context come from the imported item itself — never from a record — through
+    /// the exact functions <c>TaskAddCommand.ExecuteAsync</c> composes them with for a
+    /// non-interactive run with no explicit <c>--objective</c>: <c>ObjectiveSeed</c> on the title,
+    /// <c>WorkItemContext.Compose</c> on the body, and <c>TaskDecider.Add</c> with a fresh id and
+    /// <c>origin: null</c> — never the id any record happens to name.
+    /// </summary>
+    [Fact]
+    public async Task A_bare_adoption_seeds_the_objective_and_context_from_the_imported_item_with_a_fresh_id()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Install install = await SeedAsync(store, cts.Token);
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, $"{Repository}#4005");
+        ImportedWorkItem imported = new(
+            reference, "Fix the flaky checkout step", "It fails about one run in twenty on CI.",
+            WorkItemStatus.Open, null, Now);
+
+        FakeLedger ledger = new();
+        await using (IQuerySession query = store.QuerySession())
+        {
+            (await TaskRecordAdoption.LocateAsync(query, ledger, RepositoryPath, reference, cts.Token)).Outcome
+                .Should().Be(TaskRecordAdoption.LocateOutcome.NoRecord, "nothing has adopted this item before");
+            Func<Task> refuse = () =>
+                TaskAddCommand.RefuseIfRecordedElsewhereAsync(query, ledger, RepositoryPath, reference, cts.Token);
+            await refuse.Should().NotThrowAsync();
+        }
+
+        Guid taskId = DomainId.New();
+        string objective = TaskAddCommand.ObjectiveSeed(imported.Title);
+        string agentContext = WorkItemContext.Compose(imported);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
+                taskId, install.ProjectId, objective, ["Something"], TaskType.Feature, agentContext,
+                constraints: null, reference, Now, install.OwnerId, origin: null));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession verify = store.QuerySession();
+        TaskAggregate created = (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        created.Objective.Should().Be("Fix the flaky checkout step", "the seed comes from the imported title");
+        created.AgentContext.Should().Contain("It fails about one run in twenty on CI.",
+            "the composed context carries the imported body");
+        created.Origin.Should().BeNull("a bare adoption never mints a mirror of another install's task");
+        created.ExternalReference.Should().Be(reference);
+        taskId.Should().NotBe(Guid.Empty, "the id is freshly minted, never one read off a record");
+    }
+
+    /// <summary>
+    /// The routed defect this fix closes (independent pre-PR review, cycle 1, both lenses): the
+    /// local guard <c>TaskAddCommand.RefuseSecondAdoptionAsync</c> deliberately lets an Abandoned
+    /// task's item be adopted again — walking away releases it — but before this fix,
+    /// <see cref="TaskRecordAdoption.LocateAsync"/> found the same task by its stale ledger record
+    /// and reported it as a live holder anyway, so an item whose only task was abandoned could
+    /// never be adopted again once its record had replicated here.
+    /// </summary>
+    [Fact]
+    public async Task LocateAsync_treats_a_record_naming_an_abandoned_local_task_as_released()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Install install = await SeedAsync(store, cts.Token);
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, $"{Repository}#4004");
+        Guid recordedTaskId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<TaskAggregate>(recordedTaskId, TaskDecider.Add(
+                recordedTaskId, install.ProjectId, "A first pass nobody finished", ["Something"], TaskType.Feature,
+                agentContext: null, constraints: null, externalReference: null, Now, install.OwnerId));
+            session.Events.Append(recordedTaskId, new TaskAbandoned(recordedTaskId, "Overtaken by events.", Now, install.OwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, recordedTaskId, reference, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskRecordAdoption.Locate located = await TaskRecordAdoption.LocateAsync(
+            query, ledger, RepositoryPath, reference, cts.Token);
+
+        located.Outcome.Should().Be(TaskRecordAdoption.LocateOutcome.LocalAbandoned);
+        located.TaskId.Should().Be(recordedTaskId);
     }
 
     [Fact]
@@ -402,6 +619,36 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         (await refuse.Should().ThrowAsync<DomainValidationException>()).Which.Message
             .Should().Contain("published elsewhere").And.Contain(TaskListCommand.ShortId(recordedTaskId));
         (await CountTasksAsync(store, cts.Token)).Should().Be(before, "nothing is created while replication is pending");
+    }
+
+    [Fact]
+    public async Task RefuseIfRecordedElsewhereAsync_lets_a_record_naming_an_abandoned_task_through()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Install install = await SeedAsync(store, cts.Token);
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, $"{Repository}#5003");
+        Guid abandonedTaskId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<TaskAggregate>(abandonedTaskId, TaskDecider.Add(
+                abandonedTaskId, install.ProjectId, "A first pass nobody finished", ["Something"], TaskType.Feature,
+                agentContext: null, constraints: null, externalReference: null, Now, install.OwnerId));
+            session.Events.Append(abandonedTaskId, new TaskAbandoned(abandonedTaskId, "Overtaken by events.", Now, install.OwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, abandonedTaskId, reference, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        Func<Task> refuse = () => TaskAddCommand.RefuseIfRecordedElsewhereAsync(
+            query, ledger, RepositoryPath, reference, cts.Token);
+
+        await refuse.Should().NotThrowAsync(
+            "the item's only task was abandoned, which releases it exactly like RefuseSecondAdoptionAsync's " +
+            "own local guard — a stale ledger record must not hold the item hostage forever");
     }
 
     private static TaskOrigin SomeOrigin() => new(
@@ -458,6 +705,24 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         return await TaskRecordPublication.WriteAsync(
             session, task, project, install.NodeId, "HALLMANAC-MAC", "abc123fingerprint", Now,
             ledger, Committer, SigningKey, cancellationToken);
+    }
+
+    /// <summary>
+    /// Publishes a Draft the same way h9k task publish does: the real dependency graph and the
+    /// project's own backlog policy — the dedup gate is attested unconditionally, since this
+    /// helper's callers are testing the ledger record, not the tracker dedup gate.
+    /// </summary>
+    private static async Task PublishAsync(DocumentStore store, Install install, Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+            taskId, token: cancellationToken))!;
+        ProjectDetails project = (await session.LoadAsync<ProjectDetails>(install.ProjectId, cancellationToken))!;
+        TaskDependencyGraph graph = await TaskDependencyQuery.LoadGraphAsync(session, task.BlockedBy, cancellationToken);
+        session.Events.Append(taskId, TaskDecider.Publish(
+            task, graph, Now, install.OwnerId, project.BacklogPolicy,
+            noExistingItemAttested: task.ExternalReference is null));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private static async Task LinkIssueAsync(
