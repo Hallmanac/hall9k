@@ -1,0 +1,30 @@
+hall9k-task-record: 1
+task-id: 01a0afe4-9e29-768a-ab0a-80dd0569c229
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#450
+objective: Every hall9k project gets a run skill on the ledger describing how to run it locally, composed by a discovery agent from the repository's own documentation and written by the daemon, so a review session or an orchestrator can stand the project up on any member's machine without guessing
+criteria:
+  - |-
+    When a project is added, or h9k project set --discover-run-skill is run on an existing one, the daemon dispatches a discovery session that reads the repository's README, docs, AGENTS.md, CLAUDE.md, skills, and build files and composes the run skill as markdown in one shape every project shares: prerequisites, one-time setup, the launch command, how to know it is up, the address or entry point, and the human steps it cannot do
+  - The discovery session hands its composed markdown back through the daemon, which records a run-skill event with the author, the time, and the commit it was composed against and writes the file into the ledger's hall9k ref namespace; the session never writes the ledger itself; h9k project run-skill show prints it and h9k project run-skill set --file replaces it by hand through the same event
+  - When the repository already carries skills or documentation that cover launching it, the run skill points at them by path and adds only what they leave out; when it carries none, the run skill holds the whole procedure and cites the files each step derives from; the skill's first line states which of the two it is
+  - |-
+    Anything the agent could not determine (a secret, a login, a service it could not reach) is listed under human steps with what is needed, never guessed; a repository with no discoverable way to run it produces a run skill that says so and the project shows 'run skill: none discoverable' rather than nothing
+  - |-
+    Tests through the seam with a fake repository and a fake ledger: a README launch section yields a full-text skill citing it; a skills directory yields a pointer skill; nothing yields the none-discoverable outcome; set replaces through the event; the ledger write goes through the daemon's seam, never the session
+  - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each, the log recording that the run skill lives on the ledger, composed by an agent and written by the daemon (tools before tokens), with drift caught by the review question of the personas piece
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/0569c229-every-hall9k-project-gets-a-ru
+published: 2026-09-17 15:03:14Z
+context: |-
+  Review personas: extend the pr-review task into QA review and design review, chosen by the assignee's declared persona(s). Today anyone assigned a pull request gets the engineer's PR review (code, logic, functionality). A QA persona gets a QA review: compliance and functionality through the lens of blast radius (what changed, what adjacent behavior to regression-test, what new automated end-to-end tests are owed), mostly by running the end-to-end suite locally, with the ability to launch the application locally to confirm as needed. A designer persona gets a design review: user experience, conformance to the proposed design (Figma or a working prototype), transitions and animations, CSS best practice, accessibility, look and feel, and compliance with the project's design system if one exists, again with the ability to launch the product locally and use the feature. A team member declares zero, one, or several personas (engineer, QA, designer); no persona means the plain PR review; several personas mean every matching review runs on that assignment. All reviews for one pull request share the one worktree and branch the pr-review task already creates, but run separate agents with persona-specific prompts and criteria.
+
+  Idea b9b09779 (review personas), piece 4 of 6: run-skill discovery. Independent of the persona pieces; piece 5 (the orchestrator's launch) stacks on it, and the QA and design pieces' launch offer and drive settings depend on the skill's presence at runtime, not at build time. Walked with Brian 2026-09-17 (criterion 1 singly, 2 to 6 in a batch, approved all). His rulings in the idea's workspace/journal.md: the skill lives on the ledger always, composed by an agent, stored by the daemon; pointer or full text is the agent's call by what the repository carries. Code seams: project add (ProjectAddCommand), the ledger component (A1) for the hall9k ref namespace, the daemon's session dispatch for a non-task session (the assessment run is the precedent), the run skill shape shared with the harness's own run skill. Published unassigned on Brian's word.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/b9b09779-review-personas-extend-the-pr-review-task-into-qa-review-and/workspace
