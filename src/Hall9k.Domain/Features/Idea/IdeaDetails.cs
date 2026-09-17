@@ -44,6 +44,9 @@ public sealed class IdeaDetails
 
     /// <summary>How many times the note was rewritten after capture.</summary>
     public int Revisions => Math.Max(History.Count - 1, 0);
+
+    /// <summary>Mirrors <see cref="IdeaAggregate.IsPrivate"/>.</summary>
+    public bool IsPrivate { get; set; }
 }
 
 public sealed class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, Guid>
@@ -85,6 +88,8 @@ public sealed class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, 
         view.ArchivedAt = @event.Data.ArchivedAt;
         view.State = IdeaState.Archived;
     }
+
+    public void Apply(IEvent<IdeaPrivacySet> @event, IdeaDetails view) => view.IsPrivate = @event.Data.IsPrivate;
 
     /// <summary>Historical replay only — see <see cref="IdeaPromoted"/>'s own doc comment.</summary>
     public void Apply(IEvent<IdeaPromoted> @event, IdeaDetails view)

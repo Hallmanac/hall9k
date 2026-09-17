@@ -95,6 +95,15 @@ public sealed class TaskAggregate
     public PreApprovalMode PreApproval { get; private set; } = PreApprovalMode.Off;
 
     /// <summary>
+    /// Stops this task's own stream from riding an outbox at all (idea 202383dc, M2a): a private
+    /// task's events are never included in an outbound events envelope while this is true, whatever
+    /// their own <c>EventScope</c> classification says, so a draft a teammate should not see yet
+    /// never travels until <see cref="Events.TaskPrivacySet"/> clears it. False by default — every
+    /// task ever written before this flag existed replays as not private.
+    /// </summary>
+    public bool IsPrivate { get; private set; }
+
+    /// <summary>
     /// Which install published the work this task mirrors, or null when it is local work — see
     /// <see cref="Tasks.TaskOrigin"/>. Set once at creation and never again: a mirror's origin is a
     /// fact about where the copy came from, not a link that is maintained afterwards (Decisions Log
@@ -785,6 +794,8 @@ public sealed class TaskAggregate
     }
 
     public void Apply(TaskPreApprovedSet @event) => PreApproval = @event.EffectivePreApproval;
+
+    public void Apply(TaskPrivacySet @event) => IsPrivate = @event.IsPrivate;
 
     public void Apply(TaskMechanicalResolutionAttempted @event) => MechanicalResolutionAttempts++;
 

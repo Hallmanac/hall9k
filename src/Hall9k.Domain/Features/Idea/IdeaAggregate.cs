@@ -37,6 +37,8 @@ public sealed class IdeaAggregate
     public DateTimeOffset CapturedAt { get; private set; }
     /// <summary>The home the discovery workspace was captured under, or <see cref="ProjectHome.None"/> — see <see cref="IdeaCaptured"/>.</summary>
     public ProjectHome WorkspaceHome { get; private set; } = ProjectHome.None;
+    /// <summary>Stops this idea's own stream from riding an outbox at all (idea 202383dc, M2a) — see <see cref="Hall9k.Domain.Features.Tasks.TaskAggregate.IsPrivate"/>'s identical doc.</summary>
+    public bool IsPrivate { get; private set; }
 
     public void Apply(IdeaCaptured @event)
     {
@@ -89,4 +91,6 @@ public sealed class IdeaAggregate
         ArchivedAt = @event.DiscardedAt;
         State = IdeaState.Archived;
     }
+
+    public void Apply(IdeaPrivacySet @event) => IsPrivate = @event.IsPrivate;
 }

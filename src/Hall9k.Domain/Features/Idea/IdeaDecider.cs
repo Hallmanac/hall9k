@@ -183,4 +183,10 @@ public static class IdeaDecider
             _ => new DomainNotFoundException($"Idea {idea.Id} has no captured state to {verb}."),
         };
     }
+
+    /// <summary>idea 202383dc, M2a: gates outbound replication of this idea's own stream, not its
+    /// lifecycle — settable in any state, so an about-to-be-archived idea can still be marked
+    /// private on its way out.</summary>
+    public static IdeaPrivacySet SetPrivate(IdeaAggregate idea, bool isPrivate, DateTimeOffset setAt, Guid setByOwnerId) =>
+        new(idea.Id, isPrivate, setAt, setByOwnerId);
 }

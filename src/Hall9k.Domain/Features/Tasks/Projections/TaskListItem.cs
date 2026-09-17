@@ -21,8 +21,14 @@ public sealed class TaskListItem
     public TaskState State { get; set; } = TaskState.Unknown;
     public int LeaseGeneration { get; set; }
     public Guid? ClaimedByNodeId { get; set; }
+    /// <summary>Mirrors <see cref="TaskDetails.ClaimedByOwnerRootFingerprint"/> — idea 202383dc, M2a.</summary>
+    public string? ClaimedByOwnerRootFingerprint { get; set; }
+    /// <summary>Mirrors <see cref="TaskDetails.ClaimedAt"/>.</summary>
+    public DateTimeOffset? ClaimedAt { get; set; }
     /// <summary>The h9k task work claim's own tell (<see cref="TaskAggregate.IsInteractiveClaim"/>'s mirror): the sentinel node id an operator's claim records rather than a real node's.</summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
+    /// <summary>Mirrors <see cref="TaskAggregate.IsPrivate"/>.</summary>
+    public bool IsPrivate { get; set; }
     public Guid? CurrentRunId { get; set; }
     public string? ExternalReference { get; set; }
     /// <summary>
@@ -340,6 +346,8 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
     }
 
+    public void Apply(IEvent<TaskPrivacySet> @event, TaskListItem view) => view.IsPrivate = @event.Data.IsPrivate;
+
     public void Apply(IEvent<TaskRevised> @event, TaskListItem view)
     {
         if (@event.Data.Objective.HasValue)
@@ -551,6 +559,8 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.LeaseGeneration = @event.Data.LeaseGeneration;
         view.ClaimedByNodeId = @event.Data.NodeId;
+        view.ClaimedByOwnerRootFingerprint = @event.Data.OwnerRootFingerprint;
+        view.ClaimedAt = @event.Data.ClaimedAt;
         view.CurrentRunId = @event.Data.RunId;
         view.State = TaskState.Claimed;
         // Mirrors TaskAggregate.Apply(TaskClaimed): the marker earned its turn the moment a run

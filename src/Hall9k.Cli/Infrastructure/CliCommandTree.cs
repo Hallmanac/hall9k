@@ -734,6 +734,12 @@ public static class CliCommandTree
                     + "with its reason, nothing deleted, and the workspace stays put — an idea that keeps "
                     + "coming back is a signal.")
                 .WithExample("idea", "archive", "28b19893", "--reason", "\"Superseded by the attachments design\"");
+            idea.AddCommand<IdeaSetPrivateCommand>("set-private")
+                .WithDescription(
+                    "Idea 202383dc, M2a: keeps this idea's own events off every outbox until cleared, so a "
+                    + "draft you are not ready for a teammate to see never replicates to their node.")
+                .WithExample("idea", "set-private", "28b19893", "on")
+                .WithExample("idea", "set-private", "28b19893", "off");
         });
 
         config.AddBranch("epic", epic =>
@@ -936,6 +942,12 @@ public static class CliCommandTree
                 .WithExample("task", "set-pre-approved", "28b19893", "on")
                 .WithExample("task", "set-pre-approved", "28b19893", "after-human-review")
                 .WithExample("task", "set-pre-approved", "28b19893", "off");
+            task.AddCommand<TaskSetPrivateCommand>("set-private")
+                .WithDescription(
+                    "Idea 202383dc, M2a: keeps this task's own events off every outbox until cleared, so a "
+                    + "draft you are not ready for a teammate to see never replicates to their node.")
+                .WithExample("task", "set-private", "28b19893", "on")
+                .WithExample("task", "set-private", "28b19893", "off");
             task.AddCommand<TaskUnassignCommand>("unassign")
                 .WithDescription(
                     "Take a queued or blocked task back to Published, so no node claims it. Refused while a "

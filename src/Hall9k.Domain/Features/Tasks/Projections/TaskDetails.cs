@@ -222,8 +222,20 @@ public sealed class TaskDetails
     public CloseLinkedIssueRule? CloseLinkedIssue { get; set; }
     public int LeaseGeneration { get; set; }
     public Guid? ClaimedByNodeId { get; set; }
+    /// <summary>
+    /// The claiming owner's cross-node root fingerprint, mirroring <see cref="Events.TaskClaimed.OwnerRootFingerprint"/>
+    /// (idea 202383dc, M2a) — null on a claim recorded before the stamping task existed, or an
+    /// interactive claim, which carries none. This is what a replicated <c>Claimed</c> task's
+    /// HeldElsewhere rendering names when the claiming node itself has never replicated a friendly
+    /// name to this install (<c>NodeDetails</c> never travels).
+    /// </summary>
+    public string? ClaimedByOwnerRootFingerprint { get; set; }
+    /// <summary>When the current claim was recorded — idea 202383dc, M2a's own "holder and time" for a HeldElsewhere row.</summary>
+    public DateTimeOffset? ClaimedAt { get; set; }
     /// <summary>See <see cref="TaskAggregate.IsInteractiveClaim"/>: same discriminator, read off this projection.</summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
+    /// <summary>See <see cref="TaskAggregate.IsPrivate"/>: same recorded flag, read off this projection.</summary>
+    public bool IsPrivate { get; set; }
     /// <summary>See <see cref="TaskAggregate.InteractiveModeEnabled"/>: same recorded, task-level fact, read off this projection.</summary>
     public bool InteractiveModeEnabled { get; set; }
     /// <summary>
@@ -460,6 +472,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.PreApproval = @event.Data.EffectivePreApproval;
         view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
     }
+
+    public void Apply(IEvent<TaskPrivacySet> @event, TaskDetails view) => view.IsPrivate = @event.Data.IsPrivate;
 
     // Absent means "left alone": a revision that reworded the objective must not also claim
     // the criteria were retyped identically.
@@ -757,6 +771,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     {
         view.LeaseGeneration = @event.Data.LeaseGeneration;
         view.ClaimedByNodeId = @event.Data.NodeId;
+        view.ClaimedByOwnerRootFingerprint = @event.Data.OwnerRootFingerprint;
+        view.ClaimedAt = @event.Data.ClaimedAt;
         view.CurrentRunId = @event.Data.RunId;
         view.RunIds.Add(@event.Data.RunId);
         view.DependencyOverrideAcknowledged = @event.Data.DependencyOverrideAcknowledged;
