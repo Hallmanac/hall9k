@@ -20,6 +20,22 @@ public sealed class LedgerRefRegistryTests
         LedgerRefRegistry.FetchRefspecs.Should().Contain("+refs/hall9k/ledger/records:refs/hall9k/ledger/records");
     }
 
+    /// <summary>
+    /// A task's record path is keyed by task id under the same <see cref="LedgerRefRegistry.Records"/>
+    /// ref every other record test writes to — idea 202383dc, A3a registered no new ref for this
+    /// feature, only the path convention beside the ref that already existed.
+    /// </summary>
+    [Fact]
+    public void RecordPath_IsKeyedByTaskIdUnderTheRecordsPathPrefix()
+    {
+        Guid taskId = Guid.Parse("01a07909-b8a5-777d-9033-4318ba2a31b5");
+
+        LedgerRefRegistry.RecordPath(taskId).Should().Be($"records/{taskId}.yaml");
+        LedgerRefRegistry.RecordPath(taskId).Should().StartWith(LedgerRefRegistry.RecordsPathPrefix);
+        LedgerRefRegistry.RecordsPathPrefix.Should().Be("records/");
+        LedgerRefRegistry.Records.RefspecSource.Should().Be("refs/hall9k/ledger/records");
+    }
+
     [Fact]
     public void MessagesPrefix_IsRegisteredAsAPrefix_CoveringEveryNodesOwnOutboxRef()
     {

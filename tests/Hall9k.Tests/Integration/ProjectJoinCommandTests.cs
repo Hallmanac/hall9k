@@ -725,6 +725,9 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
             inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 
     /// <summary>
@@ -754,5 +757,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
             inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 }
