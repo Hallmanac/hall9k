@@ -81,11 +81,14 @@ public sealed class PostgresFixture : IAsyncLifetime
     // queueing — a periodic progress line — is not a tool CrossProcessContainerGate.AcquireAsync
     // can lean on the same way: that wait runs inside the daemon or CLI process, whose console
     // really is the operator's own, while this one runs inside a `dotnet test` testhost, whose
-    // Console.Error is buffered internally by vstest.console and relayed only if vstest.console
+    // console output is buffered internally by vstest.console and relayed only if vstest.console
     // itself survives long enough to report the testhost's own death — which it does not, under
     // VerificationRunner's own process.Kill(entireProcessTree: true) (adversarial review, this
     // cycle: reproduced against this repo's own package versions — the progress line never once
-    // reached anyone, live or after the fact, under a real entireProcessTree kill). What actually
+    // reached anyone, live or after the fact, under a real entireProcessTree kill). The notice it
+    // does still emit goes to CrossProcessContainerGate.WaitNotice, a trace source, precisely
+    // because the process-wide console it used to go to belongs to no one class here and landed in
+    // whatever test happened to be capturing stderr at the time (PLAN.md §16 #PLACEHOLDER-093b54f0). What actually
     // makes a wedged wait discoverable now is the evidence file CrossProcessContainerGate.AcquireAsync
     // writes directly into GateDirectory itself once a wait genuinely queues — no parent process
     // has to survive anything for a direct file write to land, so `ls`/`cat` against that fixed,

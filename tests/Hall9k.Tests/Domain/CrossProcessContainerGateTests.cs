@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Tests.Integration;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -157,6 +158,102 @@ public sealed class CrossProcessContainerGateTests
         finally
         {
             Directory.Delete(gateDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// The wait notice goes to <see cref="CrossProcessContainerGate.WaitNotice"/> and to the
+    /// evidence files, and to no console anywhere — so a test capturing the console cannot observe
+    /// it however unlucky its timing is. This drives a real queued wait rather than calling the
+    /// notice directly: the point is what the production loop writes, not what a hand-rolled line
+    /// would.
+    /// <para>
+    /// The capture scope is opened <em>around</em> the queued acquisition on purpose, which is the
+    /// strongest form of the claim: even a wait running inside the capturing flow's own async
+    /// context — where a console write would certainly be captured — leaves the buffer empty,
+    /// because there is no console write. Origin incident (2026-09-17 03:25 EDT, run 01a0ad80):
+    /// <c>TrackerAssignmentTests</c> asserted an empty stderr capture and found this notice in it,
+    /// written by a different class entirely (PLAN.md §16 #PLACEHOLDER-093b54f0).
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task The_wait_notice_reaches_the_trace_source_and_no_captured_console()
+    {
+        string gateDirectory = Directory.CreateTempSubdirectory("h9k-gate-test-").FullName;
+
+        // Scoped to this test's own gate directory, not "the first notice this listener sees":
+        // PostgresFixture's own waits emit through the same trace source, and one of them landing
+        // while this listener is attached would release the wait below before it had been queued
+        // long enough to emit anything of its own — leaving the console assertions proving nothing
+        // while the test still passed.
+        RecordingTraceListener notices = new(gateDirectory);
+        CrossProcessContainerGate.WaitNotice.Listeners.Add(notices);
+        try
+        {
+            using CancellationTokenSource patient = new(TimeSpan.FromSeconds(30));
+            await using IAsyncDisposable held = await CrossProcessContainerGate.AcquireAsync(
+                gateDirectory, maxConcurrent: 1, patient.Token);
+
+            using ScopedConsoleCapture standardError = ScopedConsoleCapture.StandardError();
+            using ScopedConsoleCapture standardOutput = ScopedConsoleCapture.StandardOutput();
+
+            // No deadline of this test's own on the wait itself: the listener completing is the
+            // signal that the loop has emitted its first notice (one second in), so this neither
+            // polls nor races a duration.
+            using CancellationTokenSource abandoned = new();
+            Task<IAsyncDisposable> queued = CrossProcessContainerGate.AcquireAsync(
+                gateDirectory, maxConcurrent: 1, abandoned.Token);
+
+            string notice = await notices.FirstNotice.WaitAsync(patient.Token);
+
+            await abandoned.CancelAsync();
+            Func<Task> abandonedWait = async () => await queued;
+            await abandonedWait.Should().ThrowAsync<OperationCanceledException>(
+                "the permit is still held, so this wait only ever ends by being abandoned");
+
+            notice.Should().Contain("Waiting on cross-process container gate")
+                .And.Contain("max concurrent",
+                    "the notice still has to say what it always said — this moved which channel carries it, not what it carries");
+            standardError.Text.Should().BeEmpty(
+                "a wait notice on the process-wide stderr is exactly what put another class's line inside " +
+                "TrackerAssignmentTests' own assertion; it must reach the trace source and the evidence files only");
+            standardOutput.Text.Should().BeEmpty("nor may it have moved to the other process-wide stream");
+        }
+        finally
+        {
+            CrossProcessContainerGate.WaitNotice.Listeners.Remove(notices);
+            Directory.Delete(gateDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Completes <see cref="FirstNotice"/> with the first notice
+    /// <see cref="CrossProcessContainerGate.WaitNotice"/> emits <em>for one named gate
+    /// directory</em> — every other wait in the process emits through the same trace source, and a
+    /// listener that took whichever notice arrived first would answer for someone else's wait.
+    /// <see cref="TraceListener.TraceEvent(TraceEventCache, string, TraceEventType, int, string)"/>
+    /// writes its header through <see cref="Write(string)"/> and the message through
+    /// <see cref="WriteLine(string)"/>, so the message alone is what the completion carries.
+    /// </summary>
+    private sealed class RecordingTraceListener(string gateDirectory) : TraceListener
+    {
+        private readonly TaskCompletionSource<string> first =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<string> FirstNotice => first.Task;
+
+        public override void Write(string? message)
+        {
+            // The header ("Hall9k.Tests.ContainerGate Information: 0 : "), which says nothing this
+            // test asserts on.
+        }
+
+        public override void WriteLine(string? message)
+        {
+            if (message is not null && message.Contains(gateDirectory, StringComparison.Ordinal))
+            {
+                first.TrySetResult(message);
+            }
         }
     }
 
