@@ -31,18 +31,23 @@ public static class ProjectStreamReplicationRules
     /// <summary>
     /// True for the Project aggregate's own events that are team-facing state, not a per-install
     /// lifecycle decision: <see cref="ProjectTeamSettingsChanged"/> (criterion 1 and the objective
-    /// both require the team half of settings to travel and apply the same way everywhere), and
+    /// both require the team half of settings to travel and apply the same way everywhere),
     /// <see cref="MemberVouched"/>/<see cref="MemberRemoved"/> (this node's own audit trail of a
     /// ledger-file write — never consulted for an actual membership decision, so applying a
-    /// teammate's copy locally is harmless bookkeeping, not a fenced action). Each one is applied to
-    /// the receiver's own Project stream id in place of the sender's: the aggregate's id IS the
-    /// coordinate being rewritten, not a field carried inside it. <see cref="IsProjectLifecycleEvent"/>
-    /// covers everything else on this same stream that must NOT do that.
+    /// teammate's copy locally is harmless bookkeeping, not a fenced action), and
+    /// <see cref="ProjectPromptAddendumSet"/>/<see cref="ProjectPromptAddendumRemoved"/> (idea
+    /// b9b09779, piece 6 — the same tier <see cref="Hall9k.Domain.Infrastructure.Persistence.EventScopeRegistry"/>
+    /// classifies them at: team-visible guidance, not a per-install decision). Each one is applied to the receiver's own
+    /// Project stream id in place of the sender's: the aggregate's id IS the coordinate being
+    /// rewritten, not a field carried inside it. <see cref="IsProjectLifecycleEvent"/> covers
+    /// everything else on this same stream that must NOT do that.
     /// </summary>
     public static bool IsProjectAggregateStreamEvent(Type eventType) =>
         eventType == typeof(ProjectTeamSettingsChanged)
         || eventType == typeof(MemberVouched)
-        || eventType == typeof(MemberRemoved);
+        || eventType == typeof(MemberRemoved)
+        || eventType == typeof(ProjectPromptAddendumSet)
+        || eventType == typeof(ProjectPromptAddendumRemoved);
 
     /// <summary>
     /// True for the Project aggregate's own per-install lifecycle decisions (independent pre-PR
