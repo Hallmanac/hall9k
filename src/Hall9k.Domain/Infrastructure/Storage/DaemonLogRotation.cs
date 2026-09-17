@@ -26,7 +26,7 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// up solely through the logon autostart task never reaches that path, so there the budget is
 /// never enforced at all rather than merely deferred. The
 /// fix — hand the daemon an inheritable append handle instead of a cmd.exe redirect — is
-/// recorded in PLAN.md §16 #PLACEHOLDER-3abf032d.
+/// recorded in PLAN.md §16 #217.
 /// </para>
 /// <para>
 /// The trade a copy-truncate makes is a narrow window: lines written between the copy

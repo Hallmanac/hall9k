@@ -122,7 +122,7 @@ public static class DaemonLifecycle
         // either way, so the two never fight over the file. On Windows this rotation is the only
         // one that ever lands: cmd.exe's `>>` redirect holds the log with FILE_SHARE_READ for the
         // whole run, refusing the daemon's own timer its ReadWrite open on every tick
-        // (WindowsAppendOnlyLog, PLAN.md §16 #PLACEHOLDER-3abf032d), so a node that comes up only
+        // (WindowsAppendOnlyLog, PLAN.md §16 #217), so a node that comes up only
         // through the logon autostart task never enforces the budget at all.
         try
         {
