@@ -1994,6 +1994,74 @@ changed; the P2P identity layer (§16 #38-#58) is untouched.
 > Every citation of the placeholder elsewhere in this repository was rewritten to
 > `#216` in the same commit.
 
+PLACEHOLDER-3abf032d. **The Windows daemon loses its append-only log handle to its own
+launcher, never to a reader tailing the log: the open now retries for a bounded three seconds
+and both give-up paths name the holder they lost to, while the structural fix — a
+launcher-supplied inheritable append handle in place of cmd.exe's `>>` redirect — stays
+open.** Why: two reports on mailbox issue #1. The Windows project window at the v0.4.0 restart
+(2026-09-08 00:28 EDT) saw h9kd fail to open `h9kd.log` append-only with Win32 error 32 and fall
+back to its inherited console handles, and read that fallback as blinding the node's orchestrator
+window to its own daemon log. The Windows node window after the v0.5.1 install (2026-09-09 09:40
+EDT) then verified the violation on all eleven restarts since 2026-08-31, with or without a
+`Get-Content -Wait` reader attached, and concluded the holder must be the *outgoing* daemon's
+launcher surviving the handoff. **What was actually measured.** Both readings were wrong, and the
+measurement (Windows 11 Pro 26200, 2026-09-16, reproducing the shape of both launch paths with a
+`CreateFileW` probe under a real `cmd.exe /c "… >> log"`) says why. cmd.exe opens an append
+redirect's target with `FILE_SHARE_READ` only — readers welcome, a second writer refused — and
+holds it for the whole run; the child's inherited stdout is a handle onto that same file object,
+so releasing the child's own copy does not help either (probed: still error 32). Both shipped
+Windows launch paths run h9kd as `cmd.exe /c "h9kd < NUL >> h9kd.log 2>&1"`
+(`DaemonLifecycle.SpawnDetachedWindows`, and `WindowsDaemonAutostart`'s inner command), so the
+holder is the *incoming* daemon's own launcher, it outlives the daemon, and
+`WindowsAppendOnlyLog.TakeOverConsoleOutput` has therefore never once succeeded on Windows — at
+every start, not only at a restart. Two consequences follow, in opposite directions. The alarming
+one is false: the fallback costs nothing an operator can see, because the inherited handles *are*
+cmd.exe's redirect onto that same `h9kd.log`, so every line still lands there and every reader
+following it still sees them; a reader was never a cause, and readers are unaffected either way
+(probed: `Get-Content` and a `FileShare.ReadWrite` open both read the log live while cmd.exe holds
+it). The quiet one is real, though it is not the NUL padding `WindowsAppendOnlyLog` was written to
+prevent: the same share mode that refuses the takeover refuses `DaemonLogRotation`'s own
+`FileAccess.ReadWrite` open just as flatly (probed the same day), so no truncation ever lands under
+the daemon's inherited handle and there is no zero-filled gap to leave behind. What is lost is the
+8 MB budget itself — `LogRotationService`'s five-minute tick catches the refusal and logs "Log
+rotation failed; will retry next tick" rather than rolling the log, so an oversized log on a
+running Windows daemon stays oversized until the CLI's own start path next runs and rotates it
+with nothing holding it — `h9k daemon start`, or an `h9k install` or `h9k update` that restarts the
+daemon. That path is the only Windows one that rotates, so on a node that comes up solely through
+the logon autostart task — `wscript.exe` to cmd.exe to h9kd, never through the CLI — the budget is
+not deferred but never enforced at all. **What this task
+shipped.** The open retries on Win32
+error 32 or 33 for a bounded three seconds in 150 ms steps — worth it for a holder that genuinely lets go, an on-access scanner or a
+backup pass or an editor left open on the log — expressed as a budget plus a delay with an
+injectable sleep rather than a wall-clock deadline, so a test drives the retry deterministically
+rather than racing it. A failure that is not a sharing violation is not retried at all, and names
+no holder because there is no holder to name. The launcher's own permanent hold is short-circuited
+rather than waited out: when this process's own stdout or stderr already resolves to the log
+(`GetFileType` plus `GetFinalPathNameByHandle`, with anything unresolvable falling through to the
+retry rather than guessing), the open fails at once and says so in those words, which keeps three
+seconds of dead air off every Windows daemon start. Both sharing-violation give-up paths, the short
+circuit and the exhausted budget, name the holder through the new `WindowsFileLockHolders` — the
+Restart Manager (`rstrtmgr.dll`), the same API an MSI installer uses to ask which applications are
+holding a file it must replace, needing no elevation for a same-user holder and reporting the
+image name (`cmd`) ahead of its localized `FileDescription` prose ("Windows Command Processor"),
+with a pid-plus-start-time identity check before that name is believed (Decisions Log #2's rule,
+applied to somebody else's process) and every failure reported as an explicit unknown carrying the
+result code that made it unknown. `TakeOverConsoleOutput` now opens both handles before installing
+either, so a failure on the second leaves the process wholly on its inherited handles rather than
+split across the two mechanisms. The orchestrator recipe's own start-up monitor command is
+untouched, as is the share mode it depends on. **What is deliberately still open.** The structural
+fix is to take cmd.exe's `>>` off the daemon launch and have the launcher hand h9kd an inheritable
+`FILE_APPEND_DATA` handle it opened with a permissive share mode — the daemon would then own a
+rotation-safe handle with no takeover at all, and Windows would finally get the guarantee
+`DaemonLogRotation` documents. It is not in this task: it rewrites a lifecycle-critical spawn path,
+it has to cover the autostart launch too (whose command line is composed inside a VBScript for
+`WScript.Shell.Run`, where no handle can be passed), and a launcher-supplied handle cannot catch
+what today's redirect does catch, a runtime failure before `Main` ever runs. Until it lands, the
+warning is expected at every Windows start, and it now reads as the diagnosis it is rather than a
+bare error number. **Does this block the later vision?** No. One new internal interop helper in
+Hall9k.Daemon and a retry loop around an existing open; no domain shape, no event, no command
+surface, and nothing the P2P layer (§16 #38-#58) touches.
+
 ---
 
 ## 17. Reference Materials
