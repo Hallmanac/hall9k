@@ -281,6 +281,14 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         // API instead of SQL lets its schema-on-demand handling create the table first rather than
         // finding it missing.
         session.Delete<ProjectGitHubMembers>(project.Id);
+        // PromptAddendaSyncPosition (idea b9b09779, piece 6) is the identical shape:
+        // project-id-keyed but never a stream, lazily created on this project's first-ever
+        // prompt-addendum push, so left behind by the events/streams deletes above the same way
+        // ProjectGitHubMembers would be (independent pre-PR review, cycle 1, adversarial lens,
+        // low — an orphaned row keyed by a project id that no longer exists, same defect shape,
+        // graded lower only because it holds a single sequence number rather than any content or
+        // identity).
+        session.Delete<PromptAddendaSyncPosition>(project.Id);
 
         if (taskIds.Length > 0)
         {
