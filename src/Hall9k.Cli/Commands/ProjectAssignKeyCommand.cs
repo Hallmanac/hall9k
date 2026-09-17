@@ -83,6 +83,24 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
                 + $"own root ({myRoot}) is not it.");
         }
 
+        NodeSigningKey key = await keyStore.EnsureAsync(context.NodeId, cancellationToken);
+
+        // genesisRoot != myRoot above only rules out a mismatched literal string — it does not
+        // prove this node actually IS the genesis owner, since owner.RootFingerprint is a claim
+        // this node made about itself (h9k project join --owner), never something a vouch proved.
+        // The sibling write onto this identical ref, ProjectMemberRemoveCommand, gates on both of
+        // these together for the same reason; assign-key needs the identical pair (independent
+        // pre-PR review, cycle 1, adversarial lens, medium): without it, a node that merely claims
+        // the genesis owner's public root fingerprint — printed in plain sight by h9k owner show —
+        // could mint and push a project key no other install ever agreed to.
+        if (chain.RoleOf(myRoot) != MembershipRole.Owner || !chain.IsEnrolledInOwner(key.Fingerprint, myRoot))
+        {
+            throw new DomainValidationException(
+                $"This node's own root ({myRoot}) does not currently hold a vouched, owner-role place in "
+                + $"'{project.Name}''s trust chain — only a currently vouched node of the genesis owner may "
+                + "assign the project's key.");
+        }
+
         if (chain.ProjectKey is not null)
         {
             throw new DomainValidationException(
@@ -91,7 +109,6 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
                 + "already exists.");
         }
 
-        NodeSigningKey key = await keyStore.EnsureAsync(context.NodeId, cancellationToken);
         LedgerCommitter committer = new(
             owner.Name.IsNotBlank() ? owner.Name : Environment.UserName,
             owner.Email.IsNotBlank() ? owner.Email : $"{context.NodeId}@hall9k.local");
