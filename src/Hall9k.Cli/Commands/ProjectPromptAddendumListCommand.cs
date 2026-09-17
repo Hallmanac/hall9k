@@ -51,6 +51,21 @@ public sealed class ProjectPromptAddendumListCommand : Hall9kAsyncCommand<Projec
         }
 
         AnsiConsole.Write(table);
+
+        // The daemon's own PromptAddendaSweepEngine records this here the moment a ledger push
+        // keeps failing — otherwise the only sign is a daemon log line nobody watching this CLI
+        // would ever see, and every addendum above would go on reporting "set" forever with no
+        // hint that none of them have actually reached the ledger (independent pre-PR review,
+        // cycle 1, adversarial lens, medium).
+        PromptAddendaSyncPosition? position = await session.LoadAsync<PromptAddendaSyncPosition>(project.Id, cancellationToken);
+        if (position is { LastPushError: { } error })
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Warning:[/] the daemon has not been able to push this project's own prompt-addenda "
+                + $"changes to the ledger since {position.LastPushErrorAt:u} — every addendum above is set here "
+                + $"but may not have reached any prompt yet. Last error: {error.EscapeMarkup()}");
+        }
+
         return ExitCodes.Ok;
     }
 }

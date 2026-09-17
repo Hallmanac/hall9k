@@ -62,6 +62,19 @@ public sealed class ProjectPromptAddendumSetCommand : Hall9kAsyncCommand<Project
         }
 
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
+        if (!project.HomeDirectory.HasValue)
+        {
+            // MaterializeAsync (PromptAddendaSweepEngine) only ever writes the local copy every
+            // prompt builder's loader reads under a project's own home directory, so a home-less
+            // project (h9k project add --no-home) can push this event forever and never have it
+            // reach a single prompt — refused here rather than a silent no-op nobody would ever
+            // trace back to this (independent pre-PR review, cycle 1, conformance lens, medium).
+            throw new DomainValidationException(
+                $"'{project.Name}' has no home directory yet, so an addendum set here can never reach a "
+                + $"prompt — the daemon only ever materializes one under a project's own home. Give it one "
+                + $"first: h9k project init {project.Name}");
+        }
+
         PromptBuilderKey builder = PromptBuilderKey.Parse(settings.Builder);
         string content = await System.IO.File.ReadAllTextAsync(settings.File, cancellationToken);
         bool overCap = settings.OverCapReason.IsNotBlank();

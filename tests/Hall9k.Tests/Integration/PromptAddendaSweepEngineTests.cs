@@ -164,6 +164,118 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
         Directory.Exists(projectHome).Should().BeTrue();
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, conformance lens, medium: a home-less project
+    /// (<c>h9k project add --no-home</c>) could set an addendum that reported success but could
+    /// never actually reach a prompt — <c>PromptAddendaSweepEngine.MaterializeAsync</c> returns 0
+    /// immediately for a project with no home directory, so no local copy is ever written. Refused
+    /// at set time instead.
+    /// </summary>
+    [Fact]
+    public async Task Set_refuses_a_project_with_no_home_directory_yet()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        Guid projectId = DomainId.New();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectId,
+                ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), ProjectName, RepositoryPath, null, null, Now,
+                    homeDirectory: null));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Func<Task> act = () => SetAsync("work", "Prefer squash commits.", overCapReason: null, cts.Token);
+        (await act.Should().ThrowAsync<DomainValidationException>())
+            .Which.Message.Should().Contain("no home directory").And.Contain("h9k project init");
+
+        await using (IQuerySession query = _postgres.Store.QuerySession())
+        {
+            ProjectDetails project = (await query.LoadAsync<ProjectDetails>(projectId, cts.Token))!;
+            project.PromptAddenda.Should().BeEmpty("the refusal happens before any event is appended");
+        }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens, medium: a permanently failing ledger
+    /// push otherwise left the whole feature silently inert — the CLI reports success,
+    /// <c>list</c>/<c>show</c> keep reporting the addendum as set — with nothing visible short of
+    /// reading daemon logs. Wraps a real <see cref="FakeLedger"/> so every other seam (reads,
+    /// materialize) behaves exactly as it always has; only writes are made to fail on demand.
+    /// </summary>
+    [Fact]
+    public async Task A_persistently_failing_ledger_push_is_recorded_and_cleared_once_it_recovers()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, Guid projectId, string projectHome) = await SeedAsync(cts.Token);
+        FlakyWriteLedger ledger = new(new FakeLedger()) { FailWrites = true };
+        PromptAddendaSweepEngine engine = new(
+            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance);
+
+        await SetAsync("work", "Prefer squash commits.", overCapReason: null, cts.Token);
+
+        PromptAddendaSweepResult failedSweep = await engine.SweepOnceAsync(cts.Token);
+        failedSweep.Pushed.Should().Be(0);
+
+        await using (IQuerySession query = _postgres.Store.QuerySession())
+        {
+            PromptAddendaSyncPosition? position = await query.LoadAsync<PromptAddendaSyncPosition>(projectId, cts.Token);
+            position.Should().NotBeNull();
+            position!.LastPushError.Should().NotBeNullOrEmpty();
+            position.LastPushErrorAt.Should().NotBeNull();
+        }
+
+        // list/show still succeed rather than crash while a failure is outstanding — the audit
+        // trail is accurate, only what has actually reached the ledger is in question.
+        (await ListExitCodeAsync(cts.Token)).Should().Be(ExitCodes.Ok);
+        (await ShowExitCodeAsync("work", cts.Token)).Should().Be(ExitCodes.Ok);
+
+        ledger.FailWrites = false;
+        PromptAddendaSweepResult recoveredSweep = await engine.SweepOnceAsync(cts.Token);
+        recoveredSweep.Pushed.Should().Be(1, "the same un-advanced position that kept retrying the failed push retries it again once writes recover");
+
+        await using (IQuerySession query = _postgres.Store.QuerySession())
+        {
+            PromptAddendaSyncPosition? position = await query.LoadAsync<PromptAddendaSyncPosition>(projectId, cts.Token);
+            position!.LastPushError.Should().BeNull("a push that actually lands clears whatever failure preceded it");
+            position.LastPushErrorAt.Should().BeNull();
+        }
+    }
+
+    /// <summary>A thin <see cref="ILedger"/> decorator whose writes can be switched to always throw
+    /// <see cref="LedgerPushRejectedException"/> on demand — the real failure mode a push exhausting
+    /// every retry attempt raises — while every other operation passes straight through to
+    /// <paramref name="inner"/> unchanged.</summary>
+    private sealed class FlakyWriteLedger(ILedger inner) : ILedger
+    {
+        public bool FailWrites { get; set; }
+
+        public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken) =>
+            inner.ReadAsync(repositoryPath, refName, path, cancellationToken);
+
+        public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken) =>
+            FailWrites
+                ? throw new LedgerPushRejectedException(request.RefName, 5, "simulated push rejection")
+                : inner.WriteAsync(request, cancellationToken);
+
+        public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
+            FailWrites
+                ? throw new LedgerPushRejectedException(request.RefName, 5, "simulated push rejection")
+                : inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
+            inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+    }
+
     private async Task SetAsync(string builder, string content, string? overCapReason, CancellationToken cancellationToken)
     {
         string file = Path.Combine(Path.GetTempPath(), $"prompt-addendum-{Guid.NewGuid():N}.md");
