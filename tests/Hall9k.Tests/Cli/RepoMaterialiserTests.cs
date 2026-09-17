@@ -5,6 +5,7 @@ using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -154,7 +155,7 @@ public sealed class RepoMaterialiserTests : IDisposable
         string bare = ProjectHomePaths.BareRepository(_home, "hall9k");
         string dev = ProjectHomePaths.DevWorktree(_home);
         File.WriteAllText(Path.Combine(bare, "MARKER"), "the same clone, not a fresh one");
-        Directory.Delete(dev, recursive: true);
+        TemporaryTree.Delete(dev);
 
         IReadOnlyList<ProjectHomeStep> repaired = await MaterialiseAsync();
 
@@ -197,7 +198,7 @@ public sealed class RepoMaterialiserTests : IDisposable
     {
         await MaterialiseAsync();
         string dev = ProjectHomePaths.DevWorktree(_home);
-        Directory.Delete(dev, recursive: true);
+        TemporaryTree.Delete(dev);
         PushToMain("SKILL.md", "# the card rules, as of today\n", "rules moved on");
 
         IReadOnlyList<ProjectHomeStep> recreated = await MaterialiseAsync();
@@ -298,19 +299,8 @@ public sealed class RepoMaterialiserTests : IDisposable
     {
         _cancellation.Dispose();
 
-        // git marks object/pack files read-only; Windows refuses to recursively delete them
-        // until the attribute is cleared. Cleanup stays best-effort either way.
-        try
-        {
-            foreach (string file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
-            {
-                File.SetAttributes(file, FileAttributes.Normal);
-            }
-
-            Directory.Delete(_root, recursive: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-        }
+        // Through TemporaryTree: git marks object/pack files read-only, and Windows refuses to
+        // recursively delete them until the attribute is cleared. Best-effort either way.
+        TemporaryTree.TryDelete(_root);
     }
 }

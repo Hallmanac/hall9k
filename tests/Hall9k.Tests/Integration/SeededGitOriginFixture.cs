@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -49,7 +50,7 @@ public sealed class SeededGitOriginFixture : IAsyncLifetime
         Git(scratch, "add -A");
         Git(scratch, "-c user.name=Test -c user.email=test@test commit -q -m init");
         Git(scratch, "push -q origin main");
-        DeleteBestEffort(scratch);
+        TemporaryTree.TryDelete(scratch);
 
         return Task.CompletedTask;
     }
@@ -70,32 +71,10 @@ public sealed class SeededGitOriginFixture : IAsyncLifetime
 
     public Task DisposeAsync()
     {
-        DeleteBestEffort(_root);
+        // Through TemporaryTree: git leaves its loose object files read-only, which
+        // Directory.Delete refuses on Windows.
+        TemporaryTree.TryDelete(_root);
         return Task.CompletedTask;
-    }
-
-    private static void DeleteBestEffort(string directory)
-    {
-        try
-        {
-            if (!Directory.Exists(directory))
-            {
-                return;
-            }
-
-            // git leaves its loose object files read-only, which Directory.Delete refuses on
-            // Windows — the same thing ReviewEngineTests.Dispose already had to widen for.
-            foreach (string file in Directory.EnumerateFiles(directory, "*", SearchOption.AllDirectories))
-            {
-                File.SetAttributes(file, FileAttributes.Normal);
-            }
-
-            Directory.Delete(directory, recursive: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // Best-effort cleanup of a temp directory.
-        }
     }
 
     private static void Git(string workingDirectory, string arguments)

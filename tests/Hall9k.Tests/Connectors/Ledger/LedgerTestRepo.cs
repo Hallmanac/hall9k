@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Hall9k.Tests.TestSupport;
 
 namespace Hall9k.Tests.Connectors.Ledger;
 
@@ -41,28 +42,9 @@ internal sealed class LedgerTestRepo : IDisposable
         return node;
     }
 
-    public void Dispose()
-    {
-        try
-        {
-            if (!Directory.Exists(_root))
-            {
-                return;
-            }
-
-            // git leaves loose object files read-only, which Directory.Delete refuses on Windows.
-            foreach (string file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
-            {
-                File.SetAttributes(file, FileAttributes.Normal);
-            }
-
-            Directory.Delete(_root, recursive: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // Best-effort cleanup of a temp directory.
-        }
-    }
+    // Through TemporaryTree: git leaves loose object files read-only, which Directory.Delete
+    // refuses on Windows. Best-effort cleanup of a temp directory either way.
+    public void Dispose() => TemporaryTree.TryDelete(_root);
 
     /// <summary>Runs a plain, ordinary `git fetch origin` — no explicit refspec — the operation
     /// GitLedger itself never performs, so a test can prove it does not bring a ledger ref down.</summary>
