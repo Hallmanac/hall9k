@@ -27,6 +27,21 @@ it was cut — replaying this branch's own commits from the recorded fork point 
 its new head just conflicted, twice. Your job is to bring it current before review
 continues, preserving the branch's own authored history — not to redo the original
 work.
+===checkpoint-with-pr-intro-unattempted===
+This run already has the pull request above open and pushed. But this branch is
+stacked on `{{BaseBranch}}`, which has moved since — replaying this branch's own
+commits from the recorded fork point onto its new head conflicted, and a read-only
+assessment's own mechanical retry at a different boundary or onto commit could not
+even run. Your job is to bring it current before review continues, preserving the
+branch's own authored history — not to redo the original work.
+===checkpoint-without-pr-intro-unattempted===
+This run's own work is not done yet — no pull request has opened, and nothing has
+been pushed. But this branch is stacked on `{{BaseBranch}}`, which has moved since
+it was cut — replaying this branch's own commits from the recorded fork point onto
+its new head conflicted, and a read-only assessment's own mechanical retry at a
+different boundary or onto commit could not even run. Your job is to bring it
+current before review continues, preserving the branch's own authored history —
+not to redo the original work.
 ===checkpoint-no-push-without-pr===
   - Do NOT push, and do NOT open a pull request — the platform's own mandatory
     gate runs over the tree you leave behind, then review continues from there;

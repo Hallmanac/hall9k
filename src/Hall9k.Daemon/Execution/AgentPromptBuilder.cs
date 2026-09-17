@@ -1060,11 +1060,21 @@ public static class AgentPromptBuilder
     /// cycle — selects the checkpoint-framed heading and intro (no false "mandatory final review
     /// pass" claim: review has not started yet) rather than the ordinary pre-final-pass wording.
     /// </param>
+    /// <param name="mechanicalRetryAttempted">
+    /// Whether the assessment-driven retry <see cref="Hall9k.Daemon.Review.ReviewEngine.TryMechanicalReplayFromAssessmentAsync"/>
+    /// actually ran a rebase before this session was dispatched — false when the onto commit was
+    /// missing from the object store, or a git call failed before the rebase itself started
+    /// (<see cref="Hall9k.Daemon.Review.ReviewEngine.BuildAssessmentDrivenReplayFailedGuidance"/>'s
+    /// own identical distinction). Only changes the checkpoint intro's own wording — never observed
+    /// once outside a <paramref name="precedesFirstReviewCycle"/> dispatch, so it defaults to true
+    /// (the ordinary "conflicted, twice" shape) for every other caller.
+    /// </param>
     public static string BuildPreFinalPassRebase(
         TaskDetails task, ProjectDetails project, string branch, CommitStyle commitStyle,
         string? pullRequestUrl, string? humanResolution = null, bool rebaseStillInProgress = false,
         string? baseBranch = null, TimeSpan? commandTimeout = null, VoiceSkillName? voiceSkill = null,
-        string? assessmentGuidance = null, string? baseCommit = null, bool precedesFirstReviewCycle = false)
+        string? assessmentGuidance = null, string? baseCommit = null, bool precedesFirstReviewCycle = false,
+        bool mechanicalRetryAttempted = true)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
         bool isStacked = effectiveBaseBranch != project.BaseBranch;
@@ -1078,13 +1088,19 @@ public static class AgentPromptBuilder
             prompt.AppendLine($"Pull request: {pullRequestUrl}");
             prompt.AppendLine();
             AppendFragment(
-                prompt, file, precedesFirstReviewCycle ? "checkpoint-with-pr-intro" : "with-pr-intro",
+                prompt, file,
+                precedesFirstReviewCycle
+                    ? mechanicalRetryAttempted ? "checkpoint-with-pr-intro" : "checkpoint-with-pr-intro-unattempted"
+                    : "with-pr-intro",
                 ("BaseBranch", effectiveBaseBranch));
         }
         else
         {
             AppendFragment(
-                prompt, file, precedesFirstReviewCycle ? "checkpoint-without-pr-intro" : "without-pr-intro",
+                prompt, file,
+                precedesFirstReviewCycle
+                    ? mechanicalRetryAttempted ? "checkpoint-without-pr-intro" : "checkpoint-without-pr-intro-unattempted"
+                    : "without-pr-intro",
                 ("BaseBranch", effectiveBaseBranch));
         }
 
