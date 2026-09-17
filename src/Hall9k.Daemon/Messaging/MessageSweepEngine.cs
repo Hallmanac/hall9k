@@ -240,6 +240,20 @@ public sealed class MessageSweepEngine(
 
         foreach (MessageOutboxTip tip in toRead)
         {
+            // Never recorded below on either read coming back not-vouched, stalled, ignored, or
+            // thrown: none of those actually finished looking at the sender's content, so caching
+            // the tip here would make this sweep skip the sender on every later tick until it
+            // pushes again or this process restarts, even though a plain re-read next sweep would
+            // succeed — the sender joining the project after already sending, or a transient git
+            // failure, are both read.StalledAtSeq's own doc promises a retry for (independent
+            // pre-PR review, cycle 1, both lenses). The two reads below share this one flag rather
+            // than each caching independently: caching after the notes read alone, before the
+            // events read even runs, previously meant a notes success followed by an events
+            // failure cached the tip anyway — leaving that sender's events batch stalled until it
+            // pushed again, in spite of the warning below actually promising a retry next sweep
+            // (independent pre-PR review, cycle 1, adversarial lens).
+            bool notesReadComplete = false;
+
             try
             {
                 // Its own session per sender: MessageInbox.ReadFromAsync is only self-contained
@@ -257,17 +271,7 @@ public sealed class MessageSweepEngine(
                     session, project.RepositoryPath, tip.SenderNodeId, project.Id, nodeId, identity.OwnerRootFingerprint,
                     now, trustChain: trustChain, cancellationToken: cancellationToken);
 
-                // Never recorded on a read that came back not vouched or stalled: neither one
-                // actually looked at the sender's content, so caching the tip here would make this
-                // sweep skip the sender on every later tick until it pushes again or this process
-                // restarts, even though a plain re-read next sweep would succeed — the sender
-                // joining the project after already sending, or a transient git failure, are both
-                // read.StalledAtSeq's own doc promises a retry for (independent pre-PR review,
-                // cycle 1, both lenses).
-                if (read is { SenderNotVouched: false, StalledAtSeq: null })
-                {
-                    _lastKnownTips[(project.RepositoryPath, tip.SenderNodeId)] = tip.Tip;
-                }
+                notesReadComplete = read is { SenderNotVouched: false, StalledAtSeq: null };
             }
             catch (Exception exception)
             {
@@ -280,17 +284,25 @@ public sealed class MessageSweepEngine(
             // only at events-kind envelopes, in its own session for the identical reason the notes
             // read above uses one — never folded into MessageInbox.ReadFromAsync itself, so this
             // never risks that class's own delicate, heavily-tested flow.
+            bool eventsReadComplete = false;
             try
             {
                 await using IDocumentSession eventsSession = store.LightweightSession();
-                await eventInbox.ReadFromAsync(
+                EventReplicationReadResult read = await eventInbox.ReadFromAsync(
                     eventsSession, project.RepositoryPath, tip.SenderNodeId, project.Id, now, trustChain, cancellationToken);
+
+                eventsReadComplete = !read.SenderIgnored;
             }
             catch (Exception exception)
             {
                 logger.LogWarning(
                     exception, "Reading sender {SenderNodeId}'s replicated events failed for project {ProjectId}; "
                     + "will retry next sweep", tip.SenderNodeId, project.Id);
+            }
+
+            if (notesReadComplete && eventsReadComplete)
+            {
+                _lastKnownTips[(project.RepositoryPath, tip.SenderNodeId)] = tip.Tip;
             }
         }
     }
