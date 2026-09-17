@@ -1412,6 +1412,161 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         }
     }
 
+    /// <summary>
+    /// idea 202383dc, M2 (independent pre-PR review, cycle 1, both lenses, medium): a project-key
+    /// mismatch mark is a fact about a specific envelope, so a later sweep that finds nothing new to
+    /// inspect (the sender's outbox tip has not moved) must carry it forward unchanged rather than
+    /// clearing it — only a sweep that genuinely inspects fresh content past the mismatch may
+    /// redecide it, the identical rule <c>MessageInboxAggregate</c> already applies to
+    /// <c>IgnoredForVerificationFailure</c>.
+    /// </summary>
+    [Fact]
+    public async Task A_project_key_mismatch_mark_survives_a_later_sweep_that_finds_nothing_new()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        const string mismatchedProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid scopedProjectId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                scopedProjectId,
+                new ProjectRegistered(scopedProjectId, ownerId, DomainId.New(), "Scoped", "/repo-scoped", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        await SeedQueuedTaskAsync(_postgres.Store, projectIdA, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, mismatchedProjectKey, adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+            firstRead.SenderIgnored.Should().BeTrue("the envelope's own project key resolves to a different local project");
+        }
+
+        // A second sweep with nothing new past the sender's outbox tip — the ordinary shape a
+        // recurring sweep tick takes once it has caught up — must never read that empty result as
+        // permission to clear a standing mismatch mark.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(4), trustChain: null, cts.Token);
+            secondRead.SenderIgnored.Should().BeTrue("nothing new was inspected, so the standing mismatch mark must carry forward");
+            secondRead.EventsApplied.Should().Be(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
+                EventReplicationStreamId.ForInboxCursor(nodeA, scopedProjectId), cts.Token);
+            cursor.Should().NotBeNull();
+            cursor!.SenderIgnored.Should().BeTrue();
+            cursor.IgnoredReason.Should().Contain("project key");
+        }
+    }
+
+    /// <summary>
+    /// idea 202383dc, M2 (independent pre-PR review, cycle 1, both lenses, medium): a "sender not
+    /// vouched" mark is a fact about the sender's current vouch status, never about a specific
+    /// envelope — the identical distinction <c>MessageInbox.ReadFromAsync</c>'s own
+    /// <c>ConfirmVouched</c> branch already draws against <c>IgnoredForVerificationFailure</c>. Once
+    /// the sender is re-vouched, a sweep that finds nothing new to send must still clear the mark:
+    /// waiting for fresh content would leave a revoked-then-restored sender ignored forever whenever
+    /// it has nothing new to say.
+    /// </summary>
+    [Fact]
+    public async Task A_not_vouched_mark_clears_once_the_sender_is_revouched_even_with_nothing_new_to_read()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        // Deliberately no node file seeded yet — the sender starts out not vouched for.
+        FakeLedger ledger = new();
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(1), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(1), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(2), trustChain: null, cts.Token);
+            firstRead.SenderIgnored.Should().BeTrue("no node file vouches for this sender yet");
+        }
+
+        // The sender is re-vouched (a node file lands), but sends nothing further — the ordinary
+        // shape of a sweep tick after the sender's own outbox has already been fully read once.
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+            secondRead.SenderIgnored.Should().BeFalse("the sender is vouched again, even though this sweep found nothing new");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
+                EventReplicationStreamId.ForInboxCursor(nodeA, projectId), cts.Token);
+            cursor.Should().NotBeNull();
+            cursor!.SenderIgnored.Should().BeFalse();
+            cursor.IgnoredReason.Should().BeNull();
+        }
+    }
+
     private static async Task<Guid> SeedQueuedTaskAsync(
         IDocumentStore store, Guid projectId, Guid ownerId, DateTimeOffset now, CancellationToken cancellationToken)
     {
