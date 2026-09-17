@@ -339,7 +339,17 @@ internal static class TaskPhaseComposer
         // progress, never as stalled with no session recorded). Checked ahead of ActiveRole
         // below, which would otherwise read Unknown for exactly this run and fall to the
         // "no session recorded as running" default the gate is live proof against.
-        if (run.ActiveGate is { } gate)
+        //
+        // Gated on no agent session also being recorded, the same narrowing
+        // TaskStatusComposer.Silence carries for the identical stale-record shape (independent
+        // pre-PR review, cycle 2, adversarial lens): the daemon deliberately never writes
+        // GateEnded across its own shutdown mid-gate, so a restart that resumes with a review or
+        // fix session instead of another gate can strand ActiveGate set for the rest of the
+        // run's life. Unlike VerifyingPhase above, UnderReview's ActiveSessions is not always
+        // empty while a gate runs — a resumed session after that exact stale-record shutdown
+        // records one — so reading the gate unconditionally here would show its stale name and
+        // elapsed time over the genuinely running session instead.
+        if (run.ActiveGate is { } gate && run.ActiveSessions.Count == 0)
         {
             return GatePhase(gate, session, now);
         }

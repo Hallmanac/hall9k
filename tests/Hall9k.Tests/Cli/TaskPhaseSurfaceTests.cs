@@ -1464,4 +1464,26 @@ public sealed class TaskPhaseSurfaceTests
         row.Stalled.Should().BeTrue();
         row.Attention.Cause.Should().Contain("silent past the stall threshold");
     }
+
+    /// <summary>
+    /// <c>Review()</c>'s own twin of the fix just above (independent pre-PR review, cycle 2,
+    /// adversarial lens): in the identical stale-gate-after-shutdown shape, a resumed fix session
+    /// is recorded instead of another gate, but before this fix <c>Review()</c> read
+    /// <see cref="RunDetails.ActiveGate"/> unconditionally and showed the stale gate's name and
+    /// elapsed time over the fix session actually running. The row's bucket was already correct —
+    /// this is the phase text lying about what is running, not a Working/Stalled misclassification.
+    /// </summary>
+    [Fact]
+    public void A_stale_active_gate_no_longer_hides_the_fix_session_actually_running()
+    {
+        Guid runId = DomainId.New();
+        RunDetails run = StatusFixtures.Run(runId, RunState.UnderReview, sessionRole: AgentRole.Fix);
+        run.ReviewCycle = 2;
+        run.ActiveGate = new ActiveGate("test", 9104, StatusFixtures.Now.AddHours(-5));
+
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Claimed, runId), run);
+
+        row.Phase.Text.Should().Be("review cycle 2");
+        row.Phase.Detail.Should().Be("fix session running");
+    }
 }
