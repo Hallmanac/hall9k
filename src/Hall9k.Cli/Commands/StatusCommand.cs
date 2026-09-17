@@ -888,10 +888,13 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             [
                 new TaskColumn("Attention", [.. rows.Select(row => row.AttentionMarkup)]),
                 new TaskColumn("Activity", activity),
-                new TaskColumn("Item", [.. rows.Select(row => row.ItemMarkup)]),
                 new TaskColumn("PR", [.. rows.Select(row => row.PullRequestMarkup)]),
             ],
-            [.. rows.Select(row => row.DetailMarkup)],
+            // The linked reference(s), where a task carries any, ride along as the row's own extra
+            // detail line rather than a fixed column: ReferenceDetailMarkup's own doc comment is
+            // where that choice, and the wrap it replaced, are explained.
+            [.. rows.Select(row => (IReadOnlyList<string>)
+                [.. row.DetailMarkup, .. row.ReferenceDetailMarkup.IsNotBlank() ? (string[])[row.ReferenceDetailMarkup] : []])],
             consoleWidth,
             headers: false);
     }

@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
 using Spectre.Console;
 using Spectre.Console.Rendering;
@@ -116,7 +117,7 @@ public sealed class TaskTableLayoutTests
     public void The_attention_pane_gives_every_row_and_every_detail_line_one_line_each(int width)
     {
         IReadOnlyList<TaskStatusRow> rows = Rows();
-        int expected = rows.Count + rows.Sum(row => row.DetailMarkup.Count);
+        int expected = ExpectedSectionLines(rows);
 
         string[] lines = Render(StatusCommand.SectionRows(rows, width, Now), width);
 
@@ -137,9 +138,13 @@ public sealed class TaskTableLayoutTests
     }
 
     /// <summary>
-    /// The attention pane's Item column, primary first (task: a task may link to both a GitHub
-    /// issue and a Jira card): a task with no reference shows nothing, one with a single reference
-    /// shows it plain, and one with both shows the primary first and names the secondary as such.
+    /// The attention pane's own reference line, primary first (task: a task may link to both a
+    /// GitHub issue and a Jira card): a task with no reference adds no line, one with a single
+    /// reference names it plain, and one with both names the primary first and the secondary as
+    /// such — and every row still fits its one line, the same promise every other attention-pane
+    /// test holds it to (independent pre-PR review, cycle 1: a fixed column carrying this same text
+    /// pushed the objective column below its floor and wrapped every row in the section, even for a
+    /// single ordinary reference).
     /// </summary>
     [Theory]
     [MemberData(nameof(Widths))]
@@ -155,14 +160,37 @@ public sealed class TaskTableLayoutTests
                 TaskState.Published, projectId: projectId,
                 externalReference: "github:o/r#42", secondaryExternalReference: "jira:PROJ-9")),
         ];
+        int expected = ExpectedSectionLines(rows);
 
-        string pane = string.Join("\n", Render(StatusCommand.SectionRows(rows, width, Now), width));
+        string[] lines = Render(StatusCommand.SectionRows(rows, width, Now), width);
+        string pane = string.Join("\n", lines);
 
+        lines.Should().HaveCount(expected, "a pane that scrolls has stopped being glanceable");
         pane.Should().Contain("github:o/r#42");
         pane.Should().Contain("jira:PROJ-9").And.Contain("secondary");
         // The primary reads before the secondary on the same line, not merely somewhere on the pane.
         pane.IndexOf("github:o/r#42", StringComparison.Ordinal)
             .Should().BeLessThan(pane.IndexOf("jira:PROJ-9", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The ordinary adopted case (one reference, no secondary) still fits one line per row at every
+    /// width the pane supports, against the realistic fixed-column widths and objective lengths
+    /// <see cref="Rows"/> builds — not only the short fixture the test above uses.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Widths))]
+    public void The_attention_pane_still_fits_once_a_row_carries_a_single_reference(int width)
+    {
+        IReadOnlyList<TaskStatusRow> baseline = Rows();
+        IReadOnlyList<TaskStatusRow> rows =
+        [
+            .. baseline.Take(baseline.Count - 1),
+            baseline[^1] with { ExternalReference = "github:hallmanac/hall9k#42" },
+        ];
+        int expected = ExpectedSectionLines(rows);
+
+        Render(StatusCommand.SectionRows(rows, width, Now), width).Should().HaveCount(expected);
     }
 
     /// <summary>
@@ -176,7 +204,7 @@ public sealed class TaskTableLayoutTests
     public void The_attention_pane_still_fits_once_rows_carry_an_assignee(int width)
     {
         IReadOnlyList<TaskStatusRow> rows = [.. Rows().Select(row => row with { Assignee = "Brian Hall" })];
-        int expected = rows.Count + rows.Sum(row => row.DetailMarkup.Count);
+        int expected = ExpectedSectionLines(rows);
 
         Render(StatusCommand.SectionRows(rows, width, Now), width).Should().HaveCount(expected);
         string.Join("\n", Render(StatusCommand.SectionRows(rows, width, Now), width))
@@ -220,6 +248,17 @@ public sealed class TaskTableLayoutTests
     /// </summary>
     private static int Expected(IReadOnlyList<TaskStatusRow> rows) =>
         1 + rows.Count + rows.Sum(row => row.SummaryMarkup.Count);
+
+    /// <summary>
+    /// What the attention pane costs in screen lines: one line per row, every one of its detail
+    /// lines, and its own reference line (<see cref="TaskStatusRow.ReferenceDetailMarkup"/>) where
+    /// the row carries one — the pane's own extra line, added in
+    /// <see cref="StatusCommand.SectionRows"/> rather than folded into
+    /// <see cref="TaskStatusRow.DetailMarkup"/>, which also feeds <see cref="TaskListCommand.Rows"/>
+    /// and <see cref="ProjectShowCommand.TaskTable"/> through <see cref="TaskStatusRow.SummaryMarkup"/>.
+    /// </summary>
+    private static int ExpectedSectionLines(IReadOnlyList<TaskStatusRow> rows) =>
+        rows.Count + rows.Sum(row => row.DetailMarkup.Count + (row.ReferenceDetailMarkup.IsNotBlank() ? 1 : 0));
 
     /// <summary>The rendered surface, one string per screen line, at the width it was built for.</summary>
     private static string[] Render(IRenderable renderable, int width)
