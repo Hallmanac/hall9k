@@ -196,6 +196,10 @@ public static class EventScopeRegistry
         [typeof(ProjectRenamed)] = EventScope.ProjectScoped,
         [typeof(ProjectSettingsChanged)] = EventScope.NodeScoped,
         [typeof(ProjectTeamSettingsChanged)] = EventScope.ProjectScoped,
+        // idea 202383dc, M2, Brian's ruling 2026-09-17: this install's own local mirror of the
+        // project's ledger-derived key — a fact every install re-derives from the identical ledger
+        // itself (h9k project join, h9k project assign-key), never a team decision to replicate.
+        [typeof(ProjectKeyAssigned)] = EventScope.NodeScoped,
 
         // idea b9b09779, piece 6: a project's own prompt addenda are team-visible guidance, the
         // same tier as ProjectTeamSettingsChanged — travels once the distributed-team chain

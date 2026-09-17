@@ -675,4 +675,24 @@ public static class ProjectDecider
 
         return new ProjectPromptAddendumRemoved(projectId, builder, removedAt, removedByOwnerId);
     }
+
+    /// <summary>
+    /// Records this install's own local mirror of the project's ledger-derived key (idea 202383dc,
+    /// M2). Stateless like <see cref="VouchMember"/>: the caller (<c>h9k project join</c> or
+    /// <c>h9k project assign-key</c>) already knows whether this project's own <c>ProjectDetails.ProjectKey</c>
+    /// is unset or already matches, and only calls this when there is something new to record — this
+    /// method's own job is only the shape of a 26-character Crockford-base32 ULID, never re-deriving
+    /// the caller's own idempotency check.
+    /// </summary>
+    public static ProjectKeyAssigned AssignKey(Guid projectId, string projectKey, DateTimeOffset assignedAt)
+    {
+        if (projectKey.Length != 26)
+        {
+            throw new DomainValidationException(
+                $"'{projectKey}' is not a project key — a project key is the 26-character ULID minted once "
+                + "at genesis (idea 202383dc, M2), never a fingerprint or any other id.");
+        }
+
+        return new ProjectKeyAssigned(projectId, projectKey, assignedAt);
+    }
 }

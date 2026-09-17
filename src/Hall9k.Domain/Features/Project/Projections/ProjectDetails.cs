@@ -158,6 +158,11 @@ public sealed class ProjectDetails
     /// <summary>Mirrors <see cref="ProjectAggregate.PromptAddenda"/>: this node's own audit trail,
     /// never what a prompt builder actually splices in.</summary>
     public Dictionary<string, ProjectPromptAddendum> PromptAddenda { get; set; } = [];
+
+    /// <summary>Mirrors <see cref="ProjectAggregate.ProjectKey"/>: this install's own local record
+    /// of the project's ledger-derived key (idea 202383dc, M2). Null until a join actually reads
+    /// one back from the ledger.</summary>
+    public string? ProjectKey { get; set; }
 }
 
 public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDetails, Guid>
@@ -460,4 +465,7 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
 
     public void Apply(IEvent<ProjectPromptAddendumRemoved> @event, ProjectDetails view) =>
         view.PromptAddenda.Remove(@event.Data.BuilderKey);
+
+    public void Apply(IEvent<ProjectKeyAssigned> @event, ProjectDetails view) =>
+        view.ProjectKey = @event.Data.ProjectKey;
 }
