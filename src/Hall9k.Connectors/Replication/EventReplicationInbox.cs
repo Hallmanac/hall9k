@@ -75,6 +75,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 HighestSeqInspected = sinceSeq,
                 SenderIgnored = true,
                 IgnoredReason = read.NotVouchedReason ?? "no node file vouches for this sender's outbox",
+                IgnoredForProjectKeyMismatch = false,
                 IgnoredAt = now,
             });
             await session.SaveChangesAsync(cancellationToken);
@@ -173,16 +174,26 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // flag the moment after it was set, so h9k status would only ever show the refusal for the
         // one sweep that first saw it (independent pre-PR review, cycle 1, conformance lens,
         // medium). A sweep that inspected nothing new instead carries the previous cursor's own
-        // ignored state forward unchanged; only a sweep that genuinely inspected fresh content gets
-        // to redecide it, the identical "clears only on a genuine advance past it" rule
-        // MessageInboxAggregate.Apply(InboxCursorAdvanced) already applies to
+        // MISMATCH mark forward unchanged, the identical "clears only on a genuine advance past it"
+        // rule MessageInboxAggregate.Apply(InboxCursorAdvanced) already applies to
+        // IgnoredForVerificationFailure — but a NOT-VOUCHED mark is a different fact (the sender's
+        // current vouch status, not a specific envelope) and must clear the moment this sweep
+        // proves the sender vouched again, whether or not it also inspected anything new: this
+        // block is only reached once read.SenderVouched is already true, so a standing not-vouched
+        // mark carried forward unconditionally would never clear again for a sender that stopped
+        // sending (independent pre-PR review, cycle 1, both lenses, medium) — the identical
+        // distinction MessageInbox.ReadFromAsync's own ConfirmVouched branch draws against
         // IgnoredForVerificationFailure.
         bool inspectedNewContent = highestSeqConsidered > sinceSeq;
-        bool senderIgnored = inspectedNewContent ? projectKeyMismatch : cursor?.SenderIgnored ?? false;
+        bool stickyMismatch = !inspectedNewContent && cursor is { SenderIgnored: true, IgnoredForProjectKeyMismatch: true };
+        bool senderIgnored = inspectedNewContent ? projectKeyMismatch : stickyMismatch;
         string? ignoredReason = inspectedNewContent
             ? (projectKeyMismatch ? projectKeyMismatchReason : null)
-            : cursor?.IgnoredReason;
-        DateTimeOffset? ignoredAt = inspectedNewContent ? (projectKeyMismatch ? now : null) : cursor?.IgnoredAt;
+            : (stickyMismatch ? cursor!.IgnoredReason : null);
+        bool ignoredForProjectKeyMismatch = inspectedNewContent ? projectKeyMismatch : stickyMismatch;
+        DateTimeOffset? ignoredAt = inspectedNewContent
+            ? (projectKeyMismatch ? now : null)
+            : (stickyMismatch ? cursor!.IgnoredAt : null);
 
         session.Store(new EventReplicationInboxCursor
         {
@@ -192,6 +203,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             HighestSeqInspected = highestSeqConsidered,
             SenderIgnored = senderIgnored,
             IgnoredReason = ignoredReason,
+            IgnoredForProjectKeyMismatch = ignoredForProjectKeyMismatch,
             IgnoredAt = ignoredAt,
         });
         await session.SaveChangesAsync(cancellationToken);
