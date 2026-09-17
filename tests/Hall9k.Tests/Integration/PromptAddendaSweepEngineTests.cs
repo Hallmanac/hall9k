@@ -12,6 +12,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -243,6 +244,121 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
             position!.LastPushError.Should().BeNull("a push that actually lands clears whatever failure preceded it");
             position.LastPushErrorAt.Should().BeNull();
         }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, conformance and adversarial lenses, both medium:
+    /// <c>MaterializeAsync</c> used to bank the ledger tip into its own cache before writing a single
+    /// local file, keyed only on the repository path. Re-homing a project
+    /// (<c>h9k project set --home</c>, or <c>h9k project init</c> repairing a wiped one) moves the
+    /// local materialize target without moving the ledger tip at all, so the old, repository-only key
+    /// still matched and the new home's own <c>prompt-addenda/</c> stayed empty forever. Asserts the
+    /// new home actually gets materialized into on the very next sweep, even though the ledger's own
+    /// tip never changes between the two sweeps.
+    /// </summary>
+    [Fact]
+    public async Task A_re_homed_project_still_materializes_into_the_new_home_even_though_the_ledger_tip_never_moved()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, Guid projectId, string projectHome) = await SeedAsync(cts.Token);
+        FakeLedger ledger = new();
+        PromptAddendaSweepEngine engine = new(
+            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance);
+
+        await SetAsync("work", "Prefer squash commits.", overCapReason: null, cts.Token);
+        await engine.SweepOnceAsync(cts.Token);
+
+        string originalMaterialized = ProjectHomePaths.PromptAddendumFile(projectHome, "work");
+        File.Exists(originalMaterialized).Should().BeTrue();
+
+        string newHome = Path.Combine(_home, "projects", "hall9k-rehomed");
+        Directory.CreateDirectory(newHome);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            ProjectAggregate aggregate = (await session.Events.AggregateStreamAsync<ProjectAggregate>(
+                projectId, token: cts.Token))!;
+            session.Events.Append(
+                projectId,
+                ProjectDecider.ChangeSettings(
+                    aggregate,
+                    verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+                    skipPermissions: Optional<bool>.None,
+                    contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+                    changedAt: Now.AddMinutes(1),
+                    changedByOwnerId: node.OwnerId,
+                    homeDirectory: ProjectHome.Parse(newHome)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The ledger's own tip has not moved since the sweep above — no set/remove happened in
+        // between — so this is exactly the scenario the premature tip-bank left unrepaired.
+        PromptAddendaSweepResult rehomedSweep = await engine.SweepOnceAsync(cts.Token);
+        rehomedSweep.Materialized.Should().BeGreaterThan(0, "the new home starts empty and must be materialized into, even though the ledger tip never moved");
+
+        string newMaterialized = ProjectHomePaths.PromptAddendumFile(newHome, "work");
+        File.Exists(newMaterialized).Should().BeTrue();
+        File.ReadAllText(newMaterialized).Should().Be("Prefer squash commits.");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens, medium: a failing
+    /// <see cref="ILedger.ListRefsAsync"/> (an unreachable <c>origin</c> — offline, no remote
+    /// configured) was retried on every single tick forever, with no backoff, each one paying for a
+    /// network round trip and a warning log line. Asserts a tick immediately following a failure does
+    /// not call <see cref="ILedger.ListRefsAsync"/> again — the backoff window (floor 30 seconds)
+    /// comfortably covers the whole test's own wall-clock time, so a second call landing anyway would
+    /// mean the backoff never engaged.
+    /// </summary>
+    [Fact]
+    public async Task A_failing_list_refs_call_backs_off_instead_of_retrying_on_the_very_next_tick()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, Guid projectId, string projectHome) = await SeedAsync(cts.Token);
+        FlakyListRefsLedger ledger = new(new FakeLedger()) { FailListRefs = true };
+        PromptAddendaSweepEngine engine = new(
+            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance);
+
+        PromptAddendaSweepResult firstSweep = await engine.SweepOnceAsync(cts.Token);
+        firstSweep.Materialized.Should().Be(0, "the failing ListRefsAsync call is caught per-project rather than thrown out of the sweep");
+        ledger.ListRefsCalls.Should().Be(1);
+
+        PromptAddendaSweepResult secondSweep = await engine.SweepOnceAsync(cts.Token);
+        secondSweep.Materialized.Should().Be(0);
+        ledger.ListRefsCalls.Should().Be(1, "the backoff window from the first failure has not elapsed, so this tick must skip the network call rather than retry it immediately");
+    }
+
+    /// <summary>A thin <see cref="ILedger"/> decorator whose <see cref="ListRefsAsync"/> call can be
+    /// switched to always throw on demand, and counts every call it actually made — the real failure
+    /// mode an unreachable ledger remote raises, while every other operation passes straight through
+    /// to <paramref name="inner"/> unchanged.</summary>
+    private sealed class FlakyListRefsLedger(ILedger inner) : ILedger
+    {
+        public bool FailListRefs { get; set; }
+
+        public int ListRefsCalls { get; private set; }
+
+        public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken) =>
+            inner.ReadAsync(repositoryPath, refName, path, cancellationToken);
+
+        public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken) =>
+            inner.WriteAsync(request, cancellationToken);
+
+        public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
+            inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken)
+        {
+            ListRefsCalls++;
+            return FailListRefs
+                ? throw new InvalidOperationException("simulated unreachable ledger remote")
+                : inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
+        }
+
+        public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 
     /// <summary>A thin <see cref="ILedger"/> decorator whose writes can be switched to always throw
