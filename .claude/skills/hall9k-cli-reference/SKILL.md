@@ -280,6 +280,7 @@ h9k task add --project <name> --objective "…"     # creates a Draft (identity,
 h9k task add --from-idea <id> --objective "…"     # cut a draft from an idea (backlog 31); repeatable, falls back to the idea's own project
 h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number, owner/repo#42, or URL)
 h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or URL)
+h9k task add --project <name> --from-issue 42 --from-jira PROJ-1 --primary-tracker jira   # link both trackers to one task (task: a task may link to both); the primary does every job, the other is shown and linked only. --primary-tracker overrides the project's own default and is required when neither says which wins
 h9k task add --project <name> --from-pr 42        # adopt a pull request to review (always pr-review)
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
 h9k task add --project <name> --objective "…" --stacked-on <id>   # a STACKED edge (Decisions Log #144), not a plain blocked-by — see below
@@ -395,7 +396,17 @@ work holds its issue, so `h9k task add --from-pr` re-adopts it for a second pass
 adoption of a card another live task holds, and `h9k task link-jira` and `h9k task link-issue`
 enforce the identical rule on the same field's other doors
 (`TaskAddCommand.RefuseSecondAdoptionAsync`), one card, one owning task, so a card never ends up
-with two sets of runs and two closeout comments. A card that genuinely needs several tasks working
+with two sets of runs and two closeout comments. The one exception to "a task carries one external
+reference" is deliberate rather than a second card slipping in sideways: `--from-issue` and
+`--from-jira` TOGETHER (task: a task may link to both a GitHub issue and a Jira card) adopt one of
+each — the primary keeps the claim gate, the branch key, publish, closeout close and every tracker
+write, and the other rides along as the secondary, shown by `h9k status`/`h9k task show` and
+linked, but never gating or written to. Which is primary is `--primary-tracker github|jira` on
+that `task add`, or the project's own default (`h9k project set <project> --primary-tracker
+github|jira`); with neither, the command refuses rather than guessing which tracker should do the
+work. Both references still go through the identical `RefuseSecondAdoptionAsync` dedup — a card
+already spoken for elsewhere is refused whether it is being adopted as this task's primary or its
+secondary. A card that genuinely needs several tasks working
 toward it (ARX-5510: one Jira card, eight pull requests) runs straight into that refusal if every
 task tries to adopt it, and the refusal is the guard working as designed, not a bug to route
 around; the pattern below is what the arx team found by trial and error against it. The epic
@@ -679,6 +690,7 @@ needed:
 h9k project set <project> --backlog none|github-issues|jira   # default none — today's behavior
 h9k project set <project> --backlog-routing "<TEXT>"          # free text: verbatim to the jira agent; a label list for github-issues
 h9k task link-issue <task> 123                                # record a GitHub issue, verified against gh first
+h9k project set <project> --primary-tracker github|jira|none  # default which tracker wins when a task adopts both (task: a task may link to both); 'none' clears it, and h9k task add --primary-tracker overrides it per task
 ```
 
 `h9k task publish` checks the policy twice. First, before publishing: a tracking policy (`jira` or
