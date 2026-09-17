@@ -335,6 +335,109 @@ public sealed class ProjectAggregate
         }
     }
 
+    /// <summary>
+    /// The team half of a settings change (idea 202383dc, M2a) — sets exactly the properties
+    /// <see cref="Apply(ProjectSettingsChanged)"/> already sets for these same fields, so a
+    /// replicated copy of this event (received from another node, or this node's own local
+    /// companion event, <see cref="ProjectTeamSettingsChanged.From"/>) updates project state the
+    /// identical way.
+    /// </summary>
+    public void Apply(ProjectTeamSettingsChanged @event)
+    {
+        if (@event.VerifyCommands.HasValue)
+        {
+            _verifyCommands.Clear();
+            _verifyCommands.AddRange(@event.VerifyCommands.Value ?? []);
+        }
+
+        if (@event.ReviewRerequest.HasValue)
+        {
+            ReviewRerequest = @event.ReviewRerequest.Value ?? ReviewRerequestPolicy.Unknown;
+        }
+
+        if (@event.JiraProjectKey.HasValue)
+        {
+            JiraProjectKey = @event.JiraProjectKey.Value ?? JiraProjectKey.None;
+        }
+
+        if (@event.BacklogPolicy.HasValue)
+        {
+            BacklogPolicy = @event.BacklogPolicy.Value ?? BacklogPolicy.None;
+        }
+
+        if (@event.BacklogRoutingGuidance.HasValue)
+        {
+            BacklogRoutingGuidance = @event.BacklogRoutingGuidance.Value.IsBlank() ? null : @event.BacklogRoutingGuidance.Value;
+        }
+
+        if (@event.MaxComplianceReviewCycles.HasValue)
+        {
+            MaxComplianceReviewCycles = @event.MaxComplianceReviewCycles.Value;
+        }
+
+        if (@event.MaxAdversarialReviewCycles.HasValue)
+        {
+            MaxAdversarialReviewCycles = @event.MaxAdversarialReviewCycles.Value;
+        }
+
+        if (@event.MaxFinalFullPassRounds.HasValue)
+        {
+            MaxFinalFullPassRounds = @event.MaxFinalFullPassRounds.Value;
+        }
+
+        if (@event.LifetimeReviewCycleBudget.HasValue)
+        {
+            LifetimeReviewCycleBudget = @event.LifetimeReviewCycleBudget.Value;
+        }
+
+        if (@event.BranchNameTemplate.HasValue)
+        {
+            BranchNameTemplate = @event.BranchNameTemplate.Value ?? BranchNameTemplate.Default;
+        }
+
+        if (@event.ReviewStageComposition.HasValue)
+        {
+            ReviewStageComposition = @event.ReviewStageComposition.Value;
+        }
+
+        if (@event.AutoPrReview.HasValue)
+        {
+            AutoPrReview = @event.AutoPrReview.Value ?? AutoPrReviewSpeed.Off;
+        }
+
+        if (@event.ClaimGate.HasValue)
+        {
+            ClaimGate = @event.ClaimGate.Value ?? ClaimGate.Off;
+        }
+
+        if (@event.CloseLinkedIssue.HasValue)
+        {
+            CloseLinkedIssue = @event.CloseLinkedIssue.Value ?? CloseLinkedIssueRule.WhenAllTasksClose;
+        }
+
+        if (@event.NeverCloseLabels.HasValue)
+        {
+            _neverCloseLabels.Clear();
+            _neverCloseLabels.AddRange(@event.NeverCloseLabels.Value ?? []);
+        }
+
+        if (@event.WritingConventions.HasValue)
+        {
+            WritingConventions = @event.WritingConventions.Value ?? WritingConventions.Default;
+        }
+
+        if (@event.ContextLinks.HasValue)
+        {
+            _contextLinks.Clear();
+            _contextLinks.AddRange(@event.ContextLinks.Value ?? []);
+        }
+
+        if (@event.CommitStyle.HasValue)
+        {
+            CommitStyle = @event.CommitStyle.Value ?? CommitStyle.Unknown;
+        }
+    }
+
     public void Apply(ProjectArchived @event)
     {
         IsArchived = true;
