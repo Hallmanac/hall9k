@@ -24,6 +24,9 @@ public sealed class NodeDetails
 
     public DateTimeOffset? ClaimedOwnerAt { get; set; }
 
+    /// <summary>Mirrors <see cref="NodeAggregate.ReplicationSwitchOnSequence"/>.</summary>
+    public long? ReplicationSwitchOnSequence { get; set; }
+
     /// <summary>
     /// Mirrors <see cref="NodeAggregate.LaunchHoldActive"/> (task: a session that exits at once
     /// with no work done is treated as the node failing to launch sessions) — read by the
@@ -113,5 +116,10 @@ public sealed class NodeDetailsProjection : SingleStreamProjection<NodeDetails, 
     {
         view.ClaimedOwnerFingerprint = @event.Data.OwnerFingerprint;
         view.ClaimedOwnerAt = @event.Data.ClaimedAt;
+    }
+
+    public void Apply(IEvent<ReplicationSwitchedOn> @event, NodeDetails view)
+    {
+        view.ReplicationSwitchOnSequence = @event.Data.SwitchOnGlobalSequence;
     }
 }
