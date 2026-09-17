@@ -2,7 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Orchestrator;
-using Spectre.Console;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -20,9 +20,6 @@ namespace Hall9k.Tests.Cli;
 /// <see cref="OrchestratorLaunchTextShowCommand.Print"/>) would ever plausibly see, to prove none
 /// of them wrap the command it prints.
 /// </summary>
-// Capture (below) swaps the process-wide AnsiConsole.Console, the same static TaskWorkClaimTests
-// and InstallCommandTests swap; sharing the collection serializes this class against them too.
-[Collection("Hall9kHome")]
 public sealed class LaunchLineWrappingTests
 {
     private const int NarrowWidth = 10;
@@ -36,7 +33,7 @@ public sealed class LaunchLineWrappingTests
     [Fact]
     public void Write_emits_the_text_as_a_single_line_terminated_by_exactly_one_newline()
     {
-        string output = Capture(() => LaunchLineWriter.Write(LongLaunchCommand), NarrowWidth);
+        string output = ScopedAnsiConsoleCapture.Capture(() => LaunchLineWriter.Write(LongLaunchCommand), NarrowWidth);
 
         output.Should().Be(LongLaunchCommand + "\n");
     }
@@ -47,7 +44,7 @@ public sealed class LaunchLineWrappingTests
     [InlineData("\n\n")]
     public void Write_collapses_a_line_terminator_already_on_the_text_to_exactly_one_newline(string existingTerminator)
     {
-        string output = Capture(() => LaunchLineWriter.Write(LongLaunchCommand + existingTerminator), NarrowWidth);
+        string output = ScopedAnsiConsoleCapture.Capture(() => LaunchLineWriter.Write(LongLaunchCommand + existingTerminator), NarrowWidth);
 
         output.Should().Be(LongLaunchCommand + "\n");
     }
@@ -57,7 +54,7 @@ public sealed class LaunchLineWrappingTests
     {
         LaunchText launchText = new(LaunchText.DefaultCli, LongLaunchCommand);
 
-        string output = Capture(
+        string output = ScopedAnsiConsoleCapture.Capture(
             () => OrchestratorReport.Print(LaunchText.DefaultCli, launchText, "/tmp/recipe.md", "/tmp/journal.md"),
             NarrowWidth);
 
@@ -70,36 +67,11 @@ public sealed class LaunchLineWrappingTests
     {
         LaunchText launchText = new(LaunchText.DefaultCli, LongLaunchCommand);
 
-        string output = Capture(
+        string output = ScopedAnsiConsoleCapture.Capture(
             () => OrchestratorLaunchTextShowCommand.Print(LaunchText.DefaultCli, launchText, stored: true, string.Empty),
             NarrowWidth);
 
         string[] lines = output.Split('\n', StringSplitOptions.RemoveEmptyEntries);
         lines.Should().ContainSingle(line => line == LongLaunchCommand);
-    }
-
-    /// <summary>The global console, swapped for a writer and put back — mirrors TaskWorkClaimTests's own capture.</summary>
-    private static string Capture(Action action, int width)
-    {
-        IAnsiConsole original = AnsiConsole.Console;
-        StringWriter writer = new();
-        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
-        {
-            Ansi = AnsiSupport.No,
-            ColorSystem = ColorSystemSupport.NoColors,
-            Out = new AnsiConsoleOutput(writer),
-        });
-        captured.Profile.Width = width;
-        AnsiConsole.Console = captured;
-        try
-        {
-            action();
-        }
-        finally
-        {
-            AnsiConsole.Console = original;
-        }
-
-        return writer.ToString();
     }
 }

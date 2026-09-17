@@ -7,8 +7,8 @@ using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
-using Spectre.Console;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -73,7 +73,7 @@ public sealed class StatusCommandUnverifiedLedgerWritesTests : IClassFixture<Pos
         string output;
         await using (IQuerySession session = _postgres.Store.QuerySession())
         {
-            output = await CaptureAsync(() => StatusCommand.WriteUnverifiedLedgerWritesAsync(session, cts.Token));
+            output = await ScopedAnsiConsoleCapture.CaptureAsync(() => StatusCommand.WriteUnverifiedLedgerWritesAsync(session, cts.Token));
         }
 
         output.Should().Contain("vouch").And.Contain(droppedNodeId.ToString())
@@ -90,7 +90,7 @@ public sealed class StatusCommandUnverifiedLedgerWritesTests : IClassFixture<Pos
         string output;
         await using (IQuerySession session = _postgres.Store.QuerySession())
         {
-            output = await CaptureAsync(() => StatusCommand.WriteUnverifiedLedgerWritesAsync(session, CancellationToken.None));
+            output = await ScopedAnsiConsoleCapture.CaptureAsync(() => StatusCommand.WriteUnverifiedLedgerWritesAsync(session, CancellationToken.None));
         }
 
         output.Should().BeEmpty("a quiet pane says nothing, the same posture every other pane in this command follows");
@@ -113,29 +113,5 @@ public sealed class StatusCommandUnverifiedLedgerWritesTests : IClassFixture<Pos
         await projectSession.SaveChangesAsync(cancellationToken);
 
         return (await projectSession.LoadAsync<ProjectDetails>(projectId, cancellationToken))!;
-    }
-
-    /// <summary>The global console, swapped for a writer and put back — mirrors LaunchLineWrappingTests's own capture.</summary>
-    private static async Task<string> CaptureAsync(Func<Task> action)
-    {
-        IAnsiConsole original = AnsiConsole.Console;
-        StringWriter writer = new();
-        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
-        {
-            Ansi = AnsiSupport.No,
-            ColorSystem = ColorSystemSupport.NoColors,
-            Out = new AnsiConsoleOutput(writer),
-        });
-        captured.Profile.Width = 4096;
-        AnsiConsole.Console = captured;
-        try
-        {
-            await action();
-            return writer.ToString();
-        }
-        finally
-        {
-            AnsiConsole.Console = original;
-        }
     }
 }

@@ -3,7 +3,7 @@ using Hall9k.Cli.Diagnostics;
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Tests.Fakes;
-using Spectre.Console;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -73,7 +73,7 @@ public sealed class DatabaseDoctorNotConfiguredTests : IDisposable
     {
         RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("exited\n");
 
-        string output = await CaptureAsync(() =>
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(() =>
             DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None));
 
         runner.Calls.Should().NotContain(
@@ -107,32 +107,5 @@ public sealed class DatabaseDoctorNotConfiguredTests : IDisposable
         calls.Should().Contain(
             call => call.Count > 0 && call[0] == "volume",
             "--yes has to reach the actual start attempt without anybody confirming it first");
-    }
-
-    /// <summary>The global console, swapped for a writer so a skipped prompt's own
-    /// explanation can be asserted on, then put back — same shape as InstallCommandTests'
-    /// own Capture, async because <see cref="DatabaseDoctor.RunAsync(bool, bool, Hall9k.Connectors.Processes.ProcessRunner, CancellationToken)"/> is.</summary>
-    private static async Task<string> CaptureAsync(Func<Task> action)
-    {
-        IAnsiConsole original = AnsiConsole.Console;
-        StringWriter writer = new();
-        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
-        {
-            Ansi = AnsiSupport.No,
-            ColorSystem = ColorSystemSupport.NoColors,
-            Interactive = InteractionSupport.No,
-            Out = new AnsiConsoleOutput(writer),
-        });
-        captured.Profile.Width = 4096;
-        AnsiConsole.Console = captured;
-        try
-        {
-            await action();
-            return writer.ToString();
-        }
-        finally
-        {
-            AnsiConsole.Console = original;
-        }
     }
 }

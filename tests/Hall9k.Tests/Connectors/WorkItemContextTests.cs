@@ -1,8 +1,8 @@
-using System.Globalization;
 using FluentAssertions;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
@@ -36,18 +36,11 @@ public sealed class WorkItemContextTests
         // This text is stored on the task and handed to the agent, so the machine that composed
         // it is not around to explain its own conventions. A locale that separates a time with a
         // full stop would put '09.30.00Z' permanently into a record every other machine reads.
-        CultureInfo original = CultureInfo.CurrentCulture;
-        try
-        {
-            CultureInfo.CurrentCulture = new CultureInfo(culture);
-
+        // CultureScope, not a set-and-restore here: the culture lands on a thread of this case's
+        // own, so it dies with that thread rather than resting on a restore being written right.
+        CultureScope.Run(culture, () =>
             WorkItemContext.Compose(Item("Body"))
-                .Should().Contain("State as observed at import (2026-08-21 09:30:00Z): open");
-        }
-        finally
-        {
-            CultureInfo.CurrentCulture = original;
-        }
+                .Should().Contain("State as observed at import (2026-08-21 09:30:00Z): open"));
     }
 
     [Fact]

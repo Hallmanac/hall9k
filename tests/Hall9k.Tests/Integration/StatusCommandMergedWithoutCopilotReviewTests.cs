@@ -8,8 +8,8 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
-using Spectre.Console;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -43,7 +43,7 @@ public sealed class StatusCommandMergedWithoutCopilotReviewTests(PostgresFixture
         string output;
         await using (IQuerySession session = postgres.Store.QuerySession())
         {
-            output = await CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(session, cts.Token));
+            output = await ScopedAnsiConsoleCapture.CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(session, cts.Token));
         }
 
         output.Should().Contain("merged without Copilot review")
@@ -68,7 +68,7 @@ public sealed class StatusCommandMergedWithoutCopilotReviewTests(PostgresFixture
         string output;
         await using (IQuerySession session = postgres.Store.QuerySession())
         {
-            output = await CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(session, cts.Token));
+            output = await ScopedAnsiConsoleCapture.CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(session, cts.Token));
         }
 
         output.Should().NotContain("PR #409", "the pull request has not merged yet, so there is nothing this line owes a reader about it");
@@ -92,7 +92,7 @@ public sealed class StatusCommandMergedWithoutCopilotReviewTests(PostgresFixture
         string output;
         await using (IQuerySession session = postgres.Store.QuerySession())
         {
-            output = await CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(session, cts.Token));
+            output = await ScopedAnsiConsoleCapture.CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(session, cts.Token));
         }
 
         output.Should().Contain("merged without Copilot review")
@@ -150,7 +150,7 @@ public sealed class StatusCommandMergedWithoutCopilotReviewTests(PostgresFixture
         string output;
         await using (IQuerySession query = postgres.Store.QuerySession())
         {
-            output = await CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(query, cts.Token));
+            output = await ScopedAnsiConsoleCapture.CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(query, cts.Token));
         }
 
         output.Should().NotContain("PR #411", "Copilot's review landed before the merge, so the merge did not happen without it");
@@ -213,7 +213,7 @@ public sealed class StatusCommandMergedWithoutCopilotReviewTests(PostgresFixture
         string output;
         await using (IQuerySession query = postgres.Store.QuerySession())
         {
-            output = await CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(query, cts.Token));
+            output = await ScopedAnsiConsoleCapture.CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(query, cts.Token));
         }
 
         output.Should().Contain("merged without Copilot review")
@@ -282,7 +282,7 @@ public sealed class StatusCommandMergedWithoutCopilotReviewTests(PostgresFixture
         string output;
         await using (IQuerySession query = postgres.Store.QuerySession())
         {
-            output = await CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(query, cts.Token));
+            output = await ScopedAnsiConsoleCapture.CaptureAsync(() => StatusCommand.WriteMergedWithoutCopilotReviewAsync(query, cts.Token));
         }
 
         output.Should().NotContain(
@@ -391,29 +391,5 @@ public sealed class StatusCommandMergedWithoutCopilotReviewTests(PostgresFixture
         await session.SaveChangesAsync(cancellationToken);
 
         return (taskId, runId);
-    }
-
-    /// <summary>The global console, swapped for a writer and put back — mirrors LaunchLineWrappingTests's own capture.</summary>
-    private static async Task<string> CaptureAsync(Func<Task> action)
-    {
-        IAnsiConsole original = AnsiConsole.Console;
-        StringWriter writer = new();
-        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
-        {
-            Ansi = AnsiSupport.No,
-            ColorSystem = ColorSystemSupport.NoColors,
-            Out = new AnsiConsoleOutput(writer),
-        });
-        captured.Profile.Width = 4096;
-        AnsiConsole.Console = captured;
-        try
-        {
-            await action();
-            return writer.ToString();
-        }
-        finally
-        {
-            AnsiConsole.Console = original;
-        }
     }
 }

@@ -24,6 +24,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -1077,22 +1078,16 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             ? JiraGate(key, holding == "held" ? "someone-else" : null)
             : GitHubGate(key, holding == "held" ? "teammate" : null);
 
-        StringWriter captured = new();
-        TextWriter previousError = Console.Error;
-        Console.SetError(captured);
-        try
+        string warning;
+        using (ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError())
         {
             await using IDocumentSession session = store.LightweightSession();
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
                 taskId, token: cts.Token))!;
             await TaskAssignCommand.WarnIfTrackerHoldsAsync(store, session, task, gate, cts.Token);
-        }
-        finally
-        {
-            Console.SetError(previousError);
+            warning = captured.Text;
         }
 
-        string warning = captured.ToString();
         warning.Should().Contain("claim gate is tracker-assignee");
         warning.Should().Contain(provider == "jira" ? "GATE-1" : $"{Repository}#601");
         if (holding == "held")
@@ -1133,22 +1128,19 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             ? JiraGate(key, JiraAccountId)
             : GitHubGate(key, GitHubLogin);
 
-        StringWriter captured = new();
-        TextWriter previousError = Console.Error;
-        Console.SetError(captured);
-        try
+        using (ScopedConsoleCapture captured = ScopedConsoleCapture.StandardError())
         {
             await using IDocumentSession session = store.LightweightSession();
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
                 taskId, token: cts.Token))!;
             await TaskAssignCommand.WarnIfTrackerHoldsAsync(store, session, task, gate, cts.Token);
-        }
-        finally
-        {
-            Console.SetError(previousError);
-        }
 
-        captured.ToString().Should().BeEmpty("nothing is holding it, so there is nothing to warn about");
+            // Scoped to this test's own async flow, so "empty" means this command wrote nothing —
+            // not that nothing else in the process happened to write to stderr at the same moment.
+            // ScopedConsoleCapture's own origin incident was exactly this assertion reading another
+            // class's cross-process container-gate wait notice out of a process-wide redirect.
+            captured.Text.Should().BeEmpty("nothing is holding it, so there is nothing to warn about");
+        }
 
         await using IQuerySession verify = store.QuerySession();
         IReadOnlyList<IEvent> stream = await verify.Events.FetchStreamAsync(taskId, token: cts.Token);
