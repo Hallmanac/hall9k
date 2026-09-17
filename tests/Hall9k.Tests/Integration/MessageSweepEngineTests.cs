@@ -113,14 +113,19 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], ProjectKey: "shared-project-key")),
             new MessageNodeIdentityResolver(new NodeKeyStore()),
             Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
-            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver())),
+            new EventCatchUpCoordinator());
 
         await engine.SweepOnceAsync(cts.Token);
         transport.ProbeCount.Should().Be(1, "the first sweep always probes once");
-        // idea 202383dc, M2a: EventReplicationInbox reads the identical outbox ref independently of
-        // MessageInbox (a second, narrower reader of the same ref, never folded into that class's own
-        // delicate, heavily-tested flow), so a moved tip now costs two reads, not one.
-        transport.ReadCount.Should().Be(2, "the sender's tip moved, so the first sweep reads it once for notes and once for replicated events");
+        // idea 202383dc, M2a/M2b: EventReplicationInbox and EventCatchUpInbox each read the
+        // identical outbox ref independently of MessageInbox (a second and third, narrower reader
+        // of the same ref, never folded into that class's own delicate, heavily-tested flow), so a
+        // moved tip now costs three reads, not one.
+        transport.ReadCount.Should().Be(
+            3, "the sender's tip moved, so the first sweep reads it once for notes, once for replicated events, "
+            + "and once for catch-up protocol envelopes");
 
         await using (IDocumentSession verifySession = _postgres.Store.LightweightSession())
         {
@@ -138,7 +143,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         await engine.SweepOnceAsync(cts.Token);
         transport.ProbeCount.Should().Be(2, "the second sweep still probes every tick");
         transport.ReadCount.Should().Be(
-            2, "node A's tip has not moved since the first sweep cached it, so the second sweep must skip both reads");
+            3, "node A's tip has not moved since the first sweep cached it, so the second sweep must skip all three reads");
     }
 
     /// <summary>
@@ -192,7 +197,9 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], ProjectKey: "shared-project-key")),
             new MessageNodeIdentityResolver(new NodeKeyStore()),
             Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
-            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver())),
+            new EventCatchUpCoordinator());
 
         MessageSweepResult result = await engine.SweepOnceAsync(cts.Token);
 
@@ -265,7 +272,9 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new FakeLedgerChainReader(chainWithDroppedVouch), new MessageNodeIdentityResolver(new NodeKeyStore()),
             Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
-            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver())),
+            new EventCatchUpCoordinator());
 
         await engine.SweepOnceAsync(cts.Token);
 
@@ -313,7 +322,9 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new FakeLedgerChainReader(chainWithDuplicateWrites), new MessageNodeIdentityResolver(new NodeKeyStore()),
             Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
-            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver())),
+            new EventCatchUpCoordinator());
 
         await engine.SweepOnceAsync(cts.Token);
 
@@ -352,7 +363,9 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new FakeLedgerChainReader(chainWithStandingWrite), new MessageNodeIdentityResolver(new NodeKeyStore()),
             Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
-            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver())),
+            new EventCatchUpCoordinator());
 
         await engine.SweepOnceAsync(cts.Token);
         await engine.SweepOnceAsync(cts.Token);
@@ -437,7 +450,9 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             new AlwaysThrowingForOneRepositoryChainReader(FailingRepositoryPath, HealthyRepositoryPath, HealthyProjectKey),
             new MessageNodeIdentityResolver(new NodeKeyStore()), Options.Create(new DaemonOptions()),
             NullLogger<MessageSweepEngine>.Instance,
-            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver())),
+            new EventCatchUpCoordinator());
 
         await engine.SweepOnceAsync(cts.Token);
 
@@ -552,7 +567,9 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             new AlwaysThrowingForOneRepositoryChainReader(FailingRepositoryPath, HealthyRepositoryPath, HealthyProjectKey),
             new MessageNodeIdentityResolver(new NodeKeyStore()), Options.Create(new DaemonOptions()),
             NullLogger<MessageSweepEngine>.Instance,
-            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver())),
+            new EventCatchUpCoordinator());
 
         await engine.SweepOnceAsync(cts.Token);
 
@@ -651,7 +668,9 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             new AlwaysThrowingForOneRepositoryChainReader(FailingRepositoryPath, HealthyRepositoryPath, HealthyProjectKey),
             new MessageNodeIdentityResolver(new NodeKeyStore()), Options.Create(new DaemonOptions()),
             NullLogger<MessageSweepEngine>.Instance,
-            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver())),
+            new EventCatchUpCoordinator());
 
         await engine.SweepOnceAsync(cts.Token);
 

@@ -1,11 +1,14 @@
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Trust;
 using Marten;
 using Marten.Linq.MatchesSql;
@@ -40,7 +43,9 @@ public sealed class MessageSweepEngine(
     IOptions<DaemonOptions> options,
     ILogger<MessageSweepEngine> logger,
     EventReplicationOutbox eventOutbox,
-    EventReplicationInbox eventInbox)
+    EventReplicationInbox eventInbox,
+    EventCatchUpInbox eventCatchUpInbox,
+    EventCatchUpCoordinator eventCatchUpCoordinator)
 {
     /// <summary>Every sender outbox's tip as of this node's last probe, so a sweep that finds an
     /// unmoved tip skips reading it entirely. In-memory and per-process by design: a restart just
@@ -239,6 +244,10 @@ public sealed class MessageSweepEngine(
         IReadOnlyList<MessageOutboxTip> toRead = SendersToRead(tips, nodeId, project.RepositoryPath, _lastKnownTips);
         if (toRead.Count == 0)
         {
+            // Still worth a look even when nothing moved: a candidate cascade's own per-candidate
+            // timeout (idea 202383dc, M2b) elapses on the wall clock, never on some other sender's
+            // outbox moving, so it must be checked every tick regardless.
+            await AdvanceCatchUpAsync(project, nodeId, identity, trustChain, tips, now, cancellationToken);
             return;
         }
 
@@ -296,6 +305,31 @@ public sealed class MessageSweepEngine(
                     eventsSession, project.RepositoryPath, tip.SenderNodeId, project.Id, now, trustChain, cancellationToken);
 
                 eventsReadComplete = !read.SenderIgnored;
+
+                if (read.StalledAtSeq is not null)
+                {
+                    // idea 202383dc, M2b, task 9408d525: this sender's own outbox has content past
+                    // a numeric gap this read could not reach at all — a squash on the sender's own
+                    // side, or a lost push, may have aged the missing envelopes out of its ref
+                    // entirely. The stalled sender itself is deliberately never passed as the
+                    // voucher tier here: any answer it queues still rides its OWN outbox ref, behind
+                    // the identical permanent hole this read just failed to cross, so asking it to
+                    // fill its own gap can never actually help — this node has no tracked "who
+                    // vouched me in" relationship to supply a real voucher instead, so ranked
+                    // candidates fall straight to owner-role members, then any other member, most
+                    // recently moved outbox first within a rank (tips is already probed fresh this
+                    // tick, in whatever order the transport returned it — recency ordering beyond
+                    // that is not tracked today); the stalled sender still appears in the "any
+                    // member" tier rather than being excluded outright, since a truly transient stall
+                    // (not yet pushed, rather than genuinely lost) does resolve if asked again.
+                    IReadOnlyList<Guid> knownNodeIds = [.. tips.Select(t => t.SenderNodeId)];
+                    IReadOnlyList<Guid> candidates = EventCatchUpCoordinator.RankCandidates(
+                        knownNodeIds, nodeId, voucherNodeId: null, trustChain);
+                    await using IDocumentSession catchUpSession = store.LightweightSession();
+                    await eventCatchUpCoordinator.RequestGapFillAsync(
+                        catchUpSession, project.Id, tip.SenderNodeId, nodeId, identity.OwnerRootFingerprint,
+                        candidates, now, cancellationToken);
+                }
             }
             catch (Exception exception)
             {
@@ -304,10 +338,81 @@ public sealed class MessageSweepEngine(
                     + "will retry next sweep", tip.SenderNodeId, project.Id);
             }
 
+            try
+            {
+                await using IDocumentSession catchUpSession = store.LightweightSession();
+                await eventCatchUpInbox.ReadFromAsync(
+                    catchUpSession, project.RepositoryPath, tip.SenderNodeId, project.Id, nodeId,
+                    identity.OwnerRootFingerprint, now, trustChain, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception, "Reading sender {SenderNodeId}'s catch-up requests failed for project {ProjectId}; "
+                    + "will retry next sweep", tip.SenderNodeId, project.Id);
+            }
+
             if (notesReadComplete && eventsReadComplete)
             {
                 _lastKnownTips[(project.RepositoryPath, tip.SenderNodeId)] = tip.Tip;
             }
+        }
+
+        await AdvanceCatchUpAsync(project, nodeId, identity, trustChain, tips, now, cancellationToken);
+    }
+
+    /// <summary>
+    /// A brand-new node's own bootstrap (idea 202383dc, M2b: "a brand-new node requests everything
+    /// and bootstraps its project from the answer"), started once this project shows no applied
+    /// history at all — no replicated event ever landed, and this node has produced no Task of its
+    /// own either — and cascades every outstanding catch-up request past its per-candidate timeout
+    /// to the next ranked candidate.
+    /// </summary>
+    private async Task AdvanceCatchUpAsync(
+        ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, TrustChain trustChain,
+        IReadOnlyList<MessageOutboxTip> tips, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<Guid> knownNodeIds = [.. tips.Select(t => t.SenderNodeId)];
+        if (knownNodeIds.Count > 0)
+        {
+            try
+            {
+                await using IDocumentSession bootstrapCheckSession = store.LightweightSession();
+                bool hasAnyLocalHistory = await bootstrapCheckSession.Query<ReplicatedEventRecord>()
+                    .Where(record => record.ProjectId == project.Id).AnyAsync(cancellationToken)
+                    || await bootstrapCheckSession.Query<TaskListItem>()
+                        .Where(task => task.ProjectId == project.Id).AnyAsync(cancellationToken)
+                    || await bootstrapCheckSession.Query<IdeaDetails>()
+                        .Where(idea => idea.ProjectId == project.Id).AnyAsync(cancellationToken);
+                if (!hasAnyLocalHistory)
+                {
+                    IReadOnlyList<Guid> candidates = EventCatchUpCoordinator.RankCandidates(
+                        knownNodeIds, nodeId, voucherNodeId: null, trustChain);
+                    await eventCatchUpCoordinator.RequestBootstrapAsync(
+                        bootstrapCheckSession, project.Id, nodeId, identity.OwnerRootFingerprint, candidates, now,
+                        cancellationToken);
+                }
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception, "Checking for a brand-new bootstrap failed for project {ProjectId}; will retry next sweep",
+                    project.Id);
+            }
+        }
+
+        try
+        {
+            await using IDocumentSession timeoutSession = store.LightweightSession();
+            await eventCatchUpCoordinator.AdvanceOverdueRequestsAsync(
+                timeoutSession, project.Id, nodeId, identity.OwnerRootFingerprint, options.Value.EventCatchUpRequestTimeout,
+                now, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Advancing overdue catch-up requests failed for project {ProjectId}; will retry next sweep",
+                project.Id);
         }
     }
 
