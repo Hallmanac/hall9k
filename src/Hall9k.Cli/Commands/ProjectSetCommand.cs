@@ -580,7 +580,16 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             }
         }
 
-        session.Events.Append(details.Id, changed);
+        // idea 202383dc, M2a: the team half rides its own event so it can replicate while
+        // `changed` itself stays node-scoped — appended only when this change actually touched a
+        // team field, so a plain --model or --home change never adds a no-op companion.
+        List<object> settingsEvents = [changed];
+        if (ProjectTeamSettingsChanged.From(changed) is { } teamChanged)
+        {
+            settingsEvents.Add(teamChanged);
+        }
+
+        session.Events.Append(details.Id, settingsEvents);
         await session.SaveChangesAsync(cancellationToken);
         await Doorbell.RingAsync($"project-changed:{details.Id}", cancellationToken);
 

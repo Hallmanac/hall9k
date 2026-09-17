@@ -319,6 +319,102 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         view.SettingsChangedAt = @event.Data.ChangedAt;
     }
 
+    /// <summary>Mirrors <see cref="ProjectAggregate.Apply(Events.ProjectTeamSettingsChanged)"/>.</summary>
+    public void Apply(IEvent<ProjectTeamSettingsChanged> @event, ProjectDetails view)
+    {
+        if (@event.Data.VerifyCommands.HasValue)
+        {
+            view.VerifyCommands = [.. @event.Data.VerifyCommands.Value ?? []];
+        }
+
+        if (@event.Data.ReviewRerequest.HasValue)
+        {
+            view.ReviewRerequest = @event.Data.ReviewRerequest.Value ?? ReviewRerequestPolicy.Unknown;
+        }
+
+        if (@event.Data.JiraProjectKey.HasValue)
+        {
+            view.JiraProjectKey = @event.Data.JiraProjectKey.Value ?? JiraProjectKey.None;
+        }
+
+        if (@event.Data.BacklogPolicy.HasValue)
+        {
+            view.BacklogPolicy = @event.Data.BacklogPolicy.Value ?? BacklogPolicy.None;
+        }
+
+        if (@event.Data.BacklogRoutingGuidance.HasValue)
+        {
+            view.BacklogRoutingGuidance = @event.Data.BacklogRoutingGuidance.Value.IsBlank()
+                ? null
+                : @event.Data.BacklogRoutingGuidance.Value;
+        }
+
+        if (@event.Data.MaxComplianceReviewCycles.HasValue)
+        {
+            view.MaxComplianceReviewCycles = @event.Data.MaxComplianceReviewCycles.Value;
+        }
+
+        if (@event.Data.MaxAdversarialReviewCycles.HasValue)
+        {
+            view.MaxAdversarialReviewCycles = @event.Data.MaxAdversarialReviewCycles.Value;
+        }
+
+        if (@event.Data.MaxFinalFullPassRounds.HasValue)
+        {
+            view.MaxFinalFullPassRounds = @event.Data.MaxFinalFullPassRounds.Value;
+        }
+
+        if (@event.Data.LifetimeReviewCycleBudget.HasValue)
+        {
+            view.LifetimeReviewCycleBudget = @event.Data.LifetimeReviewCycleBudget.Value;
+        }
+
+        if (@event.Data.ReviewStageComposition.HasValue)
+        {
+            view.ReviewStageComposition = @event.Data.ReviewStageComposition.Value;
+        }
+
+        if (@event.Data.BranchNameTemplate.HasValue)
+        {
+            view.BranchNameTemplate = @event.Data.BranchNameTemplate.Value ?? BranchNameTemplate.Default;
+        }
+
+        if (@event.Data.AutoPrReview.HasValue)
+        {
+            view.AutoPrReview = @event.Data.AutoPrReview.Value ?? AutoPrReviewSpeed.Off;
+        }
+
+        if (@event.Data.ClaimGate.HasValue)
+        {
+            view.ClaimGate = @event.Data.ClaimGate.Value ?? ClaimGate.Off;
+        }
+
+        if (@event.Data.CloseLinkedIssue.HasValue)
+        {
+            view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value ?? CloseLinkedIssueRule.WhenAllTasksClose;
+        }
+
+        if (@event.Data.NeverCloseLabels.HasValue)
+        {
+            view.NeverCloseLabels = [.. @event.Data.NeverCloseLabels.Value ?? []];
+        }
+
+        if (@event.Data.WritingConventions.HasValue)
+        {
+            view.WritingConventions = @event.Data.WritingConventions.Value ?? WritingConventions.Default;
+        }
+
+        if (@event.Data.ContextLinks.HasValue)
+        {
+            view.ContextLinks = [.. @event.Data.ContextLinks.Value ?? []];
+        }
+
+        if (@event.Data.CommitStyle.HasValue)
+        {
+            view.CommitStyle = @event.Data.CommitStyle.Value ?? CommitStyle.Unknown;
+        }
+    }
+
     public void Apply(IEvent<ProjectArchived> @event, ProjectDetails view)
     {
         view.IsArchived = true;
