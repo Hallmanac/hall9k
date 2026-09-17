@@ -19,6 +19,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Marten.Events;
 using Marten.Linq.MatchesSql;
@@ -2544,7 +2545,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         (Guid taskId, Guid runId, Worktree worktree) =
             await SeedAwaitingReviewAsync(store, node, worktrees, repoPath, cts.Token);
-        Directory.Delete(worktree.Path, recursive: true);
+        TemporaryTree.Delete(worktree.Path);
 
         FakeInspector inspector = new()
         {
@@ -5886,21 +5887,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         {
         }
 
-        try
-        {
-            if (Directory.Exists(_root))
-            {
-                foreach (string file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
-                {
-                    File.SetAttributes(file, FileAttributes.Normal);
-                }
-
-                Directory.Delete(_root, recursive: true);
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-        }
+        // Through TemporaryTree: this root holds real git repositories, whose loose objects git
+        // leaves read-only, and a bare Directory.Delete refuses one outright on Windows.
+        TemporaryTree.TryDelete(_root);
     }
 
     /// <summary>

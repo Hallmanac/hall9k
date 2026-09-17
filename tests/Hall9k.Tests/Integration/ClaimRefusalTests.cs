@@ -15,6 +15,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -761,23 +762,11 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         {
         }
 
+        // Through TemporaryTree: these roots hold real git repositories, whose loose objects git
+        // leaves read-only, and a bare Directory.Delete refuses one outright on Windows.
         foreach (string root in _repositoryRoots)
         {
-            try
-            {
-                foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
-                {
-                    File.SetAttributes(file, FileAttributes.Normal);
-                }
-
-                Directory.Delete(root, recursive: true);
-            }
-            catch (IOException)
-            {
-            }
-            catch (UnauthorizedAccessException)
-            {
-            }
+            TemporaryTree.TryDelete(root);
         }
     }
 

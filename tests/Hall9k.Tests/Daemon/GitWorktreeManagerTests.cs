@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Tests.TestSupport;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -401,7 +402,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
 
         // The worktree directory vanishes outside the platform (an operator, a temp cleaner) —
         // NOT through GitWorktreeManager.RemoveAsync, which would also delete the branch.
-        Directory.Delete(first.Path, recursive: true);
+        TemporaryTree.Delete(first.Path);
 
         Worktree followUp = await _manager.CheckoutExistingAsync(
             new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
@@ -566,7 +567,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         File.WriteAllText(Path.Combine(recreated.Path, "WORK.md"), "recomposed\n");
         Git(recreated.Path, "add -A");
         Git(recreated.Path, "-c user.name=Test -c user.email=t@t commit -qm recomposed");
-        Directory.Delete(recreated.Path, recursive: true);
+        TemporaryTree.Delete(recreated.Path);
 
         Worktree followUp = await _manager.CheckoutExistingAsync(
             new FollowUpWorktreeRequest(_repositoryPath, first.Branch, taskId, DomainId.New()), cts.Token);
@@ -948,21 +949,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
         return (process.ExitCode, output);
     }
 
-    public void Dispose()
-    {
-        // git marks object/pack files read-only; Windows refuses to recursively delete
-        // them until the attribute is cleared. Cleanup stays best-effort either way.
-        try
-        {
-            foreach (string file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
-            {
-                File.SetAttributes(file, FileAttributes.Normal);
-            }
-
-            Directory.Delete(_root, recursive: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-        }
-    }
+    // Through TemporaryTree: git marks object/pack files read-only, and Windows refuses to
+    // recursively delete them until the attribute is cleared. Cleanup stays best-effort either way.
+    public void Dispose() => TemporaryTree.TryDelete(_root);
 }

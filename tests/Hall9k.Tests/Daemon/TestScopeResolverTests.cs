@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -429,21 +430,8 @@ public sealed class TestScopeResolverTests : IDisposable
         return (process.ExitCode, output);
     }
 
-    public void Dispose()
-    {
-        try
-        {
-            foreach (string file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
-            {
-                File.SetAttributes(file, FileAttributes.Normal);
-            }
-
-            Directory.Delete(_root, recursive: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // Best-effort cleanup: a locked pack file on some platforms is not worth failing the
-            // test run over.
-        }
-    }
+    // Through TemporaryTree: git leaves its objects read-only, which a bare Directory.Delete
+    // refuses on Windows. Best-effort cleanup either way, because a locked pack file on some
+    // platforms is not worth failing the test run over.
+    public void Dispose() => TemporaryTree.TryDelete(_root);
 }
