@@ -417,8 +417,10 @@ and creates nothing, the same "already adopted" refusal by a second route; a rec
 id this store does not hold yet reports the task as published elsewhere and creates nothing, rather
 than reconstructing a draft from the record's own fields — full event replication means a record
 found in the ledger always names a task that either already exists here or is on its way, never one
-to be seeded from a stale snapshot, and the events-request that actually catches the stream up is
-event catch-up's own job (idea 202383dc, task 9408d525). An item with no record anywhere and no
+to be seeded from a stale snapshot — and starts a broadcast events-request for that exact stream
+(idea 202383dc, M2b, task 9408d525), addressed to the whole project since the CLI has no live trust
+chain or transport of its own to rank one candidate peer from, and says so in its own refusal rather
+than only telling the human to re-run the command later. An item with no record anywhere and no
 local task adopts exactly as it always did: title to objective, body to context, criteria typed by
 hand.
 
