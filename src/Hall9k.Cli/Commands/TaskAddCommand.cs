@@ -122,9 +122,12 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "shorthand, or the issue URL on github.com. Read through the gh CLI from the project's "
             + "repository, so it uses your GitHub login and no token of Hall9k's. The title seeds the "
             + "objective and the body becomes agent context; the issue is recorded as the task's external "
-            + "reference and rendered as a link by h9k task show. Acceptance criteria are NEVER "
-            + "read out of an issue body — they are the readiness contract, so you supply them with "
-            + "--criteria or at the prompt. An issue another hall9k install PUBLISHED is the one "
+            + "reference and rendered as a link by h9k task show. Pass --from-jira alongside it to "
+            + "link both trackers to one task (task: a task may link to both a GitHub issue and a "
+            + "Jira card) — see --primary-tracker for which one then does the work. Acceptance "
+            + "criteria are NEVER read out of an issue body — they are the readiness contract, so "
+            + "you supply them with --criteria or at the prompt. An issue another hall9k install "
+            + "PUBLISHED is the one "
             + "exception, and not really one: it carries a machine-readable task record holding the "
             + "criteria their owner already wrote, plus the agent context, type, model, caps, "
             + "dependencies (as issue numbers) and epic, and adoption reconstructs the whole draft "
@@ -141,12 +144,26 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "through the registered Jira connection (h9k connection add jira), which is the account "
             + "Hall9k signs in as — it holds no credentials of its own. The summary seeds the objective "
             + "and the description becomes agent context; the card key is recorded as the task's external "
-            + "reference and rendered as a link by h9k task show. Acceptance criteria are NEVER read out "
-            + "of a card description — they are the readiness contract, so you supply them with --criteria "
-            + "or at the prompt. Only a card whose status category is open is adopted, so a closed or "
-            + "missing one is refused; the state read at import is recorded as an observation of that "
-            + "moment, never re-checked afterwards")]
+            + "reference and rendered as a link by h9k task show. Pass --from-issue alongside it to link "
+            + "both trackers to one task (task: a task may link to both a GitHub issue and a Jira card) — "
+            + "see --primary-tracker for which one then does the work. Acceptance criteria are NEVER read "
+            + "out of a card description — they are the readiness contract, so you supply them with "
+            + "--criteria or at the prompt. Only a card whose status category is open is adopted, so a "
+            + "closed or missing one is refused; the state read at import is recorded as an observation of "
+            + "that moment, never re-checked afterwards")]
         public string? FromJira { get; init; }
+
+        [CommandOption("--primary-tracker <github|jira>")]
+        [Description(
+            "With --from-issue and --from-jira given together (task: a task may link to both a GitHub "
+            + "issue and a Jira card): which one becomes primary, the reference that keeps the claim "
+            + "gate, the branch key, publish, closeout close, and every tracker write. The other is "
+            + "adopted as the secondary — shown by h9k status and h9k task show and linked, but never "
+            + "gating a claim and never written to. Overrides this project's own default "
+            + "(h9k project set --primary-tracker); required when both trackers are adopted together and "
+            + "neither has set one. Ignored — never refused — when only one of --from-issue or "
+            + "--from-jira is given, or neither is")]
+        public string? PrimaryTracker { get; init; }
 
         [CommandOption("--from-pr <NUMBER-OR-URL>")]
         [Description(
@@ -422,10 +439,32 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             ? await EpicIdResolver.ResolveForMembershipAsync(session, epic, projectDetails.Id, cancellationToken)
             : null;
 
+        // The one two-source combination ChooseSource lets through rather than refusing (task: a
+        // task may link to both a GitHub issue and a Jira card): resolved here, now that the
+        // project — and its own --primary-tracker default — is known, rather than inside
+        // ChooseSource itself, which runs before the project is resolved at all.
+        AdoptionSource? secondaryAdoption = null;
+        if (settings.FromIssue.IsNotBlank() && settings.FromJira.IsNotBlank() && settings.FromPr.IsBlank())
+        {
+            (adoption, secondaryAdoption) = ResolvePrimary(
+                new AdoptionSource(WorkItemProvider.GitHub, settings.FromIssue!, "--from-issue", "issue"),
+                new AdoptionSource(WorkItemProvider.Jira, settings.FromJira!, "--from-jira", "card"),
+                settings.PrimaryTracker,
+                projectDetails.PrimaryTracker);
+        }
+
         ILedger ledger = new GitLedger(new ConsoleWorktreeLogger<GitLedger>());
         Adoption? adopted = adoption is null
             ? null
             : await AdoptAsync(store, session, projectDetails, adoption, settings.Again, ledger, cancellationToken);
+        // The secondary is adopted through the identical seam and earns the identical "already
+        // spoken for" refusals (RefuseSecondAdoptionAsync, RefuseIfRecordedElsewhereAsync) — it is
+        // a real link, just not the one that gates or gets written to. Never a pull request (the
+        // dual branch above only ever fires for --from-issue plus --from-jira), so it never holds
+        // a pr-review task either.
+        Adoption? secondaryAdopted = secondaryAdoption is null
+            ? null
+            : await AdoptAsync(store, session, projectDetails, secondaryAdoption, settings.Again, ledger, cancellationToken);
         // A pull request this node already reviewed, or is still following a posted review through
         // on: named rather than minted a second time (task: a pr-review task stays open while the
         // pull request's review threads are unresolved). Returned rather than thrown, and exiting
@@ -440,6 +479,11 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         }
 
         ImportedWorkItem? imported = adopted?.Imported;
+        // Fetched to validate it (adoptable, not already spoken for) and to get its canonical
+        // reference, never to seed anything: the secondary is shown and linked only (task: a task
+        // may link to both a GitHub issue and a Jira card), so only the primary's own imported item
+        // feeds the objective, the agent context, and the criteria prompt below.
+        ImportedWorkItem? secondaryImported = secondaryAdopted?.Imported;
         if (imported is not null && adoption is not null)
         {
             objective = ChooseObjective(objective, imported, adoption);
@@ -491,7 +535,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             // actually creates is local, original work — never a copy of another node's (idea
             // 202383dc, A3a; the record's own doc comment carries the fuller argument).
             origin: null,
-            sourceIdeaId: sourceIdea?.Id);
+            sourceIdeaId: sourceIdea?.Id,
+            secondaryExternalReference: secondaryImported?.Reference);
         session.Events.StartStream<TaskAggregate>(taskId, added);
 
         if (sourceIdea is not null)
@@ -544,6 +589,17 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 $"[dim]  adopted {imported.Reference.ToString().EscapeMarkup()}, "
                 + $"{ExternalText.OneLineMarkup(imported.Status.ToString())} when read at "
                 + $"{imported.ObservedStamp}[/]");
+        }
+
+        if (secondaryImported is not null)
+        {
+            // "secondary" is said out loud here rather than left implicit: the reference is real
+            // and linked, but it never gates a claim, sets the branch key, or is written to, and a
+            // human reading this line should not mistake it for a second tracker doing the primary's
+            // job (task: a task may link to both a GitHub issue and a Jira card).
+            AnsiConsole.MarkupLine(
+                $"[dim]  also linked {secondaryImported.Reference.ToString().EscapeMarkup()} as a "
+                + "secondary reference — shown and linked only, never gating a claim or written to[/]");
         }
 
         if (added.EffectivePreApproval.MergesAutomatically)
@@ -615,16 +671,27 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// to say either that or "card", and a boolean threaded through six methods is how those
     /// messages drift apart.
     /// </summary>
-    private sealed record AdoptionSource(WorkItemProvider Provider, string Reference, string Option, string Noun)
+    internal sealed record AdoptionSource(WorkItemProvider Provider, string Reference, string Option, string Noun)
     {
         /// <summary>"an issue", "a card" — English, kept beside the noun it belongs to.</summary>
         public string Article => "aeiou".Contains(char.ToLowerInvariant(Noun[0])) ? "an" : "a";
     }
 
     /// <summary>
-    /// The one source this invocation adopts from, or null when it is not adopting. Two sources
-    /// are refused rather than ranked: a task carries one external reference (PLAN.md §3.1a), so
-    /// picking a winner would silently drop the other one the human asked for.
+    /// The one source this invocation adopts from, or null when it is not adopting. Every
+    /// combination but one is refused rather than ranked: a task carries at most one PRIMARY
+    /// external reference (PLAN.md §3.1a), so picking a winner among three would silently drop
+    /// the others the human asked for.
+    /// <para>
+    /// --from-issue and --from-jira together is the one deliberate exception (task: a task may
+    /// link to both a GitHub issue and a Jira card): this method still answers just one of the two
+    /// (arbitrarily the issue) as a stand-in, since which one actually becomes primary needs the
+    /// project's own <c>--primary-tracker</c> default and is not known this early — every check
+    /// between here and <see cref="ExecuteAsync"/>'s own dual-source resolution only asks "is this
+    /// command adopting something at all", which either one answers identically. The real
+    /// primary/secondary split happens once the project is resolved, in
+    /// <see cref="ExecuteAsync"/>'s own dual-source branch.
+    /// </para>
     /// </summary>
     private static AdoptionSource? ChooseSource(Settings settings)
     {
@@ -638,14 +705,56 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             }.Where(source => source.Reference.IsNotBlank()),
         ];
 
-        return named.Length switch
+        return named switch
         {
-            0 => null,
-            1 => named[0],
+            [] => null,
+            [var only] => only,
+            [{ Provider: var first }, { Provider: var second }]
+                when first == WorkItemProvider.GitHub && second == WorkItemProvider.Jira => named[0],
             _ => throw new DomainValidationException(
                 $"{string.Join(" and ", named.Select(source => source.Option))} each adopt a different "
-                + "item, and a task carries one external reference (PLAN.md §3.1a). Pass one, and write "
-                + "the second task separately if both pieces of work are real."),
+                + "item. --from-issue and --from-jira together link both trackers to one task (task: a "
+                + "task may link to both a GitHub issue and a Jira card); any other combination needs "
+                + "one, and the second task can be written separately if both pieces of work are real."),
+        };
+    }
+
+    /// <summary>
+    /// Which of a dual --from-issue/--from-jira adoption becomes primary — the reference that keeps
+    /// the claim gate, the branch key, publish, closeout close, and every tracker write — and which
+    /// becomes the secondary, shown and linked only (task: a task may link to both a GitHub issue
+    /// and a Jira card). <paramref name="primaryTrackerOverride"/> is this invocation's own
+    /// <c>--primary-tracker</c>; <paramref name="projectDefault"/> is the project's
+    /// (<c>h9k project set --primary-tracker</c>). Neither deciding is refused rather than guessed
+    /// at: nothing here would say which reference actually does the work, and a silent guess would
+    /// hand one tracker jobs the human never asked it to have.
+    /// </summary>
+    internal static (AdoptionSource Primary, AdoptionSource Secondary) ResolvePrimary(
+        AdoptionSource issue, AdoptionSource jira, string? primaryTrackerOverride, WorkItemProvider projectDefault)
+    {
+        WorkItemProvider chosen = primaryTrackerOverride.IsNotBlank()
+            ? ParsePrimaryTracker(primaryTrackerOverride!)
+            : projectDefault != WorkItemProvider.Unknown
+                ? projectDefault
+                : throw new DomainValidationException(
+                    "--from-issue and --from-jira together need to know which one is primary — the "
+                    + "one that keeps the claim gate, the branch key, publish, closeout close, and "
+                    + "every tracker write. Pass --primary-tracker github|jira on this command, or set "
+                    + "a project default: h9k project set <project> --primary-tracker github|jira.");
+
+        return chosen == WorkItemProvider.GitHub ? (issue, jira) : (jira, issue);
+    }
+
+    /// <summary>The strict form --primary-tracker's own input goes through — a typo here would silently pick a tracker nobody asked for.</summary>
+    private static WorkItemProvider ParsePrimaryTracker(string value)
+    {
+        string normalized = value.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "github" => WorkItemProvider.GitHub,
+            "jira" => WorkItemProvider.Jira,
+            _ => throw new DomainValidationException(
+                $"--primary-tracker must be github or jira, not '{ExternalText.OneLine(value)}'."),
         };
     }
 
@@ -903,8 +1012,14 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // The exempt-state list is the same one FindPrReviewHolderAsync selects on, written the
         // same way, so the states this guard lets past and the states that command names can never
         // drift apart into a pull request that is neither nameable nor adoptable.
+        //
+        // Matched against the SECONDARY field too (task: a task may link to both a GitHub issue and
+        // a Jira card): an item already carried as another local task's secondary reference is just
+        // as spoken for as one carried as its primary, and this is the one check that catches that
+        // collision on THIS node without waiting on the ledger's own, slower cross-node scan
+        // (RefuseIfRecordedElsewhereAsync) to find it.
         TaskListItem? existing = await session.Query<TaskListItem>()
-            .Where(task => task.ExternalReference == canonical)
+            .Where(task => task.ExternalReference == canonical || task.SecondaryExternalReference == canonical)
             .Where(task => task.MatchesSql("d.data ->> 'state' <> ?", TaskState.Abandoned.Value))
             .Where(task => task.MatchesSql(
                 // coalesced, unlike the positive test in FindPrReviewHolderAsync: this one sits
