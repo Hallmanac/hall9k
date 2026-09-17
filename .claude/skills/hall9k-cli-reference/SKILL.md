@@ -238,6 +238,26 @@ or closed out here — `h9k status` and `h9k task show` render it as `HeldElsewh
 `Working`, naming the holder (its owner's root fingerprint, since a foreign node's own friendly
 name never replicates) and since when.
 
+**Event catch-up** (idea 202383dc, M2b): a numeric gap in a sender's own outbox sequence — a lost
+push, or a squash gone wrong — or a brand-new node with no local history for a project at all,
+starts an `events-request` envelope (kind `events-request`, never shown in `h9k messages`, the same
+reason `events` is not) asking one peer for a gap since a sequence, one specific stream, or
+everything the peer holds. The candidate is ranked — the voucher first, then owner-role members,
+then any other member, most recently moved outbox first within a rank — and a peer answers from
+whatever it holds, own or already-replicated alike, forwarding it with its true origin (owner root,
+node, event id, sequence) intact rather than overwriting it with the answering peer's own identity;
+a peer with nothing matching says so instead (`events-unavailable`), which moves the ask to the next
+candidate immediately. A request left unanswered past `DaemonOptions.EventCatchUpRequestTimeout`
+(five minutes by default, a setting) also moves to the next ranked candidate, leaving the earlier ask
+standing rather than retracting it — a late answer still lands and applies harmlessly, deduped by
+origin event id exactly like an ordinary events envelope. `h9k status` names every outstanding
+catch-up request and which candidate it is currently asking, silent when nothing is outstanding.
+`h9k task add --from-issue`/`--from-jira` adopting a ledger record whose stream has not reached this
+node yet starts a broadcast events-request for that exact stream (addressed to the whole project,
+since the CLI has no live trust chain or transport of its own to rank a candidate from) and says so
+in its own refusal, rather than only telling the human to re-run the command later — it never
+fabricates a task from the record's own fields; the task appears once the stream actually replicates.
+
 **Trust files and the chain reader** (idea 202383dc, T1): vouches, revocations, and project
 membership are files in the same hidden ledger, and every read of every ledger and messages ref
 recomputes, fresh, which signers a project currently trusts: never a cached answer, so a
