@@ -720,7 +720,13 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     {
         TaskRecordAdoption.Locate located = await TaskRecordAdoption.LocateAsync(
             session, ledger, repositoryPath, reference, cancellationToken);
-        if (located.Outcome == TaskRecordAdoption.LocateOutcome.NoRecord)
+        // LocalAbandoned joins NoRecord here for the reason RefuseSecondAdoptionAsync's own local
+        // guard exempts an Abandoned task too: a human who walked away from it released the item,
+        // and nothing ever deletes or rewrites its record to say so — refusing on its stale record
+        // would make that issue permanently unadoptable (independent pre-PR review, cycle 1, both
+        // lenses).
+        if (located.Outcome is TaskRecordAdoption.LocateOutcome.NoRecord
+            or TaskRecordAdoption.LocateOutcome.LocalAbandoned)
         {
             return;
         }
