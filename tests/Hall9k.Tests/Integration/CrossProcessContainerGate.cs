@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Hall9k.Daemon.Execution;
 using Xunit;
 
@@ -47,6 +48,35 @@ internal static class CrossProcessContainerGate
     // held by someone else.
     private static readonly TimeSpan PollInterval = TimeSpan.FromMilliseconds(50);
 
+    /// <summary>
+    /// The channel the periodic wait notice below goes to, and deliberately not
+    /// <see cref="Console.Error"/>.
+    /// <para>
+    /// A process-wide console is not this wait's to write to. Whichever class happens to be queued
+    /// here writes from a flow no test owns, while some altogether different test may be capturing
+    /// stderr to assert on what <em>it</em> wrote — and a redirect installed with
+    /// <c>Console.SetError</c> swallows everything the process emits, not just that test's own
+    /// output. Origin incident (2026-09-17 03:25 EDT, run 01a0ad80):
+    /// <c>TrackerAssignmentTests.Assign_records_what_the_tracker_showed_when_the_gate_passes(github)</c>
+    /// asserted its captured stderr was empty and found this notice in it, emitted by another class
+    /// while a second full gate ran in parallel; the same tip passed the suite when run alone. It
+    /// cost that chain a retry and a full gate (PLAN.md §16 #PLACEHOLDER-093b54f0).
+    /// </para>
+    /// <para>
+    /// A <see cref="TraceSource"/> is the channel that costs nothing to leave unread and is
+    /// available to anyone who wants it: no listener is attached by default, so the notice reaches
+    /// <see cref="DefaultTraceListener"/> (a debugger, if one is attached) and nowhere else, and an
+    /// operator or a test that does want it attaches a listener of its own. Nothing was lost by
+    /// moving off the console, because nothing ever read it there: this wait runs inside a
+    /// <c>dotnet test</c> testhost whose console output <c>vstest.console</c> buffers internally
+    /// and relays only if it survives to report the testhost's death — which
+    /// <c>VerificationRunner</c>'s own <c>process.Kill(entireProcessTree: true)</c> never allows.
+    /// The evidence files below, both written straight to disk, are what actually make a wedged
+    /// wait discoverable, and they are untouched by this.
+    /// </para>
+    /// </summary>
+    internal static readonly TraceSource WaitNotice = new("Hall9k.Tests.ContainerGate", SourceLevels.Information);
+
     public static async Task<IAsyncDisposable> AcquireAsync(
         string gateDirectory, int maxConcurrent, CancellationToken cancellationToken)
     {
@@ -64,11 +94,13 @@ internal static class CrossProcessContainerGate
         // Two independent evidence targets, because they answer two different questions and
         // conflating them would misinform the one that matters more (adversarial review, this
         // cycle: reproduced against this repo's own package versions — a wait line written only
-        // via Console.Error never reaches anyone, live or after the fact, because vstest.console
+        // to the console never reaches anyone, live or after the fact, because vstest.console
         // buffers a testhost's console output internally and only relays it if it survives long
         // enough to report the testhost's own death, which VerificationRunner's own
         // process.Kill(entireProcessTree: true) never allows: root, dotnet test, vstest.console
-        // and testhost all die together).
+        // and testhost all die together). That is why the notice now goes to WaitNotice, a trace
+        // source, rather than to Console.Error: the console never carried it anywhere, and writing
+        // it there put it inside any concurrently-capturing test's own buffer (see WaitNotice).
         //
         // 1. discoverableWaitFile, unconditional, inside gateDirectory itself: the fixed, shared,
         // machine-wide location this gate's own doc comment already names as the one place a
@@ -140,7 +172,7 @@ internal static class CrossProcessContainerGate
                         $"({(now - waitStarted).TotalSeconds:0}s elapsed, {maxConcurrent} max concurrent) " +
                         "— every permit is currently held (by this process's own other classes, " +
                         "or by another process on this machine)";
-                    Console.Error.WriteLine(diagnostic);
+                    WaitNotice.TraceEvent(TraceEventType.Information, 0, diagnostic);
                     TryWriteEvidence(discoverableWaitFile, diagnostic);
 
                     if (waitEvidenceFile is not null)
