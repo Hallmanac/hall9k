@@ -1478,9 +1478,17 @@ public sealed class RunLauncher(
     /// b9b09779, piece 6): <see cref="AgentPromptBuilder"/> and <see cref="MentionFollowUpPromptBuilder"/>
     /// are static and logger-free by design (PLAN.md's own entry for this feature), so the one line
     /// this logs at this shared dispatch point, once a run's prompt has already been composed, is
-    /// what actually satisfies that clause for every daemon-dispatched session — rather than
+    /// what satisfies that clause for every session THIS launch path dispatches — rather than
     /// threading an <see cref="ILogger"/> through every one of those builders' own <c>Build*</c>
-    /// methods for a fact this call site can already read straight off the project.
+    /// methods for a fact this call site can already read straight off the project. It is not the
+    /// only dispatcher that splices one of these addenda: <c>ReviewEngine</c>, <c>PrReviewEngine</c>,
+    /// and <c>CardPublicationEngine</c> each compose and dispatch their own prompts through
+    /// <see cref="AgentPromptBuilder"/> directly, never through <see cref="RunLauncher"/>, so none of
+    /// them ever reaches this log line. For those, the criterion is satisfied purely by the in-prompt
+    /// heading annotation every splice already carries — the only "log" a pure, logger-free static
+    /// builder has (independent pre-PR review, cycle 1, conformance lens, low: this comment's own
+    /// "every daemon-dispatched session" previously overclaimed daemon-wide coverage this one line
+    /// does not actually have).
     /// </summary>
     private void LogIfOverCapAddendum(Guid runId, ProjectDetails project, PromptBuilderKey builder)
     {

@@ -15,7 +15,11 @@ namespace Hall9k.Domain.Features.Project;
 [JsonConverter(typeof(PromptBuilderKeyJsonConverter))]
 public sealed record PromptBuilderKey
 {
-    /// <summary>The work prompt (<c>h9k task work</c>), composed by <c>WorkPromptBuilder</c>.</summary>
+    /// <summary>The work prompt, composed by <c>WorkPromptBuilder</c> — reached both by an
+    /// interactive <c>h9k task work</c> and by the daemon's own fresh-dispatch build run (a task
+    /// with no retry branch to resume composes through this same builder, not <see cref="Agent"/>),
+    /// so this addendum reaches every headless build the daemon starts on its own, not only an
+    /// interactively-claimed one.</summary>
     public static readonly PromptBuilderKey Work = new("work");
 
     /// <summary>The review-feedback lap prompt (<c>h9k pr review</c>), composed by <c>ReviewLapPromptBuilder</c>.</summary>
