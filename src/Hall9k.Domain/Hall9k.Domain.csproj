@@ -4,6 +4,7 @@
     <PackageReference Include="Marten" />
     <PackageReference Include="WolverineFx.Marten" />
     <PackageReference Include="UUIDNext" />
+    <PackageReference Include="Ulid" />
   </ItemGroup>
 
   <ItemGroup>
