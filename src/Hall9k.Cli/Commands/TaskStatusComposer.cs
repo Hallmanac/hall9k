@@ -294,7 +294,9 @@ internal static class TaskStatusComposer
             task.AssignedAt,
             task.QueuePriorityMarked,
             task.Rank,
-            heldByTracker is not null);
+            heldByTracker is not null,
+            ExternalReference: task.ExternalReference ?? string.Empty,
+            SecondaryExternalReference: task.SecondaryExternalReference ?? string.Empty);
     }
 
     /// <summary>

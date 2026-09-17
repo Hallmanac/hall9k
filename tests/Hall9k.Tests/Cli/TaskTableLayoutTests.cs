@@ -137,6 +137,35 @@ public sealed class TaskTableLayoutTests
     }
 
     /// <summary>
+    /// The attention pane's Item column, primary first (task: a task may link to both a GitHub
+    /// issue and a Jira card): a task with no reference shows nothing, one with a single reference
+    /// shows it plain, and one with both shows the primary first and names the secondary as such.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(Widths))]
+    public void The_attention_pane_shows_the_primary_reference_first_and_names_the_secondary(int width)
+    {
+        Guid projectId = DomainId.New();
+        IReadOnlyList<TaskStatusRow> rows =
+        [
+            StatusFixtures.Compose(StatusFixtures.Task(TaskState.Published, projectId: projectId)),
+            StatusFixtures.Compose(StatusFixtures.Task(
+                TaskState.Published, projectId: projectId, externalReference: "github:o/r#42")),
+            StatusFixtures.Compose(StatusFixtures.Task(
+                TaskState.Published, projectId: projectId,
+                externalReference: "github:o/r#42", secondaryExternalReference: "jira:PROJ-9")),
+        ];
+
+        string pane = string.Join("\n", Render(StatusCommand.SectionRows(rows, width, Now), width));
+
+        pane.Should().Contain("github:o/r#42");
+        pane.Should().Contain("jira:PROJ-9").And.Contain("secondary");
+        // The primary reads before the secondary on the same line, not merely somewhere on the pane.
+        pane.IndexOf("github:o/r#42", StringComparison.Ordinal)
+            .Should().BeLessThan(pane.IndexOf("jira:PROJ-9", StringComparison.Ordinal));
+    }
+
+    /// <summary>
     /// The attention pane names the assignee (Decisions Log #34) and still fits one line per
     /// row: it has the width to spend. The browse list deliberately does not carry the column —
     /// seven fixed columns already put the objective near its floor there, and an eighth would

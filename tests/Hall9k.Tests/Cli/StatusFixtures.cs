@@ -51,7 +51,9 @@ internal static class StatusFixtures
         Guid? claimedByNodeId = null,
         TaskType? type = null,
         bool preApproved = false,
-        PreApprovalMode? preApproval = null) => new()
+        PreApprovalMode? preApproval = null,
+        string? externalReference = null,
+        string? secondaryExternalReference = null) => new()
         {
             Id = DomainId.New(),
             ProjectId = projectId ?? DomainId.New(),
@@ -60,6 +62,8 @@ internal static class StatusFixtures
             State = state,
             CurrentRunId = runId,
             PullRequestUrl = pullRequest,
+            ExternalReference = externalReference,
+            SecondaryExternalReference = secondaryExternalReference,
             AddedAt = addedAt ?? Now,
             AssignedAt = assignedAt,
             ClaimedByNodeId = claimedByNodeId,

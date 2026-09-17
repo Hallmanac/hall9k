@@ -888,6 +888,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             [
                 new TaskColumn("Attention", [.. rows.Select(row => row.AttentionMarkup)]),
                 new TaskColumn("Activity", activity),
+                new TaskColumn("Item", [.. rows.Select(row => row.ItemMarkup)]),
                 new TaskColumn("PR", [.. rows.Select(row => row.PullRequestMarkup)]),
             ],
             [.. rows.Select(row => row.DetailMarkup)],

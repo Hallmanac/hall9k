@@ -75,7 +75,15 @@ internal sealed record TaskStatusRow(
     /// reading a sentence back out of a display string. The sentence itself is already on the
     /// row's second line, among the derived facts.
     /// </summary>
-    bool WaitingForTracker = false)
+    bool WaitingForTracker = false,
+    /// <summary>The primary tracker reference, canonical form, or empty when the task carries none.</summary>
+    string ExternalReference = "",
+    /// <summary>
+    /// A second tracker reference, shown alongside the primary but never gating a claim or written
+    /// to (task: a task may link to both a GitHub issue and a Jira card); empty when the task
+    /// carries none.
+    /// </summary>
+    string SecondaryExternalReference = "")
 {
     /// <summary>
     /// A truncated objective still has to say something; below this the column is noise. A
@@ -222,6 +230,20 @@ internal sealed record TaskStatusRow(
     private string PullRequestLabel => PullRequestUrls.ParseNumber(PullRequestUrl) is int number and > 0
         ? $"#{number}"
         : "PR";
+
+    /// <summary>
+    /// The task's tracker reference(s), primary first: empty for a task carrying none, the primary
+    /// alone for the ordinary case, and both — separated so the primary reads first — for a task
+    /// that adopted a GitHub issue and a Jira card together (task: a task may link to both). The
+    /// secondary is named "secondary" here for the same reason h9k task show's own row is: it is a
+    /// real link, but it never gates a claim, sets the branch key, or is written to, and this
+    /// column must not read as though both were doing the primary's job.
+    /// </summary>
+    public string ItemMarkup => ExternalReference.IsBlank()
+        ? string.Empty
+        : SecondaryExternalReference.IsBlank()
+            ? ExternalReference.EscapeMarkup()
+            : $"{ExternalReference.EscapeMarkup()} [dim]+ {SecondaryExternalReference.EscapeMarkup()} (secondary)[/]";
 
     public string AgeMarkup(DateTimeOffset now) => TaskStatusComposer.RelativeAge(now - AddedAt);
 }
