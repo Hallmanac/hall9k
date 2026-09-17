@@ -279,10 +279,18 @@ public sealed class CloseoutEngine(
     /// RunLauncher's declined-dispatch path (origin: 2026-08-28 needs-you cleanup) can complete
     /// a task's closeout without ever starting that run's stream, which leaves nothing here for
     /// the RunDetails-driven <c>orphaned</c> query above to ever find. Read from the task side
-    /// instead, and deliberately not node-scoped the way the two RunDetails-driven queries above
-    /// are: there is no RunDetails row to read a NodeId from, and any node reconstructing this
-    /// run record races safely — Marten's StartStream in <see cref="ReconstructAndCompleteAsync"/>
-    /// refuses a run id a concurrent winner already started.
+    /// instead, and node-scoped the same way <see cref="DispatchEngine"/>'s own queued-task query
+    /// is (<c>TaskListItem.AssignedOwnerId == node.OwnerId</c>, Decisions Log #34): there is no
+    /// RunDetails row to read a NodeId from, but <c>AssignedOwnerId</c> needs no RunDetails row
+    /// either, and skipping it here was wrong — a task this node never claimed can carry a replicated
+    /// <c>PullRequestUrl</c>/<c>CurrentRunId</c> fact just as well as one it produced itself, and
+    /// racing a teammate's own sweep to reconstruct and complete that run is exactly the double
+    /// closeout (a second merge comment, a second issue close, a second dependents-unblock, a
+    /// worktree cleanup for a run this node never had) the acceptance criterion forbids (independent
+    /// pre-PR review, cycle 5, conformance lens). <see cref="ReconstructAndCompleteAsync"/>'s own
+    /// StartStream/version-fence guards still stand behind this filter for the ordinary case — this
+    /// node's own two nodes, or a legitimately abandoned task an operator reassigns — but the filter
+    /// means this sweep no longer reaches for a teammate's own run in the first place.
     /// <para>
     /// Every task that ever merged a pull request stays in this candidate set forever (nothing
     /// clears <c>PullRequestUrl</c>/<c>CurrentRunId</c> on a Done task), unlike the two
@@ -302,9 +310,11 @@ public sealed class CloseoutEngine(
     private async Task<IReadOnlyList<Guid>> TasksWithMissingRunRecordsAsync(CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
+        Guid ownerId = node.OwnerId;
         IReadOnlyList<MissingRunCandidate> doneWithPullRequest = await query.Query<TaskListItem>()
             .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Done.Value))
             .Where(t => t.PullRequestUrl != null && t.CurrentRunId != null)
+            .Where(t => t.AssignedOwnerId == ownerId)
             .Select(t => new MissingRunCandidate(t.Id, t.CurrentRunId!.Value))
             .ToListAsync(cancellationToken);
 
