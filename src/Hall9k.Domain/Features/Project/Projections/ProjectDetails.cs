@@ -59,6 +59,13 @@ public sealed class ProjectDetails
     public JiraProjectKey JiraProjectKey { get; set; } = JiraProjectKey.None;
     /// <summary>Where a published task's work becomes visible outside Hall9k; None is the platform's original behavior.</summary>
     public BacklogPolicy BacklogPolicy { get; set; } = BacklogPolicy.None;
+    /// <summary>
+    /// Which tracker becomes a task's primary reference by default when <c>h9k task add</c> adopts
+    /// both a GitHub issue and a Jira card (task: a task may link to both a GitHub issue and a Jira
+    /// card); Unknown means no default is set, and adoption then needs its own
+    /// <c>--primary-tracker</c> override.
+    /// </summary>
+    public WorkItemProvider PrimaryTracker { get; set; } = WorkItemProvider.Unknown;
     /// <summary>Free-text routing guidance handed verbatim to the Jira agent; a label list for github-issues.</summary>
     public string? BacklogRoutingGuidance { get; set; }
     /// <summary>This project's override of the conformance review track's cycle cap; null defers to the node (Decisions Log #63).</summary>
@@ -230,6 +237,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.BacklogPolicy.HasValue)
         {
             view.BacklogPolicy = @event.Data.BacklogPolicy.Value ?? BacklogPolicy.None;
+        }
+
+        if (@event.Data.PrimaryTracker.HasValue)
+        {
+            view.PrimaryTracker = @event.Data.PrimaryTracker.Value ?? WorkItemProvider.Unknown;
         }
 
         if (@event.Data.BacklogRoutingGuidance.HasValue)

@@ -81,7 +81,8 @@ public static class ProjectDecider
         Optional<AgentModel> orchestratorModel = default,
         Optional<CloseLinkedIssueRule> closeLinkedIssue = default,
         Optional<IReadOnlyList<string>> neverCloseLabels = default,
-        Optional<WritingConventions> writingConventions = default)
+        Optional<WritingConventions> writingConventions = default,
+        Optional<WorkItemProvider> primaryTracker = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -176,6 +177,23 @@ public static class ProjectDecider
             throw new DomainValidationException(
                 $"The backlog policy must be {BacklogPolicy.None}, {BacklogPolicy.GitHubIssues}, "
                 + $"or {BacklogPolicy.Jira} (where a published task's work becomes visible outside Hall9k).");
+        }
+
+        // The BacklogPolicy idiom again: Unknown is the closed set's own "no default" value, so the
+        // set actually checked is exactly the three static instances a primary tracker can be —
+        // Unknown to clear, or one of the two real providers a task's primary reference can name.
+        // GitHubPullRequest is refused along with everything else: a primary tracker is a backlog
+        // item's home, never a pull request under review.
+        if (primaryTracker.HasValue
+            && primaryTracker.Value is { } chosenTracker
+            && chosenTracker != WorkItemProvider.Unknown
+            && chosenTracker != WorkItemProvider.GitHub
+            && chosenTracker != WorkItemProvider.Jira)
+        {
+            throw new DomainValidationException(
+                $"The primary tracker must be {WorkItemProvider.GitHub} or {WorkItemProvider.Jira} "
+                + "(which reference wins when h9k task add adopts both a GitHub issue and a Jira card "
+                + "and the two are not resolved by --primary-tracker there); 'none' clears the default.");
         }
 
         ReviewCapValidation.RefuseNonPositiveCap(maxComplianceReviewCycles, "--max-compliance-review-cycles");
@@ -369,7 +387,8 @@ public static class ProjectDecider
             OrchestratorModel: orchestratorModel,
             CloseLinkedIssue: closeLinkedIssue,
             NeverCloseLabels: normalizedNeverCloseLabels,
-            WritingConventions: writingConventions);
+            WritingConventions: writingConventions,
+            PrimaryTracker: primaryTracker);
     }
 
     /// <summary>

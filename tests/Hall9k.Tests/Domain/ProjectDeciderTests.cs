@@ -763,6 +763,56 @@ public sealed class ProjectDeciderTests
     }
 
     [Fact]
+    public void ChangeSettings_rejects_a_primary_tracker_outside_the_vocabulary()
+    {
+        Action act = () => ProjectDecider.ChangeSettings(
+            Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            primaryTracker: Optional<WorkItemProvider>.Of("trello"));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*github*jira*");
+    }
+
+    [Fact]
+    public void ChangeSettings_rejects_a_pull_request_provider_as_the_primary_tracker()
+    {
+        // GitHubPullRequest is a real WorkItemProvider value, but a pr-review task's target is
+        // never a backlog item, so it is refused here exactly like an unrecognized string is.
+        Action act = () => ProjectDecider.ChangeSettings(
+            Registered(), Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            primaryTracker: Optional<WorkItemProvider>.Of(WorkItemProvider.GitHubPullRequest));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*github*jira*");
+    }
+
+    [Fact]
+    public void ChangeSettings_carries_a_primary_tracker_and_lets_unknown_clear_it()
+    {
+        ProjectAggregate project = Registered();
+        project.PrimaryTracker.Should().Be(WorkItemProvider.Unknown, "no default is the platform's original behavior, byte-for-byte");
+
+        ProjectSettingsChanged set = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            primaryTracker: Optional<WorkItemProvider>.Of(WorkItemProvider.Jira));
+        project.Apply(set);
+        project.PrimaryTracker.Should().Be(WorkItemProvider.Jira);
+
+        ProjectSettingsChanged cleared = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New(),
+            primaryTracker: Optional<WorkItemProvider>.Of(WorkItemProvider.Unknown));
+        project.Apply(cleared);
+        project.PrimaryTracker.Should().Be(WorkItemProvider.Unknown, "unknown is both the default and the explicit clear");
+
+        ProjectSettingsChanged untouched = ProjectDecider.ChangeSettings(
+            project, Optional<IReadOnlyList<VerifyCommand>>.None, Optional<bool>.None,
+            Optional<IReadOnlyList<ContextLink>>.None, Now, DomainId.New());
+        untouched.PrimaryTracker.HasValue.Should().BeFalse("an option not passed leaves the setting alone");
+    }
+
+    [Fact]
     public void ChangeSettings_rejects_an_auto_pr_review_speed_outside_the_vocabulary()
     {
         Action act = () => ProjectDecider.ChangeSettings(

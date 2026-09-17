@@ -73,6 +73,15 @@ public sealed class ProjectAggregate
     public ProjectHome HomeDirectory { get; private set; } = ProjectHome.None;
     /// <summary>Where a published task's work becomes visible outside Hall9k; None is the platform's original behavior.</summary>
     public BacklogPolicy BacklogPolicy { get; private set; } = BacklogPolicy.None;
+    /// <summary>
+    /// Which tracker becomes a task's primary reference by default when <c>h9k task add</c> is
+    /// handed both a GitHub issue and a Jira card to adopt (task: a task may link to both a GitHub
+    /// issue and a Jira card): the primary keeps the claim gate, the branch key, publish, closeout
+    /// close, and every tracker write, and the other becomes the secondary — shown and linked only.
+    /// Unknown, the platform's original behavior, means no default is set; a task adopting both
+    /// then needs its own <c>--primary-tracker</c> to say which wins.
+    /// </summary>
+    public WorkItemProvider PrimaryTracker { get; private set; } = WorkItemProvider.Unknown;
     /// <summary>Free-text routing guidance handed verbatim to the Jira agent; a label list for github-issues.</summary>
     public string? BacklogRoutingGuidance { get; private set; }
     /// <summary>This project's override of the conformance review track's cycle cap; null defers to the node (Decisions Log #63).</summary>
@@ -246,6 +255,11 @@ public sealed class ProjectAggregate
         if (@event.BacklogPolicy.HasValue)
         {
             BacklogPolicy = @event.BacklogPolicy.Value ?? BacklogPolicy.None;
+        }
+
+        if (@event.PrimaryTracker.HasValue)
+        {
+            PrimaryTracker = @event.PrimaryTracker.Value ?? WorkItemProvider.Unknown;
         }
 
         if (@event.BacklogRoutingGuidance.HasValue)
