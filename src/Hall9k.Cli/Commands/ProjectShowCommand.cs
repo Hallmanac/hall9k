@@ -158,6 +158,10 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Owner", owner is null
             ? $"[dim]id {project.OwnerId} (no owner document found)[/]"
             : owner.Name.EscapeMarkup());
+        table.AddRow("Project key", project.ProjectKey is { } key
+            ? $"[dim]{key}[/]"
+            : $"[dim]not recorded yet — h9k project join {project.Name.EscapeMarkup()} reads it back once "
+              + "the ledger has one[/]");
         table.AddRow("Registered", $"[dim]{project.RegisteredAt.ToLocalTime():g}[/]");
         return table;
     }

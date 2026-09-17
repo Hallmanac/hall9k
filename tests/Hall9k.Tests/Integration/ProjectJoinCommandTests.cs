@@ -4,6 +4,7 @@ using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
@@ -111,6 +112,56 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
         updatedProject.Members.Should().ContainKey(outcome.KeyFingerprint);
+    }
+
+    /// <summary>idea 202383dc, M2 (Brian's ruling 2026-09-17): the genesis members commit mints a
+    /// fresh ULID and records it as this project's own key, and this install's own local Project
+    /// stream picks it up in the same join — never a separate step.</summary>
+    [Fact]
+    public async Task Genesis_mints_and_exposes_this_projects_own_key()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        LedgerWriteRequest memberWrite = ledger.Writes.Single(w => w.RefName == "refs/hall9k/ledger/members");
+        memberWrite.Content.Should().Contain("project_key");
+
+        ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
+        updatedProject.ProjectKey.Should().NotBeNull();
+        updatedProject.ProjectKey!.Length.Should().Be(
+            26, "a project key is the 26-character ULID idea 202383dc, M2 mints at genesis");
+    }
+
+    /// <summary>idea 202383dc, M2: a join into an already-established project (this one carrying an
+    /// explicit --owner rather than establishing genesis itself) records the key it reads back from
+    /// the live ledger, through a <see cref="FakeLedgerChainReader"/> — the seam the innermost
+    /// overload takes when a caller actually wants this, unlike every other test in this class,
+    /// which passes none and so opts out entirely (Brian's 2026-09-13 testing rule: this command
+    /// never touches git or a network on its own).</summary>
+    [Fact]
+    public async Task Joining_an_established_project_records_the_key_read_back_from_the_ledger()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+        string existingGenesisRoot = new string('c', 64);
+        const string existingProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner>(), [], GenesisRootFingerprint: existingGenesisRoot,
+            ProjectKey: existingProjectKey));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await ProjectJoinCommand.RunAsync(
+            session, project, existingGenesisRoot, invite: null, ledger, new NodeKeyStore(),
+            GitHubAccessFakes.GrantingPush(), chainReader, cts.Token);
+
+        ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
+        updatedProject.ProjectKey.Should().Be(existingProjectKey);
     }
 
     /// <summary>

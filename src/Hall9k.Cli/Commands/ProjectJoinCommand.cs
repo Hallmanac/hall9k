@@ -129,7 +129,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         RunAsync(
             session, project, claimedOwnerOverride, invite,
             new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(),
-            new ProjectGitHubAccessMirror(), cancellationToken);
+            new ProjectGitHubAccessMirror(), new GitLedgerChainReader(), cancellationToken);
 
     internal static Task<JoinOutcome> RunAsync(
         IDocumentSession session,
@@ -139,7 +139,16 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         NodeKeyStore keyStore,
         ProjectGitHubAccessMirror githubAccess,
         CancellationToken cancellationToken) =>
-        RunAsync(session, project, claimedOwnerOverride, invite: null, ledger, keyStore, githubAccess, cancellationToken);
+        RunAsync(session, project, claimedOwnerOverride, invite: null, ledger, keyStore, githubAccess, chainReader: null, cancellationToken);
+
+    /// <summary>The invite-aware, ledger-seamed overload with no chain reader — every pre-existing
+    /// test above this piece opts out of recording the project key this way (Brian's 2026-09-13
+    /// testing rule: this command never touches git or a network on its own).</summary>
+    internal static Task<JoinOutcome> RunAsync(
+        IDocumentSession session, ProjectDetails project, string? claimedOwnerOverride, string? invite,
+        ILedger ledger, NodeKeyStore keyStore, ProjectGitHubAccessMirror githubAccess,
+        CancellationToken cancellationToken) =>
+        RunAsync(session, project, claimedOwnerOverride, invite, ledger, keyStore, githubAccess, chainReader: null, cancellationToken);
 
     /// <summary>
     /// The whole join flow, seamed on <see cref="ILedger"/>, <see cref="NodeKeyStore"/>, and
@@ -155,6 +164,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         ILedger ledger,
         NodeKeyStore keyStore,
         ProjectGitHubAccessMirror githubAccess,
+        ILedgerChainReader? chainReader,
         CancellationToken cancellationToken)
     {
         if (claimedOwnerOverride.IsNotBlank() && invite.IsNotBlank())
@@ -322,6 +332,13 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             session.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(owner, claimedFingerprint, establishingRoot, now));
         }
 
+        // Set only when this exact call just minted this project's own key writing the genesis
+        // members commit (idea 202383dc, M2) — the one case where the value is already known
+        // in hand and re-reading the ledger for it would be redundant. Left null otherwise
+        // (an ordinary join, an invite join, or a lost genesis race), so RecordProjectKeyAsync
+        // below reads it back from the ledger instead.
+        string? justWrittenProjectKey = null;
+
         if (establishingRoot)
         {
             await EnsureRootFileAsync(
@@ -343,12 +360,13 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             // proof appears in its node file below.
             if (invite.IsBlank())
             {
-                bool wroteGenesisMember = await EnsureGenesisMemberFileAsync(
+                (bool wroteGenesisMember, string genesisProjectKey) = await EnsureGenesisMemberFileAsync(
                     ledger, project.RepositoryPath, claimedFingerprint, now, committer, signingKey, cancellationToken);
                 if (wroteGenesisMember)
                 {
                     session.Events.Append(
                         project.Id, ProjectDecider.VouchMember(project.Id, claimedFingerprint, ProjectMemberRole.Owner, now));
+                    justWrittenProjectKey = genesisProjectKey;
                 }
             }
         }
@@ -369,6 +387,8 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         {
             session.Events.Append(context.NodeId, NodeDecider.ClaimOwner(node, claimedFingerprint, now));
         }
+
+        await RecordProjectKeyAsync(session, project, justWrittenProjectKey, chainReader, now, cancellationToken);
 
         await session.SaveChangesAsync(cancellationToken);
 
@@ -578,13 +598,22 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
     /// "the very first commit ever touching a members file", and this must refuse to write at all
     /// once that slot is spent, exactly the same criterion the chain reader will judge this write
     /// against.
+    /// <para>
+    /// Also mints this project's own key fresh (idea 202383dc, M2, Brian's ruling 2026-09-17: a
+    /// generated id, never the genesis owner's fingerprint) — a 26-character ULID from Cysharp's
+    /// Ulid, chosen for speed; every other id in this codebase stays a DomainId UUIDv7 — and
+    /// records it as this genesis commit's own <c>project_key</c> field. Returned regardless of
+    /// whether this call actually won the write, so a caller who lost the race can fall back to
+    /// reading the winner's own key back from the ledger instead.
+    /// </para>
     /// </summary>
-    private static async Task<bool> EnsureGenesisMemberFileAsync(
+    private static async Task<(bool Wrote, string ProjectKey)> EnsureGenesisMemberFileAsync(
         ILedger ledger, string repositoryPath, string fingerprint, DateTimeOffset issuedAt,
         LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
     {
         const string refName = "refs/hall9k/ledger/members";
         string path = $"members/{fingerprint}.yaml";
+        string projectKey = Ulid.NewUlid().ToString();
 
         if (await ledger.HasAnyAsync(repositoryPath, refName, "members/", cancellationToken))
         {
@@ -593,13 +622,14 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             // ownership. A re-run whose own file is already there also lands here, correctly, as a
             // no-op: HasAnyAsync is true either way. A cheap early exit only — the write below is
             // what actually enforces this, against a tip fetched fresh in the same attempt.
-            return false;
+            return (false, projectKey);
         }
 
         string content = BuildYaml(
             ("root_fingerprint", fingerprint),
             ("role", ProjectMemberRole.Owner.Value),
-            ("issued_at", issuedAt.ToString("o", CultureInfo.InvariantCulture)));
+            ("issued_at", issuedAt.ToString("o", CultureInfo.InvariantCulture)),
+            ("project_key", projectKey));
 
         // RequireEmptyPrefix, not just ExpectedBlobId, closes the race the check above cannot: two
         // joins racing to establish genesis under two different fingerprints would each see
@@ -615,8 +645,59 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             cancellationToken);
 
         // A conflict here means another join won the race to establish the identical genesis
-        // member between the read above and this write — the entry exists either way.
-        return outcome.Verdict == LedgerWriteVerdict.Written;
+        // member between the read above and this write — the entry exists either way, under
+        // whichever caller's own freshly-minted key actually won.
+        return (outcome.Verdict == LedgerWriteVerdict.Written, projectKey);
+    }
+
+    /// <summary>
+    /// Records this install's own local mirror of the project's key (idea 202383dc, M2): the value
+    /// this exact call just minted writing genesis (<paramref name="justWrittenProjectKey"/>), or —
+    /// every other join, when a caller actually handed this a real <paramref name="chainReader"/> —
+    /// whatever it reads back from the ledger right now. Best-effort and never fatal to the join:
+    /// this is a convenience record (<c>h9k project show</c>, a safety net for envelope resolution),
+    /// never a requirement the join itself depends on — a null <paramref name="chainReader"/> (an
+    /// innermost-overload caller that opted out of it, every pre-existing test above this piece
+    /// among them — this class's own doc: this command never touches git or a network on its own), a
+    /// ledger whose genesis predates this piece with no key yet (<c>h9k project assign-key</c> never
+    /// ran), or a transient chain-read failure all simply leave nothing to record here, and a later
+    /// join or assign-key picks it up.
+    /// </summary>
+    private static async Task RecordProjectKeyAsync(
+        IDocumentSession session, ProjectDetails project, string? justWrittenProjectKey,
+        ILedgerChainReader? chainReader, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        string? resolvedProjectKey = justWrittenProjectKey;
+        if (resolvedProjectKey is null && chainReader is not null)
+        {
+            try
+            {
+                TrustChain trustChain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+                resolvedProjectKey = trustChain.ProjectKey;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return;
+            }
+        }
+
+        if (resolvedProjectKey is null || project.ProjectKey == resolvedProjectKey)
+        {
+            return;
+        }
+
+        try
+        {
+            session.Events.Append(project.Id, ProjectDecider.AssignKey(project.Id, resolvedProjectKey, now));
+        }
+        catch (DomainValidationException)
+        {
+            // A key this call just minted itself (justWrittenProjectKey) is always well-formed and
+            // can never reach here — only a value read back from the ledger can be malformed (a
+            // corrupt or hand-edited project_key field), and a bad shape on that convenience record
+            // must never abort a join whose own node-file write and owner claim already succeeded
+            // above, the identical "best-effort, never fatal" promise this method's own doc makes.
+        }
     }
 
     /// <summary>How many times a conflicting ledger write retries against a fresh read before giving up.</summary>
