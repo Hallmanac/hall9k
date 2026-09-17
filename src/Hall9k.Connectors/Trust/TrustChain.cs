@@ -66,17 +66,33 @@ public sealed record UnverifiedLedgerWrite(string Kind, string Identifier, strin
 /// genesis is decided, whether or not that commit actually self-certifies, since it names a fact
 /// about the ref's own immutable history, not a verdict on trust. Every node that fetches the
 /// identical shared repository replays the identical commit history and lands on the identical
-/// value, regardless of any install's own locally-minted project id — the one thing this platform
-/// has that qualifies as "the project's own key, derived from the ledger" rather than from any one
-/// node's local database. Null only when the members ref itself has no commit yet (the project's
-/// ledger was never initialized — <c>h9k project join</c> never ran there).
+/// value, regardless of any install's own locally-minted project id. Null only when the members
+/// ref itself has no commit yet (the project's ledger was never initialized — <c>h9k project
+/// join</c> never ran there). This is an owner fact alone from here on — it identifies who wrote
+/// genesis, never the project itself (idea 202383dc, M2 follow-up, ruled by Brian 2026-09-17 after
+/// the c8dd149c replication dispute exposed that two projects sharing one genesis owner shared
+/// this fingerprint too); <see cref="ProjectKey"/> is the project's own wire identity now.
+/// </para>
+/// <para>
+/// <see cref="ProjectKey"/> is the 26-character ULID <c>h9k project join</c> mints fresh (Cysharp's
+/// Ulid) the moment it writes this project's genesis members commit, recorded as that commit's own
+/// <c>project_key</c> field and read back here from the genesis fingerprint's own current
+/// <c>members/&lt;fingerprint&gt;.yaml</c> content — so a later, authorized rewrite of that same
+/// file (<c>h9k project assign-key</c>, the one-time backfill for a ledger whose genesis predates
+/// this piece) is picked up the identical way, without this reader caring whether the key arrived
+/// with genesis or after it. Generated once, per project, never derived from anything about the
+/// owner who happened to write genesis: two projects sharing one genesis owner's root fingerprint
+/// (idea 202383dc's own origin incident — hall9k and odonomics on Brian's machine) get two
+/// unrelated keys. Null until a genesis commit exists and actually carries one — a ledger written
+/// before this piece shipped, or mid-adoption before <c>h9k project assign-key</c> has run.
 /// </para>
 /// </summary>
 public sealed record TrustChain(
     IReadOnlyDictionary<string, TrustedOwner> OwnerChains,
     IReadOnlyList<ProjectMember> Members,
     IReadOnlyList<UnverifiedLedgerWrite>? UnverifiedWrites = null,
-    string? GenesisRootFingerprint = null)
+    string? GenesisRootFingerprint = null,
+    string? ProjectKey = null)
 {
     /// <summary>Never null, whatever a caller passed the primary constructor: a two-argument
     /// construction (every call site that predates this field) gets an empty list rather than a
