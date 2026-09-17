@@ -1,9 +1,9 @@
 using System.Globalization;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
-using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx.Events;
@@ -29,22 +29,18 @@ public sealed record EventReplicationReadResult(bool SenderIgnored, int EventsAp
 /// in exchange for never touching that class's own delicate, heavily-tested flow.
 /// <para>
 /// Idempotent by origin event id (<see cref="ReplicatedEventRecord"/>): a re-delivered batch finds
-/// every record already stored and applies nothing a second time. Each applied event is appended,
-/// as-is, to the local stream <see cref="EventReplicationCodec.ReplicatedEventRecord.StreamId"/>
-/// names (starting the stream when it does not exist yet), with no decider in the way — it is a
-/// fact this node is recording happened elsewhere, not a decision this node is making.
+/// every record already stored and applies nothing a second time. Each applied event is appended to
+/// a local stream, starting it when it does not exist yet, with no decider in the way — it is a
+/// fact this node is recording happened elsewhere, not a decision this node is making. That stream
+/// is <see cref="EventReplicationCodec.ReplicatedEventRecord.StreamId"/> as sent for a Task, Idea,
+/// Epic, or Run event (those ids ARE shared across installs), but this node's OWN local Project
+/// stream id for one of the Project aggregate's own events — the sender's own id there is a foreign
+/// coordinate, never this receiver's (<see cref="ProjectStreamReplicationRules"/>).
 /// </para>
 /// </summary>
 public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<EventReplicationInbox>? logger = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
-
-    /// <summary>Every event type on the Project aggregate's own stream — never applicable here,
-    /// the same reason <see cref="ReplicationOwnership.IsProjectStreamItself"/> keeps them off the
-    /// outbox: the Project aggregate's own id is never shared across installs, so an event
-    /// appended under a sender's own Project stream id could only ever create a phantom stream
-    /// under a foreign id on this node, never the local Project stream it actually means.</summary>
-    private static readonly string? ProjectIdentityEventsNamespace = typeof(ProjectRegistered).Namespace;
 
     public async Task<EventReplicationReadResult> ReadFromAsync(
         IDocumentSession session,
@@ -161,15 +157,17 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             return false;
         }
 
-        // A well-behaved sender's own outbox already filters to ProjectScoped, never-the-Project-
-        // stream-itself events (EventReplicationOutbox.QueuePendingAsync) — checked again here so a
-        // sender running an older build, or a misbehaving one, can never make this node apply a
-        // NodeScoped event (a node-owner claim, this install's own local settings) sight unseen, nor
-        // create a phantom stream under a foreign project's own id (the Project aggregate's own id
-        // is never shared across installs, unlike a Task/Idea/Epic id — ReplicationOwnership.IsProjectStreamItself's
-        // own doc).
+        // A well-behaved sender's own outbox already filters to ProjectScoped, never-the-identity-
+        // event events (EventReplicationOutbox.QueuePendingAsync) — checked again here so a sender
+        // running an older build, or a misbehaving one, can never make this node apply a NodeScoped
+        // event (a node-owner claim, this install's own local settings) sight unseen, nor apply
+        // ProjectRegistered itself, which mints a foreign project's own id
+        // (ProjectStreamReplicationRules.IsProjectIdentityEvent's own doc). Every other project-
+        // scoped event on the Project aggregate's own stream (ProjectTeamSettingsChanged, the
+        // lifecycle and membership events) IS eligible — its own stream id is rewritten below,
+        // rather than excluded here.
         if (EventScopeRegistry.ClassificationOf(eventType) != EventScope.ProjectScoped
-            || eventType.Namespace == ProjectIdentityEventsNamespace)
+            || ProjectStreamReplicationRules.IsProjectIdentityEvent(eventType))
         {
             logger?.LogWarning(
                 "Replicated event of type {EventType} (origin {OriginEventId}) is never eligible to travel — skipped",
@@ -177,10 +175,31 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             return false;
         }
 
+        JsonNode? dataNode;
+        try
+        {
+            dataNode = JsonNode.Parse(record.EventDataJson);
+        }
+        catch (JsonException exception)
+        {
+            logger?.LogWarning(
+                exception, "Replicated event {OriginEventId} of type {EventType} failed to deserialize — skipped",
+                record.OriginEventId, record.EventTypeName);
+            return false;
+        }
+
+        // The project id is a per-install coordinate, never this event's shared identity (the
+        // ledger repository is that identity) — rewritten here to the local id this inbox is
+        // reading for, on whichever field actually carries it, before the event is ever applied.
+        if (dataNode is JsonObject dataObject)
+        {
+            RewriteProjectIdField(dataObject, projectId);
+        }
+
         object? data;
         try
         {
-            data = JsonSerializer.Deserialize(record.EventDataJson, eventType, JsonOptions);
+            data = dataNode?.Deserialize(eventType, JsonOptions);
         }
         catch (JsonException exception)
         {
@@ -195,29 +214,56 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             return false;
         }
 
-        bool streamExists = streamsStartedThisRead.Contains(record.StreamId)
-            || await session.Events.FetchStreamStateAsync(record.StreamId, cancellationToken) is not null;
+        // The Project aggregate's own events (the team part, membership, lifecycle) apply to THIS
+        // node's own Project stream id, never the sender's — the sender's own id is a foreign
+        // coordinate here. Every other project-scoped event (Task, Idea, Epic, Run) keeps its own
+        // stream id: those ids ARE shared across installs, only the ProjectId field inside them,
+        // rewritten above, was ever a per-install coordinate.
+        Guid effectiveStreamId = ProjectStreamReplicationRules.IsProjectAggregateStreamEvent(eventType)
+            ? projectId
+            : record.StreamId;
+
+        bool streamExists = streamsStartedThisRead.Contains(effectiveStreamId)
+            || await session.Events.FetchStreamStateAsync(effectiveStreamId, cancellationToken) is not null;
         StreamAction action = streamExists
-            ? session.Events.Append(record.StreamId, data)
-            : session.Events.StartStream(record.StreamId, data);
-        streamsStartedThisRead.Add(record.StreamId);
+            ? session.Events.Append(effectiveStreamId, data)
+            : session.Events.StartStream(effectiveStreamId, data);
+        streamsStartedThisRead.Add(effectiveStreamId);
 
         IEvent appended = action.Events[^1];
         appended.SetHeader(ReplicationEventHeaders.OriginNodeId, record.OriginNodeId.ToString());
         appended.SetHeader(ReplicationEventHeaders.OriginOwnerRootFingerprint, record.OriginOwnerRootFingerprint);
         appended.SetHeader(ReplicationEventHeaders.OriginEventId, record.OriginEventId.ToString());
         appended.SetHeader(ReplicationEventHeaders.OriginSequence, record.OriginSequence.ToString(CultureInfo.InvariantCulture));
+        appended.SetHeader(ReplicationEventHeaders.OriginProjectId, record.OriginProjectId.ToString());
         appended.SetHeader(ReplicationEventHeaders.ReceivedFromNodeId, senderNodeId.ToString());
         appended.SetHeader(ReplicationEventHeaders.ReceivedAt, now.ToString("O"));
 
         session.Store(new ReplicatedEventRecord
         {
             Id = record.OriginEventId,
-            StreamId = record.StreamId,
+            StreamId = effectiveStreamId,
             ProjectId = projectId,
             AppliedAt = now,
         });
 
         return true;
+    }
+
+    /// <summary>Rewrites the top-level <c>projectId</c> property (case-insensitive, matching
+    /// whatever casing this build's own JSON options produce) to <paramref name="localProjectId"/>
+    /// when the payload carries one — a Task, Idea, or Epic event's own project reference. Leaves
+    /// every other field alone, including an "Id" that happens to equal the sender's own project id
+    /// on a Project-aggregate event (<see cref="ProjectStreamReplicationRules.IsProjectAggregateStreamEvent"/>
+    /// already rewrites that event's own STREAM id instead, and nothing reads that field back).</summary>
+    private static void RewriteProjectIdField(JsonObject dataObject, Guid localProjectId)
+    {
+        string? matchingKey = dataObject
+            .FirstOrDefault(property => string.Equals(property.Key, "projectId", StringComparison.OrdinalIgnoreCase))
+            .Key;
+        if (matchingKey is not null)
+        {
+            dataObject[matchingKey] = JsonValue.Create(localProjectId);
+        }
     }
 }

@@ -185,7 +185,12 @@ h9k message handle <id> --project <PROJECT>                           # narrows 
 identical per-node outbox as an envelope of kind `events` (never shown in `h9k messages` — a
 separate reader, `EventReplicationInbox`, applies it), and every other node registered to the same
 project appends it to its own copy of the same stream as a fact, with no decider run against it —
-it is a record of what happened elsewhere, not a decision this node is making. Which events travel
+it is a record of what happened elsewhere, not a decision this node is making. A project's own id
+is minted per install, never shared, so every applied copy has its project coordinate (a
+Task/Idea/Epic/Run event's own `ProjectId` field, or a Project-aggregate event's own stream id —
+`ProjectTeamSettingsChanged` and its lifecycle/membership siblings included) rewritten to the
+receiving node's own local id (`ProjectStreamReplicationRules`), while the ledger repository stays
+the one shared identity across installs. Which events travel
 is a single registry (`Hall9k.Domain.Infrastructure.Persistence.EventScopeRegistry`), classifying
 every event type `ProjectScoped` (travels), `NodeScoped`, or `OwnerScoped` (both stay); a build-time
 test fails the moment a new event type ships unclassified. `ProjectSettingsChanged` itself stays
