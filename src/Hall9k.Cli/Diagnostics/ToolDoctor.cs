@@ -33,6 +33,13 @@ namespace Hall9k.Cli.Diagnostics;
 /// allowed to write to an unconfigured database, and only after asking.
 /// </para>
 /// <para>
+/// <em>Which</em> database and <em>which</em> platform config file that read lands on is not this
+/// probe's own decision: it arrives as a <see cref="ConnectionStringSource"/>. The command passes
+/// <see cref="ConnectionStringSource.Process"/>, so an operator gets the full precedence chain;
+/// a test passes a file or a string it owns, so no path under test falls back to the process
+/// environment or the user's home (PLAN.md §16 #PLACEHOLDER-093b54f0).
+/// </para>
+/// <para>
 /// Presence only, never auth: a present tool is reported quietly, and a missing one gets a
 /// teaching message naming the install (and, for <c>gh</c>, the login) fix, per the CLI command
 /// standards. Nothing here probes whether an installed tool is actually authenticated — that is
@@ -51,7 +58,7 @@ public static class ToolDoctor
     private static readonly TimeSpan ProjectReadTimeout = TimeSpan.FromSeconds(3);
 
     public static Task RunAsync(CancellationToken cancellationToken) =>
-        RunAsync(GhAwareRunner(), cancellationToken);
+        RunAsync(GhAwareRunner(), ConnectionStringSource.Process, cancellationToken);
 
     /// <summary>
     /// Dispatches "git" to the plain <see cref="ExternalProcess.Runner"/> and "gh" through
@@ -70,13 +77,22 @@ public static class ToolDoctor
                 : ExternalProcess.Runner(fileName, arguments, workingDirectory, cancellationToken);
     }
 
-    internal static async Task RunAsync(ProcessRunner runner, CancellationToken cancellationToken)
+    /// <summary>
+    /// <paramref name="connection"/> is the whole of what this probe knows about the database:
+    /// nothing below it reaches for the process environment, the user's home, or
+    /// <see cref="Hall9kDatabase.ConfigFile"/> on its own. The production entry point above passes
+    /// <see cref="ConnectionStringSource.Process"/>; a test passes a config file or a connection
+    /// string it owns, so what the doctor observes is the test's arrangement rather than the
+    /// machine's (PLAN.md §16 #PLACEHOLDER-093b54f0).
+    /// </summary>
+    internal static async Task RunAsync(
+        ProcessRunner runner, ConnectionStringSource connection, CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLine("[bold]Tools[/]");
 
         await ProbeAsync(runner, "git", MissingGitMessage(), cancellationToken);
 
-        switch (await GitHubCliRequirementAsync(cancellationToken))
+        switch (await GitHubCliRequirementAsync(connection, cancellationToken))
         {
             case GitHubCliRequirement.Needed:
                 await ProbeAsync(runner, "gh", MissingGhMessage(), cancellationToken);
@@ -134,11 +150,12 @@ public static class ToolDoctor
     /// was ever registered. AGENTS.md's "never guess at unobserved facts" rule applies here the same
     /// as anywhere else.
     /// </summary>
-    private static async Task<GitHubCliRequirement> GitHubCliRequirementAsync(CancellationToken cancellationToken)
+    private static async Task<GitHubCliRequirement> GitHubCliRequirementAsync(
+        ConnectionStringSource connection, CancellationToken cancellationToken)
     {
         try
         {
-            ConnectionStringResolution resolution = Hall9kDatabase.Resolve();
+            ConnectionStringResolution resolution = connection.Resolve();
             if (resolution.Origin is ConnectionStringOrigin.PlatformConfigFileMalformed
                 or ConnectionStringOrigin.PlatformConfigFileUnreadable)
             {

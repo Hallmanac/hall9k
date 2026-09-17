@@ -7,10 +7,10 @@ using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Tests.TestSupport;
 using JasperFx;
 using Marten;
 using Npgsql;
-using Spectre.Console;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -28,9 +28,6 @@ namespace Hall9k.Tests.Integration;
 /// tests sharing one database would see each other's seeded projects.
 /// </para>
 /// </summary>
-// HALL9K_CONNECTION_STRING is process-wide state; sharing the collection serializes this against
-// every other test that redirects it.
-[Collection("Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class ToolDoctorProjectFactsTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
@@ -47,7 +44,7 @@ public sealed class ToolDoctorProjectFactsTests(PostgresFixture postgres) : ICla
             return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
         };
 
-        await WithConnectionStringAsync(database, () => ToolDoctor.RunAsync(runner, CancellationToken.None));
+        await ToolDoctor.RunAsync(runner, ConnectionStringSource.Configured(database), CancellationToken.None);
 
         probed.Should().Contain("git").And.Contain("gh",
             "a registered project's remote is GitHub, the same fact the generated AGENTS.md's gh entry reads");
@@ -71,8 +68,8 @@ public sealed class ToolDoctorProjectFactsTests(PostgresFixture postgres) : ICla
             ? throw new Win32Exception("No such file or directory")
             : Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
 
-        string output = await WithConnectionStringAsync(
-            database, () => CaptureAsync(() => ToolDoctor.RunAsync(runner, CancellationToken.None)));
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(
+            () => ToolDoctor.RunAsync(runner, ConnectionStringSource.Configured(database), CancellationToken.None));
 
         output.Should().Contain("gh is not installed");
         output.Should().Contain("https://cli.github.com",
@@ -100,7 +97,7 @@ public sealed class ToolDoctorProjectFactsTests(PostgresFixture postgres) : ICla
             return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
         };
 
-        await WithConnectionStringAsync(database, () => ToolDoctor.RunAsync(runner, CancellationToken.None));
+        await ToolDoctor.RunAsync(runner, ConnectionStringSource.Configured(database), CancellationToken.None);
 
         probed.Should().Contain("git");
         probed.Should().NotContain("gh", "an archived project is treated as removed everywhere else, so its GitHub remote no longer needs gh");
@@ -119,7 +116,7 @@ public sealed class ToolDoctorProjectFactsTests(PostgresFixture postgres) : ICla
             return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
         };
 
-        await WithConnectionStringAsync(database, () => ToolDoctor.RunAsync(runner, CancellationToken.None));
+        await ToolDoctor.RunAsync(runner, ConnectionStringSource.Configured(database), CancellationToken.None);
 
         probed.Should().Contain("git");
         probed.Should().NotContain("gh", "nothing registered on this install needs the GitHub CLI");
@@ -137,65 +134,10 @@ public sealed class ToolDoctorProjectFactsTests(PostgresFixture postgres) : ICla
         string database = await FreshDatabaseAsync(CancellationToken.None);
         ProcessRunner runner = (_, _, _, _) => Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
 
-        await WithConnectionStringAsync(database, () => ToolDoctor.RunAsync(runner, CancellationToken.None));
+        await ToolDoctor.RunAsync(runner, ConnectionStringSource.Configured(database), CancellationToken.None);
 
         (await DatabaseReachability.SchemaPresentAsync(database, CancellationToken.None)).Should().BeFalse(
             "the tool check reads projects, and only the database section is allowed to create schema, after asking");
-    }
-
-    private static async Task WithConnectionStringAsync(string connectionString, Func<Task> action)
-    {
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, connectionString);
-        try
-        {
-            await action();
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
-        }
-    }
-
-    private static async Task<T> WithConnectionStringAsync<T>(string connectionString, Func<Task<T>> action)
-    {
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, connectionString);
-        try
-        {
-            return await action();
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
-        }
-    }
-
-    /// <summary>Mirrors <c>Hall9k.Tests.Cli.ToolDoctorTests</c>' own capture helper: Spectre
-    /// consumes markup tags before they reach the writer, so assertions match the rendered text
-    /// a missing tool's teaching message actually prints, not the style tag that colored it.</summary>
-    private static async Task<string> CaptureAsync(Func<Task> action)
-    {
-        IAnsiConsole original = AnsiConsole.Console;
-        StringWriter writer = new();
-        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
-        {
-            Ansi = AnsiSupport.No,
-            ColorSystem = ColorSystemSupport.NoColors,
-            Interactive = InteractionSupport.No,
-            Out = new AnsiConsoleOutput(writer),
-        });
-        captured.Profile.Width = 4096;
-        AnsiConsole.Console = captured;
-        try
-        {
-            await action();
-            return writer.ToString();
-        }
-        finally
-        {
-            AnsiConsole.Console = original;
-        }
     }
 
     private static async Task<Guid> SeedProjectAsync(string connectionString, Uri? repositoryUrl, CancellationToken cancellationToken)
