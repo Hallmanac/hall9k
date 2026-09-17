@@ -163,9 +163,10 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // event (a node-owner claim, this install's own local settings) sight unseen, nor apply
         // ProjectRegistered itself, which mints a foreign project's own id
         // (ProjectStreamReplicationRules.IsProjectIdentityEvent's own doc). Every other project-
-        // scoped event on the Project aggregate's own stream (ProjectTeamSettingsChanged, the
-        // lifecycle and membership events) IS eligible — its own stream id is rewritten below,
-        // rather than excluded here.
+        // scoped event on the Project aggregate's own stream IS eligible — its effective stream id
+        // (this receiver's own Project stream for the team-facing subset, the sender's own foreign
+        // stream id for the per-install lifecycle events) is decided below, rather than excluded
+        // here.
         if (EventScopeRegistry.ClassificationOf(eventType) != EventScope.ProjectScoped
             || ProjectStreamReplicationRules.IsProjectIdentityEvent(eventType))
         {
@@ -214,11 +215,17 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             return false;
         }
 
-        // The Project aggregate's own events (the team part, membership, lifecycle) apply to THIS
-        // node's own Project stream id, never the sender's — the sender's own id is a foreign
-        // coordinate here. Every other project-scoped event (Task, Idea, Epic, Run) keeps its own
-        // stream id: those ids ARE shared across installs, only the ProjectId field inside them,
-        // rewritten above, was ever a per-install coordinate.
+        // The Project aggregate's own team-facing events (ProjectTeamSettingsChanged, the
+        // membership audit trail) apply to THIS node's own Project stream id, never the sender's —
+        // the sender's own id is a foreign coordinate here. Every other project-scoped event (Task,
+        // Idea, Epic, Run, and the Project aggregate's own per-install lifecycle events — archive,
+        // reactivate, rename, schedule or cancel a purge) keeps its own stream id instead: a
+        // Task/Idea/Epic/Run id IS shared across installs, only its own ProjectId field, rewritten
+        // above, was ever a per-install coordinate; a lifecycle event's own stream id stays the
+        // sender's foreign one deliberately, so a teammate's local archive, rename, or purge
+        // decision about THEIR OWN install's copy of the project is recorded as a fact without ever
+        // acting on this receiver's own project (independent pre-PR review, cycle 3, conformance
+        // lens — ProjectStreamReplicationRules.IsProjectLifecycleEvent's own doc).
         Guid effectiveStreamId = ProjectStreamReplicationRules.IsProjectAggregateStreamEvent(eventType)
             ? projectId
             : record.StreamId;
