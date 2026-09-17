@@ -1,0 +1,25 @@
+hall9k-task-record: 1
+task-id: 01a09c2c-ea22-764d-b398-630c9408d525
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#356
+objective: |-
+  Event catch-up: a node that finds a gap in a sender's sequence, or that has no history at all, asks a peer for the events it lacks and the peer answers from what it holds with origin preserved, so a returning or brand-new node reaches the same history as everyone else
+criteria:
+  - Gap detection per sender at receipt; the node sends an events-request envelope (since sequence N, or everything for a brand-new node) to one peer, asking the voucher first, then owner-role members, then any member, most recently moved outbox first within a rank
+  - A peer answers from what it holds, forwarding others' events with origin and event id intact, paginated by the envelope cap; a brand-new node requests everything and bootstraps its project from the answer; a peer that cannot answer says so
+  - A request unanswered within a per-candidate timeout (default 5 minutes, a setting) is re-sent to the next candidate with earlier requests left standing; double answers are harmless by dedupe
+  - h9k status shows outstanding gaps and requests
+  - Adoption (h9k task add --from-issue or --from-jira) of a ledger record whose stream is absent locally starts an events-request for that stream and reports that it is arriving, never fabricating events from the record (moved here from the ledger records task ce0c986a on 2026-09-16, since the record writer now lands before catch-up)
+  - |-
+    Tests through the seam with the in-memory transport: a gap is detected and filled; a new store bootstraps a project from one peer and matches its projections; a forwarded event keeps its origin; a timeout moves to the next candidate; adoption on a missing stream sends the request
+  - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each
+dependencies: [01a0af1a-c6cf-75b4-9876-342decd6bdc0]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/9408d525-event-catch-up-a-node-that-fin
+published: 2026-09-17 11:34:06Z
+context: |-
+  Idea 202383dc (Hall9k for a distributed team). M2b, ninth in the ruled chain, stacked on M2a (c8dd149c). Re-stack of 2026-09-16 (Brian's ruling, notes/decisions-2026-09-16-hall9k-b9.md): the ledger records task ce0c986a no longer follows this one, so this task owns the missing-stream events-request on adoption; the record file and TaskRecordAdoption's lookup by task id come from ce0c986a, which lands first. Criteria and ruling: ideas/202383dc-*/workspace/m2-replication-walk-2026-09-13.md (Criteria M2b and the RULED amendments on bootstrap order and timeouts). No presence system ever; archival is a later local concern. Testing rule (Brian, 2026-09-13): no test touches the project's repository or any remote; a throwaway temp bare repository is allowed only in A1's tests and the chain reader's; everything else tests through the transport seam with an in-memory fake.
