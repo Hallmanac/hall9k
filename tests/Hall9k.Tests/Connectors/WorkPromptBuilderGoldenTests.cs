@@ -440,6 +440,60 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         AssertMatchesGoldenWithHome("append-home-skill-rule", skillPrompt.ToString(), project.HomeDirectory.Value, worktree);
     }
 
+    // ---- Prompt addenda (idea b9b09779, piece 6) ----
+
+    [Fact]
+    public void Build_splices_the_project_addendum_after_the_rules_when_the_daemon_has_materialized_one()
+    {
+        ProjectDetails project = ProjectWithMaterializedAddendum(PromptBuilderKey.Work, "Always run `dotnet format` first.");
+
+        string prompt = WorkPromptBuilder.Build(SomeTask(), project, Branch, WorktreePath);
+
+        int rulesIndex = prompt.IndexOf("## Working rules", StringComparison.Ordinal);
+        int headingIndex = prompt.IndexOf("## This project's own guidance", StringComparison.Ordinal);
+        headingIndex.Should().BeGreaterThan(-1, "the work builder appends its own addendum, when one exists, after its rules");
+        headingIndex.Should().BeGreaterThan(rulesIndex);
+        prompt.Should().Contain("Always run `dotnet format` first.");
+    }
+
+    [Fact]
+    public void Build_marks_an_over_cap_addendum_in_the_prompt_itself()
+    {
+        ProjectDetails project = ProjectWithMaterializedAddendum(
+            PromptBuilderKey.Work, "A very long house style.", overCap: true);
+
+        string prompt = WorkPromptBuilder.Build(SomeTask(), project, Branch, WorktreePath);
+
+        prompt.Should().Contain("This project's own guidance (set over this project's usual addendum length cap)");
+    }
+
+    [Fact]
+    public void Build_with_no_materialized_addendum_renders_exactly_as_it_did_before()
+    {
+        // No file under prompt-addenda/ for this home at all: the loader finds nothing, and the
+        // splice is a no-op, which every other golden test in this file already proves byte for
+        // byte — this asserts the heading itself never appears when there is nothing to append.
+        ProjectDetails project = SomeProject();
+
+        string prompt = WorkPromptBuilder.Build(SomeTask(), project, Branch, WorktreePath);
+
+        prompt.Should().NotContain("This project's own guidance");
+    }
+
+    private ProjectDetails ProjectWithMaterializedAddendum(PromptBuilderKey builder, string content, bool overCap = false)
+    {
+        string home = Path.Combine(Path.GetTempPath(), $"h9k-work-prompt-addendum-{Guid.NewGuid():N}");
+        _scratchDirectories.Add(home);
+        Directory.CreateDirectory(ProjectHomePaths.PromptAddendaDirectory(home));
+        File.WriteAllText(
+            ProjectHomePaths.PromptAddendumFile(home, builder.Value),
+            overCap ? $"{ProjectPromptAddendaLoader.OverCapMarker}\n{content}" : content);
+
+        ProjectDetails project = SomeProject();
+        project.HomeDirectory = ProjectHome.Parse(home);
+        return project;
+    }
+
     // ---- Fixture plumbing ----
 
     private (ProjectDetails Project, string WorktreePath) ProjectHomeWithSkillsFixture()

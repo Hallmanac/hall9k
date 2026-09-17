@@ -131,6 +131,11 @@ public sealed record ScopedReviewPacket(
 /// drafts for the reviewer to post under their own login (task 412afe6c). Null falls back to the
 /// platform default, which is what a caller with no project to read one from passes.
 /// </param>
+/// <param name="PromptAddendum">
+/// The reviewing project's own addendum for the review-lap builder (idea b9b09779, piece 6),
+/// resolved by the caller (<see cref="ProjectPromptAddendaLoader"/>) so this type's own
+/// composition stays pure. Null when the project has none.
+/// </param>
 public sealed record ReviewLapBriefing(
     Guid TaskId,
     PullRequestSurface PullRequest,
@@ -143,7 +148,8 @@ public sealed record ReviewLapBriefing(
     string? FindingsReport,
     ReviewLapAuthorRun? AuthorRun,
     ScopedReviewPacket? SinceMyReview = null,
-    WritingConventions? WritingConventions = null);
+    WritingConventions? WritingConventions = null,
+    LoadedPromptAddendum? PromptAddendum = null);
 
 /// <summary>
 /// The opening briefing a reviewer's own review lap starts with (<c>h9k pr review</c>, Decisions
@@ -218,6 +224,7 @@ public static class ReviewLapPromptBuilder
 
         AppendWorkingArrangementSection(prompt, briefing);
         AppendRulesSection(prompt, briefing);
+        WorkPromptBuilder.AppendPromptAddendum(prompt, briefing.PromptAddendum);
         AppendClosingSection(prompt, briefing);
 
         return prompt.ToString();

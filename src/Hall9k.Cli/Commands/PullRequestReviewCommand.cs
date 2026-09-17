@@ -7,6 +7,7 @@ using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
@@ -1008,7 +1009,8 @@ public sealed class PullRequestReviewCommand : Hall9kAsyncCommand<PullRequestRev
             findingsReport,
             authorRun is null ? null : DescribeAuthorRun(authorRun),
             SinceMyReview: null,
-            WritingConventions: project.WritingConventions);
+            WritingConventions: project.WritingConventions,
+            PromptAddendum: ProjectPromptAddendaLoader.TryLoad(project, PromptBuilderKey.ReviewLap));
     }
 
     /// <summary>
