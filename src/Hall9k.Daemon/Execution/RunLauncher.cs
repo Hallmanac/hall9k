@@ -609,7 +609,16 @@ public sealed class RunLauncher(
                     commandTimeout: options.Value.VerifyGateTimeout, voiceSkill: voiceSkill);
             }
 
-            LogIfOverCapAddendum(runId, project, PromptBuilderKey.Agent);
+            // isPrReview and the followUp branches above both compose through AgentPromptBuilder's
+            // own review/follow-up methods, which splice PromptBuilderKey.Agent; only the fresh-
+            // dispatch else branch composes through AgentPromptBuilder.Build, a thin forward to
+            // WorkPromptBuilder.Build, which splices PromptBuilderKey.Work instead — so the key
+            // logged here has to track which branch actually ran rather than naming Agent
+            // unconditionally (verify pass, cycle 2, conformance lens).
+            PromptBuilderKey composedWithAddendumKey = isPrReview || followUp is not null
+                ? PromptBuilderKey.Agent
+                : PromptBuilderKey.Work;
+            LogIfOverCapAddendum(runId, project, composedWithAddendumKey);
 
             // Re-checked here, immediately before the actual spawn, rather than trusting the
             // fence read at the top of this method alone (Copilot review, PR #334, a suppressed
