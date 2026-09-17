@@ -72,8 +72,11 @@ internal static class TaskRecordAdoption
             cancellationToken);
         foreach (LedgerEntry entry in entries)
         {
+            // A record's SECONDARY reference matches too (task: a task may link to both a GitHub
+            // issue and a Jira card): the item this adoption is about is already spoken for either
+            // way, whichever of the two jobs it does on that other record's own task.
             TaskRecord? record = TaskRecord.TryParse(entry.Content);
-            if (record?.ExternalReference != reference)
+            if (record is null || (record.ExternalReference != reference && record.SecondaryExternalReference != reference))
             {
                 continue;
             }

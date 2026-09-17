@@ -162,6 +162,43 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         record.Holder.Should().BeNull("nothing has claimed this task yet — the holder lock (A3b) is not built");
     }
 
+    /// <summary>
+    /// A task may link to both a GitHub issue and a Jira card (task: a task may link to both a
+    /// GitHub issue and a Jira card): the record body carries both, and
+    /// <see cref="TaskRecordAdoption.LocateAsync"/> finds the task by whichever of the two an
+    /// adoption elsewhere names, not only by the primary.
+    /// </summary>
+    [Fact]
+    public async Task Publish_writes_both_references_when_the_task_carries_a_primary_and_a_secondary()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Install origin = await SeedAsync(store, cts.Token);
+        ExternalReference primary = new(WorkItemProvider.GitHub, $"{Repository}#3266");
+        ExternalReference secondary = new(WorkItemProvider.Jira, "PROJ-77");
+
+        Guid taskId = await AddTaskAsync(
+            store, origin, "Adopt both a GitHub issue and a Jira card", ["Both references are recorded"],
+            null, cts.Token, externalReference: primary, secondaryExternalReference: secondary);
+        await PublishAsync(store, origin, taskId, cts.Token);
+
+        FakeLedger ledger = new();
+        await WriteRecordAsync(store, origin, taskId, ledger, cts.Token);
+
+        LedgerFile stored = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token);
+        TaskRecord record = TaskRecord.TryParse(stored.Content)!;
+        record.ExternalReference.Should().Be(primary);
+        record.SecondaryExternalReference.Should().Be(secondary);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskRecordAdoption.Locate locatedBySecondary = await TaskRecordAdoption.LocateAsync(
+            query, ledger, RepositoryPath, secondary, cts.Token);
+        locatedBySecondary.Outcome.Should().Be(TaskRecordAdoption.LocateOutcome.ExistingLocal,
+            "the ledger scan matches a record's secondary reference, not only its primary");
+        locatedBySecondary.TaskId.Should().Be(taskId);
+    }
+
     [Fact]
     public async Task Revise_rewrites_the_same_ledger_path_with_the_new_content()
     {
@@ -747,14 +784,16 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         CancellationToken cancellationToken,
         IReadOnlyList<Guid>? blockedBy = null,
         AgentModel? model = null,
-        Guid? epicId = null)
+        Guid? epicId = null,
+        ExternalReference? externalReference = null,
+        ExternalReference? secondaryExternalReference = null)
     {
         Guid taskId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
         session.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
             taskId, install.ProjectId, objective, criteria, TaskType.Feature, agentContext,
-            constraints: null, externalReference: null, Now, install.OwnerId, model: model, blockedBy: blockedBy,
-            epicId: epicId));
+            constraints: null, externalReference, Now, install.OwnerId, model: model, blockedBy: blockedBy,
+            epicId: epicId, secondaryExternalReference: secondaryExternalReference));
         await session.SaveChangesAsync(cancellationToken);
         return taskId;
     }
@@ -835,6 +874,32 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
             session, new ExternalReference(WorkItemProvider.GitHub, "Hallmanac/hall9k#8"), cts.Token);
 
         await adoption.Should().NotThrowAsync();
+    }
+
+    /// <summary>
+    /// A task may link to both a GitHub issue and a Jira card (task: a task may link to both a
+    /// GitHub issue and a Jira card), and the secondary is a real link, not a lesser one: an item
+    /// already carried as another task's secondary is exactly as spoken for as one carried as its
+    /// primary, and adopting it again — as anyone's primary or secondary — is refused the same way.
+    /// </summary>
+    [Fact]
+    public async Task An_item_already_carried_as_another_tasks_secondary_reference_is_refused_too()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        ExternalReference primary = new(WorkItemProvider.GitHub, "Hallmanac/hall9k#55");
+        ExternalReference secondary = new(WorkItemProvider.Jira, "PROJ-55");
+        Guid holderTaskId = await AdoptWithSecondaryAsync(
+            store, primary, secondary, "Adopt both trackers", cts.Token);
+
+        await using IQuerySession session = store.QuerySession();
+        Func<Task> adoptSecondaryElsewhere = () =>
+            TaskAddCommand.RefuseSecondAdoptionAsync(session, secondary, cts.Token);
+
+        (await adoptSecondaryElsewhere.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain("jira:PROJ-55")
+            .And.Contain(TaskListCommand.ShortId(holderTaskId));
     }
 
     [Fact]
@@ -1054,6 +1119,29 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
             reference,
             addedAt,
             DomainId.New()));
+        await session.SaveChangesAsync(cancellationToken);
+        return taskId;
+    }
+
+    /// <summary>The <see cref="AdoptAsync(IDocumentStore,ExternalReference?,string,CancellationToken)"/> sibling that also carries a secondary reference.</summary>
+    private static async Task<Guid> AdoptWithSecondaryAsync(
+        IDocumentStore store, ExternalReference reference, ExternalReference secondary, string objective,
+        CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
+            taskId,
+            DomainId.New(),
+            objective,
+            ["Both references are recorded"],
+            TaskType.Feature,
+            agentContext: null,
+            constraints: null,
+            reference,
+            AdoptionNow,
+            DomainId.New(),
+            secondaryExternalReference: secondary));
         await session.SaveChangesAsync(cancellationToken);
         return taskId;
     }
