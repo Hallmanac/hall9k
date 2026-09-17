@@ -463,26 +463,35 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             return;
         }
 
+        TaskRecordPublication.WriteOutcome outcome;
         try
         {
             NodeDetails? node = await session.LoadAsync<NodeDetails>(context.NodeId, cancellationToken);
             (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
                 await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
-            TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
+            outcome = await TaskRecordPublication.WriteAsync(
                 session, task, project, context.NodeId, node?.MachineName ?? Environment.MachineName,
                 ownerFingerprint, DateTimeOffset.UtcNow, new GitLedger(new ConsoleWorktreeLogger<GitLedger>()),
                 committer, signingKey, cancellationToken);
-            // NotYetPublished says nothing here: a Draft this install has never published has no
-            // ledger record to report on, and telling the operator about one would be news about a
-            // write that never happened (independent pre-PR review, cycle 1, both lenses).
-            if (outcome != TaskRecordPublication.WriteOutcome.NotYetPublished)
-            {
-                AnsiConsole.MarkupLine(DescribeRewrite(outcome, revised.AcceptanceCriteria.HasValue));
-            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]  Note:[/] [dim]The revision landed, but rewriting its task record failed: "
+                + $"{exception.Message.EscapeMarkup()} The next revise writes it.[/]");
+            return;
+        }
 
-            if (revised.AcceptanceCriteria.HasValue && task.Origin is null
-                && task.ExternalReference is { } issue && issue.Provider == WorkItemProvider.GitHub
-                && project.BacklogPolicy == BacklogPolicy.GitHubIssues)
+        // Attempted, and its own success tracked, before the confirmation below is printed —
+        // never after — so "regenerated" is never claimed for a checklist update that was either
+        // not eligible to run at all or ran and failed (independent pre-PR review, cycle 1,
+        // adversarial lens).
+        bool checklistRegenerated = false;
+        if (revised.AcceptanceCriteria.HasValue && task.Origin is null
+            && task.ExternalReference is { } issue && issue.Provider == WorkItemProvider.GitHub
+            && project.BacklogPolicy == BacklogPolicy.GitHubIssues)
+        {
+            try
             {
                 GitHubWorkItemProvider provider = new(new ProjectScopedGitHubRunner(store).Runner);
                 ImportedWorkItem current = await provider.ImportAsync(
@@ -491,13 +500,23 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 await provider.UpdateBodyAsync(
                     issue, GitHubIssueBody.WithCriteriaChecklist(current.Body, task.AcceptanceCriteria),
                     project.RepositoryPath, cancellationToken);
+                checklistRegenerated = true;
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]  Note:[/] [dim]The revision and its ledger record landed, but regenerating "
+                    + $"the linked issue's acceptance-criteria checklist failed: "
+                    + $"{exception.Message.EscapeMarkup()}[/]");
             }
         }
-        catch (Exception exception) when (exception is not OperationCanceledException)
+
+        // NotYetPublished says nothing here: a Draft this install has never published has no
+        // ledger record to report on, and telling the operator about one would be news about a
+        // write that never happened (independent pre-PR review, cycle 1, both lenses).
+        if (outcome != TaskRecordPublication.WriteOutcome.NotYetPublished)
         {
-            AnsiConsole.MarkupLine(
-                $"[yellow]  Note:[/] [dim]The revision landed, but rewriting its task record failed: "
-                + $"{exception.Message.EscapeMarkup()} The next revise writes it.[/]");
+            AnsiConsole.MarkupLine(DescribeRewrite(outcome, checklistRegenerated));
         }
     }
 
@@ -511,13 +530,16 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
     /// <see cref="RewriteRecordAsync"/> skips calling this for it — but gets its own arm here rather
     /// than falling into <c>Mirror</c>'s wildcard, which would misreport an unpublished Draft as a
     /// copy of another install's task.
+    /// <paramref name="checklistRegenerated"/> is whether the checklist update actually ran and
+    /// succeeded, never merely whether criteria changed — an ineligible or failed attempt must
+    /// never read as "regenerated" here (independent pre-PR review, cycle 1, adversarial lens).
     /// </summary>
-    internal static string DescribeRewrite(TaskRecordPublication.WriteOutcome outcome, bool criteriaChanged) =>
-        (outcome, criteriaChanged) switch
+    internal static string DescribeRewrite(TaskRecordPublication.WriteOutcome outcome, bool checklistRegenerated) =>
+        (outcome, checklistRegenerated) switch
         {
             (TaskRecordPublication.WriteOutcome.Written, true) =>
                 "[dim]  Task record rewritten in the ledger, and the linked issue's acceptance-criteria "
-                + "checklist (when it is tracked in GitHub issues) regenerated from the new criteria.[/]",
+                + "checklist regenerated from the new criteria.[/]",
             (TaskRecordPublication.WriteOutcome.Written, false) =>
                 "[dim]  Task record rewritten in the ledger.[/]",
             (TaskRecordPublication.WriteOutcome.NotYetPublished, _) =>
