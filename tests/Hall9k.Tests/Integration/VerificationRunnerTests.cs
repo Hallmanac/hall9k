@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
@@ -520,6 +521,105 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 "also fails when run against a clean checkout of 'main'",
                 "the first run's own comparison warmed the cache even though it landed too late to " +
                 "help that run's own reason");
+        }
+        finally
+        {
+            TemporaryTree.Delete(cleanBase);
+        }
+    }
+
+    /// <summary>
+    /// Task: a run whose mandatory final full-scope gate fails after a merge-ready resolve never
+    /// stops silently. The repair-eligible sibling of the test above, and the layer the 2026-09-17
+    /// defect actually lived at: the recording path taken when <c>allowRepairInsteadOfFail</c> is
+    /// true — the one <c>ReviewEngine</c>'s Settling-gate repair lap reads — awaited the clean-base
+    /// comparison unconditionally, so <see cref="VerificationRunner.VerifyForSettlingAsync"/> itself
+    /// did not return until that second full gate run finished. Two shapes on two machines, one
+    /// cause: on the Mac (run 01a0ad4e) the repair session dispatched 15 minutes after the gate
+    /// failed, at 05:46:17 for a 05:31:09 failure; on Windows (run 01a0ab8d) the comparison's own
+    /// budget is twice the whole suite's wall clock, so the run sat past 30 minutes with no repair
+    /// session, no park and no <c>RunFailed</c> and was killed by hand. <c>h9k task show</c> read
+    /// "no session recorded as running" for the whole gap on both, because the run's own gate had
+    /// already ended and <c>TaskPhaseComposer</c> had no <c>ActiveGate</c> left to name.
+    /// <para>
+    /// Same arrangement as the test above — the run's own gate against the plain, non-git
+    /// <c>_worktree</c> fails immediately while the identical command against <c>cleanBase</c> (a
+    /// real <c>.git</c> checkout) pauses first — but asserted on this call's own wall clock rather
+    /// than on a poll, since a repair-eligible failure deliberately records no terminal run state
+    /// for a poll to watch for.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_repair_eligible_gate_failure_returns_before_a_slow_clean_base_comparison_finishes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        string cleanBase = Path.Combine(Path.GetTempPath(), $"hall9k-vt-base-{Guid.NewGuid():N}");
+        await InitializeCleanCheckoutAsync(cleanBase, "main", cts.Token);
+        try
+        {
+            TimeSpan comparisonPause = TimeSpan.FromSeconds(20);
+            Guid projectId = DomainId.New();
+            Guid nodeId = DomainId.New();
+            VerifyCommand gate = new(
+                "slow-to-diagnose",
+                GateScript.New()
+                    .BranchOnDirectory(
+                        ".git", GateScript.New().Pause(comparisonPause), GateScript.New().Print("not the comparison checkout"))
+                    .Print("unconditionally-broken")
+                    .Exit(1).Command);
+
+            (Guid taskId, Guid runId) = await SeedAsync(
+                store, [gate], cts.Token, repositoryPath: cleanBase, projectId: projectId, nodeId: nodeId);
+
+            Stopwatch elapsed = Stopwatch.StartNew();
+            VerificationRunner.SettlingVerificationResult result = await NewRunner(store).VerifyForSettlingAsync(
+                runId, taskId, scopeSinceSha: null, "mandatory final full pass", RunSessionLeg.SettlingGateRepair,
+                allowRepairInsteadOfFail: true, cts.Token);
+            elapsed.Stop();
+
+            // 15s: past the recording budget (a single DaemonOptions.PollInterval sweep — 5s by
+            // NewRunner's own default — with margin for a loaded test host), well short of the 20s
+            // comparisonPause. Only a fix that stops awaiting the still-running comparison can
+            // return inside this window.
+            elapsed.Elapsed.Should().BeLessThan(
+                TimeSpan.FromSeconds(15),
+                "the caller has a repair session to dispatch, a park to record or a run to fail, and " +
+                "none of the three may wait on a best-effort diagnostic");
+            result.Passed.Should().BeFalse();
+            result.FailedGateName.Should().Be(
+                gate.Name, "a genuine gate failure is what makes this failure repair-eligible at all");
+            result.FailureOutput.Should().Contain("unconditionally-broken")
+                .And.NotContain(
+                    "also fails when run against a clean checkout",
+                    "the comparison had not finished by the time this call returned");
+
+            await using (IQuerySession failureQuery = store.QuerySession())
+            {
+                List<object> events =
+                    [.. (await failureQuery.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+                events.OfType<VerificationFailed>().Should().ContainSingle(
+                    "the audit fact still lands — only the run's own ending is left to the caller");
+                events.OfType<RunFailed>().Should().BeEmpty(
+                    "a repair-eligible failure leaves the run live for the caller to dispatch a repair session over");
+            }
+
+            // The comparison the caller could not wait for still runs to completion, off the
+            // critical path, and warms the cache for whichever run next asks the same question.
+            string cleanBaseHeadSha = (await TestGit.CaptureAsync(cleanBase, ["rev-parse", "HEAD"], cts.Token)).Trim();
+            string verdictId = CleanBaseGateVerdict.ComputeId(nodeId, projectId, gate.Name, gate.Command, cleanBaseHeadSha);
+            CleanBaseGateVerdict? verdict = null;
+            for (int attempt = 0; attempt < 400 && verdict is null; attempt++)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(100), cts.Token);
+                await using IQuerySession verdictQuery = store.QuerySession();
+                verdict = await verdictQuery.LoadAsync<CleanBaseGateVerdict>(verdictId, cts.Token);
+            }
+
+            verdict.Should().NotBeNull(
+                "deferring the comparison is not dropping it — the repair-eligible path owes the next " +
+                "run the same warmed cache the fail-hard path already does");
+            verdict!.BasePasses.Should().BeFalse("the gate is unconditionally broken on the clean checkout too");
         }
         finally
         {
