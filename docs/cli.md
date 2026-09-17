@@ -644,6 +644,8 @@ otherwise, in the same shape on every machine:
 ├── ideas/
 ├── tasks/      _archive/ holds terminal tasks (closed out or abandoned); moved back if reopened
 ├── skills/     plain markdown skill docs, seeded from the install's canonical set
+├── prompt-addenda/  one <builder>.md per prompt builder with an addendum set (below); daemon-owned,
+│               materialized from the ledger on every sweep — never hand-edit, it is overwritten
 ├── recipes/    this project's orchestrator window recipe (below)
 ├── .claude/    generated Claude Code plumbing: skills/ and recipes/orchestrator-recipe-generator/ symlinked, never copied
 ├── journal.md  seeded once by the orchestrator-recipe-generator skill; the window's own live
@@ -748,6 +750,33 @@ summary comment under the owner's login with em dashes in most of its paragraphs
 in every orchestrator recipe on both nodes and in the operator's own user-level `CLAUDE.md`, and
 reached none of them, because `--setting-sources project` drops `CLAUDE.md` from a dispatched
 session and no composition prompt carried the rule itself.
+
+### Prompt addenda
+
+```bash
+h9k project prompt-addendum set <project> <builder> --file <path>   # replace the whole addendum
+h9k project prompt-addendum show <project> <builder>
+h9k project prompt-addendum list <project>
+h9k project prompt-addendum remove <project> <builder>
+```
+
+A team's own house guidance for one shipped prompt builder, set once and spliced into that builder's
+every future prompt after its rules section, never replacing or referenced by any of the platform's
+own prose: `work` (`h9k task work`), `review-lap` (`h9k pr review`), `agent` (every daemon-dispatched
+review and lifecycle prompt `AgentPromptBuilder` composes that carries project context — follow-up,
+review, review-fix, and rebase; its five purely mechanical retry/recovery builders carry no project
+context today), and `mention-follow-up`. `set` replaces the whole file; there is no partial edit.
+Content past a length cap is refused unless accepted with `--over-cap "<reason>"`, which records the
+reason and renders the addendum under a heading that says so.
+
+This node's own event stream is the audit trail `show`/`list` read back (who set it and when); the
+ledger is the actual transport, written and read only by the daemon's own sweep, never by a
+dispatched agent session — the same "CLI records the fact, the daemon alone writes the ledger" split
+`h9k project join`'s own vouch uses. `set` refuses a project with no home yet
+(`h9k project init` first): the daemon only ever materializes an addendum under a project's own home
+directory, so one set before that exists could never reach a prompt. `list`/`show` also warn when the
+daemon has not been able to push a project's own addenda to the ledger for a while, since until that
+push lands, nothing above has actually reached a prompt yet.
 
 ### Branch naming
 
