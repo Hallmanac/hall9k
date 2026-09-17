@@ -22,6 +22,12 @@ public static class ReplicationEventHeaders
     /// again at each hop; this node's own applied copy is keyed by its OWN local project id, not
     /// this one.</summary>
     public const string OriginProjectId = "originProjectId";
+    /// <summary>The project's own generated wire key (idea 202383dc, M2; Brian's ruling 2026-09-17)
+    /// carried on the events envelope this record rode in on — beside owner root, node, event id,
+    /// and origin sequence, the acceptance criterion's own list. Null when the envelope carried none
+    /// (a legacy sender, or a project whose ledger has no key yet), the same "no opinion, never a
+    /// mismatch" reading every other reader of this optional field gives it.</summary>
+    public const string OriginProjectKey = "originProjectKey";
     public const string ReceivedFromNodeId = "receivedFromNodeId";
     public const string ReceivedAt = "receivedAt";
 }

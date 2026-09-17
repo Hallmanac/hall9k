@@ -2,11 +2,13 @@ using FluentAssertions;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks;
@@ -190,6 +192,251 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         {
             TaskDetails? original = await session.LoadAsync<TaskDetails>(taskId, cts.Token);
             original!.ProjectId.Should().Be(projectIdA);
+        }
+    }
+
+    /// <summary>
+    /// idea 202383dc, M2 (Brian's ruling 2026-09-17): a project's identity no longer depends on
+    /// which ledger a message arrived through — each store resolves the sender's envelope by the
+    /// project key it carries, against its OWN locally recorded <see cref="ProjectDetails.ProjectKey"/>,
+    /// landing on its own local project id even though the two are unrelated Guids, the identical
+    /// "minted per install" shape the sibling test above already covers for the id rewrite alone.
+    /// </summary>
+    [Fact]
+    public async Task Two_stores_with_matching_recorded_project_keys_resolve_replicated_events_to_their_own_project()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        Guid projectIdB = DomainId.New();
+        const string sharedProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdA,
+                new ProjectRegistered(projectIdA, ownerId, DomainId.New(), "Shared Project", "/repo-a", null, "main", Now));
+            session.Events.Append(projectIdA, ProjectDecider.AssignKey(projectIdA, sharedProjectKey, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node B registers the identical real-world project under its own, differently-minted id,
+        // but reads back the IDENTICAL key from its own copy of the ledger — the deterministic
+        // fact TrustChain.ProjectKey is (idea 202383dc, M2's own doc).
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdB,
+                new ProjectRegistered(projectIdB, ownerId, DomainId.New(), "Shared Project", "/repo-b", null, "main", Now));
+            session.Events.Append(projectIdB, ProjectDecider.AssignKey(projectIdB, sharedProjectKey, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectIdA, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, sharedProjectKey, adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, Now.AddSeconds(3), trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeFalse("the envelope's own project key resolves to this exact local project");
+            read.EventsApplied.Should().BeGreaterThan(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskDetails? replicated = await session.LoadAsync<TaskDetails>(taskId, cts.Token);
+            replicated.Should().NotBeNull();
+            replicated!.ProjectId.Should().Be(projectIdB);
+        }
+    }
+
+    /// <summary>
+    /// The refusal half of the identical ruling: an events envelope whose own project key resolves,
+    /// through the receiver's own <see cref="ProjectDetails.ProjectKey"/> lookup, to a DIFFERENT
+    /// local project than the one this read is scoped to is refused rather than applied — the exact
+    /// hazard the c8dd149c replication dispute exposed (mapping a sender's project to the receiver's
+    /// own only through the ledger it was read through, never verified against the key itself).
+    /// </summary>
+    [Fact]
+    public async Task An_events_envelope_whose_project_key_resolves_to_a_different_local_project_is_refused_and_named()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        const string mismatchedProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node B already has a DIFFERENT local project recorded under this exact key — a genuine
+        // mismatch, never merely "no opinion recorded yet".
+        Guid projectHoldingTheKey = DomainId.New();
+        Guid scopedProjectId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectHoldingTheKey,
+                new ProjectRegistered(projectHoldingTheKey, ownerId, DomainId.New(), "Holder", "/repo-holder", null, "main", Now));
+            session.Events.Append(projectHoldingTheKey, ProjectDecider.AssignKey(projectHoldingTheKey, mismatchedProjectKey, Now));
+            session.Events.StartStream<ProjectAggregate>(
+                scopedProjectId,
+                new ProjectRegistered(scopedProjectId, ownerId, DomainId.New(), "Scoped", "/repo-scoped", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectIdA, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, mismatchedProjectKey, adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeTrue("the envelope's own project key resolves to a different local project");
+            read.EventsApplied.Should().Be(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<TaskDetails>(taskId, cts.Token)).Should().BeNull("a mismatched-key envelope is never applied");
+
+            EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
+                EventReplicationStreamId.ForInboxCursor(nodeA, scopedProjectId), cts.Token);
+            cursor.Should().NotBeNull();
+            cursor!.SenderIgnored.Should().BeTrue();
+            cursor.IgnoredReason.Should().Contain("project key");
+        }
+    }
+
+    /// <summary>
+    /// idea 202383dc, M2 (independent pre-PR review, cycle 2, conformance lens, medium): the
+    /// direct-comparison branch this project's own live <see cref="TrustChain.ProjectKey"/> feeds
+    /// (<c>EventReplicationInbox.ResolveLocalProjectKeyAsync</c>) must refuse a mismatched envelope
+    /// on its own, the same as the cross-project database lookup the test above already covers. The
+    /// receiving project's own <see cref="ProjectDetails.ProjectKey"/> is never assigned and no
+    /// other project is ever registered under the mismatched key, so the older fallback lookup
+    /// cannot be what refuses this envelope — only the trust chain's own key can, exactly the path
+    /// <c>MessageSweepEngine.ProbeAndReadAsync</c> takes on every real sweep once a project has one.
+    /// </summary>
+    [Fact]
+    public async Task An_events_envelope_whose_project_key_mismatches_the_live_trust_chains_own_key_is_refused_and_named()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        const string thisProjectsOwnKey = "01ARZ3NDEKTSV4RRFFQ69G5FCC";
+        const string mismatchedProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid scopedProjectId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                scopedProjectId,
+                new ProjectRegistered(scopedProjectId, ownerId, DomainId.New(), "Scoped", "/repo-scoped", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectIdA, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, mismatchedProjectKey, adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        TrustChain liveTrustChain = new(new Dictionary<string, TrustedOwner>(), [], ProjectKey: thisProjectsOwnKey);
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(3), trustChain: liveTrustChain, cts.Token);
+            read.SenderIgnored.Should().BeTrue("the live trust chain's own key already answers the question directly");
+            read.EventsApplied.Should().Be(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<TaskDetails>(taskId, cts.Token)).Should().BeNull("a mismatched-key envelope is never applied");
+
+            EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
+                EventReplicationStreamId.ForInboxCursor(nodeA, scopedProjectId), cts.Token);
+            cursor.Should().NotBeNull();
+            cursor!.SenderIgnored.Should().BeTrue();
+            cursor.IgnoredReason.Should().Contain("project key");
         }
     }
 

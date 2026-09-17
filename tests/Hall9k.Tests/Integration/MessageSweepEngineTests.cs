@@ -110,7 +110,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
 
         MessageSweepEngine engine = new(
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
-            new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], GenesisRootFingerprint: "shared-project-key")),
+            new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], ProjectKey: "shared-project-key")),
             new MessageNodeIdentityResolver(new NodeKeyStore()),
             Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
             new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
@@ -189,7 +189,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         InMemoryMessageTransport transport = new(new FakeLedger());
         MessageSweepEngine engine = new(
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
-            new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], GenesisRootFingerprint: "shared-project-key")),
+            new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], ProjectKey: "shared-project-key")),
             new MessageNodeIdentityResolver(new NodeKeyStore()),
             Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
             new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
@@ -679,7 +679,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             repositoryPath == failingRepositoryPath
                 ? throw new InvalidOperationException("Simulated: this project's own trust chain read never succeeds.")
                 : repositoryPath == healthyRepositoryPath
-                    ? Task.FromResult(new TrustChain(new Dictionary<string, TrustedOwner>(), [], GenesisRootFingerprint: healthyProjectKey))
+                    ? Task.FromResult(new TrustChain(new Dictionary<string, TrustedOwner>(), [], ProjectKey: healthyProjectKey))
                     : Task.FromResult(TrustChain.Empty);
     }
 

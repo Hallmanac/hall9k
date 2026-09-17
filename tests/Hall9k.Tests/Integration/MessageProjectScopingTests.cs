@@ -405,7 +405,7 @@ public sealed class MessageProjectScopingTests : IClassFixture<PostgresFixture>,
 
         // A different node acting as "install two" for the identical repository, using its own,
         // different local project id — but the identical ledger-derived key, since both installs
-        // compute it from the same shared repository's own ledger (TrustChain.GenesisRootFingerprint).
+        // compute it from the same shared repository's own ledger (TrustChain.ProjectKey).
         Guid nodeC = DomainId.New();
         await SeedNodeFileAsync(ledger, nodeC, sharedRepository, cts.Token);
         (LedgerCommitter committerC, LedgerSigningKey signingKeyC) = Signing("node-c");
@@ -838,6 +838,155 @@ public sealed class MessageProjectScopingTests : IClassFixture<PostgresFixture>,
         MessageInboxDetails? newCursor = await readSession.LoadAsync<MessageInboxDetails>(
             MessageStreamId.ForInbox(nodeA, localProjectAtB), cts.Token);
         newCursor!.HighestSeqReceived.Should().Be(4, "the new per-project cursor picks up exactly where the pre-upgrade one left off");
+    }
+
+    /// <summary>idea 202383dc, M2 (Brian's ruling 2026-09-17): an envelope whose own project key
+    /// resolves, through this node's own recorded <see cref="ProjectDetails.ProjectKey"/>, to a
+    /// DIFFERENT local project than the one this read is scoped to — refused rather than stored,
+    /// and named the identical way an unvouched sender already is.</summary>
+    [Fact]
+    public async Task A_message_whose_project_key_resolves_to_a_different_local_project_is_refused_and_named()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        const string ownerB = "owner-b-fingerprint";
+        const string mismatchedProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, RepositoryX, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        MessageInbox inbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        Guid senderProjectId = DomainId.New();
+        await using IDocumentSession sendSession = _postgres.Store.LightweightSession();
+        await MessageOutbox.QueueAsync(
+            sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, null, MessageKind.Note,
+            "broadcast to X", Now, cts.Token);
+        await outbox.FlushAsync(
+            sendSession, RepositoryX, nodeA, senderProjectId, mismatchedProjectKey, adoptUnassigned: false, committerA,
+            signingKeyA, Now, cts.Token);
+
+        // Node B already has a DIFFERENT local project recorded under this exact key — a genuine
+        // mismatch, never merely "no opinion recorded yet".
+        Guid projectHoldingTheKey = await RegisterEligibleProjectAsync("holder", "/repo-holder", cts.Token);
+        await using (IDocumentSession keySession = _postgres.Store.LightweightSession())
+        {
+            keySession.Events.Append(
+                projectHoldingTheKey, ProjectDecider.AssignKey(projectHoldingTheKey, mismatchedProjectKey, Now));
+            await keySession.SaveChangesAsync(cts.Token);
+        }
+
+        Guid scopedProjectId = await RegisterEligibleProjectAsync("scoped", RepositoryX, cts.Token);
+        await using IDocumentSession readSession = _postgres.Store.LightweightSession();
+        MessageInboxSweepResult read = await inbox.ReadFromAsync(
+            readSession, RepositoryX, nodeA, scopedProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+
+        read.EnvelopesStored.Should().Be(
+            0, "the envelope's own project key resolves to a different local project — refused, never stored");
+        read.SenderIgnored.Should().BeTrue();
+
+        MessageInboxDetails? cursor = await readSession.LoadAsync<MessageInboxDetails>(
+            MessageStreamId.ForInbox(nodeA, scopedProjectId), cts.Token);
+        cursor.Should().NotBeNull();
+        cursor!.SenderIgnored.Should().BeTrue();
+        cursor.IgnoredReason.Should().Contain("project key");
+    }
+
+    /// <summary>idea 202383dc, M2 (independent pre-PR review, cycle 2, conformance lens, medium):
+    /// the direct-comparison branch this project's own live <see cref="TrustChain.ProjectKey"/>
+    /// feeds (<c>MessageInbox.ResolveLocalProjectKeyAsync</c>) must refuse a mismatched envelope on
+    /// its own, the same as the cross-project database lookup already covered above. This project's
+    /// own <see cref="ProjectDetails.ProjectKey"/> is deliberately left unset and no other project
+    /// is ever registered under the mismatched key, so the older fallback lookup that test exercises
+    /// cannot be what refuses this envelope — only the trust chain's own key can, exactly the path
+    /// <c>MessageSweepEngine.ProbeAndReadAsync</c> takes on every real sweep once a project has
+    /// one.</summary>
+    [Fact]
+    public async Task A_message_whose_project_key_mismatches_the_live_trust_chains_own_key_is_refused_and_named()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        const string ownerB = "owner-b-fingerprint";
+        const string thisProjectsOwnKey = "01ARZ3NDEKTSV4RRFFQ69G5FBB";
+        const string mismatchedProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, RepositoryX, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        MessageInbox inbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        Guid senderProjectId = DomainId.New();
+        await using IDocumentSession sendSession = _postgres.Store.LightweightSession();
+        await MessageOutbox.QueueAsync(
+            sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, null, MessageKind.Note,
+            "broadcast to X", Now, cts.Token);
+        await outbox.FlushAsync(
+            sendSession, RepositoryX, nodeA, senderProjectId, mismatchedProjectKey, adoptUnassigned: false, committerA,
+            signingKeyA, Now, cts.Token);
+
+        Guid scopedProjectId = await RegisterEligibleProjectAsync("scoped", RepositoryX, cts.Token);
+        TrustChain liveTrustChain = new(new Dictionary<string, TrustedOwner>(), [], ProjectKey: thisProjectsOwnKey);
+
+        await using IDocumentSession readSession = _postgres.Store.LightweightSession();
+        MessageInboxSweepResult read = await inbox.ReadFromAsync(
+            readSession, RepositoryX, nodeA, scopedProjectId, nodeB, ownerB, Now.AddSeconds(1), trustChain: liveTrustChain,
+            cancellationToken: cts.Token);
+
+        read.EnvelopesStored.Should().Be(
+            0, "the live trust chain's own key already answers the question directly — never mind the cross-project lookup");
+        read.SenderIgnored.Should().BeTrue();
+
+        MessageInboxDetails? cursor = await readSession.LoadAsync<MessageInboxDetails>(
+            MessageStreamId.ForInbox(nodeA, scopedProjectId), cts.Token);
+        cursor.Should().NotBeNull();
+        cursor!.SenderIgnored.Should().BeTrue();
+        cursor.IgnoredReason.Should().Contain("project key");
+    }
+
+    /// <summary>idea 202383dc, M2's own compatibility rule: an envelope whose project key does not
+    /// resolve to any local project at all — a legacy sender's null field, or a value this node has
+    /// simply never recorded anywhere — is read normally rather than refused as malformed. Every
+    /// other test in this file already relies on this (none of them ever registers a
+    /// <see cref="ProjectDetails.ProjectKey"/> matching <c>ProjectKeyX</c>/<c>ProjectKeyY</c>); this
+    /// test states it as its own, explicit claim.</summary>
+    [Fact]
+    public async Task A_legacy_envelope_with_no_recognized_project_key_is_still_read()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        const string ownerB = "owner-b-fingerprint";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, RepositoryX, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        MessageInbox inbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        Guid senderProjectId = DomainId.New();
+        await using IDocumentSession sendSession = _postgres.Store.LightweightSession();
+        await MessageOutbox.QueueAsync(
+            sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, null, MessageKind.Note,
+            "legacy note", Now, cts.Token);
+        await outbox.FlushAsync(
+            sendSession, RepositoryX, nodeA, senderProjectId, ProjectKeyX, adoptUnassigned: false, committerA,
+            signingKeyA, Now, cts.Token);
+
+        Guid localProjectAtB = await RegisterEligibleProjectAsync("legacy-receiver", RepositoryX, cts.Token);
+        await using IDocumentSession readSession = _postgres.Store.LightweightSession();
+        MessageInboxSweepResult read = await inbox.ReadFromAsync(
+            readSession, RepositoryX, nodeA, localProjectAtB, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
+
+        read.EnvelopesStored.Should().Be(
+            1, "a project key nobody has recorded anywhere is read as 'no opinion', never as a mismatch");
+        read.SenderIgnored.Should().BeFalse();
     }
 
     /// <summary>Registers a fresh, eligible (not archived, with a repository) project under a
