@@ -190,6 +190,10 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         TaskRecord record = TaskRecord.TryParse(stored.Content)!;
         record.ExternalReference.Should().Be(primary);
         record.SecondaryExternalReference.Should().Be(secondary);
+        record.Origin.BranchName.Should().Be(
+            BranchNameTemplate.Default.Render(taskId, "Adopt both a GitHub issue and a Jira card", "3266"),
+            "the branch key is the primary's own key alone — the secondary never sets it, "
+            + "the same way it never gates a claim or closes at closeout");
 
         await using IQuerySession query = store.QuerySession();
         TaskRecordAdoption.Locate locatedBySecondary = await TaskRecordAdoption.LocateAsync(

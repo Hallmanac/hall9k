@@ -1258,6 +1258,39 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     }
 
     /// <summary>
+    /// The claim gate reads a task's primary reference alone (task: a task may link to both a
+    /// GitHub issue and a Jira card) — the same rule <see cref="BranchNameTemplate.Render"/> and
+    /// closeout's close-linked-issue read hold, this being the claim gate's own share of it (idea
+    /// 202383dc's decisions log entry names all three). The task seeded here carries a Jira card as
+    /// its secondary that this gate's own Jira requester (<see cref="FakeJiraRequester.NeverInvoked"/>,
+    /// the requester every <see cref="GitHubGate(string, string?)"/> is built with) throws on sight
+    /// if ever asked about — a regression that started reading the secondary through this door could
+    /// not pass this test, whichever way it answered.
+    /// </summary>
+    [Fact]
+    public async Task The_dispatcher_claims_off_the_primary_reference_alone_leaving_the_secondary_unread()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        (Guid projectId, Guid taskId) = await SeedGatedProjectAndTaskAsync(
+            store, "github", "606", node.OwnerId, cts.Token,
+            secondaryExternalReference: new ExternalReference(WorkItemProvider.Jira, "POISON-1"));
+
+        TrackerClaimGate gate = GitHubGate("606", GitHubLogin);
+        DispatchEngine engine = Engine(store, node, gate, TimeSpan.Zero);
+
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().Contain(
+            work => work.TaskId == taskId,
+            "the primary alone already shows this install assigned; a claim gate that also read the "
+            + "secondary would have thrown reaching for a Jira card this fake refuses to answer about");
+
+        await using IQuerySession verify = store.QuerySession();
+        IReadOnlyList<IEvent> stream = await verify.Events.FetchStreamAsync(taskId, token: cts.Token);
+        stream.Select(e => e.Data).OfType<TaskClaimed>().Should().ContainSingle();
+    }
+
+    /// <summary>
     /// The gate fails closed, and the hold it publishes has to be readable: the tracker's own
     /// error verbatim, what ends it, and whether the credentials were refused rather than the
     /// tracker failing to answer — because those have opposite remedies.
@@ -1620,7 +1653,8 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     // ── seeding ───────────────────────────────────────────────────────────────────────────────
 
     private async Task<(Guid ProjectId, Guid TaskId)> SeedGatedProjectAndTaskAsync(
-        DocumentStore store, string provider, string key, Guid ownerId, CancellationToken cancellationToken)
+        DocumentStore store, string provider, string key, Guid ownerId, CancellationToken cancellationToken,
+        ExternalReference? secondaryExternalReference = null)
     {
         Guid projectId = DomainId.New();
         Guid taskId = DomainId.New();
@@ -1638,7 +1672,8 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         seed.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
             TaskDecider.Add(
                 taskId, projectId, $"claim gate over {reference}", ["it is done"], TaskType.Chore,
-                null, null, reference, ClaimGateNow, ownerId),
+                null, null, reference, ClaimGateNow, ownerId,
+                secondaryExternalReference: secondaryExternalReference),
             ownerId, ClaimGateNow));
         await seed.SaveChangesAsync(cancellationToken);
         return (projectId, taskId);
