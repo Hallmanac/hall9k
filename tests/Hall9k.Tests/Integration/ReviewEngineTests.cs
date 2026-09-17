@@ -10583,18 +10583,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     public void Dispose()
     {
         Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-        try
-        {
-            Directory.Delete(_home, recursive: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // Best-effort cleanup of a temp directory, already accepted for IOException — widened
-            // to UnauthorizedAccessException because the seeds that build a real bare "origin"
-            // repository leave git's own loose object files marked read-only, which
-            // Directory.Delete refuses on Windows. Every test in this class that seeds an origin
-            // failed on that alone, with its own assertions all passing, before this caught it.
-        }
+
+        // Through TemporaryTree rather than a bare delete: the seeds that build a real bare
+        // "origin" repository under this home leave git's own loose object files marked read-only,
+        // which Directory.Delete refuses on Windows. Every test in this class that seeds an origin
+        // failed on that alone, with its own assertions all passing, before this was caught.
+        TemporaryTree.TryDelete(_home);
     }
 
     // --- Stack assessment feature tests (task: a stacked checkpoint that would park

@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Cli.Installation;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -15,16 +16,7 @@ public sealed class GitDescribedVersionTests : IDisposable
 {
     private readonly string repository = Directory.CreateTempSubdirectory("h9k-git-describe-").FullName;
 
-    public void Dispose()
-    {
-        try
-        {
-            Directory.Delete(repository, recursive: true);
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-        }
-    }
+    public void Dispose() => TemporaryTree.TryDelete(repository);
 
     [Fact]
     public async Task A_tagged_commit_with_a_later_commit_describes_with_the_v_prefix_stripped()
