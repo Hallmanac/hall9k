@@ -457,6 +457,123 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 6, conformance and adversarial lenses (medium and high):
+    /// before this fix, the sibling test above's own dynamic fallback applied even when this node had
+    /// ALREADY sent a legacy envelope — physically, permanently — into the lowest-id project's own
+    /// outbox ref before the lowest-id project ever started failing. Redirecting a still-pending
+    /// legacy message to a second, healthier project in that case would have left the healthier
+    /// project's own outbox starting mid-sequence (an unfillable gap
+    /// <see cref="GitLedgerMessageTransport.ReadSinceAsync"/>'s own gap-stop rule stalls every reader
+    /// on forever) while the lowest-id project's own next real send, no longer protected by
+    /// <c>NextSeqAsync</c>'s legacy fold once adoption named a different project, could silently
+    /// overwrite the already-landed envelope. This node registers the identical two eligible
+    /// projects as the sibling test, seeds an already-sent legacy envelope (seq 1) alongside a
+    /// still-pending one (seq 2), and proves the sweep leaves the pending one alone rather than
+    /// routing it through the healthy project while the lowest-id one's chain read keeps failing.
+    /// </summary>
+    [Fact]
+    public async Task A_pending_legacy_message_never_redirects_to_a_second_project_once_this_node_has_already_sent_legacy_history_elsewhere()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        const string FailingRepositoryPath = "/does/not/matter/on/a/fake/ledger-failing-3";
+        const string HealthyRepositoryPath = "/does/not/matter/on/a/fake/ledger-healthy-3";
+        const string HealthyProjectKey = "healthy-project-key-3";
+
+        FakeLedger ledger = new();
+        InMemoryMessageTransport transport = new(ledger);
+
+        NodeContext nodeB = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                HealthyRepositoryPath, $"refs/hall9k/ledger/nodes/{nodeB.NodeId}", $"nodes/{nodeB.NodeId}/node.yaml",
+                $"node_id: \"{nodeB.NodeId}\"\npublic_key: \"ssh-ed25519 AAAAFAKE{nodeB.NodeId:N} test\"\n",
+                ExpectedBlobId: null, "seed node file", new LedgerCommitter("seed", "seed@hall9k.local"),
+                new LedgerSigningKey("/dev/null/seed")),
+            cts.Token);
+
+        Guid failingProjectId = DomainId.New();
+        Guid healthyProjectId = DomainId.New();
+        await using (IDocumentSession claimSession = _postgres.Store.LightweightSession())
+        {
+            OwnerAggregate owner =
+                (await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(nodeB.OwnerId, token: cts.Token))!;
+            claimSession.Events.Append(
+                nodeB.OwnerId, OwnerDecider.ClaimRoot(owner, "owner-b-root-fingerprint", verified: true, Now));
+
+            // Registered in this order so failingProjectId (UUIDv7, minted first) sorts lower, the
+            // same ordering the sibling tests above rely on.
+            claimSession.Events.StartStream<ProjectAggregate>(
+                failingProjectId,
+                ProjectDecider.Register(
+                    failingProjectId, nodeB.OwnerId, DomainId.New(), "failing", FailingRepositoryPath, null, null, Now));
+            claimSession.Events.StartStream<ProjectAggregate>(
+                healthyProjectId,
+                ProjectDecider.Register(
+                    healthyProjectId, nodeB.OwnerId, DomainId.New(), "healthy", HealthyRepositoryPath, null, null, Now));
+
+            // The already-sent legacy envelope (seq 1): queued AND sent before idea 202383dc's M2
+            // ever shipped, under the pre-M2 event schema that never carried a ProjectId at all — its
+            // MessageSent still deserializes ProjectId as Guid.Empty forever, exactly like MessageQueued's
+            // own doc describes for the sentinel this feature resolves. Physically, this is the
+            // envelope the old, single-project sweep already landed on the lowest-id project's own
+            // outbox ref, before that project ever started failing.
+            claimSession.Events.StartStream<MessageAggregate>(
+                MessageStreamId.ForMessage(nodeB.NodeId, Guid.Empty, 1),
+                new MessageQueued(
+                    nodeB.NodeId, 1, "owner-b-root-fingerprint", MessageAudience.Project.Value, null, MessageKind.Note.Value,
+                    "already-sent legacy on node B", Now, Guid.Empty));
+            claimSession.Events.Append(
+                MessageStreamId.ForMessage(nodeB.NodeId, Guid.Empty, 1),
+                new MessageSent(nodeB.NodeId, 1, Now, Guid.Empty));
+
+            // The still-pending legacy envelope (seq 2): queued before M2 shipped, never yet flushed.
+            claimSession.Events.StartStream<MessageAggregate>(
+                MessageStreamId.ForMessage(nodeB.NodeId, Guid.Empty, 2),
+                new MessageQueued(
+                    nodeB.NodeId, 2, "owner-b-root-fingerprint", MessageAudience.Project.Value, null, MessageKind.Note.Value,
+                    "still-pending legacy on node B", Now, Guid.Empty));
+
+            await claimSession.SaveChangesAsync(cts.Token);
+        }
+
+        MessageSweepEngine engine = new(
+            _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            new AlwaysThrowingForOneRepositoryChainReader(FailingRepositoryPath, HealthyRepositoryPath, HealthyProjectKey),
+            new MessageNodeIdentityResolver(new NodeKeyStore()), Options.Create(new DaemonOptions()),
+            NullLogger<MessageSweepEngine>.Instance);
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        await using (IDocumentSession verifySession = _postgres.Store.LightweightSession())
+        {
+            MessageDetails? pending = await verifySession.LoadAsync<MessageDetails>(
+                MessageStreamId.ForMessage(nodeB.NodeId, Guid.Empty, 2), cts.Token);
+            pending!.SentAt.Should().BeNull(
+                "the healthy project must never adopt this backlog while the lowest-id project — the one "
+                + "already holding this node's earlier legacy history — is unavailable, since doing so would "
+                + "leave the healthy project's own outbox starting mid-sequence");
+
+            LegacyMessageAdoptionDetails? adoption = await verifySession.LoadAsync<LegacyMessageAdoptionDetails>(
+                MessageStreamId.ForLegacyAdoption(), cts.Token);
+            adoption.Should().BeNull(
+                "no project may be recorded as the legacy adopter until the lowest-id project — the only "
+                + "one that can safely adopt once already-sent legacy history exists — actually succeeds");
+
+            // The already-sent envelope must stay exactly as it was: still Guid.Empty, never
+            // re-stamped by a flush that never touched it.
+            MessageDetails? alreadySent = await verifySession.LoadAsync<MessageDetails>(
+                MessageStreamId.ForMessage(nodeB.NodeId, Guid.Empty, 1), cts.Token);
+            alreadySent!.ProjectId.Should().Be(Guid.Empty, "a flush that never ran against this envelope must never touch it");
+        }
+
+        TransportReadResult fromHealthy = await transport.ReadSinceAsync(HealthyRepositoryPath, nodeB.NodeId, sinceSeq: 0, cts.Token);
+        fromHealthy.Envelopes.Should().BeEmpty(
+            "the healthy project's own outbox must never receive this node's legacy backlog while the "
+            + "lowest-id project — the only safe adopter once already-sent history exists — is unavailable");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 4, adversarial lens (high): before the fix, whichever
     /// eligible project's own <c>FlushAsync</c> ran with <c>adoptUnassigned: true</c> and merely
     /// succeeded got pinned as the permanent legacy adopter — even one that had nothing pending but
