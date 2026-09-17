@@ -101,7 +101,19 @@ public sealed class MessageDeciderTests
         MessageAggregate message = new();
         message.Apply(MessageDecider.Send(FromNode, 1, ProjectId, Now));
 
-        Action act = () => MessageDecider.Resend(message, Now.AddMinutes(1));
+        Action act = () => MessageDecider.Resend(message, ProjectId, Now.AddMinutes(1));
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void Resend_RefusesAnEmptyProjectId()
+    {
+        MessageEnvelopeV1 envelope = new(1, Now, FromNode, "fp", MessageAudience.Project, null, MessageKind.Note, "hi");
+        MessageAggregate message = new();
+        message.Apply(MessageDecider.FailSend(envelope, ProjectId, "push rejected", Now));
+
+        Action act = () => MessageDecider.Resend(message, Guid.Empty, Now.AddMinutes(1));
 
         act.Should().Throw<DomainValidationException>();
     }
@@ -113,12 +125,25 @@ public sealed class MessageDeciderTests
         MessageAggregate message = new();
         message.Apply(MessageDecider.FailSend(envelope, ProjectId, "push rejected", Now));
 
-        message.Apply(MessageDecider.Resend(message, Now.AddMinutes(1)));
+        message.Apply(MessageDecider.Resend(message, ProjectId, Now.AddMinutes(1)));
 
+        message.ProjectId.Should().Be(ProjectId);
         message.SendFailed.Should().BeFalse();
         message.SendFailureReason.Should().BeNull();
         message.ResendCount.Should().Be(1);
         message.SentAt.Should().Be(Now.AddMinutes(1));
+    }
+
+    [Fact]
+    public void Resend_ResolvesAPreM2EmptyProjectIdOnTheRetryThatFinallyLands()
+    {
+        MessageEnvelopeV1 envelope = new(1, Now, FromNode, "fp", MessageAudience.Project, null, MessageKind.Note, "hi");
+        MessageAggregate message = new();
+        message.Apply(MessageDecider.FailSend(envelope, ProjectId, "push rejected", Now));
+
+        MessageResent resent = MessageDecider.Resend(message, ProjectId, Now.AddMinutes(1));
+
+        resent.ProjectId.Should().Be(ProjectId);
     }
 
     [Fact]

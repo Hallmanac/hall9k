@@ -124,6 +124,7 @@ public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDet
 
     public void Apply(IEvent<MessageResent> @event, MessageDetails view)
     {
+        view.ProjectId = @event.Data.ProjectId;
         view.SendFailed = false;
         view.SendFailureReason = null;
         view.SentAt = @event.Data.At;

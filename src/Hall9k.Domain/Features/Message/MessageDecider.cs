@@ -53,7 +53,7 @@ public static class MessageDecider
             envelope.Kind.Value, envelope.Body, reason, at, projectId);
     }
 
-    public static MessageResent Resend(MessageAggregate message, DateTimeOffset at)
+    public static MessageResent Resend(MessageAggregate message, Guid projectId, DateTimeOffset at)
     {
         if (!message.SendFailed)
         {
@@ -61,7 +61,12 @@ public static class MessageDecider
                 $"Message {message.FromNodeId}/{message.Seq} has not failed to send — only a failed send is resent.");
         }
 
-        return new MessageResent(message.FromNodeId, message.Seq, at);
+        if (projectId == Guid.Empty)
+        {
+            throw new DomainValidationException("A resent message needs the project it belongs to.");
+        }
+
+        return new MessageResent(message.FromNodeId, message.Seq, at, projectId);
     }
 
     /// <summary>

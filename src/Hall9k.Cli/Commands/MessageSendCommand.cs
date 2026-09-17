@@ -97,8 +97,16 @@ public sealed class MessageSendCommand : Hall9kAsyncCommand<MessageSendCommand.S
             session, context.NodeId, project.Id, ownerRootFingerprint, audience, settings.About, MessageKind.Note,
             settings.Text, DateTimeOffset.UtcNow, cancellationToken);
 
+        // An explicitly named project skips ResolveProjectAsync's own eligibility check (that
+        // method's own doc), so this message may have just queued for a project the sweep can never
+        // flush today (archived, or with no repository yet) — "the daemon's next message sweep sends
+        // it" would be an outright false promise for that project, not merely an optimistic one
+        // (independent pre-PR review, cycle 4, conformance lens, low).
+        string disposition = project.IsEligibleForMessaging()
+            ? "the daemon's next message sweep sends it."
+            : "it stays queued until this project is eligible for messaging (not archived, with a repository) — the daemon's sweep cannot send it yet.";
         AnsiConsole.MarkupLineInterpolated(
-            $"[blue]Queued[/] to {audience.Value} for {project.Name} [dim](seq {envelope.Seq})[/] — the daemon's next message sweep sends it.");
+            $"[blue]Queued[/] to {audience.Value} for {project.Name} [dim](seq {envelope.Seq})[/] — {disposition}");
         return ExitCodes.Ok;
     }
 

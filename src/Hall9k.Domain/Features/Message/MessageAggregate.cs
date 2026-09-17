@@ -91,6 +91,7 @@ public sealed class MessageAggregate
 
     public void Apply(MessageResent @event)
     {
+        ProjectId = @event.ProjectId;
         SendFailed = false;
         SendFailureReason = null;
         SentAt = @event.At;

@@ -73,28 +73,35 @@ public sealed class MessageSweepEngine(
             return new MessageSweepResult(ActiveCadence: false, JustPushed: false);
         }
 
-        // The one project a message queued before idea 202383dc's M2 shipped (still carrying
-        // Guid.Empty as its own ProjectId) is adopted into, the first time this sweep flushes it —
-        // in principle the lowest eligible project id (LegacyMessageAdoption's own rule, the
-        // identical one the old, single-project sweep always picked by), so nothing already queued
-        // before this change is lost. In practice, whichever eligible project reaches the flush step
-        // FIRST this tick claims the adoption instead of that fixed choice: if the lowest-id
-        // project's own trust chain read or genesis check keeps failing, pinning adoption to it
-        // forever would leave every legacy message pending forever too, even though a healthier
-        // eligible project sits right behind it in the loop (independent pre-PR review, cycle 1,
-        // both lenses, medium — "the old sweep flushed without needing either"). Only ONE project
-        // ever actually adopts a given legacy message regardless of which one gets there first: the
-        // adoption query itself is what is idempotent (MessageOutbox.FlushAsync's own doc — once
-        // adopted, a message carries a real ProjectId forever, so no later project this tick, or any
-        // project on a later tick, ever re-adopts it), so racing every eligible project at the flush
-        // step for the same still-Guid.Empty batch is safe by construction, never a double-adopt.
-        // FlushAsync below permanently records whichever project this tick's own election lands on
-        // (LegacyMessageAdoption.AssignAsync, called only after that project's own flush is known to
-        // have actually succeeded) — the first such recording ever wins and is never displaced by a
-        // later tick's own election, which is what lets MessageOutbox.NextSeqAsync and
-        // MessageInbox.ReadFromAsync agree with THIS sweep's own dynamic choice instead of silently
-        // recomputing the static lowest-id guess forever (independent pre-PR review, cycle 2, verify
-        // pass, medium and low).
+        // The one project a still-pending message queued before idea 202383dc's M2 shipped (still
+        // carrying Guid.Empty as its own ProjectId, SentAt still null) is adopted into, the first
+        // time this sweep actually flushes it — in principle the lowest eligible project id
+        // (LegacyMessageAdoption's own rule, the identical one the old, single-project sweep always
+        // picked by), so nothing already queued before this change is lost. In practice, whichever
+        // eligible project's own flush is the first to actually include one of those still-pending
+        // legacy envelopes in its batch claims the adoption instead of that fixed choice: if the
+        // lowest-id project's own trust chain read or genesis check keeps failing, pinning adoption
+        // to it forever would leave every legacy message pending forever too, even though a
+        // healthier eligible project sits right behind it in the loop (independent pre-PR review,
+        // cycle 1, both lenses, medium — "the old sweep flushed without needing either"). Only ONE
+        // project ever actually adopts a given legacy message regardless of which one gets there
+        // first: the adoption query itself is what is idempotent (MessageOutbox.FlushAsync's own doc
+        // — once adopted, a message carries a real ProjectId forever, so no later project this tick,
+        // or any project on a later tick, ever re-adopts it), so racing every eligible project at the
+        // flush step for the same still-Guid.Empty batch is safe by construction, never a
+        // double-adopt. FlushAsync below permanently records whichever project this tick's own
+        // election lands on (LegacyMessageAdoption.AssignAsync, called only after that project's own
+        // flush is known to have actually succeeded AND actually included legacy content —
+        // MessageFlushResult.AdoptedLegacyBacklog, never merely a successful no-op flush of a
+        // project's own unrelated mail, independent pre-PR review, cycle 4, adversarial lens, high)
+        // — the first such recording ever wins and is never displaced by a later tick's own election,
+        // which is what lets MessageOutbox.NextSeqAsync and MessageInbox.ReadFromAsync agree with
+        // THIS sweep's own dynamic choice instead of silently recomputing the static lowest-id guess
+        // forever (independent pre-PR review, cycle 2, verify pass, medium and low). An already-sent
+        // legacy envelope (SentAt already set before this feature ever shipped) never enters any
+        // project's own pending batch at all, so it is never what elects an adopter here — it
+        // remains, correctly, whatever the static lowest-id guess names, the same project the old
+        // single-project sweep always used, since that is the one whose ref physically holds it.
         bool legacyAlreadyClaimedThisTick = false;
 
         bool anyJustPushed = false;
@@ -123,6 +130,9 @@ public sealed class MessageSweepEngine(
             // other node on the same repository eventually computes.
             if (trustChain.GenesisRootFingerprint is not { } projectKey)
             {
+                logger.LogWarning(
+                    "Project {ProjectId}'s own ledger has no genesis yet (h9k project join never ran there); "
+                    + "this project's sweep is skipped this tick and retried next sweep", project.Id);
                 continue;
             }
 
@@ -136,7 +146,8 @@ public sealed class MessageSweepEngine(
         }
 
         await using IDocumentSession finalSession = store.LightweightSession();
-        bool hasUnflushedOrUnread = await HasUnflushedOrUnreadAsync(finalSession, nodeId, cancellationToken);
+        IReadOnlyList<Guid> eligibleProjectIds = [.. eligibleProjects.Select(project => project.Id)];
+        bool hasUnflushedOrUnread = await HasUnflushedOrUnreadAsync(finalSession, nodeId, eligibleProjectIds, cancellationToken);
         bool hasActiveRun = await HasActiveRunAsync(finalSession, nodeId, cancellationToken);
         bool activeCadence = ComputeActiveCadence(hasUnflushedOrUnread, hasActiveRun);
         return new MessageSweepResult(activeCadence, anyJustPushed);
@@ -153,15 +164,24 @@ public sealed class MessageSweepEngine(
                 session, project.RepositoryPath, nodeId, project.Id, projectKey, adoptUnassigned, identity.Committer,
                 identity.SigningKey, now, cancellationToken);
 
-            // Only reached once this exact flush call is known to have actually succeeded — a
-            // chain read that succeeded but a push that then failed must never pin this project as
-            // the permanent legacy adopter (LegacyMessageAdoption.AssignAsync's own doc). Recording
-            // this the moment adoption is actually live, rather than leaving every reader to
-            // recompute the static lowest-id guess forever, is what keeps MessageOutbox.NextSeqAsync
-            // and MessageInbox.ReadFromAsync agreeing with the sweep's own dynamic per-tick fallback
-            // once it has actually kicked in (independent pre-PR review, cycle 2, verify pass,
-            // medium and low).
-            if (adoptUnassigned)
+            // Only reached once this exact flush call is known to have actually succeeded AND
+            // actually adopted something — a chain read that succeeded but a push that then failed
+            // must never pin this project as the permanent legacy adopter
+            // (LegacyMessageAdoption.AssignAsync's own doc), and neither must a flush that succeeded
+            // but never touched a still-Guid.Empty envelope at all: an eligible project with nothing
+            // pending but its own, already-project-scoped mail still reaches this line with
+            // adoptUnassigned true on whichever tick it happens to flush first, and pinning it as
+            // the legacy adopter would permanently misdirect NextSeqAsync's and ReadFromAsync's own
+            // legacy fold onto a project that never actually held any legacy content — nothing ties
+            // that choice to the repository that physically holds this node's already-sent legacy
+            // envelopes, which is what MessageFlushResult.AdoptedLegacyBacklog guards against
+            // (independent pre-PR review, cycle 4, adversarial lens, high). An already-sent legacy
+            // envelope (SentAt already set before this flush ever ran) is never in this batch either
+            // way — pending only ever holds SentAt-null rows — so this correctly leaves the static
+            // lowest-id guess standing for that history instead of handing it to whichever healthy
+            // project happened to flush its own unrelated mail first, which is what the old
+            // unconditional-on-adoptUnassigned check let happen.
+            if (flush.AdoptedLegacyBacklog)
             {
                 await LegacyMessageAdoption.AssignAsync(session, project.Id, now, cancellationToken);
                 await session.SaveChangesAsync(cancellationToken);
@@ -391,14 +411,25 @@ public sealed class MessageSweepEngine(
     internal static bool ComputeActiveCadence(bool hasUnflushedOrUnread, bool hasActiveRun) =>
         hasUnflushedOrUnread || hasActiveRun;
 
-    /// <summary>Deliberately unscoped by project (idea 202383dc, M2): this node's own active
-    /// cadence is driven by whether ANY of its eligible projects has something unflushed or unread,
-    /// not just the one this tick happened to look at last.</summary>
+    /// <summary>Driven by whether ANY of this node's eligible projects has something unflushed or
+    /// unread (idea 202383dc, M2), not just the one this tick happened to look at last — but an
+    /// unflushed message pending for a project this node is NOT currently eligible to sweep through
+    /// (archived, or dropped its repository) is excluded from the unflushed half: the sweep can never
+    /// actually flush it, so counting it here would pin this node on the faster active cadence
+    /// forever, even though nothing this node can do moves that message (independent pre-PR review,
+    /// cycle 4, conformance lens, low — <c>h9k message send --project</c>'s own explicit-project path
+    /// lets a message queue for an ineligible project). A still-Guid.Empty legacy message is kept in
+    /// regardless of <paramref name="eligibleProjectIds"/>: it always has somewhere eligible left to
+    /// land, or this method is never reached at all (<see cref="SweepOnceAsync"/> returns early the
+    /// moment <c>eligibleProjects</c> is empty). The unread half is left unscoped, since
+    /// <see cref="MessageInbox.ReadFromAsync"/> only ever stores a received message under an eligible
+    /// project's own id in the first place.</summary>
     private static Task<bool> HasUnflushedOrUnreadAsync(
-        IDocumentSession session, Guid nodeId, CancellationToken cancellationToken) =>
+        IDocumentSession session, Guid nodeId, IReadOnlyList<Guid> eligibleProjectIds, CancellationToken cancellationToken) =>
         session.Query<MessageDetails>()
             .Where(message =>
-                (message.FromNodeId == nodeId && message.SentAt == null)
+                (message.FromNodeId == nodeId && message.SentAt == null
+                    && (message.ProjectId == Guid.Empty || eligibleProjectIds.Contains(message.ProjectId)))
                 || (message.ReceivedAt != null && message.HandledAt == null))
             .AnyAsync(cancellationToken);
 

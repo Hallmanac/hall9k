@@ -232,6 +232,98 @@ public sealed class MessageProjectScopingTests : IClassFixture<PostgresFixture>,
     }
 
     [Fact]
+    public async Task A_flush_carrying_only_the_projects_own_mail_never_reports_legacy_backlog_adopted()
+    {
+        // Independent pre-PR review, cycle 4, adversarial lens (high): before the fix, MessageSweepEngine
+        // pinned LegacyMessageAdoption to whichever project's own FlushAsync call happened to run with
+        // adoptUnassigned: true and succeed — even one that never actually touched a still-Guid.Empty
+        // envelope, because it had nothing pending but its own, already-project-scoped mail. This proves
+        // MessageFlushResult itself now tells the caller the truth: adoptUnassigned true alone is not
+        // adoption, only a batch that actually contained legacy content is.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid projectX = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, RepositoryX, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await MessageOutbox.QueueAsync(
+            session, nodeA, projectX, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note,
+            "just this project's own mail, no legacy backlog at all", Now, cts.Token);
+
+        MessageFlushResult flush = await outbox.FlushAsync(
+            session, RepositoryX, nodeA, projectX, ProjectKeyX, adoptUnassigned: true, committerA, signingKeyA, Now,
+            cts.Token);
+
+        flush.EnvelopesFlushed.Should().Be(1, "this project's own mail still flushes normally");
+        flush.AdoptedLegacyBacklog.Should().BeFalse(
+            "the batch never contained a still-Guid.Empty envelope, so this flush must never be read as the one "
+            + "that adopted the legacy backlog, even though it ran with adoptUnassigned: true and succeeded");
+    }
+
+    [Fact]
+    public async Task A_legacy_message_that_failed_before_the_upgrade_still_resolves_its_project_id_on_the_resend_that_lands_it()
+    {
+        // Independent pre-PR review, cycle 4, adversarial lens (medium): MessageResent carried no
+        // ProjectId, so a legacy message whose OWN MessageQueued and MessageSendFailed events both
+        // predate idea 202383dc's M2 (both deserializing ProjectId as Guid.Empty — the honest
+        // sentinel for "recorded before this message carried a project") kept Guid.Empty forever even
+        // after the post-upgrade flush that successfully resent it — contradicting FlushAsync's own
+        // doc that adoption is "the first and only place that sentinel is ever resolved." A fresh
+        // SendFailed under the NEW code already stamps a real ProjectId via FailSend (MessageSendFailed's
+        // own doc), so this test seeds the pre-M2 SendFailed event directly rather than producing one
+        // through today's own FlushAsync, the same way the sibling "already-sent" legacy tests above
+        // seed a pre-M2 MessageSent directly instead of flushing one.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid projectA = await RegisterEligibleProjectAsync("solo", RepositoryX, cts.Token);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.StartStream<MessageAggregate>(
+            MessageStreamId.ForMessage(nodeA, Guid.Empty, 1),
+            new MessageQueued(
+                nodeA, 1, "owner-a-fingerprint", MessageAudience.Node(nodeB).Value, null, MessageKind.Note.Value,
+                "legacy, doomed before the upgrade ever shipped", Now, Guid.Empty));
+        await session.SaveChangesAsync(cts.Token);
+        session.Events.Append(
+            MessageStreamId.ForMessage(nodeA, Guid.Empty, 1),
+            new MessageSendFailed(
+                nodeA, 1, "owner-a-fingerprint", MessageAudience.Node(nodeB).Value, null, MessageKind.Note.Value,
+                "legacy, doomed before the upgrade ever shipped", "push rejected under the old, pre-M2 code", Now,
+                Guid.Empty));
+        await session.SaveChangesAsync(cts.Token);
+
+        MessageDetails? beforeResend = await session.LoadAsync<MessageDetails>(
+            MessageStreamId.ForMessage(nodeA, Guid.Empty, 1), cts.Token);
+        beforeResend!.SendFailed.Should().BeTrue();
+        beforeResend.ProjectId.Should().Be(Guid.Empty, "both of this message's own pre-M2 events predate the ProjectId field entirely");
+
+        FakeLedger ledger = new();
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        MessageFlushResult resend = await outbox.FlushAsync(
+            session, RepositoryX, nodeA, projectA, ProjectKeyX, adoptUnassigned: true, committerA, signingKeyA, Now,
+            cts.Token);
+
+        resend.AdoptedLegacyBacklog.Should().BeTrue("the batch still carries the still-Guid.Empty legacy envelope");
+
+        MessageDetails? afterResend = await session.LoadAsync<MessageDetails>(
+            MessageStreamId.ForMessage(nodeA, Guid.Empty, 1), cts.Token);
+        afterResend!.SendFailed.Should().BeFalse();
+        afterResend.SentAt.Should().NotBeNull();
+        afterResend.ProjectId.Should().Be(
+            projectA, "the resend that finally lands a legacy message must resolve the sentinel exactly like a first-try send does");
+    }
+
+    [Fact]
     public async Task A_read_in_one_project_leaves_the_other_projects_cursor_for_the_same_sender_unmoved()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
