@@ -74,7 +74,7 @@ public static class Hall9kDatabase
                 fromEnvironment, ConnectionStringOrigin.EnvironmentVariable, EnvironmentVariableName);
         }
 
-        string? fromConfigFile = ReadConfigFile(out bool configFileMalformed, out bool configFileUnreadable);
+        string? fromConfigFile = ReadConfigFile(ConfigFile, out bool configFileMalformed, out bool configFileUnreadable);
         if (fromConfigFile is { Length: > 0 })
         {
             return new ConnectionStringResolution(fromConfigFile, ConnectionStringOrigin.PlatformConfigFile, ConfigFile);
@@ -108,6 +108,37 @@ public static class Hall9kDatabase
     }
 
     /// <summary>
+    /// Resolve from one named platform config file and nothing else: no
+    /// <see cref="EnvironmentVariableName"/>, no per-project override, and not
+    /// <see cref="ConfigFile"/> itself unless that is the path handed in — so nothing about the
+    /// answer depends on the process environment or on which home
+    /// <see cref="Hall9k.Domain.Infrastructure.Storage.PlatformPaths.Home"/> currently resolves
+    /// to. The same three outcomes <see cref="Resolve"/> distinguishes for this tier are
+    /// distinguished here (a value, invalid JSON, a file that could not be read), because a
+    /// caller's remedy text differs for each.
+    /// <para>
+    /// Exists for a caller that has to be told where to read rather than discovering it — a
+    /// doctor probe under test, chiefly, whose whole point is to answer against a config file and
+    /// a database the test controls rather than against the machine's own (PLAN.md §16 #PLACEHOLDER-093b54f0).
+    /// </para>
+    /// </summary>
+    public static ConnectionStringResolution ResolveFromConfigFile(string configFilePath)
+    {
+        string? value = ReadConfigFile(configFilePath, out bool malformed, out bool unreadable);
+
+        return (value, malformed, unreadable) switch
+        {
+            ({ Length: > 0 } configured, _, _) =>
+                new ConnectionStringResolution(configured, ConnectionStringOrigin.PlatformConfigFile, configFilePath),
+            (_, true, _) =>
+                new ConnectionStringResolution(null, ConnectionStringOrigin.PlatformConfigFileMalformed, configFilePath),
+            (_, _, true) =>
+                new ConnectionStringResolution(null, ConnectionStringOrigin.PlatformConfigFileUnreadable, configFilePath),
+            _ => ConnectionStringResolution.NotConfigured,
+        };
+    }
+
+    /// <summary>
     /// The connection string sitting in the platform config file — ignoring the
     /// higher-precedence environment variable that <see cref="Resolve"/> would return instead
     /// when it is set, which is the value an autostarted daemon (no shell, so no environment
@@ -126,7 +157,7 @@ public static class Hall9kDatabase
             return (ConfigFileConnectionStringState.Missing, null);
         }
 
-        string? value = ReadConfigFile(out bool malformed, out bool unreadable);
+        string? value = ReadConfigFile(ConfigFile, out bool malformed, out bool unreadable);
         if (malformed)
         {
             return (ConfigFileConnectionStringState.Malformed, null);
@@ -209,12 +240,17 @@ public static class Hall9kDatabase
     /// content is unrecoverable either way), but an unreadable one propagates the read exception
     /// instead of silently overwriting keys that are only momentarily inaccessible, not actually
     /// lost (cycle-1 adversarial finding, `Hall9kDatabase.cs:185`).
+    /// <para>
+    /// <paramref name="configFilePath"/> is a parameter rather than <see cref="ConfigFile"/> read
+    /// straight from here, so <see cref="ResolveFromConfigFile"/> can read a file its caller names
+    /// without that read going anywhere near <c>PlatformPaths.Home</c>.
+    /// </para>
     /// </summary>
-    private static string? ReadConfigFile(out bool malformed, out bool unreadable)
+    private static string? ReadConfigFile(string configFilePath, out bool malformed, out bool unreadable)
     {
         malformed = false;
         unreadable = false;
-        if (!File.Exists(ConfigFile))
+        if (!File.Exists(configFilePath))
         {
             return null;
         }
@@ -222,7 +258,7 @@ public static class Hall9kDatabase
         try
         {
             PlatformConfigDocument? document =
-                JsonSerializer.Deserialize<PlatformConfigDocument>(File.ReadAllText(ConfigFile), SerializerOptions);
+                JsonSerializer.Deserialize<PlatformConfigDocument>(File.ReadAllText(configFilePath), SerializerOptions);
             return document?.ConnectionString?.Trim() is { Length: > 0 } value ? value : null;
         }
         catch (JsonException)
