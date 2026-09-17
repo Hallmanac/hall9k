@@ -472,7 +472,13 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 session, task, project, context.NodeId, node?.MachineName ?? Environment.MachineName,
                 ownerFingerprint, DateTimeOffset.UtcNow, new GitLedger(new ConsoleWorktreeLogger<GitLedger>()),
                 committer, signingKey, cancellationToken);
-            AnsiConsole.MarkupLine(DescribeRewrite(outcome, revised.AcceptanceCriteria.HasValue));
+            // NotYetPublished says nothing here: a Draft this install has never published has no
+            // ledger record to report on, and telling the operator about one would be news about a
+            // write that never happened (independent pre-PR review, cycle 1, both lenses).
+            if (outcome != TaskRecordPublication.WriteOutcome.NotYetPublished)
+            {
+                AnsiConsole.MarkupLine(DescribeRewrite(outcome, revised.AcceptanceCriteria.HasValue));
+            }
 
             if (revised.AcceptanceCriteria.HasValue && task.Origin is null
                 && task.ExternalReference is { } issue && issue.Provider == WorkItemProvider.GitHub
@@ -501,6 +507,10 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
     /// <see cref="TaskRecordPublication.WriteOutcome.Mirror"/> is permanent for this task rather
     /// than a transient miss: its record belongs to the install that published it, and rewriting it
     /// from here would overwrite that install's own record with this local copy's stale facts.
+    /// <see cref="TaskRecordPublication.WriteOutcome.NotYetPublished"/> is never actually rendered —
+    /// <see cref="RewriteRecordAsync"/> skips calling this for it — but gets its own arm here rather
+    /// than falling into <c>Mirror</c>'s wildcard, which would misreport an unpublished Draft as a
+    /// copy of another install's task.
     /// </summary>
     internal static string DescribeRewrite(TaskRecordPublication.WriteOutcome outcome, bool criteriaChanged) =>
         (outcome, criteriaChanged) switch
@@ -510,6 +520,9 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 + "checklist (when it is tracked in GitHub issues) regenerated from the new criteria.[/]",
             (TaskRecordPublication.WriteOutcome.Written, false) =>
                 "[dim]  Task record rewritten in the ledger.[/]",
+            (TaskRecordPublication.WriteOutcome.NotYetPublished, _) =>
+                "[dim]  This task has not been published yet, so there is no record for the ledger to "
+                + "keep in sync — h9k task publish writes the first one.[/]",
             _ =>
                 "[dim]  Nothing was written to the ledger: this task was adopted from another node's own "
                 + "record, so that record belongs to the install that published it — rewriting it from "
