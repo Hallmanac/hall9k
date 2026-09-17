@@ -615,6 +615,13 @@ public static class TaskDecider
         return new TaskPreApprovedSet(task.Id, chosen.LegacyPreApproved, setAt, setByOwnerId, chosen);
     }
 
+    /// <summary>idea 202383dc, M2a: gates outbound replication of this task's own stream, not its
+    /// lifecycle — settable on a task in any state, a draft included.</summary>
+    public static TaskPrivacySet SetPrivate(TaskAggregate task, bool isPrivate, DateTimeOffset setAt, Guid setByOwnerId)
+    {
+        return new TaskPrivacySet(task.Id, isPrivate, setAt, setByOwnerId);
+    }
+
     /// <summary>
     /// Revision is Draft-only (Decisions Log #34), because every later state carries a promise
     /// editing would break: Published promises a human may assign it at any moment and that it
