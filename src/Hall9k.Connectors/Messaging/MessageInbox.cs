@@ -39,6 +39,12 @@ public sealed record MessageInboxSweepResult(
 /// streams (<see cref="MessageStreamId.ForMessage"/>), so a sender common to two projects never
 /// collides between them.
 /// </para>
+/// <para>
+/// An <see cref="MessageKind.Events"/> envelope is never stored here (idea 202383dc, M2a): it is
+/// <c>Hall9k.Connectors.Replication.EventReplicationInbox</c>'s own business, a second, independent
+/// reader of this identical outbox ref on its own cursor — skipped the same way an unrecognized
+/// kind is, still counted toward this call's own cursor advance.
+/// </para>
 /// </summary>
 public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInbox>? logger = null)
 {
@@ -184,6 +190,16 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
 
             if (!envelope.To.Matches(myNodeId, myOwnerFingerprint))
             {
+                continue;
+            }
+
+            if (envelope.Kind == MessageKind.Events)
+            {
+                // idea 202383dc, M2a: an events envelope is EventReplicationInbox's own business —
+                // a second, independent reader of this identical outbox ref, on its own cursor. It
+                // must never also land here as an ordinary received message (h9k messages would
+                // otherwise show a raw batch of replicated events as if it were a note); skipping
+                // it still lets the cursor above advance past it like any other inspected envelope.
                 continue;
             }
 
