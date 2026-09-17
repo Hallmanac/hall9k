@@ -106,6 +106,60 @@ public sealed class ProjectAssignKeyCommandTests : IClassFixture<PostgresFixture
         ledger.Writes.Should().BeEmpty("a non-genesis owner's attempt is refused before any push");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens, medium: <c>genesisRoot != myRoot</c>
+    /// alone only rules out a mismatched literal string — <c>owner.RootFingerprint</c> is this
+    /// node's own unverified claim about itself (<c>h9k project join --owner</c>), never something
+    /// a vouch proved, and the genesis owner's public root fingerprint is printed in plain sight
+    /// (<c>h9k owner show</c>). A node that merely claims it, with no enrollment in that owner's
+    /// real chain, must be refused the identical way the sibling <c>ProjectMemberRemoveCommand</c>
+    /// already refuses an unenrolled claimant on the same ref.
+    /// </summary>
+    [Fact]
+    public async Task Assign_key_is_refused_for_a_node_that_merely_claims_the_genesis_roots_fingerprint()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        FakeLedger ledger = new();
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        const string genesisRoot = "genuine-genesis-owner-root";
+
+        // This node claims the genesis owner's own public root fingerprint (h9k project join
+        // --owner) without ever being vouched into that owner's real chain — the unverified claim
+        // an attacker who merely read h9k owner show could make too.
+        await using IDocumentSession claimSession = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(claimSession, cts.Token);
+        await claimSession.SaveChangesAsync(cts.Token);
+        _ = await new NodeKeyStore().EnsureAsync(context.NodeId, cts.Token);
+        OwnerAggregate owner = await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token)
+            ?? throw new InvalidOperationException("Owner bootstrap did not create an owner stream.");
+        claimSession.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(owner, genesisRoot, verified: false, Now));
+        await claimSession.SaveChangesAsync(cts.Token);
+
+        // The real genesis member file the real owner actually wrote at genesis, still keyless —
+        // present in the ledger so a missing gate would actually succeed in minting and pushing a
+        // key onto it, rather than merely failing downstream for an unrelated reason. Counted here
+        // as the one write this setup itself makes, so the assertion below can tell it apart from
+        // any write the command under test performs.
+        await WriteGenesisMemberFileWithNoKeyAsync(ledger, genesisRoot, cts.Token);
+        int writesBeforeAssignKey = ledger.Writes.Count;
+
+        // The genesis owner's real chain, published by the real owner: this node's own key was
+        // never vouched into it, only the real owner's own root and an empty node list.
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [genesisRoot] = new(genesisRoot, "ssh-ed25519 AAAAREAL real-owner-key", []) },
+            [new ProjectMember(genesisRoot, MembershipRole.Owner, Now)],
+            GenesisRootFingerprint: genesisRoot));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        Func<Task> act = () => ProjectAssignKeyCommand.RunAsync(
+            session, project, ledger, chainReader, new NodeKeyStore(), cts.Token);
+
+        (await act.Should().ThrowAsync<DomainValidationException>()).WithMessage("*vouched*");
+        ledger.Writes.Should().HaveCount(
+            writesBeforeAssignKey,
+            "a mere claim of the genesis owner's root, never vouched, must never mint a key no other install agreed to");
+    }
+
     [Fact]
     public async Task Assign_key_is_refused_once_a_key_already_exists()
     {
