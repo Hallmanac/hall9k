@@ -15,6 +15,11 @@ namespace Hall9k.Connectors.Replication;
 /// event this node holds, own or already-replicated alike, with its own true origin preserved: a
 /// peer that squashed old history out of its own outbox, or a brand-new node with none at all, can
 /// still be caught up by whichever OTHER peer already applied it, not only by the original sender.
+/// Two exclusions still apply, mirroring the ordinary flush: a currently-private task or idea's own
+/// events never travel here either (<see cref="ReplicationOwnership.IsPrivate"/>), and an event this
+/// node holds whose own true origin IS the requester is never handed back to it — the requester's
+/// own dedupe only ever recognises an event it received by replication, never one it produced
+/// natively, so an echo of its own history would apply as an un-deduped second copy.
 /// <para>
 /// Queues one or more <see cref="MessageKind.Events"/> envelopes back to the requester, batched and
 /// paginated the identical way <see cref="EventReplicationOutbox"/> caps an ordinary flush
@@ -37,7 +42,17 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
         DateTimeOffset now,
         CancellationToken cancellationToken)
     {
-        IReadOnlyList<IEvent> candidates = await session.Events.QueryAllRawEvents().ToListAsync(cancellationToken);
+        // Bounded to the one requested stream when the request names one (the gap-fill and
+        // bootstrap shapes still need the full scan, since neither names a stream up front) —
+        // independent pre-PR review, cycle 1, both lenses, low: an unbounded scan of this node's
+        // entire event log, on every answered request, was the worst case named there.
+        IQueryable<IEvent> query = session.Events.QueryAllRawEvents();
+        if (request.ForStreamId is { } queryStreamId)
+        {
+            query = query.Where(e => e.StreamId == queryStreamId);
+        }
+
+        IReadOnlyList<IEvent> candidates = await query.ToListAsync(cancellationToken);
 
         List<EventReplicationCodec.ReplicatedEventRecord> matches = [];
         foreach (IEvent candidate in candidates)
@@ -69,8 +84,28 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
                 continue;
             }
 
+            if (resolved.IsPrivate)
+            {
+                // A currently-private task or idea's own events never ride the ordinary outbox
+                // flush (EventReplicationOutbox.QueuePendingAsync) — a catch-up answer must honor
+                // the identical hold-back, never forwarding a draft a teammate should not see yet
+                // just because this node happens to hold a copy of it (independent pre-PR review,
+                // cycle 1, both lenses, high).
+                continue;
+            }
+
             (Guid originNodeId, string originOwnerRootFingerprint, Guid originEventId, long originSequence) =
                 ResolveOrigin(candidate, myNodeId, myOwnerFingerprint);
+
+            if (originNodeId == requesterNodeId)
+            {
+                // Never hand a node its own history back: the requester's own dedupe
+                // (EventReplicationInbox.ApplyAsync) only recognises an event it received BY
+                // REPLICATION, never one it produced natively, so an echoed-back event of its own
+                // would apply as a second, un-deduped copy onto its own stream (independent pre-PR
+                // review, cycle 1, conformance lens, high).
+                continue;
+            }
 
             bool isMatch = request switch
             {

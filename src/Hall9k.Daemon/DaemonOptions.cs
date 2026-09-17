@@ -175,7 +175,12 @@ public sealed class DaemonOptions
     /// 2026-09-13, the M2 replication walk's own RULED amendment): long enough that an ordinary busy
     /// peer's own message sweep cadence (15 to 45 seconds) has many chances to answer before this
     /// gives up on it, short enough that a genuinely offline or unresponsive candidate does not
-    /// strand a returning or brand-new node's own catch-up for long.
+    /// strand a returning or brand-new node's own catch-up for long. Reused, unchanged, as the
+    /// cooldown before <see cref="Hall9k.Connectors.Replication.EventCatchUpCoordinator.RequestBootstrapAsync"/>
+    /// or <see cref="Hall9k.Connectors.Replication.EventCatchUpCoordinator.RequestGapFillAsync"/>
+    /// re-mints a fresh request after its own cascade exhausted — without it, a genuinely empty
+    /// project or a permanent numeric gap (every candidate declines immediately rather than timing
+    /// out) would re-arm the cascade every single sweep tick, forever.
     /// </summary>
     public TimeSpan EventCatchUpRequestTimeout { get; set; } = TimeSpan.FromMinutes(5);
 

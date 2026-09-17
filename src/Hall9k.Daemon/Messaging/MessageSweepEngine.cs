@@ -247,7 +247,7 @@ public sealed class MessageSweepEngine(
             // Still worth a look even when nothing moved: a candidate cascade's own per-candidate
             // timeout (idea 202383dc, M2b) elapses on the wall clock, never on some other sender's
             // outbox moving, so it must be checked every tick regardless.
-            await AdvanceCatchUpAsync(project, nodeId, identity, trustChain, tips, now, cancellationToken);
+            await AdvanceCatchUpAsync(project, nodeId, identity, trustChain, tips, movedThisTick: [], now, cancellationToken);
             return;
         }
 
@@ -317,18 +317,20 @@ public sealed class MessageSweepEngine(
                     // fill its own gap can never actually help — this node has no tracked "who
                     // vouched me in" relationship to supply a real voucher instead, so ranked
                     // candidates fall straight to owner-role members, then any other member, most
-                    // recently moved outbox first within a rank (tips is already probed fresh this
-                    // tick, in whatever order the transport returned it — recency ordering beyond
-                    // that is not tracked today); the stalled sender still appears in the "any
-                    // member" tier rather than being excluded outright, since a truly transient stall
-                    // (not yet pushed, rather than genuinely lost) does resolve if asked again.
-                    IReadOnlyList<Guid> knownNodeIds = [.. tips.Select(t => t.SenderNodeId)];
+                    // recently moved outbox first within a rank (a sender in this tick's own toRead
+                    // — a tip that actually moved since the last probe — ranks ahead of one that
+                    // did not; recency finer than "moved this tick or not" is not tracked today,
+                    // independent pre-PR review, cycle 1, conformance lens, medium); the stalled
+                    // sender still appears in the "any member" tier rather than being excluded
+                    // outright, since a truly transient stall (not yet pushed, rather than genuinely
+                    // lost) does resolve if asked again.
+                    IReadOnlyList<Guid> knownNodeIds = OrderByRecency(tips, toRead);
                     IReadOnlyList<Guid> candidates = EventCatchUpCoordinator.RankCandidates(
                         knownNodeIds, nodeId, voucherNodeId: null, trustChain);
                     await using IDocumentSession catchUpSession = store.LightweightSession();
                     await eventCatchUpCoordinator.RequestGapFillAsync(
                         catchUpSession, project.Id, tip.SenderNodeId, nodeId, identity.OwnerRootFingerprint,
-                        candidates, now, cancellationToken);
+                        candidates, options.Value.EventCatchUpRequestTimeout, now, cancellationToken);
                 }
             }
             catch (Exception exception)
@@ -358,7 +360,7 @@ public sealed class MessageSweepEngine(
             }
         }
 
-        await AdvanceCatchUpAsync(project, nodeId, identity, trustChain, tips, now, cancellationToken);
+        await AdvanceCatchUpAsync(project, nodeId, identity, trustChain, tips, toRead, now, cancellationToken);
     }
 
     /// <summary>
@@ -370,9 +372,10 @@ public sealed class MessageSweepEngine(
     /// </summary>
     private async Task AdvanceCatchUpAsync(
         ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, TrustChain trustChain,
-        IReadOnlyList<MessageOutboxTip> tips, DateTimeOffset now, CancellationToken cancellationToken)
+        IReadOnlyList<MessageOutboxTip> tips, IReadOnlyList<MessageOutboxTip> movedThisTick, DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
-        IReadOnlyList<Guid> knownNodeIds = [.. tips.Select(t => t.SenderNodeId)];
+        IReadOnlyList<Guid> knownNodeIds = OrderByRecency(tips, movedThisTick);
         if (knownNodeIds.Count > 0)
         {
             try
@@ -389,8 +392,8 @@ public sealed class MessageSweepEngine(
                     IReadOnlyList<Guid> candidates = EventCatchUpCoordinator.RankCandidates(
                         knownNodeIds, nodeId, voucherNodeId: null, trustChain);
                     await eventCatchUpCoordinator.RequestBootstrapAsync(
-                        bootstrapCheckSession, project.Id, nodeId, identity.OwnerRootFingerprint, candidates, now,
-                        cancellationToken);
+                        bootstrapCheckSession, project.Id, nodeId, identity.OwnerRootFingerprint, candidates,
+                        options.Value.EventCatchUpRequestTimeout, now, cancellationToken);
                 }
             }
             catch (Exception exception)
@@ -552,6 +555,28 @@ public sealed class MessageSweepEngine(
             tip.SenderNodeId != myNodeId
             && (!lastKnownTips.TryGetValue((repositoryPath, tip.SenderNodeId), out string? knownTip)
                 || knownTip != tip.Tip))];
+
+    /// <summary>
+    /// <see cref="EventCatchUpCoordinator.RankCandidates"/>'s own precondition on its own
+    /// <c>knownNodeIds</c> parameter: "expected already sorted by recency (most recently moved
+    /// first) by the caller". <paramref name="movedThisTick"/> — <see cref="SendersToRead"/>'s own
+    /// result, the senders whose tip actually changed since the last probe — is the only recency
+    /// signal a probe tick actually carries; a tip that moved this tick ranks ahead of one that
+    /// merely sits in the wider <paramref name="allTips"/> probe unmoved, with every group's own
+    /// internal order left exactly as the transport returned it (independent pre-PR review, cycle 1,
+    /// conformance lens, medium: an earlier build here passed the transport's own raw probe order
+    /// straight through, so an owner-role member offline for a week could rank ahead of one that
+    /// pushed ten seconds ago).
+    /// </summary>
+    internal static IReadOnlyList<Guid> OrderByRecency(
+        IReadOnlyList<MessageOutboxTip> allTips, IReadOnlyList<MessageOutboxTip> movedThisTick)
+    {
+        HashSet<Guid> moved = [.. movedThisTick.Select(tip => tip.SenderNodeId)];
+        return [
+            .. allTips.Where(tip => moved.Contains(tip.SenderNodeId)).Select(tip => tip.SenderNodeId),
+            .. allTips.Where(tip => !moved.Contains(tip.SenderNodeId)).Select(tip => tip.SenderNodeId),
+        ];
+    }
 
     private async Task SquashAsync(
         ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, string projectKey, DateTimeOffset now,
