@@ -15,8 +15,12 @@ using Microsoft.Extensions.Logging;
 namespace Hall9k.Connectors.Replication;
 
 /// <summary>One sweep's own outcome reading one sender's <c>events</c>-kind envelopes for one
-/// project.</summary>
-public sealed record EventReplicationReadResult(bool SenderIgnored, int EventsApplied);
+/// project. <see cref="StalledAtSeq"/> is <see cref="TransportReadResult.StalledAtSeq"/> passed
+/// straight through — a numeric gap in this sender's own outbox this call could not even inspect
+/// (idea 202383dc, M2b, task 9408d525: "a node that finds a gap in a sender's sequence... asks a
+/// peer"), the trigger <c>Hall9k.Connectors.Replication.EventCatchUpCoordinator.RequestGapFillAsync</c>
+/// is built for.</summary>
+public sealed record EventReplicationReadResult(bool SenderIgnored, int EventsApplied, long? StalledAtSeq = null);
 
 /// <summary>
 /// The inbound half of event replication (idea 202383dc, M2a): reads <paramref name="senderNodeId"/>'s
@@ -99,6 +103,12 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // ReplicatedEventRecord yet and apply a duplicate. The same uncommitted-visibility gap
         // streamsStartedThisRead already exists to close for StartStream collisions.
         HashSet<Guid> originEventIdsAppliedThisRead = [];
+        // This read's own uncommitted view of each origin's highest applied sequence
+        // (idea 202383dc, M2b): seeded lazily, per origin, from EventOriginProgress the first time
+        // that origin is seen this read, then kept current here rather than re-loaded — the
+        // identical uncommitted-visibility gap streamsStartedThisRead already exists to close,
+        // since a LightweightSession's own LoadAsync only ever sees committed rows.
+        Dictionary<Guid, long> originProgressThisRead = [];
         // This project's own ledger-derived key, resolved once, preferring the live trust chain
         // over this install's own possibly-stale local mirror, the identical resolution
         // MessageInbox.ReadFromAsync's own ResolveLocalProjectKeyAsync applies.
@@ -166,7 +176,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             {
                 if (await ApplyAsync(
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
-                    originEventIdsAppliedThisRead, now, cancellationToken))
+                    originEventIdsAppliedThisRead, originProgressThisRead, now, cancellationToken))
                 {
                     applied++;
                 }
@@ -214,8 +224,31 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             IgnoredForProjectKeyMismatch = ignoredForProjectKeyMismatch,
             IgnoredAt = ignoredAt,
         });
+
+        if (applied > 0)
+        {
+            // idea 202383dc, M2b: an outstanding catch-up request this node is currently waiting on
+            // an answer FROM this exact sender is treated as answered the moment new content from
+            // it actually applies — an approximation (this sender may not have fully satisfied the
+            // gap or the bootstrap), but the honest one available without re-deriving whether every
+            // originally-missing event landed: a partial answer is still real progress, and a
+            // genuinely still-incomplete gap surfaces again the next time this sender's outbox
+            // stalls or the receiver notices the stream still absent.
+            IReadOnlyList<EventCatchUpRequest> outstanding = await session.Query<EventCatchUpRequest>()
+                .Where(request => request.ProjectId == projectId && request.AnsweredAt == null && !request.Exhausted)
+                .ToListAsync(cancellationToken);
+            foreach (EventCatchUpRequest request in outstanding)
+            {
+                if (request.CurrentCandidateNodeId == senderNodeId)
+                {
+                    request.AnsweredAt = now;
+                    session.Store(request);
+                }
+            }
+        }
+
         await session.SaveChangesAsync(cancellationToken);
-        return new EventReplicationReadResult(SenderIgnored: senderIgnored, applied);
+        return new EventReplicationReadResult(SenderIgnored: senderIgnored, applied, read.StalledAtSeq);
     }
 
     /// <summary>Returns false, applying nothing, when this origin event id is already stored — the
@@ -226,7 +259,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     private async Task<bool> ApplyAsync(
         IDocumentSession session, EventReplicationCodec.ReplicatedEventRecord record, Guid senderNodeId, Guid projectId,
         string? originProjectKey, HashSet<Guid> streamsStartedThisRead, HashSet<Guid> originEventIdsAppliedThisRead,
-        DateTimeOffset now, CancellationToken cancellationToken)
+        Dictionary<Guid, long> originProgressThisRead, DateTimeOffset now, CancellationToken cancellationToken)
     {
         if (!originEventIdsAppliedThisRead.Add(record.OriginEventId))
         {
@@ -348,6 +381,32 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             ProjectId = projectId,
             AppliedAt = now,
         });
+
+        // idea 202383dc, M2b: the coarse "since" bound a future gap-fill events-request for this
+        // origin is built from — never regressed, and refreshed lazily from the persisted value the
+        // first time this origin is seen this read (this method's own doc on originProgressThisRead).
+        if (!originProgressThisRead.TryGetValue(record.OriginNodeId, out long knownHighest))
+        {
+            EventOriginProgress? persisted = await session.LoadAsync<EventOriginProgress>(
+                EventReplicationStreamId.ForOriginProgress(projectId, record.OriginNodeId), cancellationToken);
+            knownHighest = persisted?.HighestOriginSequenceApplied ?? 0;
+        }
+
+        if (record.OriginSequence > knownHighest)
+        {
+            originProgressThisRead[record.OriginNodeId] = record.OriginSequence;
+            session.Store(new EventOriginProgress
+            {
+                Id = EventReplicationStreamId.ForOriginProgress(projectId, record.OriginNodeId),
+                ProjectId = projectId,
+                OriginNodeId = record.OriginNodeId,
+                HighestOriginSequenceApplied = record.OriginSequence,
+            });
+        }
+        else
+        {
+            originProgressThisRead[record.OriginNodeId] = knownHighest;
+        }
 
         return true;
     }
