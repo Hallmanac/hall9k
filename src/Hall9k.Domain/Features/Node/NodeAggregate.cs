@@ -23,6 +23,14 @@ public sealed class NodeAggregate
     public DateTimeOffset? ClaimedOwnerAt { get; private set; }
 
     /// <summary>
+    /// This node's switch-on point for event replication (idea 202383dc, M2a) — null until
+    /// <see cref="ReplicationSwitchedOn"/> is appended the first time replication ever runs here.
+    /// An event at or below this global sequence is this node's own pre-replication history and
+    /// never rides an outbox.
+    /// </summary>
+    public long? ReplicationSwitchOnSequence { get; private set; }
+
+    /// <summary>
     /// Whether this node currently cannot launch working agent sessions (task: a session that
     /// exits at once with no work done is treated as the node failing to launch sessions) — the
     /// dispatcher's own claim gate and every in-place session-error retry read this instead of
@@ -105,5 +113,10 @@ public sealed class NodeAggregate
     {
         ClaimedOwnerFingerprint = @event.OwnerFingerprint;
         ClaimedOwnerAt = @event.ClaimedAt;
+    }
+
+    public void Apply(ReplicationSwitchedOn @event)
+    {
+        ReplicationSwitchOnSequence = @event.SwitchOnGlobalSequence;
     }
 }

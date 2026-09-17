@@ -46,4 +46,13 @@ public static class NodeDecider
 
         return new NodeOwnerClaimed(node.Id, ownerFingerprint, claimedAt);
     }
+
+    /// <summary>
+    /// Idea 202383dc, M2a: the caller checks <see cref="NodeAggregate.ReplicationSwitchOnSequence"/>
+    /// is still null before ever calling this — switch-on happens exactly once per node, the first
+    /// time replication runs, and this method itself does not re-check because it has no session
+    /// to read the aggregate's current state from; it only builds the event.
+    /// </summary>
+    public static ReplicationSwitchedOn SwitchOnReplication(NodeAggregate node, long currentGlobalSequence, DateTimeOffset now) =>
+        new(node.Id, currentGlobalSequence, now);
 }
