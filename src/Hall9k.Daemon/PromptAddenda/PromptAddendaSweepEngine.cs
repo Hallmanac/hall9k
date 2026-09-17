@@ -47,8 +47,37 @@ public sealed class PromptAddendaSweepEngine(
     /// this reason. In-memory and per-process by design: a restart just re-reads once, cheap and
     /// correct, never lossy (independent pre-PR review, cycle 1, conformance and adversarial
     /// lenses, both medium: every tick otherwise fetched all four builder paths individually, once
-    /// per project, forever, even for a project that has never had an addendum).</summary>
-    private readonly Dictionary<string, string?> _lastKnownPromptAddendaTips = [];
+    /// per project, forever, even for a project that has never had an addendum).
+    /// <para>
+    /// Keyed on the project's own repository path AND home together, not repository path alone: the
+    /// tip only ever describes whether the LEDGER content moved, but what this cache actually gates
+    /// is whether the LOCAL disk copy under that home still matches it, and a repository re-pointed
+    /// to a different home (<c>h9k project set --home</c>, <c>h9k project init</c> repairing a wiped
+    /// one) starts that copy back at empty without moving the ledger tip at all. Keying on the
+    /// repository path alone left a re-homed project's own materialize permanently skipped — the
+    /// unmoved tip kept matching the cached one forever, so the new home's <c>prompt-addenda/</c>
+    /// stayed empty until something else (a remove, a set) moved the tip again (independent pre-PR
+    /// review, cycle 1, conformance lens, medium).
+    /// </para>
+    /// </summary>
+    private readonly Dictionary<(string RepositoryPath, string Home), string?> _lastKnownPromptAddendaTips = [];
+
+    /// <summary>Per-project backoff for a failing <see cref="ILedger.ListRefsAsync"/> call — doubled
+    /// on every consecutive failure up to <see cref="ListRefsBackoffCeiling"/>, and forgotten the
+    /// moment a call succeeds again. Without it, a project whose remote is unreachable (offline, no
+    /// SSH agent loaded, a repository registered with no remote at all) paid for a network round
+    /// trip and logged a warning on every single tick forever, since <see cref="SweepOnceAsync"/>
+    /// filters projects only on not-archived and a non-blank repository path, with no notion of
+    /// "this project's ledger is currently unreachable" the way <c>MessageSweepEngine</c>'s own
+    /// identity gate or <c>InviteSweepEngine</c>'s own outstanding-invite gate would have caught
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium). Scoped per project, not
+    /// loop-wide like <c>PullRequestMonitor.ApplyBackoff</c>: one project's own unreachable remote
+    /// must never slow down the ledger poll for every other, healthy project this node also
+    /// materializes addenda for.</summary>
+    private readonly Dictionary<Guid, (DateTimeOffset RetryAfter, TimeSpan Interval)> _listRefsBackoff = [];
+
+    private static readonly TimeSpan ListRefsBackoffFloor = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ListRefsBackoffCeiling = TimeSpan.FromMinutes(30);
 
     public async Task<PromptAddendaSweepResult> SweepOnceAsync(CancellationToken cancellationToken)
     {
@@ -68,14 +97,16 @@ public sealed class PromptAddendaSweepEngine(
             {
                 int pushedForProject = await PushAsync(project, cancellationToken);
                 pushed += pushedForProject;
-                if (pushedForProject > 0)
-                {
-                    // A push that actually landed only ever follows a position that had not yet
-                    // advanced past it — the same un-advanced position a still-outstanding failure
-                    // leaves behind (PushAsync's own doc) — so reaching here at all means whatever
-                    // failure this project was carrying, if any, no longer applies.
-                    await ClearPushFailureAsync(project.Id, cancellationToken);
-                }
+
+                // Cleared on every tick that reaches here at all, not only one that actually
+                // pushed something: PushAsync completing without throwing means nothing addendum-
+                // shaped currently fails to push, whether or not this tick had anything addendum-
+                // shaped to push in the first place. Gating this on pushedForProject > 0 left a
+                // failure recorded by something else entirely — an ordinary SaveChangesAsync
+                // hiccup on a tick with no addendum candidates at all — stuck warning forever,
+                // since a tick with nothing to push can never clear it (independent pre-PR
+                // review, cycle 1, conformance lens, low).
+                await ClearPushFailureAsync(project.Id, cancellationToken);
             }
             catch (Exception exception)
             {
@@ -126,9 +157,11 @@ public sealed class PromptAddendaSweepEngine(
         }
     }
 
-    /// <summary>The success-path mirror of <see cref="RecordPushFailureAsync"/>: nothing to do
-    /// when this project never had a recorded failure, so the ordinary, always-succeeding case
-    /// never pays for a document load and save it does not need.</summary>
+    /// <summary>The success-path mirror of <see cref="RecordPushFailureAsync"/>: called on every
+    /// tick whose own <see cref="PushAsync"/> completed without throwing, whether or not it pushed
+    /// anything (<see cref="SweepOnceAsync"/>'s own doc on why). Nothing to do when this project
+    /// never had a recorded failure, so the ordinary, always-succeeding case still pays for the
+    /// document load but never the store and save it does not need.</summary>
     private async Task ClearPushFailureAsync(Guid projectId, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
@@ -295,6 +328,19 @@ public sealed class PromptAddendaSweepEngine(
     /// builder's file under <see cref="LedgerRefRegistry.PromptAddendaPathPrefix"/> at once rather
     /// than one <see cref="ILedger.ReadAsync"/> fetch per builder key.
     /// </para>
+    /// <para>
+    /// The tip is banked into <see cref="_lastKnownPromptAddendaTips"/> only once this call is about
+    /// to return successfully — never as soon as it is read — so a throw anywhere in between (the
+    /// fetch itself, or a <see cref="File.WriteAllTextAsync(string,string,CancellationToken)"/>/
+    /// <see cref="File.Delete(string)"/> partway through the builder loop) leaves the cache exactly
+    /// as it was. The next tick then sees the same "unmoved" tip it saw before this attempt and
+    /// retries the whole materialize from scratch, matching what <see cref="SweepOnceAsync"/>'s own
+    /// catch already tells the log it will do. Banking the tip up front, before any of that local
+    /// disk work even started, is what independent pre-PR review, cycle 1 (conformance and
+    /// adversarial lenses, both medium) flagged: a failure partway through was banked as if it had
+    /// fully succeeded, so the remaining builders' files stayed stale or missing for the life of the
+    /// daemon process while the only trace was a warning claiming the opposite.
+    /// </para>
     /// </summary>
     private async Task<int> MaterializeAsync(ProjectDetails project, CancellationToken cancellationToken)
     {
@@ -305,11 +351,33 @@ public sealed class PromptAddendaSweepEngine(
 
         string home = project.HomeDirectory.Value;
         string refName = LedgerRefRegistry.PromptAddenda.RefspecSource;
+        (string RepositoryPath, string Home) tipKey = (project.RepositoryPath, home);
 
-        IReadOnlyList<LedgerRef> refs = await ledger.ListRefsAsync(project.RepositoryPath, refName, cancellationToken);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (_listRefsBackoff.TryGetValue(project.Id, out (DateTimeOffset RetryAfter, TimeSpan Interval) backoff)
+            && now < backoff.RetryAfter)
+        {
+            return 0;
+        }
+
+        IReadOnlyList<LedgerRef> refs;
+        try
+        {
+            refs = await ledger.ListRefsAsync(project.RepositoryPath, refName, cancellationToken);
+        }
+        catch
+        {
+            TimeSpan nextInterval = backoff.Interval == default
+                ? ListRefsBackoffFloor
+                : TimeSpan.FromTicks(Math.Min(backoff.Interval.Ticks * 2, ListRefsBackoffCeiling.Ticks));
+            _listRefsBackoff[project.Id] = (now + nextInterval, nextInterval);
+            throw;
+        }
+
+        _listRefsBackoff.Remove(project.Id);
         string? tip = refs.FirstOrDefault(reference => reference.RefName == refName)?.Sha;
 
-        if (_lastKnownPromptAddendaTips.TryGetValue(project.RepositoryPath, out string? knownTip) && knownTip == tip)
+        if (_lastKnownPromptAddendaTips.TryGetValue(tipKey, out string? knownTip) && knownTip == tip)
         {
             return 0;
         }
@@ -317,7 +385,6 @@ public sealed class PromptAddendaSweepEngine(
         IReadOnlyList<LedgerEntry> entries = tip is null
             ? []
             : await ledger.ReadAllAsync(project.RepositoryPath, refName, LedgerRefRegistry.PromptAddendaPathPrefix, cancellationToken);
-        _lastKnownPromptAddendaTips[project.RepositoryPath] = tip;
 
         Dictionary<string, string> contentByBuilder = entries.ToDictionary(
             entry => Path.GetFileNameWithoutExtension(entry.Path), entry => entry.Content);
@@ -346,6 +413,7 @@ public sealed class PromptAddendaSweepEngine(
             }
         }
 
+        _lastKnownPromptAddendaTips[tipKey] = tip;
         return changed;
     }
 }
