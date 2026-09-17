@@ -37,7 +37,8 @@ public sealed class TaskRecordTests
         PreApprovalMode? preApproval = null,
         ExternalReference? externalReference = null,
         TaskRecordHolder? holder = null,
-        string ownerFingerprint = "abc123fingerprint") => new(
+        string ownerFingerprint = "abc123fingerprint",
+        ExternalReference? secondaryExternalReference = null) => new(
         Guid.Parse("01a07909-b8a5-777d-9033-4318ba2a31b5"),
         "hall9k",
         "feature",
@@ -56,7 +57,8 @@ public sealed class TaskRecordTests
         caps ?? TaskRecordCaps.None,
         ownerFingerprint,
         Origin,
-        holder);
+        holder,
+        secondaryExternalReference);
 
     [Fact]
     public void A_record_round_trips_through_its_own_yaml()
@@ -88,6 +90,38 @@ public sealed class TaskRecordTests
         read!.ExternalReference.Should().BeNull(
             "a project with no tracker, or a task published --untracked, gets a record too (Brian, 2026-09-13)");
         written.ToYaml().Should().NotContain("external-reference");
+    }
+
+    /// <summary>
+    /// A task may link to both a GitHub issue and a Jira card (task: a task may link to both):
+    /// the record body carries the secondary alongside the primary, both round-tripping through
+    /// the same YAML scalar shape the primary already uses.
+    /// </summary>
+    [Fact]
+    public void A_record_with_a_secondary_reference_round_trips_both()
+    {
+        TaskRecord written = Sample(
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "Hallmanac/hall9k#266"),
+            secondaryExternalReference: new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
+
+        TaskRecord? read = TaskRecord.TryParse(written.ToYaml());
+
+        read.Should().BeEquivalentTo(written);
+        read!.SecondaryExternalReference.Should().Be(new ExternalReference(WorkItemProvider.Jira, "PROJ-123"));
+        written.ToYaml().Should().Contain("secondary-external-reference: jira:PROJ-123");
+    }
+
+    [Fact]
+    public void A_record_with_no_secondary_reference_round_trips_as_untracked_for_it()
+    {
+        TaskRecord written = Sample(
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "Hallmanac/hall9k#266"),
+            secondaryExternalReference: null);
+
+        TaskRecord? read = TaskRecord.TryParse(written.ToYaml());
+
+        read!.SecondaryExternalReference.Should().BeNull();
+        written.ToYaml().Should().NotContain("secondary-external-reference");
     }
 
     [Fact]

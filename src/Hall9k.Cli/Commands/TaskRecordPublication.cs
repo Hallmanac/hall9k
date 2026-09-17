@@ -190,7 +190,8 @@ internal static class TaskRecordPublication
                 task.SessionCap),
             ownerFingerprint,
             new TaskOrigin(nodeId, nodeName, task.Id, Branch(task, project), publishedAt),
-            holder);
+            holder,
+            task.SecondaryExternalReference);
     }
 
     /// <summary>

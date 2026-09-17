@@ -68,7 +68,15 @@ public sealed record TaskRecord(
     /// held and carried through unchanged, so a publish or a revise can never invent or clear a
     /// claim that is not its own to make.
     /// </summary>
-    TaskRecordHolder? Holder)
+    TaskRecordHolder? Holder,
+    /// <summary>
+    /// A second tracker item, shown and linked alongside <see cref="ExternalReference"/> but never
+    /// gating or written to (task: a task may link to both a GitHub issue and a Jira card): the
+    /// primary — <see cref="ExternalReference"/> — alone keeps the claim gate, the branch key,
+    /// publish, closeout close, and every tracker write. Null on every task with at most one
+    /// reference, which is every record this build wrote before this field existed.
+    /// </summary>
+    ExternalReference? SecondaryExternalReference = null)
 {
     /// <summary>
     /// The key that says a block is one of these, and the version that says which shape it is in.
@@ -107,6 +115,11 @@ public sealed record TaskRecord(
         if (ExternalReference is { } reference)
         {
             yaml.Append(FrontmatterYaml.WriteScalar("external-reference", reference.ToString()));
+        }
+
+        if (SecondaryExternalReference is { } secondaryReference)
+        {
+            yaml.Append(FrontmatterYaml.WriteScalar("secondary-external-reference", secondaryReference.ToString()));
         }
 
         yaml.Append(FrontmatterYaml.WriteScalar("objective", Objective));
@@ -196,7 +209,8 @@ public sealed record TaskRecord(
                 taskId,
                 parsed.Scalar("origin-branch"),
                 Stamp(parsed.Scalar("published"))),
-            ReadHolder(parsed));
+            ReadHolder(parsed),
+            ParseExternalReference(parsed.Scalar("secondary-external-reference")));
     }
 
     private static TaskRecordHolder? ReadHolder(Frontmatter parsed)
