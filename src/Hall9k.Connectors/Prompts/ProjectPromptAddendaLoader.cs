@@ -24,7 +24,7 @@ public sealed record LoadedPromptAddendum(string Content, bool OverCap);
 public static class ProjectPromptAddendaLoader
 {
     /// <summary>
-    /// The first line <see cref="PromptAddendaLedgerSync"/> writes ahead of an addendum's own text
+    /// The first line <c>Hall9k.Daemon.PromptAddenda.PromptAddendaSweepEngine</c> writes ahead of an addendum's own text
     /// when it went in over the cap — an HTML comment, so it is invisible wherever the markdown
     /// renders but still a plain, greppable fact in the file itself. Never written by anything else:
     /// an addendum's own text is free to start with any line, including this one's exact words, and

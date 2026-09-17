@@ -22,10 +22,14 @@ public sealed record PromptBuilderKey
     public static readonly PromptBuilderKey ReviewLap = new("review-lap");
 
     /// <summary>
-    /// Every daemon-dispatched review and lifecycle prompt <c>AgentPromptBuilder</c> composes
-    /// (follow-up, review, review-fix, rebase, stack assessment, and the rest of its own Build*
-    /// methods) — one project-wide addendum spliced into each of them, rather than one per method,
-    /// so a team states its house guidance for "an agent-dispatched review or fix session" once.
+    /// Every daemon-dispatched review and lifecycle prompt <c>AgentPromptBuilder</c> composes that
+    /// carries a <c>ProjectDetails</c> (follow-up, review, review-fix, and rebase) — one
+    /// project-wide addendum spliced into each of them, rather than one per method, so a team
+    /// states its house guidance for "an agent-dispatched review or fix session" once. Its five
+    /// purely mechanical retry/recovery builders — <c>BuildStackAssessment</c>,
+    /// <c>BuildBudgetRetry</c>, <c>BuildSessionErrorRetry</c>, <c>BuildUncommittedWorkRecovery</c>,
+    /// <c>BuildContextSynthesis</c> — carry no project context today and get no addendum, left for
+    /// whoever threads one through them.
     /// </summary>
     public static readonly PromptBuilderKey Agent = new("agent");
 
