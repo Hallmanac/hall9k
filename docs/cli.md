@@ -762,10 +762,13 @@ h9k project prompt-addendum remove <project> <builder>
 
 A team's own house guidance for one shipped prompt builder, set once and spliced into that builder's
 every future prompt after its rules section, never replacing or referenced by any of the platform's
-own prose: `work` (`h9k task work`), `review-lap` (`h9k pr review`), `agent` (every daemon-dispatched
-review and lifecycle prompt `AgentPromptBuilder` composes that carries project context — follow-up,
-review, review-fix, and rebase; its five purely mechanical retry/recovery builders carry no project
-context today), and `mention-follow-up`. `set` replaces the whole file; there is no partial edit.
+own prose: `work` (`h9k task work`, and also the daemon's own fresh-dispatch build run — a task with
+no retry branch to resume composes through the identical `WorkPromptBuilder`, so a headless build the
+daemon starts on its own carries this addendum too, not only an interactive `h9k task work`),
+`review-lap` (`h9k pr review`), `agent` (every daemon-dispatched review and lifecycle prompt
+`AgentPromptBuilder` composes that carries project context — follow-up, review, review-fix, and
+rebase; its five purely mechanical retry/recovery builders carry no project context today), and
+`mention-follow-up`. `set` replaces the whole file; there is no partial edit.
 Content past a length cap is refused unless accepted with `--over-cap "<reason>"`, which records the
 reason and renders the addendum under a heading that says so.
 
