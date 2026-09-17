@@ -1,0 +1,32 @@
+hall9k-task-record: 1
+task-id: 01a0afcf-bceb-77a1-8c8d-808ab1b20c23
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#448
+objective: The qa persona's review reads a pull request through blast radius and compliance, runs the project's end-to-end tests on the worktree but never the product, states for every affected behavior whether it is covered, needs a new automated test, or needs a human walk-through, and ends with the offer to run the branch locally
+criteria:
+  - |-
+    The persona registry gains qa, mapped to a QA review prompt whose first job is a blast-radius map: the behaviors the diff changes, the adjacent behaviors sharing code paths or data with them, and the user-facing flows crossing either; the map is the report's first section in plain language and every later finding cites the map entry it came from
+  - |-
+    For each map entry the report says one of three things: covered by an existing automated test it names, needs a new automated end-to-end test it specifies in a sentence, or needs a human walk-through it describes step by step; no entry is left without one
+  - The session runs the project's end-to-end tests on the worktree, scoped to the blast radius where the test layout allows and in full otherwise, and reports pass, fail, or absent with evidence; it never launches the application on its own, and a verdict needing the running product becomes a human walk-through under the previous criterion
+  - The report checks the change against the project's stated conventions, the writing conventions, the decision log where it applies, and any acceptance criteria on the linked task or issue, naming each as met, not met, or not verifiable from the code alone
+  - The report ends with the offer to run the branch locally so the reviewer can walk it, present only when the project has a run skill on the ledger and phrased with the walk-throughs as the suggested route; the offer is a question in the report, never an action
+  - |-
+    Tests: the registry maps qa to the prompt; the prompt is golden-tested; a fake diff produces a blast-radius map with the three verdict kinds; a project without a run skill produces a report with no offer; a failing end-to-end run is reported with its evidence rather than swallowed
+  - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each, the log recording that QA reviews run tests but never the product
+  - The QA review prompt ships as its own template directory under .claude/templates with the same fragment layout the review-lap prompt uses (objective, blast radius, checks, findings report, closing, rules), loaded through PromptTemplates and golden-tested, never hard-coded in C#, so it is editable by the same mechanism as every other prompt and by the project override layer of the follow-on piece
+dependencies: [01a0afc1-fc97-73b5-836e-39b8ec35ceca]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/b1b20c23-the-qa-persona-s-review-reads
+published: 2026-09-17 14:40:27Z
+context: |-
+  Review personas: extend the pr-review task into QA review and design review, chosen by the assignee's declared persona(s). Today anyone assigned a pull request gets the engineer's PR review (code, logic, functionality). A QA persona gets a QA review: compliance and functionality through the lens of blast radius (what changed, what adjacent behavior to regression-test, what new automated end-to-end tests are owed), mostly by running the end-to-end suite locally, with the ability to launch the application locally to confirm as needed. A designer persona gets a design review: user experience, conformance to the proposed design (Figma or a working prototype), transitions and animations, CSS best practice, accessibility, look and feel, and compliance with the project's design system if one exists, again with the ability to launch the product locally and use the feature. A team member declares zero, one, or several personas (engineer, QA, designer); no persona means the plain PR review; several personas mean every matching review runs on that assignment. All reviews for one pull request share the one worktree and branch the pr-review task already creates, but run separate agents with persona-specific prompts and criteria.
+
+  Idea b9b09779 (review personas), piece 2 of 6: the QA persona. Walked with Brian 2026-09-17 morning (criterion 1 singly, 2 to 7 in a batch at his ask, criterion 8 added at his ask on prompt editability). Stacked on piece 1 ec35ceca (personas and the registry). Brian's rulings in the idea's workspace/journal.md. Code seams: the persona registry from piece 1, ReviewLapPromptBuilder and its template directory as the model, PromptTemplates for loading, the auto-pr-review run's session dispatch, the run skill on the ledger (piece 4) for the offer's precondition. Published unassigned on Brian's word; priority decided after the whole idea is walked.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/b9b09779-review-personas-extend-the-pr-review-task-into-qa-review-and/workspace
