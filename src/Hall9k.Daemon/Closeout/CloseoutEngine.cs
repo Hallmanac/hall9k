@@ -2663,7 +2663,7 @@ public sealed class CloseoutEngine(
     {
         List<HandoffParser.RunHandoff> authored = [];
         HandoffOutcome absence = HandoffOutcome.NotCaptured;
-        foreach (RunDetails run in await MergedRunsAsync(session, completing, cancellationToken))
+        foreach (RunDetails run in await MergedRunsAsync(session, completing, node.NodeId, cancellationToken))
         {
             (HandoffOutcome outcome, string? text, string runDirectory) = await ReadHandoffAsync(run, cancellationToken);
             if (text.IsNotBlank())
@@ -2700,13 +2700,27 @@ public sealed class CloseoutEngine(
     /// The runs whose work is in this merge, oldest dispatch first, so the run that opened the
     /// work leads the composed handoff. The completing run is appended if the projection did
     /// not return it, because the run being closed out is a fact this method already holds.
+    /// <para>
+    /// Scoped to <paramref name="nodeId"/> (idea 202383dc, M2a's engine fence): once Run events
+    /// replicate, an earlier generation of this task's runs can belong to another node entirely,
+    /// and <see cref="ReadHandoffAsync"/> reads its own handoff text from a local filesystem path
+    /// (<see cref="RunDetails.RunDirectory"/>) this node never wrote — a run this node did not
+    /// dispatch is excluded here rather than silently misread as <see cref="HandoffOutcome.NotCaptured"/>.
+    /// The completing run itself is always this node's own (closeout only ever completes a run it
+    /// holds), so this filter never drops it.
+    /// </para>
     /// </summary>
     private static async Task<IReadOnlyList<RunDetails>> MergedRunsAsync(
-        IQuerySession session, RunDetails completing, CancellationToken cancellationToken)
+        IQuerySession session, RunDetails completing, Guid nodeId, CancellationToken cancellationToken)
     {
         Guid taskId = completing.TaskId;
+        // Guid.Empty is RunDispatched's own ceiling-exempt sentinel (an interactive claim), never a
+        // real node id — RunSupervisor's own node-scoped queries already read such a run through
+        // DispatchingNodeId instead (the physical daemon that actually spawned it), and this filter
+        // matches that shape rather than dropping a genuinely local sentinel-NodeId run.
         IReadOnlyList<RunDetails> runs = await session.Query<RunDetails>()
-            .Where(run => run.TaskId == taskId)
+            .Where(run => run.TaskId == taskId
+                && (run.NodeId == nodeId || (run.NodeId == Guid.Empty && run.DispatchingNodeId == nodeId)))
             .ToListAsync(cancellationToken);
 
         List<RunDetails> merged =
