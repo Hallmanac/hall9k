@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Globalization;
+using System.Text;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
@@ -97,7 +99,7 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
 
         string mintedKey = Ulid.NewUlid().ToString();
         string writtenKey = await WriteProjectKeyAsync(
-            ledger, chainReader, project.RepositoryPath, genesisRoot, mintedKey, committer, signingKey, cancellationToken);
+            ledger, chainReader, project.RepositoryPath, chain, genesisRoot, mintedKey, committer, signingKey, cancellationToken);
 
         session.Events.Append(project.Id, ProjectDecider.AssignKey(project.Id, writtenKey, now));
         await session.SaveChangesAsync(cancellationToken);
@@ -110,42 +112,51 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
     }
 
     /// <summary>
-    /// Adds a <c>project_key</c> line to the genesis fingerprint's own, already-existing
-    /// <c>members/&lt;fingerprint&gt;.yaml</c> content — never replaces the file, so the
-    /// <c>root_fingerprint</c>, <c>role</c>, and <c>issued_at</c> fields genesis itself recorded
-    /// survive unchanged. Any <c>project_key</c> line the current content already carries is
-    /// stripped before the fresh one is appended, rather than gating on its mere presence: the raw
-    /// content read here is never authorized the way <see cref="ILedgerChainReader"/>'s own replay
-    /// is, so a line a stranger forged onto this ref (the exact rewrite
-    /// <c>GitLedgerChainReader</c>'s own authorization hardening refuses to read back) must never be
-    /// treated as "the key already exists" — that would block this backfill forever, and appending
-    /// a second line behind it would only bury a genuinely authorized key under the forged one,
-    /// since the reader returns the first match. Retried against a fresh read the same way every
-    /// other conflict-prone ledger write in this codebase is (<c>ProjectJoinCommand.WriteNodeFileAsync</c>'s
-    /// own idiom): on a conflict, this recomputes the chain to ask whether a concurrent, genuinely
-    /// authorized <c>h9k project assign-key</c> run already won the race and landed its own key —
-    /// if so, that key is returned rather than fought over, so the caller records and reports
-    /// exactly what the ledger actually holds, never a locally-minted key that was never written.
+    /// Rebuilds the genesis fingerprint's own <c>members/&lt;fingerprint&gt;.yaml</c> from the facts
+    /// the authorized chain replay itself vouches for — <paramref name="chain"/>'s own
+    /// <see cref="ProjectMember"/> entry for <paramref name="genesisFingerprint"/> — plus the freshly
+    /// minted <paramref name="projectKey"/>, rather than from the ref's raw tip content: that raw
+    /// content is never authorized the way <see cref="ILedgerChainReader"/>'s own replay is, so any
+    /// field an unauthorized push previously planted on this exact file (a rewritten <c>role</c> or
+    /// <c>issued_at</c>, not only <c>project_key</c>) would otherwise be signed and re-pushed by the
+    /// genesis owner themselves, laundering a write the chain replay refuses into one it accepts
+    /// (independent pre-PR review, cycle 3, both lenses, high) — the identical "content depends only
+    /// on authorized facts, never on what is currently on disk" discipline
+    /// <c>ProjectJoinCommand.WriteNodeFileAsync</c>'s own idiom already applies. Retried against a
+    /// fresh read the same way every other conflict-prone ledger write in this codebase is: on a
+    /// conflict, this recomputes the chain both to ask whether a concurrent, genuinely authorized
+    /// <c>h9k project assign-key</c> run already won the race and landed its own key — if so, that
+    /// key is returned rather than fought over — and to re-derive the genesis member's own
+    /// authorized facts for the next attempt's content, never the losing attempt's stale copy.
     /// </summary>
     private static async Task<string> WriteProjectKeyAsync(
-        ILedger ledger, ILedgerChainReader chainReader, string repositoryPath, string genesisFingerprint,
-        string projectKey, LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
+        ILedger ledger, ILedgerChainReader chainReader, string repositoryPath, TrustChain chain,
+        string genesisFingerprint, string projectKey, LedgerCommitter committer, LedgerSigningKey signingKey,
+        CancellationToken cancellationToken)
     {
         const string refName = "refs/hall9k/ledger/members";
         string path = $"members/{genesisFingerprint}.yaml";
 
         for (int attempt = 1; attempt <= MaxConflictRetries; attempt++)
         {
+            ProjectMember genesisMember = chain.Members.FirstOrDefault(member => member.RootFingerprint == genesisFingerprint)
+                ?? throw new DomainConflictException(
+                    $"{genesisFingerprint} is no longer a recorded member of this project's ledger — "
+                    + "re-run h9k project assign-key once membership settles.");
+
             LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
-            if (!current.Exists || current.Content is not { } currentContent)
+            if (!current.Exists)
             {
                 throw new DomainConflictException(
                     $"{path} no longer exists — the genesis member was removed since this command started. "
                     + "Re-run h9k project assign-key once membership settles.");
             }
 
-            string content = RemoveYamlLine(currentContent, "project_key").TrimEnd('\n')
-                + "\n" + $"project_key: \"{projectKey}\"\n";
+            string content = BuildYaml(
+                ("root_fingerprint", genesisMember.RootFingerprint),
+                ("role", genesisMember.Role == MembershipRole.Owner ? "owner" : "member"),
+                ("issued_at", genesisMember.IssuedAt.ToString("o", CultureInfo.InvariantCulture)),
+                ("project_key", projectKey));
             LedgerWriteOutcome outcome = await ledger.WriteAsync(
                 new LedgerWriteRequest(
                     repositoryPath, refName, path, content, current.BlobId,
@@ -160,8 +171,8 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
             // never the raw content we would otherwise reread next iteration, whether that write
             // was a genuinely authorized assign-key racing this one. If so, its key is the ledger's
             // real answer and this attempt backs off rather than appending a second, competing line.
-            TrustChain chainAfterConflict = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
-            if (chainAfterConflict.ProjectKey is { } authorizedKey)
+            chain = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
+            if (chain.ProjectKey is { } authorizedKey)
             {
                 return authorizedKey;
             }
@@ -172,14 +183,22 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
             + "something else is writing it at the same time. Re-run h9k project assign-key once that settles.");
     }
 
-    /// <summary>Removes every line matching the small, flat, every-value-double-quoted YAML shape
-    /// every ledger file in this feature uses for <paramref name="key"/> — the same shape reader
-    /// <c>GitLedgerChainReader.ExtractQuotedYamlValue</c> parses, duplicated for the same reason
-    /// that class's own doc comment gives for its own duplication of
-    /// <c>GitLedgerMessageTransport</c>'s reader — leaving every other field untouched.</summary>
-    private static string RemoveYamlLine(string yaml, string key)
+    /// <summary>Builds the small, flat, every-value-double-quoted YAML shape every ledger file in
+    /// this feature uses — the same shape reader <c>GitLedgerChainReader.ExtractQuotedYamlValue</c>
+    /// parses, duplicated for the same reason that class's own doc comment gives for its own
+    /// duplication of <c>GitLedgerMessageTransport</c>'s reader, and the identical shape
+    /// <c>ProjectJoinCommand</c>'s own <c>BuildYaml</c>/<c>QuoteYaml</c> write at genesis.</summary>
+    private static string BuildYaml(params (string Key, string Value)[] fields)
     {
-        string prefix = $"{key}: \"";
-        return string.Join('\n', yaml.Split('\n').Where(line => !line.TrimEnd('\r').StartsWith(prefix, StringComparison.Ordinal)));
+        StringBuilder builder = new();
+        foreach ((string key, string value) in fields)
+        {
+            builder.Append(key).Append(": ").AppendLine(QuoteYaml(value));
+        }
+
+        return builder.ToString();
     }
+
+    private static string QuoteYaml(string value) =>
+        $"\"{value.Replace("\\", "\\\\").Replace("\"", "\\\"")}\"";
 }
