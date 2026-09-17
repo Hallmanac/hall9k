@@ -181,6 +181,32 @@ h9k message handle <id>                                               # mark a r
 h9k message handle <id> --project <PROJECT>                           # narrows the id fragment match when it is ambiguous across projects
 ```
 
+**Event replication** (idea 202383dc, M2a): every project-scoped event a node writes rides the
+identical per-node outbox as an envelope of kind `events` (never shown in `h9k messages` — a
+separate reader, `EventReplicationInbox`, applies it), and every other node registered to the same
+project appends it to its own copy of the same stream as a fact, with no decider run against it —
+it is a record of what happened elsewhere, not a decision this node is making. Which events travel
+is a single registry (`Hall9k.Domain.Infrastructure.Persistence.EventScopeRegistry`), classifying
+every event type `ProjectScoped` (travels), `NodeScoped`, or `OwnerScoped` (both stay); a build-time
+test fails the moment a new event type ships unclassified. `ProjectSettingsChanged` itself stays
+`NodeScoped` (parallel caps, model choices, orchestrator model, this install's own filesystem
+paths); a companion event, `ProjectTeamSettingsChanged`, carries the team half (claim gate, branch
+template, backlog policy, review settings, writing conventions) and is what actually travels,
+appended alongside it whenever `h9k project set` touches a team field. The first time replication
+ever runs on a node it records that node's own current global event sequence as its switch-on
+point on the Node stream (idea 202383dc: migrating Brian's own two existing nodes keeps each one's
+history exactly as it is — no wipe, no re-adoption); nothing at or before that point ever travels,
+and the flush position past it is durable in the node's own store, so a restart never re-sends or
+skips. A task or idea can be kept off every outbox regardless of its own event classification with
+`h9k task set-private`/`h9k idea set-private` (on/off) — a draft you are not ready for a teammate
+to see. Only a chain-verified sender's events are ever applied (the identical rule messages
+already enforce); an unverified sender's batch is ignored and named in `h9k status`. The engine
+fence keys on origin: dispatch, closeout, review, and verification act only on a run or task this
+node produced or holds, so a replicated claim by another node's owner is never claimed, dispatched,
+or closed out here — `h9k status` and `h9k task show` render it as `HeldElsewhere` instead of
+`Working`, naming the holder (its owner's root fingerprint, since a foreign node's own friendly
+name never replicates) and since when.
+
 **Trust files and the chain reader** (idea 202383dc, T1): vouches, revocations, and project
 membership are files in the same hidden ledger, and every read of every ledger and messages ref
 recomputes, fresh, which signers a project currently trusts: never a cached answer, so a
@@ -263,6 +289,7 @@ h9k task add --from-idea <id> --objective "<…>"   # cut a draft task from it; 
 h9k idea promote <id> [--project <name>]          # sugar: cuts one task (note's first sentence) and concludes
 h9k idea conclude <id> --reason "<what came of it>"  # terminal: discovery produced something
 h9k idea archive <id> --reason "<why>"            # terminal: discovery produced nothing; never deleted
+h9k idea set-private <id> on|off                  # idea 202383dc, M2a: keep this idea's own events off every outbox until cleared, so a teammate never sees a draft you set aside
 ```
 
 Every idea owns a discovery workspace, where research notes, gathered files, and prototypes
@@ -299,6 +326,7 @@ h9k task publish <id> --pre-approved after-human-review   # the same automatic m
 h9k task assign <id> [<owner>] [--take]           # the dispatch trigger — Queued, or Blocked on dependencies; --take also takes the linked card/issue for this install when nobody holds it, in a project whose claim gate is on (Decisions Log #143)
 h9k task set-session-cap <id> <cap>               # override how many agent sessions this task's run may hold at once; settable any time, even mid-run (Decisions Log #111)
 h9k task set-pre-approved <id> on|off|after-human-review   # set standing pre-approval after publish, without the unassign/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged, Draft excepted (pre-approval is part of the readiness contract set at publish). after-human-review waits for a requested human reviewer to approve the head; flipping it to on is the emergency path and merges on the next sweep. No reviewer is ever named here — reviewers are added in GitHub (Decisions Log #135, #149)
+h9k task set-private <id> on|off                  # idea 202383dc, M2a: keep this task's own events off every outbox until cleared, so a teammate never sees a draft you set aside
 h9k task unassign <id>                            # back to Published (refused while leased)
 h9k task draft <id>                               # Published back to Draft, so it can be revised
 ```
