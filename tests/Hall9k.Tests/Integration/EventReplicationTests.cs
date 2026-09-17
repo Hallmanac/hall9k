@@ -1507,6 +1507,111 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// idea 202383dc, M2 (independent pre-PR review, cycle 1, both lenses, low): the project-key
+    /// check must run before the <see cref="MessageKind.Events"/> filter, the identical order
+    /// <c>MessageInbox.ReadFromAsync</c> applies — otherwise an ordinary, non-events envelope
+    /// stamped with the same foreign key advances <c>highestSeqConsidered</c> without its own key
+    /// ever being examined, clearing a standing mismatch mark that the sender never actually
+    /// stopped earning.
+    /// </summary>
+    [Fact]
+    public async Task A_non_events_envelope_carrying_the_same_foreign_key_never_clears_a_standing_mismatch_mark()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        const string mismatchedProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FBZ";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node B already has a DIFFERENT local project recorded under this exact key — a genuine
+        // mismatch, never merely "no opinion recorded yet".
+        Guid projectHoldingTheKey = DomainId.New();
+        Guid scopedProjectId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectHoldingTheKey,
+                new ProjectRegistered(projectHoldingTheKey, ownerId, DomainId.New(), "Holder", "/repo-holder", null, "main", Now));
+            session.Events.Append(projectHoldingTheKey, ProjectDecider.AssignKey(projectHoldingTheKey, mismatchedProjectKey, Now));
+            session.Events.StartStream<ProjectAggregate>(
+                scopedProjectId,
+                new ProjectRegistered(scopedProjectId, ownerId, DomainId.New(), "Scoped", "/repo-scoped", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        await SeedQueuedTaskAsync(_postgres.Store, projectIdA, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, mismatchedProjectKey, adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+            firstRead.SenderIgnored.Should().BeTrue("the events envelope's own project key resolves to a different local project");
+        }
+
+        // An ordinary note, never an events envelope, sent next — still stamped with the identical
+        // foreign key. EventReplicationInbox never applies a note (it only reads Events-kind
+        // envelopes), but it must still examine this envelope's own project key before it decides
+        // that on kind alone: the sender is still stamping the same foreign key, so the standing
+        // mismatch mark must not clear just because the newest envelope happens not to be Events.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectIdA, "owner-a-fingerprint", MessageAudience.Project, null, MessageKind.Note,
+                "still on the wrong project", Now.AddSeconds(4), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, mismatchedProjectKey, adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(4), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(5), trustChain: null, cts.Token);
+            secondRead.SenderIgnored.Should().BeTrue(
+                "the sender is still stamping the same foreign key, even though the newest envelope is not events-kind");
+            secondRead.EventsApplied.Should().Be(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
+                EventReplicationStreamId.ForInboxCursor(nodeA, scopedProjectId), cts.Token);
+            cursor.Should().NotBeNull();
+            cursor!.SenderIgnored.Should().BeTrue();
+            cursor.IgnoredReason.Should().Contain("project key");
+        }
+    }
+
+    /// <summary>
     /// idea 202383dc, M2 (independent pre-PR review, cycle 1, both lenses, medium): a "sender not
     /// vouched" mark is a fact about the sender's current vouch status, never about a specific
     /// envelope — the identical distinction <c>MessageInbox.ReadFromAsync</c>'s own

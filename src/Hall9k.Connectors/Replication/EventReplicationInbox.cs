@@ -125,13 +125,16 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             }
 
             MessageEnvelopeV1 envelope = decoded.Envelope!;
-            if (envelope.Kind != MessageKind.Events
-                || envelope.Seq != raw.Seq
-                || envelope.FromNode != senderNodeId)
+            if (envelope.Seq != raw.Seq || envelope.FromNode != senderNodeId)
             {
                 continue;
             }
 
+            // Checked before the Events-kind filter below, the identical order MessageInbox.ReadFromAsync
+            // applies (independent pre-PR review, cycle 1, both lenses, low): a mismatch found only
+            // AFTER the kind filter lets an ordinary non-events envelope stamped with the same foreign
+            // key clear a standing mismatch mark below without its own key ever being examined, since
+            // highestSeqConsidered still advances past it either way.
             if (envelope.ProjectKey is { Length: 26 } candidateKey
                 && await IsProjectKeyMismatchAsync(session, projectId, candidateKey, localProjectKey, cancellationToken))
             {
@@ -142,6 +145,11 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 logger?.LogWarning(
                     "Sender {SenderNodeId}'s events envelope {Seq} carries a project key that does not match "
                     + "this project's own ledger-derived key, refused", senderNodeId, raw.Seq);
+                continue;
+            }
+
+            if (envelope.Kind != MessageKind.Events)
+            {
                 continue;
             }
 
