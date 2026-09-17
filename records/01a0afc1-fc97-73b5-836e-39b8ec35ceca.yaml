@@ -1,0 +1,30 @@
+hall9k-task-record: 1
+task-id: 01a0afc1-fc97-73b5-836e-39b8ec35ceca
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#447
+objective: A team member declares zero or more review personas (engineer, qa, designer) on their member record, and a pull request assigned to them runs one review session per persona on the pr-review task's single worktree, with no persona meaning today's engineer review and every review carrying the standing question of whether the change altered how the application runs locally
+criteria:
+  - |-
+    A team member declares zero or more personas from the fixed set engineer, qa, designer on their own member record: the local owner record today through h9k owner set --persona (repeatable, --clear-personas to reset) and the ledger member record once the distributed-team chain ships; h9k owner show prints them; no persona reads as engineer, so nothing changes for anyone who never declares one
+  - When a pr-review task is minted (a review request, a mention, or h9k task add --type pr-review --from-pr), the run reads the assignee's personas and dispatches one review session per persona through a persona registry mapping each persona to its prompt and criteria; engineer maps to today's PR review prompt unchanged; a persona with no registered prompt is named in the report as skipped, never silently ignored
+  - Every persona review of one pull request runs on the pr-review task's single worktree and branch as separate sessions with their own transcripts and findings files; the task's report carries one section per persona in the fixed order engineer, qa, designer, and the walk-pr-review-findings flow presents them together
+  - An assignee holding several personas gets every matching review on the one task; h9k task show lists which personas ran and which reports are in, and a persona whose session failed is named rather than dropped
+  - Every review cycle inside a task run and the engineer's pull-request review carry one standing question, whether this change altered how the application runs locally; a yes is a finding of the new kind run-skill drift, routed like any finding (fixed in the pull request by updating the run skill through the daemon's event, or carried as a ride-along); a no is recorded as checked so the report shows the question was asked
+  - |-
+    Tests: persona set and show round-trip on the owner record; selection dispatches one session per persona and the engineer prompt when none is declared; an unregistered persona is named as skipped; the report carries the per-persona sections; a golden test shows the drift question in every review prompt; a drift finding routes
+  - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each, the log recording the fixed persona set and that no persona means engineer
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/ec35ceca-a-team-member-declares-zero-or
+published: 2026-09-17 14:25:30Z
+context: |-
+  Review personas: extend the pr-review task into QA review and design review, chosen by the assignee's declared persona(s). Today anyone assigned a pull request gets the engineer's PR review (code, logic, functionality). A QA persona gets a QA review: compliance and functionality through the lens of blast radius (what changed, what adjacent behavior to regression-test, what new automated end-to-end tests are owed), mostly by running the end-to-end suite locally, with the ability to launch the application locally to confirm as needed. A designer persona gets a design review: user experience, conformance to the proposed design (Figma or a working prototype), transitions and animations, CSS best practice, accessibility, look and feel, and compliance with the project's design system if one exists, again with the ability to launch the product locally and use the feature. A team member declares zero, one, or several personas (engineer, QA, designer); no persona means the plain PR review; several personas mean every matching review runs on that assignment. All reviews for one pull request share the one worktree and branch the pr-review task already creates, but run separate agents with persona-specific prompts and criteria.
+
+  Idea b9b09779 (review personas), piece 1 of 5, the root: personas and review selection. Walked with Brian 2026-09-17 morning in the hall9k-b9 window (criterion 1 singly, 2 to 7 in a batch at his ask, not a procedure change). Brian's rulings in the idea's workspace/journal.md: the run skill lives on the ledger, composed by an agent and written by the daemon (tools before tokens); drift is caught by the standing review question in this piece, not by moving the skill into the repository. Pieces 2 (QA persona) and 3 (design persona) stack on this one and register their prompts in the persona registry; piece 4 (run-skill discovery at project add) is independent; piece 5 (the orchestrator's local launch on a yes) stacks on 4 and is blocked by 2 and 3. Code seams: auto-pr-review minting (AutoPrReviewEngine, TaskAddCommand --from-pr), the pr-review run's review dispatch, the owner record and h9k owner commands, the review prompt templates (golden tests in AgentPromptBuilderGoldenTests), finding routing. Published unassigned on Brian's word; priority against the distributed-team chain decided after the whole idea is walked.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/b9b09779-review-personas-extend-the-pr-review-task-into-qa-review-and/workspace
