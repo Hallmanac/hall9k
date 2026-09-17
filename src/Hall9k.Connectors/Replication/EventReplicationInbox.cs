@@ -3,6 +3,7 @@ using System.Text.Json;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx.Events;
@@ -37,6 +38,13 @@ public sealed record EventReplicationReadResult(bool SenderIgnored, int EventsAp
 public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<EventReplicationInbox>? logger = null)
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
+
+    /// <summary>Every event type on the Project aggregate's own stream — never applicable here,
+    /// the same reason <see cref="ReplicationOwnership.IsProjectStreamItself"/> keeps them off the
+    /// outbox: the Project aggregate's own id is never shared across installs, so an event
+    /// appended under a sender's own Project stream id could only ever create a phantom stream
+    /// under a foreign id on this node, never the local Project stream it actually means.</summary>
+    private static readonly string? ProjectIdentityEventsNamespace = typeof(ProjectRegistered).Namespace;
 
     public async Task<EventReplicationReadResult> ReadFromAsync(
         IDocumentSession session,
@@ -150,6 +158,22 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             logger?.LogWarning(
                 "Replicated event of type {EventType} (origin {OriginEventId}) is not a type this build "
                 + "knows — skipped", record.EventTypeName, record.OriginEventId);
+            return false;
+        }
+
+        // A well-behaved sender's own outbox already filters to ProjectScoped, never-the-Project-
+        // stream-itself events (EventReplicationOutbox.QueuePendingAsync) — checked again here so a
+        // sender running an older build, or a misbehaving one, can never make this node apply a
+        // NodeScoped event (a node-owner claim, this install's own local settings) sight unseen, nor
+        // create a phantom stream under a foreign project's own id (the Project aggregate's own id
+        // is never shared across installs, unlike a Task/Idea/Epic id — ReplicationOwnership.IsProjectStreamItself's
+        // own doc).
+        if (EventScopeRegistry.ClassificationOf(eventType) != EventScope.ProjectScoped
+            || eventType.Namespace == ProjectIdentityEventsNamespace)
+        {
+            logger?.LogWarning(
+                "Replicated event of type {EventType} (origin {OriginEventId}) is never eligible to travel — skipped",
+                record.EventTypeName, record.OriginEventId);
             return false;
         }
 
