@@ -229,6 +229,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             {
                 header.AddRow("Close linked issue", CloseLinkedIssueMarkup(details, project));
             }
+
+            if (details.SecondaryExternalReference.IsNotBlank())
+            {
+                // Shown and linked only (task: a task may link to both a GitHub issue and a Jira
+                // card): the primary row above is the one that carries the observed status and the
+                // close-linked-issue rule, because those are jobs only the primary does. The
+                // secondary earns neither — it is a link, not a second copy of the primary's own
+                // bookkeeping.
+                header.AddRow("Secondary", ExternalMarkup(importer, details.SecondaryExternalReference));
+            }
         }
         else if (details.CloseLinkedIssue is not null && project?.BacklogPolicy == BacklogPolicy.GitHubIssues)
         {
