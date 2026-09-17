@@ -606,4 +606,73 @@ public static class ProjectDecider
 
         return new MemberRemoved(projectId, rootFingerprint, removedAt);
     }
+
+    /// <summary>
+    /// How long a project's own prompt-builder addendum may be before <c>--over-cap</c> is needed
+    /// (idea b9b09779, piece 6). Generous for real house guidance, and bounded because the text is
+    /// pasted verbatim after every prompt this builder composes — the same reasoning and the same
+    /// number as <see cref="WritingConventions.MaximumLength"/>.
+    /// </summary>
+    public const int PromptAddendumMaximumLength = 4000;
+
+    /// <summary>
+    /// Replaces the whole addendum a project states for one prompt builder. A judgment call, never
+    /// a hard blocker: past <see cref="PromptAddendumMaximumLength"/> this refuses unless
+    /// <paramref name="overCap"/> is set with <paramref name="overCapReason"/> stated, the same
+    /// "acknowledge the consequence" idiom <c>--accept-reduced-review</c> already uses.
+    /// </summary>
+    public static ProjectPromptAddendumSet SetPromptAddendum(
+        Guid projectId, PromptBuilderKey builder, string? content, bool overCap, string? overCapReason,
+        Guid setByOwnerId, DateTimeOffset setAt)
+    {
+        if (builder == PromptBuilderKey.Unknown)
+        {
+            throw new DomainValidationException("An addendum needs a real prompt builder key to set it on.");
+        }
+
+        string trimmed = content?.Trim() ?? string.Empty;
+        if (trimmed.IsBlank())
+        {
+            throw new DomainValidationException(
+                $"An addendum needs content — h9k project prompt-addendum remove {builder} clears one instead.");
+        }
+
+        bool exceedsCap = trimmed.Length > PromptAddendumMaximumLength;
+        if (overCap && !exceedsCap)
+        {
+            throw new DomainValidationException(
+                $"--over-cap has nothing to acknowledge: this addendum is {trimmed.Length} characters, "
+                + $"under the {PromptAddendumMaximumLength}-character cap.");
+        }
+
+        if (overCap && overCapReason.IsBlank())
+        {
+            throw new DomainValidationException(
+                "--over-cap needs the reason this addendum has to stay past the cap, recorded on the event: "
+                + $"h9k project prompt-addendum set {builder} --file <path> --over-cap \"<why>\".");
+        }
+
+        if (exceedsCap && !overCap)
+        {
+            throw new DomainValidationException(
+                $"This addendum is {trimmed.Length} characters, past the {PromptAddendumMaximumLength}-character "
+                + $"cap. It is pasted verbatim after {builder}'s own rules section on every prompt it composes, "
+                + "so a long one spends the session's context rather than steering it. Tighten it, or accept the "
+                + $"cost: h9k project prompt-addendum set {builder} --file <path> --over-cap \"<why this needs the room>\".");
+        }
+
+        return new ProjectPromptAddendumSet(
+            projectId, builder, trimmed, overCap, overCap ? overCapReason!.Trim() : null, setAt, setByOwnerId);
+    }
+
+    public static ProjectPromptAddendumRemoved RemovePromptAddendum(
+        Guid projectId, PromptBuilderKey builder, Guid removedByOwnerId, DateTimeOffset removedAt)
+    {
+        if (builder == PromptBuilderKey.Unknown)
+        {
+            throw new DomainValidationException("An addendum removal needs a real prompt builder key.");
+        }
+
+        return new ProjectPromptAddendumRemoved(projectId, builder, removedAt, removedByOwnerId);
+    }
 }

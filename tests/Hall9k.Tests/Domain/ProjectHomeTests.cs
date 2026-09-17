@@ -56,7 +56,7 @@ public sealed class ProjectHomeTests : IDisposable
     }
 
     [Fact]
-    public void The_shape_is_eight_entries_and_the_layout_states_all_of_them()
+    public void The_shape_is_nine_entries_and_the_layout_states_all_of_them()
     {
         string home = ProjectHomePaths.DefaultFor("hall9k");
 
@@ -66,7 +66,9 @@ public sealed class ProjectHomeTests : IDisposable
         // both read from, so the two can never drift apart on whether it exists (conformance review).
         // recipes/ (task: an operator starts a lean node or project orchestrator window) holds the
         // platform-owned launch-anchor.md and settings.json, plus whatever the
-        // orchestrator-recipe-generator skill writes beside them.
+        // orchestrator-recipe-generator skill writes beside them. prompt-addenda/ (idea b9b09779,
+        // piece 6) holds the daemon's own local materialized copy of this project's ledger-stored
+        // prompt addenda.
         ProjectHomePaths.Directories(home).Should().Equal(
             home,
             Path.Combine(home, "repo"),
@@ -76,7 +78,8 @@ public sealed class ProjectHomeTests : IDisposable
             Path.Combine(home, "skills"),
             Path.Combine(home, ".claude"),
             Path.Combine(home, ".claude", "skills"),
-            Path.Combine(home, "recipes"));
+            Path.Combine(home, "recipes"),
+            Path.Combine(home, "prompt-addenda"));
 
         ProjectHomePaths.AgentsFile(home).Should().Be(Path.Combine(home, "AGENTS.md"));
         ProjectHomePaths.BareRepository(home, "hall9k").Should().Be(Path.Combine(home, "repo", "hall9k.git"));
