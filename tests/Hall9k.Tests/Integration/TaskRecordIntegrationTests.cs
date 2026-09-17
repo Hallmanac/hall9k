@@ -5,11 +5,13 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Epic;
+using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
@@ -543,12 +545,13 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
             WorkItemStatus.Open, null, Now);
 
         FakeLedger ledger = new();
-        await using (IQuerySession query = store.QuerySession())
+        await using (IDocumentSession session = store.LightweightSession())
         {
-            (await TaskRecordAdoption.LocateAsync(query, ledger, RepositoryPath, reference, cts.Token)).Outcome
+            ProjectDetails project = (await session.LoadAsync<ProjectDetails>(install.ProjectId, cts.Token))!;
+            (await TaskRecordAdoption.LocateAsync(session, ledger, RepositoryPath, reference, cts.Token)).Outcome
                 .Should().Be(TaskRecordAdoption.LocateOutcome.NoRecord, "nothing has adopted this item before");
-            Func<Task> refuse = () =>
-                TaskAddCommand.RefuseIfRecordedElsewhereAsync(query, ledger, RepositoryPath, reference, cts.Token);
+            Func<Task> refuse = () => TaskAddCommand.RefuseIfRecordedElsewhereAsync(
+                session, ledger, project, install.NodeId, "owner-fingerprint", reference, cts.Token);
             await refuse.Should().NotThrowAsync();
         }
 
@@ -631,21 +634,27 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         await SeedRecordAsync(ledger, recordedTaskId, reference, cts.Token);
         int before = await CountTasksAsync(store, cts.Token);
 
-        await using IQuerySession query = store.QuerySession();
+        await using IDocumentSession refuseSession = store.LightweightSession();
+        ProjectDetails project = (await refuseSession.LoadAsync<ProjectDetails>(install.ProjectId, cts.Token))!;
         Func<Task> refuse = () => TaskAddCommand.RefuseIfRecordedElsewhereAsync(
-            query, ledger, RepositoryPath, reference, cts.Token);
+            refuseSession, ledger, project, install.NodeId, "owner-fingerprint", reference, cts.Token);
 
         (await refuse.Should().ThrowAsync<DomainConflictException>()).Which.Message
             .Should().Contain(TaskListCommand.ShortId(recordedTaskId));
         (await CountTasksAsync(store, cts.Token)).Should().Be(before, "nothing new was created");
     }
 
+    /// <summary>
+    /// Idea 202383dc, M2b, task 9408d525: a ledger record whose stream is absent locally starts an
+    /// events-request for that stream and says so, rather than only telling the human to re-run the
+    /// command later — never fabricating a task from the record itself.
+    /// </summary>
     [Fact]
-    public async Task RefuseIfRecordedElsewhereAsync_on_an_unreplicated_record_refuses_and_creates_nothing()
+    public async Task RefuseIfRecordedElsewhereAsync_on_an_unreplicated_record_refuses_and_starts_an_events_request()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
-        await SeedAsync(store, cts.Token);
+        Install install = await SeedAsync(store, cts.Token);
 
         ExternalReference reference = new(WorkItemProvider.GitHub, $"{Repository}#5002");
         Guid recordedTaskId = DomainId.New();
@@ -653,13 +662,22 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         await SeedRecordAsync(ledger, recordedTaskId, reference, cts.Token);
         int before = await CountTasksAsync(store, cts.Token);
 
-        await using IQuerySession query = store.QuerySession();
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectDetails project = (await session.LoadAsync<ProjectDetails>(install.ProjectId, cts.Token))!;
         Func<Task> refuse = () => TaskAddCommand.RefuseIfRecordedElsewhereAsync(
-            query, ledger, RepositoryPath, reference, cts.Token);
+            session, ledger, project, install.NodeId, "owner-fingerprint", reference, cts.Token);
 
         (await refuse.Should().ThrowAsync<DomainValidationException>()).Which.Message
-            .Should().Contain("published elsewhere").And.Contain(TaskListCommand.ShortId(recordedTaskId));
+            .Should().Contain("published elsewhere").And.Contain(TaskListCommand.ShortId(recordedTaskId))
+            .And.Contain("events-request");
         (await CountTasksAsync(store, cts.Token)).Should().Be(before, "nothing is created while replication is pending");
+
+        await using IQuerySession verify = store.QuerySession();
+        IReadOnlyList<EventCatchUpRequest> requests = await verify.Query<EventCatchUpRequest>().ToListAsync(cts.Token);
+        requests.Should().ContainSingle(request => request.ForStreamId == recordedTaskId && request.ProjectId == install.ProjectId);
+        (await verify.Query<MessageDetails>()
+            .Where(message => message.Kind == MessageKind.EventsRequest.Value)
+            .AnyAsync(cts.Token)).Should().BeTrue("the events-request envelope is queued for the daemon's next flush");
     }
 
     [Fact]
@@ -683,9 +701,10 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         FakeLedger ledger = new();
         await SeedRecordAsync(ledger, abandonedTaskId, reference, cts.Token);
 
-        await using IQuerySession query = store.QuerySession();
+        await using IDocumentSession refuseSession = store.LightweightSession();
+        ProjectDetails project = (await refuseSession.LoadAsync<ProjectDetails>(install.ProjectId, cts.Token))!;
         Func<Task> refuse = () => TaskAddCommand.RefuseIfRecordedElsewhereAsync(
-            query, ledger, RepositoryPath, reference, cts.Token);
+            refuseSession, ledger, project, install.NodeId, "owner-fingerprint", reference, cts.Token);
 
         await refuse.Should().NotThrowAsync(
             "the item's only task was abandoned, which releases it exactly like RefuseSecondAdoptionAsync's " +

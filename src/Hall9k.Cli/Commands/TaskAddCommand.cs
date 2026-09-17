@@ -1,10 +1,12 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
@@ -454,9 +456,15 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         }
 
         ILedger ledger = new GitLedger(new ConsoleWorktreeLogger<GitLedger>());
+        // Resolved once for both adoptions below: the events-request a missing stream's own
+        // refusal starts (idea 202383dc, M2b, task 9408d525) needs this node's own identity to
+        // queue an envelope under, exactly like h9k message send resolves it.
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(session, context.OwnerId, cancellationToken);
         Adoption? adopted = adoption is null
             ? null
-            : await AdoptAsync(store, session, projectDetails, adoption, settings.Again, ledger, cancellationToken);
+            : await AdoptAsync(
+                store, session, projectDetails, adoption, settings.Again, ledger, context.NodeId, ownerRootFingerprint,
+                cancellationToken);
         // The secondary is adopted through the identical seam and earns the identical "already
         // spoken for" refusals (RefuseSecondAdoptionAsync, RefuseIfRecordedElsewhereAsync) — it is
         // a real link, just not the one that gates or gets written to. Never a pull request (the
@@ -464,7 +472,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         // a pr-review task either.
         Adoption? secondaryAdopted = secondaryAdoption is null
             ? null
-            : await AdoptAsync(store, session, projectDetails, secondaryAdoption, settings.Again, ledger, cancellationToken);
+            : await AdoptAsync(
+                store, session, projectDetails, secondaryAdoption, settings.Again, ledger, context.NodeId, ownerRootFingerprint,
+                cancellationToken);
         // A pull request this node already reviewed, or is still following a posted review through
         // on: named rather than minted a second time (task: a pr-review task stays open while the
         // pull request's review threads are unresolved). Returned rather than thrown, and exiting
@@ -778,8 +788,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     private sealed record Adoption(ImportedWorkItem Imported, TaskListItem? ExistingPrReviewTask);
 
     private static async Task<Adoption> AdoptAsync(
-        IDocumentStore store, IQuerySession session, ProjectDetails project, AdoptionSource source, bool again,
-        ILedger ledger, CancellationToken cancellationToken)
+        IDocumentStore store, IDocumentSession session, ProjectDetails project, AdoptionSource source, bool again,
+        ILedger ledger, Guid nodeId, string? ownerRootFingerprint, CancellationToken cancellationToken)
     {
         WorkItemImporter importer = await WorkItemConnections.ImporterAsync(
             session, cancellationToken, processRunner: new ProjectScopedGitHubRunner(store).Runner);
@@ -806,11 +816,12 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 // this project's ledger carries for the same reference names a task that either is
                 // replicated (report it exactly like the check above does) or is not yet (idea
                 // 202383dc, A3a's own third fork: report that instead of fabricating a copy from the
-                // record — the events-request that actually brings the stream in is task 9408d525's
-                // job). --from-pr is excluded: a pr-review task's own holder rules are the two checks
-                // above, and it never publishes a record this scan would ever match.
+                // record and start an events-request for the missing stream instead — idea 202383dc,
+                // M2b, task 9408d525). --from-pr is excluded: a pr-review task's own holder rules
+                // are the two checks above, and it never publishes a record this scan would ever
+                // match.
                 await RefuseIfRecordedElsewhereAsync(
-                    session, ledger, project.RepositoryPath, imported.Reference, cancellationToken);
+                    session, ledger, project, nodeId, ownerRootFingerprint, imported.Reference, cancellationToken);
             }
         }
 
@@ -821,14 +832,21 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// Refuses adoption when the ledger already carries a record for <paramref name="reference"/>
     /// that <see cref="RefuseSecondAdoptionAsync"/>'s own local lookup missed — the case where
     /// another node already published this reference but this project's own event replication has
-    /// not caught this task's stream up here yet.
+    /// not caught this task's stream up here yet. When that is the case, starts an events-request
+    /// for the missing stream (idea 202383dc, M2b, task 9408d525) rather than only telling the
+    /// human to re-run the command later: broadcast to the whole project, never targeted at one
+    /// ranked peer, since this runs from a CLI command with no live trust chain or transport of its
+    /// own to rank candidates from (never touches git or a network on its own) — every project
+    /// member's own daemon sweep answers if it can, and double answers are harmless by dedupe.
+    /// Never fabricates the task from the record itself (that section's own doc comment carries the
+    /// fuller argument for why).
     /// </summary>
     internal static async Task RefuseIfRecordedElsewhereAsync(
-        IQuerySession session, ILedger ledger, string repositoryPath, ExternalReference reference,
-        CancellationToken cancellationToken)
+        IDocumentSession session, ILedger ledger, ProjectDetails project, Guid nodeId, string? ownerRootFingerprint,
+        ExternalReference reference, CancellationToken cancellationToken)
     {
         TaskRecordAdoption.Locate located = await TaskRecordAdoption.LocateAsync(
-            session, ledger, repositoryPath, reference, cancellationToken);
+            session, ledger, project.RepositoryPath, reference, cancellationToken);
         // LocalAbandoned joins NoRecord here for the reason RefuseSecondAdoptionAsync's own local
         // guard exempts an Abandoned task too: a human who walked away from it released the item,
         // and nothing ever deletes or rewrites its record to say so — refusing on its stale record
@@ -848,11 +866,18 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 + $"rather than its external-reference field. See it with h9k task show {shortId}.");
         }
 
+        string arriving = "nothing is created here now.";
+        if (ownerRootFingerprint.IsNotBlank())
+        {
+            await new EventCatchUpCoordinator().RequestStreamBroadcastAsync(
+                session, project.Id, located.TaskId, nodeId, ownerRootFingerprint, DateTimeOffset.UtcNow, cancellationToken);
+            arriving = "an events-request for that stream is on its way to this project's other members now.";
+        }
+
         throw new DomainValidationException(
             $"{reference} is already published elsewhere as task {shortId}, but that task's own "
-            + "event stream has not reached this node yet — nothing is created here now. It will "
-            + "appear on this node's own board once catch-up brings that stream in; re-run this "
-            + "command afterward.");
+            + $"event stream has not reached this node yet — {arriving} It will appear on this "
+            + "node's own board once catch-up brings that stream in; re-run this command afterward.");
     }
 
     /// <summary>
