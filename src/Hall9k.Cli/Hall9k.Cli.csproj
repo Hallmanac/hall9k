@@ -11,6 +11,7 @@
   <ItemGroup>
     <PackageReference Include="Spectre.Console.Cli" />
     <PackageReference Include="NJsonSchema" />
+    <PackageReference Include="Ulid" />
   </ItemGroup>
 
   <ItemGroup>

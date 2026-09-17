@@ -10,6 +10,10 @@
     <!-- Referenced (unshipped) by Spectre.Console.Cli; present so JasperFx runtime codegen can resolve it -->
     <PackageVersion Include="NJsonSchema" Version="11.4.0" />
     <PackageVersion Include="Spectre.Console.Cli" Version="0.55.0" />
+    <!-- A project's own key (idea 202383dc, M2): Cysharp's Ulid, chosen by Brian 2026-09-17 for
+         speed over UUIDNext for this one generated-once-at-genesis id; every other id in this
+         codebase stays a DomainId UUIDv7. -->
+    <PackageVersion Include="Ulid" Version="1.4.1" />
 
     <!-- Daemon -->
     <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.11" />

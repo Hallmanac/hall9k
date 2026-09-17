@@ -107,6 +107,16 @@ public static class CliCommandTree
                 .WithExample("project", "join", "hall9k")
                 .WithExample("project", "join", "hall9k", "--owner", "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716")
                 .WithExample("project", "join", "hall9k", "--invite", "3f9c2a7e...d1908f7e.9a41c6...");
+            project.AddCommand<ProjectAssignKeyCommand>("assign-key")
+                .WithDescription(
+                    "One-time backfill of the project's own key (idea 202383dc, M2) for a ledger whose "
+                    + "genesis predates this piece: mints a fresh 26-character ULID and writes it onto the "
+                    + "genesis fingerprint's own members/<fingerprint>.yaml, signed. Refused for anyone but "
+                    + "the genesis owner, and refused again once a key already exists — this is a single, "
+                    + "load-bearing fact about the ledger, never a value to overwrite. Run it once, before "
+                    + "the first h9k project invite on an adopted project; every other install then picks "
+                    + "the key up the next time it runs h9k project join there.")
+                .WithExample("project", "assign-key", "hall9k");
             project.AddCommand<ProjectInitCommand>("init")
                 .WithDescription(
                     "Create (or repair) a registered project's home directory. The adopt path for a "
