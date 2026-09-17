@@ -101,7 +101,15 @@ public sealed record TaskAdded(
     /// every task's default and the only value a stream written before this field existed can
     /// replay as.
     /// </summary>
-    int? StackedOnPullRequestNumber = null)
+    int? StackedOnPullRequestNumber = null,
+    /// <summary>
+    /// A second external item, shown and linked alongside <see cref="ExternalReference"/> but
+    /// never gating or written to (task: a task may link to both a GitHub issue and a Jira card):
+    /// the claim gate, the branch key, publish, closeout close, and every tracker write all read
+    /// <see cref="ExternalReference"/> alone. Null on every task with at most one reference, which
+    /// is every stream written before this field existed and every ordinary adoption today.
+    /// </summary>
+    ExternalReference? SecondaryExternalReference = null)
 {
     /// <summary>
     /// What this event granted, whichever build wrote it — the same one home for the

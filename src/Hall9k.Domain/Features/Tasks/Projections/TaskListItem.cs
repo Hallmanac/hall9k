@@ -26,6 +26,12 @@ public sealed class TaskListItem
     public Guid? CurrentRunId { get; set; }
     public string? ExternalReference { get; set; }
     /// <summary>
+    /// A second external item, shown and linked but never gating or written to (task: a task may
+    /// link to both a GitHub issue and a Jira card). <see cref="ExternalReference"/> is the primary
+    /// and does every job; this field is display-only.
+    /// </summary>
+    public string? SecondaryExternalReference { get; set; }
+    /// <summary>
     /// This task's own override of whether true closeout closes its linked GitHub issue; null
     /// defers to the project's own close-linked-issue setting, live (task: a task's linked GitHub
     /// issue is closed at true closeout under a configurable rule). Kept on this lean row because
@@ -311,6 +317,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         StackedOnTaskId = @event.Data.StackedOnTaskId,
         StackedOnPullRequestNumber = @event.Data.StackedOnPullRequestNumber,
         ExternalReference = @event.Data.ExternalReference?.ToString(),
+        SecondaryExternalReference = @event.Data.SecondaryExternalReference?.ToString(),
         AddedAt = @event.Data.AddedAt,
         PreApproval = @event.Data.EffectivePreApproval,
         PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved,
