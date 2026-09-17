@@ -1,0 +1,35 @@
+hall9k-task-record: 1
+task-id: 01a0af1a-c6cf-75b4-9876-342decd6bdc0
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#445
+objective: |-
+  A project's key is a generated id minted once at genesis, never the genesis owner's fingerprint: every install records it on its local project, every message and replication envelope and every replicated event carries it, and a receiver resolves its local project by that key and refuses what does not match, so a project's identity no longer depends on which ledger a message arrived through
+criteria:
+  - Writing a project's genesis members commit generates a fresh ULID with the Ulid NuGet package (Cysharp's, chosen by Brian 2026-09-17 for speed; the codebase's other ids stay DomainId UUIDv7) and records its 26-character string in that commit as the project key; the trust chain exposes it as ProjectKey, and the genesis owner's root fingerprint is no longer used as a project key anywhere (GenesisRootFingerprint stays an owner fact)
+  - |-
+    Every install records the key on its local project: creating genesis or joining by invite appends a node-part ProjectKeyAssigned event to the local Project stream (never travels), and h9k project show prints the key; a ledger whose genesis predates this piece gets its key from a one-time signed commit by the genesis owner (h9k project assign-key, refused for anyone else), and the genesis guard's documented adoption procedure gains that step before the first invite
+  - |-
+    Every envelope carries the key: MessageEnvelopeV1.ProjectKey holds the generated key; the events envelope and the events-request envelope carry it; a replicated event's origin headers carry it beside owner root, node, event id, and sequence
+  - |-
+    Receivers resolve by the key, not by the ledger: the message inbox and the replication inbox look up the local project by the key on the envelope, the apply-time rewrite of a replicated event's project coordinate keys on it, and an envelope whose key does not match the project whose ledger it arrived through is refused and named in h9k status
+  - |-
+    Compatibility under the switch-on checkpoint: an envelope written before this piece (null key, or an owner-fingerprint key) is still read, never refused as malformed; no production deployment predates this task
+  - |-
+    Tests through the seam with the in-memory transport and a fake ledger: genesis mints and exposes the key; a join records it; each envelope kind carries it; a mismatched key is refused and named; a legacy envelope is read; two stores registered under different local project ids exchange a task's events and resolve by key to their own project
+  - |-
+    dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each, the log recording Brian's ruling of 2026-09-17: the project key is a generated id so the transport can change, not the owner fingerprint
+dependencies: [01a09c2c-e7cc-75d0-9e5a-cd52c8dd149c]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/ecd6bdc0-a-project-s-key-is-a-generated
+published: 2026-09-17 11:34:19Z
+context: |-
+  Hall9k for a distributed team: nodes and projects talk to each other through a per-project relay now and a peer-to-peer network later. The immediate driver is the ARX platform's .NET Core migration, a strangler-fig port one MVC route, controller, or action at a time, where QA runs ahead of engineering writing baseline end-to-end tests per route and then validates each port before and after; QA needs Hall9k on their machines, and the coordination has to run through Hall9k rather than around it. Today two nodes talk through comments on a private GitHub issue, which works for one person and not for a team. Short term: a relay server anyone can stand up per project (and a node can stand one up for its own shared work) that carries the messages and shared state a team needs; long term: those relays become part of a broader peer-to-peer network so a new node or project joins and benefits without infrastructure. Design the relay so the peer-to-peer layer replaces the transport, not the boundary. This umbrella consolidates the tracker-as-substrate MVP (64c75e43, largely shipped: claim gate, take in tracker, issue carries the task record), the node mailbox prototype and its open questions (notes/node-mailbox.md), the container node with peer-managed nodes (efe71721), the QA-in-the-loop ideas (4e670c74, 21ddf2b3), and the backlog documents backlog/p2p/PLAN-additions.md, backlog/p2p/P2P-KICKOFF-PROMPT.md, backlog/IDEA-p2p-lazy-sync.md, and backlog/IDEA-per-project-store.md with 64e4ebd2's database-as-room model.
+
+  Idea 202383dc (Hall9k for a distributed team). Cut 2026-09-17 morning on Brian's ruling in the hall9k-b9 window after the replication (c8dd149c) dispute of 2026-09-17 03:1x exposed that a project's id is per install and that the receiver mapped a sender's project to its own only through the ledger it read from. Verified on the c8dd149c worktree: MessageEnvelopeV1.ProjectKey is documented as the project's ledger-derived key and is stamped at flush from TrustChain.GenesisRootFingerprint, which is the fingerprint named by the first commit of refs/hall9k/ledger/members, an owner's key, so two projects with one genesis owner share it (hall9k and odonomics on this machine do); no receiver reads ProjectKey today (MessageInbox and the Replication connectors do not reference it). The rewrite-on-apply rule ruled 2026-09-17 03:1x stays and keys on this id instead of the ledger. Stacked on c8dd149c so it inherits the events envelope; catch-up 9408d525 is re-stacked onto this task so its events-request envelope carries the key from the start. Testing rule (Brian, 2026-09-13): no test touches the project's repository or any remote; a throwaway temp bare repository is allowed only in A1's tests and the chain reader's; everything else tests through the transport seam with an in-memory fake.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/202383dc-hall9k-for-a-distributed-team-nodes-and-projects-talk-to-eac/workspace
