@@ -232,18 +232,28 @@ internal sealed record TaskStatusRow(
         : "PR";
 
     /// <summary>
-    /// The task's tracker reference(s), primary first: empty for a task carrying none, the primary
-    /// alone for the ordinary case, and both — separated so the primary reads first — for a task
-    /// that adopted a GitHub issue and a Jira card together (task: a task may link to both). The
-    /// secondary is named "secondary" here for the same reason h9k task show's own row is: it is a
-    /// real link, but it never gates a claim, sets the branch key, or is written to, and this
-    /// column must not read as though both were doing the primary's job.
+    /// The task's tracker reference(s), primary first, as the attention pane's own extra line
+    /// (<see cref="StatusCommand.SectionRows"/>) — never a fixed column, and never folded into
+    /// <see cref="DetailMarkup"/> either, because that also feeds <see cref="SummaryMarkup"/>, which
+    /// the browse surfaces print, and a linked item has never been browse-surface material. Kept off
+    /// the row's own fixed columns for the same reason a fixed column sized to the widest reference
+    /// (or the widest primary-plus-secondary pair) in a section pushed the objective column below its
+    /// floor and wrapped every row beside it, at ordinary console widths and with an ordinary single
+    /// reference — not only a long, doubled-up one (independent pre-PR review, cycle 1). A line has
+    /// no such shared budget to spend: <see cref="Spectre.Console.Overflow.Ellipsis"/> caps it on its
+    /// own, one row at a time.
+    /// <para>
+    /// Empty for a task carrying no reference. A task that also carries a secondary (task: a task may
+    /// link to both a GitHub issue and a Jira card) names it in full, alongside the primary, because
+    /// this line pays no width tax for doing so — it is never a real link doing the primary's job,
+    /// only named as one.
+    /// </para>
     /// </summary>
-    public string ItemMarkup => ExternalReference.IsBlank()
+    public string ReferenceDetailMarkup => ExternalReference.IsBlank()
         ? string.Empty
         : SecondaryExternalReference.IsBlank()
-            ? ExternalReference.EscapeMarkup()
-            : $"{ExternalReference.EscapeMarkup()} [dim]+ {SecondaryExternalReference.EscapeMarkup()} (secondary)[/]";
+            ? $"[dim]linked:[/] {ExternalReference.EscapeMarkup()}"
+            : $"[dim]linked:[/] {ExternalReference.EscapeMarkup()} [dim]+[/] {SecondaryExternalReference.EscapeMarkup()} [dim](secondary)[/]";
 
     public string AgeMarkup(DateTimeOffset now) => TaskStatusComposer.RelativeAge(now - AddedAt);
 }
