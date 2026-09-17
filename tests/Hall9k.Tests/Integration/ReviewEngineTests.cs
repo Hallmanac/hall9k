@@ -2715,6 +2715,61 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// The unconfirmed sibling of <see cref="A_stacked_checkpoints_guided_fix_session_is_followed_by_a_real_first_review_cycle"/>
+    /// (independent pre-PR review, cycle 4, adversarial lens): a guided recovery session that ends
+    /// with no RESOLUTION marker and never actually touches the worktree must not let this run reach
+    /// <c>ReviewPhase.Reverify</c>'s own cycle-0 Discovery dispatch unrebased — unlike the ordinary,
+    /// unstacked path, whose next Settling entry unconditionally re-checks the rebase, Reverify's own
+    /// cycle-0 branch never re-reads the worktree at all. Each inconclusive completion must instead
+    /// redispatch immediately, exactly like a fresh conflict, until the round cap parks it — the one
+    /// assessment this run may ever spend is already gone, so the cap parks rather than looping.
+    /// </summary>
+    [Fact]
+    public async Task An_unconfirmed_checkpoint_recovery_completion_redispatches_instead_of_reaching_discovery_unrebased()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
+
+        string parentNewHead = PushToOriginBranch(
+            fixture.OriginPath, fixture.ParentBranch, "Widget.cs", "class Widget { int parent; }\n");
+
+        ScriptedExecutor executor = new(
+            "The checkpoint's own conflict is real; the branch still needs replaying onto the parent's new "
+            + "head.\n\n"
+            + $"STACK ASSESSMENT VERDICT: replay\nBOUNDARY: {fixture.ParentHeadCommit}\nONTO: {parentNewHead}\n"
+            + "EVIDENCE:\ngit log confirmed the branch's own commit still needs replaying onto the parent's new "
+            + "head; the conflict is genuine content disagreement, not a stale recorded fork point.",
+            // Three guided recovery sessions in a row, each ending with no RESOLUTION marker and
+            // never touching the worktree — the "aborted, never actually rebased" shape this fix
+            // exists to catch — until the round cap parks with the one assessment already spent.
+            "Looked at it but ran out of turns before finishing.",
+            "Looked at it but ran out of turns before finishing.",
+            "Looked at it but ran out of turns before finishing.");
+
+        bool mergeReady = await NewEngine(
+                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 },
+                ExternalProcess.Runner, ExternalProcess.Runner)
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        mergeReady.Should().BeFalse("every recovery session left the branch unrebased, so the round cap parks it");
+        executor.Spawns.Should().HaveCount(
+            4, "the one read-only assessment plus the three ordinary recovery rounds this checkpoint-originated "
+            + "track still earns before the cap — never a review pass over an unrebased tree");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+        runEvents.OfType<ReviewDispatched>().Should().BeEmpty(
+            "an unconfirmed rebase must never reach a review pass — that is exactly what this checkpoint exists to guarantee");
+        runEvents.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().HaveCount(
+            3, "each inconclusive completion redispatches immediately rather than landing on Reverify unconfirmed");
+        runEvents.OfType<RunRebasedOntoBase>().Should().BeEmpty("nothing ever actually landed");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.RunId, cts.Token))!;
+        run.State.Should().Be(RunState.ReviewParked);
+    }
+
+    /// <summary>
     /// The 2026-09-14 shape (task 450b9d84): the checkpoint's own first replay attempt genuinely
     /// conflicts — the parent's merge and a later, unrelated commit on the base both touch the same
     /// file this child's own commit touches — so it parks for a human exactly as designed. A fix
@@ -10815,6 +10870,60 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
         List<object> events = [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<PreFinalPassRebaseRecoveryDispatched>().Should().ContainSingle();
+    }
+
+    /// <summary>
+    /// The resolving sibling of <see cref="A_replay_verdict_that_still_conflicts_dispatches_the_fix_session_with_the_verdict_as_guidance"/>
+    /// (independent pre-PR review, cycle 4, conformance lens): this method is reached only from
+    /// <c>DispatchRebaseRecoverySessionAsync</c>'s own round-cap check, which can redispatch a run
+    /// already sitting in <see cref="ReviewPhase.RebaseRecoveryNeeded"/> — a session-error-retried
+    /// (or budget-exhausted, or launch-held) carry-forward that gave the round back without ever
+    /// resolving the conflict, the exact shape <see cref="A_second_consecutive_rebase_recovery_session_error_fails_even_while_a_hold_stands"/>
+    /// stands in for directly. Before this fix, a landed Replay verdict here recorded the rebase
+    /// but never moved the run off RebaseRecoveryNeeded, so the loop's very next iteration walked
+    /// straight back into the identical round-cap check with the one assessment already spent and
+    /// parked over a branch that had just rebased cleanly.
+    /// </summary>
+    [Fact]
+    public async Task A_landed_replay_from_the_round_cap_actually_leaves_RebaseRecoveryNeeded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        await using (IDocumentSession seedSession = store.LightweightSession())
+        {
+            seedSession.Events.Append(runId,
+                new PreFinalPassRebaseRecoveryDispatched(
+                    runId, DomainId.New(), 5_300, Now, Now, AgentModel.Sonnet, "abc1234", "def5678", "rebase-recovery-1"),
+                new RunSessionErrorRetried(runId, RunSessionLeg.RebaseRecovery, Cycle: 0, Lens: null, "Internal server error", Now));
+            await seedSession.SaveChangesAsync(cts.Token);
+        }
+
+        StackAssessmentVerdict verdict = StackAssessmentVerdict.Replay(
+            ScriptedBoundary, ScriptedOnto, "a mechanical replay should land this time");
+        RecordingProcessRunner git = FakeCheckpointGit(cleanUpstream: ScriptedBoundary);
+
+        ReviewEngine engine = NewEngine(store, new ScriptedExecutor(), new DaemonOptions(), git.Runner);
+        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
+        RunAggregate run = await store.QuerySession().Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token)
+            ?? throw new InvalidOperationException("run stream must exist");
+        run.ReviewPhase.Should().Be(
+            ReviewPhase.RebaseRecoveryNeeded, "the fixture must reproduce the exact phase the round cap redispatches from");
+
+        ReviewEngine.RebaseGateOutcome outcome = await engine.ActOnPreFinalPassAssessmentAsync(context, run, verdict, cts.Token);
+
+        outcome.Should().Be(ReviewEngine.RebaseGateOutcome.Proceed, "the retry's own mechanical replay landed clean");
+
+        RunAggregate reloaded = await store.QuerySession().Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token)
+            ?? throw new InvalidOperationException("run stream must exist");
+        reloaded.ReviewPhase.Should().NotBe(
+            ReviewPhase.RebaseRecoveryNeeded,
+            "a resolved conflict must not leave the run stuck where the next iteration would redispatch or park over a branch that is already current");
+
+        List<object> events = [.. (await store.QuerySession().Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<PreFinalPassRebaseRecoveryCompleted>().Should().ContainSingle(
+            e => e.Outcome == ReviewFixOutcome.Fixed, "the round cap's own resolution is recorded exactly like any other resolved recovery");
     }
 
     /// <summary>

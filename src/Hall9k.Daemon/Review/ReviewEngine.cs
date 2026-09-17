@@ -3751,7 +3751,8 @@ public sealed class ReviewEngine(
             RunAggregate run = await LoadRunAsync(context.RunId, cancellationToken);
             return await DispatchRebaseRecoverySessionAsync(
                 context, run, humanGuidance: null, guidance, baseCommit: assessment.BoundaryCommit,
-                precedesFirstReviewCycle: checkpoint == StackedCheckpoint.BeforeFirstReviewCycle, cancellationToken)
+                precedesFirstReviewCycle: checkpoint == StackedCheckpoint.BeforeFirstReviewCycle, cancellationToken,
+                mechanicalRetryAttempted: replay.Value.Attempted)
                 ? RebaseGateOutcome.LoopAgain
                 : RebaseGateOutcome.Stop;
         }
@@ -3800,16 +3801,17 @@ public sealed class ReviewEngine(
     /// </summary>
     /// <param name="onAssessmentAlreadySpent">
     /// What a second git-shape park on this run does once its one assessment is already spent.
-    /// Defaults to <see cref="BothDiagnosesParkReason"/> — a direct park with both diagnoses
-    /// attached — which is the only honest answer for a stacked checkpoint's own conflict
+    /// Every caller today — a stacked checkpoint's own park, its replay conflict, and the
+    /// round-cap check inside <see cref="DispatchRebaseRecoverySessionAsync"/> — leaves this at its
+    /// default, <see cref="BothDiagnosesParkReason"/>, a direct park with both diagnoses attached
     /// (<see cref="ReplayCheckpointAsync"/>'s own doc gives the two reasons the ordinary
-    /// rebase-recovery session is wrong there). The mandatory final pass's own pre-flight rebase
-    /// passes a fallback instead: its conflicts were always the ordinary rebase-recovery session's
-    /// own territory before this assessment existed, so a second, unrelated conflict on that path
-    /// still owes it the recovery rounds <see cref="MaxRebaseRecoveryRounds"/> already budgets —
-    /// this guard's own one-shot rule is about the ASSESSMENT never dispatching twice, not about
-    /// capping the pre-existing recovery budget at whatever round the assessment happened to spend
-    /// (independent pre-PR review, cycle 1, both lenses).
+    /// rebase-recovery session is wrong for a stacked checkpoint's own conflict, and the round cap
+    /// having already spent this run's one assessment on an earlier park is the identical
+    /// never-spend-it-twice case). The one caller that overrides it,
+    /// <see cref="RecordRebaseRecoveryResultAsync"/>'s own dispute handling, still parks — through
+    /// <see cref="RecordRebaseRecoveryDisputedParkAsync"/> — rather than dispatching another
+    /// recovery round; there is no longer a fallback anywhere on this path that keeps recovery
+    /// rounds going once the assessment is spent.
     /// </param>
     /// <param name="additionalCandidateBranches">
     /// Extra branch names <see cref="ResolveOntoBranchNameAsync"/> may match an aligned or replay
@@ -4322,6 +4324,7 @@ public sealed class ReviewEngine(
                     : $"The stack assessment found the mandatory final pass's own pre-flight rebase already aligned: {assessment.Evidence}",
                 checkpointSpend: null, decisionsLogRenumbered: decisionsLogRenumberedForAligned, forkPointAdvanced: false,
                 cancellationToken);
+            await ClearRebaseRecoveryNeededIfResolvedAsync(context, run, cancellationToken);
             return RebaseGateOutcome.Proceed;
         }
 
@@ -4360,6 +4363,7 @@ public sealed class ReviewEngine(
                 + $"{ShortSha(assessment.BoundaryCommit)} to {ShortSha(assessment.OntoCommit)}): {assessment.Evidence}",
                 checkpointSpend: null, decisionsLogRenumbered: replay.Value.DecisionsLogRenumbered, forkPointAdvanced: false,
                 cancellationToken);
+            await ClearRebaseRecoveryNeededIfResolvedAsync(context, run, cancellationToken);
             return RebaseGateOutcome.Proceed;
         }
 
@@ -4369,6 +4373,40 @@ public sealed class ReviewEngine(
             precedesFirstReviewCycle: false, cancellationToken)
             ? RebaseGateOutcome.LoopAgain
             : RebaseGateOutcome.Stop;
+    }
+
+    /// <summary>
+    /// What <see cref="ActOnPreFinalPassAssessmentAsync"/>'s own Aligned and landed-Replay branches
+    /// owe a run they just resolved, beyond the plain <see cref="RunRebasedOntoBase"/>
+    /// <see cref="RecordRebaseOutcomeAsync"/> already appends (independent pre-PR review, cycle 4,
+    /// conformance lens): this method is reached only from <see cref="DispatchRebaseRecoverySessionAsync"/>'s
+    /// own round-cap check, which redispatches a run already sitting in
+    /// <see cref="ReviewPhase.RebaseRecoveryNeeded"/> — a budget-exhausted, launch-held or
+    /// session-error-retried carry-forward that gave the round back — exactly as readily as it
+    /// dispatches a fresh conflict a caller elsewhere (still <see cref="ReviewPhase.Settling"/>,
+    /// <see cref="ReviewPhase.Reverify"/>, or a checkpoint's own phase) has never moved off its own
+    /// phase at all. <see cref="RecordRebaseOutcomeAsync"/> alone never moves <c>ReviewPhase</c> —
+    /// every other caller relies on ITS OWN caller's phase already being the right one to resume —
+    /// so a run genuinely parked in RebaseRecoveryNeeded when this fires would stay there forever
+    /// once resolved: the loop's very next iteration reads the identical phase, redispatches through
+    /// this same round-cap check with the assessment already spent, and either starts a needless
+    /// fourth recovery session (Aligned's own no-op reset the round count to zero) or parks with a
+    /// stale "still conflicted" message over a branch that is already current (Replay's own landed
+    /// retry left the round count where it was). A no-op for every other caller, whose run was never
+    /// in RebaseRecoveryNeeded to begin with.
+    /// </summary>
+    private async Task ClearRebaseRecoveryNeededIfResolvedAsync(
+        ReviewContext context, RunAggregate run, CancellationToken cancellationToken)
+    {
+        if (run.ReviewPhase != ReviewPhase.RebaseRecoveryNeeded)
+        {
+            return;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(
+            context.RunId, new PreFinalPassRebaseRecoveryCompleted(context.RunId, ReviewFixOutcome.Fixed, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary><see cref="TryMechanicalReplayFromAssessmentAsync"/>'s own result.</summary>
@@ -4774,9 +4812,15 @@ public sealed class ReviewEngine(
     /// <param name="precedesFirstReviewCycle">
     /// See <see cref="Events.PreFinalPassRebaseRecoveryDispatched.PrecedesFirstReviewCycle"/>.
     /// </param>
+    /// <param name="mechanicalRetryAttempted">
+    /// See <see cref="Hall9k.Daemon.Execution.AgentPromptBuilder.BuildPreFinalPassRebase"/>'s own
+    /// identically named parameter — only <see cref="ActOnStackAssessmentAsync"/>'s own Replay
+    /// branch ever passes false, when its mechanical retry never actually ran a rebase.
+    /// </param>
     private async Task<bool> DispatchRebaseRecoverySessionAsync(
         ReviewContext context, RunAggregate run, string? humanGuidance, string? assessmentGuidance,
-        string? baseCommit, bool precedesFirstReviewCycle, CancellationToken cancellationToken)
+        string? baseCommit, bool precedesFirstReviewCycle, CancellationToken cancellationToken,
+        bool mechanicalRetryAttempted = true)
     {
         string worktreePath = context.Run.WorktreePath;
 
@@ -4798,7 +4842,13 @@ public sealed class ReviewEngine(
             return false;
         }
 
-        string baseBranch = context.BaseBranch;
+        // Read off the freshly loaded run, not context.BaseBranch: a checkpoint-originated track
+        // reaches this dispatch right after its own StackAssessmentCompleted has just moved the
+        // run's recorded base (RunAggregate.Apply(StackAssessmentCompleted)) — context.Run is the
+        // snapshot this whole review loop entered with, held for the loop's entire lifetime, and
+        // stays the stale pre-assessment base for as long as this track keeps running (independent
+        // pre-PR review, cycle 4, adversarial lens).
+        string baseBranch = run.BaseBranchOr(context.Project.BaseBranch);
         ProcessRunner git = ExternalProcess.RunnerWithDeadline(GitDeadline);
         string rebasedFromCommit = RunRebasedOntoBase.UnreadableCommit;
         string rebasedOntoCommit = RunRebasedOntoBase.UnreadableCommit;
@@ -4879,10 +4929,11 @@ public sealed class ReviewEngine(
         // project to land the gate fix as its own commit, with a message a human reads.
         string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
             context.Task, context.Project, context.Run.Branch, commitStyle, context.Task.PullRequestUrl,
-            humanGuidance, rebaseStillInProgress, baseBranch: context.BaseBranch,
+            humanGuidance, rebaseStillInProgress, baseBranch: baseBranch,
             commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
             assessmentGuidance: assessmentGuidance, baseCommit: baseCommit,
-            precedesFirstReviewCycle: precedesFirstReviewCycle);
+            precedesFirstReviewCycle: precedesFirstReviewCycle,
+            mechanicalRetryAttempted: mechanicalRetryAttempted);
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         string artifactName = RebaseRecoveryArtifactName(sessionId);
@@ -5082,6 +5133,30 @@ public sealed class ReviewEngine(
         logger.LogInformation(
             "Run {RunId}: pre-final-pass rebase-recovery session completed — outcome {Outcome} ({Input}in/{Output}out tokens)",
             runId, outcome == ReviewFixOutcome.Unknown ? "(undeclared)" : outcome.Value, result.TotalInputTokens, result.OutputTokens);
+
+        // The event just appended already moved this run to ReviewPhase.Reverify when
+        // RebaseRecoveryPrecedesFirstReviewCycle is set (RunAggregate.Apply(PreFinalPassRebaseRecoveryCompleted)) —
+        // unconditionally, on any non-Disputed outcome, the same optimistic trust an ordinary
+        // Settling landing already gives an undeclared or unconfirmed ending. That trust is safe
+        // there only because every Settling entry unconditionally re-checks the rebase
+        // (EnsureRebasedBeforeFinalPassAsync's own doc, above); Reverify's own cycle-0 branch
+        // dispatches Discovery straight away instead and never re-reads the worktree at all, so an
+        // aborted or still-mid-rebase worktree either burns a whole review cycle before this
+        // checkpoint's own next attempt conflicts again with no assessment left to spend, or fails
+        // cycle 0's own mandatory gate outright over raw conflict markers (independent pre-PR
+        // review, cycle 4, adversarial lens). Caught here, immediately, rather than left for the
+        // caller to walk into Reverify blind: redispatched exactly like a fresh conflict, with
+        // DispatchRebaseRecoverySessionAsync's own round cap still governing how many more attempts
+        // this track earns before it parks (the one assessment this run may ever spend is already
+        // gone, so a cap hit here parks with both diagnoses rather than looping).
+        if (!recordAsResolved && run.RebaseRecoveryPrecedesFirstReviewCycle)
+        {
+            RunAggregate freshRun = await LoadRunAsync(runId, cancellationToken);
+            return await DispatchRebaseRecoverySessionAsync(
+                context, freshRun, humanGuidance: null, assessmentGuidance: null,
+                baseCommit: freshRun.RebaseRecoveryBaseCommit, precedesFirstReviewCycle: true, cancellationToken);
+        }
+
         return true;
     }
 
