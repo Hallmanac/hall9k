@@ -1,0 +1,27 @@
+hall9k-task-record: 1
+task-id: 01a071de-3970-714e-a470-1a13d05e141c
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#459
+objective: |-
+  A delivered diff that touches no buildable or testable source skips the build and test gates: when every changed path is documentation, skill markdown, or other non-compiled content, verification records a deterministic skip with the file list as evidence instead of spending a full build-and-test cycle proving nothing
+criteria:
+  - |-
+    Before running any gate, VerificationRunner classifies every path the run's branch changed against its base, including deletions and renames. When every changed path matches the project's non-executable set, the build and test gates are skipped and a VerificationSkipped fact is recorded on the run stream naming every changed path and the rule each one matched, shown by h9k task show in the gate rendering where a pass shows today. A skip is never a pass for scoping: the next gate run that actually runs takes its scope from the last real VerificationPassed, never from a skip
+  - |-
+    The non-executable set is per project: h9k project set --non-executable-path <glob>, repeatable, with default restoring the compiled set, listed by h9k project show. The compiled default is exactly four rules: any *.md file, docs/, .claude/skills/, and .claude/commands/. Any changed path outside the set runs the gates as today, a diff that mixes code and content runs the gates in full, and a project can only add to the set, never remove a rule from the default
+  - |-
+    The skip applies at every entry into the gates on a run: first delivery, the verify pass between review cycles, and every follow-up lap, so a fix lap on a content-only branch does not pay the gates either; each entry classifies afresh and records its own fact
+  - |-
+    CI on GitHub is untouched: the pull request still runs the repository's workflow as it does today; this is a local-gate optimization only
+  - |-
+    Tests prove: a content-only diff skips with a fact naming every path and rule; a mixed diff runs the gates in full; a path outside the set runs the gates; a project-added glob is honored and a default rule cannot be removed; a fix lap on a content-only branch skips again; a skip is never used as a scope base. The classifier is tested as a pure function over a path list; at most one integration test covers the runner. docs/scope.md's verification section describes the skip, the default set, and the setting in one paragraph, the CLI help describes the flag, and PLAN.md's Decisions Log gains the next-numbered entry beside the stage-composition entry
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/d05e141c-a-delivered-diff-that-touches
+published: 2026-09-17 21:18:51Z
+context: |-
+  Origin: Brian, 2026-09-05, from the ef2fefe5 case study: a two-file skill markdown fix paid full build-and-test gates on every pipeline entry - about 12 minutes each time, at least twice on one task - while the actual work took four minutes. Gates exist to prove code still builds and tests still pass; a change with no code in it cannot alter either, so the gate run is deterministic ceremony. Design intent, per the doctrine seam (prescriptive lifecycle, permissive judgment): the lifecycle still runs verification on every delivery, but verification is allowed to conclude 'nothing here can break the build' by evidence rather than by running the build. Constraint: never guess - a path the project has not declared non-executable runs the gates. Seams: VerificationRunner (gate orchestration, already records scope facts such as test-gate scope and RanFullScope), the run stream (VerificationPassed and its scope facts), h9k task show's gate rendering. Related: the stage-composition feature (978ffa03, merged 2026-09-04) covers review stages; this task is the gates-side sibling. Smallest fix wins.
