@@ -1931,15 +1931,58 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await RetireMissingRunTaskAsync(store, taskId, node.OwnerId, cts.Token);
     }
 
+    /// <summary>
+    /// The regression this class was missing (independent pre-PR review, cycle 6, conformance
+    /// lens): <see cref="TasksWithMissingRunRecordsAsync"/>'s <c>AssignedOwnerId == ownerId</c>
+    /// fence, added alongside the identical one in <c>JiraWriteRetryEngine</c> (Decisions Log
+    /// #34's own precedent, <see cref="DispatchEngine"/>'s queued-task query), had no test
+    /// seeding a foreign-owner task and asserting it stays untouched — every other test in this
+    /// class seeds only under this node's own owner, so a reintroduced or inverted fence would
+    /// pass every one of them. A teammate's own completed-but-unrecorded run replicates onto this
+    /// node's database exactly like this shape (a Done task, its own pull request, a
+    /// <c>CurrentRunId</c> with no matching <c>RunDetails</c> row) — without the fence, this
+    /// sweep would reconstruct and complete a run this node never produced or holds.
+    /// </summary>
+    [Fact]
+    public async Task A_missing_runs_task_assigned_to_a_different_owner_is_never_inspected()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        Guid foreignOwnerId = DomainId.New();
+        (Guid taskId, Guid runId) = await SeedTaskWithMissingRunRecordAsync(
+            store, node, repoPath, cts.Token, foreignOwnerId: foreignOwnerId);
+
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddDays(-2) },
+        };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+        sweep.MergesObserved.Should().Be(0, "a task assigned to a different owner is never this node's own to close out");
+        inspector.StateInspections.Should().Be(0, "the ownership mismatch excludes it from the candidate set before gh is ever called");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.Events.FetchStreamStateAsync(runId, cts.Token)).Should().BeNull(
+            "nothing is reconstructed for a run this node never produced or holds");
+        TaskListItem task = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done);
+        task.AssignedOwnerId.Should().Be(foreignOwnerId);
+
+        await RetireMissingRunTaskAsync(store, taskId, node.OwnerId, cts.Token);
+    }
+
     /// <summary>See the two tests above: RunLauncher's declined-dispatch shape, seeded directly on the task stream.</summary>
     private static async Task<(Guid TaskId, Guid RunId)> SeedTaskWithMissingRunRecordAsync(
         DocumentStore store, NodeContext node, string repoPath, CancellationToken cancellationToken,
         TaskType? taskType = null, string? pullRequestUrl = null, Uri? projectRepositoryUrl = null,
-        bool archiveProject = false)
+        bool archiveProject = false, Guid? foreignOwnerId = null)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
-        Guid ownerId = node.OwnerId;
+        Guid ownerId = foreignOwnerId ?? node.OwnerId;
         Guid projectId = DomainId.New();
 
         await using IDocumentSession session = store.LightweightSession();
