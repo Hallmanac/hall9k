@@ -61,4 +61,54 @@ public static class EventReplicationCodec
             return null;
         }
     }
+
+    /// <summary>
+    /// One catch-up ask (idea 202383dc, M2b, task 9408d525) — the body of a
+    /// <see cref="Hall9k.Domain.Features.Message.MessageKind.EventsRequest"/> envelope. Exactly one
+    /// of three shapes: <see cref="ForStreamId"/> set asks for one specific stream's own events,
+    /// whoever originated them (the ledger-record adoption path — task add's own missing-stream
+    /// case); <see cref="ForOriginNodeId"/> set (with <see cref="ForStreamId"/> null) asks for
+    /// everything a peer holds from that one origin node past <see cref="SinceOriginSequence"/> — a
+    /// coarse, safe lower bound, since the origin's own global sequence is not contiguous across
+    /// projects and node/owner-scoped events, so "greater than" is always a superset of what is
+    /// genuinely missing, never a subset, and any overlap a peer re-sends is harmless (dedupe by
+    /// origin event id); both null asks for everything the peer holds for the project at all — a
+    /// brand-new node's own bootstrap.
+    /// </summary>
+    public sealed record EventsRequestRecord(Guid RequestId, Guid? ForOriginNodeId, long SinceOriginSequence, Guid? ForStreamId);
+
+    public static string EncodeRequest(EventsRequestRecord request) => JsonSerializer.Serialize(request, Options);
+
+    public static EventsRequestRecord? DecodeRequest(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<EventsRequestRecord>(json, Options);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// A peer's own answer that it cannot satisfy an <see cref="EventsRequestRecord"/> at all — the
+    /// body of a <see cref="Hall9k.Domain.Features.Message.MessageKind.EventsUnavailable"/> envelope
+    /// (idea 202383dc, M2b: "a peer that cannot answer says so").
+    /// </summary>
+    public sealed record EventsUnavailableRecord(Guid RequestId, string Reason);
+
+    public static string EncodeUnavailable(EventsUnavailableRecord unavailable) => JsonSerializer.Serialize(unavailable, Options);
+
+    public static EventsUnavailableRecord? DecodeUnavailable(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<EventsUnavailableRecord>(json, Options);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 }

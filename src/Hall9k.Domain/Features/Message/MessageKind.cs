@@ -20,6 +20,25 @@ public sealed record MessageKind
     /// </summary>
     public static readonly MessageKind Events = new("events");
 
+    /// <summary>
+    /// A catch-up request (idea 202383dc, M2b, task 9408d525) — the body is a JSON
+    /// <see cref="Hall9k.Domain.Features.Replication.EventReplicationCodec.EventsRequestRecord"/>
+    /// asking one peer (or, for the ledger-record adoption path, the whole project) to forward
+    /// whatever it holds for a gap (since a sequence), for a brand-new node (everything), or for one
+    /// specific stream. Rides the same per-node outbox ref as every other kind, read only by
+    /// <c>Hall9k.Connectors.Replication.EventCatchUpInbox</c> — never shown in <c>h9k messages</c>,
+    /// the same reason <see cref="Events"/> is not.
+    /// </summary>
+    public static readonly MessageKind EventsRequest = new("events-request");
+
+    /// <summary>
+    /// A peer's own answer that it cannot satisfy an <see cref="EventsRequest"/> at all — the body
+    /// is a JSON <see cref="Hall9k.Domain.Features.Replication.EventReplicationCodec.EventsUnavailableRecord"/>
+    /// naming the request it answers and why (idea 202383dc, M2b: "a peer that cannot answer says
+    /// so"). Never shown in <c>h9k messages</c>, the same reason <see cref="Events"/> is not.
+    /// </summary>
+    public static readonly MessageKind EventsUnavailable = new("events-unavailable");
+
     public string Value { get; }
 
     private MessageKind(string value) => Value = value;
@@ -28,12 +47,14 @@ public sealed record MessageKind
     {
         "note" => Note,
         "events" => Events,
+        "events-request" => EventsRequest,
+        "events-unavailable" => EventsUnavailable,
         _ => new MessageKind(raw),
     };
 
     /// <summary>Whether this is a kind Hall9k actually interprets, rather than one stored as-is for
     /// a future version — or a future kind this version has not learned yet — to make sense of.</summary>
-    public bool IsRecognized => this == Note || this == Events;
+    public bool IsRecognized => this == Note || this == Events || this == EventsRequest || this == EventsUnavailable;
 
     public override string ToString() => Value;
 }
