@@ -1994,7 +1994,7 @@ changed; the P2P identity layer (§16 #38-#58) is untouched.
 > Every citation of the placeholder elsewhere in this repository was rewritten to
 > `#216` in the same commit.
 
-PLACEHOLDER-3abf032d. **The Windows daemon loses its append-only log handle to its own
+217. **The Windows daemon loses its append-only log handle to its own
 launcher, never to a reader tailing the log: the open now retries for a bounded three seconds
 and both give-up paths name the holder they lost to, while the structural fix — a
 launcher-supplied inheritable append handle in place of cmd.exe's `>>` redirect — stays
@@ -2061,6 +2061,12 @@ warning is expected at every Windows start, and it now reads as the diagnosis it
 bare error number. **Does this block the later vision?** No. One new internal interop helper in
 Hall9k.Daemon and a retry loop around an existing open; no domain shape, no event, no command
 surface, and nothing the P2P layer (§16 #38-#58) touches.
+
+> Renumbering placement note: this entry was appended under placeholder
+> `PLACEHOLDER-3abf032d` and assigned **#217** by the mechanical pre-final-pass
+> rebase step — the log's next free number once this branch was rebased onto its base.
+> Every citation of the placeholder elsewhere in this repository was rewritten to
+> `#217` in the same commit.
 
 ---
 

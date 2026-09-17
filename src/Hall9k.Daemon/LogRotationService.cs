@@ -24,7 +24,7 @@ namespace Hall9k.Daemon;
 /// comes up solely through the logon autostart task (<c>wscript.exe</c> straight to cmd.exe,
 /// never through the CLI) never enforces the budget at all rather than merely deferring it. The
 /// fix is a launcher-supplied append handle in place of the redirect: see
-/// <c>WindowsAppendOnlyLog</c> and PLAN.md §16 #PLACEHOLDER-3abf032d.
+/// <c>WindowsAppendOnlyLog</c> and PLAN.md §16 #217.
 /// </para>
 /// </summary>
 public sealed class LogRotationService(ILogger<LogRotationService> logger) : BackgroundService

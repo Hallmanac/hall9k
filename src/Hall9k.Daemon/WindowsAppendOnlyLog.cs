@@ -53,7 +53,7 @@ namespace Hall9k.Daemon;
 /// shape of both launch paths. Fixing it for real means taking cmd.exe's <c>&gt;&gt;</c> off
 /// the daemon launch, so the launcher hands h9kd an inheritable <c>FILE_APPEND_DATA</c> handle
 /// it opened with a permissive share mode instead: that is its own piece of work, recorded in
-/// PLAN.md §16 #PLACEHOLDER-3abf032d, not this type's job.
+/// PLAN.md §16 #217, not this type's job.
 /// </para>
 /// <para>
 /// <strong>What losing this handle actually costs, then.</strong> Not the NUL padding the

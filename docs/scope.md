@@ -1025,7 +1025,7 @@ solely through the logon autostart task (`wscript.exe` to cmd.exe to h9kd, never
 never enforces the budget at all. The fix is a launcher-supplied inheritable append handle in
 place of the redirect; it is unbuilt.
 
-See `SLICE-1.md` S1-14, Decisions Log #3, #78, #85, #PLACEHOLDER-3abf032d.
+See `SLICE-1.md` S1-14, Decisions Log #3, #78, #85, #217.
 
 ### Token visibility and exhaustion
 
