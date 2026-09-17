@@ -720,10 +720,11 @@ ignored the same way an unvouched one always was. Project-scoped end to end now 
 M2): every eligible project a node is registered to (not archived, with a repository) is swept
 each tick through its own repository, never just the first one found; seq allocation and the
 per-sender inbox cursor are both keyed by (sender node, local project) so a sender common to two
-projects never collides between them; and the wire envelope itself carries a project key derived
-from that project's own ledger (its genesis member's own root fingerprint), identical on every
-node sharing the repository and never any one install's own locally-minted project id — see
-"Multi-node and peer-to-peer" below for the identity groundwork this key rests on.
+projects never collides between them; and the wire envelope itself carries a project key generated
+once at genesis (a fresh 26-character ULID, never the genesis owner's own root fingerprint —
+two projects sharing one genesis owner mint two unrelated keys), identical on every node sharing
+the repository and never any one install's own locally-minted project id — see "Multi-node and
+peer-to-peer" below for the identity groundwork this key rests on.
 
 ### Configuration and policy
 
