@@ -120,6 +120,20 @@ public static class LedgerRefRegistry
     /// </summary>
     public static readonly LedgerRefEntry MembersRef = RegisterExact("refs/hall9k/ledger/members");
 
+    /// <summary>
+    /// A project's own prompt-builder addenda (idea b9b09779, piece 6): one
+    /// <c>prompt-addenda/&lt;builder-key&gt;.md</c> file per builder that has one, written only by
+    /// the daemon (never a dispatched agent session) from a <c>ProjectPromptAddendumSet</c> event.
+    /// Exact, the same reason <see cref="MembersRef"/> is: the ref name is fixed and known up
+    /// front, and what varies is a path inside it.
+    /// </summary>
+    public static readonly LedgerRefEntry PromptAddenda = RegisterExact("refs/hall9k/ledger/prompt-addenda");
+
+    public const string PromptAddendaPathPrefix = "prompt-addenda/";
+
+    /// <summary>The exact path one builder's own addendum lives at: <c>prompt-addenda/&lt;builder-key&gt;.md</c>.</summary>
+    public static string PromptAddendumPath(string builderKey) => $"{PromptAddendaPathPrefix}{builderKey}.md";
+
     public static LedgerRefEntry RegisterExact(string refName) => Register(refName, LedgerRefKind.Exact);
 
     public static LedgerRefEntry RegisterPrefix(string prefix) => Register(

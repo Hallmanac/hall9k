@@ -368,6 +368,8 @@ public static class WorkPromptBuilder
             AppendHandoffRules(prompt);
         }
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Work);
+
         return prompt.ToString();
     }
 
@@ -900,6 +902,34 @@ public static class WorkPromptBuilder
     {
         prompt.AppendLine($"{indent}- {lead}");
         prompt.Append(conventions.ToPromptLines($"{indent}  > "));
+    }
+
+    /// <summary>
+    /// Splices <paramref name="project"/>'s own addendum for <paramref name="builder"/>, when it
+    /// has one, after everything appended so far — the fixed heading is this project's own
+    /// guidance, never a substitute for or a reference to any of the platform prose above it
+    /// (idea b9b09779, piece 6). A no-op when there is none, so a builder with no addendum renders
+    /// byte-for-byte as it always has. <c>Hall9k.Daemon.Execution.AgentPromptBuilder</c> and
+    /// <see cref="ReviewLapPromptBuilder"/> call this too, the same reason
+    /// <see cref="AppendWritingConventions"/> is public.
+    /// </summary>
+    public static void AppendPromptAddendum(StringBuilder prompt, ProjectDetails project, PromptBuilderKey builder) =>
+        AppendPromptAddendum(prompt, ProjectPromptAddendaLoader.TryLoad(project, builder));
+
+    /// <summary>Overload for a caller (<see cref="ReviewLapPromptBuilder"/>) that already resolved
+    /// the addendum ahead of time so its own composition stays pure and testable.</summary>
+    public static void AppendPromptAddendum(StringBuilder prompt, LoadedPromptAddendum? addendum)
+    {
+        if (addendum is null)
+        {
+            return;
+        }
+
+        prompt.AppendLine();
+        prompt.AppendLine(addendum.OverCap
+            ? "## This project's own guidance (set over this project's usual addendum length cap)"
+            : "## This project's own guidance");
+        prompt.AppendLine(addendum.Content.TrimEnd());
     }
 
     /// <summary>

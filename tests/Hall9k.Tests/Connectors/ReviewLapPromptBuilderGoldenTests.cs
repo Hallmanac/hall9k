@@ -74,6 +74,32 @@ public sealed class ReviewLapPromptBuilderGoldenTests : IDisposable
     public void A_scoped_lap_with_nothing_in_either_half_matches_its_golden() =>
         AssertMatchesGolden("since-my-review-minimal", ReviewLapPromptBuilder.Build(SinceMyReviewMinimalBriefing()));
 
+    [Fact]
+    public void A_lap_with_a_resolved_addendum_splices_it_after_the_rules_section()
+    {
+        ReviewLapBriefing briefing = MinimalBriefing() with
+        {
+            PromptAddendum = new LoadedPromptAddendum("Check for missing null checks in reviewer replies.", OverCap: false),
+        };
+
+        string prompt = ReviewLapPromptBuilder.Build(briefing);
+
+        int rulesIndex = prompt.IndexOf("## Working rules", StringComparison.Ordinal);
+        int closingIndex = prompt.IndexOf("## How this lap ends", StringComparison.Ordinal);
+        int headingIndex = prompt.IndexOf("## This project's own guidance", StringComparison.Ordinal);
+        headingIndex.Should().BeGreaterThan(rulesIndex);
+        if (closingIndex >= 0)
+        {
+            headingIndex.Should().BeLessThan(closingIndex);
+        }
+
+        prompt.Should().Contain("Check for missing null checks in reviewer replies.");
+    }
+
+    [Fact]
+    public void A_lap_with_no_addendum_never_renders_the_heading() =>
+        ReviewLapPromptBuilder.Build(MinimalBriefing()).Should().NotContain("This project's own guidance");
+
     private static void AssertMatchesGolden(string name, string actual)
     {
         string path = GoldenPath(name);
