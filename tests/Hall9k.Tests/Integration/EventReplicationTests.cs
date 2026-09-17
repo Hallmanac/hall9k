@@ -825,6 +825,103 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 5, adversarial lens (EventReplicationOutbox.cs:155): the
+    /// <see cref="EventReplicationOutboxPosition.HighestQueuedSequence"/> skip alone cannot tell a
+    /// held-back private event apart from an already-sent one once some other, later-sequence
+    /// stream in the same project gets queued while the private event is still held back — a
+    /// rescan after the flag clears would read the held-back event's own sequence as "already
+    /// queued" from the mark alone and drop it forever, leaving the receiving inbox to start a
+    /// phantom stream from whatever event of the idea's happens to arrive first.
+    /// <see cref="EventReplicationOutboxPosition.PendingPrivateSequences"/> exists so this cannot
+    /// happen: the idea's own held-back events are found and sent once the flag clears, however far
+    /// other project activity has since pushed the high-water mark past them.
+    /// </summary>
+    [Fact]
+    public async Task A_private_ideas_own_events_survive_a_later_streams_events_being_sent_first()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        // An idea goes private before any other project activity — the earliest possible hold-back
+        // point, so the durable position resumes from before it on every later sweep.
+        Guid ideaId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<IdeaAggregate>(
+                ideaId, new IdeaCaptured(ideaId, ownerId, "A private thought", projectId, Now.AddSeconds(1), string.Empty));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+            session.Events.Append(ideaId, IdeaDecider.SetPrivate(idea, isPrivate: true, Now.AddSeconds(1), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // An ordinary, non-private task's own events come AFTER the hold-back point.
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(2), cts.Token);
+
+        // First sweep: the idea is held back, but the task's own events are new and eligible, so
+        // they get queued and push HighestQueuedSequence past the idea's own two held-back events.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult firstSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            firstSweep.EventsQueued.Should().BeGreaterThan(0);
+        }
+
+        // The owner clears the flag — its own new event lands well after everything above.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+            session.Events.Append(ideaId, IdeaDecider.SetPrivate(idea, isPrivate: false, Now.AddSeconds(4), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Second sweep: without PendingPrivateSequences, the idea's own two held-back events would
+        // both read as "already queued" against the mark the task's events set above, and only the
+        // clearing event itself would ever be sent.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult secondSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(5), cts.Token);
+            secondSweep.EventsQueued.Should().Be(3, "the idea's own capture, its privacy-set(true), and its privacy-set(false) must all reach the teammate");
+        }
+
+        await messageOutbox.FlushAsync(
+            _postgres.Store.LightweightSession(), RepositoryPath, nodeA, projectId, "shared-project-key",
+            adoptUnassigned: false, committer, signingKey, Now.AddSeconds(5), cts.Token);
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        List<EventReplicationCodec.ReplicatedEventRecord> ideaRecords = [.. read.Envelopes
+            .SelectMany(envelope => EventReplicationCodec.DecodeBatch(MessageEnvelopeCodec.Decode(envelope.Content).Envelope!.Body)!)
+            .Where(record => record.StreamId == ideaId)];
+
+        // Every event the idea ever carried reaches the teammate — not just the clearing event —
+        // so the receiving inbox can start its own idea stream from IdeaCaptured rather than a
+        // phantom StartStream seeded with only the privacy flag.
+        ideaRecords.Should().HaveCount(3);
+        ideaRecords.Select(record => record.EventTypeName).Should().Contain(type => type.Contains("IdeaCaptured"));
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 3, adversarial lens (EventReplicationInbox.cs:146): dedupe
     /// by origin event id used <c>LightweightSession.LoadAsync</c>, which only ever sees committed
     /// rows — so a second copy of the identical origin event landing later in the SAME read (exactly

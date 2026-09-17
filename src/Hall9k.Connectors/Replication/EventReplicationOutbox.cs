@@ -30,15 +30,22 @@ public sealed record EventReplicationQueueResult(int EnvelopesQueued, int Events
 /// would otherwise echo forever, each hop minting a new duplicate on both ends. A currently-private
 /// task or idea's own events are skipped, never blocking any other stream's own events in the same
 /// scan — but the durable position this project's own next scan resumes from never advances past
-/// the earliest one still found private this tick (the same gap-stop idiom
+/// the earliest one still owed to a teammate (<see
+/// cref="EventReplicationOutboxPosition.PendingPrivateSequences"/>; the same gap-stop idiom
 /// <c>GitLedgerMessageTransport.ReadSinceAsync</c> already uses for a numeric seq gap), so clearing
 /// the flag later always finds it again rather than having silently skipped past it forever. A
 /// separate, never-capped high-water mark
 /// (<see cref="EventReplicationOutboxPosition.HighestQueuedSequence"/>) is what stops that resumed
-/// rescan from re-queuing a non-private event past the hold-back point a second time (independent
+/// rescan from re-queuing an already-sent event past the hold-back point a second time (independent
 /// pre-PR review, cycle 3, both lenses: the position alone can only ever move backward while the
 /// flag stays set, so every eligible event past it was otherwise re-batched, and re-pushed as a
-/// brand-new envelope, on every single sweep for as long as the flag stood).
+/// brand-new envelope, on every single sweep for as long as the flag stood) — but the mark alone
+/// cannot tell "already sent" apart from "still owed", once some other stream's own later event
+/// pushed the mark past a held-back one; <see
+/// cref="EventReplicationOutboxPosition.PendingPrivateSequences"/> makes that distinction, so a
+/// rescan neither drops a held-back event forever nor pays a full reclassification-and-resolve pass
+/// for every already-sent event it re-reads while anything nearby stays private (independent pre-PR
+/// review, cycle 5, both lenses).
 /// </summary>
 public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
 {
@@ -60,6 +67,13 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         long sinceSequence = Math.Max(position?.LastFlushedGlobalSequence ?? 0, switchOnSequence);
         long highestQueuedSequence = position?.HighestQueuedSequence ?? 0;
 
+        // Sequences this project has found still private and skipped, not yet actually queued —
+        // every one of them is re-examined below regardless of where it sits relative to
+        // highestQueuedSequence, which is what lets a formerly-private event be told apart from an
+        // already-sent one once some other stream's own later event has pushed the mark past it
+        // (independent pre-PR review, cycle 5, adversarial lens).
+        HashSet<long> pendingPrivate = position?.PendingPrivateSequences is { Count: > 0 } saved ? [.. saved] : [];
+
         IReadOnlyList<IEvent> candidates = await session.Events.QueryAllRawEvents()
             .Where(e => e.Sequence > sinceSequence)
             .OrderBy(e => e.Sequence)
@@ -73,17 +87,24 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         List<EventReplicationCodec.ReplicatedEventRecord> batch = [];
         long batchBytes = 0;
         long lastIncludedSequence = sinceSequence;
-        // The sequence of the first still-private stream's own event this scan encountered, or
-        // null while none has. Once set it never changes — candidates arrive in increasing
-        // sequence order, so the first one found is already the earliest possible — and it caps
-        // every position this call persists, so a later scan always re-finds it once the flag
-        // clears rather than having already scanned past it.
-        long? heldBackAtSequence = null;
         int envelopesQueued = 0;
         int eventsQueued = 0;
 
         foreach (IEvent candidate in candidates)
         {
+            if (candidate.Sequence <= highestQueuedSequence && !pendingPrivate.Contains(candidate.Sequence))
+            {
+                // Already scanned in an earlier sweep and conclusively settled then — queued, or
+                // found to be none of this project's business — with nothing left here that could
+                // change that reading except its own privacy flag, and a still-private candidate is
+                // exactly what pendingPrivate tracks. Skipping the classification and ownership
+                // resolution below for the rest is what keeps a long-held-back private draft from
+                // making every sweep re-read and re-resolve the whole rest of the project's history
+                // past it (independent pre-PR review, cycle 5, conformance lens, medium).
+                lastIncludedSequence = candidate.Sequence;
+                continue;
+            }
+
             EventScope scope;
             try
             {
@@ -145,23 +166,18 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             if (resolved.IsPrivate)
             {
                 // Skip only this event, never the rest of the scan: a private task or idea must not
-                // hold back every other stream's own events. The position write below still never
-                // advances past heldBackAtSequence, so this one is found again once the flag clears.
-                heldBackAtSequence ??= candidate.Sequence;
+                // hold back every other stream's own events. Recorded (or kept recorded) as owed, so
+                // a later sweep re-finds it by sequence rather than trusting highestQueuedSequence's
+                // reading once the flag clears and some other stream has since pushed the mark past
+                // it (the fast skip above, and the position cap below, both key off this set).
+                pendingPrivate.Add(candidate.Sequence);
                 continue;
             }
 
-            if (candidate.Sequence <= highestQueuedSequence)
-            {
-                // Already queued (and sent) in an earlier sweep, while some other still-private
-                // stream elsewhere in the project kept LastFlushedGlobalSequence from ever advancing
-                // past it. Never requeue it as a new envelope a second time — that is exactly the
-                // unbounded resend this high-water mark exists to stop (independent pre-PR review,
-                // cycle 3, both lenses).
-                lastIncludedSequence = candidate.Sequence;
-                continue;
-            }
-
+            // Reaching here with candidate.Sequence <= highestQueuedSequence is only possible for a
+            // pendingPrivate member (the fast skip above is the only thing that could have let it
+            // through) — never treated as "already sent" the way the high-water mark alone would
+            // read it. It is owed, whichever sweep first held it back.
             EventReplicationCodec.ReplicatedEventRecord record = ToRecord(candidate, nodeId, fromOwnerFingerprint, projectId);
             string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
 
@@ -170,7 +186,8 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             {
                 await FlushBatchAsync(
                     session, nodeId, projectId, fromOwnerFingerprint, batch,
-                    CapAtHeldBackPosition(lastIncludedSequence, heldBackAtSequence), highestQueuedSequence, now, cancellationToken);
+                    CapAtHeldBackPosition(lastIncludedSequence, pendingPrivate), highestQueuedSequence, pendingPrivate,
+                    now, cancellationToken);
                 envelopesQueued++;
                 eventsQueued += batch.Count;
                 batch = [];
@@ -180,25 +197,36 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             batch.Add(record);
             batchBytes += recordJson.Length;
             lastIncludedSequence = candidate.Sequence;
-            highestQueuedSequence = candidate.Sequence;
+            // Math.Max, not a plain assignment: a pendingPrivate member being caught up here can
+            // have a LOWER sequence than the mark already reached through other streams, and a plain
+            // assignment would regress the mark backward — which would then make the fast skip above
+            // wrongly stop trusting every already-sent event between the regressed mark and where it
+            // used to be, reclassifying and re-queuing them as duplicates on this very sweep.
+            highestQueuedSequence = Math.Max(highestQueuedSequence, candidate.Sequence);
+            // Sent now — no longer owed.
+            pendingPrivate.Remove(candidate.Sequence);
         }
 
-        long finalPosition = CapAtHeldBackPosition(lastIncludedSequence, heldBackAtSequence);
+        long finalPosition = CapAtHeldBackPosition(lastIncludedSequence, pendingPrivate);
 
         if (batch.Count > 0)
         {
             await FlushBatchAsync(
-                session, nodeId, projectId, fromOwnerFingerprint, batch, finalPosition, highestQueuedSequence, now, cancellationToken);
+                session, nodeId, projectId, fromOwnerFingerprint, batch, finalPosition, highestQueuedSequence,
+                pendingPrivate, now, cancellationToken);
             envelopesQueued++;
             eventsQueued += batch.Count;
         }
-        else if (finalPosition > sinceSequence || highestQueuedSequence > (position?.HighestQueuedSequence ?? 0))
+        else if (finalPosition > sinceSequence
+            || highestQueuedSequence > (position?.HighestQueuedSequence ?? 0)
+            || !pendingPrivate.SetEquals(position?.PendingPrivateSequences ?? []))
         {
             session.Store(new EventReplicationOutboxPosition
             {
                 Id = projectId,
                 LastFlushedGlobalSequence = finalPosition,
                 HighestQueuedSequence = highestQueuedSequence,
+                PendingPrivateSequences = [.. pendingPrivate],
             });
             await session.SaveChangesAsync(cancellationToken);
         }
@@ -206,15 +234,15 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         return new EventReplicationQueueResult(envelopesQueued, eventsQueued);
     }
 
-    /// <summary>Never lets a persisted position pass the earliest still-private event this scan
-    /// found, however far past it later, eligible events were actually queued and sent.</summary>
-    private static long CapAtHeldBackPosition(long candidatePosition, long? heldBackAtSequence) =>
-        heldBackAtSequence is { } heldBack ? Math.Min(candidatePosition, heldBack - 1) : candidatePosition;
+    /// <summary>Never lets a persisted position pass the earliest event still owed to a teammate,
+    /// however far past it later, eligible events were actually queued and sent.</summary>
+    private static long CapAtHeldBackPosition(long candidatePosition, HashSet<long> pendingPrivate) =>
+        pendingPrivate.Count > 0 ? Math.Min(candidatePosition, pendingPrivate.Min() - 1) : candidatePosition;
 
     private static async Task FlushBatchAsync(
         IDocumentSession session, Guid nodeId, Guid projectId, string fromOwnerFingerprint,
         List<EventReplicationCodec.ReplicatedEventRecord> batch, long positionAfterBatch, long highestQueuedSequence,
-        DateTimeOffset now, CancellationToken cancellationToken)
+        HashSet<long> pendingPrivate, DateTimeOffset now, CancellationToken cancellationToken)
     {
         // Stored in the same session as the QueueAsync call below, which saves it: the position
         // advance and the queued envelope land in one commit, so a crash between the two can never
@@ -224,6 +252,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             Id = projectId,
             LastFlushedGlobalSequence = positionAfterBatch,
             HighestQueuedSequence = highestQueuedSequence,
+            PendingPrivateSequences = [.. pendingPrivate],
         });
 
         string body = EventReplicationCodec.EncodeBatch(batch);
