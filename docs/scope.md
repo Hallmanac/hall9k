@@ -344,7 +344,15 @@ discovery) or `h9k idea archive` (nothing did), each with the reason kept and no
 ### External work items
 
 `h9k task add --from-issue` adopts a GitHub issue; `--from-jira` adopts a Jira card. Both are
-one-time snapshots that never re-check, and neither invents acceptance criteria. A project
+one-time snapshots that never re-check, and neither invents acceptance criteria. Passed together,
+they link both trackers to one task: one becomes the primary — the reference that keeps the claim
+gate, the branch key, publish, closeout close, and every tracker write — and the other becomes the
+secondary, shown by `h9k status`/`h9k task show` and linked, but never gating or written to. Which
+one is primary is `h9k task add --primary-tracker github|jira` on that invocation, or a project
+default (`h9k project set --primary-tracker github|jira`); with neither, the command refuses rather
+than guessing. `h9k task link-issue`/`h9k task link-jira` still enforce one reference each — the
+dual shape is establishable only at `task add` time, never by linking a secondary onto an
+already-published task afterward. A project
 declares a backlog policy (`h9k project set --backlog none|github-issues|jira`), and every task
 published under one is tracked automatically: `github-issues` has the platform author the issue
 itself, deterministically, since an issue's shape is uniform; `jira` dispatches the same
