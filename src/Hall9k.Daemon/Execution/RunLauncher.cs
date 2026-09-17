@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
@@ -608,6 +609,8 @@ public sealed class RunLauncher(
                     commandTimeout: options.Value.VerifyGateTimeout, voiceSkill: voiceSkill);
             }
 
+            LogIfOverCapAddendum(runId, project, PromptBuilderKey.Agent);
+
             // Re-checked here, immediately before the actual spawn, rather than trusting the
             // fence read at the top of this method alone (Copilot review, PR #334, a suppressed
             // finding on that earlier check): the worktree checkout, blocker-context assembly,
@@ -794,6 +797,8 @@ public sealed class RunLauncher(
                 // The drafted reply this session produces is written first-person as the owner, so
                 // the seam names their own voice skill when they have one (#193).
                 voiceSkill: (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill);
+
+            LogIfOverCapAddendum(runId, project, PromptBuilderKey.MentionFollowUp);
 
             // Re-checked here, immediately before the actual spawn, rather than trusting the
             // fence read at the top of this method alone (independent pre-PR review, cycle 1,
@@ -1457,6 +1462,26 @@ public sealed class RunLauncher(
                 project.RepositoryPath, baseBranch, taskId, runId, task.Objective,
                 project.BranchNameTemplate, task.ExternalReference),
             cancellationToken), false);
+    }
+
+    /// <summary>
+    /// The "log names an over-cap addendum whenever it appends one" half of criterion 3 (idea
+    /// b9b09779, piece 6): <see cref="AgentPromptBuilder"/> and <see cref="MentionFollowUpPromptBuilder"/>
+    /// are static and logger-free by design (PLAN.md's own entry for this feature), so the one line
+    /// this logs at this shared dispatch point, once a run's prompt has already been composed, is
+    /// what actually satisfies that clause for every daemon-dispatched session — rather than
+    /// threading an <see cref="ILogger"/> through every one of those builders' own <c>Build*</c>
+    /// methods for a fact this call site can already read straight off the project.
+    /// </summary>
+    private void LogIfOverCapAddendum(Guid runId, ProjectDetails project, PromptBuilderKey builder)
+    {
+        if (ProjectPromptAddendaLoader.TryLoad(project, builder) is { OverCap: true })
+        {
+            logger.LogInformation(
+                "Run {RunId}: composed with project {ProjectId}'s own {Builder} prompt addendum, set over "
+                + "this project's usual length cap",
+                runId, project.Id, builder.Value);
+        }
     }
 
     private async Task RecordLaunchFailureAsync(
