@@ -1,0 +1,24 @@
+hall9k-task-record: 1
+task-id: 01a09648-699d-713c-9c33-fdf71da0a4fa
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#460
+objective: |-
+  A content task (documentation, skill markdown, prompt templates, other non-compiled files) runs a lighter pipeline by default: its type selects skipped build and test gates and a single review lens, so a README or skill change clears the pipeline in minutes rather than hours while the type can never carry compiled or tested code past the gates
+criteria:
+  - |-
+    h9k task add and h9k task revise accept --type content. A content task dispatches with the conformance-only review composition by default, recorded on the run's stream at dispatch exactly as the composition already is, and the type itself is the acknowledgment, so no --accept-reduced-review is required; the existing composition flags still override it per task. The build and test gates are not the type's concern: they skip by d05e141c's evidence, which criterion 2 guarantees always holds for a content task
+  - At every entry into the gates, a content task whose diff includes any path outside the project's non-executable set fails the pre-gate check naming each offending path, with the same outcome a failed gate has today, so the type can never carry compiled or tested code past a reduced review. The check uses the classifier and the project set d05e141c builds, never a copy, and honours a project's added globs
+  - |-
+    The Decisions Log entry names ef2fefe5 as the baseline (3 hours 22 minutes claim to merge, 44 minutes of gates, 54 minutes of review on a two-file skill fix) and states the target: under 30 minutes claim to pull request for the same shape as a content task. The measurement itself comes from the record of the first content task to merge and is not this pull request's to produce
+  - |-
+    Tests prove: a content task dispatches with conformance-only recorded and no acknowledgment demanded; an explicit composition flag overrides the default; a content task diff with one path outside the set fails naming that path; a content-only diff passes the check and skips the gates through the shared classifier; the other six types dispatch exactly as before. docs/scope.md and the CLI help describe the type, its default, and the refusal with one worked example, and PLAN.md's Decisions Log gains the next-numbered entry beside d05e141c's
+dependencies: [01a071de-3970-714e-a470-1a13d05e141c]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/1da0a4fa-a-content-task-documentation-s
+published: 2026-09-17 21:18:57Z
+context: |-
+  From idea 9178c408 (value review, gap 1). Brian's case on 2026-09-12: README and getting-started updates took hours through the full pipeline and would take 15 to 30 minutes attended. Walked 2026-09-16 with Brian: the build and test gates are d05e141c's job (evidence-based skip, the classifier and the project's non-executable set live there); this task is the type on top of it, stacked on d05e141c, and adds only the conformance-only default without the acknowledgment ceremony and the refusal that keeps code off the reduced-review lane. Both fold-in, sequenced after the distributed-teams slice and before the documentation wave it will produce. Precedents: TaskType.Research already exempts the no-commit pre-gate check (src/Hall9k.Daemon/Execution/VerificationRunner.cs near line 527), which is the shape of a type-conditional check; ReviewStageComposition (src/Hall9k.Domain/Features/Run/ReviewStageComposition.cs) is settable per task and frozen at dispatch, and ConformanceOnly already exists; TaskType (src/Hall9k.Domain/Features/Tasks/TaskType.cs) gains the seventh value. Reference case detail in ideas/fc85f609-*/workspace/final-stage-optimization-2026-09-03.md under Reference case (ef2fefe5).
