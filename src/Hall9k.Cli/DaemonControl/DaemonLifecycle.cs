@@ -116,10 +116,14 @@ public static class DaemonLifecycle
         Directory.CreateDirectory(RunPaths.Root);
 
         // Start with a log that is inside its budget, so this run's output is not read
-        // out of a file that was already at the threshold. The running daemon enforces
-        // the same budget on its own timer (LogRotationService) — a daemon left up for
+        // out of a file that was already at the threshold. On Unix the running daemon
+        // enforces the same budget on its own timer (LogRotationService) — a daemon left up for
         // weeks never reaches a start path again — and rotation is a copy-then-truncate
-        // either way, so the two never fight over the file.
+        // either way, so the two never fight over the file. On Windows this rotation is the only
+        // one that ever lands: cmd.exe's `>>` redirect holds the log with FILE_SHARE_READ for the
+        // whole run, refusing the daemon's own timer its ReadWrite open on every tick
+        // (WindowsAppendOnlyLog, PLAN.md §16 #PLACEHOLDER-3abf032d), so a node that comes up only
+        // through the logon autostart task never enforces the budget at all.
         try
         {
             if (DaemonLog.RotateIfOversized())

@@ -10,6 +10,22 @@ namespace Hall9k.Daemon;
 /// <see cref="DaemonLogRotation"/>): this process holds the log's descriptor open for
 /// its whole lifetime, so a rename would silently redirect every subsequent line into
 /// the rolled-aside generation.
+/// <para>
+/// On Windows this check cannot currently succeed, and the claim above that the budget is
+/// checked while the daemon runs holds on Unix only. Both Windows launch paths give h9kd its
+/// log through a cmd.exe <c>&gt;&gt;</c> redirect, which holds the file with
+/// <c>FILE_SHARE_READ</c> for the whole run, so <see cref="DaemonLogRotation"/>'s
+/// <c>FileAccess.ReadWrite</c> open is refused with a sharing violation on every tick — caught
+/// and logged below, then retried five minutes later. Nothing is corrupted by that (no
+/// truncation lands, so no line is lost and the log is not NUL-padded), but an oversized log
+/// on Windows stays oversized until the CLI's own start path next rolls it aside with nothing
+/// holding it (<c>h9k daemon start</c>, or an <c>h9k install</c> or <c>h9k update</c> that
+/// restarts the daemon) — and that path is the only Windows one that rotates, so a node that
+/// comes up solely through the logon autostart task (<c>wscript.exe</c> straight to cmd.exe,
+/// never through the CLI) never enforces the budget at all rather than merely deferring it. The
+/// fix is a launcher-supplied append handle in place of the redirect: see
+/// <c>WindowsAppendOnlyLog</c> and PLAN.md §16 #PLACEHOLDER-3abf032d.
+/// </para>
 /// </summary>
 public sealed class LogRotationService(ILogger<LogRotationService> logger) : BackgroundService
 {

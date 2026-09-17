@@ -13,8 +13,20 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// redirect and launchd's StandardOutPath open with O_APPEND, so the next write lands at
 /// the new end of the emptied file. Windows has no equivalent for a plain <c>cmd.exe
 /// &gt;&gt;</c> handle (its write position is cached at open time rather than re-resolved
-/// per write), so h9kd replaces its inherited stdout/stderr with true append-only handles
-/// of its own before it logs anything — see <c>WindowsAppendOnlyLog</c> in Hall9k.Daemon.
+/// per write), so h9kd tries to replace its inherited stdout/stderr with true append-only
+/// handles of its own before it logs anything — see <c>WindowsAppendOnlyLog</c> in
+/// Hall9k.Daemon. Be honest about where that stands: cmd.exe holds an append redirect's
+/// target with <c>FILE_SHARE_READ</c> only, for the whole run, so on both shipped Windows
+/// launch paths that replacement is refused — and so is the <c>FileAccess.ReadWrite</c> open
+/// below, on the identical grounds. That is why a running Windows daemon leaves no
+/// NUL-padded log behind: the truncation never lands at all, <c>LogRotationService</c> logs
+/// the refusal every five minutes instead, and the budget is enforced only when the CLI's own
+/// start path next runs and rotates the log while nothing holds it — <c>h9k daemon start</c>, or
+/// an <c>h9k install</c> or <c>h9k update</c> that restarts the daemon. A Windows node that comes
+/// up solely through the logon autostart task never reaches that path, so there the budget is
+/// never enforced at all rather than merely deferred. The
+/// fix — hand the daemon an inheritable append handle instead of a cmd.exe redirect — is
+/// recorded in PLAN.md §16 #PLACEHOLDER-3abf032d.
 /// </para>
 /// <para>
 /// The trade a copy-truncate makes is a narrow window: lines written between the copy

@@ -65,8 +65,11 @@ public sealed class DaemonLogRotationTests : IDisposable
             // Models a real O_APPEND descriptor (/bin/sh's own >>), which is the Unix
             // side of the story. Windows has no shell equivalent to model here — a plain
             // cmd.exe >> handle does NOT re-resolve end-of-file per write, which is
-            // exactly why h9kd never relies on one; see WindowsAppendOnlyLogTests for the
-            // Windows-side coverage of the handle it uses instead.
+            // exactly why h9kd tries not to rely on one; see WindowsAppendOnlyLogTests for
+            // the Windows-side coverage of the handle it opens instead — and for why that
+            // open is in fact always refused on the shipped launch paths, which is also why
+            // rotation never runs under a live Windows daemon at all and there is no
+            // Windows half of this test to write.
             return;
         }
 
