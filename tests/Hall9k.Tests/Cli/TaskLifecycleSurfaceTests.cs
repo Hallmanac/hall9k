@@ -23,7 +23,8 @@ public sealed class TaskLifecycleSurfaceTests
     {
         string[] lifecycle = [.. LifecycleState.All.Select(state => state.Word)];
         lifecycle.Should().Equal(
-            "Draft", "Published", "Working", "Delivered", "Waiting", "Done", "Failed", "Archived");
+            "Draft", "Published", "Working", "Delivered", "Waiting", "HeldElsewhere", "Done", "Failed",
+            "Archived");
 
         // Every run state under every task state the composer can be handed. The run vocabulary
         // is the phase line's material now, and the column it used to leak into prints exactly

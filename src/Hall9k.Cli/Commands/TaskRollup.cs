@@ -20,15 +20,20 @@ internal sealed record TaskRollup(
     int Ready,
     int Draft,
     int Done,
-    int Closed)
+    int Closed,
+    int HeldElsewhere = 0)
 {
-    public static readonly TaskRollup Empty = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+    public static readonly TaskRollup Empty = new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
 
     /// <summary>Column headers, in the same order as <see cref="Cells"/>.</summary>
     public static readonly string[] Columns =
-        ["Needs you", "Stalled", "Working", "Delivered", "Queued", "Blocked", "Ready", "Draft", "Done", "Closed"];
+    [
+        "Needs you", "Stalled", "Working", "Delivered", "Queued", "Blocked", "Ready", "Draft", "Done",
+        "Closed", "Held elsewhere",
+    ];
 
-    public int Total => NeedsYou + Stalled + Working + Delivered + Queued + Blocked + Ready + Draft + Done + Closed;
+    public int Total =>
+        NeedsYou + Stalled + Working + Delivered + Queued + Blocked + Ready + Draft + Done + Closed + HeldElsewhere;
 
     public static TaskRollup From(IEnumerable<TaskStatusRow> rows)
     {
@@ -56,6 +61,10 @@ internal sealed record TaskRollup(
                 AttentionBucket.Ready => rollup with { Ready = rollup.Ready + 1 },
                 AttentionBucket.Draft => rollup with { Draft = rollup.Draft + 1 },
                 AttentionBucket.Done => rollup with { Done = rollup.Done + 1 },
+                // Explicit for the identical reason Waiting is above it: the fall-through is
+                // Closed, which would count a teammate's own live work as archived (idea
+                // 202383dc, M2a).
+                AttentionBucket.HeldElsewhere => rollup with { HeldElsewhere = rollup.HeldElsewhere + 1 },
                 _ => rollup with { Closed = rollup.Closed + 1 },
             };
         }
@@ -76,6 +85,7 @@ internal sealed record TaskRollup(
         Cell(Draft, "dim"),
         Cell(Done, "green"),
         Cell(Closed, "dim"),
+        Cell(HeldElsewhere, "grey"),
     ];
 
     /// <summary>
@@ -95,6 +105,7 @@ internal sealed record TaskRollup(
         Add(parts, Draft, "dim", "draft");
         Add(parts, Done, "green", "done");
         Add(parts, Closed, "dim", "closed");
+        Add(parts, HeldElsewhere, "grey", "held elsewhere");
 
         return parts.Count > 0 ? string.Join(" · ", parts) : "[dim]no tasks[/]";
     }

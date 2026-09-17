@@ -47,6 +47,24 @@ internal static class PublishedFacts
     };
 
     /// <summary>
+    /// Who holds a HeldElsewhere row's claim, and since when (idea 202383dc, M2a). A foreign
+    /// node's own friendly name never replicates (<c>NodeDetails</c> is node-scoped), so the
+    /// claiming owner's cross-node root fingerprint is what names the holder — truncated to a
+    /// short, readable prefix the same way a task or run id is shortened elsewhere on this board —
+    /// falling back to the bare node id on a claim recorded before that fingerprint existed.
+    /// </summary>
+    private static string HeldElsewhereFact(TaskListItem task, DateTimeOffset now)
+    {
+        string holder = task.ClaimedByOwnerRootFingerprint.IsNotBlank()
+            ? task.ClaimedByOwnerRootFingerprint![..Math.Min(12, task.ClaimedByOwnerRootFingerprint!.Length)]
+            : task.ClaimedByNodeId?.ToString() ?? "an unknown node";
+        string since = task.ClaimedAt is { } claimedAt
+            ? TaskStatusComposer.RelativeAge(now - claimedAt)
+            : "an unknown time";
+        return $"held by {holder} since {since}";
+    }
+
+    /// <summary>
     /// What a Published row is actually waiting for, oldest question first: whether a human has
     /// assigned it at all, then what the platform is waiting on. Empty for any row that is not
     /// Published, which is what keeps the line from appearing where it would say nothing — except
@@ -72,7 +90,8 @@ internal static class PublishedFacts
         TaskListItem task,
         LifecycleState state,
         QueueHold? held = null,
-        TrackerClaimDecision? heldByTracker = null)
+        TrackerClaimDecision? heldByTracker = null,
+        DateTimeOffset now = default)
     {
         if (state != LifecycleState.Published)
         {
@@ -103,6 +122,7 @@ internal static class PublishedFacts
             // platform will never attempt (independent pre-PR review, cycle 1, both lenses).
             return
             [
+                .. state == LifecycleState.HeldElsewhere ? (string[])[HeldElsewhereFact(task, now)] : [],
                 .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
                 .. task.EffectivePreApproval.MergesAutomatically
                     && state != LifecycleState.Done

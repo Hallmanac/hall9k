@@ -244,7 +244,7 @@ internal static class TaskStatusComposer
     public static TaskStatusRow Compose(TaskListItem task, TaskStatusContext context, DateTimeOffset now)
     {
         RunDetails? run = task.CurrentRunId is { } runId ? context.Runs.GetValueOrDefault(runId) : null;
-        LifecycleState state = State(task, run);
+        LifecycleState state = State(task, run, context);
 
         bool onThisMachine = run is not null
             && context.NodeMachines.GetValueOrDefault(run.NodeId) == context.MachineName;
@@ -276,7 +276,7 @@ internal static class TaskStatusComposer
             phase,
             attention,
             group,
-            PublishedFacts.Compose(task, state, held, heldByTracker),
+            PublishedFacts.Compose(task, state, held, heldByTracker, now),
             project,
             task.Objective,
             task.Type.Value,
@@ -411,11 +411,33 @@ internal static class TaskStatusComposer
     /// runs were still going (the origin confusion, task 17).
     /// </para>
     /// </summary>
-    private static LifecycleState State(TaskListItem task, RunDetails? run)
+    private static LifecycleState State(TaskListItem task, RunDetails? run, TaskStatusContext context)
     {
+        if (HeldElsewhere(task, context))
+        {
+            return LifecycleState.HeldElsewhere;
+        }
+
         bool pushed = task.PullRequestUrl.IsNotBlank();
         return State(task.State, pushed, Closed(run, pushed));
     }
+
+    /// <summary>
+    /// Whether a Claimed task's holder is a node this install has never registered locally (idea
+    /// 202383dc, M2a) — the rendering test for a replicated claim. <see cref="TaskListItem.ClaimedByNodeId"/>
+    /// is preserved verbatim on a replicated <c>TaskClaimed</c> fact, but a foreign node's own
+    /// <c>NodeDetails</c> never replicates (node identity is node-scoped), so a claimant absent
+    /// from <see cref="TaskStatusContext.NodeMachines"/> — which only ever holds nodes THIS
+    /// install's own database has a <c>NodeRegistered</c> stream for — can only be a node this
+    /// claim traveled in from. The interactive-claim sentinel (<see cref="TaskListItem.IsInteractiveClaim"/>,
+    /// <see cref="Guid.Empty"/>) is never a foreign node and is excluded explicitly rather than
+    /// relying on it also being absent from <c>NodeMachines</c>.
+    /// </summary>
+    private static bool HeldElsewhere(TaskListItem task, TaskStatusContext context) =>
+        task.State == TaskState.Claimed
+        && task.ClaimedByNodeId is { } claimedByNodeId
+        && claimedByNodeId != Guid.Empty
+        && !context.NodeMachines.ContainsKey(claimedByNodeId);
 
     /// <summary>
     /// The same word for a task seen from a dependent's side, so the blocker list on
@@ -645,6 +667,7 @@ internal static class TaskStatusComposer
             "Working" => AttentionBucket.Working,
             "Delivered" => AttentionBucket.Delivered,
             "Waiting" => AttentionBucket.Waiting,
+            "HeldElsewhere" => AttentionBucket.HeldElsewhere,
             "Failed" => AttentionBucket.NeedsYou,
             "Done" => AttentionBucket.Done,
             "Draft" => AttentionBucket.Draft,
