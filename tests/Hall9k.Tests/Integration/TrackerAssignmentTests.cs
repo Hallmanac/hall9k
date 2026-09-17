@@ -1854,6 +1854,76 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         stillStuck!.PendingJiraWriteIsAuthFailure.Should().BeTrue("the write stays pending until the project is reactivated");
     }
 
+    /// <summary>
+    /// All three of <see cref="JiraWriteRetryEngine.PollOnceAsync"/>'s own candidate queries fence
+    /// on <c>TaskDetails.AssignedOwnerId == ownerId</c> (independent pre-PR review, cycle 5,
+    /// conformance lens), but every other test in this class runs its task through
+    /// <see cref="SeedTaskAsync"/> with <c>ownerId</c> set to the caller's own
+    /// <c>node.OwnerId</c> — see that helper's own doc comment — so none of them would notice a
+    /// reintroduced or inverted fence on any of the three queries (independent pre-PR review,
+    /// cycle 6, conformance lens: the same coverage gap named against
+    /// <c>CloseoutEngineTests</c>'s own missing-run sweep). This seeds one task in each of the
+    /// three candidate shapes under a different owner and proves the sweep never touches any of
+    /// them — Jira is never called at all.
+    /// </summary>
+    [Fact]
+    public async Task Tasks_assigned_to_a_different_owner_are_never_retried_drained_or_expired()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid foreignOwnerId = DomainId.New();
+
+        Guid authFailureTaskId = await SeedTaskAsync(
+            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-501"), foreignOwnerId, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            JiraWriteAttemptResult submitted = await JiraWriteCoordinator.SubmitAsync(
+                session, authFailureTaskId, JiraWriteOperation.Comment, issueKey: null,
+                new JiraWritePayload(null, null, "A teammate's own comment."), JiraProjectKey.None,
+                DomainId.New(), Executor(AuthRejected()), cts.Token);
+            submitted.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
+        }
+
+        Guid queuedNoticeTaskId = await SeedTaskAsync(
+            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-502"), foreignOwnerId, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(queuedNoticeTaskId, token: cts.Token))!;
+            session.Events.Append(queuedNoticeTaskId, TaskDecider.QueueJiraMergeNotice(task, JiraWriteNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid stalePendingTaskId = await SeedTaskAsync(
+            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-503"), foreignOwnerId, cts.Token);
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(stalePendingTaskId, token: cts.Token))!;
+            session.Events.Append(stalePendingTaskId, TaskDecider.RequestJiraWrite(
+                task, JiraWriteOperation.Comment, "PROJ-503", "{}", DomainId.New(), JiraWriteNow, foreignOwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
+            _ => throw new InvalidOperationException("a different owner's own pending write must never reach this node's Jira connection"));
+        JiraWriteRetryEngine engine = new(store, node, mustNotRun.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
+
+        JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(
+            new JiraWriteRetrySweepResult(Retried: 0, Succeeded: 0, MergeNoticesDrained: 0, Expired: 0),
+            "every candidate here belongs to a different owner, so none of them are this node's own to act on");
+
+        TaskAggregate? authFailure = await LoadAsync(store, authFailureTaskId, cts.Token);
+        authFailure!.PendingJiraWriteIsAuthFailure.Should().BeTrue("untouched — still waiting on its own owner's node");
+
+        TaskAggregate? queuedNotice = await LoadAsync(store, queuedNoticeTaskId, cts.Token);
+        queuedNotice!.HasQueuedJiraMergeNotice.Should().BeTrue("untouched — still waiting on its own owner's node");
+
+        TaskAggregate? stalePending = await LoadAsync(store, stalePendingTaskId, cts.Token);
+        stalePending!.PendingJiraWriteId.Should().NotBeNull("untouched — still waiting on its own owner's node");
+    }
+
     [Fact]
     public async Task A_failure_that_is_not_about_authentication_is_left_for_a_freshly_composed_write()
     {
