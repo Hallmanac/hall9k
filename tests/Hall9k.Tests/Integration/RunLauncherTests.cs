@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
@@ -1643,6 +1644,148 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
         run.Model.Value.Should().Be("claude-opus-5[1m]", "the run records what it was actually dispatched on");
         (await query.LoadAsync<RunListItem>(runId, cts.Token))!.Model.Value.Should().Be("claude-opus-5[1m]");
+    }
+
+    /// <summary>
+    /// Regression for the over-cap addendum log line (verify pass, cycle 2, conformance lens): a
+    /// fresh dispatch composes through <see cref="AgentPromptBuilder.Build"/>, a thin forward to
+    /// <c>WorkPromptBuilder.Build</c>, which splices <see cref="PromptBuilderKey.Work"/> — never
+    /// <see cref="PromptBuilderKey.Agent"/>, which only the follow-up and review prompts splice.
+    /// The log line naming an over-cap addendum has to check the key the prompt actually spliced
+    /// on this dispatch path, or a genuinely over-cap Work addendum goes unlogged on the single
+    /// most common dispatch path.
+    /// </summary>
+    [Fact]
+    public async Task A_fresh_dispatchs_over_cap_log_names_the_work_addendum_not_agent()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        string home = Path.Combine(Path.GetTempPath(), $"h9k-overcap-work-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(ProjectHomePaths.PromptAddendaDirectory(home));
+            // Over cap on Work only — the builder a fresh dispatch actually splices. No file at
+            // all for Agent, so a log line naming Agent would be inventing a fact.
+            await File.WriteAllTextAsync(
+                ProjectHomePaths.PromptAddendumFile(home, PromptBuilderKey.Work.Value),
+                $"{ProjectPromptAddendaLoader.OverCapMarker}\nA very long house style, kept anyway.", cts.Token);
+
+            Guid taskId = DomainId.New();
+            Guid runId = DomainId.New();
+            Guid projectId = DomainId.New();
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                ProjectRegistered registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"overcap-work-{taskId:N}", "/tmp/overcap-work-repo",
+                    null, "main", Now, homeDirectory: ProjectHome.Parse(home));
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                    TaskDecider.Add(
+                        taskId, projectId, "Fresh dispatch over an over-cap Work addendum",
+                        ["the log names work, never agent"], TaskType.Chore, null, null, null, Now, node.OwnerId),
+                    node.OwnerId, Now);
+                Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                    TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+                session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+                session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            ListLogger<RunLauncher> logger = new();
+            MergedInspector inspector = new();
+            StubWorktreeManager worktrees = new();
+            RunLauncher launcher = new(store, worktrees, new CapturingExecutor(),
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+                Options.Create(new DaemonOptions()), logger);
+
+            await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+            logger.Lines.Should().Contain(
+                line => line.Contains("own work prompt addendum, set over"),
+                "a fresh dispatch actually spliced the Work addendum, so the log has to name that builder");
+            logger.Lines.Should().NotContain(
+                line => line.Contains("own agent prompt addendum"),
+                "nothing on a fresh dispatch ever splices the Agent addendum, so the log must never claim it did");
+        }
+        finally
+        {
+            if (Directory.Exists(home))
+            {
+                Directory.Delete(home, recursive: true);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The inverse of <see cref="A_fresh_dispatchs_over_cap_log_names_the_work_addendum_not_agent"/>
+    /// (verify pass, cycle 2, conformance lens): when only the Agent addendum is over cap and a
+    /// fresh dispatch never touches it, the log must stay silent rather than naming Agent as
+    /// though this run's own prompt had spliced it.
+    /// </summary>
+    [Fact]
+    public async Task A_fresh_dispatch_stays_silent_on_an_over_cap_agent_addendum_it_never_spliced()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        string home = Path.Combine(Path.GetTempPath(), $"h9k-overcap-agent-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(ProjectHomePaths.PromptAddendaDirectory(home));
+            // Over cap on Agent only — a builder a fresh dispatch never composes through.
+            await File.WriteAllTextAsync(
+                ProjectHomePaths.PromptAddendumFile(home, PromptBuilderKey.Agent.Value),
+                $"{ProjectPromptAddendaLoader.OverCapMarker}\nA very long house style, kept anyway.", cts.Token);
+
+            Guid taskId = DomainId.New();
+            Guid runId = DomainId.New();
+            Guid projectId = DomainId.New();
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                ProjectRegistered registered = ProjectDecider.Register(
+                    projectId, node.OwnerId, DomainId.New(), $"overcap-agent-{taskId:N}", "/tmp/overcap-agent-repo",
+                    null, "main", Now, homeDirectory: ProjectHome.Parse(home));
+                session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+                (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                    TaskDecider.Add(
+                        taskId, projectId, "Fresh dispatch beside an over-cap Agent addendum",
+                        ["the log stays silent"], TaskType.Chore, null, null, null, Now, node.OwnerId),
+                    node.OwnerId, Now);
+                Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                    TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+                session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+                session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            ListLogger<RunLauncher> logger = new();
+            MergedInspector inspector = new();
+            StubWorktreeManager worktrees = new();
+            RunLauncher launcher = new(store, worktrees, new CapturingExecutor(),
+                NewSupervisor(store, node), NewContextAssembler(store), inspector,
+                NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+                Options.Create(new DaemonOptions()), logger);
+
+            await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+            logger.Lines.Should().NotContain(
+                line => line.Contains("prompt addendum, set over"),
+                "the Work addendum this dispatch actually spliced has no file at all, and the "
+                + "over-cap Agent addendum beside it was never touched by this dispatch");
+        }
+        finally
+        {
+            if (Directory.Exists(home))
+            {
+                Directory.Delete(home, recursive: true);
+            }
+        }
     }
 
     /// <summary>
