@@ -387,6 +387,70 @@ public sealed class GitLedgerTests : IDisposable
         await write.Should().ThrowAsync<DomainValidationException>();
     }
 
+    [Fact]
+    public async Task ReadAllAsync_ReturnsEveryFileUnderThePrefix_EachWithItsOwnPathAndBlobId()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string writer = _repo.CloneNode(hub);
+
+        LedgerWriteOutcome first = await _ledger.WriteAsync(
+            new LedgerWriteRequest(writer, refName, "records/one.yaml", "task-id: one\n", null, "one", _committer, _signingKey),
+            CancellationToken.None);
+        LedgerWriteOutcome second = await _ledger.WriteAsync(
+            new LedgerWriteRequest(writer, refName, "records/two.yaml", "task-id: two\n", null, "two", _committer, _signingKey),
+            CancellationToken.None);
+        // A file outside the prefix — proves ReadAllAsync filters by path prefix rather than
+        // returning every file in the tree.
+        await _ledger.WriteAsync(
+            new LedgerWriteRequest(writer, refName, "other/three.yaml", "task-id: three\n", null, "three", _committer, _signingKey),
+            CancellationToken.None);
+
+        first.Verdict.Should().Be(LedgerWriteVerdict.Written);
+        second.Verdict.Should().Be(LedgerWriteVerdict.Written);
+
+        string reader = _repo.CloneNode(hub);
+        IReadOnlyList<LedgerEntry> entries = await _ledger.ReadAllAsync(reader, refName, "records/", CancellationToken.None);
+
+        entries.Should().HaveCount(2);
+        LedgerEntry one = entries.Should().ContainSingle(entry => entry.Path == "records/one.yaml").Subject;
+        LedgerEntry two = entries.Should().ContainSingle(entry => entry.Path == "records/two.yaml").Subject;
+        one.Content.Should().Be("task-id: one\n");
+        two.Content.Should().Be("task-id: two\n");
+        one.BlobId.Should().NotBeNullOrEmpty();
+        two.BlobId.Should().NotBeNullOrEmpty();
+        one.BlobId.Should().NotBe(two.BlobId, "each file's own blob id, not the commit id");
+
+        // The blob id ReadAllAsync reports for a path matches what a targeted ReadAsync reports for
+        // that same path — the two primitives read the same tip the same way.
+        LedgerFile direct = await _ledger.ReadAsync(reader, refName, "records/one.yaml", CancellationToken.None);
+        one.BlobId.Should().Be(direct.BlobId);
+    }
+
+    [Fact]
+    public async Task ReadAllAsync_OnARefNeverPushedTo_ReturnsEmpty()
+    {
+        string refName = UniqueTestRef();
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+
+        IReadOnlyList<LedgerEntry> entries = await _ledger.ReadAllAsync(node, refName, "records/", CancellationToken.None);
+
+        entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ReadAllAsync_OnAnUnregisteredRef_Refuses()
+    {
+        string unregistered = $"refs/hall9k/not-registered-{Guid.NewGuid():N}";
+        string hub = _repo.CreateHub();
+        string node = _repo.CloneNode(hub);
+
+        Func<Task> readAll = () => _ledger.ReadAllAsync(node, unregistered, "records/", CancellationToken.None);
+
+        await readAll.Should().ThrowAsync<ArgumentException>();
+    }
+
     private static string UniqueTestRef() => LedgerRefRegistry.RegisterExact($"refs/hall9k/ledger/test-{Guid.NewGuid():N}").RefspecSource;
 
     private static (string PrivateKeyPath, string PublicKey) GenerateSshKeypair()

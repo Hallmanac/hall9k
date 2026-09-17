@@ -109,6 +109,17 @@ internal sealed class FakeLedger : ILedger
         return Task.FromResult(refs);
     }
 
+    public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(
+        string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken)
+    {
+        RequireRegistered(refName);
+        IReadOnlyList<LedgerEntry> entries = [.. _files
+            .Where(pair => pair.Key.Repository == repositoryPath && pair.Key.RefName == refName
+                && pair.Key.Path.StartsWith(pathPrefix, StringComparison.Ordinal))
+            .Select(pair => new LedgerEntry(pair.Key.Path, pair.Value.Content, pair.Value.BlobId))];
+        return Task.FromResult(entries);
+    }
+
     private static void RequireRegistered(string refName)
     {
         if (!LedgerRefRegistry.IsRegistered(refName))

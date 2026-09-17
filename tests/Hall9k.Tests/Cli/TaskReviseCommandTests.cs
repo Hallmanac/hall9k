@@ -103,64 +103,49 @@ public sealed class TaskReviseCommandTests
     }
 
     /// <summary>
-    /// The record-rewrite confirmation says only what the write actually did. It used to print
-    /// "Task record rewritten in <c>owner/repo#266</c>" unconditionally, so a mirror — whose issue
-    /// belongs to the install that published it and is deliberately never written — and a task in a
-    /// project that tracks no backlog both claimed a tracker write that never happened (independent
-    /// pre-PR review, cycle 1, both lenses).
+    /// The record-rewrite confirmation says only what the write actually did. Idea 202383dc, A3a
+    /// moved the record from a collapsed section of the issue body into the ledger, so the two
+    /// outcomes worth telling an operator apart are now "written" and "this is a mirror, so nothing
+    /// was written" — <see cref="TaskRecordPublication.WriteOutcome.Mirror"/> is permanent for a
+    /// task adopted from another node's own record, never a transient miss (its own doc comment).
     /// </summary>
     [Fact]
-    public void A_written_record_is_the_only_outcome_reported_as_a_rewrite()
+    public void A_written_record_with_no_criteria_change_says_only_the_ledger_was_rewritten()
     {
         string written = RenderPlain(TaskReviseCommand.DescribeRewrite(
-            TaskRecordPublication.WriteOutcome.Written, mirror: false, criteriaChanged: false, "hall9k",
-            "Hallmanac/hall9k#266"));
+            TaskRecordPublication.WriteOutcome.Written, criteriaChanged: false));
 
-        written.Should().Contain("Task record rewritten in Hallmanac/hall9k#266");
-        written.Should().Contain("everything above it in the issue is untouched");
+        written.Should().Contain("Task record rewritten in the ledger");
+        written.Should().NotContain("checklist");
     }
 
     /// <summary>
-    /// A revision that replaced the criteria regenerated the checklist ABOVE the record, so the
-    /// confirmation cannot claim everything above the record survived — it used to, on exactly the
-    /// revision that rewrote the most (independent pre-PR review, cycle 1, adversarial lens).
+    /// A revision that replaced the criteria also regenerates the linked issue's checklist (when
+    /// one applies), so the confirmation says both things happened — never only the ledger write,
+    /// which is exactly what this revision did the most of.
     /// </summary>
     [Fact]
     public void A_revision_that_replaced_the_criteria_says_the_checklist_was_regenerated_too()
     {
         string written = RenderPlain(TaskReviseCommand.DescribeRewrite(
-            TaskRecordPublication.WriteOutcome.Written, mirror: false, criteriaChanged: true, "hall9k",
-            "Hallmanac/hall9k#266"));
+            TaskRecordPublication.WriteOutcome.Written, criteriaChanged: true));
 
-        written.Should().Contain("Task record rewritten in Hallmanac/hall9k#266");
-        written.Should().Contain("checklist above it regenerated");
-        written.Should().NotContain("everything above it in the issue is untouched",
-            "the checklist above the record is exactly what this revision did rewrite");
+        written.Should().Contain("Task record rewritten in the ledger");
+        written.Should().Contain("acceptance-criteria checklist")
+            .And.Contain("regenerated from the new criteria");
     }
 
-    [Fact]
-    public void A_mirrors_revision_says_the_origins_issue_was_not_written()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void A_mirrors_revision_says_the_origins_record_was_not_written(bool criteriaChanged)
     {
         string reported = RenderPlain(TaskReviseCommand.DescribeRewrite(
-            TaskRecordPublication.WriteOutcome.NotTracked, mirror: true, criteriaChanged: true, "hall9k",
-            "Hallmanac/hall9k#266"));
+            TaskRecordPublication.WriteOutcome.Mirror, criteriaChanged));
 
         reported.Should().NotContain("rewritten");
-        reported.Should().Contain("Nothing was written to Hallmanac/hall9k#266");
+        reported.Should().Contain("Nothing was written to the ledger");
         reported.Should().Contain("belongs to the install that published it");
-    }
-
-    [Fact]
-    public void A_project_that_tracks_nothing_says_why_its_linked_issue_was_left_alone()
-    {
-        string reported = RenderPlain(TaskReviseCommand.DescribeRewrite(
-            TaskRecordPublication.WriteOutcome.NotTracked, mirror: false, criteriaChanged: false, "hall9k",
-            "Hallmanac/hall9k#266"));
-
-        reported.Should().NotContain("rewritten");
-        reported.Should().Contain("does not track its backlog in GitHub issues");
-        reported.Should().Contain("h9k project set hall9k --backlog github-issues",
-            "the message names the rule and the command that changes it, so an operator can self-correct");
     }
 
     /// <summary>

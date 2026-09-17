@@ -1040,6 +1040,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
             inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 
     /// <summary>An <see cref="ILedger"/> that throws <see cref="LedgerPushRejectedException"/> on
@@ -1070,5 +1073,8 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
         public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
             inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 }

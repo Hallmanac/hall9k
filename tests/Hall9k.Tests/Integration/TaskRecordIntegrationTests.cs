@@ -1,6 +1,6 @@
-using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Connection;
@@ -27,21 +27,26 @@ using Xunit;
 namespace Hall9k.Tests.Integration;
 
 /// <summary>
-/// The task record's own integration surfaces — what it carries out to a GitHub issue and back,
-/// what adoption refuses to take twice, and what <c>h9k task resolve --pr</c> writes onto a run
-/// stream — sharing one container across the three seams below. Each was its own class and so its
-/// own container for nine to thirteen tests; every assertion here reads what its own test seeded,
-/// by id or by its own external reference (no two seams here name the same issue), so a sibling
-/// seam's rows are as invisible as a sibling test's already were.
+/// The task record's own integration surfaces — what it writes into the project's own ledger, what
+/// <see cref="TaskRecordAdoption.LocateAsync"/> (and, through it,
+/// <see cref="TaskAddCommand.RefuseIfRecordedElsewhereAsync"/>) makes of a record it finds there,
+/// and what <c>h9k task resolve --pr</c> writes onto a run stream — sharing one container across
+/// the three seams below. Each was its own class and so its own container for nine to thirteen
+/// tests; every assertion here reads what its own test seeded, by id or by its own external
+/// reference (no two seams here name the same issue), so a sibling seam's rows are as invisible as
+/// a sibling test's already were.
 /// <para>
-/// The whole crossing, against a real store and a scripted <c>gh</c> (task: a published task's
-/// GitHub issue carries the whole task record): what publish writes into the issue, what revise
-/// rewrites and what it leaves alone, and what a second install makes of the block when it adopts
-/// the issue — including the two references that had to change form to survive the crossing, the
-/// dependency edges (issue numbers) and the epic (a title). gh is a
-/// <see cref="RecordingProcessRunner"/> serving a mutable issue body rather than the real CLI,
-/// which is what lets the round trip be asserted end to end: the body publish wrote is literally
-/// the body adoption reads.
+/// The whole crossing, against a real store and <see cref="FakeLedger"/> (idea 202383dc, A3a: a
+/// task's record moved from a collapsed section of its GitHub issue body into
+/// <c>records/&lt;task-id&gt;.yaml</c> on <c>refs/hall9k/ledger/records</c>, ruled 2026-09-12): what
+/// publish writes into the ledger, what revise rewrites there, and what
+/// <see cref="TaskRecordAdoption.LocateAsync"/> makes of a record naming a task this store already
+/// holds versus one it does not — including the one reference that had to change form to survive
+/// the crossing, a dependency edge, now a task id rather than a tracker's own issue number (task ids
+/// are the same on every node; Brian, 2026-09-13). Per Brian's 2026-09-13 testing rule, no test here
+/// touches a real git repository or remote — <see cref="FakeLedger"/> is the seam every test below
+/// drives instead; <c>GitLedgerTests</c> and the chain reader's own tests are the only ones allowed
+/// to use real git.
 /// </para>
 /// <para>
 /// Adoption is selective, never mirroring (PLAN.md §3.1a): the platform tracks only the external
@@ -68,48 +73,90 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 7, 15, 31, 33, TimeSpan.Zero);
     private const string Repository = "Hallmanac/hall9k";
+    private const string RepositoryPath = "/repos/hall9k";
+    private static readonly LedgerCommitter Committer = new("Ledger Test", "ledger-test@hall9k.local");
+    // FakeLedger never reads this path — it only checks a signing key is present, the same gate
+    // GitLedger itself enforces (RequireSigningKey) — so a real key on disk is never needed here.
+    private static readonly LedgerSigningKey SigningKey = new("/fake/signing-key-never-read-by-fakeledger");
 
     [Fact]
-    public async Task Publish_writes_the_record_below_the_checklist_and_a_second_install_reads_it_back()
+    public async Task Publish_writes_the_record_to_the_ledger_with_every_field()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
         Install origin = await SeedAsync(store, cts.Token);
+
+        Guid epicId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Events.StartStream<EpicAggregate>(epicId, EpicDecider.Add(
+                epicId, origin.ProjectId, "Distributed team on the tracker", Now, origin.OwnerId));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        Guid firstBlocker = await AddTaskAsync(store, origin, "The first blocker", ["Something"], null, cts.Token);
+        Guid secondBlocker = await AddTaskAsync(store, origin, "The second blocker", ["Something"], null, cts.Token);
+
         Guid taskId = await AddTaskAsync(
-            store, origin, "Carry the whole task record on the issue",
-            ["Publishing writes the block", "Adoption reads it once"],
+            store, origin, "Carry the whole task record in the ledger",
+            ["Publishing writes it", "Any node that shares the project reads it back"],
             agentContext: "Origin: Brian. The Mac publishes, the Windows node adopts.",
-            cts.Token);
+            cts.Token, blockedBy: [firstBlocker, secondBlocker], model: AgentModel.FromInput("opus"), epicId: epicId);
         await LinkIssueAsync(store, taskId, 1266, cts.Token);
 
-        FakeGitHub gh = new(1266, GitHubIssueBody.Compose(
-            "Origin: Brian. The Mac publishes, the Windows node adopts.",
-            ["Publishing writes the block", "Adoption reads it once"]));
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate withCaps = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.OverrideReviewCaps(
+                withCaps, Optional<int?>.Of(3), Optional<int?>.None, Optional<int?>.Of(2), Optional<int?>.None,
+                Now, origin.OwnerId));
+            session.Events.Append(taskId, TaskDecider.OverrideSessionCap(withCaps, 4, Now, origin.OwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
 
-        await WriteRecordAsync(store, origin, taskId, gh, criteriaChanged: false, cts.Token);
+        FakeLedger ledger = new();
+        TaskRecordPublication.WriteOutcome outcome = await WriteRecordAsync(store, origin, taskId, ledger, cts.Token);
 
-        gh.Body.Should().Contain("## Acceptance criteria")
-            .And.Contain(GitHubIssueBody.RecordSummary);
-        gh.Body.IndexOf("- [ ] Publishing writes the block", StringComparison.Ordinal)
-            .Should().BeLessThan(gh.Body.IndexOf("<details>", StringComparison.Ordinal));
+        outcome.Should().Be(TaskRecordPublication.WriteOutcome.Written);
+        ledger.Writes.Should().ContainSingle().Which.RefName.Should().Be(LedgerRefRegistry.Records.RefspecSource);
+        ledger.Writes[0].Path.Should().Be(LedgerRefRegistry.RecordPath(taskId));
 
-        TaskRecord? record = TaskRecord.TryParse(GitHubIssueBody.TryReadRecordYaml(gh.Body));
+        LedgerFile stored = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token);
+        stored.Exists.Should().BeTrue();
 
-        record.Should().NotBeNull();
-        record!.Project.Should().Be("hall9k");
+        TaskRecord record = TaskRecord.TryParse(stored.Content)!;
+        record.TaskId.Should().Be(taskId);
+        record.Project.Should().Be("hall9k");
         record.Type.Should().Be("feature");
-        record.Objective.Should().Be("Carry the whole task record on the issue");
-        record.Criteria.Should().Equal("Publishing writes the block", "Adoption reads it once");
+        record.Objective.Should().Be("Carry the whole task record in the ledger");
+        record.Criteria.Should().Equal("Publishing writes it", "Any node that shares the project reads it back");
         record.AgentContext.Should().Be("Origin: Brian. The Mac publishes, the Windows node adopts.");
-        record.Origin.TaskId.Should().Be(taskId);
+        record.Model.Should().Be("opus");
+        record.PreApproval.Should().Be(PreApprovalMode.Off);
+        record.ExternalReference.Should().Be(new ExternalReference(WorkItemProvider.GitHub, $"{Repository}#1266"));
+        record.Dependencies.Should().Equal(firstBlocker, secondBlocker);
+        record.EpicId.Should().Be(epicId);
+        record.EpicTitle.Should().Be("Distributed team on the tracker");
+        record.Caps.MaxComplianceReviewCycles.Should().Be(3);
+        record.Caps.MaxFinalFullPassRounds.Should().Be(2);
+        record.Caps.SessionCap.Should().Be(4);
+        record.Caps.MaxAdversarialReviewCycles.Should().BeNull();
+        record.Caps.LifetimeReviewCycleBudget.Should().BeNull();
+        record.OriginOwnerFingerprint.Should().Be("abc123fingerprint");
         record.Origin.NodeId.Should().Be(origin.NodeId);
+        record.Origin.NodeName.Should().Be("HALLMANAC-MAC");
+        record.Origin.TaskId.Should().Be(taskId);
         record.Origin.BranchName.Should().Be(
-            BranchNameTemplate.Default.Render(taskId, "Carry the whole task record on the issue", "1266"),
+            BranchNameTemplate.Default.Render(taskId, "Carry the whole task record in the ledger", "1266"),
             "the record carries the branch the origin actually cuts, rendered through its own template");
+        record.Origin.PublishedAt.Should().Be(Now);
+        record.Holder.Should().BeNull("nothing has claimed this task yet — the holder lock (A3b) is not built");
     }
 
     [Fact]
-    public async Task Revise_rewrites_only_the_record_and_leaves_a_humans_prose_alone()
+    public async Task Revise_rewrites_the_same_ledger_path_with_the_new_content()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
@@ -118,9 +165,12 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
             store, origin, "The first objective", ["The first criterion"], null, cts.Token);
         await LinkIssueAsync(store, taskId, 2266, cts.Token);
 
-        FakeGitHub gh = new(2266, "## Objective\n\nThe first objective\n\n## Notes from Brian\n\nStill mine.");
-        await WriteRecordAsync(store, origin, taskId, gh, criteriaChanged: false, cts.Token);
-        string beforeRevision = gh.Body[..gh.Body.IndexOf("<details>", StringComparison.Ordinal)];
+        FakeLedger ledger = new();
+        (await WriteRecordAsync(store, origin, taskId, ledger, cts.Token))
+            .Should().Be(TaskRecordPublication.WriteOutcome.Written);
+        string firstContent = (await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token))
+            .Content!;
 
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -139,406 +189,275 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
             await session.SaveChangesAsync(cts.Token);
         }
 
-        await WriteRecordAsync(store, origin, taskId, gh, criteriaChanged: false, cts.Token);
+        (await WriteRecordAsync(store, origin, taskId, ledger, cts.Token))
+            .Should().Be(TaskRecordPublication.WriteOutcome.Written);
 
-        gh.Body[..gh.Body.IndexOf("<details>", StringComparison.Ordinal)]
-            .Should().Be(beforeRevision, "a human's edits to the issue's prose are theirs to keep");
-        TaskRecord.TryParse(GitHubIssueBody.TryReadRecordYaml(gh.Body))!.Objective
-            .Should().Be("A reworded objective");
-        gh.Body.Split(GitHubIssueBody.RecordSummary).Length.Should().Be(2, "exactly one record section");
+        LedgerFile rewritten = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token);
+        rewritten.Content.Should().NotBe(firstContent, "the revision changed the objective the record carries");
+        TaskRecord.TryParse(rewritten.Content)!.Objective.Should().Be("A reworded objective");
+        ledger.Writes.Should().HaveCount(2, "publish wrote once and revise rewrote the same path");
+        ledger.Writes.Select(write => write.Path).Distinct().Should().ContainSingle()
+            .Which.Should().Be(LedgerRefRegistry.RecordPath(taskId), "revise rewrites the same file, never a second one");
     }
 
     [Fact]
-    public async Task Revise_regenerates_the_checklist_only_when_the_criteria_changed()
+    public async Task A_mirror_never_writes_to_the_ledger()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
-        Install origin = await SeedAsync(store, cts.Token);
-        Guid taskId = await AddTaskAsync(store, origin, "An objective", ["The old criterion"], null, cts.Token);
-        await LinkIssueAsync(store, taskId, 3266, cts.Token);
-
-        FakeGitHub gh = new(3266, GitHubIssueBody.Compose(null, ["The old criterion"]));
-        await WriteRecordAsync(store, origin, taskId, gh, criteriaChanged: false, cts.Token);
-
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
-                taskId, token: cts.Token))!;
-            session.Events.Append(taskId, TaskDecider.Revise(
-                task,
-                Optional<string>.None,
-                Optional<IReadOnlyList<string>>.Of(["A new criterion"]),
-                Optional<string>.None,
-                Optional<IReadOnlyList<Guid>>.None,
-                Optional<TaskType>.None,
-                Optional<AgentModel>.None,
-                Now,
-                origin.OwnerId));
-            await session.SaveChangesAsync(cts.Token);
-        }
-
-        await WriteRecordAsync(store, origin, taskId, gh, criteriaChanged: true, cts.Token);
-
-        gh.Body.Should().Contain("- [ ] A new criterion").And.NotContain("- [ ] The old criterion");
-    }
-
-    /// <summary>
-    /// The write side of the edge convention: a dependency becomes an ISSUE NUMBER, and a blocker
-    /// that cannot be named that way here is counted rather than dropped. It also pins the one
-    /// thing that would regress quietly now that the blockers load in a single round trip — the
-    /// numbers stay in the task's own <c>BlockedBy</c> order, so rewriting the record of a task
-    /// nobody changed produces the same list rather than a reshuffled one.
-    /// </summary>
-    [Fact]
-    public async Task The_dependency_edges_are_written_as_issue_numbers_in_order_and_the_rest_counted()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Install origin = await SeedAsync(store, cts.Token);
-
-        Guid first = await AddTaskAsync(store, origin, "The first blocker", ["Something"], null, cts.Token);
-        Guid second = await AddTaskAsync(store, origin, "The second blocker", ["Something"], null, cts.Token);
-        Guid unpublished = await AddTaskAsync(
-            store, origin, "A blocker nobody published", ["Something"], null, cts.Token);
-        await LinkIssueAsync(store, first, 12001, cts.Token);
-        await LinkIssueAsync(store, second, 12002, cts.Token);
-
-        Guid taskId = await AddTaskAsync(
-            store, origin, "The blocked work", ["Something"], null, cts.Token,
-            blockedBy: [second, unpublished, first]);
-        await LinkIssueAsync(store, taskId, 12266, cts.Token);
-
-        FakeGitHub gh = new(12266, GitHubIssueBody.Compose(null, ["Something"]));
-        await WriteRecordAsync(store, origin, taskId, gh, criteriaChanged: false, cts.Token);
-
-        TaskRecord record = TaskRecord.TryParse(GitHubIssueBody.TryReadRecordYaml(gh.Body))!;
-
-        record.BlockedByIssues.Should().Equal(12002, 12001);
-        record.DependenciesWithoutIssues.Should().Be(
-            1, "a blocker never published to an issue has no identifier that means anything there");
-    }
-
-    [Fact]
-    public async Task An_issue_carrying_a_record_reconstructs_the_whole_draft_criteria_and_all()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Install adopting = await SeedAsync(store, cts.Token);
-
-        TaskRecord published = SomeRecord() with
-        {
-            Model = "claude-opus-5",
-            Caps = new TaskRecordCaps(3, null, null, null, 4),
-            PreApproval = PreApprovalMode.AfterHumanReview,
-        };
-        ImportedWorkItem issue = IssueCarrying(published);
-
-        TaskRecord? read = TaskRecordAdoption.Read(WorkItemProvider.GitHub, issue);
-        read.Should().NotBeNull();
-
-        await using IQuerySession session = store.QuerySession();
-        TaskRecordAdoption.Resolution resolution = await TaskRecordAdoption.ResolveAsync(
-            session, read!, issue.Reference, adopting.ProjectId, cts.Token);
-        TaskRecordAdoption.Reconstruction draft = TaskRecordAdoption.Reconstruct(
-            read!, resolution, NothingOnTheCommandLine, issue.Reference.ToString());
-
-        draft.Objective.Should().Be(published.Objective);
-        draft.Criteria.Should().Equal(published.Criteria, "criteria become criteria, never context");
-        draft.AgentContext.Should().Be(published.AgentContext);
-        draft.Type.Should().Be("feature");
-        draft.Model.Should().Be("claude-opus-5");
-        read!.Caps.Should().Be(new TaskRecordCaps(3, null, null, null, 4));
-        read.PreApproval.Should().Be(PreApprovalMode.AfterHumanReview,
-            "the record states the ORIGIN install's own answer, and states which of the three modes it "
-            + "was — a boolean could not have said after-human-review at all");
-    }
-
-    [Fact]
-    public async Task An_issue_with_no_record_behaves_exactly_as_it_always_did()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        await SeedAsync(store, cts.Token);
-
-        ImportedWorkItem plain = new(
-            new ExternalReference(WorkItemProvider.GitHub, $"{Repository}#7"),
-            "Something a person filed",
-            "## Objective\n\nThe login times out.\n\n- [ ] not a hall9k checklist",
-            WorkItemStatus.Open,
-            null,
-            Now);
-
-        TaskRecordAdoption.Read(WorkItemProvider.GitHub, plain).Should().BeNull(
-            "an issue nobody published from hall9k adopts by title and body, as it always has");
-        await Task.CompletedTask;
-    }
-
-    [Fact]
-    public async Task A_blocked_by_chain_adopted_parent_first_resolves_the_edge()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Install adopting = await SeedAsync(store, cts.Token);
-
-        Guid parentId = await AddTaskAsync(store, adopting, "The parent", ["Something"], null, cts.Token);
-        await LinkIssueAsync(store, parentId, 5081, cts.Token);
-
-        TaskRecord child = SomeRecord() with { BlockedByIssues = [5081] };
-        await using IQuerySession session = store.QuerySession();
-        TaskRecordAdoption.Resolution resolution = await TaskRecordAdoption.ResolveAsync(
-            session, child, Issue(5266), adopting.ProjectId, cts.Token);
-
-        resolution.Dependencies.Should().Equal(parentId);
-        resolution.UnresolvedIssues.Should().BeEmpty();
-    }
-
-    [Fact]
-    public async Task A_blocked_by_chain_adopted_child_first_records_the_edge_as_unresolved()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Install adopting = await SeedAsync(store, cts.Token);
-
-        TaskRecord child = SomeRecord() with { BlockedByIssues = [6081] };
-        await using IQuerySession session = store.QuerySession();
-        TaskRecordAdoption.Resolution resolution = await TaskRecordAdoption.ResolveAsync(
-            session, child, Issue(6266), adopting.ProjectId, cts.Token);
-
-        resolution.Dependencies.Should().BeEmpty();
-        // Nobody here has adopted issue 6081 yet, and inventing an edge onto a look-alike task would
-        // be worse than saying so.
-        resolution.UnresolvedIssues.Should().Equal([6081]);
-    }
-
-    [Fact]
-    public async Task The_epic_maps_to_the_local_epic_of_that_title_and_otherwise_says_it_did_not()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Install adopting = await SeedAsync(store, cts.Token);
-
-        Guid epicId = DomainId.New();
-        await using (IDocumentSession seed = store.LightweightSession())
-        {
-            seed.Events.StartStream<EpicAggregate>(epicId, EpicDecider.Add(
-                epicId, adopting.ProjectId, "Distributed team on the tracker", Now, adopting.OwnerId));
-            await seed.SaveChangesAsync(cts.Token);
-        }
-
-        await using IQuerySession session = store.QuerySession();
-        TaskRecordAdoption.Resolution matched = await TaskRecordAdoption.ResolveAsync(
-            session,
-            SomeRecord() with { EpicTitle = "Distributed team on the tracker" },
-            Issue(266),
-            adopting.ProjectId,
-            cts.Token);
-        TaskRecordAdoption.Resolution unmatched = await TaskRecordAdoption.ResolveAsync(
-            session,
-            SomeRecord() with { EpicTitle = "An epic this install has never heard of" },
-            Issue(266),
-            adopting.ProjectId,
-            cts.Token);
-
-        matched.EpicId.Should().Be(epicId);
-        matched.UnmatchedEpicTitle.Should().BeNull();
-        unmatched.EpicId.Should().BeNull();
-        unmatched.UnmatchedEpicTitle.Should().Be("An epic this install has never heard of");
-    }
-
-    [Fact]
-    public async Task The_adopted_task_records_which_install_published_it_and_under_what_id()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Install adopting = await SeedAsync(store, cts.Token);
-
-        TaskRecord record = SomeRecord();
-        Guid taskId = DomainId.New();
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            session.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
-                taskId, adopting.ProjectId, record.Objective, record.Criteria, TaskType.Feature,
-                record.AgentContext, constraints: null,
-                externalReference: Issue(266), Now, adopting.OwnerId,
-                origin: record.Origin));
-            await session.SaveChangesAsync(cts.Token);
-        }
-
-        await using IQuerySession query = store.QuerySession();
-        TaskAggregate? task = await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token);
-        TaskDetails? details = await query.LoadAsync<TaskDetails>(taskId, cts.Token);
-
-        task!.Origin!.NodeName.Should().Be("HALLMANAC-MAC");
-        task.Origin.TaskId.Should().Be(record.Origin.TaskId);
-        details!.Origin!.BranchName.Should().Be(record.Origin.BranchName,
-            "h9k task show reads the projection, so the origin has to survive the projection too");
-        TaskShowCommand.OriginMarkup(details.Origin).Should().Contain("HALLMANAC-MAC")
-            .And.Contain(TaskListCommand.ShortId(record.Origin.TaskId))
-            .And.Contain("adopt again");
-    }
-
-    /// <summary>
-    /// The caps ride on their own events rather than on <c>TaskAdded</c>, which means adoption
-    /// appends them onto a stream it is starting in the same transaction — worth exercising against
-    /// a real store rather than assumed, since that is the one shape here that could fail at
-    /// runtime while every unit test passes.
-    /// </summary>
-    [Fact]
-    public async Task The_origins_cap_overrides_land_on_the_adopted_copy()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Install adopting = await SeedAsync(store, cts.Token);
-
-        TaskRecord record = SomeRecord() with { Caps = new TaskRecordCaps(3, null, 2, null, 4) };
-        Guid taskId = DomainId.New();
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            TaskAdded added = TaskDecider.Add(
-                taskId, adopting.ProjectId, record.Objective, record.Criteria, TaskType.Feature,
-                record.AgentContext, constraints: null, externalReference: Issue(11266), Now,
-                adopting.OwnerId, origin: record.Origin);
-            session.Events.StartStream<TaskAggregate>(taskId, added);
-            TaskAddCommand.AppendRecordCaps(session, taskId, added, record.Caps, adopting.OwnerId);
-            await session.SaveChangesAsync(cts.Token);
-        }
-
-        await using IQuerySession query = store.QuerySession();
-        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(
-            taskId, token: cts.Token))!;
-        IReadOnlyList<JasperFx.Events.IEvent> stream =
-            await query.Events.FetchStreamAsync(taskId, token: cts.Token);
-
-        // One transaction, one observed moment: the cap events are part of the adoption that
-        // created the task, so they carry TaskAdded's own stamp rather than a second clock reading.
-        stream.Select(@event => @event.Data).OfType<TaskReviewCapsOverridden>()
-            .Should().ContainSingle().Which.OverriddenAt.Should().Be(Now);
-        stream.Select(@event => @event.Data).OfType<TaskSessionCapOverridden>()
-            .Should().ContainSingle().Which.OverriddenAt.Should().Be(Now);
-
-        task.MaxComplianceReviewCycles.Should().Be(3);
-        task.MaxFinalFullPassRounds.Should().Be(2);
-        task.SessionCap.Should().Be(4);
-        task.MaxAdversarialReviewCycles.Should().BeNull(
-            "a cap the record did not name is left to the levels above this task, exactly as it was "
-            + "on the origin");
-        task.LifetimeReviewCycleBudget.Should().BeNull();
-    }
-
-    [Fact]
-    public async Task A_mirror_never_writes_the_record_it_was_adopted_from()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        Install adopting = await SeedAsync(store, cts.Token);
+        Install install = await SeedAsync(store, cts.Token);
 
         Guid taskId = DomainId.New();
         await using (IDocumentSession session = store.LightweightSession())
         {
             session.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
-                taskId, adopting.ProjectId, "The adopted copy", ["Something"], TaskType.Feature,
-                agentContext: null, constraints: null, externalReference: Issue(9266), Now,
-                adopting.OwnerId, origin: SomeRecord().Origin));
+                taskId, install.ProjectId, "The adopted copy", ["Something"], TaskType.Feature,
+                agentContext: null, constraints: null, externalReference: null, Now, install.OwnerId,
+                origin: SomeOrigin()));
             await session.SaveChangesAsync(cts.Token);
         }
 
-        FakeGitHub gh = new(9266, GitHubIssueBody.WithRecord(
-            GitHubIssueBody.Compose(null, ["Something"]), SomeRecord()));
-        string before = gh.Body;
+        FakeLedger ledger = new();
+        TaskRecordPublication.WriteOutcome outcome = await WriteRecordAsync(store, install, taskId, ledger, cts.Token);
 
-        await using IQuerySession query = store.QuerySession();
-        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(
-            taskId, token: cts.Token))!;
-        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(adopting.ProjectId, cts.Token))!;
-
-        TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
-            query, task, project, adopting.NodeId, "HALLMANAC-WIN", Now, criteriaChanged: true,
-            gh.Provider, cts.Token);
-
-        outcome.Should().Be(TaskRecordPublication.WriteOutcome.NotTracked);
-        gh.Body.Should().Be(before,
-            "the issue belongs to the install that published it — a mirror rewriting that block would "
-            + "overwrite the origin's own record with its local copy");
-        gh.Runner.Calls.Should().BeEmpty("and it does not even ask gh");
+        outcome.Should().Be(TaskRecordPublication.WriteOutcome.Mirror);
+        ledger.Writes.Should().BeEmpty(
+            "this install never published this task — its record belongs to the install that did, and "
+            + "writing over it here would overwrite that install's own record with this local copy");
+        (await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token))
+            .Exists.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Brian, 2026-09-13: "a task with no tracker item gets a record too" — unlike the retired
+    /// issue-block writer, which wrote a record only under the github-issues backlog policy, the
+    /// ledger record has no backlog-policy gate at all (<see cref="TaskRecordPublication.WriteAsync"/>'s
+    /// own doc comment).
+    /// </summary>
     [Fact]
-    public async Task A_project_that_tracks_nothing_gets_no_record_written_into_its_adopted_issue()
+    public async Task A_project_that_tracks_nothing_still_gets_its_tasks_record_written()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
         Install install = await SeedAsync(store, cts.Token, BacklogPolicy.None);
         Guid taskId = await AddTaskAsync(store, install, "Local work", ["Something"], null, cts.Token);
-        await LinkIssueAsync(store, taskId, 10266, cts.Token);
 
-        FakeGitHub gh = new(10266, "Somebody else's issue, in somebody else's repository.");
+        FakeLedger ledger = new();
+        TaskRecordPublication.WriteOutcome outcome = await WriteRecordAsync(store, install, taskId, ledger, cts.Token);
 
-        await using IQuerySession query = store.QuerySession();
-        TaskAggregate task = (await query.Events.AggregateStreamAsync<TaskAggregate>(
-            taskId, token: cts.Token))!;
-        ProjectDetails project = (await query.LoadAsync<ProjectDetails>(install.ProjectId, cts.Token))!;
-
-        TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
-            query, task, project, install.NodeId, "HALLMANAC-WIN", Now, criteriaChanged: false,
-            gh.Provider, cts.Token);
-
-        outcome.Should().Be(TaskRecordPublication.WriteOutcome.NotTracked);
-        gh.Runner.Calls.Should().BeEmpty();
+        outcome.Should().Be(TaskRecordPublication.WriteOutcome.Written);
+        (await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token))
+            .Exists.Should().BeTrue();
     }
 
-    private static readonly TaskRecordAdoption.Overrides NothingOnTheCommandLine =
-        new(null, [], null, null, null, null, []);
+    /// <summary>
+    /// The GitHub issue keeps only the human text it always had (idea 202383dc, A3a, ruled
+    /// 2026-09-12): composing or regenerating its checklist never produces the collapsed
+    /// <c>&lt;details&gt;</c> section the retired writer used to append, whatever the record itself
+    /// now says — there is no code path left that could put one there at all
+    /// (<see cref="GitHubIssueBody"/> exposes no method that writes a record block into a body).
+    /// </summary>
+    [Fact]
+    public void The_composed_issue_body_never_carries_a_record_block()
+    {
+        string body = GitHubIssueBody.Compose(
+            "Origin: Brian. The Mac publishes, the Windows node adopts.",
+            ["Publishing writes it", "Any node that shares the project reads it back"]);
 
-    private static ExternalReference Issue(int number) =>
-        new(WorkItemProvider.GitHub, $"{Repository}#{number}");
+        body.Should().NotContain(TaskRecord.VersionKey).And.NotContain("<details>").And.NotContain("</details>");
+
+        string rewritten = GitHubIssueBody.WithCriteriaChecklist(body, ["A new criterion"]);
+
+        rewritten.Should().NotContain(TaskRecord.VersionKey).And.NotContain("<details>");
+    }
+
+    [Fact]
+    public async Task LocateAsync_finds_a_record_whose_task_is_already_replicated_here()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Install install = await SeedAsync(store, cts.Token);
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, $"{Repository}#4001");
+        Guid recordedTaskId = DomainId.New();
+        // Seeded at the SAME id the ledger record names, but with NO external reference of its
+        // own — this proves LocateAsync found it via the record's own task id (idea 202383dc, A3a's
+        // third fork), never via the ordinary external-reference match
+        // TaskAddCommand.RefuseSecondAdoptionAsync already covers.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<TaskAggregate>(recordedTaskId, TaskDecider.Add(
+                recordedTaskId, install.ProjectId, "Already replicated here", ["Something"], TaskType.Feature,
+                agentContext: null, constraints: null, externalReference: null, Now, install.OwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, recordedTaskId, reference, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskRecordAdoption.Locate located = await TaskRecordAdoption.LocateAsync(
+            query, ledger, RepositoryPath, reference, cts.Token);
+
+        located.Outcome.Should().Be(TaskRecordAdoption.LocateOutcome.ExistingLocal);
+        located.TaskId.Should().Be(recordedTaskId);
+    }
+
+    [Fact]
+    public async Task LocateAsync_reports_a_record_whose_task_has_not_replicated_here_yet()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        await SeedAsync(store, cts.Token);
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, $"{Repository}#4002");
+        Guid recordedTaskId = DomainId.New();
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, recordedTaskId, reference, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        TaskRecordAdoption.Locate located = await TaskRecordAdoption.LocateAsync(
+            query, ledger, RepositoryPath, reference, cts.Token);
+
+        located.Outcome.Should().Be(TaskRecordAdoption.LocateOutcome.StreamAbsent);
+        located.TaskId.Should().Be(recordedTaskId);
+    }
+
+    /// <summary>
+    /// An item with no record anywhere and no local task adopts exactly as it always did — the
+    /// plain "title becomes objective, body becomes context" path
+    /// <c>TaskAddCommand.ExecuteAsync</c> falls through to once neither
+    /// <c>RefuseSecondAdoptionAsync</c> nor <c>RefuseIfRecordedElsewhereAsync</c> objects. That plain
+    /// path itself is unaffected by this feature (a plain, unpublished issue never had a record to
+    /// begin with) and is already covered elsewhere in the suite — <c>RepeatPullRequestAdoptionTests</c>
+    /// and the ordinary <c>--from-issue</c>/<c>--from-jira</c> adoption tests exercise it; this test
+    /// only pins <see cref="TaskRecordAdoption.LocateAsync"/>'s own half of "nothing found".
+    /// </summary>
+    [Fact]
+    public async Task LocateAsync_with_no_record_anywhere_reports_none()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        await SeedAsync(store, cts.Token);
+
+        FakeLedger ledger = new();
+        await using IQuerySession query = store.QuerySession();
+        TaskRecordAdoption.Locate located = await TaskRecordAdoption.LocateAsync(
+            query, ledger, RepositoryPath, new ExternalReference(WorkItemProvider.GitHub, $"{Repository}#4003"), cts.Token);
+
+        located.Outcome.Should().Be(TaskRecordAdoption.LocateOutcome.NoRecord);
+        located.TaskId.Should().Be(Guid.Empty);
+    }
+
+    [Fact]
+    public async Task RefuseIfRecordedElsewhereAsync_on_an_existing_local_task_names_it_and_creates_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Install install = await SeedAsync(store, cts.Token);
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, $"{Repository}#5001");
+        Guid recordedTaskId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<TaskAggregate>(recordedTaskId, TaskDecider.Add(
+                recordedTaskId, install.ProjectId, "Already replicated here", ["Something"], TaskType.Feature,
+                agentContext: null, constraints: null, externalReference: null, Now, install.OwnerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, recordedTaskId, reference, cts.Token);
+        int before = await CountTasksAsync(store, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        Func<Task> refuse = () => TaskAddCommand.RefuseIfRecordedElsewhereAsync(
+            query, ledger, RepositoryPath, reference, cts.Token);
+
+        (await refuse.Should().ThrowAsync<DomainConflictException>()).Which.Message
+            .Should().Contain(TaskListCommand.ShortId(recordedTaskId));
+        (await CountTasksAsync(store, cts.Token)).Should().Be(before, "nothing new was created");
+    }
+
+    [Fact]
+    public async Task RefuseIfRecordedElsewhereAsync_on_an_unreplicated_record_refuses_and_creates_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        await SeedAsync(store, cts.Token);
+
+        ExternalReference reference = new(WorkItemProvider.GitHub, $"{Repository}#5002");
+        Guid recordedTaskId = DomainId.New();
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, recordedTaskId, reference, cts.Token);
+        int before = await CountTasksAsync(store, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        Func<Task> refuse = () => TaskAddCommand.RefuseIfRecordedElsewhereAsync(
+            query, ledger, RepositoryPath, reference, cts.Token);
+
+        (await refuse.Should().ThrowAsync<DomainValidationException>()).Which.Message
+            .Should().Contain("published elsewhere").And.Contain(TaskListCommand.ShortId(recordedTaskId));
+        (await CountTasksAsync(store, cts.Token)).Should().Be(before, "nothing is created while replication is pending");
+    }
+
+    private static TaskOrigin SomeOrigin() => new(
+        Guid.Parse("01a07c7e-fed4-74bf-a0f8-ac5a7325335a"),
+        "HALLMANAC-MAC",
+        Guid.Parse("01a07909-b8a5-777d-9033-4318ba2a31b5"),
+        "task/7325335a-carry-the-whole-task-record",
+        Now);
 
     private static TaskRecord SomeRecord() => new(
+        Guid.Parse("01a07909-b8a5-777d-9033-4318ba2a31b5"),
         "hall9k",
         "feature",
-        "Carry the whole task record on the issue",
-        ["Publishing writes the block", "Adoption reads it once"],
+        "Carry the whole task record in the ledger",
+        ["Publishing writes it", "Any node that shares the project reads it back"],
         "Origin: Brian. The Mac publishes, the Windows node adopts.",
         null,
         PreApprovalMode.Off,
+        null,
         [],
-        0,
         null,
         null,
         TaskRecordCaps.None,
-        new TaskOrigin(
-            Guid.Parse("01a07c7e-fed4-74bf-a0f8-ac5a7325335a"),
-            "HALLMANAC-MAC",
-            Guid.Parse("01a07909-b8a5-777d-9033-4318ba2a31b5"),
-            "task/7325335a-carry-the-whole-task-record",
-            Now));
+        "abc123fingerprint",
+        SomeOrigin(),
+        null);
 
-    private static ImportedWorkItem IssueCarrying(TaskRecord record) => new(
-        Issue(266),
-        "Carry the whole task record on the issue",
-        GitHubIssueBody.WithRecord(
-            GitHubIssueBody.Compose(record.AgentContext, record.Criteria), record),
-        WorkItemStatus.Open,
-        null,
-        Now);
+    /// <summary>Writes a record directly to <paramref name="ledger"/>, at the id and reference the caller wants — the seam <see cref="TaskRecordAdoption.LocateAsync"/>'s own tests read back through.</summary>
+    private static async Task SeedRecordAsync(
+        FakeLedger ledger, Guid taskId, ExternalReference reference, CancellationToken cancellationToken)
+    {
+        TaskRecord record = SomeRecord() with { TaskId = taskId, ExternalReference = reference };
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId),
+                record.ToYaml(), null, "seed", Committer, SigningKey),
+            cancellationToken);
+    }
 
-    private static async Task WriteRecordAsync(
-        DocumentStore store,
-        Install install,
-        Guid taskId,
-        FakeGitHub gh,
-        bool criteriaChanged,
-        CancellationToken cancellationToken)
+    private static async Task<int> CountTasksAsync(DocumentStore store, CancellationToken cancellationToken)
+    {
+        await using IQuerySession session = store.QuerySession();
+        return await session.Query<TaskListItem>().CountAsync(cancellationToken);
+    }
+
+    private static async Task<TaskRecordPublication.WriteOutcome> WriteRecordAsync(
+        DocumentStore store, Install install, Guid taskId, FakeLedger ledger, CancellationToken cancellationToken)
     {
         await using IQuerySession session = store.QuerySession();
         TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
             taskId, token: cancellationToken))!;
         ProjectDetails project = (await session.LoadAsync<ProjectDetails>(install.ProjectId, cancellationToken))!;
 
-        TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
-            session, task, project, install.NodeId, "HALLMANAC-MAC", Now, criteriaChanged,
-            gh.Provider, cancellationToken);
-
-        outcome.Should().Be(TaskRecordPublication.WriteOutcome.Written);
+        return await TaskRecordPublication.WriteAsync(
+            session, task, project, install.NodeId, "HALLMANAC-MAC", "abc123fingerprint", Now,
+            ledger, Committer, SigningKey, cancellationToken);
     }
 
     private static async Task LinkIssueAsync(
@@ -547,7 +466,9 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         await using IDocumentSession session = store.LightweightSession();
         await TaskLinkIssueCommand.LinkAsync(
             session, taskId,
-            new ImportedWorkItem(Issue(number), $"Issue {number}", null, WorkItemStatus.Open, null, Now),
+            new ImportedWorkItem(
+                new ExternalReference(WorkItemProvider.GitHub, $"{Repository}#{number}"), $"Issue {number}", null,
+                WorkItemStatus.Open, null, Now),
             DomainId.New(), cancellationToken);
         await session.SaveChangesAsync(cancellationToken);
     }
@@ -559,13 +480,16 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         IReadOnlyList<string> criteria,
         string? agentContext,
         CancellationToken cancellationToken,
-        IReadOnlyList<Guid>? blockedBy = null)
+        IReadOnlyList<Guid>? blockedBy = null,
+        AgentModel? model = null,
+        Guid? epicId = null)
     {
         Guid taskId = DomainId.New();
         await using IDocumentSession session = store.LightweightSession();
         session.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
             taskId, install.ProjectId, objective, criteria, TaskType.Feature, agentContext,
-            constraints: null, externalReference: null, Now, install.OwnerId, blockedBy: blockedBy));
+            constraints: null, externalReference: null, Now, install.OwnerId, model: model, blockedBy: blockedBy,
+            epicId: epicId));
         await session.SaveChangesAsync(cancellationToken);
         return taskId;
     }
@@ -587,12 +511,13 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         session.Events.StartStream<ConnectionAggregate>(connectionId, ConnectionDecider.Register(
             connectionId, ownerId, WorkItemProvider.GitHub, "Hallmanac", CredentialReference.GhCli, Now));
         ProjectRegistered registered = ProjectDecider.Register(
-            projectId, ownerId, connectionId, "hall9k", "/repos/hall9k",
+            projectId, ownerId, connectionId, "hall9k", RepositoryPath,
             new Uri($"https://github.com/{Repository}"), null, Now);
         session.Events.StartStream<ProjectAggregate>(projectId, registered);
 
-        // The record is written only under the github-issues policy, so the seed states it: a
-        // project that tracks nothing has said nothing about wanting hall9k to write into an issue.
+        // The ledger record has no backlog-policy gate at all (Brian, 2026-09-13: "a task with no
+        // tracker item gets a record too") — backlogPolicy here only picks what a task's own
+        // external reference looks like, never whether TaskRecordPublication.WriteAsync writes.
         ProjectAggregate project = new();
         project.Apply(registered);
         session.Events.Append(projectId, ProjectDecider.ChangeSettings(
@@ -608,54 +533,6 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
         return new Install(ownerId, projectId, DomainId.New());
     }
 
-
-    /// <summary>
-    /// A <c>gh</c> that serves one issue out of memory: <c>issue view --json</c> hands back the
-    /// current body and <c>issue edit --body-file</c> replaces it. That is what makes the round trip
-    /// real here rather than asserted twice — the body publish wrote is the body adoption reads.
-    /// </summary>
-    private sealed class FakeGitHub
-    {
-        private readonly int number;
-
-        public FakeGitHub(int number, string body)
-        {
-            this.number = number;
-            Body = body;
-            Runner = new RecordingProcessRunner(Respond);
-            Provider = new GitHubWorkItemProvider(Runner.Runner);
-        }
-
-        public string Body { get; private set; }
-
-        public RecordingProcessRunner Runner { get; }
-
-        public GitHubWorkItemProvider Provider { get; }
-
-        private ProcessResult Respond(IReadOnlyList<string> arguments)
-        {
-            if (arguments.Contains("view"))
-            {
-                return new ProcessResult(0, JsonSerializer.Serialize(new
-                {
-                    number,
-                    title = "Carry the whole task record on the issue",
-                    body = Body,
-                    state = "OPEN",
-                    url = $"https://github.com/{Repository}/issues/{number}",
-                }), string.Empty);
-            }
-
-            if (arguments.Contains("edit"))
-            {
-                int file = arguments.ToList().IndexOf("--body-file");
-                Body = File.ReadAllText(arguments[file + 1]);
-                return new ProcessResult(0, string.Empty, string.Empty);
-            }
-
-            return new ProcessResult(1, string.Empty, $"unexpected gh call: {string.Join(' ', arguments)}");
-        }
-    }
 
     // ── adoption is selective, never mirroring ──
     private static readonly DateTimeOffset AdoptionNow = new(2026, 8, 21, 9, 30, 0, TimeSpan.Zero);
