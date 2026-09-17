@@ -951,10 +951,16 @@ public sealed class MessageProjectScopingTests : IClassFixture<PostgresFixture>,
 
     /// <summary>idea 202383dc, M2's own compatibility rule: an envelope whose project key does not
     /// resolve to any local project at all — a legacy sender's null field, or a value this node has
-    /// simply never recorded anywhere — is read normally rather than refused as malformed. Every
-    /// other test in this file already relies on this (none of them ever registers a
-    /// <see cref="ProjectDetails.ProjectKey"/> matching <c>ProjectKeyX</c>/<c>ProjectKeyY</c>); this
-    /// test states it as its own, explicit claim.</summary>
+    /// simply never recorded anywhere — is read normally rather than refused as malformed. This
+    /// test flushes with a genuine 26-character ULID-shaped key that no local project has ever
+    /// recorded, so it actually reaches <c>IsProjectKeyMismatchAsync</c> — the null-field/non-ULID-shaped
+    /// "no opinion" case a short legacy-fingerprint value like <see cref="ProjectKeyX"/> would filter
+    /// out one branch earlier is already covered incidentally by every other test in this file, none
+    /// of which ever registers a <see cref="ProjectDetails.ProjectKey"/> matching
+    /// <c>ProjectKeyX</c>/<c>ProjectKeyY</c> (independent pre-PR review, cycle 1, adversarial lens,
+    /// low: a 21-character key like <c>ProjectKeyX</c> never satisfies the <c>{ Length: 26 }</c>
+    /// pattern, so this test previously never exercised the lookup-finds-nothing branch it claimed
+    /// to).</summary>
     [Fact]
     public async Task A_legacy_envelope_with_no_recognized_project_key_is_still_read()
     {
@@ -962,6 +968,7 @@ public sealed class MessageProjectScopingTests : IClassFixture<PostgresFixture>,
         Guid nodeA = DomainId.New();
         Guid nodeB = DomainId.New();
         const string ownerB = "owner-b-fingerprint";
+        const string unrecordedProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FZZ";
 
         FakeLedger ledger = new();
         await SeedNodeFileAsync(ledger, nodeA, RepositoryX, cts.Token);
@@ -976,7 +983,7 @@ public sealed class MessageProjectScopingTests : IClassFixture<PostgresFixture>,
             sendSession, nodeA, senderProjectId, "owner-a-fingerprint", MessageAudience.Project, null, MessageKind.Note,
             "legacy note", Now, cts.Token);
         await outbox.FlushAsync(
-            sendSession, RepositoryX, nodeA, senderProjectId, ProjectKeyX, adoptUnassigned: false, committerA,
+            sendSession, RepositoryX, nodeA, senderProjectId, unrecordedProjectKey, adoptUnassigned: false, committerA,
             signingKeyA, Now, cts.Token);
 
         Guid localProjectAtB = await RegisterEligibleProjectAsync("legacy-receiver", RepositoryX, cts.Token);
