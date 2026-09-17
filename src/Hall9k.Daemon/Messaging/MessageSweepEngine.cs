@@ -51,6 +51,7 @@ public sealed class MessageSweepEngine(
 
         MessageNodeIdentity? identity;
         List<ProjectDetails> eligibleProjects;
+        bool hasAlreadySentLegacyHistory;
         await using (IDocumentSession lookupSession = store.LightweightSession())
         {
             identity = await identityResolver.ResolveAsync(lookupSession, nodeId, node.OwnerId, cancellationToken);
@@ -66,42 +67,51 @@ public sealed class MessageSweepEngine(
             eligibleProjects = [.. allProjects
                 .Where(candidate => candidate.IsEligibleForMessaging())
                 .OrderBy(candidate => candidate.Id)];
-        }
 
-        if (eligibleProjects.Count == 0)
-        {
-            return new MessageSweepResult(ActiveCadence: false, JustPushed: false);
+            if (eligibleProjects.Count == 0)
+            {
+                return new MessageSweepResult(ActiveCadence: false, JustPushed: false);
+            }
+
+            // Whether ANY legacy envelope from before idea 202383dc's M2 shipped has already landed
+            // on the wire, under whichever project the old, single-project sweep physically wrote it
+            // to (see the doc below on hasAlreadySentLegacyHistory's own use).
+            hasAlreadySentLegacyHistory = await lookupSession.Query<MessageDetails>()
+                .Where(message => message.FromNodeId == nodeId && message.ProjectId == Guid.Empty && message.SentAt != null)
+                .AnyAsync(cancellationToken);
         }
 
         // The one project a still-pending message queued before idea 202383dc's M2 shipped (still
         // carrying Guid.Empty as its own ProjectId, SentAt still null) is adopted into, the first
         // time this sweep actually flushes it — in principle the lowest eligible project id
         // (LegacyMessageAdoption's own rule, the identical one the old, single-project sweep always
-        // picked by), so nothing already queued before this change is lost. In practice, whichever
-        // eligible project's own flush is the first to actually include one of those still-pending
-        // legacy envelopes in its batch claims the adoption instead of that fixed choice: if the
-        // lowest-id project's own trust chain read or genesis check keeps failing, pinning adoption
-        // to it forever would leave every legacy message pending forever too, even though a
-        // healthier eligible project sits right behind it in the loop (independent pre-PR review,
-        // cycle 1, both lenses, medium — "the old sweep flushed without needing either"). Only ONE
-        // project ever actually adopts a given legacy message regardless of which one gets there
-        // first: the adoption query itself is what is idempotent (MessageOutbox.FlushAsync's own doc
-        // — once adopted, a message carries a real ProjectId forever, so no later project this tick,
-        // or any project on a later tick, ever re-adopts it), so racing every eligible project at the
-        // flush step for the same still-Guid.Empty batch is safe by construction, never a
-        // double-adopt. FlushAsync below permanently records whichever project this tick's own
-        // election lands on (LegacyMessageAdoption.AssignAsync, called only after that project's own
-        // flush is known to have actually succeeded AND actually included legacy content —
-        // MessageFlushResult.AdoptedLegacyBacklog, never merely a successful no-op flush of a
-        // project's own unrelated mail, independent pre-PR review, cycle 4, adversarial lens, high)
-        // — the first such recording ever wins and is never displaced by a later tick's own election,
-        // which is what lets MessageOutbox.NextSeqAsync and MessageInbox.ReadFromAsync agree with
-        // THIS sweep's own dynamic choice instead of silently recomputing the static lowest-id guess
-        // forever (independent pre-PR review, cycle 2, verify pass, medium and low). An already-sent
-        // legacy envelope (SentAt already set before this feature ever shipped) never enters any
-        // project's own pending batch at all, so it is never what elects an adopter here — it
-        // remains, correctly, whatever the static lowest-id guess names, the same project the old
-        // single-project sweep always used, since that is the one whose ref physically holds it.
+        // picked by), so nothing already queued before this change is lost. When no legacy envelope
+        // has ever actually landed on the wire yet (hasAlreadySentLegacyHistory false — nothing
+        // physically holds pre-M2 history anywhere), whichever eligible project's own flush is the
+        // first to actually include one of those still-pending legacy envelopes in its batch claims
+        // the adoption instead of that fixed choice: if the lowest-id project's own trust chain read
+        // or genesis check keeps failing, pinning adoption to it forever would leave every legacy
+        // message pending forever too, even though a healthier eligible project sits right behind it
+        // in the loop (independent pre-PR review, cycle 1, both lenses, medium — "the old sweep
+        // flushed without needing either"), and redirecting costs nothing since there is no existing
+        // ref content anywhere else it could ever collide with or gap against.
+        //
+        // But once even one legacy envelope HAS already landed — physically, permanently, in
+        // whatever project's ref the old sweep used — that project is the only one this backlog may
+        // ever adopt into: the still-pending envelopes share that same node-wide, pre-M2 seq space
+        // (idea 202383dc, M1a's own global-per-node counter, before M2 ever scoped it per project),
+        // so flushing them through a DIFFERENT project would leave that different project's own ref
+        // permanently missing every seq below the batch's lowest one — an unfillable gap
+        // GitLedgerMessageTransport.ReadSinceAsync's own gap-stop rule stalls every reader on forever
+        // — while the project that actually holds the earlier history keeps no record it was ever
+        // reserved, so its own next NextSeqAsync-allocated send silently reuses and overwrites one of
+        // those already-landed paths instead (independent pre-PR review, cycle 6, conformance and
+        // adversarial lenses, medium and high). No fallback can make that split safe, so this case
+        // never redirects: adoption stays pinned to the lowest-id eligible project, the one the old
+        // sweep actually used, even on a tick where that project's own trust chain read or genesis
+        // check fails — the backlog simply stays pending and is retried next sweep, the same as any
+        // other flush failure, rather than risking either an overwrite or a permanent gap.
+        Guid lowestEligibleProjectId = eligibleProjects[0].Id;
         bool legacyAlreadyClaimedThisTick = false;
 
         bool anyJustPushed = false;
@@ -136,7 +146,8 @@ public sealed class MessageSweepEngine(
                 continue;
             }
 
-            bool adoptUnassigned = !legacyAlreadyClaimedThisTick;
+            bool adoptUnassigned = !legacyAlreadyClaimedThisTick
+                && (!hasAlreadySentLegacyHistory || project.Id == lowestEligibleProjectId);
             legacyAlreadyClaimedThisTick = true;
             bool justPushed = await FlushAsync(project, nodeId, identity, projectKey, adoptUnassigned, now, cancellationToken);
             anyJustPushed |= justPushed;
