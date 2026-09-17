@@ -98,6 +98,25 @@ public sealed class TaskRollupTests
         summary.Should().NotContain("done", "a zero bucket is noise on a glanceable line");
     }
 
+    /// <summary>
+    /// Idea 202383dc, M2a: a HeldElsewhere row is a teammate's own live work, not archived history
+    /// — folding it into Closed by the switch's own fall-through would tell a project owner their
+    /// project has less live work happening than it actually does.
+    /// </summary>
+    [Fact]
+    public void A_held_elsewhere_row_is_counted_on_its_own_never_folded_into_closed()
+    {
+        Guid foreignNodeId = DomainId.New();
+        TaskStatusRow row = StatusFixtures.Compose(
+            StatusFixtures.Task(TaskState.Claimed, claimedByNodeId: foreignNodeId), run: null);
+
+        TaskRollup rollup = TaskRollup.From([row]);
+
+        rollup.HeldElsewhere.Should().Be(1);
+        rollup.Closed.Should().Be(0);
+        rollup.Total.Should().Be(1);
+    }
+
     [Fact]
     public void The_rollup_columns_use_the_same_words_the_status_column_does()
     {

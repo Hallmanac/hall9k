@@ -58,6 +58,15 @@ internal sealed record LifecycleState
     public static readonly LifecycleState Waiting = new("Waiting", "cyan");
 
     /// <summary>
+    /// A Claimed task whose holder is another node (idea 202383dc, M2a) — a rendered state, never
+    /// a persisted one: the aggregate is Claimed on every node exactly the same way, and this is
+    /// what a foreign holder's claim is shown as here. Window's call (2026-09-13): keeping the
+    /// aggregate identical on every node is what replication needs, so the rendering carries the
+    /// distinction instead of a new <see cref="Domain.Features.Tasks.TaskState"/> value.
+    /// </summary>
+    public static readonly LifecycleState HeldElsewhere = new("HeldElsewhere", "grey");
+
+    /// <summary>
     /// True closeout: the merge was observed, or the task was closed with no pull request to
     /// watch. This is the same bar the dependency rule uses (TASK-MODEL.md §2.3), which is the
     /// point — the board and the blocker rule finally agree on the word.
@@ -75,7 +84,7 @@ internal sealed record LifecycleState
 
     /// <summary>The whole vocabulary, in lifecycle order — what --state offers and --help lists.</summary>
     public static readonly IReadOnlyList<LifecycleState> All =
-        [Draft, Published, Working, Delivered, Waiting, Done, Failed, Archived];
+        [Draft, Published, Working, Delivered, Waiting, HeldElsewhere, Done, Failed, Archived];
 
     /// <summary>The word itself, as every surface prints it.</summary>
     public string Word { get; }

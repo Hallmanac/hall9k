@@ -6,8 +6,8 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// Reads --state against the three surfaces a row now carries (Decisions Log #66):
 /// <list type="number">
-/// <item>a <b>lifecycle state</b> (Draft, Published, Working, Delivered, Waiting, Done, Failed, Archived)
-/// selects exactly what the Status column shows;</item>
+/// <item>a <b>lifecycle state</b> (Draft, Published, Working, Delivered, Waiting, HeldElsewhere, Done,
+/// Failed, Archived) selects exactly what the Status column shows;</item>
 /// <item>an <b>attention group</b> (needs-you, stalled, attention-working, …) selects the whole
 /// group h9k status and the rollups count by;</item>
 /// <item>a <b>run state</b> (running, under-review, checks-failing, …) selects on the phase
@@ -65,6 +65,10 @@ internal static class TaskStateFilter
         ["attentiondraft"] = AttentionBucket.Draft,
         ["attentiondone"] = AttentionBucket.Done,
         ["closed"] = AttentionBucket.Closed,
+        // The bare word "heldelsewhere" is the Status column's (LifecycleState.HeldElsewhere,
+        // idea 202383dc, M2a), so this group takes the attention- spelling exactly as the other
+        // groups the column shadows already do.
+        ["attentionheldelsewhere"] = AttentionBucket.HeldElsewhere,
     };
 
     /// <summary>
@@ -77,7 +81,7 @@ internal static class TaskStateFilter
     /// </summary>
     internal const string AttentionSpelling =
         "needs-you, stalled, attention-working, attention-delivered, attention-waiting, queued, "
-        + "blocked, ready, attention-draft, attention-done, closed";
+        + "blocked, ready, attention-draft, attention-done, closed, attention-heldelsewhere";
 
     /// <summary>
     /// The lifecycle vocabulary the Status column prints (Decisions Log #66). Every word here is

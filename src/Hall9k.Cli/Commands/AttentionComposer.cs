@@ -71,6 +71,18 @@ internal static class AttentionComposer
             return TaskAttention.None;
         }
 
+        // A task another node holds owes this node nothing (idea 202383dc, M2a): its own run, if
+        // one has replicated in at all, may be a completed, failed, or parked generation from long
+        // before this node ever saw the claim — every arm below reads run.State as a live signal
+        // this node could act on, which is never true here. Without this a foreign-held row could
+        // read HeldElsewhere in the Status column and NeedsYou in the Attention column at once,
+        // offering a lever (retry, resolve, answer a question) that belongs to the holding node
+        // alone.
+        if (state == LifecycleState.HeldElsewhere)
+        {
+            return TaskAttention.None;
+        }
+
         // The pull request answered a review this node posted (task: a pr-review task stays open while
         // the pull request's review threads are unresolved). Ahead of the NeedsHuman arm below,
         // which is the same state and would otherwise report "the agent asked a question and

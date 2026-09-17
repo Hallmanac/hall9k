@@ -296,6 +296,12 @@ internal enum AttentionBucket
     /// <summary>Assigned with every dependency met: the dispatcher has not claimed it yet.</summary>
     Queued,
 
+    /// <summary>
+    /// A teammate's node holds this task's claim (idea 202383dc, M2a) — nothing here needs this
+    /// node's attention; the work belongs to the node named on the row's own detail line.
+    /// </summary>
+    HeldElsewhere,
+
     /// <summary>The objective was met and the merge was observed.</summary>
     Done,
 
