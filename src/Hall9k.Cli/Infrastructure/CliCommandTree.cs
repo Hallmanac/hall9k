@@ -241,6 +241,31 @@ public static class CliCommandTree
                     .WithExample("project", "member", "remove", "hall9k",
                         "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716");
             });
+            project.AddBranch("prompt-addendum", addendum =>
+            {
+                addendum.SetDescription(
+                    "This project's own guidance, pasted after a shipped prompt builder's own rules section "
+                    + "(idea b9b09779, piece 6) — additive only, never a replacement for or a reference to "
+                    + "platform prose.");
+                addendum.AddCommand<ProjectPromptAddendumSetCommand>("set")
+                    .WithDescription(
+                        "Replace the whole addendum for one prompt builder. Recorded here as an event only — "
+                        + "the daemon alone writes it to the ledger — with who and when. Past the length cap, "
+                        + "this refuses unless --over-cap names the reason to keep past it.")
+                    .WithExample("project", "prompt-addendum", "set", "hall9k", "work", "--file", "work-guidance.md")
+                    .WithExample(
+                        "project", "prompt-addendum", "set", "hall9k", "agent", "--file", "agent-guidance.md",
+                        "--over-cap", "\"house style needs the extra examples\"");
+                addendum.AddCommand<ProjectPromptAddendumShowCommand>("show")
+                    .WithDescription("Print one builder's own addendum exactly as this node's event stream last recorded it.")
+                    .WithExample("project", "prompt-addendum", "show", "hall9k", "work");
+                addendum.AddCommand<ProjectPromptAddendumListCommand>("list")
+                    .WithDescription("Every prompt builder this project could address, and whether it currently has an addendum.")
+                    .WithExample("project", "prompt-addendum", "list", "hall9k");
+                addendum.AddCommand<ProjectPromptAddendumRemoveCommand>("remove")
+                    .WithDescription("Clear a prompt builder's addendum. The daemon deletes it from the ledger on its next sweep.")
+                    .WithExample("project", "prompt-addendum", "remove", "hall9k", "work");
+            });
         });
 
         config.AddBranch("owner", owner =>
