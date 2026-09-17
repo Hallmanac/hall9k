@@ -197,6 +197,13 @@ public static class EventScopeRegistry
         [typeof(ProjectSettingsChanged)] = EventScope.NodeScoped,
         [typeof(ProjectTeamSettingsChanged)] = EventScope.ProjectScoped,
 
+        // idea b9b09779, piece 6: a project's own prompt addenda are team-visible guidance, the
+        // same tier as ProjectTeamSettingsChanged — travels once the distributed-team chain
+        // replicates it, even though today the ledger (never this event) is what actually carries
+        // an addendum to a fellow member's node.
+        [typeof(ProjectPromptAddendumSet)] = EventScope.ProjectScoped,
+        [typeof(ProjectPromptAddendumRemoved)] = EventScope.ProjectScoped,
+
         // GitHub access observed through this install's own connected account (idea 202383dc,
         // A2b): both are what THIS node's own gh call saw, through THIS node's own registered
         // credential, never a canonical team fact another node's differently-connected account

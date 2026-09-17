@@ -154,6 +154,10 @@ public sealed class ProjectDetails
     /// <summary>Mirrors <see cref="ProjectAggregate.Members"/>: this node's own audit trail, never
     /// what a membership read actually trusts.</summary>
     public Dictionary<string, ProjectMemberRole> Members { get; set; } = [];
+
+    /// <summary>Mirrors <see cref="ProjectAggregate.PromptAddenda"/>: this node's own audit trail,
+    /// never what a prompt builder actually splices in.</summary>
+    public Dictionary<string, ProjectPromptAddendum> PromptAddenda { get; set; } = [];
 }
 
 public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDetails, Guid>
@@ -449,4 +453,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
 
     public void Apply(IEvent<MemberRemoved> @event, ProjectDetails view) =>
         view.Members.Remove(@event.Data.RootFingerprint);
+
+    public void Apply(IEvent<ProjectPromptAddendumSet> @event, ProjectDetails view) =>
+        view.PromptAddenda[@event.Data.BuilderKey] = new ProjectPromptAddendum(
+            @event.Data.Content, @event.Data.OverCap, @event.Data.OverCapReason, @event.Data.SetAt, @event.Data.SetByOwnerId);
+
+    public void Apply(IEvent<ProjectPromptAddendumRemoved> @event, ProjectDetails view) =>
+        view.PromptAddenda.Remove(@event.Data.BuilderKey);
 }

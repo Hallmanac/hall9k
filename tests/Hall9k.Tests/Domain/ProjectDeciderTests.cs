@@ -1126,4 +1126,120 @@ public sealed class ProjectDeciderTests
         project.Apply(ProjectDecider.RemoveMember(project.Id, "root-fingerprint", Now.AddMinutes(5)));
         project.Members.Should().NotContainKey("root-fingerprint");
     }
+
+    [Fact]
+    public void SetPromptAddendum_produces_an_event_carrying_the_content_and_who_and_when()
+    {
+        ProjectAggregate project = RegisteredProject();
+        Guid ownerId = DomainId.New();
+
+        ProjectPromptAddendumSet set = ProjectDecider.SetPromptAddendum(
+            project.Id, PromptBuilderKey.Work, "Prefer squash commits.", overCap: false, overCapReason: null,
+            ownerId, Now);
+
+        set.ProjectId.Should().Be(project.Id);
+        set.BuilderKey.Should().Be(PromptBuilderKey.Work.Value);
+        set.Content.Should().Be("Prefer squash commits.");
+        set.OverCap.Should().BeFalse();
+        set.OverCapReason.Should().BeNull();
+        set.SetAt.Should().Be(Now);
+        set.SetByOwnerId.Should().Be(ownerId);
+    }
+
+    [Fact]
+    public void SetPromptAddendum_refuses_blank_content()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ProjectDecider.SetPromptAddendum(
+            project.Id, PromptBuilderKey.Work, "   ", overCap: false, overCapReason: null, DomainId.New(), Now);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*remove*");
+    }
+
+    [Fact]
+    public void SetPromptAddendum_refuses_an_unknown_builder()
+    {
+        Action act = () => ProjectDecider.SetPromptAddendum(
+            DomainId.New(), PromptBuilderKey.Unknown, "Some guidance.", overCap: false, overCapReason: null,
+            DomainId.New(), Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void SetPromptAddendum_past_the_cap_without_over_cap_stops_naming_the_cap_the_size_and_the_escape_hatch()
+    {
+        string tooLong = new('x', ProjectDecider.PromptAddendumMaximumLength + 1);
+
+        Action act = () => ProjectDecider.SetPromptAddendum(
+            DomainId.New(), PromptBuilderKey.Work, tooLong, overCap: false, overCapReason: null, DomainId.New(), Now);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage($"*{ProjectDecider.PromptAddendumMaximumLength}*")
+            .Where(exception => exception.Message.Contains("--over-cap"));
+    }
+
+    [Fact]
+    public void SetPromptAddendum_past_the_cap_with_over_cap_and_a_reason_succeeds_and_records_the_reason()
+    {
+        string tooLong = new('x', ProjectDecider.PromptAddendumMaximumLength + 1);
+
+        ProjectPromptAddendumSet set = ProjectDecider.SetPromptAddendum(
+            DomainId.New(), PromptBuilderKey.Work, tooLong, overCap: true, "house style needs the room",
+            DomainId.New(), Now);
+
+        set.OverCap.Should().BeTrue();
+        set.OverCapReason.Should().Be("house style needs the room");
+        set.Content.Should().Be(tooLong);
+    }
+
+    [Fact]
+    public void SetPromptAddendum_over_cap_without_a_reason_is_refused()
+    {
+        string tooLong = new('x', ProjectDecider.PromptAddendumMaximumLength + 1);
+
+        Action act = () => ProjectDecider.SetPromptAddendum(
+            DomainId.New(), PromptBuilderKey.Work, tooLong, overCap: true, overCapReason: "  ", DomainId.New(), Now);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*reason*");
+    }
+
+    [Fact]
+    public void SetPromptAddendum_over_cap_with_nothing_to_acknowledge_is_refused()
+    {
+        Action act = () => ProjectDecider.SetPromptAddendum(
+            DomainId.New(), PromptBuilderKey.Work, "Short and under the cap.", overCap: true, "why though",
+            DomainId.New(), Now);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*nothing to acknowledge*");
+    }
+
+    [Fact]
+    public void RemovePromptAddendum_refuses_an_unknown_builder()
+    {
+        Action act = () => ProjectDecider.RemovePromptAddendum(DomainId.New(), PromptBuilderKey.Unknown, DomainId.New(), Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void ProjectAggregate_tracks_a_set_addendum_and_a_second_set_replaces_it_and_forgets_it_once_removed()
+    {
+        ProjectAggregate project = RegisteredProject();
+        Guid ownerId = DomainId.New();
+
+        project.Apply(ProjectDecider.SetPromptAddendum(
+            project.Id, PromptBuilderKey.Work, "First version.", overCap: false, overCapReason: null, ownerId, Now));
+        project.PromptAddenda[PromptBuilderKey.Work.Value].Content.Should().Be("First version.");
+
+        project.Apply(ProjectDecider.SetPromptAddendum(
+            project.Id, PromptBuilderKey.Work, "Second version.", overCap: false, overCapReason: null, ownerId,
+            Now.AddMinutes(5)));
+        project.PromptAddenda[PromptBuilderKey.Work.Value].Content.Should().Be(
+            "Second version.", "each set replaces the whole file rather than merging with the last one");
+
+        project.Apply(ProjectDecider.RemovePromptAddendum(project.Id, PromptBuilderKey.Work, ownerId, Now.AddMinutes(10)));
+        project.PromptAddenda.Should().NotContainKey(PromptBuilderKey.Work.Value);
+    }
 }

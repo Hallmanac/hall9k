@@ -8,13 +8,15 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// identically and a session that walks into one already knows where everything is (ruled at the
 /// project-home discovery, 2026-08-23: location is a setting, shape is the contract).
 /// <para>
-/// Seven entries at the top level, all speaking the platform's own vocabulary:
+/// Eight entries at the top level, all speaking the platform's own vocabulary:
 /// <c>AGENTS.md</c> (a generated render of project facts), <c>repo/</c> (the bare clone, its
 /// <c>dev/</c> worktree, and the <c>wt-*</c> worktrees dispatch creates beside them),
 /// <c>ideas/</c>, <c>tasks/</c>, and <c>skills/</c> — plus <c>.claude/</c>, which is generated
 /// vendor plumbing rather than a noun of its own, and <c>recipes/</c> (task: an operator starts a
 /// lean node or project orchestrator window), the platform-owned launch anchor and settings file
-/// plus whatever the orchestrator-recipe-generator skill writes beside them. Beside those seven,
+/// plus whatever the orchestrator-recipe-generator skill writes beside them, and
+/// <c>prompt-addenda/</c> (idea b9b09779, piece 6), the daemon's own local materialized copy of
+/// this project's ledger-stored prompt addenda. Beside those eight,
 /// the skill also seeds a plain file directly at this root, <c>journal.md</c> (see
 /// <see cref="RecipeJournalFile"/> for why it sits here rather than under <c>recipes/</c>), its
 /// sibling <c>sessions.md</c>, which no platform code path names, and a <c>notes/</c> directory
@@ -209,6 +211,18 @@ public static class ProjectHomePaths
     public static string RecipeSkillDirectory(string home, string skillName) => Path.Combine(RecipesDirectory(home), skillName);
 
     /// <summary>
+    /// The daemon's own local materialized copy of this project's ledger-stored prompt addenda
+    /// (idea b9b09779, piece 6) — one <c>&lt;builder-key&gt;.md</c> file per builder that has one,
+    /// rewritten on every ledger fetch that finds it changed. Every prompt builder's loader reads
+    /// from here, never the ledger itself: the fetch is the daemon's job, composing a prompt is
+    /// not.
+    /// </summary>
+    public static string PromptAddendaDirectory(string home) => Path.Combine(home, "prompt-addenda");
+
+    public static string PromptAddendumFile(string home, string builderKey) =>
+        Path.Combine(PromptAddendaDirectory(home), $"{builderKey}.md");
+
+    /// <summary>
     /// Every directory the shape is made of, in creation order. One list so the recipe that
     /// creates a home and the render that describes it cannot drift apart —
     /// <see cref="ArchivedTasksDirectory"/> included, even though nothing lands there until a
@@ -227,6 +241,7 @@ public static class ProjectHomePaths
         ClaudeDirectory(home),
         ClaudeSkillsDirectory(home),
         RecipesDirectory(home),
+        PromptAddendaDirectory(home),
     ];
 
     /// <summary>

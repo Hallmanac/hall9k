@@ -494,4 +494,20 @@ public sealed class ProjectAggregate
     public void Apply(MemberVouched @event) => _members[@event.RootFingerprint] = @event.Role;
 
     public void Apply(MemberRemoved @event) => _members.Remove(@event.RootFingerprint);
+
+    /// <summary>
+    /// This node's own audit trail of this project's addenda, keyed by <see cref="PromptBuilderKey"/>
+    /// value (idea b9b09779, piece 6). The ledger file the daemon writes from
+    /// <see cref="ProjectPromptAddendumSet"/> is what every prompt builder actually reads; this is
+    /// never consulted for that, only for <c>h9k project prompt-addendum show</c>/<c>list</c>.
+    /// </summary>
+    public IReadOnlyDictionary<string, ProjectPromptAddendum> PromptAddenda => _promptAddenda;
+
+    private readonly Dictionary<string, ProjectPromptAddendum> _promptAddenda = [];
+
+    public void Apply(ProjectPromptAddendumSet @event) =>
+        _promptAddenda[@event.BuilderKey] = new ProjectPromptAddendum(
+            @event.Content, @event.OverCap, @event.OverCapReason, @event.SetAt, @event.SetByOwnerId);
+
+    public void Apply(ProjectPromptAddendumRemoved @event) => _promptAddenda.Remove(@event.BuilderKey);
 }
