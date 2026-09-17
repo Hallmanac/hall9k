@@ -29,13 +29,18 @@ public sealed record EventReplicationReadResult(bool SenderIgnored, int EventsAp
 /// in exchange for never touching that class's own delicate, heavily-tested flow.
 /// <para>
 /// Idempotent by origin event id (<see cref="ReplicatedEventRecord"/>): a re-delivered batch finds
-/// every record already stored and applies nothing a second time. Each applied event is appended to
-/// a local stream, starting it when it does not exist yet, with no decider in the way — it is a
-/// fact this node is recording happened elsewhere, not a decision this node is making. That stream
-/// is <see cref="EventReplicationCodec.ReplicatedEventRecord.StreamId"/> as sent for a Task, Idea,
-/// Epic, or Run event (those ids ARE shared across installs), but this node's OWN local Project
-/// stream id for one of the Project aggregate's own events — the sender's own id there is a foreign
-/// coordinate, never this receiver's (<see cref="ProjectStreamReplicationRules"/>).
+/// every record already stored and applies nothing a second time, and a duplicate origin event later
+/// in the SAME read — ordinary once the outbox re-batches an already-sent event — is caught the same
+/// way, tracked uncommitted for the identical reason <c>streamsStartedThisRead</c> tracks streams:
+/// <c>LightweightSession.LoadAsync</c> alone only ever sees committed rows. Each applied event is
+/// appended to a local stream, starting it when it does not exist yet, with no decider in the way —
+/// it is a fact this node is recording happened elsewhere, not a decision this node is making. That
+/// stream is <see cref="EventReplicationCodec.ReplicatedEventRecord.StreamId"/> as sent for a Task,
+/// Idea, Epic, or Run event (those ids ARE shared across installs) and for one of the Project
+/// aggregate's own per-install lifecycle events (a foreign coordinate, deliberately never this
+/// receiver's own stream), but this node's OWN local Project stream id for the Project aggregate's
+/// team-facing events — the sender's own id there is a foreign coordinate, never this receiver's
+/// (<see cref="ProjectStreamReplicationRules"/>).
 /// </para>
 /// </summary>
 public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<EventReplicationInbox>? logger = null)
@@ -85,6 +90,13 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // MessageSweepEngine.PersistUnverifiedWritesAsync's own doc already names as a defect this
         // feature must not repeat.
         HashSet<Guid> streamsStartedThisRead = [];
+        // Tracks every origin event id this call has already applied, uncommitted: LightweightSession's
+        // own LoadAsync only ever sees committed rows, so a second copy of the identical origin event
+        // later in the same read (ordinary once EventReplicationOutbox re-batches an event already
+        // sent — independent pre-PR review, cycle 3, adversarial lens) would find no stored
+        // ReplicatedEventRecord yet and apply a duplicate. The same uncommitted-visibility gap
+        // streamsStartedThisRead already exists to close for StartStream collisions.
+        HashSet<Guid> originEventIdsAppliedThisRead = [];
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
             highestSeqConsidered = raw.Seq;
@@ -114,7 +126,9 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
 
             foreach (EventReplicationCodec.ReplicatedEventRecord record in batch)
             {
-                if (await ApplyAsync(session, record, senderNodeId, projectId, streamsStartedThisRead, now, cancellationToken))
+                if (await ApplyAsync(
+                    session, record, senderNodeId, projectId, streamsStartedThisRead, originEventIdsAppliedThisRead,
+                    now, cancellationToken))
                 {
                     applied++;
                 }
@@ -138,11 +152,20 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     }
 
     /// <summary>Returns false, applying nothing, when this origin event id is already stored — the
-    /// idempotency a re-delivered batch relies on.</summary>
+    /// idempotency a re-delivered batch relies on — or already applied earlier in this identical
+    /// read, uncommitted (<paramref name="originEventIdsAppliedThisRead"/>): the stored-row check
+    /// alone only ever sees committed rows, so a second copy of the same origin event later in the
+    /// same read would otherwise find nothing yet and apply a duplicate.</summary>
     private async Task<bool> ApplyAsync(
         IDocumentSession session, EventReplicationCodec.ReplicatedEventRecord record, Guid senderNodeId, Guid projectId,
-        HashSet<Guid> streamsStartedThisRead, DateTimeOffset now, CancellationToken cancellationToken)
+        HashSet<Guid> streamsStartedThisRead, HashSet<Guid> originEventIdsAppliedThisRead, DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
+        if (!originEventIdsAppliedThisRead.Add(record.OriginEventId))
+        {
+            return false;
+        }
+
         if (await session.LoadAsync<ReplicatedEventRecord>(record.OriginEventId, cancellationToken) is not null)
         {
             return false;

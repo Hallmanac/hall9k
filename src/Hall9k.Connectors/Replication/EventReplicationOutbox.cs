@@ -32,9 +32,13 @@ public sealed record EventReplicationQueueResult(int EnvelopesQueued, int Events
 /// scan — but the durable position this project's own next scan resumes from never advances past
 /// the earliest one still found private this tick (the same gap-stop idiom
 /// <c>GitLedgerMessageTransport.ReadSinceAsync</c> already uses for a numeric seq gap), so clearing
-/// the flag later always finds it again rather than having silently skipped past it forever; every
-/// non-private event already queued past that point simply gets rescanned, and re-batched, every
-/// tick until the flag clears — wasteful, never wrong, since a receiver dedupes by origin event id.
+/// the flag later always finds it again rather than having silently skipped past it forever. A
+/// separate, never-capped high-water mark
+/// (<see cref="EventReplicationOutboxPosition.HighestQueuedSequence"/>) is what stops that resumed
+/// rescan from re-queuing a non-private event past the hold-back point a second time (independent
+/// pre-PR review, cycle 3, both lenses: the position alone can only ever move backward while the
+/// flag stays set, so every eligible event past it was otherwise re-batched, and re-pushed as a
+/// brand-new envelope, on every single sweep for as long as the flag stood).
 /// </summary>
 public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
 {
@@ -54,6 +58,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         EventReplicationOutboxPosition? position =
             await session.LoadAsync<EventReplicationOutboxPosition>(projectId, cancellationToken);
         long sinceSequence = Math.Max(position?.LastFlushedGlobalSequence ?? 0, switchOnSequence);
+        long highestQueuedSequence = position?.HighestQueuedSequence ?? 0;
 
         IReadOnlyList<IEvent> candidates = await session.Events.QueryAllRawEvents()
             .Where(e => e.Sequence > sinceSequence)
@@ -146,6 +151,17 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 continue;
             }
 
+            if (candidate.Sequence <= highestQueuedSequence)
+            {
+                // Already queued (and sent) in an earlier sweep, while some other still-private
+                // stream elsewhere in the project kept LastFlushedGlobalSequence from ever advancing
+                // past it. Never requeue it as a new envelope a second time — that is exactly the
+                // unbounded resend this high-water mark exists to stop (independent pre-PR review,
+                // cycle 3, both lenses).
+                lastIncludedSequence = candidate.Sequence;
+                continue;
+            }
+
             EventReplicationCodec.ReplicatedEventRecord record = ToRecord(candidate, nodeId, fromOwnerFingerprint, projectId);
             string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
 
@@ -154,7 +170,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             {
                 await FlushBatchAsync(
                     session, nodeId, projectId, fromOwnerFingerprint, batch,
-                    CapAtHeldBackPosition(lastIncludedSequence, heldBackAtSequence), now, cancellationToken);
+                    CapAtHeldBackPosition(lastIncludedSequence, heldBackAtSequence), highestQueuedSequence, now, cancellationToken);
                 envelopesQueued++;
                 eventsQueued += batch.Count;
                 batch = [];
@@ -164,19 +180,26 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             batch.Add(record);
             batchBytes += recordJson.Length;
             lastIncludedSequence = candidate.Sequence;
+            highestQueuedSequence = candidate.Sequence;
         }
 
         long finalPosition = CapAtHeldBackPosition(lastIncludedSequence, heldBackAtSequence);
 
         if (batch.Count > 0)
         {
-            await FlushBatchAsync(session, nodeId, projectId, fromOwnerFingerprint, batch, finalPosition, now, cancellationToken);
+            await FlushBatchAsync(
+                session, nodeId, projectId, fromOwnerFingerprint, batch, finalPosition, highestQueuedSequence, now, cancellationToken);
             envelopesQueued++;
             eventsQueued += batch.Count;
         }
-        else if (finalPosition > sinceSequence)
+        else if (finalPosition > sinceSequence || highestQueuedSequence > (position?.HighestQueuedSequence ?? 0))
         {
-            session.Store(new EventReplicationOutboxPosition { Id = projectId, LastFlushedGlobalSequence = finalPosition });
+            session.Store(new EventReplicationOutboxPosition
+            {
+                Id = projectId,
+                LastFlushedGlobalSequence = finalPosition,
+                HighestQueuedSequence = highestQueuedSequence,
+            });
             await session.SaveChangesAsync(cancellationToken);
         }
 
@@ -190,13 +213,18 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
 
     private static async Task FlushBatchAsync(
         IDocumentSession session, Guid nodeId, Guid projectId, string fromOwnerFingerprint,
-        List<EventReplicationCodec.ReplicatedEventRecord> batch, long positionAfterBatch, DateTimeOffset now,
-        CancellationToken cancellationToken)
+        List<EventReplicationCodec.ReplicatedEventRecord> batch, long positionAfterBatch, long highestQueuedSequence,
+        DateTimeOffset now, CancellationToken cancellationToken)
     {
         // Stored in the same session as the QueueAsync call below, which saves it: the position
         // advance and the queued envelope land in one commit, so a crash between the two can never
         // happen (idea 202383dc: "a restart never re-sends or skips").
-        session.Store(new EventReplicationOutboxPosition { Id = projectId, LastFlushedGlobalSequence = positionAfterBatch });
+        session.Store(new EventReplicationOutboxPosition
+        {
+            Id = projectId,
+            LastFlushedGlobalSequence = positionAfterBatch,
+            HighestQueuedSequence = highestQueuedSequence,
+        });
 
         string body = EventReplicationCodec.EncodeBatch(batch);
         await MessageOutbox.QueueAsync(

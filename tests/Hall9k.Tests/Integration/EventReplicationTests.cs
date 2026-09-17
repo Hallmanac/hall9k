@@ -18,6 +18,7 @@ using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
+using JasperFx.Events;
 using Marten;
 using Weasel.Core;
 using Xunit;
@@ -731,6 +732,178 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         IReadOnlyList<EventReplicationCodec.ReplicatedEventRecord> batch =
             EventReplicationCodec.DecodeBatch(MessageEnvelopeCodec.Decode(read.Envelopes.Single().Content).Envelope!.Body)!;
         batch.Should().Contain(record => record.StreamId == ideaId);
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, both lenses (EventReplicationOutbox.cs:325/167): while a
+    /// task or idea stays private, the durable position can only ever move backward to the
+    /// hold-back point, so a scan resumes from there and rescans everything past it on every single
+    /// sweep. Before <see cref="EventReplicationOutboxPosition.HighestQueuedSequence"/>, that rescan
+    /// requeued and repushed every already-sent event past the hold-back point as a brand-new
+    /// envelope, every tick, for as long as the flag stayed set — unbounded growth of the outbox ref
+    /// and the local store. A sweep that finds nothing new must queue nothing new.
+    /// </summary>
+    [Fact]
+    public async Task An_already_sent_event_past_the_hold_back_point_is_never_requeued()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            // Switches replication on right after node registration, before the idea or task below
+            // exist, so neither is treated as pre-switch-on history.
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        // An idea goes private before any other project activity — the earliest possible hold-back
+        // point, so every later scan resumes from before it.
+        Guid ideaId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<IdeaAggregate>(
+                ideaId, new IdeaCaptured(ideaId, ownerId, "A private thought", projectId, Now.AddSeconds(1), string.Empty));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+            session.Events.Append(ideaId, IdeaDecider.SetPrivate(idea, isPrivate: true, Now.AddSeconds(1), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // An ordinary, non-private task's own events come AFTER the hold-back point.
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(2), cts.Token);
+
+        // First sweep: switches replication on and finds the task's events past the still-private
+        // idea — sent for the first time.
+        EventReplicationQueueResult firstSweep;
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            firstSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+        }
+
+        firstSweep.EnvelopesQueued.Should().Be(1);
+        firstSweep.EventsQueued.Should().BeGreaterThan(0);
+
+        // Second sweep: nothing changed — the idea is still private and the task has no new
+        // events — so nothing eligible is new. The durable position is still capped below the
+        // task's own events (the idea's hold-back point never moved), but they were already sent.
+        EventReplicationQueueResult secondSweep;
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            secondSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(4), cts.Token);
+        }
+
+        secondSweep.EnvelopesQueued.Should().Be(0, "the task's events were already sent and must never be requeued as a new envelope");
+        secondSweep.EventsQueued.Should().Be(0);
+
+        // Only the one envelope from the first sweep ever reached the transport.
+        await messageOutbox.FlushAsync(
+            _postgres.Store.LightweightSession(), RepositoryPath, nodeA, projectId, "shared-project-key",
+            adoptUnassigned: false, committer, signingKey, Now.AddSeconds(4), cts.Token);
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        read.Envelopes.Should().ContainSingle();
+        IReadOnlyList<EventReplicationCodec.ReplicatedEventRecord> batch =
+            EventReplicationCodec.DecodeBatch(MessageEnvelopeCodec.Decode(read.Envelopes.Single().Content).Envelope!.Body)!;
+        batch.Should().Contain(record => record.StreamId == taskId);
+        batch.Should().NotContain(record => record.StreamId == ideaId);
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 3, adversarial lens (EventReplicationInbox.cs:146): dedupe
+    /// by origin event id used <c>LightweightSession.LoadAsync</c>, which only ever sees committed
+    /// rows — so a second copy of the identical origin event landing later in the SAME read (exactly
+    /// what an outbox resend, fixed above, used to produce) found no stored
+    /// <see cref="ReplicatedEventRecord"/> yet and applied a duplicate. Two envelopes carrying the
+    /// identical batch, read in one call, must still apply each origin event exactly once.
+    /// </summary>
+    [Fact]
+    public async Task A_duplicate_origin_event_within_the_same_read_applies_only_once()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        // Simulate a resent duplicate: the identical envelope body, queued a second time under a
+        // fresh seq — the exact shape the outbox's own pre-fix resend bug used to produce, and the
+        // one case a re-delivery of an unmoved cursor can never itself exercise (a genuine
+        // re-delivery replays the same seq, never a new one).
+        string duplicateBody;
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            TransportReadResult firstRead = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+            duplicateBody = MessageEnvelopeCodec.Decode(firstRead.Envelopes.Single().Content).Envelope!.Body;
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, duplicateBody, Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        TransportReadResult bothEnvelopes = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        bothEnvelopes.Envelopes.Should().HaveCount(2, "the duplicate envelope must land beside the original, not replace it");
+
+        int eventsInOneOriginalBatch = EventReplicationCodec.DecodeBatch(duplicateBody)!.Count;
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(4), trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeFalse();
+            read.EventsApplied.Should().Be(
+                eventsInOneOriginalBatch, "each origin event id must apply exactly once, however many copies land in one read");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            IReadOnlyList<IEvent> streamEvents = await session.Events.FetchStreamAsync(taskId, token: cts.Token);
+            streamEvents.Should().HaveCount(
+                eventsInOneOriginalBatch, "a duplicate copy within the same read must never append a second time");
+        }
     }
 
     [Fact]
