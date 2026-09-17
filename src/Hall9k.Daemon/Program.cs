@@ -2,6 +2,7 @@ using Hall9k.Daemon;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
@@ -250,6 +251,9 @@ builder.Services.AddSingleton<IMessageTransport, GitLedgerMessageTransport>();
 builder.Services.AddSingleton<MessageOutbox>();
 builder.Services.AddSingleton<MessageInbox>();
 builder.Services.AddSingleton<MessageNodeIdentityResolver>();
+builder.Services.AddSingleton<ReplicationProjectResolver>();
+builder.Services.AddSingleton<EventReplicationOutbox>();
+builder.Services.AddSingleton<EventReplicationInbox>();
 builder.Services.AddSingleton<MessageSweepEngine>();
 builder.Services.AddSingleton<InviteSweepEngine>();
 
