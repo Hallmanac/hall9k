@@ -540,7 +540,7 @@ alongside your verdict, and that choice is the only way those words ever reach t
 
 ### Projects, owners, connections
 
-`h9k project add | init | join | list | show | set | remove | cancel-purge | reactivate | rename | invite` ·
+`h9k project add | init | join | assign-key | list | show | set | remove | cancel-purge | reactivate | rename | invite` ·
 `h9k owner show | set` · `h9k node invite` · `h9k connection add jira | list`
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
@@ -560,6 +560,13 @@ before any key is generated or any ledger byte is written when the resolved GitH
 push on the repository, naming the repository and the rule. `owner show` lists every confirmed
 GitHub account linked to the owner (login and GitHub's own numeric id, or "unconfirmed" when `gh`
 has never answered for it). See [the project home](#the-project-home) below.
+
+`project assign-key <name>` is the one-time backfill for a project whose ledger predates the
+project key: it mints a fresh key and writes it, signed, onto the genesis owner's own members
+file, refused for anyone but the genesis owner and refused again once a key already exists. Run
+it once, before the first `project invite` on an adopted project; every other install picks the
+key up the next time it runs `project join` there. `MessageSweepEngine` skips a project with no
+key recorded, so a legacy project's sweeps stay off until this runs.
 
 `project remove` archives a project on this install: reversible, and nothing is deleted. The
 dispatcher stops claiming its tasks, the project-home render, closeout, and auto-pr-review sweeps skip it,
