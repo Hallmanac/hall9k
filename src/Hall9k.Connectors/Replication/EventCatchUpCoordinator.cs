@@ -89,18 +89,25 @@ public sealed class EventCatchUpCoordinator
     /// <summary>
     /// Starts a gap-fill request for one origin node's own missing history in one project — skipped
     /// when an outstanding, unanswered request for the identical (project, origin) pair already
-    /// exists, so a sender whose outbox keeps stalling on the same gap sweep after sweep does not
-    /// mint a fresh request (and a fresh candidate cascade) every single tick.
+    /// exists, or when the most recent one exhausted within <paramref name="reMintCooldown"/>, so a
+    /// sender whose outbox keeps stalling on the same gap sweep after sweep does not mint a fresh
+    /// request (and a fresh candidate cascade) every single tick — the identical unbounded-loop shape
+    /// <see cref="RequestBootstrapAsync"/>'s own doc explains, sharing its own cause here too: a
+    /// permanent numeric gap nobody holds the far side of has every candidate answer
+    /// <see cref="MessageKind.EventsUnavailable"/> immediately, so an uncooled cascade exhausts within
+    /// a few ticks and re-mints again next sweep, forever.
     /// </summary>
     public async Task<bool> RequestGapFillAsync(
         IDocumentSession session, Guid projectId, Guid forOriginNodeId, Guid myNodeId, string myOwnerFingerprint,
-        IReadOnlyList<Guid> candidates, DateTimeOffset now, CancellationToken cancellationToken)
+        IReadOnlyList<Guid> candidates, TimeSpan reMintCooldown, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        bool alreadyOutstanding = await session.Query<EventCatchUpRequest>()
-            .Where(request => request.ProjectId == projectId && request.ForOriginNodeId == forOriginNodeId
-                && request.AnsweredAt == null && !request.Exhausted)
-            .AnyAsync(cancellationToken);
-        if (alreadyOutstanding || candidates.Count == 0)
+        EventCatchUpRequest? mostRecent = await session.Query<EventCatchUpRequest>()
+            .Where(request => request.ProjectId == projectId && request.ForOriginNodeId == forOriginNodeId)
+            .OrderByDescending(request => request.SentAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        bool blockedByRecentAttempt = mostRecent is not null
+            && (mostRecent.IsOutstanding || now - mostRecent.SentAt < reMintCooldown);
+        if (blockedByRecentAttempt || candidates.Count == 0)
         {
             return false;
         }
@@ -125,17 +132,25 @@ public sealed class EventCatchUpCoordinator
     /// <summary>
     /// Starts a brand-new node's own bootstrap request for a whole project — skipped when an
     /// outstanding "everything" request (both <see cref="EventCatchUpRequest.ForOriginNodeId"/> and
-    /// <see cref="EventCatchUpRequest.ForStreamId"/> null) already exists for this project.
+    /// <see cref="EventCatchUpRequest.ForStreamId"/> null) already exists for this project, or when
+    /// the most recent one exhausted within <paramref name="reMintCooldown"/>. The cooldown matters
+    /// for a project that is genuinely, currently empty (right after <c>h9k project join</c>, before
+    /// anyone has added a first task or idea): every peer answers <see cref="MessageKind.EventsUnavailable"/>
+    /// immediately rather than timing out, so a cascade with no cooldown exhausts within a few ticks
+    /// and re-mints again next sweep, forever — one signed commit and push per side, per tick, for as
+    /// long as the project stays empty (independent pre-PR review, cycle 1, conformance lens, medium).
     /// </summary>
     public async Task<bool> RequestBootstrapAsync(
         IDocumentSession session, Guid projectId, Guid myNodeId, string myOwnerFingerprint,
-        IReadOnlyList<Guid> candidates, DateTimeOffset now, CancellationToken cancellationToken)
+        IReadOnlyList<Guid> candidates, TimeSpan reMintCooldown, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        bool alreadyOutstanding = await session.Query<EventCatchUpRequest>()
-            .Where(request => request.ProjectId == projectId && request.ForOriginNodeId == null && request.ForStreamId == null
-                && request.AnsweredAt == null && !request.Exhausted)
-            .AnyAsync(cancellationToken);
-        if (alreadyOutstanding || candidates.Count == 0)
+        EventCatchUpRequest? mostRecent = await session.Query<EventCatchUpRequest>()
+            .Where(request => request.ProjectId == projectId && request.ForOriginNodeId == null && request.ForStreamId == null)
+            .OrderByDescending(request => request.SentAt)
+            .FirstOrDefaultAsync(cancellationToken);
+        bool blockedByRecentAttempt = mostRecent is not null
+            && (mostRecent.IsOutstanding || now - mostRecent.SentAt < reMintCooldown);
+        if (blockedByRecentAttempt || candidates.Count == 0)
         {
             return false;
         }
@@ -215,16 +230,7 @@ public sealed class EventCatchUpCoordinator
                 continue;
             }
 
-            AdvanceToNextCandidate(request, now);
-            if (!request.Exhausted)
-            {
-                await SendCurrentCandidateAsync(session, myNodeId, myOwnerFingerprint, request, now, cancellationToken);
-            }
-            else
-            {
-                session.Store(request);
-            }
-
+            await AdvanceToNextCandidateAsync(session, myNodeId, myOwnerFingerprint, request, now, cancellationToken);
             advanced++;
         }
 
@@ -236,17 +242,29 @@ public sealed class EventCatchUpCoordinator
         return advanced;
     }
 
-    /// <summary>Moves <paramref name="request"/> to its next candidate, or marks it
+    /// <summary>Moves <paramref name="request"/> to its next candidate and actually asks it
+    /// (queuing a fresh <see cref="MessageKind.EventsRequest"/> envelope), or marks it
     /// <see cref="EventCatchUpRequest.Exhausted"/> once none remain — shared by an explicit decline
-    /// (<see cref="EventCatchUpInbox"/>) and a silent timeout (<see cref="AdvanceOverdueRequestsAsync"/>).</summary>
-    internal static void AdvanceToNextCandidate(EventCatchUpRequest request, DateTimeOffset now)
+    /// (<see cref="EventCatchUpInbox"/>) and a silent timeout (<see cref="AdvanceOverdueRequestsAsync"/>),
+    /// so a decline actually moves the cascade rather than merely recording that it should have
+    /// (independent pre-PR review, cycle 1, adversarial lens, high: an earlier build here advanced
+    /// <see cref="EventCatchUpRequest.CandidateIndex"/> without ever sending to the newly-current
+    /// candidate, silently skipping it until the NEXT decline or timeout finally asked the one after
+    /// it instead).</summary>
+    internal static async Task AdvanceToNextCandidateAsync(
+        IDocumentSession session, Guid myNodeId, string myOwnerFingerprint, EventCatchUpRequest request,
+        DateTimeOffset now, CancellationToken cancellationToken)
     {
         request.CandidateIndex++;
         request.SentAt = now;
         if (request.CandidateIndex >= request.Candidates.Count)
         {
             request.Exhausted = true;
+            session.Store(request);
+            return;
         }
+
+        await SendCurrentCandidateAsync(session, myNodeId, myOwnerFingerprint, request, now, cancellationToken);
     }
 
     private static async Task SendCurrentCandidateAsync(

@@ -124,6 +124,13 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // refused on that basis alone (MessageEnvelopeV1.ProjectKey's own doc).
         bool projectKeyMismatch = false;
         string? projectKeyMismatchReason = null;
+        // Every stream this read's own applied batches named, regardless of whether ApplyAsync
+        // actually stored anything new for it (a re-delivered, already-applied stream still counts
+        // as answered): the only signal available to close a BROADCAST catch-up request
+        // (EventCatchUpRequest.Candidates empty, EventCatchUpRequest.ForStreamId set), which has no
+        // single current candidate to match a sender against below (independent pre-PR review,
+        // cycle 1, both lenses, medium).
+        HashSet<Guid> streamIdsAnsweredThisRead = [];
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
             highestSeqConsidered = raw.Seq;
@@ -174,6 +181,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
 
             foreach (EventReplicationCodec.ReplicatedEventRecord record in batch)
             {
+                streamIdsAnsweredThisRead.Add(record.StreamId);
                 if (await ApplyAsync(
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
                     originEventIdsAppliedThisRead, originProgressThisRead, now, cancellationToken))
@@ -225,7 +233,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             IgnoredAt = ignoredAt,
         });
 
-        if (applied > 0)
+        if (applied > 0 || streamIdsAnsweredThisRead.Count > 0)
         {
             // idea 202383dc, M2b: an outstanding catch-up request this node is currently waiting on
             // an answer FROM this exact sender is treated as answered the moment new content from
@@ -239,8 +247,19 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 .ToListAsync(cancellationToken);
             foreach (EventCatchUpRequest request in outstanding)
             {
-                if (request.CurrentCandidateNodeId == senderNodeId)
+                if (request.CurrentCandidateNodeId == senderNodeId && applied > 0)
                 {
+                    request.AnsweredAt = now;
+                    session.Store(request);
+                }
+                else if (request.Candidates.Count == 0 && request.ForStreamId is { } forStreamId
+                    && streamIdsAnsweredThisRead.Contains(forStreamId))
+                {
+                    // A broadcast request (the ledger-record adoption path) has no single current
+                    // candidate to match a sender against — ANY project member's own answer for the
+                    // exact stream it asked for closes it, or it would sit IsOutstanding forever,
+                    // reported by h9k status as outstanding long after the stream actually arrived
+                    // (independent pre-PR review, cycle 1, both lenses, medium).
                     request.AnsweredAt = now;
                     session.Store(request);
                 }
@@ -385,27 +404,39 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // idea 202383dc, M2b: the coarse "since" bound a future gap-fill events-request for this
         // origin is built from — never regressed, and refreshed lazily from the persisted value the
         // first time this origin is seen this read (this method's own doc on originProgressThisRead).
-        if (!originProgressThisRead.TryGetValue(record.OriginNodeId, out long knownHighest))
+        // Advanced ONLY from a record read directly off its own origin's outbox (senderNodeId ==
+        // record.OriginNodeId): EventOriginProgress's own doc asserts "greater than this is always a
+        // safe superset of what is genuinely missing, never a subset", which held under the ordinary
+        // outbox (an origin's own events only ever arrive in that origin's own sequence order) but
+        // does not hold for a record FORWARDED by a catch-up answer — a peer can hold a high origin
+        // sequence while genuinely missing a lower range from that same origin, and advancing this
+        // node's own progress from that forwarded high-water mark would make a later gap-fill request
+        // start past events this node was never actually sent (independent pre-PR review, cycle 1,
+        // conformance and adversarial lenses, medium).
+        if (senderNodeId == record.OriginNodeId)
         {
-            EventOriginProgress? persisted = await session.LoadAsync<EventOriginProgress>(
-                EventReplicationStreamId.ForOriginProgress(projectId, record.OriginNodeId), cancellationToken);
-            knownHighest = persisted?.HighestOriginSequenceApplied ?? 0;
-        }
-
-        if (record.OriginSequence > knownHighest)
-        {
-            originProgressThisRead[record.OriginNodeId] = record.OriginSequence;
-            session.Store(new EventOriginProgress
+            if (!originProgressThisRead.TryGetValue(record.OriginNodeId, out long knownHighest))
             {
-                Id = EventReplicationStreamId.ForOriginProgress(projectId, record.OriginNodeId),
-                ProjectId = projectId,
-                OriginNodeId = record.OriginNodeId,
-                HighestOriginSequenceApplied = record.OriginSequence,
-            });
-        }
-        else
-        {
-            originProgressThisRead[record.OriginNodeId] = knownHighest;
+                EventOriginProgress? persisted = await session.LoadAsync<EventOriginProgress>(
+                    EventReplicationStreamId.ForOriginProgress(projectId, record.OriginNodeId), cancellationToken);
+                knownHighest = persisted?.HighestOriginSequenceApplied ?? 0;
+            }
+
+            if (record.OriginSequence > knownHighest)
+            {
+                originProgressThisRead[record.OriginNodeId] = record.OriginSequence;
+                session.Store(new EventOriginProgress
+                {
+                    Id = EventReplicationStreamId.ForOriginProgress(projectId, record.OriginNodeId),
+                    ProjectId = projectId,
+                    OriginNodeId = record.OriginNodeId,
+                    HighestOriginSequenceApplied = record.OriginSequence,
+                });
+            }
+            else
+            {
+                originProgressThisRead[record.OriginNodeId] = knownHighest;
+            }
         }
 
         return true;

@@ -96,8 +96,8 @@ public sealed class EventCatchUpInbox(
                 if (outstanding is { AnsweredAt: null, Exhausted: false } && outstanding.CurrentCandidateNodeId == senderNodeId)
                 {
                     outstanding.DeclinedReason = unavailable.Reason;
-                    EventCatchUpCoordinator.AdvanceToNextCandidate(outstanding, now);
-                    session.Store(outstanding);
+                    await EventCatchUpCoordinator.AdvanceToNextCandidateAsync(
+                        session, myNodeId, myOwnerFingerprint, outstanding, now, cancellationToken);
                     declined++;
                 }
             }

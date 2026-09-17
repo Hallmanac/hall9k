@@ -77,6 +77,39 @@ public sealed class MessageSweepEngineTests
     }
 
     [Fact]
+    public void A_sender_that_moved_this_tick_ranks_ahead_of_one_that_did_not()
+    {
+        Guid staleSenderId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        MessageOutboxTip[] allTips =
+        [
+            new MessageOutboxTip(staleSenderId, "tip-stale"),
+            new MessageOutboxTip(SenderNodeId, "tip-2"),
+        ];
+        MessageOutboxTip[] movedThisTick = [new MessageOutboxTip(SenderNodeId, "tip-2")];
+
+        IReadOnlyList<Guid> ordered = MessageSweepEngine.OrderByRecency(allTips, movedThisTick);
+
+        ordered.Should().Equal(
+            [SenderNodeId, staleSenderId],
+            "the sender whose tip actually moved this tick is the only recency signal available, and it ranks first");
+    }
+
+    [Fact]
+    public void Every_sender_stale_this_tick_keeps_the_probes_own_order()
+    {
+        Guid secondStaleSenderId = Guid.Parse("44444444-4444-4444-4444-444444444444");
+        MessageOutboxTip[] allTips =
+        [
+            new MessageOutboxTip(SenderNodeId, "tip-1"),
+            new MessageOutboxTip(secondStaleSenderId, "tip-1"),
+        ];
+
+        IReadOnlyList<Guid> ordered = MessageSweepEngine.OrderByRecency(allTips, movedThisTick: []);
+
+        ordered.Should().Equal([SenderNodeId, secondStaleSenderId], "nothing moved, so the transport's own probe order stands");
+    }
+
+    [Fact]
     public void A_node_with_no_active_run_and_nothing_pending_is_idle()
     {
         bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: false, hasActiveRun: false);
