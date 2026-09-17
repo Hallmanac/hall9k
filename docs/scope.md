@@ -282,7 +282,7 @@ it, which is the pairwise edges declining to guess at the multi-level ordering b
 mid-run first dispatches this run's one read-only stack assessment (PLAN.md §16, Decisions Log
 #205); only an undecidable verdict parks it outright, since a replay verdict whose own mechanical
 retry also conflicts earns a guided fix session instead of a park (PLAN.md §16, Decisions Log
-#PLACEHOLDER-4785f496). A child whose pull request is already open (the closeout watcher's own
+#212). A child whose pull request is already open (the closeout watcher's own
 sweep, a separate monitor this assessment does not reach) parks directly.
 
 The parent's post-delivery churn is absorbed at **two checkpoints** rather than chased push by push
@@ -294,7 +294,7 @@ one read-only stack assessment; the branch is restored, and only an undecidable 
 human outright. A replay verdict whose own mechanical retry also conflicts earns a guided fix
 session instead, one whose own completion still routes the run through the review cycles a
 checkpoint before cycle one exists to precede (PLAN.md §16, Decisions Log #205,
-#PLACEHOLDER-4785f496). A parent that has died terminally (abandoned, `Failed`, or Done having
+#212). A parent that has died terminally (abandoned, `Failed`, or Done having
 never delivered a pull request that can merge) does the same for a child still mid-run, assessed
 first on the identical terms, while a child whose pull request is already open parks directly,
 under the closeout watcher's own separate sweep.
