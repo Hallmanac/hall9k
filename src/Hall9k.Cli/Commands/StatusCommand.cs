@@ -71,6 +71,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await WriteIdentityLineAsync(session, cancellationToken);
         await WriteMessagesLineAsync(session, cancellationToken);
         await WriteReplicatedEventsIgnoredSendersAsync(session, cancellationToken);
+        await WriteEventCatchUpRequestsAsync(session, cancellationToken);
         await WriteUnverifiedLedgerWritesAsync(session, cancellationToken);
         await WriteMergedWithoutCopilotReviewAsync(session, cancellationToken);
 
@@ -397,6 +398,46 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]replicated events: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>
+    /// Every outstanding catch-up request this node currently has open (idea 202383dc, M2b, task
+    /// 9408d525: "h9k status shows outstanding gaps and requests") — a gap-fill for one origin
+    /// node's own missing history, a brand-new node's own "everything" bootstrap, or a ledger-record
+    /// adoption's broadcast for one specific stream. Silent when there is nothing outstanding, the
+    /// same "a quiet pane says nothing" posture the rest of this command follows.
+    /// </summary>
+    private static async Task WriteEventCatchUpRequestsAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<EventCatchUpRequest> outstanding = await session.Query<EventCatchUpRequest>()
+                .Where(request => request.AnsweredAt == null && !request.Exhausted)
+                .ToListAsync(cancellationToken);
+            if (outstanding.Count == 0)
+            {
+                return;
+            }
+
+            foreach (EventCatchUpRequest request in outstanding.OrderBy(request => request.SentAt))
+            {
+                string what = request switch
+                {
+                    { ForStreamId: { } streamId } => $"stream {DomainId.Short(streamId)}",
+                    { ForOriginNodeId: { } originNodeId } => $"a gap from {DomainId.Short(originNodeId)} (since {request.SinceOriginSequence})",
+                    _ => "a brand-new node's own bootstrap",
+                };
+                string candidate = request.CurrentCandidateNodeId is { } current
+                    ? $"asking {DomainId.Short(current)}"
+                    : "broadcast to the whole project";
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]catch-up outstanding[/] for {what.EscapeMarkup()} — {candidate.EscapeMarkup()} [dim](sent {request.SentAt:u})[/]");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]catch-up requests: unavailable ({exception.Message})[/]");
         }
     }
 
