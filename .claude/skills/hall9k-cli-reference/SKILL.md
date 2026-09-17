@@ -35,6 +35,10 @@ h9k project set <name> --priority high|normal|low|default   # which tier this pr
 h9k project set <name> --claim-gate off|tracker-assignee   # a task linked to a Jira card or GitHub issue is claimed on this install only while the tracker shows that item assigned to this install's own identity; default off (Decisions Log #142)
 h9k project set <name> --close-linked-issue on-closeout|never|when-all-tasks-close|default   # whether true closeout closes a task's linked GitHub issue, and when; default when-all-tasks-close waits for every task linked to the same issue to close out or be abandoned, decided fresh at the last one — a task overrides it at publish/revise, --never-close-labels forces never for a labeled issue, Jira untouched (Decisions Log #154)
 h9k project set <name> --writing-conventions "<TEXT>"   # how prose an agent composes for people has to read here, pasted verbatim into every prompt that asks a session to write something posted under the owner's login (PR title and body, a review-feedback lap's summary comment and thread replies, the note a review lap drafts for h9k pr approve / request-changes, an attended session's commit messages). The two mechanically checkable rules are re-checked immediately before the platform posts: an em dash is rewritten by context, an attribution line is dropped, an attribution welded into a sentence is not posted at all. A run never fails over a convention miss. 'default' restores the platform text (no em dashes, full sentences, no AI attribution)
+h9k project prompt-addendum set <name> <builder> --file <path> [--over-cap "<reason>"]   # replaces the whole addendum for one shipped prompt builder (work, review-lap, agent, mention-follow-up); recorded as an event only — the daemon alone writes it to the ledger — with who and when; past the 4000-character cap this refuses naming the cap and the size unless --over-cap states why to keep it (PLACEHOLDER-503a7acf)
+h9k project prompt-addendum show <name> <builder>   # prints one builder's own addendum exactly as this node's event stream last recorded it (PLACEHOLDER-503a7acf)
+h9k project prompt-addendum list <name>   # every builder this project could address, and whether it currently has an addendum (PLACEHOLDER-503a7acf)
+h9k project prompt-addendum remove <name> <builder>   # clears a builder's addendum; the daemon deletes it from the ledger on its next sweep (PLACEHOLDER-503a7acf)
 h9k owner show [<owner>]     # one owner: identity (root fingerprint once established, else this install's local Guid), the projects registered to them, and every standing preference their work runs by. Omit the argument when this platform has one owner
 h9k owner set [<owner>] --rerequest-review on|off|default   # whether closeout asks a pull request's reviewers for another pass once a fix follow-up pushed (Decisions Log #62). A project setting outranks this; the node default (DaemonOptions.DefaultReviewRerequest, off) sits under both
 h9k owner set [<owner>] --voice-skill <NAME> | --clear-voice-skill   # the skill this owner WRITES IN, by name. Every prompt seam where a session composes text a human reads as the owner's (a pull request description, a review-thread reply, a commit message, a posted review finding, a drafted reply to a GitHub mention) then tells that session to load the skill and its matching context first: contexts/code-review.md for prose the session posts, contexts/explainer.md for a draft the owner reads and decides on. The skill is the owner's own — referenced by name, never copied into a project, a prompt template, or the platform — so the name must already be a skill directory in the owner's user skills (~/.claude/skills/<NAME>) or in a project home's skills/; a name in neither is refused naming both paths. Structure authority does not move: the repository's own PR-description rule and the project's --writing-conventions still decide the shape, the voice skill decides only the prose. --clear-voice-skill forgets it, and every seam then renders as it does for an owner who never named one
@@ -860,6 +864,26 @@ failing. `default` restores the platform text. Origin incident (2026-09-09): a r
 follow-up on `AgelessRx/arx-platform#2042` posted its summary comment under the owner's login with
 em dashes in most of its paragraphs, because the rule lived only in the orchestrator recipes and in
 the operator's own `CLAUDE.md`, which `--setting-sources project` drops from a dispatched session.
+
+**A project's own prompt addenda are additive, never a fragment override** (idea b9b09779, piece 6;
+Brian, 2026-09-17: "flexibility with guardrails, no fragment overrides"): `h9k project
+prompt-addendum set <project> <builder> --file <path>` (`show`/`list`/`remove` alongside) states
+guidance for one shipped prompt builder — `work`, `review-lap`, `agent` (every daemon-dispatched
+review/fix/rebase prompt, one addendum for all of them), or `mention-follow-up` — and every one of
+those builders pastes it verbatim after its own rules section under a fixed "This project's own
+guidance" heading, exactly the way `--writing-conventions` already gets pasted in. It never
+replaces or references platform prose, so a platform version change can never make an addendum
+stale. Each `set` replaces the whole file — there is no partial edit — so a project rewrites,
+shortens, or drops one freely at any time; 'additive' describes only how it joins the prompt, never
+its own history. No agent ever writes the ledger for this: `set`/`remove` record only an event
+(`ProjectPromptAddendumSet`/`Removed`, project-scoped, so the distributed-team chain carries a
+change to every member's node once it ships), and the daemon's own sweep is the only thing that
+ever writes `prompt-addenda/<builder>.md` on `refs/hall9k/ledger/prompt-addenda` and materializes
+every builder's own current ledger content to this node's local disk — the copy every prompt
+builder's own loader actually reads, which is what already reaches a fellow member's node today,
+ahead of the distributed-team chain (idea 202383dc, M2b). Past the 4000-character cap `set` stops,
+naming the cap, the size, and `--over-cap "<why>"` as the escape hatch; the reason is recorded on
+the event, and a builder that splices an over-cap addendum marks that plainly in the prompt itself.
 
 **A pull request GitHub assigns to this install's own login is a go signal in its own right, on
 every project unless it has opted out** (idea e5e98a33, Decisions Log #34's own amendment, #133,
