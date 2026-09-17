@@ -1,10 +1,10 @@
-using System.Globalization;
 using FluentAssertions;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
@@ -55,25 +55,22 @@ public sealed class WorkItemImporterTests
     [InlineData("fi-FI")]
     [InlineData("da-DK")]
     [InlineData("en-US")]
-    public async Task The_observation_is_stamped_the_same_way_whatever_locale_the_machine_runs_in(
-        string culture)
-    {
-        CultureInfo original = CultureInfo.CurrentCulture;
-        try
+    public void The_observation_is_stamped_the_same_way_whatever_locale_the_machine_runs_in(
+        string culture) =>
+        // CultureScope, not a set-and-restore around an await: the whole body runs on a thread of
+        // this case's own, so the locale dies with the thread and there is no finally to omit or to
+        // write with the wrong original. (CurrentCulture does flow across an await and unwind again
+        // with the pool thread's execution context; CultureScope's own comment carries the detail,
+        // and ProcessWideStateGuardTests requires the helper here either way.)
+        CultureScope.RunToCompletion(culture, async () =>
         {
-            CultureInfo.CurrentCulture = new CultureInfo(culture);
             WorkItemImporter importer = new(new StubProvider(WorkItemProvider.GitHub, WorkItemStatus.Closed));
 
             Func<Task> import = () => Import(importer, WorkItemProvider.GitHub);
 
             (await import.Should().ThrowAsync<DomainValidationException>()).Which.Message
                 .Should().Contain("2026-08-21 09:30:00Z");
-        }
-        finally
-        {
-            CultureInfo.CurrentCulture = original;
-        }
-    }
+        });
 
     /// <summary>
     /// The gate is positively open, not merely not-closed. A source that said nothing, and a

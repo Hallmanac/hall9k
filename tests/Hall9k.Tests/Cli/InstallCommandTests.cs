@@ -2,7 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon.Execution;
-using Spectre.Console;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -12,10 +12,6 @@ namespace Hall9k.Tests.Cli;
 /// matters because the answer decides whether a file on the operator's PATH is
 /// replaced: a symlink is install's own to retarget, a real file is never clobbered.
 /// </summary>
-// Capture (below) swaps the process-wide AnsiConsole.Console, the same static
-// DatabaseDoctorNotConfiguredTests and others in this collection swap; sharing the
-// collection serializes this class against them too (cycle-8 review).
-[Collection("Hall9kHome")]
 public sealed class InstallCommandTests : IDisposable
 {
     private readonly string directory = Path.Combine(
@@ -158,7 +154,7 @@ public sealed class InstallCommandTests : IDisposable
             return;
         }
 
-        string output = Capture(() => InstallCommand.LinkOntoPath(target, blockedDirectory, home));
+        string output = ScopedAnsiConsoleCapture.Capture(() => InstallCommand.LinkOntoPath(target, blockedDirectory, home));
 
         new FileInfo(blocked).LinkTarget.Should().NotBe(target, "the directory refused the rewrite");
         output.Should().Contain(blocked, "the operator is told which entry stayed stale")
@@ -185,7 +181,7 @@ public sealed class InstallCommandTests : IDisposable
             return;
         }
 
-        string output = Capture(() => InstallCommand.LinkOntoPath(target, frozenDirectory, home));
+        string output = ScopedAnsiConsoleCapture.Capture(() => InstallCommand.LinkOntoPath(target, frozenDirectory, home));
 
         output.Should().Contain("On PATH").And.NotContain("Could not retarget");
         Directory.Exists(Path.Combine(home, ".local", "bin")).Should().BeFalse(
@@ -239,31 +235,6 @@ public sealed class InstallCommandTests : IDisposable
         catch (Exception exception) when (exception is UnauthorizedAccessException or IOException)
         {
             return true;
-        }
-    }
-
-    /// <summary>What install told the operator: the global console, swapped for a writer and
-    /// widened so a path never wraps mid-assertion, then put back.</summary>
-    private static string Capture(Action action)
-    {
-        IAnsiConsole original = AnsiConsole.Console;
-        StringWriter writer = new();
-        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
-        {
-            Ansi = AnsiSupport.No,
-            ColorSystem = ColorSystemSupport.NoColors,
-            Out = new AnsiConsoleOutput(writer),
-        });
-        captured.Profile.Width = 4096;
-        AnsiConsole.Console = captured;
-        try
-        {
-            action();
-            return writer.ToString();
-        }
-        finally
-        {
-            AnsiConsole.Console = original;
         }
     }
 

@@ -6,7 +6,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
-using Spectre.Console;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -23,10 +23,6 @@ namespace Hall9k.Tests.Cli;
 /// included: h9k task start's own Blocked entry gained the identical carry-forward behavior in the
 /// same task, closing the gap task 8a56af78-h9k had originally left open.
 /// </summary>
-// Capture (below) swaps the process-wide AnsiConsole.Console, the same static
-// InstallCommandTests and others in this collection swap; sharing the collection serializes
-// this class against them too (review, PR #192).
-[Collection("Hall9kHome")]
 public sealed class TaskWorkClaimTests
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 2, 12, 0, 0, TimeSpan.Zero);
@@ -233,7 +229,7 @@ public sealed class TaskWorkClaimTests
     {
         TaskDependency dead = DeadDependency();
 
-        string output = Capture(() => TaskWorkCommand.PrintUnmetDependencyWarning(
+        string output = ScopedAnsiConsoleCapture.Capture(() => TaskWorkCommand.PrintUnmetDependencyWarning(
             "Claiming", DomainId.New(), [dead], carriedForward: true));
 
         output.Should().Contain(dead.Describe());
@@ -292,30 +288,6 @@ public sealed class TaskWorkClaimTests
                 "this one is on the sweep's cadence, so waiting is honest advice — and advice it can follow");
 
         task.State.Should().Be(TaskState.Blocked, "the refusal decides nothing");
-    }
-
-    /// <summary>The global console, swapped for a writer and put back — mirrors InstallCommandTests's own capture.</summary>
-    private static string Capture(Action action)
-    {
-        IAnsiConsole original = AnsiConsole.Console;
-        StringWriter writer = new();
-        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
-        {
-            Ansi = AnsiSupport.No,
-            ColorSystem = ColorSystemSupport.NoColors,
-            Out = new AnsiConsoleOutput(writer),
-        });
-        captured.Profile.Width = 4096;
-        AnsiConsole.Console = captured;
-        try
-        {
-            action();
-            return writer.ToString();
-        }
-        finally
-        {
-            AnsiConsole.Console = original;
-        }
     }
 
     private static TaskAggregate BlockedTask(TaskDependency open)

@@ -2,7 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Tests.Fakes;
-using Spectre.Console;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -107,7 +107,7 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
         // own tests already establish that), so this exercises the same skip-and-name-the-flag
         // rule the start and schema offers already use rather than hanging on a prompt.
         ConnectionStringResolution? resolution = null;
-        string output = await CaptureAsync(async () =>
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
         {
             resolution = await DatabaseDoctor.OfferAndRecordAlreadyRunningContainerAsync(
                 assumeYes: false, _ => Task.FromResult(Reachable()), CancellationToken.None);
@@ -151,31 +151,4 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
 
     private static ReachabilityReport RefusedConnection() =>
         new(ReachabilityStatus.RefusedConnection, "nothing listening", "localhost", 5432, "hall9k");
-
-    /// <summary>The global console, swapped for a writer so a skipped prompt's own
-    /// explanation can be asserted on, then put back — same shape as
-    /// DatabaseDoctorNotConfiguredTests' own CaptureAsync.</summary>
-    private static async Task<string> CaptureAsync(Func<Task> action)
-    {
-        IAnsiConsole original = AnsiConsole.Console;
-        StringWriter writer = new();
-        IAnsiConsole captured = AnsiConsole.Create(new AnsiConsoleSettings
-        {
-            Ansi = AnsiSupport.No,
-            ColorSystem = ColorSystemSupport.NoColors,
-            Interactive = InteractionSupport.No,
-            Out = new AnsiConsoleOutput(writer),
-        });
-        captured.Profile.Width = 4096;
-        AnsiConsole.Console = captured;
-        try
-        {
-            await action();
-            return writer.ToString();
-        }
-        finally
-        {
-            AnsiConsole.Console = original;
-        }
-    }
 }
