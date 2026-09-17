@@ -55,6 +55,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid purgedIdeaId = await SeedIdeaAsync(store, purgedProjectId, ownerId, cts.Token);
         Guid purgedEpicId = await SeedEpicAsync(store, purgedProjectId, ownerId, cts.Token);
         await SeedGitHubAccessAsync(store, purgedProjectId, cts.Token);
+        await SeedPromptAddendaSyncPositionAsync(store, purgedProjectId, cts.Token);
         await SchedulePastDuePurgeAsync(store, purgedProjectId, ownerId, cts.Token);
 
         // A sibling project, untouched by this sweep — the control that proves the purge is
@@ -65,6 +66,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid survivingIdeaId = await SeedIdeaAsync(store, survivingProjectId, ownerId, cts.Token);
         Guid survivingEpicId = await SeedEpicAsync(store, survivingProjectId, ownerId, cts.Token);
         await SeedGitHubAccessAsync(store, survivingProjectId, cts.Token);
+        await SeedPromptAddendaSyncPositionAsync(store, survivingProjectId, cts.Token);
 
         ProjectPurgeEngine engine = new(store, NullLogger<ProjectPurgeEngine>.Instance);
         ProjectPurgeSweepResult result = await engine.SweepOnceAsync(cts.Token);
@@ -83,6 +85,9 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
                 "ProjectGitHubMembers is keyed by the project's own id but is never a stream of its "
                 + "own, so it needs its own delete alongside ProjectDetails rather than falling out "
                 + "of the events/streams deletes above");
+            (await query.LoadAsync<PromptAddendaSyncPosition>(purgedProjectId, cts.Token)).Should().BeNull(
+                "PromptAddendaSyncPosition is the identical shape: project-id-keyed but never a "
+                + "stream of its own");
             foreach (Guid taskId in purgedTaskIds)
             {
                 (await query.LoadAsync<TaskDetails>(taskId, cts.Token)).Should().BeNull();
@@ -105,6 +110,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             // The survivor: every stream and projection row still exactly where it was.
             (await query.LoadAsync<ProjectDetails>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<ProjectGitHubMembers>(survivingProjectId, cts.Token)).Should().NotBeNull();
+            (await query.LoadAsync<PromptAddendaSyncPosition>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<TaskDetails>(survivingTaskIds[0], cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<RunDetails>(survivingRunId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<IdeaDetails>(survivingIdeaId, cts.Token)).Should().NotBeNull();
@@ -375,6 +381,20 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(
             projectId, new ProjectGitHubAccessObserved(projectId, 1, "octocat", GitHubRepositoryRole.Admin, Now));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Materialises <see cref="PromptAddendaSyncPosition"/> for the project the identical way
+    /// <c>PromptAddendaSweepEngine.PushAsync</c> would — a purge must delete this row too, not only
+    /// <c>ProjectDetails</c> (independent pre-PR review, cycle 1, adversarial lens, low: it is
+    /// project-id-keyed but never a stream, so the events/streams deletes never reach it).
+    /// </summary>
+    private static async Task SeedPromptAddendaSyncPositionAsync(
+        IDocumentStore store, Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Store(new PromptAddendaSyncPosition { Id = projectId, LastScannedGlobalSequence = 1 });
         await session.SaveChangesAsync(cancellationToken);
     }
 
