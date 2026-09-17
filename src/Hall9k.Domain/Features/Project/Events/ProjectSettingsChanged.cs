@@ -198,4 +198,13 @@ public sealed record ProjectSettingsChanged(
     /// the origin incident. Trailing and optional so every stream written before this setting
     /// existed replays byte-for-byte unchanged.
     /// </summary>
-    Optional<WritingConventions> WritingConventions = default);
+    Optional<WritingConventions> WritingConventions = default,
+    /// <summary>
+    /// Which tracker becomes a task's primary reference by default when <c>h9k task add</c> adopts
+    /// both a GitHub issue and a Jira card (task: a task may link to both a GitHub issue and a
+    /// Jira card). <see cref="WorkItemProvider.Unknown"/> is both the default and the explicit "no
+    /// default" — the <see cref="BacklogPolicy"/> clearing idiom — and a task adopting both then
+    /// needs its own <c>--primary-tracker</c> to say which wins. Trailing and optional so every
+    /// stream written before this setting existed replays byte-for-byte unchanged.
+    /// </summary>
+    Optional<WorkItemProvider> PrimaryTracker = default);
