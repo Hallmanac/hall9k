@@ -4618,6 +4618,47 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// Closeout tells only the primary's own card (task: a task may link to both a GitHub issue
+    /// and a Jira card) — the same rule <see cref="TrackerClaimGate"/> and
+    /// <see cref="Hall9k.Domain.Features.Project.BranchNameTemplate.Render"/> hold for their own
+    /// doors, this being closeout's own share of it. The task seeded here carries a Jira card as
+    /// its secondary, and the engine's own Jira requester here throws on any request at all — a
+    /// regression that started telling the secondary's own card too could not pass this test.
+    /// </summary>
+    [Fact]
+    public async Task Closeout_tells_only_the_primary_and_never_reads_the_secondary()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, _, _) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token,
+            externalReference: new ExternalReference(WorkItemProvider.GitHub, "o/r#1"),
+            secondaryExternalReference: new ExternalReference(WorkItemProvider.Jira, "POISON-1"));
+        Guid projectId = await ProjectIdAsync(store, taskId, cts.Token);
+        await SetCloseLinkedIssueSettingsAsync(store, projectId, CloseLinkedIssueRule.OnCloseout, null, cts.Token);
+
+        RecordingProcessRunner github = GitHubCloseoutRunner(isOpen: true);
+        RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
+            _ => throw new InvalidOperationException("closeout must never reach for the secondary's own card"));
+        FakeInspector inspector = new()
+        {
+            Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
+        };
+        await NewEngine(store, node, inspector, worktrees, github: github, jira: mustNotRun).PollOnceAsync(cts.Token);
+
+        mustNotRun.Requests.Should().BeEmpty("the secondary is never told, whatever its own provider");
+        github.Calls.Should().ContainSingle(call => call.Arguments.Contains("comment"),
+            "the primary still gets its merge note");
+        github.Calls.Should().ContainSingle(call => call.Arguments.Contains("close"),
+            "the primary still closes under on-closeout");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
+    }
+
+    /// <summary>
     /// Under on-closeout, when the close write itself fails (gh rejects it, a permissions error,
     /// a transient network failure), the merge note must say so honestly rather than claim a
     /// closure that never happened — the close is attempted before the comment is composed for
@@ -5198,7 +5239,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         PreApprovalMode? preApproval = null,
         Guid? existingProjectId = null,
         string? closeLinkedIssueOverride = null,
-        string? rawCloseLinkedIssueOverride = null)
+        string? rawCloseLinkedIssueOverride = null,
+        ExternalReference? secondaryExternalReference = null)
     {
         Guid taskId = DomainId.New();
         Guid runId = DomainId.New();
@@ -5222,7 +5264,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         // stream at all — the same shape a newer build or a hand-edited stream could leave behind.
         Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
             taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null,
-            externalReference, Now, ownerId);
+            externalReference, Now, ownerId, secondaryExternalReference: secondaryExternalReference);
         (TaskAggregate task, object[] lifecycle) = rawCloseLinkedIssueOverride is not null
             ? StartWithRawCloseLinkedIssueOverride(added, ownerId, Now, rawCloseLinkedIssueOverride)
             : closeLinkedIssueOverride is null
