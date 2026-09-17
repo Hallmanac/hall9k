@@ -1727,8 +1727,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-123"), cts.Token);
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-123"), node.OwnerId, cts.Token);
 
         RecordingJiraRequester rejecting = AuthRejected();
         await using (IDocumentSession session = store.LightweightSession())
@@ -1746,7 +1747,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
 
         // A fresh, working credential — the identical comment goes through this time.
         RecordingJiraRequester reauthenticated = RecordingJiraRequester.Succeeding(200, """{"key":"PROJ-123"}""");
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, reauthenticated.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -1770,8 +1770,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-321"), cts.Token);
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-321"), node.OwnerId, cts.Token);
 
         RecordingJiraRequester rejecting = AuthRejected();
         await using (IDocumentSession session = store.LightweightSession())
@@ -1784,7 +1785,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             submitted.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
         }
 
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, AuthRejected().Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult second = await engine.PollOnceAsync(cts.Token);
@@ -1827,9 +1827,10 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = await SeedTaskAsync(
-            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-987"), cts.Token, archiveProject: true);
+            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-987"), node.OwnerId, cts.Token, archiveProject: true);
 
         RecordingJiraRequester rejecting = AuthRejected();
         await using (IDocumentSession session = store.LightweightSession())
@@ -1844,7 +1845,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
 
         RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
             _ => throw new InvalidOperationException("an archived project's write must never be retried"));
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, mustNotRun.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -1859,8 +1859,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-456"), cts.Token);
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-456"), node.OwnerId, cts.Token);
 
         RecordingJiraRequester refusing = RecordingJiraRequester.Succeeding(
             400, """{"errorMessages":["field 'customfield_10010' is required"]}""");
@@ -1876,7 +1877,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
 
         RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
             _ => throw new InvalidOperationException("a non-auth failure must not be retried by the sweep"));
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, mustNotRun.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -1889,8 +1889,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-789"), cts.Token);
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-789"), node.OwnerId, cts.Token);
 
         // Closeout tried to submit the merge comment while another write was still outstanding on
         // this task and queued it instead of losing it (CloseoutEngine.QueueJiraMergeNoticeAsync).
@@ -1909,7 +1910,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         }
 
         RecordingJiraRequester reauthenticated = RecordingJiraRequester.Succeeding(200, """{"key":"PROJ-789"}""");
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, reauthenticated.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         // First sweep: the outstanding write clears, but the queued notice was read as still
@@ -1942,9 +1942,10 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = await SeedTaskAsync(
-            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-135"), cts.Token, archiveProject: true);
+            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-135"), node.OwnerId, cts.Token, archiveProject: true);
 
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -1955,7 +1956,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
 
         RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
             _ => throw new InvalidOperationException("an archived project's queued notice must never drain"));
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, mustNotRun.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -1983,9 +1983,10 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
         Guid taskId = await SeedTaskAsync(
-            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-246"), cts.Token, archiveProject: true);
+            store, new ExternalReference(WorkItemProvider.Jira, "PROJ-246"), node.OwnerId, cts.Token, archiveProject: true);
 
         await using IDocumentSession session = store.LightweightSession();
         TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
@@ -2020,8 +2021,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid targetTaskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-222"), cts.Token);
+        Guid targetTaskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-222"), node.OwnerId, cts.Token);
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate target = (await session.Events.AggregateStreamAsync<TaskAggregate>(targetTaskId, token: cts.Token))!;
@@ -2032,7 +2034,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
             _ => throw new InvalidOperationException(
                 "the notice's own submit must be refused before it ever reaches Jira"));
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, mustNotRun.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance)
         {
             // Fires in the exact window DrainMergeNoticeAsync's own guard cannot see: it already
@@ -2096,8 +2097,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-654"), cts.Token);
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-654"), node.OwnerId, cts.Token);
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
@@ -2126,7 +2128,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             return new JiraResponse(201, "{}");
         });
 
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, requester.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -2163,8 +2164,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-741"), cts.Token);
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-741"), node.OwnerId, cts.Token);
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
@@ -2187,7 +2189,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             return new JiraResponse(201, "{}");
         });
 
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, requester.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -2216,8 +2217,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-852"), cts.Token);
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-852"), node.OwnerId, cts.Token);
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
@@ -2241,7 +2243,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             return new JiraResponse(201, "{}");
         });
 
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, requester.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -2272,8 +2273,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-987"), cts.Token);
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-987"), node.OwnerId, cts.Token);
         await using (IDocumentSession session = store.LightweightSession())
         {
             TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
@@ -2308,7 +2310,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             return new JiraResponse(201, "{}");
         });
 
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(store, node, requester.Requester, DefaultOptions(), NullLogger<JiraWriteRetryEngine>.Instance);
 
         JiraWriteRetrySweepResult sweep = await engine.PollOnceAsync(cts.Token);
@@ -2352,8 +2353,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid taskId = await SeedTaskAsync(store, externalReference: null, cts.Token);
+        Guid taskId = await SeedTaskAsync(store, externalReference: null, node.OwnerId, cts.Token);
 
         RecordingJiraRequester stuck = AuthRejected();
         await using (IDocumentSession session = store.LightweightSession())
@@ -2406,8 +2408,9 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
 
-        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-321"), cts.Token);
+        Guid taskId = await SeedTaskAsync(store, new ExternalReference(WorkItemProvider.Jira, "PROJ-321"), node.OwnerId, cts.Token);
         Guid writeId;
         await using (IDocumentSession session = store.LightweightSession())
         {
@@ -2420,7 +2423,6 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
 
         RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
             _ => throw new InvalidOperationException("the ceiling sweep must never call Jira — it only ends a stale write"));
-        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
         JiraWriteRetryEngine engine = new(
             store, node, mustNotRun.Requester, Options.Create(new DaemonOptions { PendingJiraWriteCeiling = TimeSpan.Zero }),
             NullLogger<JiraWriteRetryEngine>.Instance);
@@ -2442,18 +2444,22 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         return await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
     }
 
+    /// <summary>
+    /// Seeded assigned to <paramref name="ownerId"/> — the caller's own <c>NodeContext.OwnerId</c>,
+    /// not a fresh unrelated one, ever since <see cref="JiraWriteRetryEngine.PollOnceAsync"/> started
+    /// fencing its three candidate queries on <c>TaskDetails.AssignedOwnerId</c> (independent
+    /// pre-PR review, cycle 5, conformance lens): a task this owner does not hold would never
+    /// reach any of those queries in the first place, and a Draft task (the shape a bare
+    /// <see cref="TaskDecider.Add"/> alone leaves behind) carries no assigned owner at all, so the
+    /// full <see cref="TaskSeed.Dispatchable(TaskAdded,Guid,DateTimeOffset)"/> lifecycle runs here —
+    /// the same one a task with a genuine pending Jira write would actually have been through.
+    /// </summary>
     private static async Task<Guid> SeedTaskAsync(
-        IDocumentStore store, ExternalReference? externalReference, CancellationToken cancellationToken,
+        IDocumentStore store, ExternalReference? externalReference, Guid ownerId, CancellationToken cancellationToken,
         bool archiveProject = false)
     {
-        Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
         Guid taskId = DomainId.New();
-
-        await using IDocumentSession ownerSession = store.LightweightSession();
-        ownerSession.Events.StartStream<OwnerAggregate>(ownerId, OwnerDecider.Register(
-            ownerId, "Brian Hall", "brian@hallmanac.com", JiraWriteNow));
-        await ownerSession.SaveChangesAsync(cancellationToken);
 
         Guid connectionId = await EnsureJiraConnectionAsync(store, ownerId, cancellationToken);
 
@@ -2462,9 +2468,10 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             projectId, ownerId, connectionId, "hall9k", "/repos/hall9k.git",
             new Uri("https://github.com/Hallmanac/hall9k"), null, JiraWriteNow));
 
-        session.Events.StartStream<TaskAggregate>(taskId, TaskDecider.Add(
+        TaskAdded added = TaskDecider.Add(
             taskId, projectId, "Comment on the linked Jira card", ["A comment is posted"], TaskType.Feature,
-            agentContext: null, constraints: null, externalReference, JiraWriteNow, ownerId));
+            agentContext: null, constraints: null, externalReference, JiraWriteNow, ownerId);
+        session.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(added, ownerId, JiraWriteNow));
 
         await session.SaveChangesAsync(cancellationToken);
 

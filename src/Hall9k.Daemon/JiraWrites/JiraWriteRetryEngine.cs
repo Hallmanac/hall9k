@@ -92,6 +92,17 @@ public sealed class JiraWriteRetryEngine(
         IReadOnlyList<TaskDetails> stalePending;
         await using (IQuerySession query = store.QuerySession())
         {
+            // Owner-scoped the same way DispatchEngine's own queued-task query is
+            // (Decisions Log #34): PendingJiraWriteIsAuthFailure, HasQueuedJiraMergeNotice and
+            // PendingJiraWriteId are all set by project-scoped events, so a teammate's own stuck
+            // write or queued merge notice replicates here as a fact just like any other. Without
+            // this filter this node would retry a Jira write, or drain a merge notice, for work it
+            // neither produced nor holds — through its own Jira connection, against a task
+            // AssignedOwnerId says is somebody else's — the same double-write hazard the two
+            // TaskDetails-driven loops below exist to avoid for THIS node's own outstanding writes
+            // (independent pre-PR review, cycle 5, conformance lens).
+            Guid ownerId = node.OwnerId;
+
             // Abandoned is excluded on purpose (independent pre-PR review, cycle 5):
             // TaskDecider.RequestJiraWrite now refuses a fresh write against an abandoned task,
             // but a write that was already pending when the human abandoned it is not itself
@@ -102,11 +113,13 @@ public sealed class JiraWriteRetryEngine(
             pending = await query.Query<TaskDetails>()
                 .Where(task => task.PendingJiraWriteIsAuthFailure)
                 .Where(task => task.MatchesSql("d.data ->> 'state' != ?", TaskState.Abandoned.Value))
+                .Where(task => task.AssignedOwnerId == ownerId)
                 .ToListAsync(cancellationToken);
 
             queuedMergeNotices = await query.Query<TaskDetails>()
                 .Where(task => task.HasQueuedJiraMergeNotice && task.PendingJiraWriteId == null)
                 .Where(task => task.MatchesSql("d.data ->> 'state' != ?", TaskState.Abandoned.Value))
+                .Where(task => task.AssignedOwnerId == ownerId)
                 .ToListAsync(cancellationToken);
 
             // Not auth-failure and still pending is not the ordinary case: JiraWriteCoordinator
@@ -120,6 +133,7 @@ public sealed class JiraWriteRetryEngine(
             stalePending = await query.Query<TaskDetails>()
                 .Where(task => task.PendingJiraWriteId != null)
                 .Where(task => !task.PendingJiraWriteIsAuthFailure)
+                .Where(task => task.AssignedOwnerId == ownerId)
                 .ToListAsync(cancellationToken);
         }
 
