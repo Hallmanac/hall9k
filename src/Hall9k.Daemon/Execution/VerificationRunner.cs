@@ -1644,61 +1644,20 @@ public sealed partial class VerificationRunner(
     /// lenses, medium: nothing downstream of the fail-hard path used to receive this method's own
     /// output at all).
     /// <para>
-    /// Races that comparison against <see cref="CleanBaseComparisonRecordingBudget"/> rather than
-    /// always awaiting it before <see cref="RecordFailureAsync"/> ever runs (see that budget's own
-    /// doc for the incident this closes). Winning the race is unchanged from before: the annotated
-    /// reason lands inline, in the same transaction shape this method always used, and is what this
-    /// method returns. Losing it no longer means this call itself keeps waiting for the comparison
-    /// to finish (independent pre-PR review, cycle 1, both lenses, medium: awaiting it here even
-    /// after giving up on including it reintroduced the identical 08:57 gap one layer up, since
-    /// every caller of this method — including the safety net whose only job is to never block
-    /// longer than one sweep — still sat behind this call's own return) — the plain reason is
-    /// recorded and returned immediately, and the comparison is left running in the background,
-    /// observed only for an unhandled exception rather than awaited, so it can still warm
-    /// <see cref="CleanBaseGateVerdict"/> for whichever run next asks this same question without
-    /// holding this method, or anything downstream of it, open a second longer than the budget.
-    /// Its own annotation is discarded once it finally answers — <see cref="RunFailed"/> is
-    /// append-only, so there is nothing left here to attach it to. The run's own node slot is freed
-    /// the moment this call returns (<c>NodeLoad</c> counts only live runs), while the background
-    /// comparison keeps a full gate-sized process (a `dotnet build`/`dotnet test` against
-    /// <c>repo/dev</c>, up to <see cref="AdHocGateRunner.ComputeComparisonBudget"/>'s own budget)
-    /// running unaccounted for — a real, but bounded, cost against a freshly dispatched run landing
-    /// on the same node before that background process exits (independent pre-PR review, cycle 1,
-    /// conformance lens, low).
+    /// The clean-base comparison is raced against <see cref="CleanBaseComparisonRecordingBudget"/>
+    /// rather than always awaited before <see cref="RecordFailureAsync"/> ever runs — see
+    /// <see cref="RaceCleanBaseComparisonAsync"/>, which both recording paths share, for the whole
+    /// mechanism and the two incidents behind it.
     /// </para>
     /// </summary>
     private async Task<string> RecordGateFailureAsync(
         Guid runId, Guid taskId, Guid nodeId, ProjectDetails? project, VerifyCommand gate, string reason,
         bool isInfrastructureFailure, IReadOnlyList<GateDuration> gateDurations, CancellationToken cancellationToken)
     {
-        Task<string> reportedReasonTask = BuildReportedGateFailureReasonAsync(
+        string reportedReason = await RaceCleanBaseComparisonAsync(
             runId, nodeId, project, gate, reason, isInfrastructureFailure, cancellationToken);
-        Task first = await Task.WhenAny(
-            reportedReasonTask, Task.Delay(CleanBaseComparisonRecordingBudget, cancellationToken));
-
-        if (first == reportedReasonTask)
-        {
-            string reportedReason = await reportedReasonTask;
-            await RecordFailureAsync(runId, taskId, gate.Name, reportedReason, gateDurations, cancellationToken);
-            return reportedReason;
-        }
-
-        // The comparison is still running past the budget — this run's own terminal disposition,
-        // and every caller of this method, must not wait on it any longer. Recorded now, with the
-        // plain reason, and returned as-is: the comparison itself keeps running below, off this
-        // call's own critical path, unawaited — only watched for a fault so an unobserved
-        // cancellation never reaches the process-wide TaskScheduler.UnobservedTaskException handler;
-        // every other exception is already handled inside BuildReportedGateFailureReasonAsync's own
-        // try/catch. Its own annotation is discarded once it finally answers — RunFailed is
-        // append-only, so there is nothing left to attach it to — and the next run against this
-        // same base commit is who benefits from the CleanBaseGateVerdict it still warms.
-        await RecordFailureAsync(runId, taskId, gate.Name, reason, gateDurations, cancellationToken);
-        _ = reportedReasonTask.ContinueWith(
-            static faulted => faulted.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
-        return reason;
+        await RecordFailureAsync(runId, taskId, gate.Name, reportedReason, gateDurations, cancellationToken);
+        return reportedReason;
     }
 
     /// <summary>
@@ -1710,17 +1669,87 @@ public sealed partial class VerificationRunner(
     /// about to dispatch a repair session rather than end the run, so nothing here should end it
     /// either. Returns the reported (possibly clean-base-annotated) reason for that caller to hand
     /// the repair session and, if the round cap is spent, name in the park.
+    /// <para>
+    /// Races the comparison against <see cref="CleanBaseComparisonRecordingBudget"/> through the
+    /// shared <see cref="RaceCleanBaseComparisonAsync"/>, exactly as
+    /// <see cref="RecordGateFailureAsync"/> does: this method awaiting it unconditionally is the
+    /// 2026-09-17 defect (see that method's own doc for both machines' shapes).
+    /// </para>
     /// </summary>
     private async Task<string> RecordGateFailureWithoutFailingRunAsync(
         Guid runId, Guid nodeId, ProjectDetails? project, VerifyCommand gate, string reason,
         bool isInfrastructureFailure, IReadOnlyList<GateDuration> gateDurations, CancellationToken cancellationToken)
     {
-        string reportedReason = await BuildReportedGateFailureReasonAsync(
+        string reportedReason = await RaceCleanBaseComparisonAsync(
             runId, nodeId, project, gate, reason, isInfrastructureFailure, cancellationToken);
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new VerificationFailed(runId, [gate.Name], DateTimeOffset.UtcNow, gateDurations));
         await session.SaveChangesAsync(cancellationToken);
         return reportedReason;
+    }
+
+    /// <summary>
+    /// The clean-base comparison, raced against <see cref="CleanBaseComparisonRecordingBudget"/>
+    /// (see that budget's own doc for the 2026-09-15 08:57 incident that introduced the race):
+    /// returns the annotated reason when the comparison answers inside the budget, and the
+    /// caller's own plain <paramref name="reason"/> the moment it does not. Losing the race never
+    /// waits for the comparison's tail (independent pre-PR review, cycle 1, both lenses, medium:
+    /// awaiting it even after giving up on including it reintroduced the identical gap one layer
+    /// up, since every caller still sat behind the recording call's own return) — the comparison is
+    /// left running in the background, observed only for an unhandled exception rather than
+    /// awaited, so it still warms <see cref="CleanBaseGateVerdict"/> for whichever run next asks
+    /// this same question without holding either recording path, or anything downstream of one,
+    /// open a second longer than the budget. Its own annotation is discarded once it finally
+    /// answers: both recording paths are append-only, so there is nothing left to attach it to. The
+    /// run's own node slot is freed the moment the recording path returns (<c>NodeLoad</c> counts
+    /// only live runs), while the background comparison keeps a full gate-sized process (a `dotnet
+    /// build`/`dotnet test` against <c>repo/dev</c>, up to
+    /// <see cref="AdHocGateRunner.ComputeComparisonBudget"/>'s own budget) running unaccounted for
+    /// — a real, but bounded, cost against a freshly dispatched run landing on the same node before
+    /// that background process exits (independent pre-PR review, cycle 1, conformance lens, low).
+    /// <para>
+    /// Shared by BOTH recording paths rather than living in <see cref="RecordGateFailureAsync"/>
+    /// alone, which is the 2026-09-17 defect this extraction closes: two shapes of one miss, run
+    /// 01a0ab8d on Windows and run 01a0ad4e on the Mac.
+    /// <see cref="RecordGateFailureWithoutFailingRunAsync"/> — the repair-eligible sibling added
+    /// for the Settling-gate repair lap — awaited the comparison unconditionally, so a run whose
+    /// mandatory final full-scope gate failed after a merge-ready resolve sat with no session, no
+    /// park and no failure for as long as the comparison's own gate run took: 15 minutes on the Mac
+    /// (gate failed 05:31:09, repair session dispatched 05:46:17) and past 30 on Windows, where the
+    /// comparison's budget is twice the whole suite's own wall clock. <c>h9k task show</c> read
+    /// "no session recorded as running" throughout, because the run's own gate had already ended by
+    /// then and <c>TaskPhaseComposer</c> had no <see cref="ActiveGate"/> left to name.
+    /// </para>
+    /// </summary>
+    private async Task<string> RaceCleanBaseComparisonAsync(
+        Guid runId, Guid nodeId, ProjectDetails? project, VerifyCommand gate, string reason,
+        bool isInfrastructureFailure, CancellationToken cancellationToken)
+    {
+        Task<string> reportedReasonTask = BuildReportedGateFailureReasonAsync(
+            runId, nodeId, project, gate, reason, isInfrastructureFailure, cancellationToken);
+        Task first = await Task.WhenAny(
+            reportedReasonTask, Task.Delay(CleanBaseComparisonRecordingBudget, cancellationToken));
+        if (first == reportedReasonTask)
+        {
+            return await reportedReasonTask;
+        }
+
+        // The comparison is still running past the budget — this gate's own failure, and every
+        // caller downstream of it, must not wait on it any longer. The comparison itself keeps
+        // running, off this call's own critical path, unawaited: only watched for a fault so an
+        // unobserved cancellation never reaches the process-wide
+        // TaskScheduler.UnobservedTaskException handler; every other exception is already handled
+        // inside BuildReportedGateFailureReasonAsync's own try/catch.
+        logger.LogInformation(
+            "Run {RunId}: the clean-base comparison for gate '{Gate}' has not answered within {Budget} — "
+            + "recording this failure with the gate's own reason and leaving the comparison to warm the cache",
+            runId, gate.Name, CleanBaseComparisonRecordingBudget);
+        _ = reportedReasonTask.ContinueWith(
+            static faulted => faulted.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+        return reason;
     }
 
     /// <summary>
