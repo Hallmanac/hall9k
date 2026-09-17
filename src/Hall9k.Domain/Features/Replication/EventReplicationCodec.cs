@@ -26,6 +26,12 @@ public static class EventReplicationCodec
     /// <see cref="OriginSequence"/> is the origin's own global sequence, kept so a receiver's own
     /// origin metadata (idea 202383dc's own list: "owner root, node, event id, origin sequence")
     /// is complete without a second round trip to the sender.
+    /// <see cref="OriginProjectId"/> is the sending node's own LOCAL project id for this event — a
+    /// per-install coordinate, never a shared identity (the ledger repository is) — carried so a
+    /// forwarded copy (M2b, not built yet) can be rewritten again at each hop; trailing and
+    /// defaulted so an envelope from a sender on an older build still decodes. Never itself applied:
+    /// the receiver's own local project id, not this one, is what a replicated event's project
+    /// coordinate is rewritten to on apply.
     /// </summary>
     public sealed record ReplicatedEventRecord(
         Guid StreamId,
@@ -35,7 +41,8 @@ public static class EventReplicationCodec
         long OriginSequence,
         Guid OriginNodeId,
         string OriginOwnerRootFingerprint,
-        DateTimeOffset OriginAt);
+        DateTimeOffset OriginAt,
+        Guid OriginProjectId = default);
 
     public static string EncodeBatch(IReadOnlyList<ReplicatedEventRecord> records) =>
         JsonSerializer.Serialize(records, Options);

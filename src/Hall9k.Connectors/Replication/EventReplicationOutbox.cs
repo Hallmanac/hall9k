@@ -118,12 +118,19 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 continue;
             }
 
-            if (resolved.IsProjectStreamItself)
+            if (resolved.IsProjectStreamItself && ProjectStreamReplicationRules.IsProjectIdentityEvent(candidate.EventType))
             {
-                // The Project aggregate's own stream id is never shared across installs (each node
-                // mints its own at registration) — a fact appended under it could never land on a
+                // Only the Project aggregate's own identity event (ProjectRegistered) is excluded
+                // here: it mints this install's own local project id (ProjectAddCommand), never
+                // shared across installs, so a fact appended under it could never land on a
                 // receiver's own Project stream, only create a phantom one under a foreign id. Never
                 // worth looking at again, the same as any other never-this-project's-business skip.
+                // Every OTHER project-scoped event on this same stream (ProjectTeamSettingsChanged,
+                // the lifecycle and membership events) travels like any other candidate below — the
+                // receiving inbox rewrites its own stream id to ITS OWN local Project stream
+                // (ProjectStreamReplicationRules.IsProjectAggregateStreamEvent) rather than excluding
+                // the whole stream, because the project id is a per-install coordinate rewritten on
+                // apply, never the shared identity (the ledger repository is).
                 lastIncludedSequence = candidate.Sequence;
                 continue;
             }
@@ -137,7 +144,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 continue;
             }
 
-            EventReplicationCodec.ReplicatedEventRecord record = ToRecord(candidate, nodeId, fromOwnerFingerprint);
+            EventReplicationCodec.ReplicatedEventRecord record = ToRecord(candidate, nodeId, fromOwnerFingerprint, projectId);
             string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
 
             if (batch.Count >= MaxEventsPerEnvelope
@@ -195,7 +202,8 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             MessageKind.Events, body, now, cancellationToken);
     }
 
-    private static EventReplicationCodec.ReplicatedEventRecord ToRecord(IEvent candidate, Guid nodeId, string fromOwnerFingerprint)
+    private static EventReplicationCodec.ReplicatedEventRecord ToRecord(
+        IEvent candidate, Guid nodeId, string fromOwnerFingerprint, Guid projectId)
     {
         string originNodeIdText = candidate.GetHeader(EventOriginStampingListener.NodeIdHeader) as string ?? string.Empty;
         Guid originNodeId = Guid.TryParse(originNodeIdText, out Guid parsedNodeId) ? parsedNodeId : nodeId;
@@ -210,7 +218,8 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             candidate.Sequence,
             originNodeId,
             originOwnerRootFingerprint,
-            candidate.Timestamp);
+            candidate.Timestamp,
+            projectId);
     }
 
     /// <summary>The first time this ever runs on this node, records the node's own current global

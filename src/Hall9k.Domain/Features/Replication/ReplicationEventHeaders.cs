@@ -16,6 +16,12 @@ public static class ReplicationEventHeaders
     public const string OriginOwnerRootFingerprint = "originOwnerRootFingerprint";
     public const string OriginEventId = "originEventId";
     public const string OriginSequence = "originSequence";
+    /// <summary>The sending node's own local project id for this event, at the moment it sent it —
+    /// a per-install coordinate, never this event's shared identity (idea 202383dc, M2a follow-up:
+    /// PLAN.md §16 PLACEHOLDER-c8dd149c). Kept so a future forwarded copy (M2b) can be rewritten
+    /// again at each hop; this node's own applied copy is keyed by its OWN local project id, not
+    /// this one.</summary>
+    public const string OriginProjectId = "originProjectId";
     public const string ReceivedFromNodeId = "receivedFromNodeId";
     public const string ReceivedAt = "receivedAt";
 }

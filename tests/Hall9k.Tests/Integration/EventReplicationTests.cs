@@ -5,7 +5,9 @@ using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -13,6 +15,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
 using Marten;
@@ -110,6 +113,181 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             replicated.Should().NotBeNull();
             replicated!.ProjectId.Should().Be(projectId);
             replicated.State.Should().Be(TaskState.Queued);
+        }
+    }
+
+    /// <summary>
+    /// The disputed adversarial finding this fix resolves (independent pre-PR review, cycle 1,
+    /// EventReplicationInbox.cs:174): a project's own id is minted per install (ProjectAddCommand),
+    /// so the two stores here register the identical real-world project under two DIFFERENT local
+    /// ids — the shape every genuine two-node exchange actually has, unlike every other test in this
+    /// file, which uses one shared id for convenience. A replicated TaskAdded must still land under
+    /// node B's own project id, never node A's foreign one, and each store's own projection reads
+    /// the task back under its own coordinate.
+    /// </summary>
+    [Fact]
+    public async Task Two_stores_registered_under_different_project_ids_exchange_a_tasks_events_and_each_reach_their_own_project()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        Guid projectIdB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectIdA, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        // Node B reads node A's outbox for the identical shared repository, but its own local
+        // project id (projectIdB) has nothing to do with node A's (projectIdA) — exactly the
+        // "minted per install" shape ProjectAddCommand documents.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, Now.AddSeconds(3), trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeFalse();
+            read.EventsApplied.Should().BeGreaterThan(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskDetails? replicated = await session.LoadAsync<TaskDetails>(taskId, cts.Token);
+            replicated.Should().NotBeNull();
+            replicated!.ProjectId.Should().Be(projectIdB, "the receiver's own local project id, never the sender's foreign one");
+            replicated.State.Should().Be(TaskState.Queued);
+        }
+
+        // Node A's own copy is untouched by any of this — still under its own local project id.
+        await using (IQuerySession session = _postgres.Store.QuerySession())
+        {
+            TaskDetails? original = await session.LoadAsync<TaskDetails>(taskId, cts.Token);
+            original!.ProjectId.Should().Be(projectIdA);
+        }
+    }
+
+    /// <summary>
+    /// The other half of the same disputed finding: excluding the whole Project stream from
+    /// replication (the fix session's first attempt) was itself wrong, since criterion 1 makes team
+    /// settings project-scoped and the objective says every project-scoped event travels.
+    /// ProjectTeamSettingsChanged must reach a teammate — applied to THAT node's own Project stream
+    /// id, never the sender's, since the id is a per-install coordinate — while its node-scoped
+    /// sibling, ProjectSettingsChanged, never leaves at all.
+    /// </summary>
+    [Fact]
+    public async Task A_team_settings_change_applies_to_the_receivers_own_project_stream_and_the_node_part_never_travels()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        Guid projectIdB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdA,
+                new ProjectRegistered(projectIdA, ownerId, DomainId.New(), "Shared Project", "/repo-a", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node B registers the identical real-world project under its OWN, differently-minted id —
+        // the ordinary shape of two installs of the same repository.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdB,
+                new ProjectRegistered(projectIdB, ownerId, DomainId.New(), "Shared Project", "/repo-b", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(1), cts.Token);
+        }
+
+        // The team half travels (ProjectScoped); the node half — model, parallelism, this
+        // install's own filesystem paths — never does (NodeScoped), appended right beside it on
+        // the identical Project stream.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.Append(
+                projectIdA,
+                new ProjectTeamSettingsChanged(
+                    projectIdA, Now.AddSeconds(2), ownerId, ClaimGate: Optional<ClaimGate>.Of(ClaimGate.TrackerAssignee)));
+            session.Events.Append(
+                projectIdA,
+                new ProjectSettingsChanged(
+                    projectIdA, default, default, default, default, Now.AddSeconds(2), ownerId,
+                    Model: Optional<AgentModel>.Of(AgentModel.Sonnet)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, Now.AddSeconds(4), trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeFalse();
+            // Exactly the team event: ProjectRegistered (identity) and ProjectSettingsChanged
+            // (node-scoped) are both never eligible to travel at all.
+            read.EventsApplied.Should().Be(1);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            ProjectDetails? receiverProject = await session.LoadAsync<ProjectDetails>(projectIdB, cts.Token);
+            receiverProject.Should().NotBeNull();
+            receiverProject!.ClaimGate.Should().Be(ClaimGate.TrackerAssignee, "the team half applied to this node's own Project stream");
+            receiverProject.Model.Should().Be(
+                AgentModel.Unknown, "the node half (ProjectSettingsChanged) is node-scoped and never travels");
+
+            // Never a phantom stream under node A's own, foreign project id.
+            (await session.LoadAsync<ProjectDetails>(projectIdA, cts.Token)).Should().BeNull();
         }
     }
 

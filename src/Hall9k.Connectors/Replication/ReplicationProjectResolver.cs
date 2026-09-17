@@ -31,11 +31,14 @@ public sealed class ReplicationProjectResolver
         {
             // The Project aggregate's own id, unlike a Task/Idea/Epic id, is never shared across
             // installs — every node mints its own via DomainId.New() the moment it registers the
-            // same real-world project (ProjectAddCommand), so a fact appended under the SENDER's
-            // own project id could never land on the RECEIVER's own Project stream. Flagged here
-            // rather than filtered out silently so the outbox (never send one) and the inbox
-            // (never apply one, in case an older or misbehaving sender still does) can both refuse
-            // it for the same reason.
+            // same real-world project (ProjectAddCommand). Flagged here, rather than resolved
+            // silently like every other family below, so the outbox can refuse only its one
+            // identity event (ProjectRegistered — a fact appended under the SENDER's own project id
+            // could only phantom-stream under a foreign id) while every other project-scoped event
+            // on this same stream still travels normally; the inbox rewrites its own stream id to
+            // the RECEIVER's own Project stream on apply (ProjectStreamReplicationRules), never the
+            // sender's (independent pre-PR review, cycle 1, adversarial lens: the earlier build here
+            // wrongly excluded the whole stream, ProjectTeamSettingsChanged included).
             return new ReplicationOwnership(project.Id, IsPrivate: false, IsProjectStreamItself: true);
         }
 
