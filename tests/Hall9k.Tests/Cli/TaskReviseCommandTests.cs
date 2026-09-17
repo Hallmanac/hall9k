@@ -113,7 +113,7 @@ public sealed class TaskReviseCommandTests
     public void A_written_record_with_no_criteria_change_says_only_the_ledger_was_rewritten()
     {
         string written = RenderPlain(TaskReviseCommand.DescribeRewrite(
-            TaskRecordPublication.WriteOutcome.Written, criteriaChanged: false));
+            TaskRecordPublication.WriteOutcome.Written, checklistRegenerated: false));
 
         written.Should().Contain("Task record rewritten in the ledger");
         written.Should().NotContain("checklist");
@@ -128,7 +128,7 @@ public sealed class TaskReviseCommandTests
     public void A_revision_that_replaced_the_criteria_says_the_checklist_was_regenerated_too()
     {
         string written = RenderPlain(TaskReviseCommand.DescribeRewrite(
-            TaskRecordPublication.WriteOutcome.Written, criteriaChanged: true));
+            TaskRecordPublication.WriteOutcome.Written, checklistRegenerated: true));
 
         written.Should().Contain("Task record rewritten in the ledger");
         written.Should().Contain("acceptance-criteria checklist")
@@ -138,10 +138,10 @@ public sealed class TaskReviseCommandTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public void A_mirrors_revision_says_the_origins_record_was_not_written(bool criteriaChanged)
+    public void A_mirrors_revision_says_the_origins_record_was_not_written(bool checklistRegenerated)
     {
         string reported = RenderPlain(TaskReviseCommand.DescribeRewrite(
-            TaskRecordPublication.WriteOutcome.Mirror, criteriaChanged));
+            TaskRecordPublication.WriteOutcome.Mirror, checklistRegenerated));
 
         reported.Should().NotContain("rewritten");
         reported.Should().Contain("Nothing was written to the ledger");
