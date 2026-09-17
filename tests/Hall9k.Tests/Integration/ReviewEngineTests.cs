@@ -3896,6 +3896,136 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// Task: a run whose mandatory final full-scope gate fails after a merge-ready resolve never
+    /// stops silently. The field shape both 2026-09-17 incidents took, end to end: a human's
+    /// <c>h9k review resolve --merge-ready</c> re-enters the pipeline, the pre-final-pass rebase
+    /// conflicts and a narrow recovery session resolves it, and then the mandatory full-scope gate
+    /// the recovered rebase still owes fails for real. Every such failure ends the pass it was
+    /// observed in, in one of exactly three observable states — a Settling-gate repair session
+    /// dispatched, a review park for the human, or <c>RunFailed</c> with the task Failed — and
+    /// never leaves the run UnderReview with no session, no monitor and no park for the
+    /// <c>RunSupervisor</c> sweep to stumble onto later. This run takes two of the three in
+    /// sequence: the first failure dispatches the repair lap, and the second, after the repair
+    /// session fails to find the cause, parks on the round cap.
+    /// <para>
+    /// The timing half of the same defect lives inside <c>VerificationRunner</c>'s own
+    /// repair-eligible gate-failure recording and is covered there, at the layer that caused it
+    /// (<see cref="VerificationRunnerTests.A_repair_eligible_gate_failure_returns_before_a_slow_clean_base_comparison_finishes"/>):
+    /// this test's own gate fails instantly, so nothing here would ever observe a 15-minute gap.
+    /// What it does assert is the structural half — that every <see cref="VerificationFailed"/> on
+    /// the stream is followed immediately by its own disposition, with no window in between for a
+    /// reader (or <c>h9k task show</c>) to find the run resting on nothing.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_merge_ready_resolve_whose_recovered_rebase_fails_the_mandatory_gate_never_rests_on_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> failingGate =
+        [
+            new Hall9k.Domain.Features.Project.VerifyCommand(
+                "test",
+                GateScript.New().Print("RunLauncherTests: 6 failed, 6064 passed").Exit(1).Command),
+        ];
+        (Guid taskId, Guid runId, string worktreePath, string originPath) =
+            await SeedVerifiedRunWithOriginAndGateAsync(store, failingGate, cts.Token);
+
+        // main gains a Widget.cs of its own, so this branch's own Widget.cs conflicts and the
+        // pre-final-pass rebase needs a recovery session rather than a clean git apply.
+        PushToOrigin(originPath, "Widget.cs", "class Widget { /* from main */ }\n", "add Widget from main");
+
+        // Cycle 1 parks at its one-cycle conformance cap without ever reaching a gate — the park
+        // a human then overrules with h9k review resolve --merge-ready.
+        ScriptedExecutor cycleOne = new(
+            "FINDING: severity=high; scope=in-scope; at=Widget.cs:1\nDefect: needs work.\n\nVERDICT: needs-fixes",
+            "Nothing of my own.\n\nVERDICT: merge-ready");
+        bool parkedFirst = await NewEngine(store, cycleOne, new DaemonOptions { MaxComplianceReviewCycles = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+        parkedFirst.Should().BeFalse("conformance is still finding things at its one-cycle cap");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new ReviewParkResolved(
+                runId, ReviewVerdict.MergeReady, null, Now, DomainId.New()));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        ScriptedExecutor resumed = new(
+            "Kept main's Widget and replayed this branch's own commit on top.\n\nRESOLUTION: fixed",
+            "Read the gate output, but could not find what the rebase broke.");
+        resumed.OnSpawnByIndex[0] = () =>
+        {
+            Git(worktreePath, "fetch -q origin");
+            TryGit(worktreePath, "rebase origin/main").Should().NotBe(0, "both sides added Widget.cs differently");
+            File.WriteAllText(Path.Combine(worktreePath, "Widget.cs"), "class Widget { /* kept main's version */ }\n");
+            Git(worktreePath, "add -A");
+            Git(
+                worktreePath,
+                "-c user.name=Test -c user.email=test@test -c core.editor=true -c commit.gpgsign=false "
+                + "rebase --continue");
+        };
+
+        bool mergeReady = await NewEngine(store, resumed, new DaemonOptions { MaxComplianceReviewCycles = 1 })
+            .ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeFalse("the mandatory gate the recovered rebase owes fails for real");
+        resumed.Spawns.Should().HaveCount(
+            2, "the rebase-recovery session and exactly the round cap's worth of repair sessions — no reviewer, "
+            + "since the human already ended the loop");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(
+            RunState.ReviewParked,
+            "UnderReview with no session, no monitor and no park is never a resting state — not even for a later sweep to correct");
+        run.ParkedReason.Should().Contain("RunLauncherTests", "the park has to carry the gate's own output for a human to act on");
+
+        // Asserted positively, not merely as "not that string": a NotBe alone would also pass for
+        // a phase this composer never actually reached, so the line a human would read is named
+        // outright and the silent-gap line is ruled out as a consequence.
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        TaskPhase phase = Hall9k.Tests.Cli.StatusFixtures.Compose(
+            Hall9k.Tests.Cli.StatusFixtures.Task(task.State, runId), run).Phase;
+        phase.Text.Should().Be("review parked");
+        phase.Detail.Should().Be(
+            "the worktree is yours until you resolve it",
+            "h9k task show read 'no session recorded as running' for the whole silent gap on both machines; a "
+            + "resting run must read as parked, failed, or working on something");
+
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().Contain(
+            e => e.RecoveredByAgentSession, "the recovery session is what actually landed the rebase");
+        events.OfType<SettlingGateRepairDispatched>().Should().ContainSingle(
+            "the first gate failure earns the repair lap; the cap stops the second before it ever spawns");
+        events.OfType<SettlingGateRepairCapReached>().Should().ContainSingle();
+        events.OfType<Hall9k.Domain.Features.Run.Events.RunFailed>().Should().BeEmpty(
+            "a repair-eligible failure parks rather than failing the run");
+
+        // Every gate failure's own disposition lands in the same pass that observed it, adjacent on
+        // the stream: the repair dispatch for the first, the cap park for the second. A
+        // VerificationFailed followed by anything else — or by nothing — is the gap both incidents
+        // sat in.
+        events.OfType<VerificationFailed>().Should().HaveCount(2);
+        for (int failureIndex = 0; failureIndex < events.Count; failureIndex++)
+        {
+            if (events[failureIndex] is not VerificationFailed)
+            {
+                continue;
+            }
+
+            events.Should().HaveCountGreaterThan(
+                failureIndex + 1, "a gate failure is never the last thing this pass recorded");
+            object next = events[failureIndex + 1];
+            (next is SettlingGateRepairDispatched or SettlingGateRepairCapReached or ReviewParked
+                or Hall9k.Domain.Features.Run.Events.RunFailed)
+                .Should().BeTrue(
+                    "the very next event after a mandatory-gate failure is the outcome this pass took over it, "
+                    + "but it was {0}", next.GetType().Name);
+        }
+    }
+
+    /// <summary>
     /// Task: a pre-final-pass rebase that applies cleanly but breaks the mandatory gate gets a
     /// repair lap inside the same run instead of failing it. A repair session that never actually
     /// fixes the gate sends the loop straight back to the identical failure every time Settling is

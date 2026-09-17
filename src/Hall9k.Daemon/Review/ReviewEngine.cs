@@ -634,44 +634,13 @@ public sealed class ReviewEngine(
                                 cancellationToken);
                             if (!gateResult.Passed)
                             {
-                                // gateResult.FailedGateName is populated for a genuine gate failure
-                                // regardless of allowRepairInsteadOfFail (SettlingVerificationResult's
-                                // own doc) — that flag only decides whether the ordinary
-                                // RunFailed/TaskFailed append also runs. FailedGateName stays null
-                                // only for the pre-gate checks VerifyForSettlingAsync always runs
-                                // first — stranded work, a missing run or task, or an abandoned task
-                                // — which return (false, null, null) and, for the stranded-work
-                                // case, already appended RunFailed/TaskFailed themselves regardless
-                                // of allowRepairInsteadOfFail (independent pre-PR review, cycle 1,
-                                // adversarial lens: an agent's own uncommitted work is not something
-                                // a rebase caused, so it stays fail-hard unconditionally), while the
-                                // abandoned-task case retires the run superseded instead of failing
-                                // it (task: abandoning a task halts its in-flight run entirely). So a
-                                // populated FailedGateName alone does not mean repair is safe here:
-                                // eligibleForSettlingGateRepair still has to gate it, since a genuine
-                                // failure recorded fail-hard (eligibleForSettlingGateRepair false,
-                                // which is what allowRepairInsteadOfFail was passed above) still
-                                // returns its own FailedGateName even though no repair session may
-                                // follow.
-                                if (!eligibleForSettlingGateRepair || gateResult.FailedGateName is null)
-                                {
-                                    // Today's unchanged fail-hard contract: VerifyForSettlingAsync
-                                    // already recorded RunFailed/TaskFailed itself, exactly as
-                                    // VerifyAsync always has, since allowRepairInsteadOfFail was
-                                    // false above (or the pre-gate check failed before it was ever
-                                    // consulted). EnsureGateFailureRecordedAsync is the safety net
-                                    // for when it did not (task: a composition-none lap whose
-                                    // mandatory gate fails after the pre-final-pass rebase parks or
-                                    // fails the run instead of stopping silently with the task left
-                                    // Claimed).
-                                    await EnsureGateFailureRecordedAsync(
-                                        context, gateResult.FailedGateName, gateResult.FailureOutput, cancellationToken);
-                                    return false;
-                                }
-
-                                if (!await DispatchSettlingGateRepairSessionAsync(
-                                    context, run, gateResult.FailureOutput ?? "(gate output unavailable)",
-                                    humanGuidance: null, enforceCap: true, cancellationToken))
+                                // One shared exit for every mandatory-gate failure in this file:
+                                // a repair session dispatched (loop again and await it), or a park
+                                // or a run failure already on the stream (stop). See
+                                // ResolveMandatoryGateFailureAsync for why this pass never returns
+                                // with none of the three recorded.
+                                if (!await ResolveMandatoryGateFailureAsync(
+                                    context, run, eligibleForSettlingGateRepair, gateResult, cancellationToken))
                                 {
                                     return false;
                                 }
@@ -1135,23 +1104,12 @@ public sealed class ReviewEngine(
                             cancellationToken);
                         if (!reverifyGateResult.Passed)
                         {
-                            // See the identical check in the Settling branch above for why
-                            // FailedGateName, not just Passed, decides repair eligibility here too.
-                            if (!eligibleForSettlingGateRepair || reverifyGateResult.FailedGateName is null)
-                            {
-                                // VerificationRunner already failed the run and task honestly.
-                                // EnsureGateFailureRecordedAsync is the safety net for when it did
-                                // not (task: a composition-none lap whose mandatory gate fails
-                                // after the pre-final-pass rebase parks or fails the run instead of
-                                // stopping silently with the task left Claimed).
-                                await EnsureGateFailureRecordedAsync(
-                                    context, reverifyGateResult.FailedGateName, reverifyGateResult.FailureOutput, cancellationToken);
-                                return false;
-                            }
-
-                            if (!await DispatchSettlingGateRepairSessionAsync(
-                                context, run, reverifyGateResult.FailureOutput ?? "(gate output unavailable)",
-                                humanGuidance: null, enforceCap: true, cancellationToken))
+                            // The same shared exit the Settling branch above takes — one place, so
+                            // neither arm can be given a fix the other misses
+                            // (ResolveMandatoryGateFailureAsync's own doc: that is the 2026-09-17
+                            // defect's own shape).
+                            if (!await ResolveMandatoryGateFailureAsync(
+                                context, run, eligibleForSettlingGateRepair, reverifyGateResult, cancellationToken))
                             {
                                 return false;
                             }
@@ -2644,31 +2602,22 @@ public sealed class ReviewEngine(
             return GateCoverageOutcome.Proceed;
         }
 
-        // See the identical check in the Settling branch's own mandatory-gate call for why
-        // FailedGateName, not just Passed, decides repair eligibility here too.
-        if (!eligibleForSettlingGateRepair || gateResult.FailedGateName is null)
-        {
-            // VerificationRunner already failed the run and task honestly on the ordinary path.
-            // EnsureGateFailureRecordedAsync is the safety net for when it did not — this method
-            // must never return Stop having recorded neither a park nor a failure (this task's
-            // own objective).
-            await EnsureGateFailureRecordedAsync(
-                context, gateResult.FailedGateName, gateResult.FailureOutput, cancellationToken);
-            return GateCoverageOutcome.Stop;
-        }
-
-        return await DispatchSettlingGateRepairSessionAsync(
-            context, run, gateResult.FailureOutput ?? "(gate output unavailable)",
-            humanGuidance: null, enforceCap: true, cancellationToken)
+        // The same shared exit both of DriveAsync's own mandatory-gate calls take: this method must
+        // never return Stop having recorded neither a park nor a failure (this task's own
+        // objective), and ResolveMandatoryGateFailureAsync is where that guarantee lives for all
+        // three sites at once.
+        return await ResolveMandatoryGateFailureAsync(
+            context, run, eligibleForSettlingGateRepair, gateResult, cancellationToken)
             ? GateCoverageOutcome.LoopAgain
             : GateCoverageOutcome.Stop;
     }
 
     /// <summary>
-    /// The safety net for the three call sites below that dispatch through
-    /// <c>VerifyForSettlingAsync</c> (task: a composition-none lap whose mandatory gate fails after
-    /// the pre-final-pass rebase parks or fails the run instead of stopping silently with the task
-    /// left Claimed) — not every non-repair-eligible mandatory-gate failure in this file:
+    /// The safety net for the three call sites that gate through <c>VerifyForSettlingAsync</c>,
+    /// reached through the one <see cref="ResolveMandatoryGateFailureAsync"/> they all now share
+    /// (task: a composition-none lap whose mandatory gate fails after the pre-final-pass rebase
+    /// parks or fails the run instead of stopping silently with the task left Claimed) — not every
+    /// non-repair-eligible mandatory-gate failure in this file:
     /// <see cref="EnsureGateCoversHeadAsync"/> calls <c>VerifyAsync</c> directly and carries no net
     /// of its own, and neither do <c>RunSupervisor</c>'s own two ordinary-pipeline call sites
     /// (independent pre-PR review, cycle 1, adversarial lens, low — naming the gap honestly rather
@@ -2693,17 +2642,35 @@ public sealed class ReviewEngine(
     /// human under Needs you gets the actual diagnostic rather than a bare gate name (Copilot review,
     /// this PR) — and offering the same resolve verbs (<c>h9k review resolve &lt;task&gt; --needs-fixes</c>
     /// or <c>--merge-ready</c>) a review park already does, so a human finds this under Needs you
-    /// instead of a dead run nobody is watching.
+    /// instead of a dead run nobody is watching. Either way it writes the one log line naming the
+    /// run and which of the two outcomes this pass actually took (task: a run whose mandatory final
+    /// full-scope gate fails after a merge-ready resolve never stops silently) — the fail-hard path
+    /// itself logs the gate's own failure and then nothing about the run's disposition, so without
+    /// this line a reader following the daemon log has to infer it from the absence of anything else.
     /// </para>
     /// </summary>
     private async Task EnsureGateFailureRecordedAsync(
         ReviewContext context, string? failedGateName, string? failureOutput, CancellationToken cancellationToken)
     {
+        string gate = failedGateName is null ? "(no gate reached)" : $"'{failedGateName}'";
         await using (IQuerySession query = store.QuerySession())
         {
             RunDetails? run = await query.LoadAsync<RunDetails>(context.RunId, cancellationToken);
             if (run is { State.IsTerminal: true })
             {
+                // Both states read off what actually landed rather than asserted from the fail-hard
+                // contract (AGENTS.md's never-guess rule): VerificationRunner's own
+                // RecordFailureAsync appends TaskFailed only when TaskDecider.CanFail allows it, so
+                // a task already terminal for another reason reads as that reason here instead of
+                // being reported as this gate's own casualty. A missing document is named
+                // "(unreadable)" rather than left to TaskState.Unknown, whose own Value is the
+                // empty string and would render this line as though the state were blank.
+                TaskDetails? task = await query.LoadAsync<TaskDetails>(context.TaskId, cancellationToken);
+                logger.LogWarning(
+                    "Run {RunId}: the mandatory full-scope gate failed at {Gate} with no repair lap available — "
+                    + "outcome: the run is {RunState} and its task {TaskId} is {TaskState}; this review pass ends here",
+                    context.RunId, gate, run.State.Value, context.TaskId,
+                    task is null || task.State == TaskState.Unknown ? "(unreadable)" : task.State.Value);
                 return;
             }
         }
@@ -2714,6 +2681,10 @@ public sealed class ReviewEngine(
         string diagnostic = string.IsNullOrWhiteSpace(failureOutput)
             ? string.Empty
             : $"\n\n{failureOutput}";
+        logger.LogWarning(
+            "Run {RunId}: the mandatory full-scope gate failed at {Gate} with no repair lap available, and nothing "
+            + "recorded the failure — outcome: parking for the human; this review pass ends here",
+            context.RunId, gate);
         await ParkAsync(
             context.RunId, context.TaskId,
             $"{what}, and this run was left live instead of ending: worth a human's look rather " +
@@ -2721,6 +2692,66 @@ public sealed class ReviewEngine(
             $"h9k review resolve {context.TaskId} --needs-fixes \"<guidance>\" to dispatch a fix session, or " +
             $"--merge-ready once you've verified it yourself.{diagnostic}",
             cancellationToken: cancellationToken);
+    }
+
+    /// <summary>
+    /// The single exit every mandatory-gate failure in this file takes (task: a run whose mandatory
+    /// final full-scope gate fails after a merge-ready resolve never stops silently). The three
+    /// call sites that gate through <c>VerifyForSettlingAsync</c> — the <see cref="ReviewPhase.Settling"/>
+    /// branch's own mandatory gate, the <see cref="ReviewPhase.Reverify"/> branch's mirror of it, and
+    /// composition none's <see cref="EnsureGateCoversHeadRepairEligibleAsync"/> — each held their own
+    /// inline copy of this pair of branches before this method existed, which is exactly the shape
+    /// that let the repair-eligible half of the 2026-09-15 recording fix be missed on one arm
+    /// (2026-09-17: run 01a0ab8d on Windows, run 01a0ad4e on the Mac, two shapes of the one defect).
+    /// <para>
+    /// Exactly one of three observable outcomes is on the run's own stream by the time this returns,
+    /// and each writes one log line naming the run and which one it is: a Settling-gate repair
+    /// session dispatched (<c>true</c> — the caller loops again and awaits it), a review park for
+    /// the human, or the <c>RunFailed</c>/<c>TaskFailed</c> pair <c>VerificationRunner</c> already
+    /// recorded on its fail-hard path (<c>false</c> either way — the caller stops this pass).
+    /// UnderReview with no session, no monitor and no park is never left behind for a later sweep to
+    /// correct — the <c>RunSupervisor</c> sweep that eventually moved the Mac's run is a safety net
+    /// for a restarted daemon, not this pass's disposition.
+    /// </para>
+    /// </summary>
+    private async Task<bool> ResolveMandatoryGateFailureAsync(
+        ReviewContext context, RunAggregate run, bool eligibleForSettlingGateRepair,
+        VerificationRunner.SettlingVerificationResult gateResult, CancellationToken cancellationToken)
+    {
+        // gateResult.FailedGateName is populated for a genuine gate failure regardless of
+        // allowRepairInsteadOfFail (SettlingVerificationResult's own doc) — that flag only decides
+        // whether the ordinary RunFailed/TaskFailed append also runs. FailedGateName stays null only
+        // for the pre-gate checks VerifyForSettlingAsync always runs first — stranded work, a
+        // missing run or task, or an abandoned task — which return (false, null, null) and, for the
+        // stranded-work case, already appended RunFailed/TaskFailed themselves regardless of
+        // allowRepairInsteadOfFail (independent pre-PR review, cycle 1, adversarial lens: an
+        // agent's own uncommitted work is not something a rebase caused, so it stays fail-hard
+        // unconditionally), while the abandoned-task case retires the run superseded instead of
+        // failing it (task: abandoning a task halts its in-flight run entirely). So a populated
+        // FailedGateName alone does not mean repair is safe here: eligibleForSettlingGateRepair
+        // still has to gate it, since a genuine failure recorded fail-hard
+        // (eligibleForSettlingGateRepair false, which is what allowRepairInsteadOfFail was passed)
+        // still returns its own FailedGateName even though no repair session may follow.
+        if (!eligibleForSettlingGateRepair || gateResult.FailedGateName is null)
+        {
+            // Today's unchanged fail-hard contract: VerifyForSettlingAsync already recorded
+            // RunFailed/TaskFailed itself, exactly as VerifyAsync always has, since
+            // allowRepairInsteadOfFail was false (or a pre-gate check failed before it was ever
+            // consulted). EnsureGateFailureRecordedAsync is the safety net for when it did not, and
+            // is what logs whichever of those two outcomes actually landed.
+            await EnsureGateFailureRecordedAsync(
+                context, gateResult.FailedGateName, gateResult.FailureOutput, cancellationToken);
+            return false;
+        }
+
+        logger.LogWarning(
+            "Run {RunId}: the mandatory full-scope gate failed on '{Gate}' after a real pre-final-pass rebase — "
+            + "outcome: routing to the Settling-gate repair lap ({Spent} of {Cap} round(s) already spent)",
+            context.RunId, gateResult.FailedGateName, run.SettlingGateRepairRounds,
+            _options.MaxSettlingGateRepairRounds);
+        return await DispatchSettlingGateRepairSessionAsync(
+            context, run, gateResult.FailureOutput ?? "(gate output unavailable)",
+            humanGuidance: null, enforceCap: true, cancellationToken);
     }
 
     /// <summary>
