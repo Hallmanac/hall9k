@@ -225,6 +225,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             : $"[dim]none bound — bind one: h9k project set {project.Name.EscapeMarkup()} --jira PROJ[/]");
         table.AddRow("Backlog policy", BacklogPolicyRow(
             project, history.WasRecorded(change => change.BacklogPolicy)));
+        table.AddRow("Primary tracker", PrimaryTrackerRow(
+            project, history.WasRecorded(change => change.PrimaryTracker)));
         table.AddRow("Branch template", project.BranchNameTemplate == BranchNameTemplate.Default
             ? $"[dim]{BranchNameTemplate.Default.Value.EscapeMarkup()} — the platform default; state a "
               + $"convention: h9k project set {project.Name.EscapeMarkup()} --branch-template \"{{key}}-{{slug}}\"[/]"
@@ -408,6 +410,35 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
 
         return $"[dim]none ({OriginNote(recorded)}) — publishing tracks nothing externally; set one: "
             + $"h9k project set {project.Name.EscapeMarkup()} --backlog github-issues|jira[/]{routing}";
+    }
+
+    /// <summary>
+    /// Which tracker wins by default when h9k task add is handed both a GitHub issue and a Jira
+    /// card to adopt (task: a task may link to both a GitHub issue and a Jira card). Unknown
+    /// carries its origin for the same reason the backlog policy's row does: it is both the
+    /// untouched default and a deliberate "no default", and a reader deciding whether to set one
+    /// needs to know which of the two they are looking at.
+    /// </summary>
+    internal static string PrimaryTrackerRow(ProjectDetails project, bool recorded)
+    {
+        string name = project.Name.EscapeMarkup();
+        if (project.PrimaryTracker == WorkItemProvider.GitHub)
+        {
+            return "github [dim]— a task adopting both a GitHub issue and a Jira card makes the "
+                + "issue primary by default: it alone keeps the claim gate, the branch key, publish, "
+                + "closeout close, and every tracker write; the Jira card is shown and linked only[/]";
+        }
+
+        if (project.PrimaryTracker == WorkItemProvider.Jira)
+        {
+            return "jira [dim]— a task adopting both a GitHub issue and a Jira card makes the card "
+                + "primary by default: it alone keeps the claim gate, the branch key, publish, "
+                + "closeout close, and every tracker write; the GitHub issue is shown and linked only[/]";
+        }
+
+        return $"[dim]none ({OriginNote(recorded)}) — a task adopting both a GitHub issue and a "
+            + "Jira card needs its own h9k task add --primary-tracker to say which wins; set a "
+            + $"default: h9k project set {name} --primary-tracker github|jira[/]";
     }
 
     /// <summary>
