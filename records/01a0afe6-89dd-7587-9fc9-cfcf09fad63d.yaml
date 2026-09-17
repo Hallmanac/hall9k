@@ -1,0 +1,28 @@
+hall9k-task-record: 1
+task-id: 01a0afe6-89dd-7587-9fc9-cfcf09fad63d
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#451
+objective: When a QA or design review report has offered to run the branch locally and the reviewer says yes in their orchestrator window, the orchestrator runs h9k task run-local, which stands that branch up in the pull request's worktree by the project's run skill and reports the address and every human step, so a reviewer walks the change without setting anything up
+criteria:
+  - A review report's launch offer carries a recorded identity (task, run, worktree) so a yes in the orchestrator window resolves to exactly one branch and worktree without the human naming either; h9k task run-local <task> is the command and it refuses with a sentence when the worktree is gone, the run skill is absent, or another launch of the same task is already up
+  - The command follows the run skill's steps in order on that worktree, on an ephemeral port when the skill's launch command allows one, records a launch event with the port and the process, and prints the address or entry point plus every human step from the skill in the order needed
+  - Where a step needs a human, the command stops at that step, prints exactly what to do, and h9k task run-local <task> --continue resumes from the next step; the orchestrator relays both to the reviewer as the recipe's normal relay
+  - h9k task run-local <task> --stop ends the process and records the event; a launch is torn down automatically when the task closes out or the worktree is removed, never left running
+  - |-
+    Tests with a fake run skill of three steps and one human step: the launch stops at the human step, continues after it, prints the address, refuses a second launch of the same task, and stops on close-out; a missing run skill refuses with the sentence
+  - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each, and the orchestrator recipe generator gains the one sentence telling a window to run the command on a reviewer's yes
+dependencies: [01a0afe4-9e29-768a-ab0a-80dd0569c229, 01a0afcf-bceb-77a1-8c8d-808ab1b20c23, 01a0afdf-74cd-759a-8878-3763cd722750]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/09fad63d-when-a-qa-or-design-review-rep
+published: 2026-09-17 15:05:21Z
+context: |-
+  Review personas: extend the pr-review task into QA review and design review, chosen by the assignee's declared persona(s). Today anyone assigned a pull request gets the engineer's PR review (code, logic, functionality). A QA persona gets a QA review: compliance and functionality through the lens of blast radius (what changed, what adjacent behavior to regression-test, what new automated end-to-end tests are owed), mostly by running the end-to-end suite locally, with the ability to launch the application locally to confirm as needed. A designer persona gets a design review: user experience, conformance to the proposed design (Figma or a working prototype), transitions and animations, CSS best practice, accessibility, look and feel, and compliance with the project's design system if one exists, again with the ability to launch the product locally and use the feature. A team member declares zero, one, or several personas (engineer, QA, designer); no persona means the plain PR review; several personas mean every matching review runs on that assignment. All reviews for one pull request share the one worktree and branch the pr-review task already creates, but run separate agents with persona-specific prompts and criteria.
+
+  Idea b9b09779 (review personas), piece 5 of 6: the orchestrator's local launch. Stacked on piece 4 0569c229 (the run skill it reads) and blocked by piece 2 b1b20c23 and piece 3 cd722750 (the reports whose offer it answers). Walked with Brian 2026-09-17 (criterion 1 singly, 2 to 6 in a batch, approved all). Rulings in the idea's workspace/journal.md: the review never launches on the human's behalf; the orchestrator does, on the yes. Code seams: the pr-review task's worktree, the run skill on the ledger (piece 4), the daemon's process ownership (the kill stack 2c8b68bc is the precedent for a daemon-owned process), the orchestrator recipe generator skill. Published unassigned on Brian's word.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/b9b09779-review-personas-extend-the-pr-review-task-into-qa-review-and/workspace
