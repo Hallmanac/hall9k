@@ -790,7 +790,7 @@ public sealed class RunLauncher(
                 : null;
             string prompt = MentionFollowUpPromptBuilder.Build(
                 facts.Repository, facts.Number, worktree.Path, baseBranch: baseBranch, comment: comment,
-                priorReport: priorReport,
+                priorReport: priorReport, project: project,
                 // The drafted reply this session produces is written first-person as the owner, so
                 // the seam names their own voice skill when they have one (#193).
                 voiceSkill: (await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken))?.VoiceSkill);

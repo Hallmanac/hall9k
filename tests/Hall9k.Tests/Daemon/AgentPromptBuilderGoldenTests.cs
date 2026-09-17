@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
@@ -72,6 +73,37 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
             task, SomeProject(), "task/1-slug", "https://github.com/acme/web/pull/7", CommitStyle.Narrative,
             interactiveMilestoneAddress: "agent://milestones/1");
         AssertMatchesGolden("build-follow-up", prompt);
+    }
+
+    [Fact]
+    public void BuildFollowUp_splices_the_agent_addendum_after_the_rules_when_the_daemon_has_materialized_one()
+    {
+        string home = Path.Combine(Path.GetTempPath(), $"h9k-agent-prompt-addendum-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(ProjectHomePaths.PromptAddendaDirectory(home));
+            File.WriteAllText(
+                ProjectHomePaths.PromptAddendumFile(home, PromptBuilderKey.Agent.Value),
+                "Never merge without a green Windows run too.");
+
+            ProjectDetails project = SomeProject();
+            project.HomeDirectory = ProjectHome.Parse(home);
+            TaskDetails task = SomeTask();
+            task.FollowUpReason = "The pull request's CI review thread asked for a retry with more context.";
+
+            string prompt = AgentPromptBuilder.BuildFollowUp(
+                task, project, "task/1-slug", "https://github.com/acme/web/pull/7", CommitStyle.Narrative);
+
+            prompt.Should().Contain("## This project's own guidance");
+            prompt.Should().Contain("Never merge without a green Windows run too.");
+        }
+        finally
+        {
+            if (Directory.Exists(home))
+            {
+                Directory.Delete(home, recursive: true);
+            }
+        }
     }
 
     [Fact]

@@ -258,6 +258,7 @@ public static class AgentPromptBuilder
         // this leg's fixes.
         AppendHandoffRules(prompt);
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -358,6 +359,7 @@ public static class AgentPromptBuilder
 
         AppendHandoffRules(prompt);
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -611,6 +613,7 @@ public static class AgentPromptBuilder
 
         AppendHandoffRules(prompt);
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -787,6 +790,7 @@ public static class AgentPromptBuilder
         // this leg's rebase.
         AppendHandoffRules(prompt);
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -1207,6 +1211,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "closing-summary");
         AppendHandoffRules(prompt);
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -1321,6 +1326,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "closing-summary");
         AppendHandoffRules(prompt);
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -1479,6 +1485,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "closing-summary");
         WorkPromptBuilder.AppendHandoffRules(prompt);
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -2143,6 +2150,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "verdict-outcome-tail");
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -2329,6 +2337,7 @@ public static class AgentPromptBuilder
             AppendFragment(prompt, file, "hunting-hard-own", ("MergeReadyWord", "merge-ready"));
         }
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -2412,6 +2421,7 @@ public static class AgentPromptBuilder
             AppendFragment(prompt, file, "hunting-hard-own", ("MergeReadyWord", "merge-ready"));
         }
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -3154,6 +3164,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "closing", ("Cycle", cycle.ToString(CultureInfo.InvariantCulture)));
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -3398,6 +3409,7 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         AppendFragment(prompt, file, "resolution-disputed-condition");
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 
@@ -3816,6 +3828,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "cannot-create-card");
         AppendFragment(prompt, file, "closing-summary");
 
+        AppendPromptAddendum(prompt, project, PromptBuilderKey.Agent);
         return prompt.ToString();
     }
 

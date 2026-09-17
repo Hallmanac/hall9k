@@ -2,6 +2,8 @@ using System.Text;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -39,7 +41,8 @@ public static class MentionFollowUpPromptBuilder
     /// </param>
     public static string Build(
         string repository, int number, string worktreePath, string baseBranch,
-        PullRequestMentionComment comment, string? priorReport, VoiceSkillName? voiceSkill = null)
+        PullRequestMentionComment comment, string? priorReport, ProjectDetails project,
+        VoiceSkillName? voiceSkill = null)
     {
         const string file = $"{TemplateDirectory}/build.md";
         StringBuilder prompt = new();
@@ -96,6 +99,8 @@ public static class MentionFollowUpPromptBuilder
         prompt.AppendLine(PromptTemplates.Load(file, "rules-heading"));
         prompt.AppendLine();
         prompt.AppendLine(PromptTemplates.Load(file, "rules-body"));
+
+        WorkPromptBuilder.AppendPromptAddendum(prompt, project, PromptBuilderKey.MentionFollowUp);
 
         return prompt.ToString();
     }
