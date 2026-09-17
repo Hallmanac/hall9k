@@ -31,8 +31,22 @@ namespace Hall9k.Tests.Domain;
 /// <c>tests/</c> directory like <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>, and
 /// uses all three members — but matches the stripped text for the call it looks for and the
 /// <em>raw</em> text for the two attributes that call site then has to carry, since an
-/// attribute's own arguments are string literals the stripping removes. This is now the full
-/// list of consumers and is meant to be kept current whenever a new one is added.
+/// attribute's own arguments are string literals the stripping removes.
+/// <see cref="Hall9k.Tests.Domain.ProcessWideStateGuardTests"/> is an eighth: it walks the whole
+/// <c>tests/</c> directory like <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/> and
+/// matches stripped text, but with regexes rather than substrings, since two of the three
+/// mutations it forbids are assignments to a property whose reads are legitimate. Three more have
+/// used it all along without earning a paragraph, and this list had drifted behind them, so they
+/// are named here too: <see cref="Hall9k.Tests.Domain.GitHubSpawnSeamGuardTests"/> walks
+/// <c>src/</c> with all three members, on raw text for one of its two scans and stripped text for
+/// the other; <see cref="Hall9k.Tests.Domain.ProjectAddSkipPermissionsGuardTests"/> walks
+/// <c>src/</c> on raw lines, so it needs <see cref="SourceDirectory"/> and
+/// <see cref="IsBuildOutput"/> only; and
+/// <see cref="Hall9k.Tests.Domain.AgentsMarkdownLineCountTests"/> uses
+/// <see cref="SourceDirectory"/> alone to reach the repository root and locate AGENTS.md, exactly
+/// as <see cref="Hall9k.Tests.Domain.DecisionsLogNumberingGuardTests"/> does for PLAN.md. That is
+/// eleven, which is every file naming this type today — worth keeping current, but a grep for
+/// <c>TestSourceTree.</c> is the authority on the set, not this paragraph.
 /// </para>
 /// </summary>
 internal static class TestSourceTree
