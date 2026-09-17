@@ -630,10 +630,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         finally
         {
             Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            TemporaryTree.TryDelete(root);
         }
     }
 
@@ -775,10 +772,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         finally
         {
             Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            TemporaryTree.TryDelete(root);
         }
     }
 
@@ -903,10 +897,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         finally
         {
             Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            TemporaryTree.TryDelete(root);
         }
     }
 
@@ -1034,10 +1025,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         finally
         {
             Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            TemporaryTree.TryDelete(root);
         }
     }
 
@@ -1161,10 +1149,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         finally
         {
             Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            TemporaryTree.TryDelete(root);
         }
     }
 
@@ -1364,10 +1349,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         finally
         {
             Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-            if (Directory.Exists(root))
-            {
-                Directory.Delete(root, recursive: true);
-            }
+            TemporaryTree.TryDelete(root);
         }
     }
 
