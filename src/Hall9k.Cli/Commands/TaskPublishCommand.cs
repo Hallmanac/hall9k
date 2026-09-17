@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Node;
@@ -424,11 +425,17 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
     }
 
     /// <summary>
-    /// Write the task record into the issue this task is tracked by, so a second install can adopt
-    /// the issue and get the whole task (task: a published task's GitHub issue carries the whole
-    /// task record). Reported and swallowed on failure, exactly like the create and link above it:
-    /// the task is published either way, and the record is idempotent — the next
+    /// Write the task's record into the ledger, so every node that shares this project can adopt
+    /// the whole task from it rather than only whichever install happens to read one tracker item
+    /// (idea 202383dc, A3a). Reported and swallowed on failure, exactly like the create and link
+    /// above it: the task is published either way, and the write is idempotent — the next
     /// <c>h9k task revise</c> writes it, and so does running publish again after a draft-back.
+    /// <para>
+    /// A GitHub-tracked task also gets its issue's acceptance-criteria checklist regenerated here,
+    /// when <paramref name="criteriaChanged"/> — a concern the ledger record has nothing to do with
+    /// (the checklist is the issue's own human-readable text, not the record), so it is written
+    /// through its own gh round trip instead of piggy-backing on the record's.
+    /// </para>
     /// </summary>
     private static async Task WriteRecordAsync(
         DocumentStore store,
@@ -443,7 +450,7 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
         try
         {
             // Re-read rather than reusing the caller's aggregate: the link that just landed is what
-            // gives the record its issue to write into, and the caller's copy predates it.
+            // gives the record its external reference, and the caller's copy predates it.
             TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
                 taskId, token: cancellationToken);
             if (task is null)
@@ -452,25 +459,36 @@ public sealed class TaskPublishCommand : Hall9kAsyncCommand<TaskPublishCommand.S
             }
 
             NodeDetails? node = await session.LoadAsync<NodeDetails>(context.NodeId, cancellationToken);
+            (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
+                await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
             TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
                 session, task, project, context.NodeId, node?.MachineName ?? Environment.MachineName,
-                DateTimeOffset.UtcNow, criteriaChanged,
-                provider: new GitHubWorkItemProvider(new ProjectScopedGitHubRunner(store).Runner),
-                cancellationToken: cancellationToken);
-            if (outcome == TaskRecordPublication.WriteOutcome.Written && task.ExternalReference is { } issue)
+                ownerFingerprint, DateTimeOffset.UtcNow, new GitLedger(new ConsoleWorktreeLogger<GitLedger>()),
+                committer, signingKey, cancellationToken);
+            if (outcome == TaskRecordPublication.WriteOutcome.Written)
             {
                 AnsiConsole.MarkupLine(
-                    "[dim]  Task record written into the issue — a second install adopts the whole "
-                    + $"task with:[/] h9k task add --project {project.Name.EscapeMarkup()} --from-issue "
-                    + $"{issue.Key.EscapeMarkup()}");
+                    "[dim]  Task record written to the ledger — a second node that shares this project "
+                    + $"already sees task {shortId}, and any node adopts by external reference too.[/]");
+            }
+
+            if (criteriaChanged && task.Origin is null && task.ExternalReference is { } issue
+                && issue.Provider == WorkItemProvider.GitHub && project.BacklogPolicy == BacklogPolicy.GitHubIssues)
+            {
+                GitHubWorkItemProvider provider = new(new ProjectScopedGitHubRunner(store).Runner);
+                ImportedWorkItem current = await provider.ImportAsync(
+                    new WorkItemImportRequest(WorkItemProvider.GitHub, issue.Reference, project.RepositoryPath),
+                    cancellationToken);
+                await provider.UpdateBodyAsync(
+                    issue, GitHubIssueBody.WithCriteriaChecklist(current.Body, task.AcceptanceCriteria),
+                    project.RepositoryPath, cancellationToken);
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLine(
-                $"[yellow]  Note:[/] [dim]Task {shortId} is published and linked, but writing the task "
-                + $"record into its issue failed: {exception.Message.EscapeMarkup()} Nothing above the "
-                + "record was touched; the next h9k task revise writes it.[/]");
+                $"[yellow]  Note:[/] [dim]Task {shortId} is published and linked, but writing its task "
+                + $"record failed: {exception.Message.EscapeMarkup()} The next h9k task revise writes it.[/]");
         }
     }
 

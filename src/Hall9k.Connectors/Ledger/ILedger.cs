@@ -62,6 +62,15 @@ public sealed record LedgerWriteOutcome(LedgerWriteVerdict Verdict, string? Comm
 public sealed record LedgerRef(string RefName, string Sha);
 
 /// <summary>
+/// One file <see cref="ILedger.ReadAllAsync"/> found under a prefix inside one ref's tree — the
+/// same <see cref="LedgerFile.Content"/>/<see cref="LedgerFile.BlobId"/> shape <see cref="ILedger.ReadAsync"/>
+/// answers for a single known path, paired with the path it actually sat at (idea 202383dc, A3a:
+/// adoption has to find a task record by the external reference it carries, never the task id its
+/// path is keyed by, so it has no single path to ask <see cref="ILedger.ReadAsync"/> for).
+/// </summary>
+public sealed record LedgerEntry(string Path, string Content, string BlobId);
+
+/// <summary>
 /// A push kept losing the race for <see cref="Attempts"/> tries in a row on a path that was never
 /// itself in conflict (the retry loop's own re-fetch found <c>LedgerWriteRequest.Path</c> still
 /// matched <c>LedgerWriteRequest.ExpectedBlobId</c> every time) — something is keeping the ref
@@ -150,4 +159,16 @@ public interface ILedger
     /// ordinary seam every fake and every other caller already uses.
     /// </summary>
     Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Fetches <paramref name="refName"/> fresh, then every file that currently sits under
+    /// <paramref name="pathPrefix"/> in its tree, each paired with its own path — empty both when
+    /// the ref does not exist yet and when nothing sits under the prefix. Unlike <see cref="ReadAsync"/>,
+    /// which only ever answers about one path a caller already knows the name of, this is the
+    /// "read everything here" primitive a caller keyed on something other than the path itself
+    /// needs: idea 202383dc's task records are keyed by task id (<c>records/&lt;task-id&gt;.yaml</c>),
+    /// but adoption is handed an external reference and has to find the one record naming it, which
+    /// means reading every record under the prefix rather than one already-known path.
+    /// </summary>
+    Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken);
 }

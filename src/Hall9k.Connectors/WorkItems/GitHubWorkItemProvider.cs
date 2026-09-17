@@ -226,16 +226,15 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
     }
 
     /// <summary>
-    /// Replace an issue's whole body — the one write behind the task record on a published issue
-    /// (task: a published task's GitHub issue carries the whole task record). The body handed in is
-    /// always one this platform composed from the body it just read
-    /// (<see cref="GitHubIssueBody.WithRecord"/>), never a body composed from nothing: a human's
-    /// edits to the prose above the record are theirs, and a blind overwrite would take them.
+    /// Replace an issue's whole body — used to regenerate the acceptance-criteria checklist
+    /// (<see cref="GitHubIssueBody.WithCriteriaChecklist"/>) when a revision replaces the criteria.
+    /// The body handed in is always one this platform composed from the body it just read, never a
+    /// body composed from nothing: a human's edits to the prose around the checklist are theirs,
+    /// and a blind overwrite would take them.
     /// <para>
     /// Written through a temp file rather than <c>--body</c>, the same idiom
-    /// <see cref="CreateAsync"/> uses for the same reason: an issue body carrying a whole task
-    /// record routinely runs past Windows' command-line limit, and a spawn that fails there is
-    /// reported as a missing gh install.
+    /// <see cref="CreateAsync"/> uses for the same reason: an issue body can run past Windows'
+    /// command-line limit, and a spawn that fails there is reported as a missing gh install.
     /// </para>
     /// </summary>
     public async Task UpdateBodyAsync(

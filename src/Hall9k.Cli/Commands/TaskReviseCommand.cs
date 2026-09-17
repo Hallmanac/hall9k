@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks;
@@ -430,10 +432,12 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
     }
 
     /// <summary>
-    /// Rewrite the task record in this task's linked GitHub issue, so the issue keeps describing the
-    /// task it names (task: a published task's GitHub issue carries the whole task record). Only the
-    /// record section moves; the prose above it is a human's to keep, and the acceptance-criteria
-    /// checklist is regenerated only when this revision actually replaced the criteria.
+    /// Rewrite this task's record in the ledger, so every node that shares the project keeps
+    /// describing the task it names (idea 202383dc, A3a). A GitHub-tracked task also gets its
+    /// issue's acceptance-criteria checklist regenerated, but only when this revision actually
+    /// replaced the criteria — the checklist is the issue's own human-readable text, a separate
+    /// concern from the ledger record, and rewriting it when nothing changed would throw away a
+    /// human's own formatting for nothing.
     /// <para>
     /// Reported and swallowed like every other tracker write around a committed transaction: the
     /// revision landed either way, and the write is idempotent — the next revise, or a republish,
@@ -448,85 +452,69 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         BootstrapContext context,
         CancellationToken cancellationToken)
     {
-        if (task.ExternalReference is not { } reference || reference.Provider != WorkItemProvider.GitHub
-            || !TouchesTheRecord(revised))
+        if (!TouchesTheRecord(revised))
+        {
+            return;
+        }
+
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+        if (project is null)
         {
             return;
         }
 
         try
         {
-            ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
-            if (project is null)
-            {
-                return;
-            }
-
             NodeDetails? node = await session.LoadAsync<NodeDetails>(context.NodeId, cancellationToken);
+            (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
+                await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
             TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
                 session, task, project, context.NodeId, node?.MachineName ?? Environment.MachineName,
-                DateTimeOffset.UtcNow, revised.AcceptanceCriteria.HasValue,
-                provider: new GitHubWorkItemProvider(new ProjectScopedGitHubRunner(store).Runner),
-                cancellationToken: cancellationToken);
-            AnsiConsole.MarkupLine(DescribeRewrite(
-                outcome, task.Origin is not null, revised.AcceptanceCriteria.HasValue, project.Name,
-                reference.ToString()));
+                ownerFingerprint, DateTimeOffset.UtcNow, new GitLedger(new ConsoleWorktreeLogger<GitLedger>()),
+                committer, signingKey, cancellationToken);
+            AnsiConsole.MarkupLine(DescribeRewrite(outcome, revised.AcceptanceCriteria.HasValue));
+
+            if (revised.AcceptanceCriteria.HasValue && task.Origin is null
+                && task.ExternalReference is { } issue && issue.Provider == WorkItemProvider.GitHub
+                && project.BacklogPolicy == BacklogPolicy.GitHubIssues)
+            {
+                GitHubWorkItemProvider provider = new(new ProjectScopedGitHubRunner(store).Runner);
+                ImportedWorkItem current = await provider.ImportAsync(
+                    new WorkItemImportRequest(WorkItemProvider.GitHub, issue.Reference, project.RepositoryPath),
+                    cancellationToken);
+                await provider.UpdateBodyAsync(
+                    issue, GitHubIssueBody.WithCriteriaChecklist(current.Body, task.AcceptanceCriteria),
+                    project.RepositoryPath, cancellationToken);
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLine(
-                $"[yellow]  Note:[/] [dim]The revision landed, but rewriting the task record in "
-                + $"{reference.ToString().EscapeMarkup()} failed: {exception.Message.EscapeMarkup()} "
-                + "Nothing in the issue was changed; the next revise writes it.[/]");
+                $"[yellow]  Note:[/] [dim]The revision landed, but rewriting its task record failed: "
+                + $"{exception.Message.EscapeMarkup()} The next revise writes it.[/]");
         }
     }
 
     /// <summary>
     /// What to tell the operator about the record write — only ever the outcome
     /// <see cref="TaskRecordPublication.WriteAsync"/> actually answered, never a write it refused.
-    /// <para>
-    /// <see cref="TaskRecordPublication.WriteOutcome.NotTracked"/> has exactly two causes once this
-    /// task is known to carry a GitHub reference, and both are permanent for this task rather than a
-    /// transient miss: the task is a MIRROR, whose issue belongs to the install that published it,
-    /// or the project does not track its backlog in GitHub issues. Each is named outright, because
-    /// the alternative — the confirmation this used to print unconditionally — told the operator
-    /// that a shared issue now reflects their revision when nothing was written and, in the mirror
-    /// case, never will be (independent pre-PR review, cycle 1, both lenses).
-    /// </para>
-    /// <para>
-    /// <paramref name="criteriaChanged"/> is the same fact the writer is handed, and it is here for
-    /// the same reason the causes above are named: this revision regenerated the checklist ABOVE
-    /// the record whenever it replaced the criteria, so saying "everything above it is untouched"
-    /// there would describe a write that did not happen — and it is the sentence a human editing
-    /// that issue's prose reads to decide whether to go look (independent pre-PR review, cycle 1,
-    /// adversarial lens).
-    /// </para>
+    /// <see cref="TaskRecordPublication.WriteOutcome.Mirror"/> is permanent for this task rather
+    /// than a transient miss: its record belongs to the install that published it, and rewriting it
+    /// from here would overwrite that install's own record with this local copy's stale facts.
     /// </summary>
-    internal static string DescribeRewrite(
-        TaskRecordPublication.WriteOutcome outcome,
-        bool mirror,
-        bool criteriaChanged,
-        string projectName,
-        string reference) =>
-        (outcome, mirror) switch
+    internal static string DescribeRewrite(TaskRecordPublication.WriteOutcome outcome, bool criteriaChanged) =>
+        (outcome, criteriaChanged) switch
         {
-            (TaskRecordPublication.WriteOutcome.Written, _) when criteriaChanged =>
-                $"[dim]  Task record rewritten in {reference.EscapeMarkup()}, and the acceptance-criteria "
-                + "checklist above it regenerated from the new criteria; the rest of the issue — every line "
-                + "that is neither the checklist nor the record — is untouched.[/]",
-            (TaskRecordPublication.WriteOutcome.Written, _) =>
-                $"[dim]  Task record rewritten in {reference.EscapeMarkup()}; everything above it in the "
-                + "issue is untouched.[/]",
-            (_, true) =>
-                $"[dim]  Nothing was written to {reference.EscapeMarkup()}: this copy was adopted from that "
-                + "issue's own task record, so the record there belongs to the install that published it — "
-                + "rewriting it from here would overwrite the origin's record with this local copy. The "
-                + "revision is yours and it landed; the issue keeps describing the origin's task.[/]",
+            (TaskRecordPublication.WriteOutcome.Written, true) =>
+                "[dim]  Task record rewritten in the ledger, and the linked issue's acceptance-criteria "
+                + "checklist (when it is tracked in GitHub issues) regenerated from the new criteria.[/]",
+            (TaskRecordPublication.WriteOutcome.Written, false) =>
+                "[dim]  Task record rewritten in the ledger.[/]",
             _ =>
-                $"[dim]  Nothing was written to {reference.EscapeMarkup()}: "
-                + $"{projectName.EscapeMarkup()} does not track its backlog in GitHub issues, so hall9k "
-                + "leaves the linked issue's body alone — h9k project set "
-                + $"{projectName.EscapeMarkup()} --backlog github-issues to have it maintain the record.[/]",
+                "[dim]  Nothing was written to the ledger: this task was adopted from another node's own "
+                + "record, so that record belongs to the install that published it — rewriting it from "
+                + "here would overwrite the origin's record with this local copy. The revision is yours "
+                + "and it landed; the ledger keeps describing the origin's task.[/]",
         };
 
     /// <summary>

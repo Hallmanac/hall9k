@@ -6,26 +6,31 @@ using Hall9k.Domain.Features.Tasks;
 namespace Hall9k.Connectors.WorkItems;
 
 /// <summary>
-/// The whole of a published task, written into the tracker item it is published to so a second
-/// hall9k install can adopt the item and get the same task rather than three fields of it (task: a
-/// published task's GitHub issue carries the whole task record). Everything a draft needs travels
-/// here: the readiness contract, the agent context, the type and model, the caps, the dependency
-/// edges, the epic, and where it came from.
+/// A task's own projection in the ledger (idea 202383dc, A3a): the whole of a published task,
+/// written to <c>records/&lt;task-id&gt;.yaml</c> on <c>refs/hall9k/ledger/records</c>
+/// (<see cref="Ledger.LedgerRefRegistry.RecordPath"/>) so every node that shares the project can
+/// tell what a task is, whichever one published it. Keyed by task id rather than by a tracker key
+/// because ids are the same on every node (Brian, 2026-09-13) — a tracker reference differs per
+/// provider and a task with no tracker item at all has none.
 /// <para>
-/// Provider-neutral on purpose. This class knows the record's shape and its YAML; where that YAML
-/// sits inside a particular tracker's item — a collapsed <c>&lt;details&gt;</c> section at the foot
-/// of a GitHub issue body (<see cref="GitHubIssueBody"/>) — is the provider's business. Jira is the
-/// next provider to carry the same record (docs/scope.md), and it will reuse this class rather than
-/// grow a second shape.
+/// It is a PROJECTION, never the event log: every field but <see cref="Holder"/> is composed fresh
+/// from the task's current state on every publish and every revise (<c>Hall9k.Cli.Commands.TaskRecordPublication</c>
+/// is the one writer), so the record is rebuildable from the events at any time and carries nothing
+/// an event does not already say. <see cref="Holder"/> is the one field this build never composes:
+/// it stays whatever it already was — empty until A3b's holder lock writes it — because the record
+/// writer does not own it and must never invent or clear a claim that is not its own to make.
 /// </para>
 /// <para>
-/// Two conventions the record depends on, both of them because ids do not survive the crossing:
-/// dependencies are written as ISSUE NUMBERS, never as the origin's task ids, since the issue
-/// number is the only identifier that means the same thing on both installs; and the epic travels
-/// as its TITLE beside the origin's id, since the adopting install maps it by title or creates one.
+/// Dependencies and the epic both travel as ids now, not as a tracker's own numbering: task ids are
+/// shared across every node (adoption keeps the origin's id, Decisions Log #60), so the convention
+/// this record used to need — writing a dependency as the ISSUE NUMBER it happened to carry,
+/// because ids differed per install — retires with it. A dependency with no id at all cannot occur:
+/// every edge here is another task in this same store, addressed the only way that means the same
+/// thing everywhere.
 /// </para>
 /// </summary>
 public sealed record TaskRecord(
+    Guid TaskId,
     string Project,
     string Type,
     string Objective,
@@ -40,69 +45,68 @@ public sealed record TaskRecord(
     /// read and reported, never applied — pre-approval deliberately does not carry across the
     /// crossing, and the adopting install gives its own answer with <c>h9k task add
     /// --pre-approved</c>.
-    /// <para>
-    /// <see cref="PreApprovalMode.FromInput"/> is what reads it back, so the <c>true</c>/<c>false</c>
-    /// a hand-written block would say — the shape the ten issues annotated before this feature
-    /// existed use — still parses, as does the mode word the writer emits.
-    /// </para>
     /// </summary>
     PreApprovalMode PreApproval,
-    IReadOnlyList<int> BlockedByIssues,
-    int DependenciesWithoutIssues,
+    /// <summary>
+    /// This task's tracker item, provider and key together, or null when it has none — a project
+    /// with no tracker, or a task published --untracked, gets a record too (Brian's 2026-09-13
+    /// ruling: "a task with no tracker item gets a record too").
+    /// </summary>
+    ExternalReference? ExternalReference,
+    /// <summary>This task's blockers, by task id — see this type's own remarks on why an id rather than a tracker key.</summary>
+    IReadOnlyList<Guid> Dependencies,
     string? EpicTitle,
-    Guid? EpicOriginId,
+    Guid? EpicId,
     TaskRecordCaps Caps,
-    TaskOrigin Origin)
+    /// <summary>The root fingerprint of the owner who published this record (idea 202383dc, A2a).</summary>
+    string OriginOwnerFingerprint,
+    /// <summary>Which node published this record, when, and onto which branch — <see cref="TaskOrigin.TaskId"/> is this same record's own <see cref="TaskId"/>.</summary>
+    TaskOrigin Origin,
+    /// <summary>
+    /// The holder lock (A3b, not yet built): empty on every record this build writes, and never
+    /// composed by <c>TaskRecordPublication</c> — it is read back from whatever the record already
+    /// held and carried through unchanged, so a publish or a revise can never invent or clear a
+    /// claim that is not its own to make.
+    /// </summary>
+    TaskRecordHolder? Holder)
 {
     /// <summary>
     /// The key that says a block is one of these, and the version that says which shape it is in.
-    /// A reader that finds no such key is looking at an issue nobody published from hall9k, which
-    /// adopts exactly as it always did (title to objective, body to context).
+    /// A reader that finds no such key is looking at content nobody published from hall9k.
     /// </summary>
     public const string VersionKey = "hall9k-task-record";
 
     /// <summary>
     /// The only version this build writes. A reader accepts anything it can read rather than
     /// demanding an exact match: every field is optional on the way in, so a record written by a
-    /// later build degrades to the fields this one understands instead of refusing the adoption.
-    /// <para>
-    /// <c>type</c>, <c>model</c> and the cap lines included — the three fields whose values this
-    /// build validates rather than merely stores. A type it has never heard of, a model name it
-    /// will not spawn, a cap outside its own floors: each is degraded like any other unreadable
-    /// field — the draft takes this install's own value and the adoption output names the one it
-    /// could not use — rather than failing the whole adoption, which is what feeding them to the
-    /// command line's own strict parsers used to do (independent pre-PR review, cycle 1, both
-    /// lenses; the cap floors are asked through <c>TaskDecider</c>'s own predicates so the two
-    /// readings cannot drift). The single refusal is a record naming type <c>pr-review</c>, and
-    /// that one is not a field this build cannot read: it is work of a different kind, pointed at a
-    /// pull request rather than an issue (<c>Hall9k.Cli.Commands.TaskRecordAdoption</c> names the
-    /// two routes that work).
-    /// </para>
+    /// later build degrades to the fields this one understands instead of refusing to read it.
     /// </summary>
     public const int CurrentVersion = 1;
 
     /// <summary>
-    /// The record as the YAML that goes inside the fence — plain and block scalars throughout, and
-    /// never a quoted one, so nothing downstream has to unquote anything
-    /// (<see cref="FrontmatterYaml"/>'s own summary carries the incident behind that rule).
+    /// The record as YAML — plain and block scalars throughout, and never a quoted one, so nothing
+    /// downstream has to unquote anything (<see cref="FrontmatterYaml"/>'s own summary carries the
+    /// incident behind that rule).
     /// </summary>
     public string ToYaml()
     {
         StringBuilder yaml = new();
         yaml.Append(FrontmatterYaml.WriteValue(
             VersionKey, CurrentVersion.ToString(CultureInfo.InvariantCulture)));
+        yaml.Append(FrontmatterYaml.WriteValue("task-id", TaskId.ToString()));
         yaml.Append(FrontmatterYaml.WriteScalar("project", Project));
         // Lowercase is the record's canonical casing (the platform displays it capitalised); the
-        // reader accepts either, so a hand-written block saying "Feature" still adopts.
+        // reader accepts either, so a hand-written block saying "Feature" still reads.
         yaml.Append(FrontmatterYaml.WriteScalar("type", Type.ToLowerInvariant()));
-        // The CLI's own spelling of the mode — off, on, after-human-review — rather than a boolean,
-        // for the reason PreApproval's own doc gives: after-human-review is neither, and this field
-        // exists to state which of the three the origin chose. The reader takes the old boolean
-        // spellings too, so a hand-written `pre-approved: true` still adopts.
         yaml.Append(FrontmatterYaml.WriteValue("pre-approved", PreApproval.Word));
         if (Model.IsNotBlank())
         {
             yaml.Append(FrontmatterYaml.WriteScalar("model", Model));
+        }
+
+        if (ExternalReference is { } reference)
+        {
+            yaml.Append(FrontmatterYaml.WriteScalar("external-reference", reference.ToString()));
         }
 
         yaml.Append(FrontmatterYaml.WriteScalar("objective", Objective));
@@ -113,31 +117,22 @@ public sealed record TaskRecord(
         }
 
         yaml.Append(FrontmatterYaml.WriteValue(
-            "blocked-by-issues", $"[{string.Join(", ", BlockedByIssues)}]"));
-        if (DependenciesWithoutIssues > 0)
-        {
-            // Stated rather than silently dropped: the origin has dependencies whose own tasks were
-            // never published to an issue, so there is no identifier that would mean anything here.
-            // A count is the honest whole of what can be said about them (AGENTS.md, never guess).
-            yaml.Append(FrontmatterYaml.WriteValue(
-                "blocked-by-without-issues",
-                DependenciesWithoutIssues.ToString(CultureInfo.InvariantCulture)));
-        }
+            "dependencies", $"[{string.Join(", ", Dependencies)}]"));
 
         if (EpicTitle.IsNotBlank())
         {
             yaml.Append(FrontmatterYaml.WriteScalar("epic-title", EpicTitle));
         }
 
-        if (EpicOriginId is { } epicOriginId)
+        if (EpicId is { } epicId)
         {
-            yaml.Append(FrontmatterYaml.WriteValue("epic-origin-id", epicOriginId.ToString()));
+            yaml.Append(FrontmatterYaml.WriteValue("epic-id", epicId.ToString()));
         }
 
         yaml.Append(Caps.ToYaml());
+        yaml.Append(FrontmatterYaml.WriteScalar("origin-owner-fingerprint", OriginOwnerFingerprint));
         yaml.Append(FrontmatterYaml.WriteValue("origin-node", Origin.NodeId.ToString()));
         yaml.Append(FrontmatterYaml.WriteScalar("origin-node-name", Origin.NodeName));
-        yaml.Append(FrontmatterYaml.WriteValue("origin-task", Origin.TaskId.ToString()));
         if (Origin.BranchName.IsNotBlank())
         {
             yaml.Append(FrontmatterYaml.WriteScalar("origin-branch", Origin.BranchName));
@@ -149,14 +144,21 @@ public sealed record TaskRecord(
             yaml.Append(FrontmatterYaml.WriteScalar("context", AgentContext));
         }
 
+        if (Holder is { } holder)
+        {
+            yaml.Append(FrontmatterYaml.WriteScalar("holder-owner-fingerprint", holder.OwnerFingerprint));
+            yaml.Append(FrontmatterYaml.WriteValue("holder-node", holder.NodeId.ToString()));
+            yaml.Append(FrontmatterYaml.WriteScalar("holder-node-name", holder.NodeName));
+            yaml.Append(FrontmatterYaml.WriteValue("holder-since", Stamp(holder.Since)));
+        }
+
         return yaml.ToString();
     }
 
     /// <summary>
     /// The record a block of YAML describes, or null when the block is not one — no version key, or
-    /// no objective to build a draft around. Never throws: an item whose record cannot be read is
-    /// adopted the way an item with no record at all is, and a refusal here would turn a
-    /// best-effort improvement into a wall.
+    /// no objective to build a draft around. Never throws: content that cannot be read this way is
+    /// treated the same as content that carries no record at all.
     /// </summary>
     public static TaskRecord? TryParse(string? yaml)
     {
@@ -172,58 +174,63 @@ public sealed record TaskRecord(
             return null;
         }
 
+        Guid taskId = Uuid(parsed.Scalar("task-id")) ?? Guid.Empty;
         return new TaskRecord(
+            taskId,
             parsed.Scalar("project") ?? string.Empty,
             parsed.Scalar("type")?.ToLowerInvariant() ?? string.Empty,
             objective,
             [.. parsed.List("criteria").Where(criterion => criterion.IsNotBlank())],
             parsed.Scalar("context"),
             parsed.Scalar("model"),
-            // FromInput, not Flag: it takes the mode words the writer emits and the boolean
-            // spellings a hand-written block uses, and answers Unknown for anything else — which
-            // the adoption reports as unrecognized rather than reading as off, the same degrade
-            // every other unusable field in the record gets.
             PreApprovalMode.FromInput(parsed.Scalar("pre-approved")),
-            [.. parsed.List("blocked-by-issues").Select(ParseIssueNumber).OfType<int>()],
-            parsed.Number("blocked-by-without-issues") ?? 0,
+            ParseExternalReference(parsed.Scalar("external-reference")),
+            [.. parsed.List("dependencies").Select(Uuid).OfType<Guid>()],
             parsed.Scalar("epic-title"),
-            Uuid(parsed.Scalar("epic-origin-id")),
+            Uuid(parsed.Scalar("epic-id")),
             TaskRecordCaps.Read(parsed),
+            parsed.Scalar("origin-owner-fingerprint") ?? string.Empty,
             new TaskOrigin(
                 Uuid(parsed.Scalar("origin-node")) ?? Guid.Empty,
                 parsed.Scalar("origin-node-name") ?? string.Empty,
-                Uuid(parsed.Scalar("origin-task")) ?? Guid.Empty,
+                taskId,
                 parsed.Scalar("origin-branch"),
-                Stamp(parsed.Scalar("published"))));
+                Stamp(parsed.Scalar("published"))),
+            ReadHolder(parsed));
     }
 
-    /// <summary>
-    /// An issue number as the record writes it, tolerating the <c>#42</c> a human would type by
-    /// hand. Anything else answers null and is dropped rather than guessed at — an unreadable edge
-    /// is better lost loudly (the adoption output names what it resolved) than turned into a
-    /// dependency on whichever issue the digits happened to look like.
-    /// </summary>
-    private static int? ParseIssueNumber(string value) =>
-        int.TryParse(
-            value.Trim().TrimStart('#'), NumberStyles.Integer, CultureInfo.InvariantCulture, out int number)
-        && number > 0
-            ? number
-            : null;
+    private static TaskRecordHolder? ReadHolder(Frontmatter parsed)
+    {
+        string? ownerFingerprint = parsed.Scalar("holder-owner-fingerprint");
+        Guid? nodeId = Uuid(parsed.Scalar("holder-node"));
+        if (ownerFingerprint.IsBlank() || nodeId is null)
+        {
+            return null;
+        }
+
+        return new TaskRecordHolder(
+            ownerFingerprint,
+            nodeId.Value,
+            parsed.Scalar("holder-node-name") ?? string.Empty,
+            Stamp(parsed.Scalar("holder-since")));
+    }
+
+    private static Hall9k.Domain.Features.Tasks.ExternalReference? ParseExternalReference(string? value) =>
+        value.IsBlank() ? null : Hall9k.Domain.Features.Tasks.ExternalReference.Parse(value);
 
     private static Guid? Uuid(string? value) => Guid.TryParse(value, out Guid parsed) ? parsed : null;
 
     /// <summary>
-    /// The publish stamp written the one way every reader will see it, in UTC with the invariant
-    /// culture — the same discipline <see cref="ImportedWorkItem.ObservedStamp"/> keeps, and for the
-    /// same reason: this string crosses machines and outlives the one that wrote it.
+    /// The publish (or holder-claim) stamp written the one way every reader will see it, in UTC
+    /// with the invariant culture — the same discipline <see cref="ImportedWorkItem.ObservedStamp"/>
+    /// keeps, and for the same reason: this string crosses machines and outlives the one that wrote it.
     /// </summary>
     private static string Stamp(DateTimeOffset moment) =>
         moment.UtcDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture) + "Z";
 
     /// <summary>
     /// The stamp read back. An unparseable or absent one answers <see cref="DateTimeOffset.MinValue"/>
-    /// rather than the moment of reading: the adopting install did not observe a publish time, and
-    /// stamping the record with "now" would claim it did.
+    /// rather than the moment of reading: a READER must not claim it observed a moment it never saw.
     /// </summary>
     private static DateTimeOffset Stamp(string? value) =>
         DateTimeOffset.TryParse(
@@ -234,18 +241,17 @@ public sealed record TaskRecord(
 }
 
 /// <summary>
+/// The claim lock A3b writes (idea 202383dc): who holds this task, and since when. Absent — the
+/// whole of <see cref="TaskRecord.Holder"/> being null — until the first claim writes it; nothing
+/// in A3a ever composes one, only carries an already-written one through unchanged.
+/// </summary>
+public sealed record TaskRecordHolder(string OwnerFingerprint, Guid NodeId, string NodeName, DateTimeOffset Since);
+
+/// <summary>
 /// The four review-cycle caps and the session cap, each null when the origin task overrode nothing
 /// and the level above it decides (task: the review cycle caps become settable at three levels;
 /// Decisions Log #111 for the session cap). Written only when overridden, so an ordinary task's
-/// record says nothing about caps at all rather than freezing this build's defaults into an issue.
-/// <para>
-/// These are the caps as of the last time the record was written — publish, or a revise. Unlike
-/// every other field here, a cap is settable at any time, mid-run included
-/// (<c>h9k task set-session-cap</c>, <c>h9k task set-review-caps</c>), and those commands
-/// deliberately do not write to the tracker: they are local operating levers pulled while a run
-/// grinds, not changes to the published work, and a gh round trip on each one would be noise. A cap
-/// set that way reaches the record at the next revise, which rewrites the whole block.
-/// </para>
+/// record says nothing about caps at all.
 /// </summary>
 public sealed record TaskRecordCaps(
     int? MaxComplianceReviewCycles,
