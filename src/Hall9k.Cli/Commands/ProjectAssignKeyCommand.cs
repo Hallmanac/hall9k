@@ -95,14 +95,14 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
             owner.Email.IsNotBlank() ? owner.Email : $"{context.NodeId}@hall9k.local");
         LedgerSigningKey signingKey = new(key.PrivateKeyPath);
 
-        string projectKey = Ulid.NewUlid().ToString();
-        await WriteProjectKeyAsync(
-            ledger, project.RepositoryPath, genesisRoot, projectKey, committer, signingKey, cancellationToken);
+        string mintedKey = Ulid.NewUlid().ToString();
+        string writtenKey = await WriteProjectKeyAsync(
+            ledger, chainReader, project.RepositoryPath, genesisRoot, mintedKey, committer, signingKey, cancellationToken);
 
-        session.Events.Append(project.Id, ProjectDecider.AssignKey(project.Id, projectKey, now));
+        session.Events.Append(project.Id, ProjectDecider.AssignKey(project.Id, writtenKey, now));
         await session.SaveChangesAsync(cancellationToken);
 
-        AnsiConsole.MarkupLine($"[green]Assigned[/] '{project.Name.EscapeMarkup()}'s own key: [bold]{projectKey}[/]");
+        AnsiConsole.MarkupLine($"[green]Assigned[/] '{project.Name.EscapeMarkup()}'s own key: [bold]{writtenKey}[/]");
         AnsiConsole.MarkupLine(
             "[dim]One-time backfill for a ledger whose genesis predates this piece — every other install "
             + "picks it up the next time it runs h9k project join there.[/]");
@@ -113,14 +113,23 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
     /// Adds a <c>project_key</c> line to the genesis fingerprint's own, already-existing
     /// <c>members/&lt;fingerprint&gt;.yaml</c> content — never replaces the file, so the
     /// <c>root_fingerprint</c>, <c>role</c>, and <c>issued_at</c> fields genesis itself recorded
-    /// survive unchanged. Retried against a fresh read the same way every other conflict-prone
-    /// ledger write in this codebase is (<c>ProjectJoinCommand.WriteNodeFileAsync</c>'s own idiom):
-    /// content depends only on this call's own arguments plus whatever the current read returns, so
-    /// a conflict is always safe to retry.
+    /// survive unchanged. Any <c>project_key</c> line the current content already carries is
+    /// stripped before the fresh one is appended, rather than gating on its mere presence: the raw
+    /// content read here is never authorized the way <see cref="ILedgerChainReader"/>'s own replay
+    /// is, so a line a stranger forged onto this ref (the exact rewrite
+    /// <c>GitLedgerChainReader</c>'s own authorization hardening refuses to read back) must never be
+    /// treated as "the key already exists" — that would block this backfill forever, and appending
+    /// a second line behind it would only bury a genuinely authorized key under the forged one,
+    /// since the reader returns the first match. Retried against a fresh read the same way every
+    /// other conflict-prone ledger write in this codebase is (<c>ProjectJoinCommand.WriteNodeFileAsync</c>'s
+    /// own idiom): on a conflict, this recomputes the chain to ask whether a concurrent, genuinely
+    /// authorized <c>h9k project assign-key</c> run already won the race and landed its own key —
+    /// if so, that key is returned rather than fought over, so the caller records and reports
+    /// exactly what the ledger actually holds, never a locally-minted key that was never written.
     /// </summary>
-    private static async Task WriteProjectKeyAsync(
-        ILedger ledger, string repositoryPath, string genesisFingerprint, string projectKey,
-        LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
+    private static async Task<string> WriteProjectKeyAsync(
+        ILedger ledger, ILedgerChainReader chainReader, string repositoryPath, string genesisFingerprint,
+        string projectKey, LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
     {
         const string refName = "refs/hall9k/ledger/members";
         string path = $"members/{genesisFingerprint}.yaml";
@@ -135,14 +144,8 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
                     + "Re-run h9k project assign-key once membership settles.");
             }
 
-            if (ExtractYamlValue(currentContent, "project_key") is not null)
-            {
-                // Another writer's own assign-key won the race between the refusal check above and
-                // this write — the key exists either way, whichever one actually landed.
-                return;
-            }
-
-            string content = currentContent.TrimEnd('\n') + "\n" + $"project_key: \"{projectKey}\"\n";
+            string content = RemoveYamlLine(currentContent, "project_key").TrimEnd('\n')
+                + "\n" + $"project_key: \"{projectKey}\"\n";
             LedgerWriteOutcome outcome = await ledger.WriteAsync(
                 new LedgerWriteRequest(
                     repositoryPath, refName, path, content, current.BlobId,
@@ -150,7 +153,17 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
                 cancellationToken);
             if (outcome.Verdict == LedgerWriteVerdict.Written)
             {
-                return;
+                return projectKey;
+            }
+
+            // Someone else's write landed between our read and ours — ask the authorized chain,
+            // never the raw content we would otherwise reread next iteration, whether that write
+            // was a genuinely authorized assign-key racing this one. If so, its key is the ledger's
+            // real answer and this attempt backs off rather than appending a second, competing line.
+            TrustChain chainAfterConflict = await chainReader.ComputeAsync(repositoryPath, cancellationToken);
+            if (chainAfterConflict.ProjectKey is { } authorizedKey)
+            {
+                return authorizedKey;
             }
         }
 
@@ -159,24 +172,14 @@ public sealed class ProjectAssignKeyCommand : Hall9kAsyncCommand<ProjectAssignKe
             + "something else is writing it at the same time. Re-run h9k project assign-key once that settles.");
     }
 
-    /// <summary>Reverses the small, flat, every-value-double-quoted YAML shape every ledger file in
-    /// this feature uses — the same reader <c>GitLedgerChainReader.ExtractQuotedYamlValue</c>
-    /// already is, duplicated for the same reason that class's own doc comment gives for its own
-    /// duplication of <c>GitLedgerMessageTransport</c>'s reader.</summary>
-    private static string? ExtractYamlValue(string yaml, string key)
+    /// <summary>Removes every line matching the small, flat, every-value-double-quoted YAML shape
+    /// every ledger file in this feature uses for <paramref name="key"/> — the same shape reader
+    /// <c>GitLedgerChainReader.ExtractQuotedYamlValue</c> parses, duplicated for the same reason
+    /// that class's own doc comment gives for its own duplication of
+    /// <c>GitLedgerMessageTransport</c>'s reader — leaving every other field untouched.</summary>
+    private static string RemoveYamlLine(string yaml, string key)
     {
-        foreach (string rawLine in yaml.Split('\n'))
-        {
-            string line = rawLine.TrimEnd('\r');
-            string prefix = $"{key}: \"";
-            if (!line.StartsWith(prefix, StringComparison.Ordinal) || !line.EndsWith('"'))
-            {
-                continue;
-            }
-
-            return line[prefix.Length..^1];
-        }
-
-        return null;
+        string prefix = $"{key}: \"";
+        return string.Join('\n', yaml.Split('\n').Where(line => !line.TrimEnd('\r').StartsWith(prefix, StringComparison.Ordinal)));
     }
 }

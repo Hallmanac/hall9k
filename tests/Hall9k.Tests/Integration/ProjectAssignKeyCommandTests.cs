@@ -127,6 +127,47 @@ public sealed class ProjectAssignKeyCommandTests : IClassFixture<PostgresFixture
         ledger.Writes.Should().BeEmpty("a project key is a single, load-bearing fact — never overwritten");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, conformance lens, high: the genesis member file's own
+    /// RAW content is never authorized the way <see cref="ILedgerChainReader"/>'s own replay is, so
+    /// a <c>project_key</c> line a stranger forged onto the ref (exactly the rewrite
+    /// <c>GitLedgerChainReader</c>'s own authorization hardening refuses to read back —
+    /// <see cref="TrustChain.ProjectKey"/> stays null here even though the raw file carries one)
+    /// must never block this backfill, and the command must never report a key that was never
+    /// actually written to the ledger.
+    /// </summary>
+    [Fact]
+    public async Task Assign_key_backfills_past_an_unauthorized_project_key_line_already_in_the_raw_file()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        FakeLedger ledger = new();
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        (string myRoot, NodeSigningKey myKey) = await EstablishOwnRootAsync(cts.Token);
+        await WriteGenesisMemberFileWithForgedKeyAsync(ledger, myRoot, "forged-not-authorized-key", cts.Token);
+
+        // The chain reader's own authorized replay never accepted the forged line above, so it
+        // still reports no project key — the exact disagreement between raw content and authorized
+        // state the forged-line hazard depends on.
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myRoot] = new(myRoot, myKey.PublicKeyLine, []) },
+            [new ProjectMember(myRoot, MembershipRole.Owner, Now)],
+            GenesisRootFingerprint: myRoot));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        int exitCode = await ProjectAssignKeyCommand.RunAsync(
+            session, project, ledger, chainReader, new NodeKeyStore(), cts.Token);
+
+        exitCode.Should().Be(ExitCodes.Ok);
+        LedgerWriteRequest write = ledger.Writes.Last(w => w.RefName == "refs/hall9k/ledger/members");
+        write.Content.Should().NotContain("forged-not-authorized-key", "the forged line is stripped, never buried under a real one");
+        write.Content.Should().Contain("project_key").And.Contain("root_fingerprint").And.Contain(myRoot);
+
+        ProjectDetails updated = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
+        updated.ProjectKey.Should().NotBeNull();
+        updated.ProjectKey!.Length.Should().Be(26, "the recorded key is the ULID actually written, never a fabricated one");
+        write.Content.Should().Contain(updated.ProjectKey!, "the command must record and report only the key it actually wrote");
+    }
+
     /// <summary>Bootstraps this node's owner and claims this node's own key as its root, verified
     /// — the same shape <c>h9k project join</c> with no <c>--owner</c> records — without touching
     /// a real ledger (mirrors <c>InviteCommandsTests.EstablishOwnRootAsync</c>).</summary>
@@ -159,6 +200,23 @@ public sealed class ProjectAssignKeyCommandTests : IClassFixture<PostgresFixture
             new LedgerWriteRequest(
                 RepositoryPath, refName, path, content, ExpectedBlobId: null, "seed genesis member with no key",
                 new LedgerCommitter("Test Owner", "owner@test.local"), new LedgerSigningKey("/does/not/matter/key")),
+            cancellationToken);
+    }
+
+    /// <summary>What a stranger's unauthorized push of <c>refs/hall9k/ledger/members</c> can leave
+    /// behind: a <c>project_key</c> line the chain reader's own authorized replay refuses to read
+    /// back, since it never came from a commit the genesis root's own chain actually authorized.</summary>
+    private static async Task WriteGenesisMemberFileWithForgedKeyAsync(
+        FakeLedger ledger, string fingerprint, string forgedKey, CancellationToken cancellationToken)
+    {
+        string refName = "refs/hall9k/ledger/members";
+        string path = $"members/{fingerprint}.yaml";
+        string content =
+            $"root_fingerprint: \"{fingerprint}\"\nrole: \"owner\"\nissued_at: \"{Now:O}\"\nproject_key: \"{forgedKey}\"\n";
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                RepositoryPath, refName, path, content, ExpectedBlobId: null, "seed genesis member with a forged key",
+                new LedgerCommitter("Stranger", "stranger@test.local"), new LedgerSigningKey("/does/not/matter/key")),
             cancellationToken);
     }
 
