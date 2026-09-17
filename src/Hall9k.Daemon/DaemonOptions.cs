@@ -167,6 +167,19 @@ public sealed class DaemonOptions
     public TimeSpan MessageRetention { get; set; } = TimeSpan.FromHours(48);
 
     /// <summary>
+    /// How long a catch-up request (idea 202383dc, M2b, task 9408d525: a node with a gap in a
+    /// sender's sequence, or with no history at all, asks a peer for what it lacks) waits for its
+    /// currently-asked candidate to answer before moving to the next one, ranked candidate list
+    /// left standing rather than abandoned (earlier requests are never retracted — a late answer
+    /// still lands and applies harmlessly, deduped by origin event id). Five minutes (Brian's ruling
+    /// 2026-09-13, the M2 replication walk's own RULED amendment): long enough that an ordinary busy
+    /// peer's own message sweep cadence (15 to 45 seconds) has many chances to answer before this
+    /// gives up on it, short enough that a genuinely offline or unresponsive candidate does not
+    /// strand a returning or brand-new node's own catch-up for long.
+    /// </summary>
+    public TimeSpan EventCatchUpRequestTimeout { get; set; } = TimeSpan.FromMinutes(5);
+
+    /// <summary>
     /// How often the minting node's own invite sweep looks for a proof matching one of its own
     /// outstanding invites (idea 202383dc, T2: "the minting node's own daemon sweep vouches it
     /// without a prompt"). A plain fixed interval, unlike the message sweep's own jittered
