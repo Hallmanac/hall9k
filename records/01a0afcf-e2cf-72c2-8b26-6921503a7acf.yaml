@@ -15,7 +15,7 @@ criteria:
     Tests through the seam with a fake ledger: a builder with an addendum renders it under the heading after the rules; a builder without one renders unchanged (golden); set, show, list, remove round-trip and a second set replaces the first; an over-cap set stops with the cap named and succeeds with --over-cap and its reason on the event
   - |-
     dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each, the log recording that project prompt customization is additive by design (Brian, 2026-09-17: flexibility with guardrails, no fragment overrides)
-dependencies: [01a09c2c-faaa-7174-9df5-936e777f0e18]
+dependencies: []
 origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
 origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
 origin-node-name: Hallmamac-Max36
