@@ -41,6 +41,15 @@ public sealed class PromptAddendaSweepEngine(
 {
     private const int MaxConflictRetries = 5;
 
+    /// <summary>Each project's own prompt-addenda ref tip as of this node's last look — so a tick
+    /// that finds an unmoved tip skips the fetch <see cref="ILedger.ReadAllAsync"/> would otherwise
+    /// cost, the same tip-gating <c>InviteSweepEngine._lastKnownRefs</c> already uses for exactly
+    /// this reason. In-memory and per-process by design: a restart just re-reads once, cheap and
+    /// correct, never lossy (independent pre-PR review, cycle 1, conformance and adversarial
+    /// lenses, both medium: every tick otherwise fetched all four builder paths individually, once
+    /// per project, forever, even for a project that has never had an addendum).</summary>
+    private readonly Dictionary<string, string?> _lastKnownPromptAddendaTips = [];
+
     public async Task<PromptAddendaSweepResult> SweepOnceAsync(CancellationToken cancellationToken)
     {
         IReadOnlyList<ProjectDetails> projects;
@@ -57,12 +66,22 @@ public sealed class PromptAddendaSweepEngine(
         {
             try
             {
-                pushed += await PushAsync(project, cancellationToken);
+                int pushedForProject = await PushAsync(project, cancellationToken);
+                pushed += pushedForProject;
+                if (pushedForProject > 0)
+                {
+                    // A push that actually landed only ever follows a position that had not yet
+                    // advanced past it — the same un-advanced position a still-outstanding failure
+                    // leaves behind (PushAsync's own doc) — so reaching here at all means whatever
+                    // failure this project was carrying, if any, no longer applies.
+                    await ClearPushFailureAsync(project.Id, cancellationToken);
+                }
             }
             catch (Exception exception)
             {
                 logger.LogWarning(
                     exception, "Prompt-addenda push failed for project {ProjectId}; will retry next sweep", project.Id);
+                await RecordPushFailureAsync(project.Id, exception.Message, cancellationToken);
             }
 
             try
@@ -78,6 +97,51 @@ public sealed class PromptAddendaSweepEngine(
         }
 
         return new PromptAddendaSweepResult(pushed, materialized);
+    }
+
+    /// <summary>
+    /// Records what a push attempt just threw against this project's own sync position, on a fresh
+    /// session — the one <see cref="PushAsync"/> itself was using may have already failed its own
+    /// <see cref="IDocumentSession.SaveChangesAsync"/> call, or never reached one, so a new session
+    /// is the only one guaranteed to still be usable here. Best-effort: a failure recording the
+    /// failure is logged and swallowed rather than allowed to mask the original one.
+    /// </summary>
+    private async Task RecordPushFailureAsync(Guid projectId, string error, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            PromptAddendaSyncPosition position =
+                await session.LoadAsync<PromptAddendaSyncPosition>(projectId, cancellationToken)
+                ?? new PromptAddendaSyncPosition { Id = projectId };
+            position.LastPushError = error;
+            position.LastPushErrorAt = DateTimeOffset.UtcNow;
+            session.Store(position);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Could not record the prompt-addenda push failure itself for project {ProjectId}", projectId);
+        }
+    }
+
+    /// <summary>The success-path mirror of <see cref="RecordPushFailureAsync"/>: nothing to do
+    /// when this project never had a recorded failure, so the ordinary, always-succeeding case
+    /// never pays for a document load and save it does not need.</summary>
+    private async Task ClearPushFailureAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        PromptAddendaSyncPosition? position = await session.LoadAsync<PromptAddendaSyncPosition>(projectId, cancellationToken);
+        if (position is not { LastPushError: not null })
+        {
+            return;
+        }
+
+        position.LastPushError = null;
+        position.LastPushErrorAt = null;
+        session.Store(position);
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>
@@ -224,6 +288,13 @@ public sealed class PromptAddendaSweepEngine(
     /// Reads the ledger's own current content for every builder key and keeps this node's local
     /// disk copy in step — the copy every prompt builder's loader actually reads. Read-only against
     /// the ledger itself; only ever writes local disk.
+    /// <para>
+    /// A cheap <see cref="ILedger.ListRefsAsync"/> (<c>git ls-remote</c>, no fetch) decides whether
+    /// this project's prompt-addenda ref moved since this node's last look; only a moved tip pays
+    /// for the real fetch <see cref="ILedger.ReadAllAsync"/> costs, and that one call reads every
+    /// builder's file under <see cref="LedgerRefRegistry.PromptAddendaPathPrefix"/> at once rather
+    /// than one <see cref="ILedger.ReadAsync"/> fetch per builder key.
+    /// </para>
     /// </summary>
     private async Task<int> MaterializeAsync(ProjectDetails project, CancellationToken cancellationToken)
     {
@@ -234,15 +305,29 @@ public sealed class PromptAddendaSweepEngine(
 
         string home = project.HomeDirectory.Value;
         string refName = LedgerRefRegistry.PromptAddenda.RefspecSource;
-        int changed = 0;
 
+        IReadOnlyList<LedgerRef> refs = await ledger.ListRefsAsync(project.RepositoryPath, refName, cancellationToken);
+        string? tip = refs.FirstOrDefault(reference => reference.RefName == refName)?.Sha;
+
+        if (_lastKnownPromptAddendaTips.TryGetValue(project.RepositoryPath, out string? knownTip) && knownTip == tip)
+        {
+            return 0;
+        }
+
+        IReadOnlyList<LedgerEntry> entries = tip is null
+            ? []
+            : await ledger.ReadAllAsync(project.RepositoryPath, refName, LedgerRefRegistry.PromptAddendaPathPrefix, cancellationToken);
+        _lastKnownPromptAddendaTips[project.RepositoryPath] = tip;
+
+        Dictionary<string, string> contentByBuilder = entries.ToDictionary(
+            entry => Path.GetFileNameWithoutExtension(entry.Path), entry => entry.Content);
+
+        int changed = 0;
         foreach (PromptBuilderKey builder in PromptBuilderKey.All)
         {
-            LedgerFile current = await ledger.ReadAsync(
-                project.RepositoryPath, refName, LedgerRefRegistry.PromptAddendumPath(builder), cancellationToken);
             string localPath = ProjectHomePaths.PromptAddendumFile(home, builder);
 
-            if (!current.Exists)
+            if (!contentByBuilder.TryGetValue(builder.Value, out string? content))
             {
                 if (File.Exists(localPath))
                 {
@@ -253,10 +338,10 @@ public sealed class PromptAddendaSweepEngine(
                 continue;
             }
 
-            if (!File.Exists(localPath) || await File.ReadAllTextAsync(localPath, cancellationToken) != current.Content)
+            if (!File.Exists(localPath) || await File.ReadAllTextAsync(localPath, cancellationToken) != content)
             {
                 Directory.CreateDirectory(ProjectHomePaths.PromptAddendaDirectory(home));
-                await File.WriteAllTextAsync(localPath, current.Content, cancellationToken);
+                await File.WriteAllTextAsync(localPath, content, cancellationToken);
                 changed++;
             }
         }

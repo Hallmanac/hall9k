@@ -14,4 +14,17 @@ public sealed class PromptAddendaSyncPosition
     /// <summary>The highest global event sequence this node has already scanned for this
     /// project's own prompt-addendum changes — never an event past this point is scanned again.</summary>
     public long LastScannedGlobalSequence { get; set; }
+
+    /// <summary>
+    /// What the ledger push last threw, when it did — cleared the moment a later push actually
+    /// lands. A push failure otherwise leaves the whole feature silently inert (the CLI reports
+    /// success, <c>list</c>/<c>show</c> keep reporting the addendum as set) with nothing visible
+    /// short of reading daemon logs, so <c>h9k project prompt-addendum list</c>/<c>show</c> surface
+    /// this instead of leaving it there alone (independent pre-PR review, cycle 1, adversarial
+    /// lens, medium).
+    /// </summary>
+    public string? LastPushError { get; set; }
+
+    /// <summary>When <see cref="LastPushError"/> was last recorded.</summary>
+    public DateTimeOffset? LastPushErrorAt { get; set; }
 }
