@@ -15,7 +15,7 @@ criteria:
   - |-
     Tests: persona set and show round-trip on the owner record; selection dispatches one session per persona and the engineer prompt when none is declared; an unregistered persona is named as skipped; the report carries the per-persona sections; a golden test shows the drift question in every review prompt; a drift finding routes
   - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each, the log recording the fixed persona set and that no persona means engineer
-dependencies: []
+dependencies: [01a09c2c-faaa-7174-9df5-936e777f0e18]
 origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
 origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
 origin-node-name: Hallmamac-Max36
