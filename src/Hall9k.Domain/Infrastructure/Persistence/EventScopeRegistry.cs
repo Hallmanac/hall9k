@@ -76,6 +76,7 @@ public static class EventScopeRegistry
         [typeof(TaskRetried)] = EventScope.ProjectScoped,
         [typeof(TaskReturnedToDraft)] = EventScope.ProjectScoped,
         [typeof(TaskReviewCapsOverridden)] = EventScope.ProjectScoped,
+        [typeof(TaskPrivacySet)] = EventScope.ProjectScoped,
         [typeof(TaskRevised)] = EventScope.ProjectScoped,
         [typeof(TaskSessionCapOverridden)] = EventScope.ProjectScoped,
         [typeof(TaskUnassigned)] = EventScope.ProjectScoped,
@@ -182,10 +183,11 @@ public static class EventScopeRegistry
         [typeof(VerificationPassed)] = EventScope.ProjectScoped,
 
         // Hall9k.Domain.Features.Project.Events — the project's own identity travels; its
-        // settings stay node-scoped until M2 splits ProjectSettingsChanged into the team part
-        // (travels) and the node part (parallel caps, model choices — stays) the 2026-09-13
-        // ruling names. One event still carries both today, so it is classified NodeScoped
-        // rather than leaking a node's own local settings out ahead of that split.
+        // settings split at M2a (idea 202383dc): ProjectSettingsChanged keeps every field for
+        // replay but is node-scoped from here on (parallel caps, model choices, orchestrator
+        // model, and this install's own filesystem paths — never leaked to another node), and the
+        // new ProjectTeamSettingsChanged (the claim gate, branch template, backlog policy, review
+        // settings, writing conventions) is what actually travels.
         [typeof(ProjectArchived)] = EventScope.ProjectScoped,
         [typeof(ProjectPurgeCancelled)] = EventScope.ProjectScoped,
         [typeof(ProjectPurgeScheduled)] = EventScope.ProjectScoped,
@@ -193,6 +195,7 @@ public static class EventScopeRegistry
         [typeof(ProjectRegistered)] = EventScope.ProjectScoped,
         [typeof(ProjectRenamed)] = EventScope.ProjectScoped,
         [typeof(ProjectSettingsChanged)] = EventScope.NodeScoped,
+        [typeof(ProjectTeamSettingsChanged)] = EventScope.ProjectScoped,
 
         // GitHub access observed through this install's own connected account (idea 202383dc,
         // A2b): both are what THIS node's own gh call saw, through THIS node's own registered
@@ -226,6 +229,9 @@ public static class EventScopeRegistry
         [typeof(NodeLaunchHoldRunHeld)] = EventScope.NodeScoped,
         [typeof(NodeOwnerClaimed)] = EventScope.NodeScoped,
         [typeof(NodeRegistered)] = EventScope.NodeScoped,
+        // idea 202383dc, M2a: this node's own switch-on point — never a team fact, and reading it
+        // from another node would be meaningless (each node's own global sequence is local).
+        [typeof(ReplicationSwitchedOn)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Message — idea 202383dc, M1a: messages are ephemeral, ruled
         // 2026-09-13 ("read receipts and bookmark announcements are dead ... messages are
@@ -290,6 +296,7 @@ public static class EventScopeRegistry
         [typeof(IdeaCaptured)] = EventScope.ProjectScoped,
         [typeof(IdeaConcluded)] = EventScope.ProjectScoped,
         [typeof(IdeaDiscarded)] = EventScope.ProjectScoped,
+        [typeof(IdeaPrivacySet)] = EventScope.ProjectScoped,
         [typeof(IdeaPromoted)] = EventScope.ProjectScoped,
         [typeof(IdeaRevised)] = EventScope.ProjectScoped,
         [typeof(IdeaTaskCut)] = EventScope.ProjectScoped,
