@@ -686,11 +686,16 @@ public static class ProjectDecider
     /// </summary>
     public static ProjectKeyAssigned AssignKey(Guid projectId, string projectKey, DateTimeOffset assignedAt)
     {
-        if (projectKey.Length != 26)
+        // Ulid.TryParse checks the full Crockford-base32 shape, not merely the length: a
+        // length-only check let a 26-character string containing anything at all (Spectre markup
+        // included) through as a "project key", which h9k project show would then hand straight to
+        // AnsiConsole.MarkupLine and crash on (independent pre-PR review, cycle 1, adversarial
+        // lens, low).
+        if (!Ulid.TryParse(projectKey, out _))
         {
             throw new DomainValidationException(
-                $"'{projectKey}' is not a project key — a project key is the 26-character ULID minted once "
-                + "at genesis (idea 202383dc, M2), never a fingerprint or any other id.");
+                $"'{projectKey}' is not a project key — a project key is the 26-character Crockford-base32 "
+                + "ULID minted once at genesis (idea 202383dc, M2), never a fingerprint or any other id.");
         }
 
         return new ProjectKeyAssigned(projectId, projectKey, assignedAt);
