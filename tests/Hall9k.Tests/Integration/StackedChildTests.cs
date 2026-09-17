@@ -15,6 +15,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using JasperFx.Events;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -1609,23 +1610,11 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
             : throw new InvalidOperationException($"git {arguments} failed in {workingDirectory}: {error}");
     }
 
-    public void Dispose()
-    {
-        try
-        {
-            if (Directory.Exists(_root))
-            {
-                Directory.Delete(_root, recursive: true);
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // Windows can hold a git pack file open past the process's own exit, and git marks
-            // objects read-only, which surfaces as either of these. A leftover temp directory is
-            // not worth failing a green run over — and swallowing it here must never swallow a real
-            // assertion failure, which is why only these two are caught.
-        }
-    }
+    // Through TemporaryTree: git marks its objects read-only, which a bare Directory.Delete
+    // refuses outright on Windows, and Windows can hold a pack file open past the process's own
+    // exit. A leftover temp directory is not worth failing a green run over, and the helper's
+    // swallow is narrow enough that it can never swallow a real assertion failure.
+    public void Dispose() => TemporaryTree.TryDelete(_root);
 
     // ── a parent on another install, watched through GitHub ──
     private static readonly DateTimeOffset RemoteNow = new(2026, 9, 7, 12, 0, 0, TimeSpan.Zero);
