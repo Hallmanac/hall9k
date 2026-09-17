@@ -3598,6 +3598,37 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("## Handoff (required — the last thing in your final message)");
     }
 
+    /// <summary>
+    /// A stack assessment's own Replay verdict can redirect a checkpoint whose parent died onto the
+    /// project's own base branch — <c>DispatchStackAssessmentAsync</c> matches the verdict's onto
+    /// commit to the project base, and <c>RunAggregate.Apply(StackAssessmentCompleted)</c> then
+    /// clears the run's recorded base to match. <paramref name="baseBranch"/> below therefore names
+    /// the project's own base exactly as an ordinary, never-stacked run would, even though
+    /// <c>baseCommit</c> still carries a real boundary — the old fork point that must not be
+    /// replayed over, since replaying it would duplicate the dead parent's own already-landed
+    /// commits onto this branch. <c>effectiveBaseBranch != project.BaseBranch</c> alone cannot tell
+    /// this apart from the ordinary case, so the prompt has to key its mechanics off
+    /// <c>baseCommit</c>'s own presence instead (independent pre-PR review, cycle 6, conformance
+    /// lens).
+    /// </summary>
+    [Fact]
+    public void PreFinalPassRebase_prompt_replays_from_the_boundary_when_the_assessment_redirects_onto_the_project_base_branch()
+    {
+        string prompt = AgentPromptBuilder.BuildPreFinalPassRebase(
+            SomeTask(), SomeProject(), "task/1-slug", CommitStyle.Append, pullRequestUrl: null,
+            baseBranch: "main", baseCommit: "0123456789abcdef0123456789abcdef01234567",
+            precedesFirstReviewCycle: true);
+
+        prompt.Should().Contain(
+            "git rebase --onto origin/main 0123456789abcdef0123456789abcdef01234567 task/1-slug",
+            "the boundary a stack assessment carried as baseCommit must still be replayed from, even " +
+            "though the onto target now names the project's own base branch");
+        prompt.Should().NotContain(
+            "`git rebase origin/main`, resolving each conflict",
+            "the plain merge-base rebase would replay the dead parent's own already-landed commits as " +
+            "this branch's own work");
+    }
+
     /// <summary>An adopted task as import leaves it: the reference recorded, the quote composed.</summary>
     private static TaskDetails AdoptedTask()
     {
