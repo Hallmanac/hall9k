@@ -187,10 +187,18 @@ separate reader, `EventReplicationInbox`, applies it), and every other node regi
 project appends it to its own copy of the same stream as a fact, with no decider run against it —
 it is a record of what happened elsewhere, not a decision this node is making. A project's own id
 is minted per install, never shared, so every applied copy has its project coordinate (a
-Task/Idea/Epic/Run event's own `ProjectId` field, or a Project-aggregate event's own stream id —
-`ProjectTeamSettingsChanged` and its lifecycle/membership siblings included) rewritten to the
-receiving node's own local id (`ProjectStreamReplicationRules`), while the ledger repository stays
-the one shared identity across installs. Which events travel
+Task/Idea/Epic/Run event's own `ProjectId` field, or a Project-aggregate event's own stream id, for
+the team-facing subset alone — `ProjectTeamSettingsChanged` and the membership audit trail,
+`MemberVouched`/`MemberRemoved`) rewritten to the receiving node's own local id
+(`ProjectStreamReplicationRules.IsProjectAggregateStreamEvent`). The Project aggregate's own
+per-install lifecycle events — archive, reactivate, rename, schedule or cancel a purge
+(`ProjectStreamReplicationRules.IsProjectLifecycleEvent`) — still travel and are recorded, but
+never touch the receiver's own Project stream: each is this install's own decision about its own
+local copy, so a teammate's own archive or purge stays under the sender's own foreign stream id
+instead, never applied to the receiver's real project (independent pre-PR review, cycle 3,
+conformance lens — applying it locally would let a teammate's `h9k project remove --purge` schedule
+this install's own project for an unrecoverable hard delete with no decider in the way). The ledger
+repository stays the one shared identity across installs regardless. Which events travel
 is a single registry (`Hall9k.Domain.Infrastructure.Persistence.EventScopeRegistry`), classifying
 every event type `ProjectScoped` (travels), `NodeScoped`, or `OwnerScoped` (both stay); a build-time
 test fails the moment a new event type ships unclassified. `ProjectSettingsChanged` itself stays

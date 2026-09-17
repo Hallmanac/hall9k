@@ -292,6 +292,96 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 3, conformance lens (ProjectStreamReplicationRules.cs:572):
+    /// applying a teammate's own per-install lifecycle decision (archive, reactivate, rename,
+    /// schedule or cancel a purge) to the receiver's own Project stream let another node's local
+    /// <c>h9k project remove --purge</c> or rename act on this install's own copy of the project
+    /// with no decider in the way. <see cref="ProjectArchived"/> must still travel and be recorded
+    /// as a fact (the objective's own "every project-scoped event... every other node... appends it
+    /// under the same stream id as a fact"), but never touch the receiver's own local project.
+    /// </summary>
+    [Fact]
+    public async Task A_teammates_project_archived_never_touches_the_receivers_own_project()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        Guid projectIdB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdA,
+                new ProjectRegistered(projectIdA, ownerId, DomainId.New(), "Shared Project", "/repo-a", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node B registers the identical real-world project under its OWN, differently-minted id —
+        // and never archives it locally.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdB,
+                new ProjectRegistered(projectIdB, ownerId, DomainId.New(), "Shared Project", "/repo-b", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(1), cts.Token);
+        }
+
+        // Node A archives and schedules a purge of ITS OWN local copy — a decision about node A's
+        // own install alone.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.Append(projectIdA, new ProjectArchived(projectIdA, "cleanup", Now.AddSeconds(2), ownerId));
+            session.Events.Append(
+                projectIdA, new ProjectPurgeScheduled(projectIdA, Now.AddSeconds(2), Now.AddSeconds(2).AddHours(24), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, Now.AddSeconds(4), trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeFalse();
+            // Both events are still recorded — as facts, never applied to B's own project.
+            read.EventsApplied.Should().Be(2);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            ProjectDetails? receiverProject = await session.LoadAsync<ProjectDetails>(projectIdB, cts.Token);
+            receiverProject.Should().NotBeNull();
+            receiverProject!.IsArchived.Should().BeFalse("node A's own archive is a decision about node A's own local copy alone");
+            receiverProject.ArchivedAt.Should().BeNull();
+            receiverProject.PurgeAt.Should().BeNull(
+                "a replicated purge schedule must never let a teammate's node schedule this install's own project, tasks, runs, ideas, and epics for a hard delete");
+        }
+    }
+
+    /// <summary>
     /// MessageInbox reads the identical outbox ref EventReplicationInbox does — same ref, same
     /// envelopes, two independent cursors — so an events envelope must never also land as an
     /// ordinary received message there, or h9k messages would show a raw batch of replicated

@@ -125,12 +125,14 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 // shared across installs, so a fact appended under it could never land on a
                 // receiver's own Project stream, only create a phantom one under a foreign id. Never
                 // worth looking at again, the same as any other never-this-project's-business skip.
-                // Every OTHER project-scoped event on this same stream (ProjectTeamSettingsChanged,
-                // the lifecycle and membership events) travels like any other candidate below — the
-                // receiving inbox rewrites its own stream id to ITS OWN local Project stream
-                // (ProjectStreamReplicationRules.IsProjectAggregateStreamEvent) rather than excluding
-                // the whole stream, because the project id is a per-install coordinate rewritten on
-                // apply, never the shared identity (the ledger repository is).
+                // Every OTHER project-scoped event on this same stream still travels like any other
+                // candidate below — the receiving inbox rewrites the team-facing subset
+                // (ProjectTeamSettingsChanged, MemberVouched, MemberRemoved) onto ITS OWN local
+                // Project stream (ProjectStreamReplicationRules.IsProjectAggregateStreamEvent), but
+                // keeps the sender's own foreign stream id for the per-install lifecycle events
+                // (ProjectStreamReplicationRules.IsProjectLifecycleEvent) — those are this install's
+                // own decision about its own local copy, never one a teammate's node may act on
+                // (independent pre-PR review, cycle 3, conformance lens).
                 lastIncludedSequence = candidate.Sequence;
                 continue;
             }
