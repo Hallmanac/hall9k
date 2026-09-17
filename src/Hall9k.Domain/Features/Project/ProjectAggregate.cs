@@ -126,6 +126,13 @@ public sealed class ProjectAggregate
     /// until an operator states their own (<see cref="Project.WritingConventions"/>).
     /// </summary>
     public WritingConventions WritingConventions { get; private set; } = WritingConventions.Default;
+    /// <summary>
+    /// This install's own local mirror of the project's ledger-derived key (idea 202383dc, M2,
+    /// Brian's ruling 2026-09-17) — null until <see cref="ProjectKeyAssigned"/> lands, which never
+    /// happens until <c>h9k project join</c> or <c>h9k project assign-key</c> can actually read one
+    /// back from the ledger.
+    /// </summary>
+    public string? ProjectKey { get; private set; }
     public DateTimeOffset RegisteredAt { get; private set; }
     /// <summary>
     /// Whether this project is archived on this install (task: a project can be archived, listed
@@ -510,4 +517,6 @@ public sealed class ProjectAggregate
             @event.Content, @event.OverCap, @event.OverCapReason, @event.SetAt, @event.SetByOwnerId);
 
     public void Apply(ProjectPromptAddendumRemoved @event) => _promptAddenda.Remove(@event.BuilderKey);
+
+    public void Apply(ProjectKeyAssigned @event) => ProjectKey = @event.ProjectKey;
 }
