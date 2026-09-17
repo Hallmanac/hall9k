@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Messaging;
@@ -111,11 +112,15 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], GenesisRootFingerprint: "shared-project-key")),
             new MessageNodeIdentityResolver(new NodeKeyStore()),
-            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
 
         await engine.SweepOnceAsync(cts.Token);
         transport.ProbeCount.Should().Be(1, "the first sweep always probes once");
-        transport.ReadCount.Should().Be(1, "the sender's tip moved, so the first sweep reads it once");
+        // idea 202383dc, M2a: EventReplicationInbox reads the identical outbox ref independently of
+        // MessageInbox (a second, narrower reader of the same ref, never folded into that class's own
+        // delicate, heavily-tested flow), so a moved tip now costs two reads, not one.
+        transport.ReadCount.Should().Be(2, "the sender's tip moved, so the first sweep reads it once for notes and once for replicated events");
 
         await using (IDocumentSession verifySession = _postgres.Store.LightweightSession())
         {
@@ -133,7 +138,7 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         await engine.SweepOnceAsync(cts.Token);
         transport.ProbeCount.Should().Be(2, "the second sweep still probes every tick");
         transport.ReadCount.Should().Be(
-            1, "node A's tip has not moved since the first sweep cached it, so the second sweep must skip the read");
+            2, "node A's tip has not moved since the first sweep cached it, so the second sweep must skip both reads");
     }
 
     /// <summary>
@@ -186,7 +191,8 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], GenesisRootFingerprint: "shared-project-key")),
             new MessageNodeIdentityResolver(new NodeKeyStore()),
-            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
 
         MessageSweepResult result = await engine.SweepOnceAsync(cts.Token);
 
@@ -258,7 +264,8 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         MessageSweepEngine engine = new(
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new FakeLedgerChainReader(chainWithDroppedVouch), new MessageNodeIdentityResolver(new NodeKeyStore()),
-            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
 
         await engine.SweepOnceAsync(cts.Token);
 
@@ -305,7 +312,8 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         MessageSweepEngine engine = new(
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new FakeLedgerChainReader(chainWithDuplicateWrites), new MessageNodeIdentityResolver(new NodeKeyStore()),
-            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
 
         await engine.SweepOnceAsync(cts.Token);
 
@@ -343,7 +351,8 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         MessageSweepEngine engine = new(
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new FakeLedgerChainReader(chainWithStandingWrite), new MessageNodeIdentityResolver(new NodeKeyStore()),
-            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
 
         await engine.SweepOnceAsync(cts.Token);
         await engine.SweepOnceAsync(cts.Token);
@@ -427,7 +436,8 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new AlwaysThrowingForOneRepositoryChainReader(FailingRepositoryPath, HealthyRepositoryPath, HealthyProjectKey),
             new MessageNodeIdentityResolver(new NodeKeyStore()), Options.Create(new DaemonOptions()),
-            NullLogger<MessageSweepEngine>.Instance);
+            NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
 
         await engine.SweepOnceAsync(cts.Token);
 
@@ -541,7 +551,8 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new AlwaysThrowingForOneRepositoryChainReader(FailingRepositoryPath, HealthyRepositoryPath, HealthyProjectKey),
             new MessageNodeIdentityResolver(new NodeKeyStore()), Options.Create(new DaemonOptions()),
-            NullLogger<MessageSweepEngine>.Instance);
+            NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
 
         await engine.SweepOnceAsync(cts.Token);
 
@@ -639,7 +650,8 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
             _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
             new AlwaysThrowingForOneRepositoryChainReader(FailingRepositoryPath, HealthyRepositoryPath, HealthyProjectKey),
             new MessageNodeIdentityResolver(new NodeKeyStore()), Options.Create(new DaemonOptions()),
-            NullLogger<MessageSweepEngine>.Instance);
+            NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport));
 
         await engine.SweepOnceAsync(cts.Token);
 

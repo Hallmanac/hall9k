@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
@@ -37,7 +38,9 @@ public sealed class MessageSweepEngine(
     ILedgerChainReader chainReader,
     MessageNodeIdentityResolver identityResolver,
     IOptions<DaemonOptions> options,
-    ILogger<MessageSweepEngine> logger)
+    ILogger<MessageSweepEngine> logger,
+    EventReplicationOutbox eventOutbox,
+    EventReplicationInbox eventInbox)
 {
     /// <summary>Every sender outbox's tip as of this node's last probe, so a sweep that finds an
     /// unmoved tip skips reading it entirely. In-memory and per-process by design: a restart just
@@ -149,6 +152,13 @@ public sealed class MessageSweepEngine(
             bool adoptUnassigned = !legacyAlreadyClaimedThisTick
                 && (!hasAlreadySentLegacyHistory || project.Id == lowestEligibleProjectId);
             legacyAlreadyClaimedThisTick = true;
+
+            // idea 202383dc, M2a: queues this project's own pending replicated events as ordinary
+            // "events"-kind mail, in its own session, before the flush below — so the same tick's
+            // FlushAsync call lands them in the identical commit as any other pending mail this
+            // project has queued.
+            await QueueReplicatedEventsAsync(project, nodeId, identity, now, cancellationToken);
+
             bool justPushed = await FlushAsync(project, nodeId, identity, projectKey, adoptUnassigned, now, cancellationToken);
             anyJustPushed |= justPushed;
 
@@ -265,6 +275,40 @@ public sealed class MessageSweepEngine(
                     exception, "Reading sender {SenderNodeId}'s outbox failed for project {ProjectId}; will retry next sweep",
                     tip.SenderNodeId, project.Id);
             }
+
+            // idea 202383dc, M2a: a second, independent read of the identical outbox ref, looking
+            // only at events-kind envelopes, in its own session for the identical reason the notes
+            // read above uses one — never folded into MessageInbox.ReadFromAsync itself, so this
+            // never risks that class's own delicate, heavily-tested flow.
+            try
+            {
+                await using IDocumentSession eventsSession = store.LightweightSession();
+                await eventInbox.ReadFromAsync(
+                    eventsSession, project.RepositoryPath, tip.SenderNodeId, project.Id, now, trustChain, cancellationToken);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(
+                    exception, "Reading sender {SenderNodeId}'s replicated events failed for project {ProjectId}; "
+                    + "will retry next sweep", tip.SenderNodeId, project.Id);
+            }
+        }
+    }
+
+    private async Task QueueReplicatedEventsAsync(
+        ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            await eventOutbox.QueuePendingAsync(
+                session, nodeId, project.Id, identity.OwnerRootFingerprint, now, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Queuing replicated events failed for project {ProjectId}; will retry next sweep", project.Id);
         }
     }
 
