@@ -413,18 +413,98 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         chain.Members.Should().NotContain(m => m.RootFingerprint == laterSelfClaim.Fingerprint);
     }
 
+    [Fact]
+    public async Task Genesis_exposes_the_project_key_recorded_in_its_own_commit()
+    {
+        string hub = _repo.CreateHub();
+        const string projectKey = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub, projectKey);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.ProjectKey.Should().Be(projectKey);
+        // The two are deliberately unrelated (Brian's ruling 2026-09-17): GenesisRootFingerprint
+        // names the owner who wrote genesis, never the project itself.
+        chain.GenesisRootFingerprint.Should().Be(owner.Fingerprint);
+        chain.ProjectKey.Should().NotBe(chain.GenesisRootFingerprint);
+    }
+
+    [Fact]
+    public async Task A_ledger_with_no_project_key_yet_exposes_a_null_one()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.GenesisRootFingerprint.Should().Be(owner.Fingerprint);
+        chain.ProjectKey.Should().BeNull("this genesis predates the project key and h9k project assign-key never ran");
+    }
+
+    [Fact]
+    public async Task A_later_authorized_rewrite_of_the_genesis_file_backfills_the_project_key()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+
+        string readerRepoBeforeBackfill = _repo.CloneNode(hub);
+        TrustChain beforeBackfill = await _chainReader.ComputeAsync(readerRepoBeforeBackfill, CancellationToken.None);
+        beforeBackfill.ProjectKey.Should().BeNull();
+
+        // h9k project assign-key's own write: the genesis owner rewrites its own already-existing
+        // members/<fingerprint>.yaml, signed, adding the key rather than replacing the file.
+        const string backfilledKey = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+        await WriteMemberFileAsync(ownerRepo, owner.Fingerprint, "owner", owner, backfilledKey);
+
+        string readerRepoAfterBackfill = _repo.CloneNode(hub);
+        TrustChain afterBackfill = await _chainReader.ComputeAsync(readerRepoAfterBackfill, CancellationToken.None);
+        afterBackfill.ProjectKey.Should().Be(backfilledKey);
+        afterBackfill.GenesisRootFingerprint.Should().Be(owner.Fingerprint, "genesis identity itself never moves");
+    }
+
+    [Fact]
+    public async Task An_unauthorized_rewrite_of_the_genesis_file_by_a_stranger_cannot_set_the_project_key()
+    {
+        // independent pre-PR review, cycle 1, conformance and adversarial lenses, both high: a
+        // blind tip read of members/<genesis-fingerprint>.yaml would have let anyone who can push
+        // refs/hall9k/ledger/members set this project's own key, since that read trusts the ref's
+        // current content unconditionally. The fix tracks projectKey live during the authorized
+        // replay instead (ComputeMembersAsync's own doc) — this proves a rewrite signed by neither
+        // the genesis root's own key nor any node it has enrolled is refused the identical way any
+        // other unauthorized membership write already is, and never reaches the project key at all.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity attacker = GenerateIdentity();
+
+        // A stranger — never vouched into owner's chain, never a member of any role — pushes a
+        // second commit onto the genesis fingerprint's own file, adding a project_key, signed with
+        // its own key rather than owner's or any node owner has enrolled.
+        const string forgedKey = "01ARZ3NDEKTSV4RRFFQ69G5FZZ";
+        await WriteMemberFileAsync(ownerRepo, owner.Fingerprint, "owner", attacker, forgedKey);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.ProjectKey.Should().BeNull("the rewrite was never signed by the genesis root's own chain, so it is refused");
+        chain.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "membership" && write.RootFingerprint == owner.Fingerprint,
+            "the forged rewrite is named rather than silently discarded");
+    }
+
     // ---- test scaffolding -------------------------------------------------------------------
 
     private sealed record GeneratedIdentity(string PrivateKeyPath, string PublicKeyLine, string Fingerprint, Guid NodeId);
 
     private static readonly LedgerCommitter Committer = new("Chain Reader Test", "chain-reader-test@hall9k.local");
 
-    private async Task<(string RepositoryPath, GeneratedIdentity Owner)> EstablishGenesisRootAsync(string hub)
+    private async Task<(string RepositoryPath, GeneratedIdentity Owner)> EstablishGenesisRootAsync(string hub, string? projectKey = null)
     {
         GeneratedIdentity owner = GenerateIdentity();
         string repo = _repo.CloneNode(hub);
         await WriteRootFileAsync(repo, owner);
-        await WriteMemberFileAsync(repo, owner.Fingerprint, "owner", owner);
+        await WriteMemberFileAsync(repo, owner.Fingerprint, "owner", owner, projectKey);
         return (repo, owner);
     }
 
@@ -444,11 +524,15 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         await WriteAsync(repositoryPath, refName, path, content, signer);
     }
 
-    private async Task WriteMemberFileAsync(string repositoryPath, string rootFingerprint, string role, GeneratedIdentity signer)
+    private async Task WriteMemberFileAsync(
+        string repositoryPath, string rootFingerprint, string role, GeneratedIdentity signer, string? projectKey = null)
     {
         string refName = "refs/hall9k/ledger/members";
         string path = $"members/{rootFingerprint}.yaml";
-        string content = BuildYaml(("root_fingerprint", rootFingerprint), ("role", role), ("issued_at", Now()));
+        string content = projectKey is null
+            ? BuildYaml(("root_fingerprint", rootFingerprint), ("role", role), ("issued_at", Now()))
+            : BuildYaml(
+                ("root_fingerprint", rootFingerprint), ("role", role), ("issued_at", Now()), ("project_key", projectKey));
         await WriteAsync(repositoryPath, refName, path, content, signer);
     }
 

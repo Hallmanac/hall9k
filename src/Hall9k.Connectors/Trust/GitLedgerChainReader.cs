@@ -91,10 +91,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         }
 
         (IReadOnlyList<ProjectMember> members, IReadOnlyList<UnverifiedLedgerWrite> memberUnverified,
-            string? genesisRootFingerprint) = await ComputeMembersAsync(repositoryPath, ownerChains, cancellationToken);
+            string? genesisRootFingerprint, string? projectKey) =
+            await ComputeMembersAsync(repositoryPath, ownerChains, cancellationToken);
         unverified.AddRange(memberUnverified);
 
-        return new TrustChain(ownerChains, members, unverified, genesisRootFingerprint);
+        return new TrustChain(ownerChains, members, unverified, genesisRootFingerprint, projectKey);
     }
 
     /// <summary>Every <c>refs/hall9k/ledger/owners/&lt;fingerprint&gt;</c> ref origin currently
@@ -300,7 +301,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// </para>
     /// </summary>
     private async Task<(IReadOnlyList<ProjectMember> Members, IReadOnlyList<UnverifiedLedgerWrite> Unverified,
-        string? GenesisRootFingerprint)> ComputeMembersAsync(
+        string? GenesisRootFingerprint, string? ProjectKey)> ComputeMembersAsync(
         string repositoryPath, IReadOnlyDictionary<string, TrustedOwner> ownerChains, CancellationToken cancellationToken)
     {
         await FetchRefAsync(repositoryPath, MembersRefName, cancellationToken);
@@ -308,7 +309,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         string? tip = await ResolveTipAsync(repositoryPath, MembersRefName, cancellationToken);
         if (tip is null)
         {
-            return ([], [], null);
+            return ([], [], null, null);
         }
 
         const string prefix = "members/";
@@ -317,6 +318,19 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         List<UnverifiedLedgerWrite> unverified = [];
         bool genesisDecided = false;
         string? genesisRootFingerprint = null;
+        // The project's own key (idea 202383dc, M2), tracked live during this same replay rather
+        // than read back from whatever members/<genesis>.yaml happens to hold at the ref's tip: a
+        // tip read trusts that file's current content unconditionally, so anyone who can push
+        // refs/hall9k/ledger/members (even a write the replay above refuses and records into
+        // UnverifiedWrites) could set, change, or (by deleting the genesis member entirely, an
+        // ownership handoff this ledger already supports) permanently erase the key every node then
+        // computes (independent pre-PR review, cycle 1, conformance and adversarial lenses, both
+        // high). Set only from the genesis commit's own self-signed content, or from a later commit
+        // to that identical path this replay has already verified was authorized by the genesis
+        // root's own chain specifically, never any other currently-owner-role member's, and never
+        // reassigned once set, so neither a forged rewrite nor the genesis member's own later
+        // removal can ever change or lose it again.
+        string? projectKey = null;
 
         foreach (string commit in await CommitsOldestFirstAsync(repositoryPath, tip, cancellationToken))
         {
@@ -344,11 +358,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                     // every node fetching the identical ref lands on the identical value (TrustChain's
                     // own doc: "the project's own key, derived from the ledger").
                     genesisRootFingerprint = fingerprint;
-                    if (!isDeletion
+                    if (content is not null
                         && ownerChains.TryGetValue(fingerprint, out TrustedOwner? selfOwner)
                         && await IsSignedByAsync(repositoryPath, commit, selfOwner.RootPublicKeyLine, cancellationToken))
                     {
                         current[fingerprint] = new ProjectMember(fingerprint, MembershipRole.Owner, ParseIssuedAt(content));
+                        projectKey ??= ExtractQuotedYamlValue(content, "project_key");
                     }
                     else if (!isDeletion)
                     {
@@ -390,6 +405,21 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                     continue;
                 }
 
+                // The one-time backfill (h9k project assign-key) for a ledger whose genesis
+                // predates this piece: a later, authorized rewrite of the genesis fingerprint's own
+                // file that adds project_key without touching role, issued_at, or root_fingerprint.
+                // Deliberately narrower than the general "authorized" check just above: signed
+                // specifically by the genesis root's own chain, never merely any current owner-role
+                // member's, so an owner who is not the genesis root can never mint or move this
+                // project's own key, only the one identity the ledger's own genesis fact names.
+                if (content is not null && projectKey is null && genesisRootFingerprint is { } genesisFingerprint
+                    && fingerprint == genesisFingerprint
+                    && ownerChains.TryGetValue(genesisFingerprint, out TrustedOwner? genesisChain)
+                    && await IsAuthorizedByOwnerChainAsync(repositoryPath, commit, genesisChain, cancellationToken))
+                {
+                    projectKey = ExtractQuotedYamlValue(content, "project_key");
+                }
+
                 if (isDeletion)
                 {
                     current.Remove(fingerprint);
@@ -412,7 +442,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        return ([.. current.Values], unverified, genesisRootFingerprint);
+        return ([.. current.Values], unverified, genesisRootFingerprint, projectKey);
     }
 
     /// <summary>
