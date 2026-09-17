@@ -5,8 +5,17 @@ using Marten;
 namespace Hall9k.Connectors.Messaging;
 
 /// <summary>How many envelopes one <see cref="MessageOutbox.FlushAsync"/> call actually landed —
-/// zero means there was nothing queued to flush, so the caller pushed no commit at all.</summary>
-public sealed record MessageFlushResult(int EnvelopesFlushed);
+/// zero means there was nothing queued to flush, so the caller pushed no commit at all.
+/// <paramref name="AdoptedLegacyBacklog"/> is true only when this exact batch actually contained a
+/// still-<see cref="Guid.Empty"/>-project envelope — the caller's own signal for whether THIS flush
+/// is the one <see cref="LegacyMessageAdoption.AssignAsync"/> should permanently pin, never merely
+/// whether <paramref name="EnvelopesFlushed"/> is positive: a project with nothing but its own,
+/// already-project-scoped pending mail still flushes successfully with <c>adoptUnassigned: true</c>
+/// on some tick, and pinning THAT project as the legacy adopter would permanently misdirect
+/// <see cref="MessageOutbox.NextSeqAsync"/>'s and <c>MessageInbox.ReadFromAsync</c>'s own legacy
+/// fold for a project that never actually held any legacy content (independent pre-PR review, cycle
+/// 4, adversarial lens, high).</summary>
+public sealed record MessageFlushResult(int EnvelopesFlushed, bool AdoptedLegacyBacklog);
 
 /// <summary>How many envelopes <see cref="MessageOutbox.SquashAsync"/> kept — a squash never
 /// touches the local event store, only the outbox ref's own content, so there is nothing to
@@ -123,8 +132,10 @@ public sealed class MessageOutbox(IMessageTransport transport)
 
         if (pending.Count == 0)
         {
-            return new MessageFlushResult(0);
+            return new MessageFlushResult(0, AdoptedLegacyBacklog: false);
         }
+
+        bool adoptedLegacyBacklog = pending.Any(message => message.ProjectId == Guid.Empty);
 
         List<TransportEnvelope> batch = [.. pending.Select(
             message => new TransportEnvelope(
@@ -161,7 +172,7 @@ public sealed class MessageOutbox(IMessageTransport transport)
                     message.Id, token: cancellationToken)
                     ?? throw new InvalidOperationException(
                         $"Message {fromNodeId}/{message.Seq} has no stream to flush a resend onto.");
-                session.Events.Append(message.Id, MessageDecider.Resend(aggregate, now));
+                session.Events.Append(message.Id, MessageDecider.Resend(aggregate, projectId, now));
             }
             else
             {
@@ -170,7 +181,7 @@ public sealed class MessageOutbox(IMessageTransport transport)
         }
 
         await session.SaveChangesAsync(cancellationToken);
-        return new MessageFlushResult(pending.Count);
+        return new MessageFlushResult(pending.Count, adoptedLegacyBacklog);
     }
 
     /// <summary>

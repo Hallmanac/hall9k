@@ -8,6 +8,7 @@ using Hall9k.Daemon.Messaging;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Trust;
@@ -133,6 +134,65 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         transport.ProbeCount.Should().Be(2, "the second sweep still probes every tick");
         transport.ReadCount.Should().Be(
             1, "node A's tip has not moved since the first sweep cached it, so the second sweep must skip the read");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 4, conformance lens (low): <c>h9k message send --project</c>
+    /// lets a message queue for a project not eligible for messaging (archived, or with no
+    /// repository) with no eligibility check of its own, since queueing never touches git. Before
+    /// this fix, <c>HasUnflushedOrUnreadAsync</c> counted that message regardless of which project
+    /// it was pending for, so a node stuck with one never dropped out of the sweep's fast, active
+    /// cadence even though nothing this node can do ever flushes it. This node has one genuinely
+    /// eligible project (so the sweep does not take the early "no eligible projects" return, which
+    /// would trivially read as inactive on its own) and one message pending for a DIFFERENT,
+    /// archived (permanently ineligible) project — the sweep must still read as inactive.
+    /// </summary>
+    [Fact]
+    public async Task A_message_pending_for_an_ineligible_project_never_forces_the_active_cadence()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        NodeContext nodeB = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+        Guid eligibleProjectId = DomainId.New();
+        Guid ineligibleProjectId = DomainId.New();
+        await using (IDocumentSession claimSession = _postgres.Store.LightweightSession())
+        {
+            OwnerAggregate owner =
+                (await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(nodeB.OwnerId, token: cts.Token))!;
+            claimSession.Events.Append(
+                nodeB.OwnerId, OwnerDecider.ClaimRoot(owner, "owner-b-root-fingerprint", verified: true, Now));
+
+            claimSession.Events.StartStream<ProjectAggregate>(
+                eligibleProjectId,
+                ProjectDecider.Register(
+                    eligibleProjectId, nodeB.OwnerId, DomainId.New(), "eligible", RepositoryPath, null, null, Now));
+            claimSession.Events.StartStream<ProjectAggregate>(
+                ineligibleProjectId,
+                ProjectDecider.Register(
+                    ineligibleProjectId, nodeB.OwnerId, DomainId.New(), "archived", RepositoryPath, null, null, Now));
+            claimSession.Events.Append(
+                ineligibleProjectId, new ProjectArchived(ineligibleProjectId, "no longer needed", Now, nodeB.OwnerId));
+
+            claimSession.Events.StartStream<MessageAggregate>(
+                MessageStreamId.ForMessage(nodeB.NodeId, ineligibleProjectId, 1),
+                new MessageQueued(
+                    nodeB.NodeId, 1, "owner-b-root-fingerprint", MessageAudience.Project.Value, null, MessageKind.Note.Value,
+                    "stuck forever — the sweep can never flush this project", Now, ineligibleProjectId));
+
+            await claimSession.SaveChangesAsync(cts.Token);
+        }
+
+        InMemoryMessageTransport transport = new(new FakeLedger());
+        MessageSweepEngine engine = new(
+            _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            new FakeLedgerChainReader(new TrustChain(new Dictionary<string, TrustedOwner>(), [], GenesisRootFingerprint: "shared-project-key")),
+            new MessageNodeIdentityResolver(new NodeKeyStore()),
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance);
+
+        MessageSweepResult result = await engine.SweepOnceAsync(cts.Token);
+
+        result.ActiveCadence.Should().BeFalse(
+            "the only pending message belongs to a project this node can never flush, so nothing here should "
+            + "keep the sweep on its fast, active cadence");
     }
 
     /// <summary>
@@ -394,6 +454,90 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
 
         TransportReadResult fromHealthy = await transport.ReadSinceAsync(HealthyRepositoryPath, nodeB.NodeId, sinceSeq: 0, cts.Token);
         fromHealthy.Envelopes.Should().ContainSingle(envelope => envelope.Content.Contains("legacy pending on node B"));
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 4, adversarial lens (high): before the fix, whichever
+    /// eligible project's own <c>FlushAsync</c> ran with <c>adoptUnassigned: true</c> and merely
+    /// succeeded got pinned as the permanent legacy adopter — even one that had nothing pending but
+    /// its own, already-project-scoped mail, with no still-Guid.Empty envelope in its batch at all.
+    /// This node registers two eligible projects, the lower-id one wired to a chain reader that
+    /// always throws (so the healthy, higher-id project is the one whose flush runs with
+    /// adoptUnassigned: true), and the healthy project has only its OWN new message pending — no
+    /// legacy backlog anywhere. The sweep must never record a legacy adoption decision at all here:
+    /// nothing in this tick's own batch was ever legacy content for it to adopt.
+    /// </summary>
+    [Fact]
+    public async Task A_flush_with_nothing_but_its_own_mail_never_pins_itself_as_the_legacy_adopter()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        const string FailingRepositoryPath = "/does/not/matter/on/a/fake/ledger-failing-2";
+        const string HealthyRepositoryPath = "/does/not/matter/on/a/fake/ledger-healthy-2";
+        const string HealthyProjectKey = "healthy-project-key-2";
+
+        FakeLedger ledger = new();
+        InMemoryMessageTransport transport = new(ledger);
+
+        NodeContext nodeB = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
+
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                HealthyRepositoryPath, $"refs/hall9k/ledger/nodes/{nodeB.NodeId}", $"nodes/{nodeB.NodeId}/node.yaml",
+                $"node_id: \"{nodeB.NodeId}\"\npublic_key: \"ssh-ed25519 AAAAFAKE{nodeB.NodeId:N} test\"\n",
+                ExpectedBlobId: null, "seed node file", new LedgerCommitter("seed", "seed@hall9k.local"),
+                new LedgerSigningKey("/dev/null/seed")),
+            cts.Token);
+
+        Guid failingProjectId = DomainId.New();
+        Guid healthyProjectId = DomainId.New();
+        await using (IDocumentSession claimSession = _postgres.Store.LightweightSession())
+        {
+            OwnerAggregate owner =
+                (await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(nodeB.OwnerId, token: cts.Token))!;
+            claimSession.Events.Append(
+                nodeB.OwnerId, OwnerDecider.ClaimRoot(owner, "owner-b-root-fingerprint", verified: true, Now));
+
+            // Registered in this order so failingProjectId (UUIDv7, minted first) sorts lower, the
+            // same ordering the sibling test above relies on.
+            claimSession.Events.StartStream<ProjectAggregate>(
+                failingProjectId,
+                ProjectDecider.Register(
+                    failingProjectId, nodeB.OwnerId, DomainId.New(), "failing", FailingRepositoryPath, null, null, Now));
+            claimSession.Events.StartStream<ProjectAggregate>(
+                healthyProjectId,
+                ProjectDecider.Register(
+                    healthyProjectId, nodeB.OwnerId, DomainId.New(), "healthy", HealthyRepositoryPath, null, null, Now));
+
+            await claimSession.SaveChangesAsync(cts.Token);
+
+            // The healthy project's own, already-project-scoped message — never a legacy Guid.Empty
+            // one. Queued through MessageOutbox.QueueAsync (the real seam), the same way this
+            // project's own ordinary traffic would be.
+            await MessageOutbox.QueueAsync(
+                claimSession, nodeB.NodeId, healthyProjectId, "owner-b-root-fingerprint", MessageAudience.Project, null,
+                MessageKind.Note, "just this project's own mail", Now, cts.Token);
+        }
+
+        MessageSweepEngine engine = new(
+            _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            new AlwaysThrowingForOneRepositoryChainReader(FailingRepositoryPath, HealthyRepositoryPath, HealthyProjectKey),
+            new MessageNodeIdentityResolver(new NodeKeyStore()), Options.Create(new DaemonOptions()),
+            NullLogger<MessageSweepEngine>.Instance);
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        await using (IDocumentSession verifySession = _postgres.Store.LightweightSession())
+        {
+            MessageDetails? own = await verifySession.LoadAsync<MessageDetails>(
+                MessageStreamId.ForMessage(nodeB.NodeId, healthyProjectId, 1), cts.Token);
+            own!.SentAt.Should().NotBeNull("the healthy project's own mail still flushes normally");
+
+            LegacyMessageAdoptionDetails? adoption = await verifySession.LoadAsync<LegacyMessageAdoptionDetails>(
+                MessageStreamId.ForLegacyAdoption(), cts.Token);
+            adoption.Should().BeNull(
+                "nothing in this tick's own batch was ever legacy content — a successful flush of only this "
+                + "project's own mail must never pin it as the permanent legacy adopter");
+        }
     }
 
     /// <summary>An <see cref="ILedgerChainReader"/> that throws for one specific repository path
