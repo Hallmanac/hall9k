@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -69,6 +70,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
 
         await WriteIdentityLineAsync(session, cancellationToken);
         await WriteMessagesLineAsync(session, cancellationToken);
+        await WriteReplicatedEventsIgnoredSendersAsync(session, cancellationToken);
         await WriteUnverifiedLedgerWritesAsync(session, cancellationToken);
         await WriteMergedWithoutCopilotReviewAsync(session, cancellationToken);
 
@@ -365,6 +367,36 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]messages: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>
+    /// Every sender this node's own event-replication inbox has had to ignore because that
+    /// sender's node file does not vouch for their outbox (idea 202383dc, M2a: "an events envelope
+    /// from an unverified sender is ignored and named in status") — read from
+    /// <see cref="EventReplicationInboxCursor"/>, the events-replication analogue of
+    /// <see cref="MessageInboxDetails"/> above. A sender already named by the notes-inbox pane can
+    /// be named again here too: the two are independent reads of the same outbox ref and either one
+    /// failing to vouch is worth its own line, since a sender fixed for one need not yet be fixed
+    /// for the other.
+    /// </summary>
+    private static async Task WriteReplicatedEventsIgnoredSendersAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<EventReplicationInboxCursor> ignored = await session.Query<EventReplicationInboxCursor>()
+                .Where(cursor => cursor.SenderIgnored)
+                .ToListAsync(cancellationToken);
+
+            foreach (EventReplicationInboxCursor sender in ignored)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]sender {DomainId.Short(sender.SenderNodeId)}'s replicated events ignored[/] — {sender.IgnoredReason}");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]replicated events: unavailable ({exception.Message})[/]");
         }
     }
 
