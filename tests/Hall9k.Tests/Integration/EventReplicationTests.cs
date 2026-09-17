@@ -1,0 +1,567 @@
+using FluentAssertions;
+using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Replication;
+using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Project.Events;
+using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Tests.Fakes;
+using JasperFx;
+using Marten;
+using Weasel.Core;
+using Xunit;
+
+namespace Hall9k.Tests.Integration;
+
+/// <summary>
+/// Idea 202383dc, M2a: every project-scoped event a node writes rides its outbox as an events
+/// envelope, every other node records it under the same stream id as a fact, and engines act only
+/// on work this node produced or holds. Driven entirely through the seam — a shared
+/// <see cref="InMemoryMessageTransport"/> and <see cref="FakeLedger"/>, never a real repository
+/// (Brian's 2026-09-13 testing rule) — with two genuinely separate Marten stores standing in for
+/// two nodes: <see cref="PostgresFixture.Store"/> for node A's own database, and a second
+/// <see cref="DocumentStore"/> in its own schema, on the identical container, for node B's — the
+/// documented pattern for "a test that genuinely needs a store of its own"
+/// (<see cref="PostgresFixture.Store"/>'s own doc comment).
+/// </summary>
+[Trait("Category", "RequiresDocker")]
+public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsyncLifetime
+{
+    private const string RepositoryPath = "/repo-shared";
+    private static readonly DateTimeOffset Now = new(2026, 9, 16, 12, 0, 0, TimeSpan.Zero);
+
+    private readonly PostgresFixture _postgres;
+
+    public EventReplicationTests(PostgresFixture postgres) => _postgres = postgres;
+
+    public async Task InitializeAsync() => await _postgres.Store.Advanced.Clean.CompletelyRemoveAllAsync();
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    private DocumentStore OpenStoreB() => DocumentStore.For(opts =>
+    {
+        opts.Connection(_postgres.ConnectionString);
+        opts.DatabaseSchemaName = "event_replication_node_b";
+        opts.ConfigureHall9k(AutoCreate.All);
+    });
+
+    [Fact]
+    public async Task Two_stores_exchange_a_tasks_events_and_reach_the_same_projection()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        // Node A: register the node stream, switch replication on (nothing pending yet), then
+        // add and publish a task — every one of these events past the switch-on point.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        // Node B reads node A's outbox and applies the batch to its own, otherwise-empty store.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeFalse();
+            read.EventsApplied.Should().BeGreaterThan(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskDetails? replicated = await session.LoadAsync<TaskDetails>(taskId, cts.Token);
+            replicated.Should().NotBeNull();
+            replicated!.ProjectId.Should().Be(projectId);
+            replicated.State.Should().Be(TaskState.Queued);
+        }
+    }
+
+    /// <summary>
+    /// MessageInbox reads the identical outbox ref EventReplicationInbox does — same ref, same
+    /// envelopes, two independent cursors — so an events envelope must never also land as an
+    /// ordinary received message there, or h9k messages would show a raw batch of replicated
+    /// domain events as if a teammate had typed them as a note.
+    /// </summary>
+    [Fact]
+    public async Task An_events_envelope_never_lands_as_an_ordinary_received_message()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        MessageOutbox messageOutbox = new(transport);
+        MessageInbox messageInbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            MessageInboxSweepResult read = await messageInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                cancellationToken: cts.Token);
+            read.EnvelopesStored.Should().Be(0, "an events envelope is never an ordinary received message");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Query<MessageDetails>().AnyAsync(cts.Token)).Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public async Task A_redelivered_batch_changes_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        // First read applies the batch; a second read of the identical, unmoved outbox — the
+        // ordinary shape of a sweep tick that finds nothing new since the last one — must change
+        // nothing, since the transport never returns content already past this cursor.
+        int firstApplied;
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            firstApplied = (await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(3), trustChain: null, cts.Token)).EventsApplied;
+        }
+
+        firstApplied.Should().BeGreaterThan(0);
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult redelivered = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(4), trustChain: null, cts.Token);
+            redelivered.EventsApplied.Should().Be(0);
+        }
+
+        // Explicitly re-applying the exact same wire batch a second time (a genuine re-delivery,
+        // not merely an unmoved cursor) is still a no-op: dedupe is keyed by origin event id.
+        await using (IQuerySession readOnly = _postgres.Store.QuerySession())
+        {
+            TaskDetails source = (await readOnly.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            source.State.Should().Be(TaskState.Queued);
+        }
+    }
+
+    [Fact]
+    public async Task A_node_scoped_event_never_leaves()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        // Sanity check on the classification this test relies on: ProjectSettingsChanged is
+        // node-scoped from M2a's own split onward.
+        EventScopeRegistry.ClassificationOf(typeof(ProjectSettingsChanged)).Should().Be(EventScope.NodeScoped);
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+
+        // A node-scoped event on the SAME project, appended after the switch-on point: nothing
+        // about the outbound scan treats it as travel-eligible.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.Append(
+                projectId,
+                new ProjectSettingsChanged(
+                    projectId, default, default, default, default, Now.AddSeconds(2), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        read.Envelopes.Should().ContainSingle();
+        string body = MessageEnvelopeCodec.Decode(read.Envelopes.Single().Content).Envelope!.Body;
+        IReadOnlyList<EventReplicationCodec.ReplicatedEventRecord> batch =
+            EventReplicationCodec.DecodeBatch(body)!;
+        batch.Should().Contain(record => record.StreamId == taskId);
+        batch.Should().NotContain(record => record.EventTypeName == typeof(ProjectSettingsChanged).FullName);
+    }
+
+    [Fact]
+    public async Task An_event_before_the_switch_on_point_never_leaves()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // This task's own events exist BEFORE replication ever runs on this node — the migration
+        // shape (Brian, 2026-09-13): "each node keeps its history; replication records a switch-on
+        // point per node and nothing before it travels."
+        Guid preSwitchOnTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now, cts.Token);
+
+        // The first-ever QueuePendingAsync call is what switches replication on; it also picks up
+        // this project's own outbox for the first time.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(1), cts.Token);
+        }
+
+        Guid postSwitchOnTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(2), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        read.Envelopes.Should().ContainSingle();
+        IReadOnlyList<EventReplicationCodec.ReplicatedEventRecord> batch =
+            EventReplicationCodec.DecodeBatch(MessageEnvelopeCodec.Decode(read.Envelopes.Single().Content).Envelope!.Body)!;
+
+        batch.Should().Contain(record => record.StreamId == postSwitchOnTaskId);
+        batch.Should().NotContain(record => record.StreamId == preSwitchOnTaskId);
+    }
+
+    [Fact]
+    public async Task An_unverified_senders_batch_is_ignored()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        // Deliberately no node file seeded for nodeA — GitLedgerMessageTransport's own sender
+        // verification rule, mirrored identically by InMemoryMessageTransport.
+        FakeLedger ledger = new();
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeTrue();
+            read.EventsApplied.Should().Be(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<TaskDetails>(taskId, cts.Token)).Should().BeNull();
+
+            EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
+                EventReplicationStreamId.ForInboxCursor(nodeA, projectId), cts.Token);
+            cursor.Should().NotBeNull();
+            cursor!.SenderIgnored.Should().BeTrue();
+        }
+    }
+
+    [Fact]
+    public async Task A_private_draft_does_not_travel_until_the_flag_clears()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid ideaId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<IdeaAggregate>(
+                ideaId, new IdeaCaptured(ideaId, ownerId, "A private thought", projectId, Now.AddSeconds(1), string.Empty));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+            session.Events.Append(ideaId, IdeaDecider.SetPrivate(idea, isPrivate: true, Now.AddSeconds(1), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // First sweep: the idea is private, so its own events never even reach a batch.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult firstSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            firstSweep.EventsQueued.Should().Be(0);
+        }
+
+        // Cleared: the identical sweep now finds it.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+            session.Events.Append(ideaId, IdeaDecider.SetPrivate(idea, isPrivate: false, Now.AddSeconds(3), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult secondSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(4), cts.Token);
+            secondSweep.EventsQueued.Should().BeGreaterThan(0);
+        }
+
+        await messageOutbox.FlushAsync(
+            _postgres.Store.LightweightSession(), RepositoryPath, nodeA, projectId, "shared-project-key",
+            adoptUnassigned: false, committer, signingKey, Now.AddSeconds(4), cts.Token);
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        read.Envelopes.Should().ContainSingle();
+        IReadOnlyList<EventReplicationCodec.ReplicatedEventRecord> batch =
+            EventReplicationCodec.DecodeBatch(MessageEnvelopeCodec.Decode(read.Envelopes.Single().Content).Envelope!.Body)!;
+        batch.Should().Contain(record => record.StreamId == ideaId);
+    }
+
+    [Fact]
+    public async Task A_replicated_claim_never_dispatches_locally_and_shows_HeldElsewhere()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+
+        // Node A claims the task locally.
+        Guid runId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            TaskClaimed claimed = TaskDecider.Claim(task, nodeA, ownerId, runId, Now.AddSeconds(2), "owner-a-fingerprint");
+            session.Events.Append(taskId, claimed);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(4), trustChain: null, cts.Token);
+        }
+
+        // Node B's own dispatch-style read of Queued candidates never sees this task once the
+        // claim has replicated in — it left the Queued set the moment the fact landed.
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskListItem? replicated = await session.LoadAsync<TaskListItem>(taskId, cts.Token);
+            replicated.Should().NotBeNull();
+            replicated!.State.Should().Be(TaskState.Claimed);
+            replicated.ClaimedByNodeId.Should().Be(nodeA);
+
+            bool wouldDispatchLocally = await session.Query<TaskListItem>()
+                .Where(candidate => candidate.Id == taskId && candidate.State.Value == TaskState.Queued.Value)
+                .AnyAsync(cts.Token);
+            wouldDispatchLocally.Should().BeFalse();
+
+            // Node B never registered a NodeDetails row for nodeA (NodeRegistered is node-scoped
+            // and never replicates), which is exactly the signal TaskStatusComposer's own
+            // HeldElsewhere test reads: the claimant is absent from the node's own known set.
+            (await session.LoadAsync<NodeDetails>(nodeA, cts.Token)).Should().BeNull();
+        }
+    }
+
+    private static async Task<Guid> SeedQueuedTaskAsync(
+        IDocumentStore store, Guid projectId, Guid ownerId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, now, ownerId);
+        session.Events.StartStream<TaskAggregate>(taskId, added);
+        session.Events.Append(taskId, new TaskPublished(taskId, now, ownerId));
+        session.Events.Append(taskId, new TaskAssigned(taskId, ownerId, [], now, ownerId));
+        await session.SaveChangesAsync(cancellationToken);
+        return taskId;
+    }
+
+    private static async Task SeedNodeFileAsync(FakeLedger ledger, Guid nodeId, CancellationToken cancellationToken)
+    {
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("seed");
+        string content = $"node_id: \"{nodeId}\"\npublic_key: \"ssh-ed25519 AAAAFAKE{nodeId:N} test\"\n";
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                RepositoryPath, $"refs/hall9k/ledger/nodes/{nodeId}", $"nodes/{nodeId}/node.yaml", content,
+                ExpectedBlobId: null, "seed node file", committer, signingKey),
+            cancellationToken);
+    }
+
+    private static (LedgerCommitter Committer, LedgerSigningKey SigningKey) Signing(string name) =>
+        (new LedgerCommitter(name, $"{name}@hall9k.local"), new LedgerSigningKey($"/dev/null/{name}"));
+}
