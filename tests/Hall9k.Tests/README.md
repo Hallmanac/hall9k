@@ -63,3 +63,34 @@ above, not a mechanically-enforced one, and there is no guard test for it.
 Not a third tier: a standalone executable `CrossProcessContainerGateTests` launches and kills to
 prove permit reclaim against a real process death (PLAN.md §16 #132). It carries no tests of its
 own.
+
+## Capturing output, and everything else the process shares
+
+Three pieces of state in the test process belong to no single test: the two `Console` writers,
+`Spectre.Console.AnsiConsole.Console`, and the ambient `CultureInfo`. xUnit runs distinct
+collections in parallel inside one process, so a test that swaps any of them decides what every
+other test running at that moment sees — and for the two `Console` writers and `AnsiConsole`, the
+save-swap-restore idiom cannot fix that, because the redirect it installs is process-wide for as
+long as it is installed. (`CultureInfo` is the exception, and the bullet below says why it is
+guarded anyway.) Capture through the
+`TestSupport` helpers instead (PLAN.md §16 #PLACEHOLDER-093b54f0):
+
+- `ScopedConsoleCapture.StandardError()` / `.StandardOutput()` — what this test's own async flow
+  wrote to `Console.Error` / `Console.Out`, and nothing else.
+- `ScopedAnsiConsoleCapture.CaptureAsync(...)` / `.Capture(...)` — what this flow rendered through
+  `AnsiConsole`, with Spectre's markup already consumed, at a width wide enough that nothing wraps
+  mid-phrase (or a width you pass, when wrapping is the subject).
+- `CultureScope.Run(...)` / `.RunToCompletion(...)` — a body under a named culture, on a thread of
+  the case's own, so there is no restore to omit and nothing left behind. `CurrentCulture` is the
+  one of the three that does flow with the test's own execution context and unwinds again with it,
+  so a correctly written set-and-restore around it is sound; the guard covers the marker anyway,
+  because the same marker covers `DefaultThreadCurrentCulture`, which is genuinely process-wide
+  with no flow to unwind it, and because a helper cannot be written with the restore left out.
+
+`ProcessWideStateGuardTests` fails the build for any file in `tests/` that mutates one of the three
+directly, and names the helper to use instead. Two adjacent rules live elsewhere for reasons of
+their own: `HALL9K_HOME` and the rest of the environment are `HomeEnvironmentIsolationTests`'
+surface, answered with the shared `[Collection("Hall9kHome")]` serial lane rather than a scoping
+helper (a variable production code re-reads on every call has nowhere per-test to be scoped to),
+and `PostgresFixture`'s own container-gate wait notice goes to a `TraceSource`
+(`CrossProcessContainerGate.WaitNotice`) precisely so that no capture can pick it up.
