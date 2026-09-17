@@ -8,10 +8,11 @@ using Marten;
 
 namespace Hall9k.Connectors.Replication;
 
-/// <summary>One project-scoped event's own project (for the outbound flush) and, when it lives on
-/// a Task or Idea stream (directly, or by way of the Run that stream belongs to), whether that
-/// owning task or idea is currently private (idea 202383dc, M2a).</summary>
-public sealed record ReplicationOwnership(Guid? ProjectId, bool IsPrivate);
+/// <summary>One project-scoped event's own project (for the outbound flush), whether it lives on
+/// a Task or Idea stream (directly, or by way of the Run that stream belongs to) that is currently
+/// private (idea 202383dc, M2a), and whether the stream IS the Project aggregate's own stream
+/// rather than one that merely belongs to it.</summary>
+public sealed record ReplicationOwnership(Guid? ProjectId, bool IsPrivate, bool IsProjectStreamItself = false);
 
 /// <summary>
 /// Resolves which project owns a raw event's own stream (idea 202383dc, M2a's outbound flush needs
@@ -28,7 +29,14 @@ public sealed class ReplicationProjectResolver
 
         if (await session.LoadAsync<ProjectDetails>(streamId, cancellationToken) is { } project)
         {
-            return new ReplicationOwnership(project.Id, IsPrivate: false);
+            // The Project aggregate's own id, unlike a Task/Idea/Epic id, is never shared across
+            // installs — every node mints its own via DomainId.New() the moment it registers the
+            // same real-world project (ProjectAddCommand), so a fact appended under the SENDER's
+            // own project id could never land on the RECEIVER's own Project stream. Flagged here
+            // rather than filtered out silently so the outbox (never send one) and the inbox
+            // (never apply one, in case an older or misbehaving sender still does) can both refuse
+            // it for the same reason.
+            return new ReplicationOwnership(project.Id, IsPrivate: false, IsProjectStreamItself: true);
         }
 
         if (await session.LoadAsync<TaskDetails>(streamId, cancellationToken) is { } task)
