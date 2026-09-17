@@ -135,17 +135,21 @@ public sealed class MessageSweepEngine(
 
             await PersistUnverifiedWritesAsync(project, trustChain, now, cancellationToken);
 
-            // The project's own ledger-derived wire key (idea 202383dc, M2) — never a local project
-            // id, which differs per install for the identical shared project. Null only when this
-            // project's own ledger has never had a member written into it (h9k project join never
-            // ran there): nothing meaningful to flush or read as yet, so this project's sweep is
-            // skipped rather than stamping envelopes with a key that would never match what any
-            // other node on the same repository eventually computes.
-            if (trustChain.GenesisRootFingerprint is not { } projectKey)
+            // The project's own generated wire key (idea 202383dc, M2; Brian's ruling 2026-09-17) —
+            // never a local project id (differs per install for the identical shared project) and
+            // never the genesis owner's own root fingerprint (two projects sharing one genesis owner
+            // would share that too). Null either when this project's own ledger has never had a
+            // member written into it (h9k project join never ran there) or when genesis predates
+            // this piece and h9k project assign-key has not yet backfilled one: nothing meaningful to
+            // flush or read as yet, so this project's sweep is skipped rather than stamping envelopes
+            // with a key that would never match what any other node on the same repository
+            // eventually computes.
+            if (trustChain.ProjectKey is not { } projectKey)
             {
                 logger.LogWarning(
-                    "Project {ProjectId}'s own ledger has no genesis yet (h9k project join never ran there); "
-                    + "this project's sweep is skipped this tick and retried next sweep", project.Id);
+                    "Project {ProjectId}'s own ledger has no key yet (h9k project join never ran there, or "
+                    + "its genesis predates this piece and h9k project assign-key has not run); this "
+                    + "project's sweep is skipped this tick and retried next sweep", project.Id);
                 continue;
             }
 

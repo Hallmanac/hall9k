@@ -96,10 +96,10 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// project's own flush is scoped to that project's own query, session, and transport call).
     /// <para>
     /// <paramref name="projectKey"/> is stamped onto every envelope this call builds — the project's
-    /// own ledger-derived wire key (<c>Hall9k.Connectors.Trust.TrustChain.GenesisRootFingerprint</c>),
-    /// recomputed fresh by the caller every tick from the live ledger rather than persisted: the
-    /// underlying genesis fact never changes once established, so re-deriving it costs nothing and a
-    /// retried flush always stamps the identical value a first attempt would have.
+    /// own generated wire key (<c>Hall9k.Connectors.Trust.TrustChain.ProjectKey</c>), recomputed
+    /// fresh by the caller every tick from the live ledger rather than persisted: the underlying
+    /// genesis fact never changes once established, so re-deriving it costs nothing and a retried
+    /// flush always stamps the identical value a first attempt would have.
     /// </para>
     /// <para>
     /// <paramref name="adoptUnassigned"/> is true only for the one project a sweep resolves as the
@@ -221,10 +221,12 @@ public sealed class MessageOutbox(IMessageTransport transport)
     /// </para>
     /// <para>
     /// <paramref name="projectKey"/> is stamped onto every survivor the same way <see cref="FlushAsync"/>
-    /// stamps it at flush time: a squash rebuilds each surviving envelope from <see cref="MessageDetails"/>'s
-    /// own stored fields via <see cref="ToEnvelope"/>, which carries no project key of its own, so
-    /// without this every squashed ref would silently drop the key a reader still expects on it
-    /// (independent pre-PR review, cycle 1, adversarial lens, medium).
+    /// stamps it at flush time (the project's own generated wire key,
+    /// <c>Hall9k.Connectors.Trust.TrustChain.ProjectKey</c>): a squash rebuilds each surviving
+    /// envelope from <see cref="MessageDetails"/>'s own stored fields via <see cref="ToEnvelope"/>,
+    /// which carries no project key of its own, so without this every squashed ref would silently
+    /// drop the key a reader still expects on it (independent pre-PR review, cycle 1, adversarial
+    /// lens, medium).
     /// </para>
     /// </summary>
     public async Task<MessageSquashResult> SquashAsync(

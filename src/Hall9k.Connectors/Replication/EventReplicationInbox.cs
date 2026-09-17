@@ -4,6 +4,7 @@ using System.Text.Json.Nodes;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx.Events;
@@ -97,6 +98,21 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // ReplicatedEventRecord yet and apply a duplicate. The same uncommitted-visibility gap
         // streamsStartedThisRead already exists to close for StartStream collisions.
         HashSet<Guid> originEventIdsAppliedThisRead = [];
+        // This project's own ledger-derived key, resolved once, preferring the live trust chain
+        // over this install's own possibly-stale local mirror, the identical resolution
+        // MessageInbox.ReadFromAsync's own ResolveLocalProjectKeyAsync applies.
+        string? localProjectKey = await ResolveLocalProjectKeyAsync(session, projectId, trustChain, cancellationToken);
+        // Set the moment any envelope this read inspects carries a project key that does not match
+        // this project's own ledger-derived key above (idea 202383dc, M2; Brian's ruling
+        // 2026-09-17: a project's identity no longer depends on which ledger a message arrived
+        // through), refused rather than applied, and named the identical way an unvouched sender
+        // already is (h9k status's own WriteReplicatedEventsIgnoredSendersAsync reads
+        // EventReplicationInboxCursor.SenderIgnored regardless of which reason set it). A null
+        // envelope key, or one that is not shaped like a 26-character ULID (a pre-ruling envelope
+        // still carrying the retired owner-fingerprint value), is read as "no opinion" and never
+        // refused on that basis alone (MessageEnvelopeV1.ProjectKey's own doc).
+        bool projectKeyMismatch = false;
+        string? projectKeyMismatchReason = null;
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
             highestSeqConsidered = raw.Seq;
@@ -115,6 +131,19 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 continue;
             }
 
+            if (envelope.ProjectKey is { Length: 26 } candidateKey
+                && await IsProjectKeyMismatchAsync(session, projectId, candidateKey, localProjectKey, cancellationToken))
+            {
+                projectKeyMismatch = true;
+                projectKeyMismatchReason =
+                    $"events envelope {raw.Seq} carries project key {candidateKey}, which does not match "
+                    + "this project's own ledger-derived key, refused rather than applied";
+                logger?.LogWarning(
+                    "Sender {SenderNodeId}'s events envelope {Seq} carries a project key that does not match "
+                    + "this project's own ledger-derived key, refused", senderNodeId, raw.Seq);
+                continue;
+            }
+
             IReadOnlyList<EventReplicationCodec.ReplicatedEventRecord>? batch = EventReplicationCodec.DecodeBatch(envelope.Body);
             if (batch is null)
             {
@@ -127,8 +156,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             foreach (EventReplicationCodec.ReplicatedEventRecord record in batch)
             {
                 if (await ApplyAsync(
-                    session, record, senderNodeId, projectId, streamsStartedThisRead, originEventIdsAppliedThisRead,
-                    now, cancellationToken))
+                    session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
+                    originEventIdsAppliedThisRead, now, cancellationToken))
                 {
                     applied++;
                 }
@@ -137,18 +166,36 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
 
         highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
 
+        // Whether this sweep actually inspected anything past what the LAST sweep already
+        // recorded: once the cursor has advanced past a mismatched envelope, a later sweep with
+        // nothing new to read finds read.Envelopes empty and projectKeyMismatch false regardless
+        // of the standing refusal: overwriting SenderIgnored from that empty loop would clear the
+        // flag the moment after it was set, so h9k status would only ever show the refusal for the
+        // one sweep that first saw it (independent pre-PR review, cycle 1, conformance lens,
+        // medium). A sweep that inspected nothing new instead carries the previous cursor's own
+        // ignored state forward unchanged; only a sweep that genuinely inspected fresh content gets
+        // to redecide it, the identical "clears only on a genuine advance past it" rule
+        // MessageInboxAggregate.Apply(InboxCursorAdvanced) already applies to
+        // IgnoredForVerificationFailure.
+        bool inspectedNewContent = highestSeqConsidered > sinceSeq;
+        bool senderIgnored = inspectedNewContent ? projectKeyMismatch : cursor?.SenderIgnored ?? false;
+        string? ignoredReason = inspectedNewContent
+            ? (projectKeyMismatch ? projectKeyMismatchReason : null)
+            : cursor?.IgnoredReason;
+        DateTimeOffset? ignoredAt = inspectedNewContent ? (projectKeyMismatch ? now : null) : cursor?.IgnoredAt;
+
         session.Store(new EventReplicationInboxCursor
         {
             Id = cursorId,
             SenderNodeId = senderNodeId,
             ProjectId = projectId,
             HighestSeqInspected = highestSeqConsidered,
-            SenderIgnored = false,
-            IgnoredReason = null,
-            IgnoredAt = null,
+            SenderIgnored = senderIgnored,
+            IgnoredReason = ignoredReason,
+            IgnoredAt = ignoredAt,
         });
         await session.SaveChangesAsync(cancellationToken);
-        return new EventReplicationReadResult(SenderIgnored: false, applied);
+        return new EventReplicationReadResult(SenderIgnored: senderIgnored, applied);
     }
 
     /// <summary>Returns false, applying nothing, when this origin event id is already stored — the
@@ -158,8 +205,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// same read would otherwise find nothing yet and apply a duplicate.</summary>
     private async Task<bool> ApplyAsync(
         IDocumentSession session, EventReplicationCodec.ReplicatedEventRecord record, Guid senderNodeId, Guid projectId,
-        HashSet<Guid> streamsStartedThisRead, HashSet<Guid> originEventIdsAppliedThisRead, DateTimeOffset now,
-        CancellationToken cancellationToken)
+        string? originProjectKey, HashSet<Guid> streamsStartedThisRead, HashSet<Guid> originEventIdsAppliedThisRead,
+        DateTimeOffset now, CancellationToken cancellationToken)
     {
         if (!originEventIdsAppliedThisRead.Add(record.OriginEventId))
         {
@@ -266,6 +313,11 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         appended.SetHeader(ReplicationEventHeaders.OriginEventId, record.OriginEventId.ToString());
         appended.SetHeader(ReplicationEventHeaders.OriginSequence, record.OriginSequence.ToString(CultureInfo.InvariantCulture));
         appended.SetHeader(ReplicationEventHeaders.OriginProjectId, record.OriginProjectId.ToString());
+        if (originProjectKey is not null)
+        {
+            appended.SetHeader(ReplicationEventHeaders.OriginProjectKey, originProjectKey);
+        }
+
         appended.SetHeader(ReplicationEventHeaders.ReceivedFromNodeId, senderNodeId.ToString());
         appended.SetHeader(ReplicationEventHeaders.ReceivedAt, now.ToString("O"));
 
@@ -295,5 +347,45 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         {
             dataObject[matchingKey] = JsonValue.Create(localProjectId);
         }
+    }
+
+    /// <summary>This project's own ledger-derived key: the live trust chain's own value when a
+    /// caller actually computed one this tick (every production sweep does, via
+    /// <c>MessageSweepEngine.ProbeAndReadAsync</c>), falling back to this install's own local
+    /// mirror (<see cref="ProjectDetails.ProjectKey"/>) only when it did not. Null when neither
+    /// source has one yet, in which case a mismatch can never be judged and nothing carrying a
+    /// project key is refused on that basis alone; the identical resolution
+    /// <c>MessageInbox.ReadFromAsync</c>'s own <c>ResolveLocalProjectKeyAsync</c> applies.</summary>
+    private static async Task<string?> ResolveLocalProjectKeyAsync(
+        IDocumentSession session, Guid projectId, TrustChain? trustChain, CancellationToken cancellationToken)
+    {
+        if (trustChain?.ProjectKey is { } ledgerKey)
+        {
+            return ledgerKey;
+        }
+
+        ProjectDetails? localProject = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
+        return localProject?.ProjectKey;
+    }
+
+    /// <summary>Whether a genuinely 26-character <paramref name="candidateKey"/> fails to name this
+    /// project: a direct mismatch against <paramref name="localProjectKey"/> when this install
+    /// already knows it, or (the only case that needs a lookup at all, since a known key already
+    /// answers the question directly) a hit against some OTHER local project's own recorded key
+    /// when it does not, so a project too new or too far behind to have read its own key back yet
+    /// still refuses an envelope this node can already prove belongs elsewhere. The identical check
+    /// <c>MessageInbox.ReadFromAsync</c>'s own <c>IsProjectKeyMismatchAsync</c> applies.</summary>
+    private static async Task<bool> IsProjectKeyMismatchAsync(
+        IDocumentSession session, Guid projectId, string candidateKey, string? localProjectKey, CancellationToken cancellationToken)
+    {
+        if (localProjectKey is not null)
+        {
+            return candidateKey != localProjectKey;
+        }
+
+        ProjectDetails? resolvedByKey = await session.Query<ProjectDetails>()
+            .Where(candidate => candidate.ProjectKey == candidateKey)
+            .FirstOrDefaultAsync(cancellationToken);
+        return resolvedByKey is not null && resolvedByKey.Id != projectId;
     }
 }

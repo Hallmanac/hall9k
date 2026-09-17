@@ -1,5 +1,6 @@
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Project.Projections;
 using Marten;
 using Microsoft.Extensions.Logging;
 
@@ -165,6 +166,20 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         // seq this sweep actually saw the transport return, and only when this sweep was not an
         // override that skipped ahead over content it never looked at.
         long highestSeqConsidered = persistedCursor;
+        // This project's own ledger-derived key, resolved once, preferring the live trust chain
+        // (idea 202383dc, M2; Brian's ruling 2026-09-17: a project's identity no longer depends on
+        // which ledger a message arrived through) over this install's own possibly-stale local
+        // mirror, so every envelope below is refused or accepted against the SAME key regardless of
+        // how many this sweep inspects.
+        string? localProjectKey = await ResolveLocalProjectKeyAsync(session, projectId, trustChain, cancellationToken);
+        // Every seq whose own envelope carried a project key that does not match this project's own
+        // ledger-derived key above is refused, never stored, and folded into the same standing
+        // "sender ignored" record an ordinary signature failure already produces below, so h9k
+        // status names it the identical way. A null envelope key, or one that is not shaped like a
+        // 26-character ULID (a pre-ruling envelope still carrying the retired owner-fingerprint
+        // value, or one from a build older than idea 202383dc's M2), is read as "no opinion" and
+        // never refused on that basis alone (MessageEnvelopeV1.ProjectKey's own doc).
+        List<long> projectKeyMismatchSeqs = [];
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
             highestSeqConsidered = raw.Seq;
@@ -185,6 +200,16 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                     "Envelope at transport position {Seq} from sender {SenderNodeId} claims a mismatched "
                     + "identity (seq {ClaimedSeq}, sender {ClaimedSender}) — refused",
                     raw.Seq, senderNodeId, envelope.Seq, envelope.FromNode);
+                continue;
+            }
+
+            if (envelope.ProjectKey is { Length: 26 } candidateKey
+                && await IsProjectKeyMismatchAsync(session, projectId, candidateKey, localProjectKey, cancellationToken))
+            {
+                projectKeyMismatchSeqs.Add(raw.Seq);
+                logger?.LogWarning(
+                    "Envelope {Seq} from sender {SenderNodeId} carries a project key that does not match "
+                    + "this project's own ledger-derived key, refused", raw.Seq, senderNodeId);
                 continue;
             }
 
@@ -234,7 +259,7 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
 
         bool cursorAdvanced = highestSeqConsidered > persistedCursor && !overrideSkipsAhead;
-        bool envelopeVerificationFailed = read.RejectedSeqs.Count > 0;
+        bool envelopeVerificationFailed = read.RejectedSeqs.Count > 0 || projectKeyMismatchSeqs.Count > 0;
 
         List<object> inboxEvents = [];
         if (cursorAdvanced)
@@ -248,10 +273,23 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
             // wins: a rejected envelope must be named for h9k status even in a sweep whose other,
             // genuinely verified envelopes moved the cursor forward — a cursor advance on its own
             // must never be read as "this sender is fine".
-            string reason = read.RejectedSeqs.Count == 1
-                ? $"envelope verification failed for seq {read.RejectedSeqs[0]}"
-                : $"envelope verification failed for seqs {string.Join(", ", read.RejectedSeqs)}";
-            inboxEvents.Add(MessageInboxDecider.IgnoreSender(senderNodeId, projectId, reason, verificationFailed: true, now));
+            List<string> reasons = [];
+            if (read.RejectedSeqs.Count > 0)
+            {
+                reasons.Add(read.RejectedSeqs.Count == 1
+                    ? $"envelope verification failed for seq {read.RejectedSeqs[0]}"
+                    : $"envelope verification failed for seqs {string.Join(", ", read.RejectedSeqs)}");
+            }
+
+            if (projectKeyMismatchSeqs.Count > 0)
+            {
+                reasons.Add(projectKeyMismatchSeqs.Count == 1
+                    ? $"project key mismatch for seq {projectKeyMismatchSeqs[0]}"
+                    : $"project key mismatch for seqs {string.Join(", ", projectKeyMismatchSeqs)}");
+            }
+
+            inboxEvents.Add(MessageInboxDecider.IgnoreSender(
+                senderNodeId, projectId, string.Join("; ", reasons), verificationFailed: true, now));
         }
         // This sweep read the sender's outbox successfully but found nothing new to advance the
         // cursor to — without this, a prior "not vouched at all" ignored mark would never clear on
@@ -274,6 +312,45 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
         return new MessageInboxSweepResult(
             senderNodeId, envelopeVerificationFailed, read.Envelopes.Count + read.RejectedSeqs.Count, stored,
             read.StalledAtSeq);
+    }
+
+    /// <summary>This project's own ledger-derived key: the live trust chain's own value when a
+    /// caller actually computed one this tick (every production sweep does, via
+    /// <c>MessageSweepEngine.ProbeAndReadAsync</c>), falling back to this install's own local
+    /// mirror (<see cref="ProjectDetails.ProjectKey"/>) only when it did not. Null when neither
+    /// source has one yet: a project too new, or too far behind, for either to have read one back
+    /// from the ledger, in which case a mismatch can never be judged and nothing carrying a project
+    /// key is refused on that basis alone.</summary>
+    private static async Task<string?> ResolveLocalProjectKeyAsync(
+        IDocumentSession session, Guid projectId, TrustChain? trustChain, CancellationToken cancellationToken)
+    {
+        if (trustChain?.ProjectKey is { } ledgerKey)
+        {
+            return ledgerKey;
+        }
+
+        ProjectDetails? localProject = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
+        return localProject?.ProjectKey;
+    }
+
+    /// <summary>Whether a genuinely 26-character <paramref name="candidateKey"/> fails to name this
+    /// project: a direct mismatch against <paramref name="localProjectKey"/> when this install
+    /// already knows it, or (the only case that needs a lookup at all, since a known key already
+    /// answers the question directly) a hit against some OTHER local project's own recorded key
+    /// when it does not, so a project too new or too far behind to have read its own key back yet
+    /// still refuses an envelope this node can already prove belongs elsewhere.</summary>
+    private static async Task<bool> IsProjectKeyMismatchAsync(
+        IDocumentSession session, Guid projectId, string candidateKey, string? localProjectKey, CancellationToken cancellationToken)
+    {
+        if (localProjectKey is not null)
+        {
+            return candidateKey != localProjectKey;
+        }
+
+        ProjectDetails? resolvedByKey = await session.Query<ProjectDetails>()
+            .Where(candidate => candidate.ProjectKey == candidateKey)
+            .FirstOrDefaultAsync(cancellationToken);
+        return resolvedByKey is not null && resolvedByKey.Id != projectId;
     }
 
     private static void AppendInboxEvents(IDocumentSession session, Guid streamId, bool streamExists, IReadOnlyList<object> events)
