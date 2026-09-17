@@ -179,6 +179,15 @@ public sealed class DaemonOptions
     public TimeSpan InviteSweepPollInterval { get; set; } = TimeSpan.FromSeconds(20);
 
     /// <summary>
+    /// How often <c>PromptAddendaSweepEngine</c> pushes a project's own new prompt-addendum events
+    /// to the ledger and re-materializes every builder's own current ledger content to local disk
+    /// (idea b9b09779, piece 6). A plain fixed interval, the same reasoning
+    /// <see cref="InviteSweepPollInterval"/> gives: an addendum is set rarely, so there is no
+    /// backlog signal worth a jittered cadence over.
+    /// </summary>
+    public TimeSpan PromptAddendaSweepPollInterval { get; set; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// The absolute lifetime ceiling of automatic closeout actions (reopen dispatches, plus
     /// errored-review re-requests) one task's pull request may spend, whatever obstruction
     /// each one answered — the true runaway backstop (log #11 spirit, backlog 45), separate

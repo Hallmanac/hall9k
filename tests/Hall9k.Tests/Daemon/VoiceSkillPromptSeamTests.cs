@@ -159,15 +159,44 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
     public void The_mention_follow_up_names_the_voice_skill_for_the_reply_it_drafts()
     {
         string withSkill = MentionFollowUpPromptBuilder.Build(
-            "acme/web", 7, _worktreePath, "main", SomeMention(), priorReport: null, voiceSkill: MyVoice);
+            "acme/web", 7, _worktreePath, "main", SomeMention(), priorReport: null, project: SomeProject(),
+            voiceSkill: MyVoice);
         string without = MentionFollowUpPromptBuilder.Build(
-            "acme/web", 7, _worktreePath, "main", SomeMention(), priorReport: null);
+            "acme/web", 7, _worktreePath, "main", SomeMention(), priorReport: null, project: SomeProject());
 
         IReadOnlyList<string> lines = VoiceLines(withSkill);
         lines.Should().HaveCount(1);
         lines[0].Should().Contain("`my-voice`")
             .And.Contain($"`{WorkPromptBuilder.ExplainerVoiceContext}`");
         without.Should().NotContain(VoiceLeadIn);
+    }
+
+    [Fact]
+    public void The_mention_follow_up_splices_the_project_addendum_after_its_rules_when_the_daemon_has_materialized_one()
+    {
+        string home = Path.Combine(Path.GetTempPath(), $"h9k-mention-followup-addendum-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(ProjectHomePaths.PromptAddendaDirectory(home));
+            File.WriteAllText(
+                ProjectHomePaths.PromptAddendumFile(home, PromptBuilderKey.MentionFollowUp.Value),
+                "Always link back to the original review comment.");
+            ProjectDetails project = SomeProject();
+            project.HomeDirectory = ProjectHome.Parse(home);
+
+            string prompt = MentionFollowUpPromptBuilder.Build(
+                "acme/web", 7, _worktreePath, "main", SomeMention(), priorReport: null, project: project);
+
+            prompt.Should().Contain("## This project's own guidance");
+            prompt.Should().Contain("Always link back to the original review comment.");
+        }
+        finally
+        {
+            if (Directory.Exists(home))
+            {
+                Directory.Delete(home, recursive: true);
+            }
+        }
     }
 
     /// <summary>
