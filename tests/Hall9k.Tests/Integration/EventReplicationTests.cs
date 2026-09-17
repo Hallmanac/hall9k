@@ -1445,9 +1445,18 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             await session.SaveChangesAsync(cts.Token);
         }
 
+        // Node B already has a DIFFERENT local project recorded under this exact key — a genuine
+        // mismatch, never merely "no opinion recorded yet" that leftover rows from another test's
+        // schema could otherwise supply (independent pre-PR review, cycle 3, adversarial lens,
+        // medium).
+        Guid projectHoldingTheKey = DomainId.New();
         Guid scopedProjectId = DomainId.New();
         await using (IDocumentSession session = storeB.LightweightSession())
         {
+            session.Events.StartStream<ProjectAggregate>(
+                projectHoldingTheKey,
+                new ProjectRegistered(projectHoldingTheKey, ownerId, DomainId.New(), "Holder", "/repo-holder", null, "main", Now));
+            session.Events.Append(projectHoldingTheKey, ProjectDecider.AssignKey(projectHoldingTheKey, mismatchedProjectKey, Now));
             session.Events.StartStream<ProjectAggregate>(
                 scopedProjectId,
                 new ProjectRegistered(scopedProjectId, ownerId, DomainId.New(), "Scoped", "/repo-scoped", null, "main", Now));
