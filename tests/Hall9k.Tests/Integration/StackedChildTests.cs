@@ -1626,6 +1626,16 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
     /// test's sweep. That is the shape the sweep is scoped for in production (one owner, several
     /// stacked children), so it is left alone here and the assertions are made per child instead of
     /// on the sweep's own totals.
+    /// <para>
+    /// One of the two mutable statics in this test project (<c>PreApprovedOptionTests</c>'
+    /// <c>CaptureCommand.Captured</c> is the other), and safe where the console and culture statics
+    /// are not, for the same reason that one is: it is private to this file, so nothing outside can
+    /// reach it to race it, and xUnit never runs two tests of one class concurrently — a test class
+    /// is its own collection, and a collection runs serially within itself. The increment is
+    /// interlocked regardless, because a test of this class may take its number from a flow of its
+    /// own. PLAN.md §16 #PLACEHOLDER-093b54f0's sweep of process-wide state names both and leaves
+    /// both as they are, for exactly that reason.
+    /// </para>
     /// </summary>
     private static int _parentNumbers = 1000;
 
