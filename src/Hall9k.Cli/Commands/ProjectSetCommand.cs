@@ -168,6 +168,17 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "carries its reference, so publishing it creates nothing a second time.")]
         public string? Backlog { get; init; }
 
+        [CommandOption("--primary-tracker <github|jira|none>")]
+        [Description(
+            "Which tracker becomes a task's primary reference by default when h9k task add is handed "
+            + "both a GitHub issue and a Jira card to adopt (task: a task may link to both a GitHub "
+            + "issue and a Jira card): the primary keeps the claim gate, the branch key, publish, "
+            + "closeout close, and every tracker write, and the other becomes the secondary — shown "
+            + "and linked only, gating and writing nothing. Overridable per task with h9k task add "
+            + "--primary-tracker; a task adopting both with neither this default nor the override set "
+            + "is refused, since nothing would say which reference wins. 'none' clears the default")]
+        public string? PrimaryTracker { get; init; }
+
         [CommandOption("--backlog-routing <TEXT>")]
         [Description(
             "Free-text routing guidance for the backlog policy above (epic-first, initiative-first, "
@@ -482,6 +493,14 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             backlogPolicy: settings.Backlog is { } backlog
                 ? Optional<BacklogPolicy>.Of(BacklogPolicy.Parse(backlog))
                 : Optional<BacklogPolicy>.None,
+            // 'none' clears the default, the --jira/--backlog idiom; lowercased so a human's own
+            // casing ("GitHub") still matches the closed set ProjectDecider.ChangeSettings checks
+            // against, exactly as it is recorded (WorkItemProvider.GitHub's own Value is "github").
+            primaryTracker: settings.PrimaryTracker is { } primaryTracker
+                ? Optional<WorkItemProvider>.Of(ClearingWord(primaryTracker)
+                    ? WorkItemProvider.Unknown
+                    : (WorkItemProvider)primaryTracker.Trim().ToLowerInvariant())
+                : Optional<WorkItemProvider>.None,
             // Blank clears it, the ContextLinks/JiraProjectKey idiom: 'absent' means left alone
             // and 'present but empty' means cleared, so a bare --backlog-routing "" is how a
             // human removes guidance without touching the policy that reads it.
