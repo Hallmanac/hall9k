@@ -189,11 +189,11 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         bool senderIgnored = inspectedNewContent ? projectKeyMismatch : stickyMismatch;
         string? ignoredReason = inspectedNewContent
             ? (projectKeyMismatch ? projectKeyMismatchReason : null)
-            : (stickyMismatch ? cursor!.IgnoredReason : null);
+            : (stickyMismatch ? cursor?.IgnoredReason : null);
         bool ignoredForProjectKeyMismatch = inspectedNewContent ? projectKeyMismatch : stickyMismatch;
         DateTimeOffset? ignoredAt = inspectedNewContent
             ? (projectKeyMismatch ? now : null)
-            : (stickyMismatch ? cursor!.IgnoredAt : null);
+            : (stickyMismatch ? cursor?.IgnoredAt : null);
 
         session.Store(new EventReplicationInboxCursor
         {
