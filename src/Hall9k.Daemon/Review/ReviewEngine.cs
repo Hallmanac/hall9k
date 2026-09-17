@@ -5102,11 +5102,19 @@ public sealed class ReviewEngine(
         // Settling entry's own EnsureRebasedBeforeFinalPassAsync re-checks and either finds the
         // same conflict again or, if the worktree is left in a state it will not touch further,
         // warns and proceeds unrebased.
+        // Read off the run parameter, not context.BaseBranch: the same staleness
+        // DispatchRebaseRecoverySessionAsync's own doc already covers (independent pre-PR review,
+        // cycle 4, adversarial lens) reaches here too now that ActOnStackAssessmentAsync's own Replay
+        // branch sends stacked runs through this method right after StackAssessmentCompleted may have
+        // moved the run's recorded base — context.BaseBranch is the loop-entry snapshot, held for the
+        // whole review loop's lifetime, and stays the stale pre-assessment base for as long as this
+        // track keeps running (independent pre-PR review, cycle 6, adversarial lens).
+        string baseBranch = run.BaseBranchOr(context.Project.BaseBranch);
         bool recordAsResolved = outcome == ReviewFixOutcome.Fixed
             || (outcome is { } unmarked
                 && (unmarked == ReviewFixOutcome.Unknown || unmarked == ReviewFixOutcome.WaitingOnBackgroundGate)
                 && await RebaseActuallyLandedAsync(
-                    context.Run.WorktreePath, context.Run.Branch, $"origin/{context.BaseBranch}", cancellationToken));
+                    context.Run.WorktreePath, context.Run.Branch, $"origin/{baseBranch}", cancellationToken));
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
@@ -5116,9 +5124,10 @@ public sealed class ReviewEngine(
         {
             // The base branch's tip as observed now, not the value DispatchRebaseRecoverySessionAsync
             // read at dispatch time: the recovery session's own fetch can have picked up a later
-            // commit while it ran (ResolveObservedOntoCommitAsync's own doc).
+            // commit while it ran (ResolveObservedOntoCommitAsync's own doc). baseBranch, not
+            // context.BaseBranch, for the same staleness reason as recordAsResolved's own read above.
             string observedOntoCommit = await ResolveObservedOntoCommitAsync(
-                context.Run.WorktreePath, context.BaseBranch, cancellationToken);
+                context.Run.WorktreePath, baseBranch, cancellationToken);
 
             // Records the resolution as a completed rebase, the same event a clean git-only apply
             // appends, so h9k task show renders one consistent outcome regardless of which path

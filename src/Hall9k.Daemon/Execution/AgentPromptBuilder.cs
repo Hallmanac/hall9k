@@ -1077,8 +1077,16 @@ public static class AgentPromptBuilder
         bool mechanicalRetryAttempted = true)
     {
         string effectiveBaseBranch = baseBranch ?? project.BaseBranch;
-        bool isStacked = effectiveBaseBranch != project.BaseBranch;
-        string? stackedForkPoint = WorkPromptBuilder.StackedForkPoint(project, effectiveBaseBranch, baseCommit);
+        // Keyed to baseCommit's own presence, not to effectiveBaseBranch's name, unlike every other
+        // caller of WorkPromptBuilder.StackedForkPoint: a stack assessment's Replay verdict can name
+        // the project's own base branch as the onto target for a checkpoint whose parent died, and
+        // RunAggregate.Apply(StackAssessmentCompleted) clears the run's recorded base to match — so
+        // effectiveBaseBranch reads as the project's own base even though baseCommit still carries a
+        // real boundary (the old fork point) that must not be replayed over (independent pre-PR
+        // review, cycle 6, conformance lens). baseCommit is null for every ordinary, unstacked
+        // dispatch, which keeps this byte-identical to the branch-name check for that case.
+        string? stackedForkPoint = baseCommit.IsNotBlank() ? baseCommit : null;
+        bool isStacked = stackedForkPoint is not null;
         const string file = $"{TemplateDirectory}/pre-final-pass-rebase.md";
         StringBuilder prompt = new();
         prompt.AppendLine(Fragment(file, precedesFirstReviewCycle ? "checkpoint-heading" : "heading"));

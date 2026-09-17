@@ -2715,6 +2715,116 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// The redirected-onto-project-base sibling of <see cref="A_stacked_checkpoints_guided_fix_session_is_followed_by_a_real_first_review_cycle"/>
+    /// (independent pre-PR review, cycle 6, both lenses): the assessment's own verdict can name the
+    /// project's own base branch as the replay target — the shape <c>StackAssessmentCompleted</c>
+    /// resolves by clearing this run's recorded base branch — while the boundary it also carries is
+    /// still this branch's real fork point, not the project base's own history. The guided fix
+    /// session's own prompt has to render the stacked replay mechanics keyed to that boundary, not a
+    /// plain <c>git rebase origin/main</c> that would replay the dead parent's own commits onto this
+    /// branch a second time; and once it resolves, the run's own recorded landing commit has to be
+    /// read off the base this run is ACTUALLY on now (main), not the stale parent branch the review
+    /// loop's own <c>ReviewContext</c> was holding since before the assessment ever ran.
+    /// <para>
+    /// Scoped to that one redirected recovery cycle rather than driving the whole run to
+    /// merge-ready: once review concludes, this run's next mandatory pre-final-pass check
+    /// (<c>EnsureRebasedBeforeFinalPassAsync</c>) reads <c>context.BaseBranch</c> — the SAME stale
+    /// loop-entry snapshot, at a call site this cycle's own sweep found and named as a pre-existing,
+    /// out-of-scope sibling rather than fixed here — and genuinely conflicts against the dead parent
+    /// branch it still names. That is a real, separate defect this test does not exist to prove or
+    /// paper over, so it asserts on the first recovery cycle's own recorded events directly instead
+    /// of on the run ever reaching merge-ready.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_checkpoints_guided_fix_session_redirected_onto_the_project_base_reads_the_fresh_base()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        StackedChildFixture fixture = await SeedStackedChildRunAsync(store, cts.Token);
+
+        // The parent's own lap touches the child's own file, so the checkpoint's first mechanical
+        // replay attempt — still against the run's own recorded parent branch — conflicts and earns
+        // this run its one read-only assessment, exactly as the un-redirected sibling test's fixture
+        // does.
+        PushToOriginBranch(fixture.OriginPath, fixture.ParentBranch, "Widget.cs", "class Widget { int parent; }\n");
+
+        // The assessment's own investigation finds the parent's own work actually already landed on
+        // main directly (a rebase-merge elsewhere), so its verdict redirects the replay onto main's
+        // own tip instead of the parent branch — main's own lap here touches the same file
+        // differently, so the guided fix session's own retry hits a genuine conflict too.
+        string mainNewHead = PushToOriginBranch(fixture.OriginPath, "main", "Widget.cs", "class Widget { int mainLap; }\n");
+
+        ScriptedExecutor executor = new(
+            "gh pr view confirms the parent's own work already landed on main directly; the branch still "
+            + "needs replaying from its own recorded fork point onto main's new tip.\n\n"
+            + $"STACK ASSESSMENT VERDICT: replay\nBOUNDARY: {fixture.ParentHeadCommit}\nONTO: {mainNewHead}\n"
+            + "EVIDENCE:\ngit log confirmed the branch's own commit still needs replaying onto main's new "
+            + "tip; the conflict is genuine content disagreement, not a stale recorded fork point.",
+            "Rebased onto main's new tip and resolved the conflict by hand.\n\nRESOLUTION: fixed");
+        // The real assessment session's own prompt runs `git fetch origin` as part of its
+        // verification steps before ever reporting a verdict (the one exception its read-only
+        // contract allows) — scripted here explicitly since nothing else in this fixture would
+        // otherwise pull main's own new commit into this branch's own worktree before the verdict
+        // names it as an onto target.
+        executor.OnSpawnByIndex[0] = () => Git(fixture.WorktreePath, "fetch -q origin");
+        executor.OnSpawnByIndex[1] = () =>
+        {
+            Git(fixture.WorktreePath, "fetch -q origin");
+            TryGit(fixture.WorktreePath, $"rebase --onto {mainNewHead} {fixture.ParentHeadCommit}").Should().NotBe(
+                0, "the guided fix session hits the same genuine conflict the assessment's own retry hit");
+            File.WriteAllText(
+                Path.Combine(fixture.WorktreePath, "Widget.cs"), "class Widget { int mainLap; int childOwn; }\n");
+            Git(fixture.WorktreePath, "add -A");
+            Git(
+                fixture.WorktreePath,
+                "-c user.name=Test -c user.email=test@test -c core.editor=true -c commit.gpgsign=false "
+                + "rebase --continue");
+        };
+
+        // Not asserted on: this run's own next, unrelated gate parks it past this point (see this
+        // test's own doc) — everything this test verifies is already fully recorded on the stream by
+        // the time this call returns, whatever it returns.
+        await NewEngine(
+                store, executor, new DaemonOptions { MaxComplianceReviewCycles = 3 },
+                ExternalProcess.Runner, ExternalProcess.Runner)
+            .ReviewAsync(fixture.RunId, fixture.TaskId, cts.Token);
+
+        File.ReadAllText(Path.Combine(fixture.WorktreePath, "Widget.cs")).Should().Contain(
+            "childOwn", "the guided fix session's own resolution is what landed, not the checkpoint's own broken retry");
+
+        executor.Spawns[1].Prompt.Should().Contain(
+            $"git rebase --onto origin/main {fixture.ParentHeadCommit} task/review-me",
+            "the redirected verdict's own boundary must still be replayed from, even though the onto "
+            + "target now names the project's own base branch (independent pre-PR review, cycle 6, "
+            + "conformance lens)");
+        executor.Spawns[1].Prompt.Should().NotContain(
+            "`git rebase origin/main`, resolving each conflict",
+            "the plain merge-base rebase would replay the dead parent's own already-landed commits onto "
+            + "this branch a second time");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(fixture.RunId, cts.Token))!;
+        run.BaseBranch.Should().BeEmpty(
+            "the onto commit the assessment named is confirmed as main's own tip, and blank is what "
+            + "BaseBranch means by that — a parent that merged into main leaves its child no longer "
+            + "stacked on anything of its own");
+
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(fixture.RunId, token: cts.Token)).Select(e => e.Data)];
+        PreFinalPassRebaseRecoveryDispatched dispatched =
+            runEvents.OfType<PreFinalPassRebaseRecoveryDispatched>().First();
+        dispatched.BaseCommit.Should().Be(
+            fixture.ParentHeadCommit, "the assessment verdict's own boundary is this fix session's fork point");
+        RunRebasedOntoBase recordedRebase = runEvents.OfType<RunRebasedOntoBase>().First();
+        recordedRebase.RebasedOntoCommit.Should().Be(
+            mainNewHead,
+            "the landing commit must be read off this run's own fresh base (main, after the redirect), not "
+            + "the review loop's stale ReviewContext.BaseBranch snapshot, which still names the dead parent "
+            + "branch and would misrecord this branch's own fork point for every later review range "
+            + "(independent pre-PR review, cycle 6, adversarial lens)");
+    }
+
+    /// <summary>
     /// The unconfirmed sibling of <see cref="A_stacked_checkpoints_guided_fix_session_is_followed_by_a_real_first_review_cycle"/>
     /// (independent pre-PR review, cycle 4, adversarial lens): a guided recovery session that ends
     /// with no RESOLUTION marker and never actually touches the worktree must not let this run reach
