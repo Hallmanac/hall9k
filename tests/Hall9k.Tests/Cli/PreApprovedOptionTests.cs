@@ -126,7 +126,7 @@ public sealed class PreApprovedOptionTests
         /// culture statics are not: it is private to
         /// <see cref="PreApprovedOptionTests"/>, and xUnit never runs two tests of one class
         /// concurrently — a test class is its own collection, and a collection runs serially
-        /// within itself. Nothing outside this file can reach it to race it (PLAN.md §16 #PLACEHOLDER-093b54f0's
+        /// within itself. Nothing outside this file can reach it to race it (PLAN.md §16 #220's
         /// own sweep of process-wide state named this and left it as-is for exactly that reason).
         /// </summary>
         public static TaskPublishCommand.Settings? Captured { get; set; }

@@ -25,7 +25,7 @@ namespace Hall9k.Tests.Cli;
 /// <see cref="An_unreachable_configured_database_reports_gh_as_unconfirmed_rather_than_silently_skipped"/>
 /// failed because it arranged itself by exporting <c>HALL9K_CONNECTION_STRING</c> and capturing
 /// the process-wide <c>AnsiConsole.Console</c>, and neither is a test's to own while the suite
-/// runs beside it (PLAN.md §16 #PLACEHOLDER-093b54f0).
+/// runs beside it (PLAN.md §16 #220).
 /// </para>
 /// </summary>
 public sealed class ToolDoctorTests : IDisposable

@@ -1633,7 +1633,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
     /// reach it to race it, and xUnit never runs two tests of one class concurrently — a test class
     /// is its own collection, and a collection runs serially within itself. The increment is
     /// interlocked regardless, because a test of this class may take its number from a flow of its
-    /// own. PLAN.md §16 #PLACEHOLDER-093b54f0's sweep of process-wide state names both and leaves
+    /// own. PLAN.md §16 #220's sweep of process-wide state names both and leaves
     /// both as they are, for exactly that reason.
     /// </para>
     /// </summary>

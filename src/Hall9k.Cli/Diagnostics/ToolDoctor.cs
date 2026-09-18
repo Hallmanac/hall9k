@@ -37,7 +37,7 @@ namespace Hall9k.Cli.Diagnostics;
 /// probe's own decision: it arrives as a <see cref="ConnectionStringSource"/>. The command passes
 /// <see cref="ConnectionStringSource.Process"/>, so an operator gets the full precedence chain;
 /// a test passes a file or a string it owns, so no path under test falls back to the process
-/// environment or the user's home (PLAN.md §16 #PLACEHOLDER-093b54f0).
+/// environment or the user's home (PLAN.md §16 #220).
 /// </para>
 /// <para>
 /// Presence only, never auth: a present tool is reported quietly, and a missing one gets a
@@ -83,7 +83,7 @@ public static class ToolDoctor
     /// <see cref="Hall9kDatabase.ConfigFile"/> on its own. The production entry point above passes
     /// <see cref="ConnectionStringSource.Process"/>; a test passes a config file or a connection
     /// string it owns, so what the doctor observes is the test's arrangement rather than the
-    /// machine's (PLAN.md §16 #PLACEHOLDER-093b54f0).
+    /// machine's (PLAN.md §16 #220).
     /// </summary>
     internal static async Task RunAsync(
         ProcessRunner runner, ConnectionStringSource connection, CancellationToken cancellationToken)

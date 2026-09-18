@@ -173,7 +173,7 @@ public sealed class CrossProcessContainerGateTests
     /// context — where a console write would certainly be captured — leaves the buffer empty,
     /// because there is no console write. Origin incident (2026-09-17 03:25 EDT, run 01a0ad80):
     /// <c>TrackerAssignmentTests</c> asserted an empty stderr capture and found this notice in it,
-    /// written by a different class entirely (PLAN.md §16 #PLACEHOLDER-093b54f0).
+    /// written by a different class entirely (PLAN.md §16 #220).
     /// </para>
     /// </summary>
     [Fact]
