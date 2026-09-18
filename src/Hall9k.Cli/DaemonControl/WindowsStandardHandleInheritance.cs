@@ -14,12 +14,15 @@ namespace Hall9k.Cli.DaemonControl;
 /// "Why does my pipe hang" family of posts): clear it before the child is created, restore it after, and
 /// the child's own handle table never gets a copy.
 /// <para>
-/// Origin incident (first Windows install friction log, item 4): <c>DaemonLifecycle.SpawnDetachedWindows</c>'s
-/// cmd.exe intermediary stays alive for h9kd's entire run. Without this guard, a caller piping or
-/// redirecting <c>h9k daemon start</c>'s own output (a CI step, a PowerShell <c>$output = ...</c>
-/// capture) handed cmd.exe a duplicate of that pipe's write handle at creation; h9k itself exited
-/// promptly, but the pipe never reached EOF because cmd.exe was still holding it open — a 300s wrapper
-/// timeout fired with the daemon already healthy.
+/// Origin incident (first Windows install friction log, item 4): <c>h9k daemon start</c>'s detached
+/// child stays alive for h9kd's entire run — the daemon itself today, and a cmd.exe intermediary
+/// wrapping it back then. Without this guard, a caller piping or redirecting
+/// <c>h9k daemon start</c>'s own output (a CI step, a PowerShell <c>$output = ...</c> capture)
+/// handed that child a duplicate of the pipe's write handle at creation; h9k itself exited
+/// promptly, but the pipe never reached EOF because the child was still holding it open — a 300s
+/// wrapper timeout fired with the daemon already healthy. <c>WindowsDaemonLaunch</c> calls
+/// <c>CreateProcess</c> with <c>bInheritHandles=true</c> (<c>STARTF_USESTDHANDLES</c> requires it),
+/// so the same leak is available to it and it takes the same guard.
 /// </para>
 /// </summary>
 internal static class WindowsStandardHandleInheritance
