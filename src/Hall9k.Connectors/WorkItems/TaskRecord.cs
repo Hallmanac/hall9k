@@ -76,7 +76,15 @@ public sealed record TaskRecord(
     /// publish, closeout close, and every tracker write. Null on every task with at most one
     /// reference, which is every record this build wrote before this field existed.
     /// </summary>
-    ExternalReference? SecondaryExternalReference = null)
+    ExternalReference? SecondaryExternalReference = null,
+    /// <summary>
+    /// The latest handoff note the holding node left for whoever holds this task next (idea
+    /// 202383dc, item 3), or null when none has ever been left. Unlike <see cref="Holder"/>, this
+    /// IS composed fresh on every write, the same as every other field: its source is a task-stream
+    /// event (<c>TaskHandoffNoted</c>), mirrored onto <c>TaskAggregate.HandoffNote</c>, and
+    /// <c>TaskRecordPublication.ComposeAsync</c> reads it from there like anything else on the task.
+    /// </summary>
+    TaskRecordHandoffNote? HandoffNote = null)
 {
     /// <summary>
     /// The key that says a block is one of these, and the version that says which shape it is in.
@@ -165,6 +173,14 @@ public sealed record TaskRecord(
             yaml.Append(FrontmatterYaml.WriteValue("holder-since", Stamp(holder.Since)));
         }
 
+        if (HandoffNote is { } handoffNote)
+        {
+            yaml.Append(FrontmatterYaml.WriteScalar("handoff-note", handoffNote.Note));
+            yaml.Append(FrontmatterYaml.WriteScalar("handoff-note-author-owner-fingerprint", handoffNote.AuthorOwnerFingerprint));
+            yaml.Append(FrontmatterYaml.WriteValue("handoff-note-author-node", handoffNote.AuthorNodeId.ToString()));
+            yaml.Append(FrontmatterYaml.WriteValue("handoff-note-at", Stamp(handoffNote.NotedAt)));
+        }
+
         return yaml.ToString();
     }
 
@@ -210,7 +226,8 @@ public sealed record TaskRecord(
                 parsed.Scalar("origin-branch"),
                 Stamp(parsed.Scalar("published"))),
             ReadHolder(parsed),
-            ParseExternalReference(parsed.Scalar("secondary-external-reference")));
+            ParseExternalReference(parsed.Scalar("secondary-external-reference")),
+            ReadHandoffNote(parsed));
     }
 
     private static TaskRecordHolder? ReadHolder(Frontmatter parsed)
@@ -227,6 +244,22 @@ public sealed record TaskRecord(
             nodeId.Value,
             parsed.Scalar("holder-node-name") ?? string.Empty,
             Stamp(parsed.Scalar("holder-since")));
+    }
+
+    private static TaskRecordHandoffNote? ReadHandoffNote(Frontmatter parsed)
+    {
+        string? note = parsed.Scalar("handoff-note");
+        Guid? authorNodeId = Uuid(parsed.Scalar("handoff-note-author-node"));
+        if (note.IsBlank() || authorNodeId is null)
+        {
+            return null;
+        }
+
+        return new TaskRecordHandoffNote(
+            note,
+            parsed.Scalar("handoff-note-author-owner-fingerprint") ?? string.Empty,
+            authorNodeId.Value,
+            Stamp(parsed.Scalar("handoff-note-at")));
     }
 
     private static Hall9k.Domain.Features.Tasks.ExternalReference? ParseExternalReference(string? value) =>
@@ -260,6 +293,13 @@ public sealed record TaskRecord(
 /// in A3a ever composes one, only carries an already-written one through unchanged.
 /// </summary>
 public sealed record TaskRecordHolder(string OwnerFingerprint, Guid NodeId, string NodeName, DateTimeOffset Since);
+
+/// <summary>
+/// The latest handoff note the holding node left for whoever holds this task next (idea 202383dc,
+/// item 3) — composed fresh on every write, unlike <see cref="TaskRecordHolder"/>, since its source
+/// is a task-stream event mirrored onto the aggregate like any other field.
+/// </summary>
+public sealed record TaskRecordHandoffNote(string Note, string AuthorOwnerFingerprint, Guid AuthorNodeId, DateTimeOffset NotedAt);
 
 /// <summary>
 /// The four review-cycle caps and the session cap, each null when the origin task overrode nothing

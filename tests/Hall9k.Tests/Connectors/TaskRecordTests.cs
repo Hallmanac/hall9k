@@ -38,7 +38,8 @@ public sealed class TaskRecordTests
         ExternalReference? externalReference = null,
         TaskRecordHolder? holder = null,
         string ownerFingerprint = "abc123fingerprint",
-        ExternalReference? secondaryExternalReference = null) => new(
+        ExternalReference? secondaryExternalReference = null,
+        TaskRecordHandoffNote? handoffNote = null) => new(
         Guid.Parse("01a07909-b8a5-777d-9033-4318ba2a31b5"),
         "hall9k",
         "feature",
@@ -58,7 +59,8 @@ public sealed class TaskRecordTests
         ownerFingerprint,
         Origin,
         holder,
-        secondaryExternalReference);
+        secondaryExternalReference,
+        handoffNote);
 
     [Fact]
     public void A_record_round_trips_through_its_own_yaml()
@@ -131,6 +133,35 @@ public sealed class TaskRecordTests
 
         written.ToYaml().Should().NotContain("holder-");
         TaskRecord.TryParse(written.ToYaml())!.Holder.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The handoff note (idea 202383dc, item 3) round-trips through the record like every other
+    /// composed field — unlike <see cref="TaskRecordHolder"/>, which the writer only ever carries
+    /// through unchanged.
+    /// </summary>
+    [Fact]
+    public void A_record_with_a_handoff_note_round_trips()
+    {
+        TaskRecord written = Sample(handoffNote: new TaskRecordHandoffNote(
+            "Migration script drafted but untested.",
+            "def456fingerprint",
+            Guid.Parse("01a07c7e-fed4-74bf-a0f8-ac5a7325335b"),
+            new DateTimeOffset(2026, 9, 17, 9, 30, 0, TimeSpan.Zero)));
+
+        TaskRecord? read = TaskRecord.TryParse(written.ToYaml());
+
+        read.Should().BeEquivalentTo(written);
+        read!.HandoffNote!.Note.Should().Be("Migration script drafted but untested.");
+    }
+
+    [Fact]
+    public void A_record_with_no_handoff_note_round_trips_with_none()
+    {
+        TaskRecord written = Sample(handoffNote: null);
+
+        written.ToYaml().Should().NotContain("handoff-note");
+        TaskRecord.TryParse(written.ToYaml())!.HandoffNote.Should().BeNull();
     }
 
     [Fact]

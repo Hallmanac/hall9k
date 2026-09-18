@@ -191,8 +191,23 @@ internal static class TaskRecordPublication
             ownerFingerprint,
             new TaskOrigin(nodeId, nodeName, task.Id, Branch(task, project), publishedAt),
             holder,
-            task.SecondaryExternalReference);
+            task.SecondaryExternalReference,
+            HandoffNote(task));
     }
+
+    /// <summary>
+    /// Composed fresh from the task's own aggregate fields, unlike <paramref name="holder"/> above
+    /// (idea 202383dc, item 3): the note's source is a task-stream event
+    /// (<c>Hall9k.Domain.Features.Tasks.Events.TaskHandoffNoted</c>) mirrored onto
+    /// <see cref="TaskAggregate.HandoffNote"/>, so every ordinary record write already carries the
+    /// latest one forward the same way it does every other field.
+    /// </summary>
+    private static TaskRecordHandoffNote? HandoffNote(TaskAggregate task) =>
+        task.HandoffNote is { } note && task.HandoffNoteAuthorNodeId is { } authorNodeId
+            ? new TaskRecordHandoffNote(
+                note, task.HandoffNoteAuthorOwnerRootFingerprint ?? string.Empty, authorNodeId,
+                task.HandoffNoteAt ?? DateTimeOffset.MinValue)
+            : null;
 
     /// <summary>
     /// This node's own identity for a ledger commit — its committer line, its signing key, and the
