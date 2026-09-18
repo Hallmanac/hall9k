@@ -2069,11 +2069,20 @@ public sealed partial class VerificationRunner(
         // doc comment).
         bool cacheable = baseCommitSha is not null && uncleanNote is null;
 
+        // The composed command, not gate.Command: the comparison exists to answer "does this
+        // gate also fail against a clean base", and for a host-coupled gate the gate that just
+        // failed is the filtered one, never the raw configured command (independent pre-PR
+        // review, cycle 3, conformance and adversarial lenses, high/medium — this call site was
+        // missed when 1176a38a composed this same filter into every other gate-spawn site).
+        // Keyed into the cache id too, so moving a gate's designation from one filter to another
+        // never reuses a verdict recorded under the old filter's command string.
+        string composedCommand = ComposeGateCommand(gate);
+
         await using IQuerySession query = store.QuerySession();
         if (cacheable)
         {
             CleanBaseGateVerdict? cached = await query.LoadAsync<CleanBaseGateVerdict>(
-                CleanBaseGateVerdict.ComputeId(nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!), cancellationToken);
+                CleanBaseGateVerdict.ComputeId(nodeId, project.Id, gate.Name, composedCommand, baseCommitSha!), cancellationToken);
             if (cached is not null)
             {
                 logger.LogInformation(
@@ -2163,7 +2172,7 @@ public sealed partial class VerificationRunner(
             if (cacheable)
             {
                 CleanBaseGateVerdict? wonRace = await query.LoadAsync<CleanBaseGateVerdict>(
-                    CleanBaseGateVerdict.ComputeId(nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!), cancellationToken);
+                    CleanBaseGateVerdict.ComputeId(nodeId, project.Id, gate.Name, composedCommand, baseCommitSha!), cancellationToken);
                 if (wonRace is not null)
                 {
                     logger.LogInformation(
@@ -2188,7 +2197,7 @@ public sealed partial class VerificationRunner(
             TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
                 query, project.Id, nodeId, gate.Name, excludingRunId: runId, cancellationToken);
             TimeSpan comparisonTimeout = AdHocGateRunner.ComputeComparisonBudget(recentDuration, options.Value.VerifyGateTimeout);
-            GateCheckResult result = await AdHocGateRunner.RunAsync(checkout, gate.Command, comparisonTimeout, cancellationToken);
+            GateCheckResult result = await AdHocGateRunner.RunAsync(checkout, composedCommand, comparisonTimeout, cancellationToken);
             if (result.Outcome != GateCheckOutcome.Failed)
             {
                 if (result.Outcome == GateCheckOutcome.Inconclusive)
@@ -2202,7 +2211,7 @@ public sealed partial class VerificationRunner(
                 if (cacheable)
                 {
                     await TryRecordCleanBaseVerdictAsync(
-                        runId, nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!, basePasses: true, failureNote: null,
+                        runId, nodeId, project.Id, gate.Name, composedCommand, baseCommitSha!, basePasses: true, failureNote: null,
                         cancellationToken);
                 }
 
@@ -2264,7 +2273,7 @@ public sealed partial class VerificationRunner(
             if (cacheable)
             {
                 await TryRecordCleanBaseVerdictAsync(
-                    runId, nodeId, project.Id, gate.Name, gate.Command, baseCommitSha!, basePasses: false, failureNote: note,
+                    runId, nodeId, project.Id, gate.Name, composedCommand, baseCommitSha!, basePasses: false, failureNote: note,
                     cancellationToken);
             }
 

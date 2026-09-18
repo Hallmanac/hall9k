@@ -413,8 +413,16 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
                 TimeSpan? recentDuration = await GateDurationHistoryQuery.MostRecentDurationOnNodeAsync(
                     session, project.Id, nodeId, gate.Name, excludingRunId: Guid.Empty, cancellationToken);
                 TimeSpan comparisonTimeout = AdHocGateRunner.ComputeComparisonBudget(recentDuration, GateTimeout);
+
+                // The composed command, not gate.Command: the gate that just failed and produced
+                // this comparison is the filtered one for a host-coupled gate — RunGateAsync
+                // below already composes the identical filter for the real run this same loop
+                // iteration made — so comparing against the raw configured command answers a
+                // different question than the one this comparison exists to answer (independent
+                // pre-PR review, cycle 3, conformance lens, medium).
+                string comparisonCommand = HostCoupledGate.ComposeGateCommand(gate);
                 GateCheckResult result = await AdHocGateRunner.RunAsync(
-                    checkout, gate.Command, comparisonTimeout, cancellationToken);
+                    checkout, comparisonCommand, comparisonTimeout, cancellationToken);
                 switch (result.Outcome)
                 {
                     case GateCheckOutcome.Inconclusive:
