@@ -16,6 +16,15 @@ public sealed class MessageKindTests
     }
 
     [Fact]
+    public void Parse_RecognizesHandoff()
+    {
+        MessageKind kind = MessageKind.Parse("handoff");
+
+        kind.Should().Be(MessageKind.Handoff);
+        kind.IsRecognized.Should().BeTrue();
+    }
+
+    [Fact]
     public void Parse_RoundTripsAnUnrecognizedKindRatherThanFailing()
     {
         MessageKind kind = MessageKind.Parse("bookmark-announcement");
