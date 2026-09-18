@@ -1,0 +1,23 @@
+hall9k-task-record: 1
+task-id: 01a0b5c7-2e6f-773a-96f8-7bf60982f5b9
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#477
+objective: A daemon whose every GitHub call has failed for ten minutes says so once at error level and on the board, and recovers on its own when a fresh process can resolve the host, instead of warning every tick for an hour while claims, pushes, and messages silently stop
+criteria:
+  - The daemon keeps one node-wide count of consecutive failed origin operations (ledger fetch, ls-remote, push, gh) and the time of the last success; when the count has been rising for ten minutes it logs one error-level line naming the host, the first failure time, and the count, and h9k status prints a matching needs-you line until the next success clears it
+  - Before declaring the outage the daemon probes the host from a freshly spawned git process with a clean environment; if that probe succeeds while the daemon's own operations keep failing, the error line says the fault is the daemon's own process state and names h9k daemon stop and start as the lever, so an operator or an orchestrator does not have to diagnose it by hand
+  - |-
+    Per-tick warnings for the same outage are collapsed: one line at onset, one when the count crosses each of 10, 100, and 1000, and one line at recovery giving the total duration and count
+  - |-
+    Tests through the existing fakes: ten minutes of failures raises the error and the status line; a successful probe beside failing operations produces the process-state wording; recovery clears the status line and logs once
+  - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/0982f5b9-a-daemon-whose-every-github-ca
+published: 2026-09-18 18:28:47Z
+context: |-
+  Platform defect captured under the dogfood rule. Evidence, 2026-09-18: a DNS failure on this Mac from 13:03 to about 13:25 made every git call fail with "Could not resolve host: github.com". The network recovered at 13:25 (git from a shell resolved github.com at 13:26 and six of six times at 14:2x for both bare repos; dig answered 140.82.114.3 through 8.8.8.8), but the daemon (pid 12449, started 08:23, build 0.9.1-422, no proxy variables in its environment, the same /opt/homebrew/bin/git) kept failing every call until it was stopped and started at 14:26:56, after which the first tick succeeded. Between 13:25 and 14:26 the log carried 271 warn lines in the 13:00 hour and 101 in the 14:00 hour, all "Could not resolve host", from the trust chain reader, the prompt-addenda materializer, the ledger fetch, and the holder release, and nothing at error level; the board showed nothing. While it lasted no ledger claim could land (claims fail closed), no push or message flush could happen, and 609bd344's final pass ran without a fresh origin/main at 13:53. The mechanism by which the process state went stale is not known; the fix asked for here is detection, visibility, and a named lever, since the recovery itself is one restart. Published unassigned in the fixes lane behind the distributed-team chain (Brian, 2026-09-18).
