@@ -798,18 +798,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         // The tree is actually gone, not merely finalized on the stream: the whole point of the
         // grace-then-terminate behavior is that a stuck root never keeps running unattended once
         // the run has moved on.
-        bool stillRunning;
-        try
-        {
-            using Process process = Process.GetProcessById(processId);
-            stillRunning = !process.HasExited;
-        }
-        catch (ArgumentException)
-        {
-            stillRunning = false;
-        }
-
-        stillRunning.Should().BeFalse("the grace expiring must terminate the root rather than leave it running");
+        ProcessIsRunning(processId).Should()
+            .BeFalse("the grace expiring must terminate the root rather than leave it running");
     }
 
     [Fact]
@@ -864,30 +854,31 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         DocumentStore store = postgres.Store;
         (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
 
-        // Prints its only result line immediately, then keeps running for ~3s — the shape a
+        // Prints its only result line immediately, then keeps running for ~10s — the shape a
         // session leaves when it forgets to foreground a background task before its own process
-        // exits on its own.
-        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine).Pause(3));
+        // exits on its own. The pause is sized so the whole staged restart still fits inside it
+        // when the child's own shell was slow to start, not for the tail's poll alone.
+        int processId = SpawnFakeAgent(runId, FakeAgentScript.New().Emit(ResultLine).Pause(10));
         DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
 
         using (CancellationTokenSource firstDaemon = new())
         {
             RunSupervisor doomed = NewSupervisor(store, node);
             doomed.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, firstDaemon.Token);
-            // Long enough for the tail to read the result line and persist the cursor past it
-            // while the scripted process is still alive and sleeping; short enough that it has
-            // not exited yet.
-            await Task.Delay(TimeSpan.FromSeconds(1.2), cts.Token);
+            // Waited for, not slept past: the tail persists the flag within a poll of the result
+            // line landing, but the line itself only lands once the scripted child's own shell
+            // has started, and that startup is the slowest, most load-sensitive step here. The
+            // fixed 1.2s sleep this once was covered it on an idle host and did not under a full
+            // suite's load — the tail had read nothing at all, so no RunActivity document existed
+            // and the assertion that followed dereferenced null (gate run, 2026-09-17).
+            await WaitForResultSeenAsync(store, runId, cts.Token);
             firstDaemon.Cancel();
         }
 
-        await using (IQuerySession query = store.QuerySession())
-        {
-            Hall9k.Domain.Features.Run.Documents.RunActivity? activity =
-                await query.LoadAsync<Hall9k.Domain.Features.Run.Documents.RunActivity>(runId, cts.Token);
-            activity!.SawResult.Should().BeTrue(
-                "the first daemon already read the run's only result line before it was stopped");
-        }
+        // The window this test exists to cover is a restart between that save and the tailed
+        // process's own later death, so the child has to still be running right here.
+        ProcessIsRunning(processId).Should().BeTrue(
+            "the restart this test stages must land while the tailed process is still alive");
 
         // The "restarted daemon": adoption finds the still-live process and resumes tailing from
         // the persisted cursor, with nothing left unread past it.
@@ -3352,6 +3343,49 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         throw new TimeoutException(
             $"Run {runId} never reached state {state}; it is {reached?.State.Value ?? "(no projection)"} "
             + $"(failure: {reached?.FailureReason ?? "none"}, park: {reached?.ParkedReason ?? "none"}).");
+    }
+
+    /// <summary>
+    /// Polls the run's own <c>RunActivity</c> until the tail has persisted a seen result line,
+    /// rather than sleeping a fixed span and loading the document once: the line the tail is
+    /// waiting on only appears after the scripted child's own shell has started, so what a caller
+    /// actually wants to wait for is the flag, not a wall-clock span that happens to cover that
+    /// startup on an unloaded host.
+    /// </summary>
+    private static async Task WaitForResultSeenAsync(
+        DocumentStore store, Guid runId, CancellationToken cancellationToken)
+    {
+        DateTimeOffset deadline = DateTimeOffset.UtcNow.AddSeconds(30);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await using IQuerySession query = store.QuerySession();
+            Hall9k.Domain.Features.Run.Documents.RunActivity? activity =
+                await query.LoadAsync<Hall9k.Domain.Features.Run.Documents.RunActivity>(runId, cancellationToken);
+            if (activity is { SawResult: true })
+            {
+                return;
+            }
+
+            await Task.Delay(100, cancellationToken);
+        }
+
+        throw new TimeoutException(
+            $"Run {runId}'s tail never persisted a seen result line; its RunActivity document is "
+            + "either missing entirely or still reports SawResult false.");
+    }
+
+    /// <summary>Whether the operating system still has a live process under this pid.</summary>
+    private static bool ProcessIsRunning(int processId)
+    {
+        try
+        {
+            using Process process = Process.GetProcessById(processId);
+            return !process.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
     }
 
     /// <summary>
