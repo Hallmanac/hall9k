@@ -428,6 +428,50 @@ public sealed class WorkPromptBuilderTests
         prompt.Should().NotContain("h9k review fixed");
     }
 
+    /// <summary>
+    /// The next holder's first run after a holder change (idea 202383dc, item 3, criterion 4): the
+    /// note the previous holder left, ahead of the work prompt's own context —
+    /// <c>TaskDetails.RetryBranchResumesForeignNode</c> is exactly that "resumed from another node"
+    /// signal, already carried by every claim path (headless, interactive, and deliberate) that can
+    /// take over a foreign node's run.
+    /// </summary>
+    [Fact]
+    public void A_run_resuming_a_foreign_nodes_branch_carries_the_handoff_note_ahead_of_context()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryBranchResumesForeignNode = true;
+        task.HandoffNote = "Migration script drafted but untested.";
+        task.AgentContext = "Watch the staging schema for drift.";
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), branch: "task/abc12345-do-the-thing", worktreePath: _worktreePath,
+            resumesPreviousWork: true);
+
+        prompt.Should().Contain("Migration script drafted but untested.");
+        prompt.IndexOf("Migration script drafted but untested.", StringComparison.Ordinal).Should().BeLessThan(
+            prompt.IndexOf("Watch the staging schema for drift.", StringComparison.Ordinal),
+            "the note comes ahead of the work prompt's own context");
+    }
+
+    /// <summary>
+    /// An ordinary same-node resume (a retained worktree, a retry, a handback) never carries a
+    /// foreign-node handoff note, even when the task happens to record one from an earlier holder
+    /// change: <c>RetryBranchResumesForeignNode</c> is the one signal this section gates on, not
+    /// merely the note's own presence.
+    /// </summary>
+    [Fact]
+    public void A_same_node_resume_never_shows_a_handoff_note()
+    {
+        TaskDetails task = SomeTask();
+        task.HandoffNote = "Should never appear on a same-node resume.";
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), branch: "task/abc12345-do-the-thing", worktreePath: _worktreePath,
+            resumesPreviousWork: true);
+
+        prompt.Should().NotContain("Should never appear on a same-node resume.");
+    }
+
     private string Build(bool isInteractive, bool isDeliberateHeadlessStart) =>
         WorkPromptBuilder.Build(
             SomeTask(), SomeProject(), branch: "task/abc12345-do-the-thing",

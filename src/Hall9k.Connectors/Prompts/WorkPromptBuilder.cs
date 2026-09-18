@@ -184,6 +184,18 @@ public static class WorkPromptBuilder
             }
         }
 
+        // The next holder's first run that resumes a foreign node's branch (idea 202383dc, item 3):
+        // the note the previous holder left, ahead of the work prompt's own context (task.AgentContext,
+        // below) — read straight off TaskDetails.RetryBranchResumesForeignNode/HandoffNote rather than
+        // threaded as its own parameter, since every caller already passes task through unchanged.
+        if (task.RetryBranchResumesForeignNode && task.HandoffNote.IsNotBlank())
+        {
+            AppendFragment(prompt, file, "handoff-note-heading");
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "handoff-note-body", ("Note", task.HandoffNote));
+            prompt.AppendLine();
+        }
+
         AppendFragment(prompt, file, "acceptance-criteria-heading");
         prompt.AppendLine();
         foreach (string criterion in task.AcceptanceCriteria)
