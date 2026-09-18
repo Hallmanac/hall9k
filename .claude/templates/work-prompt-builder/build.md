@@ -30,7 +30,7 @@ Why this run resumes here, in the requester's own words: {{RetryReason}}
 ===handoff-note-heading===
 ## A note from the previous holder
 ===handoff-note-body===
-Whoever held this task before you left this note for whoever holds it next:
+Left by {{Author}} at {{When}}, for whoever holds this task next:
 
 {{Note}}
 ===acceptance-criteria-heading===

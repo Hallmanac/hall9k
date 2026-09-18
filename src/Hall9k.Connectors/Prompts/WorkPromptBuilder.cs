@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -184,15 +185,31 @@ public static class WorkPromptBuilder
             }
         }
 
-        // The next holder's first run that resumes a foreign node's branch (idea 202383dc, item 3):
-        // the note the previous holder left, ahead of the work prompt's own context (task.AgentContext,
-        // below) — read straight off TaskDetails.RetryBranchResumesForeignNode/HandoffNote rather than
-        // threaded as its own parameter, since every caller already passes task through unchanged.
-        if (task.RetryBranchResumesForeignNode && task.HandoffNote.IsNotBlank())
+        // The next holder's first run after a holder change (idea 202383dc, item 3): the note the
+        // previous holder left, ahead of the work prompt's own context (task.AgentContext, below) —
+        // read straight off TaskDetails rather than threaded as its own parameter, since every
+        // caller already passes task through unchanged. Gated on either signal, not
+        // RetryBranchResumesForeignNode alone (independent pre-PR review, cycle 1, both lenses):
+        // that flag is false on reachable holder-change paths — a claim whose predecessor's latest
+        // run carried the interactive/deliberate Guid.Empty sentinel, and every PrReview task,
+        // which ForeignResumeBranchResolver refuses unconditionally — so ClaimedFromDifferentHolder
+        // covers those the same way, off the ledger holder rather than the resumed-run branch.
+        if ((task.RetryBranchResumesForeignNode || task.ClaimedFromDifferentHolder) && task.HandoffNote.IsNotBlank())
         {
             AppendFragment(prompt, file, "handoff-note-heading");
             prompt.AppendLine();
-            AppendFragment(prompt, file, "handoff-note-body", ("Note", task.HandoffNote));
+            // Author and timestamp, never "whoever held this task before you" (independent pre-PR
+            // review, cycle 1, adversarial lens): this run's own claim is not necessarily the note
+            // author's immediate successor — the same holder that left it can reclaim the task
+            // later and see its own, now-stale note attributed to somebody else — so the fragment
+            // states who actually left it and when, exactly the fact TaskShowCommand renders this
+            // same field with, rather than a relationship this render site cannot know holds.
+            string author = task.HandoffNoteAuthorNodeId is { } authorNodeId
+                ? $"node {DomainId.Short(authorNodeId)}"
+                : "an unrecorded node";
+            string when = task.HandoffNoteAt is { } notedAt ? notedAt.ToLocalTime().ToString("g") : "an unrecorded time";
+            AppendFragment(
+                prompt, file, "handoff-note-body", ("Note", task.HandoffNote), ("Author", author), ("When", when));
             prompt.AppendLine();
         }
 

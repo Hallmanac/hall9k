@@ -292,6 +292,32 @@ public sealed class TaskDetails
     public string? RetryBranch { get; set; }
     /// <summary>See <see cref="TaskAggregate.RetryBranchResumesForeignNode"/>'s own doc.</summary>
     public bool RetryBranchResumesForeignNode { get; set; }
+    /// <summary>
+    /// True exactly when the claim this view just applied changed this task's holder — a wider
+    /// signal than <see cref="RetryBranchResumesForeignNode"/>, which only fires when
+    /// <see cref="Queries.ForeignResumeBranchResolver"/> found a branch to resume and is false on
+    /// other reachable holder-change paths: a claim whose predecessor's latest run carried the
+    /// interactive/deliberate <see cref="Guid.Empty"/> sentinel (an operator's own <c>h9k task work</c>
+    /// or <c>h9k task start</c> claim, never a foreign NODE's own run), and every
+    /// <see cref="TaskType.PrReview"/> task, which that resolver refuses unconditionally
+    /// (independent pre-PR review, cycle 1, conformance and adversarial lenses). Computed from
+    /// <see cref="LastRealHolderNodeId"/> rather than mirroring
+    /// <see cref="TaskAggregate.ResumedAfterHolderChange"/> directly: that aggregate field is
+    /// deliberately sticky — cleared only by a human's manual reopen or a
+    /// <see cref="Events.TaskResolved"/> naming a new pull request, so
+    /// <c>CloseoutEngine.TryReplayStackedChildAsync</c> keeps parking a taken-over stacked child
+    /// until a human has actually looked — which is the wrong lifetime for a per-run prompt gate
+    /// (<c>WorkPromptBuilder.Build</c> is called once per fresh claim; this field answers "did THIS
+    /// claim change the holder" and nothing longer).
+    /// </summary>
+    public bool ClaimedFromDifferentHolder { get; set; }
+    /// <summary>
+    /// The last real (non-<see cref="Guid.Empty"/>) node id to claim this task — bookkeeping for
+    /// <see cref="ClaimedFromDifferentHolder"/> alone, never cleared, so an interactive or
+    /// deliberate claim (which always carries the <see cref="Guid.Empty"/> sentinel) neither
+    /// updates nor resets it. Not exposed by <c>h9k task show</c>.
+    /// </summary>
+    public Guid? LastRealHolderNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.HandoffNote"/>'s own doc — mirrored here for <c>h9k task show</c> and the resuming prompt alike.</summary>
     public string? HandoffNote { get; set; }
     /// <summary>See <see cref="TaskAggregate.HandoffNoteAuthorOwnerRootFingerprint"/>'s own doc.</summary>
@@ -796,6 +822,18 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         {
             view.RetryBranch = @event.Data.ResumesBranch;
             view.RetryBranchResumesForeignNode = true;
+        }
+
+        // Mirrors the same holder-changed condition TaskAggregate.Apply(TaskClaimed) computes off
+        // its own HolderNodeId/_lastReleasedHolderNodeId — see ClaimedFromDifferentHolder's own
+        // doc for why this view tracks it through LastRealHolderNodeId instead of mirroring the
+        // aggregate's own (deliberately sticky) ResumedAfterHolderChange field.
+        view.ClaimedFromDifferentHolder = view.LastRealHolderNodeId is { } previousHolderNodeId
+            && @event.Data.NodeId != Guid.Empty
+            && previousHolderNodeId != @event.Data.NodeId;
+        if (@event.Data.NodeId != Guid.Empty)
+        {
+            view.LastRealHolderNodeId = @event.Data.NodeId;
         }
 
         view.State = TaskState.Claimed;
