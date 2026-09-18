@@ -621,6 +621,39 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
         tracker.GhCalls.Should().NotContain(arguments => arguments.Contains("edit"));
     }
 
+    // ── releasing an item this install holds (criterion 5's release half) ────────────────────
+
+    /// <summary>
+    /// Jira's half of the release write, checked at the wire: a field update carrying an actual
+    /// JSON <c>null</c> for <c>assignee</c>, which lands and is confirmed cleared on the read-back
+    /// — <see cref="TrackerAssignmentTake.ReleaseAsync"/>'s payload is a fixed, hardcoded write
+    /// rather than a composed one, so it must not route through <see cref="JiraWritePayload"/>'s
+    /// own content-check <c>Validate</c>, whose blank-null rule exists for an unfilled composed
+    /// template and would otherwise refuse this intentional clear every time it ran.
+    /// </summary>
+    [Fact]
+    public async Task Release_clears_jira_via_an_actual_null_assignee_field()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Guid ownerId = (await NodeBootstrapSeed.NewNodeAsync(store, cts.Token)).OwnerId;
+        Guid taskId = await SeedGatedAsync(store, "jira", "TAKE-20", ownerId, cts.Token);
+        ExternalReference reference = new(WorkItemProvider.Jira, "TAKE-20");
+        string repositoryPath = await RepositoryPathAsync(store, taskId, cts.Token);
+
+        FakeTracker tracker = FakeTracker.HeldBy("jira", "TAKE-20", JiraAccountId);
+        TrackerRelease release = await tracker.Taker().ReleaseAsync(
+            store, ClaimGate.TrackerAssignee, reference, repositoryPath, cts.Token);
+
+        release.Succeeded.Should().BeTrue(release.FailureReason);
+        string body = tracker.Writes.Should().ContainSingle().Subject;
+        using JsonDocument written = JsonDocument.Parse(body);
+        JsonElement fields = written.RootElement.GetProperty("fields");
+        fields.EnumerateObject().Select(field => field.Name).Should().Equal(["assignee"]);
+        fields.GetProperty("assignee").ValueKind.Should().Be(
+            JsonValueKind.Null, "the clear sends an actual JSON null, not the four-character text \"null\"");
+    }
+
     // ── the flag on a project with nothing to take ────────────────────────────────────────────
 
     /// <summary>
@@ -1015,7 +1048,13 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
                 Writes.Add(request.JsonBody ?? string.Empty);
                 if (!writeIsInvisible)
                 {
-                    holder = JiraAccountId;
+                    // A release write's own body carries a JSON null for the assignee (idea
+                    // 202383dc, A3b, criterion 5's release half), never an accountId object — the
+                    // one thing that tells a clear-write apart from a take's own assign-write here.
+                    holder = (request.JsonBody ?? string.Empty)
+                        .Contains("\"assignee\":null", StringComparison.Ordinal)
+                        ? null
+                        : JiraAccountId;
                 }
 
                 return new JiraResponse(204, string.Empty);

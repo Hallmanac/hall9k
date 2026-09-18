@@ -563,6 +563,48 @@ public sealed class GitHubWorkItemProvider(ProcessRunner? runner = null, TimePro
         + $"{RelayedText.OneLine(repository)} --json assignees' says who holds it now.");
 
     /// <summary>
+    /// The release-flavoured sibling of <see cref="AddAssigneeAsync"/> (idea 202383dc, A3b,
+    /// criterion 5): takes one login back off an issue's assignee field once this node's own
+    /// ledger holder is given back, leaving any other assignee on the issue untouched. Writes
+    /// what it is told to write and nothing else — whether taking it off is warranted is decided
+    /// by <see cref="TrackerAssignmentTake.ReleaseAsync"/>, exactly the division
+    /// <see cref="AddAssigneeAsync"/>'s own doc draws for the write behind a take.
+    /// </summary>
+    public async Task<TrackerAssignmentWrite> RemoveAssigneeAsync(
+        ExternalReference reference, string login, string workingDirectory, CancellationToken cancellationToken)
+    {
+        if (!TryParseCanonical(reference.Reference, out string repository, out int number))
+        {
+            return TrackerAssignmentWrite.Refused(
+                $"'{RelayedText.OneLine(reference.ToString())}' does not read as a github owner/repo#number "
+                + "reference, so there is no issue whose assignee could be cleared.");
+        }
+
+        ProcessResult result;
+        try
+        {
+            result = await RunGhAsync(
+                [
+                    "issue", "edit", number.ToString(CultureInfo.InvariantCulture),
+                    "--repo", repository, "--remove-assignee", login,
+                ],
+                workingDirectory, cancellationToken,
+                onStoppedAnswering: exception =>
+                    GhStoppedAnsweringOnAssign(exception, workingDirectory, repository, number, login));
+        }
+        catch (DomainException exception)
+        {
+            return TrackerAssignmentWrite.Refused(exception.Message);
+        }
+
+        return result.ExitCode == 0
+            ? TrackerAssignmentWrite.Wrote()
+            : TrackerAssignmentWrite.Refused(
+                $"gh could not clear {RelayedText.OneLine(login)} off {Item(repository, number)}. gh reported: "
+                + $"{RelayedText.Truncate(RelayedText.OneLine(result.StandardError).Trim(), 400)}.");
+    }
+
+    /// <summary>
     /// One issue as it is spoken in a sentence bound for a terminal — <c>owner/repo#42</c>, with the
     /// repository half relayed rather than trusted, for the reason
     /// <see cref="AddAssigneeAsync"/>'s own comment gives. The number cannot need it: it only
