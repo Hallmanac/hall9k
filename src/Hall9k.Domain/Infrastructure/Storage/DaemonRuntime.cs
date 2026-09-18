@@ -66,12 +66,12 @@ public static class DaemonRuntime
     public static string StopRequestFile => Path.Combine(RunPaths.Root, "h9kd.stop");
 
     /// <summary>
-    /// Set to <c>"1"</c> only by the two Windows launch paths that redirect h9kd's
-    /// stdout/stderr through cmd.exe's own <c>&gt;&gt;</c> append before h9kd ever starts
-    /// (<c>DaemonLifecycle.SpawnDetachedWindows</c> and <c>WindowsDaemonAutostart</c>'s
-    /// launch script) — never by a human's shell. Both paths set this through
-    /// <c>ProcessStartInfo.Environment</c>, which is seeded from the current process's own
-    /// environment, so this name IS forwarded like every other if a parent shell happens to
+    /// Set to <c>"1"</c> only by the one place that hands h9kd its log as an inheritable
+    /// standard handle before h9kd ever starts — <c>WindowsDaemonLaunch</c> in Hall9k.Cli,
+    /// which both Windows launch paths go through (<c>DaemonLifecycle.SpawnDetachedWindows</c>
+    /// and <c>h9k daemon autostart launch</c>) — and never by a human's shell. It is set on the
+    /// environment block that launcher builds for the child, which is seeded from the launcher's
+    /// own environment, so this name IS forwarded like every other if a parent shell happens to
     /// have it set; what actually keeps this safe is that no supported path ever sets it,
     /// not that inheritance is somehow blocked. An operator exporting this variable by hand
     /// before running h9kd from a terminal would see their own console output silently
@@ -83,8 +83,7 @@ public static class DaemonRuntime
     /// Windows (a bare terminal invocation, the <c>dotnet run --project Hall9k.AppHost</c>
     /// dev loop) had its console output silently redirected into the installed daemon's
     /// log file instead, because <c>WindowsAppendOnlyLog</c> was applied unconditionally on
-    /// the OS check alone rather than on whether stdout was actually the cmd.exe redirect it
-    /// exists to survive a rotation of.
+    /// the OS check alone rather than on whether stdout was actually a handle onto that log.
     /// </summary>
     public const string AppendOnlyLogEnvironmentVariable = "HALL9K_DAEMON_APPEND_ONLY_LOG";
 }

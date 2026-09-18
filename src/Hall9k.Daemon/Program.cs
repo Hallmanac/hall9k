@@ -43,15 +43,17 @@ if (instance is null)
     return 0;
 }
 
-// Before anything logs a single line: the inherited stdout/stderr h9kd gets from
-// cmd.exe's own `>>` redirect does not survive a live rotation (WindowsAppendOnlyLog),
-// so every line — not just the ones after the first rotation — needs to go through the
-// replacement handle from the start. Gated on the marker the two launch paths that
-// actually set up that cmd.exe redirect set (DaemonRuntime.AppendOnlyLogEnvironmentVariable),
-// not on OperatingSystem.IsWindows() alone: h9kd started any other way on Windows — a bare
-// terminal invocation, or the AppHost dev loop — has its own real console/pipe, and taking
-// it over here would silently vanish every line (including this process's own
-// unconfigured-connection-string refusal below) into the installed daemon's log instead.
+// Before anything logs a single line, so the encoding is the same from the first line: a
+// redirected Console on Windows writes in the console code page, and every line in h9kd.log
+// has always been UTF-8 with no byte-order mark (WindowsAppendOnlyLog). The handle h9kd
+// inherits is already a rotation-safe append handle its launcher opened (WindowsDaemonLaunch),
+// so this is no longer what saves the log from a truncation — it is what keeps its bytes
+// readable. Gated on the marker that launcher sets
+// (DaemonRuntime.AppendOnlyLogEnvironmentVariable), not on OperatingSystem.IsWindows() alone:
+// h9kd started any other way on Windows — a bare terminal invocation, or the AppHost dev loop —
+// has its own real console/pipe, and taking it over here would silently vanish every line
+// (including this process's own unconfigured-connection-string refusal below) into the
+// installed daemon's log instead.
 if (OperatingSystem.IsWindows()
     && Environment.GetEnvironmentVariable(DaemonRuntime.AppendOnlyLogEnvironmentVariable) == "1")
 {
@@ -61,31 +63,25 @@ if (OperatingSystem.IsWindows()
     }
     catch (IOException exception)
     {
-        // Losing the replacement handle only costs the log's size budget while this daemon
-        // runs: the same share mode that refuses this open refuses DaemonLogRotation's own
-        // ReadWrite open too, so nothing truncates the log under the inherited cmd.exe
-        // handle and LogRotationService logs the refusal on its five-minute tick until the
-        // next h9k daemon start rolls the log with nothing holding it — and on a node that comes
-        // up solely through the logon autostart task, which never runs the CLI's start path, the
-        // budget is never enforced at all (see WindowsAppendOnlyLog's own
-        // doc comment). That is strictly better than the alternative of letting this throw unhandled
-        // above the host builder and above DaemonLogging.Configure: nothing would catch
-        // it, the process would exit before logging its own diagnosis, and an autostarted
-        // daemon would burn its whole RestartOnFailure budget leaving the machine with no
-        // daemon at all. The inherited handles still work for this fallback line itself.
+        // Losing the replacement handles costs the encoding above, and — on a node still being
+        // launched the pre-PLACEHOLDER-d4e64dfa way, through cmd.exe's `>>` redirect — the log's size budget too,
+        // since that launcher's share mode refuses DaemonLogRotation's own ReadWrite open just as
+        // flatly (the exception's own message names that case and its remedy; see
+        // WindowsAppendOnlyLog's doc comment). Either way it is strictly better than letting this
+        // throw unhandled above the host builder and above DaemonLogging.Configure: nothing would
+        // catch it, the process would exit before logging its own diagnosis, and an autostarted
+        // daemon would burn its whole RestartOnFailure budget leaving the machine with no daemon
+        // at all. The inherited handles still work for this fallback line itself.
         //
         // The second sentence is there because both reports on mailbox issue #1 read this
         // fallback as a blinding — the Windows project window concluded the node's
         // orchestrator window had lost sight of its own daemon log. It never had: the
-        // inherited handles are cmd.exe's own `>>` redirect onto this very file, so every
-        // subsequent line still lands in h9kd.log and every reader following it still sees
-        // them. What this costs is the size budget above, and nothing else.
+        // inherited handles are handles onto this very file, so every subsequent line still
+        // lands in h9kd.log and every reader following it still sees them.
         Console.Error.WriteLine(
             $"Could not open {DaemonRuntime.LogFile} for append-only logging ({exception.Message}); "
             + "continuing on the inherited console handles. Every line still lands in this same log, "
-            + "and a reader following that log still sees them all; what is lost is the log's size "
-            + "budget while this daemon runs, since rotation cannot truncate the log either while "
-            + "that handle holds it.");
+            + "and a reader following that log still sees them all.");
     }
 
     // Cleared from this process's own environment the moment it has been acted on: a

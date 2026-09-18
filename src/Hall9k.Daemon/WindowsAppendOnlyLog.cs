@@ -16,18 +16,15 @@ namespace Hall9k.Daemon;
 /// this process keeps writing through its own, and that is only safe when the writer's
 /// handle re-resolves end-of-file per write (its own doc comment names this as the
 /// precondition, true of the CLI's <c>&gt;&gt;</c> redirect and launchd's StandardOutPath on
-/// Unix, both real <c>O_APPEND</c>). The handle h9kd otherwise inherits on Windows — the one
-/// cmd.exe opened for its own <c>&gt;&gt;</c> redirect — does not have that property: its
-/// write position is a value cached at open time, so a rotation that truncates the file out
-/// from under it leaves the next write landing at the old (now past-end-of-file) offset,
-/// which Windows answers by zero-filling the gap. The log would then read back at its
+/// Unix, both real <c>O_APPEND</c>). A cmd.exe <c>&gt;&gt;</c> handle does not have that
+/// property: its write position is a value cached at open time, so a rotation that truncates
+/// the file out from under it leaves the next write landing at the old (now past-end-of-file)
+/// offset, which Windows answers by zero-filling the gap. The log would then read back at its
 /// pre-rotation size, padded with NULs, and the budget <see cref="DaemonLogRotation"/> exists
 /// to enforce would never actually hold. Opening a fresh handle with only
 /// <c>FILE_APPEND_DATA</c> (never combined with <c>FILE_WRITE_DATA</c>/<c>GENERIC_WRITE</c>)
 /// gets the same self-healing-across-truncation property real <c>O_APPEND</c> gives the Unix
-/// side, so when this open succeeds, this process's own writes survive a rotation regardless
-/// of who performs it. Read the two paragraphs below for where that stands on Windows today:
-/// it does not succeed, and the shipped consequence is not the NUL padding described here.
+/// side, so this process's own writes survive a rotation regardless of who performs it.
 /// </para>
 /// <para>
 /// <strong>The share mode is deliberately the widest one Windows offers</strong>
@@ -38,50 +35,44 @@ namespace Hall9k.Daemon;
 /// one Windows would refuse.
 /// </para>
 /// <para>
-/// <strong>What a sharing violation on this open actually means.</strong> Windows decides a
-/// second open by checking the requested access against every existing handle's share mode,
-/// so this open is refused whenever somebody already holds the log with a share mode that
-/// excludes writers. The one such holder h9kd always has is its own launcher: both shipped
-/// Windows launch paths run h9kd under <c>cmd.exe /c "h9kd &lt; NUL &gt;&gt; h9kd.log 2&gt;&amp;1"</c>
-/// (<c>DaemonLifecycle.SpawnDetachedWindows</c> and <c>WindowsDaemonAutostart</c>'s inner
-/// command), and cmd.exe opens an append redirect's target with <c>FILE_SHARE_READ</c> only —
-/// readers welcome, a second writer refused — then holds it for the whole run. That handle is
-/// this process's own inherited stdout, so no amount of retrying can outlive it, which is why
-/// the open checks the one part of that it can actually observe — whether its own inherited
-/// stdout or stderr already targets the log — and reports that rather than burning the retry
-/// budget at every single daemon start. Measured on Windows 11 Pro 26200, 2026-09-16, against the
-/// shape of both launch paths. Fixing it for real means taking cmd.exe's <c>&gt;&gt;</c> off
-/// the daemon launch, so the launcher hands h9kd an inheritable <c>FILE_APPEND_DATA</c> handle
-/// it opened with a permissive share mode instead: that is its own piece of work, recorded in
-/// PLAN.md §16 #217, not this type's job.
+/// <strong>What still gets inherited, and why this takeover is worth doing anyway.</strong> The
+/// handle h9kd inherits as stdout on Windows is now itself a <c>FILE_APPEND_DATA</c> handle its
+/// launcher opened with that same permissive share mode, and closed its own copy of
+/// (<c>WindowsDaemonLaunch</c> in Hall9k.Cli, reached by <c>DaemonLifecycle.SpawnDetachedWindows</c>
+/// and by <c>h9k daemon autostart launch</c> — PLAN.md §16 PLACEHOLDER-d4e64dfa). So the inherited handle would
+/// survive a rotation on its own, and what this adds on top of it is the encoding: .NET writes a
+/// redirected <see cref="Console"/> in the console code page, where these writers are UTF-8 with
+/// no byte-order mark, which is what the log has always been read back as.
 /// </para>
 /// <para>
-/// <strong>What losing this handle actually costs, then.</strong> Not the NUL padding the
-/// first paragraph warns of: the same share mode that refuses this open refuses
-/// <see cref="DaemonLogRotation"/>'s own <c>FileAccess.ReadWrite</c> open just as flatly
-/// (measured the same day), so on Windows no truncation lands under the daemon's inherited
-/// handle at all, and there is no zero-filled gap for it to leave behind. What is lost is the
-/// budget itself: <c>LogRotationService</c>'s five-minute tick catches the refusal and logs
-/// "Log rotation failed; will retry next tick" instead of rolling the log, so an oversized log
-/// on a running Windows daemon stays oversized until the CLI's own start path next runs and
-/// rotates it while nothing holds it — <c>h9k daemon start</c>, or an <c>h9k install</c> or
-/// <c>h9k update</c> that restarts the daemon for you. That path is the only Windows one that
-/// rotates: a node that comes up solely through the logon autostart task goes from
-/// <c>wscript.exe</c> straight to cmd.exe and never reaches it, so there the budget is not
-/// deferred but never enforced at all. The lines themselves are never at risk either way: the
-/// inherited handle this falls back to is cmd.exe's redirect onto the very same
-/// <c>h9kd.log</c>, so every line still lands there and every reader following it still sees
-/// them.
+/// <strong>What a sharing violation on this open means, then.</strong> Windows decides a second
+/// open by checking the requested access against every existing handle's share mode, so this
+/// open is refused only when somebody holds the log with a share mode that excludes writers —
+/// and after §16 PLACEHOLDER-d4e64dfa that somebody is never h9kd's own launcher. It is a backup agent, an
+/// on-access virus scanner, an editor left open on the log: all transient, all worth waiting a
+/// few bounded seconds for, which is what the retry does. The one structural holder left is a
+/// Windows node whose autostart registration predates §16 PLACEHOLDER-d4e64dfa and still carries the old
+/// <c>cmd.exe /c "h9kd &lt; NUL &gt;&gt; h9kd.log 2&gt;&amp;1"</c> launch script (no install or
+/// update rewrites it; only <c>h9k daemon autostart enable</c> does), so the give-up message
+/// checks the one part of that it can actually observe — whether this process's own inherited
+/// stdout or stderr targets the log — and names that remedy when it does.
 /// </para>
 /// <para>
-/// A sharing violation from anybody <em>else</em> — a backup agent, an on-access virus
-/// scanner, an editor left open on the log — is transient, so the open retries for a few
-/// bounded seconds before it gives up. Both sharing-violation give-up paths, the short circuit
-/// above and the exhausted budget, name the holder through <see cref="WindowsFileLockHolders"/>
-/// rather than reporting a bare Win32 error 32: the two reports on mailbox issue #1 (the Windows
-/// project window at the v0.4.0 restart, 2026-09-08 00:28 EDT, and the Windows node window after
-/// the v0.5.1 install, 2026-09-09 09:40 EDT) each had to reason backwards from the error number
-/// alone, and each landed on the wrong holder.
+/// <strong>What losing this handle costs.</strong> The encoding above, and nothing else: the
+/// inherited handle is a handle onto this very same <c>h9kd.log</c>, so every line still lands
+/// there, every reader following it still sees them, and <see cref="DaemonLogRotation"/>'s own
+/// truncation still lands underneath it. On a legacy cmd.exe-launched node it costs more — that
+/// launcher's share mode refuses the rotation's <c>FileAccess.ReadWrite</c> open just as flatly
+/// as it refuses this one (measured on Windows 11 Pro 26200, 2026-09-16), so
+/// <c>LogRotationService</c>'s five-minute tick logs "Log rotation failed; will retry next tick"
+/// and the 8 MB budget goes unenforced until something rotates the log with nothing holding it.
+/// </para>
+/// <para>
+/// Every sharing-violation give-up path names the holder through
+/// <see cref="WindowsFileLockHolders"/> rather than reporting a bare Win32 error 32: the two
+/// reports on mailbox issue #1 (the Windows project window at the v0.4.0 restart, 2026-09-08
+/// 00:28 EDT, and the Windows node window after the v0.5.1 install, 2026-09-09 09:40 EDT) each
+/// had to reason backwards from the error number alone, and each landed on the wrong holder.
 /// </para>
 /// </summary>
 public static class WindowsAppendOnlyLog
@@ -198,18 +189,6 @@ public static class WindowsAppendOnlyLog
                 throw new IOException($"CreateFile({logFilePath}) failed with Win32 error {lastError}.");
             }
 
-            if (attempt == 1 && InheritedStandardHandleAlreadyTargets(logFilePath))
-            {
-                throw new IOException(
-                    $"CreateFile({logFilePath}) failed with Win32 error {lastError} ({ErrorName(lastError)}), and no "
-                    + "retry can clear it: this process's own inherited stdout or stderr already targets that same "
-                    + "file, and a handle this process inherited lives exactly as long as this process does. Who "
-                    + "opened it is not something this check observes; on both shipped Windows launch paths it is "
-                    + "the launcher's cmd.exe `>>` redirect, whose share mode admits readers but refuses a second "
-                    + "writer. The holder named next is the measured one. "
-                    + WindowsFileLockHolders.Describe(logFilePath));
-            }
-
             if (attempt < attempts)
             {
                 sleep(retryDelay);
@@ -219,7 +198,8 @@ public static class WindowsAppendOnlyLog
         throw new IOException(
             $"CreateFile({logFilePath}) failed with Win32 error {lastError} ({ErrorName(lastError)}) after retrying for "
             + $"{retryBudget.TotalSeconds:0.#}s across {attempts} attempts. "
-            + WindowsFileLockHolders.Describe(logFilePath));
+            + WindowsFileLockHolders.Describe(logFilePath)
+            + LegacyLauncherRemedy(logFilePath));
     }
 
     /// <summary>
@@ -236,15 +216,38 @@ public static class WindowsAppendOnlyLog
     };
 
     /// <summary>
+    /// The one remedy this can name for a sharing violation that never cleared, and it is only
+    /// ever the right one when this process's own inherited stdout or stderr is itself a handle
+    /// onto the log. Since §16 PLACEHOLDER-d4e64dfa that handle is the launcher's own append handle, which
+    /// refuses nobody — so a violation alongside it means a legacy autostart registration is
+    /// still launching h9kd through cmd.exe's <c>&gt;&gt;</c> redirect, whose share mode admits
+    /// readers and refuses a second writer, and which nothing but
+    /// <c>h9k daemon autostart enable</c> rewrites.
+    /// <para>
+    /// This used to short-circuit the retry outright rather than annotate its give-up: back when
+    /// the launcher ALWAYS held the log that way, waiting was provably pointless and three
+    /// seconds of dead air at every daemon start was worth avoiding. It would be wrong now — the
+    /// inherited handle is no longer a reason a retry cannot succeed, so blaming it would send a
+    /// reader after the wrong holder and skip the wait that would actually have worked. The price
+    /// is that a node still on the legacy launch script pays the full retry budget once per
+    /// start; three seconds on an un-migrated node is the right side of that trade against ever
+    /// naming the wrong holder on a migrated one.
+    /// </para>
+    /// </summary>
+    private static string LegacyLauncherRemedy(string logFilePath) =>
+        InheritedStandardHandleAlreadyTargets(logFilePath)
+            ? " This process's own inherited stdout or stderr also targets that same file, and a handle this "
+                + "process inherited lives exactly as long as this process does. An h9kd launched by h9k itself "
+                + "inherits an append handle that refuses nobody, so this points at an autostart registration "
+                + "written before the launcher opened that handle, whose launch script still redirects through "
+                + "cmd.exe's `>>`. Re-run h9k daemon autostart enable to rewrite it."
+            : string.Empty;
+
+    /// <summary>
     /// True when this process's own stdout or stderr is already a handle onto
-    /// <paramref name="logFilePath"/>. That, and not who opened it, is what makes waiting
-    /// pointless: a handle this process inherited is released when this process exits and
-    /// not before, so no retry budget can outlast it whatever the launcher was. (On the two
-    /// shipped launch paths it is cmd.exe's <c>&gt;&gt;</c> redirect, which is why the message
-    /// offers that as the lead while leaving the measured holder to
-    /// <see cref="WindowsFileLockHolders"/>.) Anything this cannot resolve (a pipe, a console,
-    /// a path the kernel will not name) answers false, so an unrecognized case falls through
-    /// to the retry rather than short-circuiting on a guess.
+    /// <paramref name="logFilePath"/>. Anything this cannot resolve (a pipe, a console, a path
+    /// the kernel will not name) answers false, so an unrecognized case says nothing rather than
+    /// guessing.
     /// </summary>
     private static bool InheritedStandardHandleAlreadyTargets(string logFilePath) =>
         StandardHandleTargets(StandardOutputHandle, logFilePath)
