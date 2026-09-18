@@ -1270,6 +1270,22 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// Gives back the ledger holder lock (idea 202383dc, A3b) — true completion,
+    /// <c>h9k task abandon</c>, or the sweep that found the holding node's own run gone; never
+    /// <c>h9k task release</c>, which stays scoped to an interactive claim and never writes a
+    /// ledger holder in the first place.
+    /// State-agnostic on purpose (unlike <see cref="Requeue"/>): the ordinary case is a task
+    /// already <see cref="TaskState.Done"/>, since the holder stays assigned through the whole
+    /// post-claim closeout journey and is released only once that genuinely concludes, not at the
+    /// task's own <see cref="TaskState.Claimed"/> → <see cref="TaskState.Done"/> transition. Every
+    /// caller only appends this after deciding, from its own read, that <see cref="TaskAggregate.HolderNodeId"/>
+    /// names itself — this decider does not re-check that, the same way <see cref="Claim"/> never
+    /// second-guesses whether the caller meant to claim this particular task.
+    /// </summary>
+    public static TaskHolderReleased ReleaseHolder(TaskAggregate task, DateTimeOffset releasedAt) =>
+        new(task.Id, releasedAt);
+
+    /// <summary>
     /// h9k task work's claim: the operator's mirror of <see cref="Claim"/>, same
     /// <see cref="TaskClaimed"/> event and lease-generation fencing — but NodeId is the sentinel
     /// <see cref="Guid.Empty"/> rather than a real node's id, which is what

@@ -805,6 +805,38 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
+    /// The ledger record's own holder (idea 202383dc, A3b) must survive an interactive reclaim
+    /// unrelated to it: a node's own real claim is the only thing that ever writes
+    /// <see cref="TaskAggregate.HolderNodeId"/> (<c>DispatchEngine.TryClaimLedgerHolderAsync</c> is
+    /// the sole writer), so the sentinel <see cref="Guid.Empty"/> node id an interactive or
+    /// deliberate claim's own <see cref="TaskClaimed"/> carries must never overwrite it — a fix
+    /// that failed and was retried, then picked up with <c>h9k task work</c> while the ledger
+    /// still names the node that claimed it, would otherwise sever the aggregate from a holder
+    /// nothing could ever release again (independent pre-PR review, this branch, conformance and
+    /// adversarial lenses).
+    /// </summary>
+    [Fact]
+    public void An_interactive_reclaim_never_overwrites_the_ledger_holder_a_real_node_claim_set()
+    {
+        Guid nodeA = DomainId.New();
+        TaskAggregate task = QueuedTask();
+        task.Apply(TaskDecider.Claim(task, nodeA, Owner, DomainId.New(), Now, ownerRootFingerprint: "owner-fingerprint"));
+        task.HolderNodeId.Should().Be(nodeA);
+
+        task.Apply(TaskDecider.Fail(task, task.CurrentRunId!.Value, "Follow-up push rejected.", Now));
+        task.Apply(TaskDecider.Retry(task, task.CurrentRunId, "task/abc", "Rebuilding.", Now, DomainId.New()));
+        task.State.Should().Be(TaskState.Queued);
+        task.HolderNodeId.Should().Be(nodeA, "a retry never touches the ledger holder — only Apply(TaskHolderReleased) clears it");
+
+        TaskClaimed interactive = TaskDecider.ClaimInteractively(task, Owner, DomainId.New(), Now);
+        task.Apply(interactive);
+
+        task.IsInteractiveClaim.Should().BeTrue("the interactive claim itself commits normally");
+        task.HolderNodeId.Should().Be(
+            nodeA, "the interactive claim's own Guid.Empty sentinel must never overwrite the ledger's real holder");
+    }
+
+    /// <summary>
     /// Task: interactive mode becomes a recorded property of the task, design ruling R2 — every
     /// h9k task work claim is the human's own hands-on-the-wheel act, so ClaimInteractively always
     /// turns TaskAggregate.InteractiveModeEnabled on, with no parameter to opt out.
@@ -1558,7 +1590,7 @@ public sealed class TaskDeciderTests
 
     private static void CompleteFollowUp(TaskAggregate task)
     {
-        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        task.Apply(TaskDecider.Claim(task, NodeA, Owner, DomainId.New(), Now));
         task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, task.PullRequestUrl, Now));
     }
 
@@ -1610,6 +1642,49 @@ public sealed class TaskDeciderTests
             FollowUpKind.FailingChecks, automatic: false, Now, DomainId.New()));
         task.CloseoutAttempts.Should().Be(0);
         task.ConsecutiveObstructionLaps.Should().Be(0, "a manual reopen wipes the obstruction slate too");
+        task.LastAutomaticObstructionKey.Should().BeNull();
+        task.AutomaticLapHistory.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// The platform's own real cross-node handoff (a lease expiring appends <see cref="TaskRequeued"/>
+    /// and <see cref="TaskDecider.ReleaseHolder"/> together, in the same transaction, strictly
+    /// before any other node's own claim can land — <c>DispatchEngine.SweepExpiredLeasesAsync</c>)
+    /// clears <see cref="TaskAggregate.HolderNodeId"/> to null before the next claim ever
+    /// applies — so the handoff-reset in <c>Apply(TaskClaimed)</c> keying only on the live
+    /// <see cref="TaskAggregate.HolderNodeId"/> would never fire on this path, and a different
+    /// node's own obstruction laps would carry straight into the new holder's progress cap
+    /// (adversarial review, this branch's fix cycle).
+    /// </summary>
+    [Fact]
+    public void A_handoff_through_the_platforms_own_lease_expiry_path_still_resets_the_progress_cap()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "CI checks failing: build.",
+            FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New(),
+            obstructionKey: "FailingChecks:build", obstructionSummary: "the failing check(s) build",
+            knownHumanReviewThreadIds: [], knownPendingReviewRequestLogins: []));
+        task.ConsecutiveObstructionLaps.Should().Be(1);
+
+        // Back onto Claimed — still NodeA, an ordinary automatic reclaim, not the handoff under
+        // test — so the lease-expiry sweep below has something Claimed to expire.
+        task.Apply(TaskDecider.Claim(task, NodeA, Owner, DomainId.New(), Now));
+        task.HolderNodeId.Should().Be(NodeA);
+        task.ConsecutiveObstructionLaps.Should().Be(1, "a same-node reclaim carries the laps forward");
+
+        task.Apply(TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now));
+        task.Apply(TaskDecider.ReleaseHolder(task, Now));
+        task.HolderNodeId.Should().BeNull("the release already landed, ahead of any other node's own claim");
+
+        Guid nodeB = DomainId.New();
+        task.Apply(TaskDecider.Claim(task, nodeB, Owner, DomainId.New(), Now));
+
+        task.HolderNodeId.Should().Be(nodeB);
+        task.ConsecutiveObstructionLaps.Should().Be(
+            0, "a genuine cross-node handoff must not spend the new holder's own progress cap on "
+                + "laps a different node already burned, even though HolderNodeId already reads "
+                + "null by the time this claim lands");
         task.LastAutomaticObstructionKey.Should().BeNull();
         task.AutomaticLapHistory.Should().BeEmpty();
     }
@@ -2208,6 +2283,17 @@ public sealed class TaskDeciderTests
     /// </summary>
     private static readonly Guid Owner = DomainId.New();
 
+    /// <summary>
+    /// The claiming node <see cref="ClaimedTask"/> and <see cref="CompleteFollowUp"/> share — a
+    /// stable id, not a fresh <see cref="DomainId.New"/> per call, because the obstruction-lap
+    /// reset in <c>Apply(TaskClaimed)</c> now keys on <see cref="TaskAggregate.HolderNodeId"/>
+    /// (idea 202383dc, A3b): a follow-up claim standing in for the SAME node's own automatic
+    /// reclaim has to carry that node's own id forward, or every helper-driven follow-up in this
+    /// file would misread as a cross-node handoff and reset counters these tests mean to keep
+    /// accumulating (window ruling, this branch's fix cycle).
+    /// </summary>
+    private static readonly Guid NodeA = DomainId.New();
+
     private static TaskAggregate DraftTask(params Guid[] blockedBy)
     {
         TaskAggregate task = new();
@@ -2248,7 +2334,7 @@ public sealed class TaskDeciderTests
     private static TaskAggregate ClaimedTask()
     {
         TaskAggregate task = QueuedTask();
-        task.Apply(TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now));
+        task.Apply(TaskDecider.Claim(task, NodeA, Owner, DomainId.New(), Now));
         return task;
     }
 
