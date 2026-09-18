@@ -379,6 +379,13 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
         return await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
     }
 
+    // A project here is registered through ProjectDecider.Register with a repository path
+    // ("/repos/{name}.git") that names no real repository (SeedProjectAsync below), so the
+    // dispatcher's own ledger holder guard needs a ledger that answers a genuine Absent rather
+    // than a real GitLedger's FetchFailed against a path it cannot reach — DispatchEngine's own
+    // fail-closed existence check now holds a claim on that signal (Brian's 2026-09-13 ruling),
+    // and this class's projects were never meant to exercise the ledger at all (class sweep,
+    // this branch's fix cycle).
     private DispatchEngine Engine(
         IDocumentStore store, NodeContext node, int maxConcurrentRuns, ILogger<DispatchEngine>? logger = null,
         long? spendBudgetTokens = null) => new(
@@ -391,7 +398,8 @@ public sealed class ProjectRunCeilingDispatchTests(PostgresFixture postgres) : I
             SpendBudgetTokens = spendBudgetTokens,
             SpendPeriod = SpendPeriod.Week.Value,
         }),
-        logger ?? NullLogger<DispatchEngine>.Instance);
+        logger ?? NullLogger<DispatchEngine>.Instance,
+        ledger: new FakeLedger());
 
     /// <summary>A registered project carrying the cap under test, through its own real events.</summary>
     private static async Task<Guid> SeedProjectAsync(

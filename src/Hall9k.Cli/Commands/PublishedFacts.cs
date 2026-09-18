@@ -1,5 +1,6 @@
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Projections;
 
 namespace Hall9k.Cli.Commands;
@@ -86,12 +87,19 @@ internal static class PublishedFacts
     /// sentence; absent means the platform observed no such wait, never that the tracker was
     /// checked and agreed.
     /// </param>
+    /// <param name="heldByLedgerHolder">
+    /// The measurement that says this row's own claim last stood down at the ledger record's
+    /// holder lock (idea 202383dc, A3b) — another node's own claim, or a write that could not
+    /// complete — or null when nothing is holding it that way. Read off what the dispatcher
+    /// published, the identical reasoning <paramref name="heldByTracker"/> gives its own hold.
+    /// </param>
     public static IReadOnlyList<string> Compose(
         TaskListItem task,
         LifecycleState state,
         QueueHold? held = null,
         TrackerClaimDecision? heldByTracker = null,
-        DateTimeOffset now = default)
+        DateTimeOffset now = default,
+        TaskHolderClaimHold? heldByLedgerHolder = null)
     {
         if (state != LifecycleState.Published)
         {
@@ -153,6 +161,7 @@ internal static class PublishedFacts
             [
                 $"assigned and ready as {task.Rank.Describe()}; the dispatcher has not claimed it yet",
                 .. heldByTracker is not null ? (string[])[heldByTracker.ReasonLine] : [],
+                .. heldByLedgerHolder is not null ? (string[])[LedgerHolderFact(heldByLedgerHolder, now)] : [],
                 .. held is not null ? (string[])[held.ReasonLine] : [],
             ],
             // A blocker recorded dead is answered before the count, in the same words and the
@@ -218,6 +227,26 @@ internal static class PublishedFacts
                 ? (string[])[PreApprovedFact(task.EffectivePreApproval)]
                 : [],
         ];
+    }
+
+    /// <summary>
+    /// The same hold in the one-clause voice <see cref="TrackerClaimDecision.ReasonLine"/> gives
+    /// the tracker-assignee gate's own wait (idea 202383dc, A3b): the ledger record's holder is
+    /// another node's, or its own write could not complete — the identical fact
+    /// <c>DispatchEngine</c>'s own log line states, so a board render and the daemon never
+    /// disagree about it.
+    /// </summary>
+    private static string LedgerHolderFact(TaskHolderClaimHold hold, DateTimeOffset now)
+    {
+        if (hold.HolderNodeId is null)
+        {
+            return $"waiting for its ledger record's holder to clear — the write failed: {hold.Cause}";
+        }
+
+        string since = hold.HolderSince is { } holderSince
+            ? TaskStatusComposer.RelativeAge(now - holderSince)
+            : "an unknown time";
+        return $"waiting for its ledger record's holder to clear — held by {hold.HolderNodeName} since {since}";
     }
 
     /// <summary>

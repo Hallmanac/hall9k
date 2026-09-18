@@ -699,12 +699,18 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         // assigned-owner, project-archived, lease, and expected-version checks), not by calling
         // TaskDecider.Claim directly: that bypasses every one of those and would pass even if the
         // real dispatcher could no longer claim this task (Copilot review, PR #366).
+        // SeedProjectAsync's own repository path ("/does/not/matter/on/a/fake/ledger") names no
+        // real repository — a real GitLedger's fetch against it answers FetchFailed, which
+        // DispatchEngine's own fail-closed existence check now holds a claim on (Brian's
+        // 2026-09-13 ruling); this migration test is about the claim seam, not the ledger holder
+        // (class sweep, this branch's fix cycle).
         NodeContext claimingNode = await NodeBootstrapSeed.NewNodeAsync(_postgres.Store, cts.Token);
         DispatchEngine engine = new(
             _postgres.Store, claimingNode, new DaemonConnection(_postgres.ConnectionString), new FakeProcessManager(),
             new LaunchHoldEngine(_postgres.Store, NullLogger<LaunchHoldEngine>.Instance),
             Options.Create(new DaemonOptions { MaxConcurrentTaskRuns = 1, LeaseTimeout = TimeSpan.FromSeconds(60) }),
-            NullLogger<DispatchEngine>.Instance);
+            NullLogger<DispatchEngine>.Instance,
+            ledger: new FakeLedger());
 
         IReadOnlyList<ClaimedWork> claimed = await engine.ClaimEligibleAsync(cts.Token);
 
