@@ -620,6 +620,7 @@ run.
 
 ```bash
 h9k project set myproject --verify "build=dotnet build" --verify "test=dotnet test"
+h9k project set myproject --verify-gate-filter "test=Category=RequiresDocker"
 h9k project set myproject --model claude-opus-5
 h9k project set myproject --commit-style narrative
 h9k project set myproject --max-parallel-tasks 2

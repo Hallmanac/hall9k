@@ -443,6 +443,18 @@ process is killed the instant it finishes, so a backgrounded gate is left waitin
 notification that never arrives, and the daemon tears down a completed session's own process tree
 before the next gate or session touches the same worktree (PLAN.md §16 #167).
 
+One `--verify` gate can be marked **host-coupled** (`h9k project set --verify-gate-filter
+"name=filter"`) for tests that reach outside the process itself — git, the process table, the
+toolchain, Docker — and so collide when several gates run in parallel on one machine. A
+host-coupled gate runs only at a run's first verification and its final full pass; every
+intermediate review-cycle pass in between skips it outright, recorded as such rather than as an
+instantaneous pass, so `h9k task show`'s Gates cell reads "skipped (host-coupled)" for that pass.
+When it does run, it is serialized against every other run's own host-coupled gate on the same
+node — at most one runs at a time — and a run waiting its turn reports that wait as its own phase
+(`h9k task show` says "waiting for the host-coupled gate slot"), never as a failure.
+
+Depth: PLAN.md §16, Decisions Log PLACEHOLDER-609bd344.
+
 A session also never generates host load to reproduce or prove a flaky or timing-dependent test:
 no parallel copies of a suite or test, no stress or spin loops, no deliberate memory pressure, no
 CPU pinning. The host also runs the daemon, Postgres, and other sessions, so loading it to chase

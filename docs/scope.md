@@ -100,6 +100,14 @@ percent per run: that smooth multi-day drift, the origin incident's own shape, s
 threshold on every run of the climb and is not what this flag catches. Seeing that shape still
 needs a human reading the Gates column's own raw numbers over time.
 
+One `--verify` gate can be marked host-coupled (`h9k project set --verify-gate-filter`) for tests
+that reach outside the process — git, the process table, the toolchain, Docker — and so collide
+when several gates run in parallel on one machine. It runs only at a run's first verification and
+its final full pass, skips outright on every intermediate review-cycle pass in between (shown as
+"skipped (host-coupled)" rather than a zero duration), and is serialized against every other run's
+own host-coupled gate on the same node — a run waiting its turn reports the wait as its own phase,
+never a failure.
+
 `h9k task show` also renders a task's own passage in time, computed fresh on every read from the
 task's own stream and every run it has dispatched, never a persisted projection: how long it sat
 queued, how long each run spent building before its first verification, gate wall-clock time
