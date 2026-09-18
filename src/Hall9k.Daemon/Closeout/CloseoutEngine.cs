@@ -3680,6 +3680,28 @@ public sealed class CloseoutEngine(
             return true;
         }
 
+        // Everything from here down would dispatch (or retarget toward dispatching) an automatic
+        // stack replay — the ParentMergedAligned retarget-and-no-op-replay below, and the
+        // ParentMerged/ParentMoved retarget-and-replay further down. A stacked child taken over by
+        // this node while it was still in flight parks instead (idea 202383dc, piece C's residual,
+        // criterion 3): the new holder's own node never watched whatever review or build context
+        // the previous holder's run built up, so a mechanical replay here would be reasoning about
+        // a stack it has no history with. ParentDead and ParentMergedElsewhere above already park
+        // regardless of who holds the task — this guard sits below them so their own, more specific
+        // reasons are not displaced by this one.
+        if (task.ResumedAfterHolderChange)
+        {
+            await ParkAsync(
+                session, run,
+                $"This is a stacked pull request and {observation.Detail}. Its own holder changed to this node "
+                + "while it was still in flight, though (trigger: a stacked in-flight task changes holder), so "
+                + "the automatic replay that would ordinarily follow stays parked instead. Look over what the "
+                + "previous holder's run left on this branch, then hand it back with h9k pr resolve to let "
+                + "replay run again.",
+                now, cancellationToken);
+            return true;
+        }
+
         if (observation.Verdict == StackedParentVerdict.ParentMergedAligned)
         {
             // The one verdict that is neither "nothing to do" nor "a replay is owed", but still
