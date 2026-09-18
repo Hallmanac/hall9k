@@ -228,6 +228,25 @@ public sealed class TaskAggregate
     /// </summary>
     public bool InteractiveModeEnabled { get; private set; }
 
+    /// <summary>
+    /// The latest handoff note the holding node left for whoever holds this task next (idea
+    /// 202383dc, item 3) — the note's own source of truth, mirrored from
+    /// <see cref="Events.TaskHandoffNoted"/>. Only ever the most recent one: a new note replaces
+    /// the fields below wholesale rather than accumulating a history, since the record writer
+    /// (<c>TaskRecordPublication.ComposeAsync</c>) composes the ledger's own field from exactly
+    /// these four, the same way every other record field is composed fresh on every write.
+    /// </summary>
+    public string? HandoffNote { get; private set; }
+
+    /// <summary>The claiming owner's cross-node root fingerprint of whoever left <see cref="HandoffNote"/>.</summary>
+    public string? HandoffNoteAuthorOwnerRootFingerprint { get; private set; }
+
+    /// <summary>The node id of whoever left <see cref="HandoffNote"/> — always this task's own holder at the moment it was left.</summary>
+    public Guid? HandoffNoteAuthorNodeId { get; private set; }
+
+    /// <summary>When <see cref="HandoffNote"/> was left.</summary>
+    public DateTimeOffset? HandoffNoteAt { get; private set; }
+
     public Guid? CurrentRunId { get; private set; }
     public Guid? PendingQuestionId { get; private set; }
     public string? PullRequestUrl { get; private set; }
@@ -1309,6 +1328,15 @@ public sealed class TaskAggregate
         HolderNodeId = null;
         HolderOwnerRootFingerprint = null;
         HolderSince = null;
+    }
+
+    /// <summary>Replaces the whole note wholesale (idea 202383dc, item 3) — see <see cref="HandoffNote"/>'s own doc.</summary>
+    public void Apply(Events.TaskHandoffNoted @event)
+    {
+        HandoffNote = @event.Note;
+        HandoffNoteAuthorOwnerRootFingerprint = @event.AuthorOwnerRootFingerprint;
+        HandoffNoteAuthorNodeId = @event.AuthorNodeId;
+        HandoffNoteAt = @event.NotedAt;
     }
 
     public void Apply(TaskRequeued @event)

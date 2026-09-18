@@ -292,6 +292,14 @@ public sealed class TaskDetails
     public string? RetryBranch { get; set; }
     /// <summary>See <see cref="TaskAggregate.RetryBranchResumesForeignNode"/>'s own doc.</summary>
     public bool RetryBranchResumesForeignNode { get; set; }
+    /// <summary>See <see cref="TaskAggregate.HandoffNote"/>'s own doc — mirrored here for <c>h9k task show</c> and the resuming prompt alike.</summary>
+    public string? HandoffNote { get; set; }
+    /// <summary>See <see cref="TaskAggregate.HandoffNoteAuthorOwnerRootFingerprint"/>'s own doc.</summary>
+    public string? HandoffNoteAuthorOwnerRootFingerprint { get; set; }
+    /// <summary>See <see cref="TaskAggregate.HandoffNoteAuthorNodeId"/>'s own doc.</summary>
+    public Guid? HandoffNoteAuthorNodeId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.HandoffNoteAt"/>'s own doc.</summary>
+    public DateTimeOffset? HandoffNoteAt { get; set; }
     /// <summary>
     /// The branch this node most recently force-with-lease pushed for this task — the durable
     /// record <c>ForceWithLeasePusher</c> checks before refusing a push whose reflog was wiped by
@@ -791,6 +799,15 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         }
 
         view.State = TaskState.Claimed;
+    }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskHandoffNoted)"/> — see <see cref="TaskDetails.HandoffNote"/>'s own doc.</summary>
+    public void Apply(IEvent<TaskHandoffNoted> @event, TaskDetails view)
+    {
+        view.HandoffNote = @event.Data.Note;
+        view.HandoffNoteAuthorOwnerRootFingerprint = @event.Data.AuthorOwnerRootFingerprint;
+        view.HandoffNoteAuthorNodeId = @event.Data.AuthorNodeId;
+        view.HandoffNoteAt = @event.Data.NotedAt;
     }
 
     // ResumesFromHandback survives a requeue's own state reset by default, but WorkPromptBuilder
