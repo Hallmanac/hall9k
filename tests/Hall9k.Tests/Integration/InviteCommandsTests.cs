@@ -537,7 +537,8 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
         Guid inviteId = DomainId.New();
         string secret = InviteSecret.Generate(root, inviteId);
         string secretHash = InviteSecret.Hash(secret);
-        InviteLedgerRecord record = new(secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, Now.AddHours(72), Spent: false);
+        InviteLedgerRecord record = new(
+            secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
         await ledger.WriteAsync(
             new LedgerWriteRequest(
                 RepositoryPath, InviteLedgerRecord.RefName(root), InviteLedgerRecord.PathFor(root, inviteId), record.ToYaml(),
