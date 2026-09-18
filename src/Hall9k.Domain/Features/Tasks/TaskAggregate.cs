@@ -153,6 +153,42 @@ public sealed class TaskAggregate
     public Guid? ClaimedByNodeId { get; private set; }
 
     /// <summary>
+    /// The ledger record's own holder (idea 202383dc, A3b) — the node currently responsible for
+    /// shepherding this task, mirrored locally from whatever <see cref="TaskClaimed"/> most
+    /// recently landed (this node's own claim, or a replicated one from another node, applied
+    /// identically). Unlike <see cref="ClaimedByNodeId"/>, this is never cleared by
+    /// <see cref="Apply(TaskRequeued)"/> or any other give-back that merely returns the task to
+    /// the queue for another lap of its own follow-up cycle: it survives past <see cref="TaskState.Claimed"/>
+    /// into <see cref="TaskState.Done"/>/<see cref="TaskState.Blocked"/>, which is exactly the
+    /// window closeout, review re-request, merge and follow-up dispatch need a durable "is this
+    /// still ours" answer for. Cleared only by <see cref="Apply(Events.TaskHolderReleased)"/> —
+    /// true completion, <c>h9k task abandon</c>, or the sweep that finds this node's own run gone;
+    /// never <c>h9k task release</c>, which stays scoped to an interactive claim and never writes
+    /// this field in the first place.
+    /// </summary>
+    public Guid? HolderNodeId { get; private set; }
+
+    /// <summary>Mirrors <see cref="TaskClaimed.OwnerRootFingerprint"/> for whichever node <see cref="HolderNodeId"/> names.</summary>
+    public string? HolderOwnerRootFingerprint { get; private set; }
+
+    /// <summary>When the current holder took over — <see cref="TaskClaimed.ClaimedAt"/> of the claim that set <see cref="HolderNodeId"/>.</summary>
+    public DateTimeOffset? HolderSince { get; private set; }
+
+    /// <summary>
+    /// Who <see cref="HolderNodeId"/> named immediately before the most recent
+    /// <see cref="Apply(Events.TaskHolderReleased)"/> cleared it — never itself cleared by a
+    /// release, only consumed and reset by the next <see cref="Apply(TaskClaimed)"/>. On the
+    /// platform's own handoff path (a lease expiry appends <c>TaskRequeued</c> and
+    /// <c>TaskHolderReleased</c> together, ahead of any other node's claim), <see cref="HolderNodeId"/>
+    /// is already null by the time that claim lands, so the handoff-reset check in
+    /// <see cref="Apply(TaskClaimed)"/> reads this field instead — the one place that still
+    /// remembers who held the task a moment before it did (adversarial review, this branch's fix
+    /// cycle: the reset keyed on the live <see cref="HolderNodeId"/> alone never fired on that
+    /// path, since the release always lands first).
+    /// </summary>
+    private Guid? _lastReleasedHolderNodeId;
+
+    /// <summary>
     /// Whether the current claim is an operator working the task interactively (h9k task work)
     /// rather than a node's headless dispatch. An interactive claim carries no <c>TaskLease</c>
     /// document — no liveness lease, no heartbeat reclaim (AGENTS.md) — and is represented on the
@@ -1143,6 +1179,53 @@ public sealed class TaskAggregate
         // outlives the dispatch it bought (task 45136b29, R7).
         QueuePriorityMarked = false;
 
+        // A genuine cross-node handoff — this claim's own node id names a different node than
+        // whoever held it before — starts this task's obstruction bookkeeping fresh (idea
+        // 202383dc, A3b): the new holder's own progress cap should not be spent by laps a
+        // different node already burned before handing the task off. Keyed on the bare node id,
+        // never the owner root fingerprint: the fingerprint is one value per *owner*, shared by
+        // every node that owner runs, so it can never tell apart a same-owner handoff between two
+        // of that owner's own nodes — the only topology this reset exists for (window ruling,
+        // this branch's fix cycle, upholding Brian's 2026-09-12/2026-09-13 rulings; a build
+        // session's own PLAN.md entry cannot ratify keying this on the fingerprint instead). Only
+        // an actually different node id resets, and only against a real node's own claim
+        // (@event.NodeId != Guid.Empty) — the interactive/deliberate sentinel never updates
+        // HolderNodeId below either, so it must not look like a handoff here.
+        //
+        // Reads HolderNodeId when it is still live (a same-node reclaim that never went through
+        // a release) or, failing that, _lastReleasedHolderNodeId: the platform's own handoff path
+        // always appends TaskRequeued and TaskHolderReleased together ahead of the next claim, so
+        // by the time that claim lands HolderNodeId has already gone null and this is the only
+        // place left that still remembers who held the task a moment before (adversarial review,
+        // this branch's fix cycle — the reset keyed on the live HolderNodeId alone never fired on
+        // that path, since the release always lands first).
+        if ((HolderNodeId ?? _lastReleasedHolderNodeId) is { } previousHolderNodeId
+            && @event.NodeId != Guid.Empty
+            && previousHolderNodeId != @event.NodeId)
+        {
+            ConsecutiveObstructionLaps = 0;
+            LastAutomaticObstructionKey = null;
+            _automaticLapHistory.Clear();
+        }
+
+        _lastReleasedHolderNodeId = null;
+
+        // The ledger record's own holder mirrors only a real node's claim (idea 202383dc, A3b):
+        // an interactive or deliberate claim (h9k task work, h9k task start) carries the
+        // Guid.Empty sentinel (IsInteractiveClaim's own discriminator) and never writes the
+        // ledger at all — DispatchEngine.TryClaimAsync's own TryClaimLedgerHolderAsync is the
+        // only writer. Applying that sentinel here would sever this aggregate from a ledger
+        // record that still names the node that actually holds it, after which nothing could
+        // ever release it: every release path (lease expiry, closeout, h9k task abandon) keys on
+        // HolderNodeId == node.NodeId, and a sentinel-stamped Guid.Empty never equals a real
+        // node's id.
+        if (@event.NodeId != Guid.Empty)
+        {
+            HolderNodeId = @event.NodeId;
+            HolderOwnerRootFingerprint = @event.OwnerRootFingerprint;
+            HolderSince = @event.ClaimedAt;
+        }
+
         // Whether this claim's own acknowledgment was freshly given or carried forward from an
         // earlier one, the still-open blockers it covered are now on record acknowledged, so a
         // later reclaim of the same still-open set (after a handback or a retry) does not ask
@@ -1157,6 +1240,26 @@ public sealed class TaskAggregate
         {
             InteractiveModeEnabled = true;
         }
+    }
+
+    /// <summary>
+    /// The ledger holder gave this task back (idea 202383dc, A3b) — true completion,
+    /// <c>h9k task abandon</c>, or the sweep that found the holding node's own run gone; never
+    /// <c>h9k task release</c>, which stays scoped to an interactive claim and never wrote a
+    /// ledger holder to begin with. Deliberately independent of <see cref="TaskState"/>: this fires on a task already
+    /// Done (the ordinary case — the holder is released once closeout genuinely finishes, not at
+    /// the earlier <see cref="TaskCompleted"/> that only opens the pull request) as readily as on
+    /// one still Claimed or already Abandoned.
+    /// </summary>
+    public void Apply(TaskHolderReleased @event)
+    {
+        // Remembered, not merely dropped: Apply(TaskClaimed)'s own handoff-reset check reads this
+        // back, since the platform's own handoff path appends this event immediately ahead of the
+        // next claim, leaving HolderNodeId already null by the time that claim lands.
+        _lastReleasedHolderNodeId = HolderNodeId;
+        HolderNodeId = null;
+        HolderOwnerRootFingerprint = null;
+        HolderSince = null;
     }
 
     public void Apply(TaskRequeued @event)
