@@ -54,9 +54,22 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
 
         IReadOnlyList<IEvent> candidates = await query.ToListAsync(cancellationToken);
 
+        // This node's own pre-replication history never travels, in a catch-up answer any more than
+        // an ordinary outbox flush (EventReplicationOutbox.QueuePendingAsync's own identical
+        // Math.Max(position, switchOnSequence) exclusion) — independent pre-PR review, cycle 1,
+        // conformance lens, high: an unfiltered scan here would hand a brand-new node this node's
+        // entire pre-switch-on back catalogue, which idea 202383dc's migration ruling keeps out of
+        // scope for now.
+        long switchOnSequence = await EventReplicationOutbox.EnsureSwitchedOnAsync(session, myNodeId, now, cancellationToken);
+
         List<EventReplicationCodec.ReplicatedEventRecord> matches = [];
         foreach (IEvent candidate in candidates)
         {
+            if (candidate.Sequence <= switchOnSequence)
+            {
+                continue;
+            }
+
             EventScope scope;
             try
             {
