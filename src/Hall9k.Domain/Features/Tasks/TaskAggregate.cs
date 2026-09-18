@@ -270,6 +270,36 @@ public sealed class TaskAggregate
     public string? RetryBranch { get; private set; }
 
     /// <summary>
+    /// True exactly when <see cref="RetryBranch"/> was set because a claim resumed this task's
+    /// latest run from a NODE OTHER than the one that dispatched it — never for an ordinary
+    /// human-requested retry or handback on the same node (idea 202383dc, piece C's residual: "a
+    /// node that claims a task whose latest run was on another node resumes that run's branch").
+    /// <see cref="Handlers.TaskDecider.Claim"/>'s own <c>resumesBranch</c> parameter is the only
+    /// writer. The one consumer, <c>RunLauncher.CheckoutFreshOrRetryAsync</c>, reads this to
+    /// decide whether a branch missing both locally and on origin fails the run loudly by name
+    /// (this case) or falls back to a clean cut the way an ordinary retry's missing branch always
+    /// has (every other case) — silently starting over would quietly abandon a foreign node's own
+    /// work instead of surfacing that it is gone. Cleared everywhere <see cref="RetryBranch"/>
+    /// itself is.
+    /// </summary>
+    public bool RetryBranchResumesForeignNode { get; private set; }
+
+    /// <summary>
+    /// True once a claim lands on this task from a node other than the one that held it a moment
+    /// before, while a run was still in flight for it (idea 202383dc, piece C's residual,
+    /// criterion 3) — the same cross-node handoff <see cref="Apply(TaskClaimed)"/> already detects
+    /// to reset this task's obstruction bookkeeping, recorded here as its own durable fact so
+    /// <c>CloseoutEngine.TryReplayStackedChildAsync</c> can read it: a stacked child taken over
+    /// this way parks instead of auto-replaying, trigger "a stacked in-flight task changes
+    /// holder" — the new holder's own node has none of the review or build context the previous
+    /// node's agent built up, so a mechanical replay run here would be reasoning about a stack it
+    /// never watched. Cleared by <see cref="ResetAutomaticCloseoutState"/>, the same reset a
+    /// human's own manual reopen or h9k pr resolve already triggers, which is what actually lets
+    /// automatic replay resume once a human has looked.
+    /// </summary>
+    public bool ResumedAfterHolderChange { get; private set; }
+
+    /// <summary>
     /// The branch this node most recently force-with-lease pushed for this task, or null before its
     /// first push — the durable half of the force-with-lease push guard fix (origin incident,
     /// 2026-09-15; see <see cref="Events.TaskBranchPushed"/>'s own doc). Read back by
@@ -1206,9 +1236,25 @@ public sealed class TaskAggregate
             ConsecutiveObstructionLaps = 0;
             LastAutomaticObstructionKey = null;
             _automaticLapHistory.Clear();
+            // Recorded as its own durable fact (criterion 3 above), read by
+            // CloseoutEngine.TryReplayStackedChildAsync to park a taken-over stacked child rather
+            // than auto-replay it — see ResumedAfterHolderChange's own doc.
+            ResumedAfterHolderChange = true;
         }
 
         _lastReleasedHolderNodeId = null;
+
+        // The branch a foreign node's own latest run for this task left behind (idea 202383dc,
+        // piece C's residual, criterion 1) — resumed through the same RetryBranch path a
+        // human-requested retry or handback already uses, so RunLauncher needs no branch of its
+        // own for this. RetryBranchResumesForeignNode is recorded alongside it so
+        // CheckoutFreshOrRetryAsync can tell this apart from an ordinary retry's own branch (see
+        // that field's own doc for why the two fail differently when the branch is gone).
+        if (@event.ResumesBranch.IsNotBlank())
+        {
+            RetryBranch = @event.ResumesBranch;
+            RetryBranchResumesForeignNode = true;
+        }
 
         // The ledger record's own holder mirrors only a real node's claim (idea 202383dc, A3b):
         // an interactive or deliberate claim (h9k task work, h9k task start) carries the
@@ -1343,6 +1389,7 @@ public sealed class TaskAggregate
         StackReplayOntoCommit = null;
         ChangesRequestedReviews = [];
         RetryBranch = null;
+        RetryBranchResumesForeignNode = false;
         State = TaskState.Done;
         // A marker set while this same claim was live (h9k task revise --queue-first on a
         // Claimed task) never goes through Apply(TaskClaimed) again, so nothing else clears it —
@@ -1484,6 +1531,10 @@ public sealed class TaskAggregate
         ConsecutiveObstructionLaps = 0;
         LastAutomaticObstructionKey = null;
         _automaticLapHistory.Clear();
+        // A human's own manual reopen or h9k pr resolve is exactly the "a human has looked" event
+        // that lets automatic stack replay resume for a taken-over child (ResumedAfterHolderChange's
+        // own doc) — cleared alongside the rest of this reset rather than on its own trigger.
+        ResumedAfterHolderChange = false;
         _knownHumanReviewThreadIds.Clear();
         // Cleared beside the ids, never apart from them: the two lists name the same threads, and
         // a reset that wiped one and kept the other would carry a PREVIOUS pull request's thread
@@ -1507,6 +1558,11 @@ public sealed class TaskAggregate
     public void Apply(TaskHandedBack @event)
     {
         RetryBranch = @event.Branch;
+        // A human's own explicit handback names the branch to resume — never a stale carry-over
+        // from an earlier foreign-node claim this task may have passed through before failing
+        // (self-review finding: RunLauncher's loud-by-name failure is for that shape only, and an
+        // ordinary handback's own missing branch keeps its long-standing fallback to a fresh cut).
+        RetryBranchResumesForeignNode = false;
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
@@ -1539,6 +1595,7 @@ public sealed class TaskAggregate
         StackReplayOntoCommit = null;
         ChangesRequestedReviews = [];
         RetryBranch = null;
+        RetryBranchResumesForeignNode = false;
         State = TaskState.Done;
         // Same reasoning as Apply(TaskCompleted): a resolved task reaches Done without ever
         // routing back through Apply(TaskClaimed), so a marker set earlier in its life would
@@ -1559,6 +1616,10 @@ public sealed class TaskAggregate
     public void Apply(TaskRetried @event)
     {
         RetryBranch = @event.Branch;
+        // Same reasoning as Apply(TaskHandedBack): a human-requested retry names its own branch,
+        // so any RetryBranchResumesForeignNode left true by an earlier foreign-node claim must not
+        // survive onto it.
+        RetryBranchResumesForeignNode = false;
         ClaimedByNodeId = null;
         CurrentRunId = null;
         PendingQuestionId = null;
@@ -1817,6 +1878,7 @@ public sealed class TaskAggregate
         StackReplayOntoCommit = null;
         ChangesRequestedReviews = [];
         RetryBranch = null;
+        RetryBranchResumesForeignNode = false;
         State = TaskState.Abandoned;
         // Same reasoning as Apply(TaskCompleted): a marker set earlier in this task's life is a
         // dead end here — Abandoned never reopens — so it must not survive to be read back.

@@ -1690,6 +1690,108 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
+    /// Idea 202383dc, piece C's residual, criterion 3: the same genuine cross-node handoff that
+    /// resets the progress cap above also records its own durable fact,
+    /// <see cref="TaskAggregate.ResumedAfterHolderChange"/> — read by
+    /// <c>CloseoutEngine.TryReplayStackedChildAsync</c> to park a taken-over stacked child instead
+    /// of auto-replaying it. A same-node reclaim never sets it; only a human's own manual reopen
+    /// (through <see cref="TaskAggregate.ResetAutomaticCloseoutState"/>, the same reset the
+    /// progress cap's own manual-reopen case above already exercises) clears it again.
+    /// </summary>
+    [Fact]
+    public void A_genuine_cross_node_handoff_records_that_a_stacked_replay_should_park()
+    {
+        TaskAggregate task = DoneTask("https://github.com/x/y/pull/7");
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "CI checks failing: build.",
+            FollowUpKind.FailingChecks, automatic: true, Now, DomainId.New()));
+        task.Apply(TaskDecider.Claim(task, NodeA, Owner, DomainId.New(), Now));
+        task.ResumedAfterHolderChange.Should().BeFalse("the same node reclaiming its own work is not a handoff");
+
+        task.Apply(TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now));
+        task.Apply(TaskDecider.ReleaseHolder(task, Now));
+        Guid nodeB = DomainId.New();
+        task.Apply(TaskDecider.Claim(task, nodeB, Owner, DomainId.New(), Now));
+        task.ResumedAfterHolderChange.Should().BeTrue(
+            "a different node picked this in-flight task up — a stacked replay owed to it now parks "
+            + "rather than firing against a stack this node never watched build");
+
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, task.PullRequestUrl, Now));
+        task.Apply(TaskDecider.Reopen(
+            task, task.CurrentRunId!.Value, "task/abc", "Human asked for another attempt.",
+            FollowUpKind.FailingChecks, automatic: false, Now, DomainId.New()));
+        task.ResumedAfterHolderChange.Should().BeFalse(
+            "a human's own manual reopen is the same look that lets automatic stack replay resume");
+    }
+
+    /// <summary>
+    /// Idea 202383dc, piece C's residual, criterion 1: <see cref="TaskDecider.Claim"/>'s own
+    /// <c>resumesBranch</c> parameter applies onto <see cref="TaskAggregate.RetryBranch"/> exactly
+    /// as <see cref="TaskDecider.Retry"/> and <see cref="TaskDecider.HandBack"/> already do, and
+    /// marks it as a foreign-node resume so the launcher's own missing-branch handling can tell it
+    /// apart from an ordinary retry's branch (<see cref="TaskAggregate.RetryBranchResumesForeignNode"/>'s
+    /// own doc). An ordinary claim with no <c>resumesBranch</c> — every other claim in this file —
+    /// leaves both untouched.
+    /// </summary>
+    [Fact]
+    public void A_claims_own_resumes_branch_sets_retry_branch_as_a_foreign_node_resume()
+    {
+        TaskAggregate task = QueuedTask();
+
+        task.Apply(TaskDecider.Claim(
+            task, NodeA, Owner, DomainId.New(), Now, resumesBranch: "task/left-by-another-node"));
+
+        task.RetryBranch.Should().Be("task/left-by-another-node");
+        task.RetryBranchResumesForeignNode.Should().BeTrue();
+
+        // Completing the task clears both, the same way it already clears an ordinary retry's own
+        // RetryBranch.
+        task.Apply(TaskDecider.Complete(task, task.CurrentRunId!.Value, "https://github.com/x/y/pull/9", Now));
+        task.RetryBranch.Should().BeNull();
+        task.RetryBranchResumesForeignNode.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// Self-review finding: a foreign-node resume's own flag must not survive onto a later,
+    /// unrelated human-requested retry or handback for the same task — Apply(TaskRetried) and
+    /// Apply(TaskHandedBack) each name their own branch explicitly, so RunLauncher's loud-by-name
+    /// failure (reserved for a foreign-node resume's own missing branch) must not leak onto an
+    /// ordinary retry's or handback's missing branch, which keeps its long-standing fallback to a
+    /// fresh cut.
+    /// </summary>
+    [Fact]
+    public void A_human_requested_retry_or_handback_clears_a_stale_foreign_node_resume_flag()
+    {
+        TaskAggregate retried = QueuedTask();
+        retried.Apply(TaskDecider.Claim(
+            retried, NodeA, Owner, DomainId.New(), Now, resumesBranch: "task/left-by-another-node"));
+        retried.RetryBranchResumesForeignNode.Should().BeTrue();
+        retried.Apply(TaskDecider.Fail(retried, retried.CurrentRunId!.Value, "Build failed.", Now));
+
+        retried.Apply(TaskDecider.Retry(
+            retried, retried.CurrentRunId, "task/left-by-another-node", "Trying again.", Now, DomainId.New()));
+
+        retried.RetryBranchResumesForeignNode.Should().BeFalse(
+            "a human-requested retry names its own branch to resume, not the earlier foreign-node claim");
+
+        TaskAggregate handedBack = QueuedTask();
+        handedBack.Apply(TaskDecider.Claim(
+            handedBack, NodeA, Owner, DomainId.New(), Now, resumesBranch: "task/left-by-another-node"));
+        handedBack.RetryBranchResumesForeignNode.Should().BeTrue();
+        // Back to Queued without clearing the flag (Apply(TaskRequeued) leaves RetryBranch and its
+        // own flag alone by construction), then picked up interactively — the shape that reaches
+        // HandBack.
+        handedBack.Apply(TaskDecider.Requeue(handedBack, RequeueReason.HumanRequested, Now));
+        handedBack.Apply(TaskDecider.ClaimInteractively(handedBack, Owner, DomainId.New(), Now));
+
+        handedBack.Apply(TaskDecider.HandBack(
+            handedBack, handedBack.CurrentRunId!.Value, "task/left-by-another-node", null, Now, Owner));
+
+        handedBack.RetryBranchResumesForeignNode.Should().BeFalse(
+            "a human's own handback names its own branch to resume, not the earlier foreign-node claim");
+    }
+
+    /// <summary>
     /// A `h9k task retry` that lands the work on a second pull request must not carry the
     /// first PR's closeout spend into the second — otherwise the second PR starts pre-debited
     /// and pre-capped, and a park message would misattribute the first PR's lap history to a

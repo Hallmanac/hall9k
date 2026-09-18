@@ -38,6 +38,25 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// (<see cref="Owner.OwnerRootFingerprintResolver"/>) rather than treating a null here as "no
 /// fingerprint exists".
 /// </param>
+/// <param name="ResumesBranch">
+/// The branch this task's latest run left behind on a NODE OTHER than the one making this claim,
+/// read from that run's own replicated <c>RunDispatched</c> event (idea 202383dc, piece C's
+/// residual, criterion 1) — null for every ordinary claim, including a same-node reclaim, a
+/// human-requested retry, and a handback, each of which already carries its own resumed branch
+/// forward on <see cref="TaskAggregate.RetryBranch"/> without this field's help.
+/// <see cref="Handlers.TaskDecider.Claim"/> is the only decider that ever sets it, and only
+/// <c>DispatchEngine.TryClaimAsync</c> ever passes a value in: the CLI's own interactive and
+/// deliberate claims never look up run history for this, so
+/// <see cref="Handlers.TaskDecider.ClaimInteractively"/> and
+/// <see cref="Handlers.TaskDecider.ClaimDeliberately"/> carry no equivalent parameter.
+/// <see cref="TaskAggregate.Apply(TaskClaimed)"/> applies this onto <see cref="TaskAggregate.RetryBranch"/>
+/// exactly as <see cref="Events.TaskRetried"/> and <see cref="Events.TaskHandedBack"/> already do,
+/// so the ordinary <c>RetryBranch</c> path in <c>RunLauncher.CheckoutFreshOrRetryAsync</c> resumes
+/// it with no branch of its own — recorded apart on
+/// <see cref="TaskAggregate.RetryBranchResumesForeignNode"/> only so that one caller can tell a
+/// foreign-node resume's missing branch (which fails the run loudly, by name) apart from an
+/// ordinary retry's (which falls back to a clean cut, as it always has).
+/// </param>
 public sealed record TaskClaimed(
     Guid Id,
     Guid NodeId,
@@ -48,4 +67,5 @@ public sealed record TaskClaimed(
     bool DependencyOverrideAcknowledged = false,
     bool DependencyOverrideCarriedForward = false,
     bool InteractiveMode = false,
-    string? OwnerRootFingerprint = null);
+    string? OwnerRootFingerprint = null,
+    string? ResumesBranch = null);

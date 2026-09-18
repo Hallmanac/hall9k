@@ -1235,9 +1235,12 @@ public static class TaskDecider
     /// so both halves of "should this run, and on whose nodes" are answered before a node ever
     /// looks at the task.
     /// </summary>
+    /// <param name="resumesBranch">See <see cref="TaskClaimed.ResumesBranch"/>'s own doc — the
+    /// caller (<c>DispatchEngine.TryClaimAsync</c>) resolves this from the task's latest replicated
+    /// run before calling in; every other caller of this method leaves it null.</param>
     public static TaskClaimed Claim(
         TaskAggregate task, Guid nodeId, Guid ownerId, Guid runId, DateTimeOffset claimedAt,
-        string? ownerRootFingerprint = null)
+        string? ownerRootFingerprint = null, string? resumesBranch = null)
     {
         if (task.State != TaskState.Queued)
         {
@@ -1254,7 +1257,7 @@ public static class TaskDecider
 
         return new TaskClaimed(
             task.Id, nodeId, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
-            OwnerRootFingerprint: ownerRootFingerprint);
+            OwnerRootFingerprint: ownerRootFingerprint, ResumesBranch: resumesBranch);
     }
 
     public static TaskRequeued Requeue(

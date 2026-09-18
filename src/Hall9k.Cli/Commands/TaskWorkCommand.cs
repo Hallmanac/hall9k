@@ -1294,6 +1294,24 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     {
         if (taskDetails.RetryBranch.IsNotBlank())
         {
+            // A branch this task's RetryBranch names because a headless claim resumed it from
+            // another node (idea 202383dc, piece C's residual, criterion 1) never falls back to a
+            // clean cut here either — the same loud-by-name failure
+            // RunLauncher.CheckoutFreshOrRetryAsync gives this exact shape, mirrored for the
+            // reason this method's own summary states: an interactive claim shares this branch's
+            // fate with the daemon's own claim, and silently starting over would quietly abandon
+            // whatever that foreign node's own run left behind. The flag survives on a Queued task
+            // even after a headless claim that set it requeues without ever launching, so a human
+            // reaching this same task through h9k task work or h9k task start still owes it the
+            // loud failure, not just the daemon's own next claim.
+            if (taskDetails.RetryBranchResumesForeignNode)
+            {
+                Worktree resumed = await worktrees.CheckoutExistingAsync(
+                    new FollowUpWorktreeRequest(project.RepositoryPath, taskDetails.RetryBranch, taskId, runId),
+                    cancellationToken);
+                return (resumed, true);
+            }
+
             try
             {
                 Worktree resumed = await worktrees.CheckoutExistingAsync(
