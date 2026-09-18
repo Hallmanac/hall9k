@@ -171,22 +171,21 @@ public sealed class VerificationRunnerScopedGateTests
             .Should().Be("dotnet build");
     }
 
+    /// <summary>
+    /// Combining a host-coupled gate's own filter with whatever filter its command already carries
+    /// is <see cref="VerificationRunner.ApplyTestFilter"/>'s own job, not
+    /// <see cref="VerificationRunner.ComposeGateCommand"/>'s: that combining behavior already has
+    /// six dedicated cases above (plain, single-quoted, `=`, `:`, compound, post-segment), and
+    /// <see cref="An_ordinary_gates_command_runs_unchanged"/> plus this fact together already prove
+    /// <c>ComposeGateCommand</c>'s own one-line delegation to <c>ApplyTestFilter</c> — a second
+    /// combining case behind that same delegation reaches no boundary the existing ones do not
+    /// (independent pre-PR review, cycle 1, adversarial lens, low; dropped rather than kept).
+    /// </summary>
     [Fact]
     public void A_host_coupled_gates_own_filter_is_injected_into_its_command()
     {
         VerificationRunner.ComposeGateCommand(
                 new VerifyCommand("host", "dotnet test", HostCoupledFilter: "Category=RequiresDocker"))
             .Should().Be("""dotnet test --filter "Category=RequiresDocker" """.Trim());
-    }
-
-    [Fact]
-    public void A_host_coupled_gates_own_filter_combines_with_whatever_filter_the_command_already_carries()
-    {
-        VerificationRunner.ComposeGateCommand(
-                new VerifyCommand(
-                    "host",
-                    """dotnet test --filter "Category!=RequiresDocker" """.Trim(),
-                    HostCoupledFilter: "Category=RequiresDocker"))
-            .Should().Be("""dotnet test --filter "(Category!=RequiresDocker)&(Category=RequiresDocker)" """.Trim());
     }
 }
