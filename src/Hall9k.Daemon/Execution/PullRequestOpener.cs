@@ -577,10 +577,11 @@ public sealed class PullRequestOpener(
     /// <see cref="OpenAsync"/> makes ahead of every <c>gh pr create</c> so a retry on a branch this
     /// task's delivery already pushed adopts that pull request rather than being refused a second
     /// one for the same head (idea 202383dc, piece C's residual, criterion 2). Null when none is
-    /// open, including when the lookup itself could not be read — a failure here costs only the
-    /// adoption, and <c>gh pr create</c> below answers definitively either way (adopting nothing
-    /// leads straight into the ordinary create, which itself fails loudly if gh still refuses a
-    /// duplicate).
+    /// open, when more than one is (GitHub allows several open pull requests from the same head
+    /// with different bases, and there is no principled way to pick among them), or when the
+    /// lookup itself could not be read — a failure here costs only the adoption, and
+    /// <c>gh pr create</c> below answers definitively either way (adopting nothing leads straight
+    /// into the ordinary create, which itself fails loudly if gh still refuses a duplicate).
     /// </summary>
     private async Task<(string Url, int Number, string BaseRefName)?> TryFindOpenPullRequestByHeadAsync(
         string repositoryPath, string branch, CancellationToken cancellationToken)
@@ -614,6 +615,22 @@ public sealed class PullRequestOpener(
             using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
             if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() == 0)
             {
+                return null;
+            }
+
+            // GitHub permits several simultaneously-open pull requests from the same head branch
+            // as long as their bases differ — a human opening a second one onto a branch other
+            // than this task's own (alongside the platform's own, onto main) makes "the first one
+            // gh happens to list" an arbitrary answer. Refusing to adopt falls straight through to
+            // the ordinary create below, which itself fails loudly if gh still refuses a duplicate
+            // — the same "adopting nothing leads straight into the ordinary create" contract this
+            // method's own doc already promises (independent pre-PR review, cycle 1, adversarial
+            // lens).
+            if (document.RootElement.GetArrayLength() > 1)
+            {
+                logger.LogWarning(
+                    "Branch {Branch} has {Count} open pull requests — refusing to guess which one to adopt; "
+                    + "creating fresh", branch, document.RootElement.GetArrayLength());
                 return null;
             }
 
