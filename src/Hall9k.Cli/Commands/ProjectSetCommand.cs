@@ -631,8 +631,19 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // already covers Command and HostCoupledFilter together, so a gate whose filter just
             // changed is still caught (ApplyHostCoupledGateFilter clears the old designee's filter
             // too, so both the old and new host-coupled gate are validated, and only them).
-            IReadOnlyList<VerifyCommand> changedGates =
-                [.. gatesToValidate.Where(gate => !details.VerifyCommands.Contains(gate))];
+            //
+            // Unless this same invocation is also moving the checkout a gate would run against
+            // (--home or --repo passed alongside --verify): an unchanged gate record is still
+            // being attached to a repository it was never once run against, which record equality
+            // against the OLD checkout can never catch (independent pre-PR review, cycle 3,
+            // adversarial lens, low — validationTarget above was built for exactly this
+            // combination, and narrowing to changedGates alone left it dead code for a gate whose
+            // command didn't change). Falls back to the whole resolved list rather than trying to
+            // diff two different checkouts' worth of "changed".
+            bool checkoutChanging = homeDirectory.HasValue || repositoryPath.HasValue;
+            IReadOnlyList<VerifyCommand> changedGates = checkoutChanging
+                ? gatesToValidate
+                : [.. gatesToValidate.Where(gate => !details.VerifyCommands.Contains(gate))];
             if (changedGates.Count > 0)
             {
                 bool acceptedBrokenGate = await ValidateGatesAgainstCleanBaseAsync(
