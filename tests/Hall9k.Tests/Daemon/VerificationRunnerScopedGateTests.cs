@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Execution;
+using Hall9k.Domain.Features.Project;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -156,4 +157,36 @@ public sealed class VerificationRunnerScopedGateTests
     [InlineData("dotnet tests --no-build", false)]
     public void The_dotnet_test_gate_boundary_matches_only_the_bare_word(string command, bool expected) =>
         VerificationRunner.IsDotnetTestGate(command).Should().Be(expected);
+
+    /// <summary>
+    /// The whole of "the filter splits the two gates" (task: host-coupled tests run in their own
+    /// gate once per task, never in parallel with another run's copy): an ordinary gate's own
+    /// command runs unchanged, a host-coupled gate's own inclusion filter gets injected the same
+    /// way a fix cycle's own scoped reverify already injects one.
+    /// </summary>
+    [Fact]
+    public void An_ordinary_gates_command_runs_unchanged()
+    {
+        VerificationRunner.ComposeGateCommand(new VerifyCommand("build", "dotnet build"))
+            .Should().Be("dotnet build");
+    }
+
+    [Fact]
+    public void A_host_coupled_gates_own_filter_is_injected_into_its_command()
+    {
+        VerificationRunner.ComposeGateCommand(
+                new VerifyCommand("host", "dotnet test", HostCoupledFilter: "Category=RequiresDocker"))
+            .Should().Be("""dotnet test --filter "Category=RequiresDocker" """.Trim());
+    }
+
+    [Fact]
+    public void A_host_coupled_gates_own_filter_combines_with_whatever_filter_the_command_already_carries()
+    {
+        VerificationRunner.ComposeGateCommand(
+                new VerifyCommand(
+                    "host",
+                    """dotnet test --filter "Category!=RequiresDocker" """.Trim(),
+                    HostCoupledFilter: "Category=RequiresDocker"))
+            .Should().Be("""dotnet test --filter "(Category!=RequiresDocker)&(Category=RequiresDocker)" """.Trim());
+    }
 }
