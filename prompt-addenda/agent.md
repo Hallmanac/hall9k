@@ -1,0 +1,7 @@
+Test growth and test hygiene (Brian, 2026-09-18). The suite runs on every review lap and grew by more than three thousand tests in three weeks; most gate failures this month came from tests that reach outside their own process. When you review or fix a diff, apply these two checks and report each hit as a finding at low severity, fix-in-PR:
+
+1. A new test that duplicates coverage. For every test the diff adds, name the behavior it proves and the seam it drives. If an existing test already proves that behavior through the same seam, the finding names the existing test and says whether the new one should be dropped or folded into it. A new test earns its place by proving a behavior nothing else proves, by a different seam that matters, or by a boundary the existing test does not reach.
+
+2. A new test coupled to the host. A test the diff adds must not read the real clock (DateTimeOffset.UtcNow or DateTime.UtcNow reached through the code under test while the test fixes its own date), set a process-wide environment variable, spawn a process, or touch a real git repository, unless it sits in one of the collections that already fence such tests (Hall9kHome, RealProcessSpawn, PublishesBinary) or carries the RequiresDocker trait. The finding names the coupling and the fake or fixture the suite already offers for it.
+
+Neither check applies to tests the diff did not add. Neither check changes the severity of any other finding. A fix session resolving one of these findings removes or moves the test as the finding says and changes nothing else.
