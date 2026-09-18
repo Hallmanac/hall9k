@@ -1,0 +1,21 @@
+hall9k-task-record: 1
+task-id: 01a0b4c3-5ec6-77db-82f0-4045feb732c4
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#471
+objective: |-
+  No product code path a test can reach reads the wall clock directly: every DateTimeOffset.UtcNow and DateTime.UtcNow in src/ goes through an injected TimeProvider, so a test's fixed clock can never collide with the real date again
+criteria:
+  - Every one of the 311 direct wall-clock reads in src/ (DateTimeOffset.UtcNow, DateTime.UtcNow, DateTimeOffset.Now, DateTime.Now) is replaced by a TimeProvider the type already receives or now receives through its constructor, with TimeProvider.System registered once at composition root; behavior is unchanged
+  - Test fixtures that fix a clock (the static Now fields in InviteCommandsTests, MessageTransportTests, InviteDeciderTests, and every other test class with one) hand a FakeTimeProvider set to that same instant into the code under test, so the fixed date is the only clock the test ever sees
+  - A guard test fails the build the moment a file under src/ names the real clock directly, with the one-line allowlist for the composition root, so the sweep cannot regress
+  - dotnet build and dotnet test pass; the decision log carries one entry recording that product code reads time only through TimeProvider (Brian, 2026-09-18)
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/feb732c4-no-product-code-path-a-test-ca
+published: 2026-09-18 14:51:47Z
+context: |-
+  Test-hygiene move 1 of 3 from the 2026-09-18 analysis (notes/decisions-2026-09-18-hall9k-fb.md). Origin: three clock-shaped gate failures in one week, the last being the InviteCommandsTests time bomb (#469): the test class fixed Now = 2026-09-15 12:00Z, seeded an invite expiring 72 hours later, and ProjectJoinCommand compared it against DateTimeOffset.UtcNow, so every gate on every branch failed from 08:00 EDT on 2026-09-18. TimeProvider is already used in 69 files under src/; this finishes the job. Land at a lull: the sweep touches many files and will conflict with any open chain branch, so it is held unassigned until the distributed-team chain (idea 202383dc) drains (Brian, 2026-09-18: distributed teams stay the priority). Smallest shape: mechanical substitution, no behavior change, no new abstractions beyond TimeProvider itself.
