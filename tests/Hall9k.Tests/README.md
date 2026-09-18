@@ -5,8 +5,8 @@ aggregates through `Apply`, projections through a `FakeEvent<T>` stub, source-sc
 an **integration** tier backed by a real Postgres in Testcontainers. `dotnet test` with no filter
 runs both, and that is the only run that proves anything about a branch.
 
-Two xUnit traits exist so a narrower run can leave a tier out on purpose. Both are `Category`
-values, because that is what `dotnet test --filter` reads, and neither is decoration: each one is
+Four xUnit traits exist so a narrower run can leave a tier out on purpose. All four are `Category`
+values, because that is what `dotnet test --filter` reads, and none is decoration: each one is
 the handle a real gate command already uses.
 
 ## `Category=RequiresDocker`
@@ -43,6 +43,17 @@ time; `PublishLaneGuardTests` fails the build if a third publish test is ever ad
 attributes. A budget miss under load is thrown as `PublishBudgetExceededException`, which names the
 elapsed publish time and the dotnet-family process count it saw and classifies as an
 infrastructure-class timeout rather than a product assertion (`GateInfrastructureFailureClassifier`).
+
+## `Category=Hall9kHome`
+
+Carried by every class `HomeEnvironmentIsolationTests` requires to sit in the
+`[Collection("Hall9kHome")]` serial lane — every class that sets or resolves a `HALL9K_HOME`-derived
+path (see that guard's own doc comment for the full list of risky members it scans for). The
+collection is what actually serializes them against each other; the trait is what gives
+`--verify-gate-filter` and an ordinary cycle gate a `Category` to match on, the identical role
+`RequiresDocker`/`PublishesBinary` already play. `HomeEnvironmentIsolationTests` fails the build for
+a class that carries the collection without the trait beside it, the same "carries both attributes"
+shape `PublishLaneGuardTests` already enforces for `PublishesBinary`.
 
 ## `[Collection("RealProcessSpawn")]`
 
