@@ -68,14 +68,23 @@ internal sealed record PurgeOneResult(
 /// harmless, unlike a stream, event, or projection row, which is exactly what this purge is scoped to.
 /// </para>
 /// <para>
-/// The same reasoning leaves four more documents unmentioned in the deletes above and genuinely
+/// The same reasoning leaves eight more documents unmentioned in the deletes above and genuinely
 /// orphaned rather than accounted for by them: <c>CleanBaseGateVerdict</c>, <c>ObservedReviewRequest</c>
 /// and <c>ObservedReviewMention</c> (all keyed in part by <c>ProjectId</c>), and
-/// <c>TrackerClaimHold</c> (keyed by <c>TaskId</c>) are each mutable telemetry rather than
-/// projections of an event stream, so none is deleted by the nine queued statements above. Each
-/// sits harmlessly under an id nothing will ever look up again once its owning project or task is
-/// gone (independent pre-PR review, cycle 1, conformance lens, low) — this exclusion list is not
-/// exhaustive by omission, it names every document this purge deliberately leaves behind.
+/// <c>TrackerClaimHold</c>, <c>TaskHolderClaimHold</c>, <c>TaskHolderReleasePending</c>,
+/// <c>TaskTrackerAssignMirrorPending</c>, and <c>TaskTrackerReleaseMirrorPending</c> (each keyed by
+/// <c>TaskId</c>, idea 202383dc A3b) are each mutable telemetry rather than projections of an event
+/// stream, so none is deleted by the nine queued statements above. <c>TaskHolderClaimHold</c> sits
+/// harmlessly under an id nothing will ever look up again once its owning task is gone, permanently
+/// — its only deleter, <c>DispatchEngine.ReleaseHolderClaimHoldAsync</c>, only ever fires ahead of a
+/// later successful claim of a task whose stream this purge just destroyed. The
+/// three pending-mirror/release documents sit orphaned only until whichever node's own dispatch
+/// sweep next reaggregates their task, finds the stream gone, and deletes them as a permanent exit
+/// the identical way it already does for a task genuinely held elsewhere — a purge mid-flight
+/// between a holder change and that sweep picking it up is the only window either survives past.
+/// Each is harmless either way (independent pre-PR review, cycle 1, conformance lens, low) — this
+/// exclusion list is not exhaustive by omission, it names every document this purge deliberately
+/// leaves behind.
 /// </para>
 /// </summary>
 public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurgeEngine> logger)
