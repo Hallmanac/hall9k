@@ -14,8 +14,10 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// <c>ArgumentList</c>, which would re-escape it — and cmd.exe's own "first character is a
 /// quote" fallback strips exactly that outer pair, leaving every quote inside (around a
 /// path, a redirected file) exactly as written. Shared by every cmd.exe invocation that
-/// carries embedded quotes: <c>WindowsProcessManager</c>, <c>DaemonLifecycle.SpawnDetachedWindows</c>,
-/// and the Task Scheduler action <c>WindowsDaemonAutostart</c> registers.
+/// carries embedded quotes: <c>WindowsProcessManager</c>, <c>HeadlessLaunch</c>, and the launch
+/// script the Task Scheduler action <c>WindowsDaemonAutostart</c> registers runs. The daemon's
+/// own CLI-launched spawn no longer needs it — it goes through <c>CreateProcess</c> directly
+/// (<c>WindowsDaemonLaunch</c>, PLAN.md §16 PLACEHOLDER-d4e64dfa) with no shell in the way at all.
 /// </para>
 /// </summary>
 public static class WindowsCommandLine

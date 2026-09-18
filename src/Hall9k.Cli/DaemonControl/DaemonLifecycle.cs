@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using Hall9k.Cli.Diagnostics;
 using Hall9k.Cli.Infrastructure;
@@ -116,14 +117,14 @@ public static class DaemonLifecycle
         Directory.CreateDirectory(RunPaths.Root);
 
         // Start with a log that is inside its budget, so this run's output is not read
-        // out of a file that was already at the threshold. On Unix the running daemon
-        // enforces the same budget on its own timer (LogRotationService) — a daemon left up for
-        // weeks never reaches a start path again — and rotation is a copy-then-truncate
-        // either way, so the two never fight over the file. On Windows this rotation is the only
-        // one that ever lands: cmd.exe's `>>` redirect holds the log with FILE_SHARE_READ for the
-        // whole run, refusing the daemon's own timer its ReadWrite open on every tick
-        // (WindowsAppendOnlyLog, PLAN.md §16 #217), so a node that comes up only
-        // through the logon autostart task never enforces the budget at all.
+        // out of a file that was already at the threshold. The running daemon enforces the same
+        // budget on its own timer (LogRotationService) — a daemon left up for weeks never
+        // reaches a start path again — and rotation is a copy-then-truncate either way, so the
+        // two never fight over the file. That holds on Windows too now that the launcher hands
+        // h9kd an append handle with a permissive share mode rather than a cmd.exe `>>` redirect
+        // (WindowsDaemonLaunch, PLAN.md §16 PLACEHOLDER-d4e64dfa); before that this rotation was the only one
+        // that ever landed there, and a node coming up only through the logon autostart task
+        // never reached it at all.
         try
         {
             if (DaemonLog.RotateIfOversized())
@@ -197,7 +198,7 @@ public static class DaemonLifecycle
                 SpawnDetached(binary, connectionString);
             }
         }
-        catch
+        catch (Exception exception)
         {
             // Only the spawn attempt itself is covered here — SpawnDetached failing
             // outright, or autostart.StartAsync throwing rather than returning false.
@@ -212,6 +213,26 @@ public static class DaemonLifecycle
             // that is still genuinely booting as not running, the exact bug task 92da629d
             // exists to fix, reintroduced by a different trigger.
             DaemonStartingMarker.Delete(DaemonRuntime.StartingMarkerFile);
+
+            // The Windows spawn opens the daemon's log itself before creating the process
+            // (WindowsDaemonLaunch), so the two ways it fails are a log nobody else will share
+            // and a CreateProcess that refused the binary — both of them things an operator can
+            // act on, and neither worth a stack trace. Gated on the direct-spawn arm rather than
+            // on the exception type alone: the autostart arm above can raise the same
+            // Win32Exception from schtasks.exe itself, and answering that with advice about who
+            // is holding the log would name a cause it cannot have (self-review round two).
+            // Anything else still propagates to Program.cs's own mapping either way.
+            if (!startThroughAutostart && exception is IOException or Win32Exception)
+            {
+                await Console.Error.WriteLineAsync($"h9kd was not started: {exception.Message}");
+                await Console.Error.WriteLineAsync(
+                    $"Nothing is running and nothing was recorded. If that names {DaemonRuntime.LogFile}, "
+                    + "something else is holding the log with a share mode that excludes writers — a backup "
+                    + "pass, an on-access scanner, an editor left open on it. Close it or wait, then run "
+                    + "h9k daemon start again.");
+                return ExitCodes.Error;
+            }
+
             throw;
         }
 
@@ -414,45 +435,34 @@ public static class DaemonLifecycle
     /// above (which exists specifically to reparent h9kd off this CLI invocation and off
     /// its parent shell). What Windows lacks instead is a way to redirect a child's
     /// stdout/stderr to a FILE without this process owning the pipe (log #2's "the child
-    /// owns the handle" requirement) — cmd.exe's own <c>&gt;&gt;</c>/<c>2&gt;&amp;1</c>
-    /// syntax supplies that, exactly as <c>WindowsProcessManager</c> uses it for agent
-    /// sessions. cmd.exe stays alive for h9kd's whole run (a plain <c>/c "command"</c>
-    /// blocks until the child exits) — deliberately never awaited here, so this call
-    /// returns the moment the process is created and h9k's own start command keeps
-    /// running without waiting on the daemon's entire lifetime.
+    /// owns the handle" requirement), and <see cref="ProcessStartInfo"/> has no answer for
+    /// that at all: its redirection only ever hands the child a pipe this process owns. So
+    /// the log handle is opened here and passed to h9kd as an inheritable standard handle
+    /// through <c>CreateProcess</c> — see <see cref="WindowsDaemonLaunch"/>, which owns every
+    /// part of that and is shared with the logon autostart path.
     /// <para>
-    /// <see cref="WindowsStandardHandleInheritance"/> wraps the spawn: cmd.exe living for
-    /// h9kd's whole run means any handle it inherits from this process lives that whole run
-    /// too, and .NET's <see cref="Process.Start(ProcessStartInfo)"/> hands a child every
-    /// inheritable handle this process holds regardless of what <paramref name="binaryPath"/>'s
-    /// own <c>ProcessStartInfo</c> asks to redirect. Left unguarded, a caller piping or
-    /// redirecting this command's own output hands cmd.exe a duplicate of that pipe's write
-    /// handle at creation, and the caller then blocks reading it until the daemon itself
-    /// exits — see the guard's own doc for the origin incident.
+    /// This used to run h9kd under <c>cmd.exe /c "h9kd &lt; NUL &gt;&gt; h9kd.log 2&gt;&amp;1"</c>,
+    /// which supplied the same redirect at the price of a cmd.exe holding the log with
+    /// <c>FILE_SHARE_READ</c> only for h9kd's whole run. That is what refused h9kd its own
+    /// rotation-safe takeover of the log and refused <see cref="DaemonLogRotation"/> the
+    /// truncation the 8 MB budget needs — on every Windows node, at every start, always
+    /// (PLAN.md §16 PLACEHOLDER-d4e64dfa). Nothing this process opens outlives the call now: the handle is
+    /// closed the moment h9kd exists, so the daemon is the only writer left on its own log.
+    /// </para>
+    /// <para>
+    /// <paramref name="connectionString"/> rides on the child's environment for the reason the
+    /// Unix path's own doc gives above. The marker <c>WindowsAppendOnlyLog</c> keys on is set
+    /// inside <see cref="WindowsDaemonLaunch"/> rather than here, so the two launch paths
+    /// cannot disagree about it.
     /// </para>
     /// </summary>
     private static void SpawnDetachedWindows(string binaryPath, string connectionString)
     {
-        ProcessStartInfo shell = new()
-        {
-            FileName = "cmd.exe",
-            WorkingDirectory = RunPaths.Root,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
-        shell.Environment[Hall9kDatabase.EnvironmentVariableName] = connectionString;
-        // Tells h9kd this is the cmd.exe `>>` redirect WindowsAppendOnlyLog exists to
-        // survive a rotation of — see DaemonRuntime.AppendOnlyLogEnvironmentVariable's own
-        // doc for why this can't just be OperatingSystem.IsWindows().
-        shell.Environment[DaemonRuntime.AppendOnlyLogEnvironmentVariable] = "1";
-        // The raw Arguments string, never ArgumentList (see WindowsCommandLine): this
-        // command carries its own embedded quotes around the binary path and the log
-        // file, and ArgumentList would C-runtime-escape them in a way cmd.exe's own /c
-        // parsing does not undo.
-        shell.Arguments = WindowsCommandLine.WrapForCmdExe($"\"{binaryPath}\" < NUL >> \"{DaemonRuntime.LogFile}\" 2>&1");
-
-        using IDisposable handleGuard = WindowsStandardHandleInheritance.SuppressForChildProcesses();
-        using Process? process = Process.Start(shell);
+        WindowsDaemonLaunch.StartDetached(
+            binaryPath,
+            RunPaths.Root,
+            DaemonRuntime.LogFile,
+            [new(Hall9kDatabase.EnvironmentVariableName, connectionString)]);
     }
 
     /// <summary>
