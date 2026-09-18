@@ -44,11 +44,12 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// residual, criterion 1) — null for every ordinary claim, including a same-node reclaim, a
 /// human-requested retry, and a handback, each of which already carries its own resumed branch
 /// forward on <see cref="TaskAggregate.RetryBranch"/> without this field's help.
-/// <see cref="Handlers.TaskDecider.Claim"/> is the only decider that ever sets it, and only
-/// <c>DispatchEngine.TryClaimAsync</c> ever passes a value in: the CLI's own interactive and
-/// deliberate claims never look up run history for this, so
-/// <see cref="Handlers.TaskDecider.ClaimInteractively"/> and
-/// <see cref="Handlers.TaskDecider.ClaimDeliberately"/> carry no equivalent parameter.
+/// <see cref="Handlers.TaskDecider.Claim"/>, <see cref="Handlers.TaskDecider.ClaimInteractively"/>
+/// and <see cref="Handlers.TaskDecider.ClaimDeliberately"/> all accept it, each resolved the same
+/// way through <see cref="Queries.ForeignResumeBranchResolver"/> — by <c>DispatchEngine.TryClaimAsync</c>
+/// for the first, and by the CLI's own <c>h9k task work</c> and <c>h9k task start</c> doors for the
+/// other two, so a foreign node's own branch resumes no matter which of the three doors reclaims
+/// the task (independent pre-PR review, cycle 1, conformance lens).
 /// <see cref="TaskAggregate.Apply(TaskClaimed)"/> applies this onto <see cref="TaskAggregate.RetryBranch"/>
 /// exactly as <see cref="Events.TaskRetried"/> and <see cref="Events.TaskHandedBack"/> already do,
 /// so the ordinary <c>RetryBranch</c> path in <c>RunLauncher.CheckoutFreshOrRetryAsync</c> resumes

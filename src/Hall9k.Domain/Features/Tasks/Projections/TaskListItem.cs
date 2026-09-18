@@ -566,6 +566,16 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // Mirrors TaskAggregate.Apply(TaskClaimed): the marker earned its turn the moment a run
         // actually dispatches for it, regardless of which claim kind produced this event.
         view.QueuePriorityMarked = false;
+
+        // Mirrors TaskAggregate.Apply(TaskClaimed)'s own ResumesBranch handling, exactly as
+        // RetryBranch's own doc promises — a foreign-node resume is carried on RetryBranch the
+        // identical way a human-requested retry or handback already is, so this row must not
+        // drift from the aggregate it mirrors (independent pre-PR review, cycle 1, conformance
+        // lens).
+        if (@event.Data.ResumesBranch.IsNotBlank())
+        {
+            view.RetryBranch = @event.Data.ResumesBranch;
+        }
     }
 
     public void Apply(IEvent<TaskRequeued> @event, TaskListItem view)

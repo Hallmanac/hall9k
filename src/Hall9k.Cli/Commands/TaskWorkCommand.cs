@@ -718,6 +718,13 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         DateTimeOffset claimedAt = DateTimeOffset.UtcNow;
         string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
             session, context.OwnerId, cancellationToken);
+        // Resolved the same way DispatchEngine.TryClaimAsync resolves it for its own Claim, so a
+        // task whose latest run was a foreign node's own headless work resumes that branch here
+        // too rather than falling through to a fresh cut — an interactive claim shares this
+        // branch's fate with the daemon's own claim (independent pre-PR review, cycle 1,
+        // conformance lens).
+        string? resumesBranch = await ForeignResumeBranchResolver.ResolveAsync(
+            session, task, task.Id, Guid.Empty, cancellationToken);
 
         // Commit the claim before touching the filesystem — mirrors the daemon's own dispatch
         // order (DispatchEngine.TryClaimAsync commits TaskClaimed first; RunLauncher only then
@@ -741,19 +748,20 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         {
             (assigned, claimed, unmet) = PrepareInteractiveClaimFromPublished(
                 task, context.OwnerId, dependencies, runId, claimedAt, acknowledgeUnmetDependencies,
-                ownerRootFingerprint);
+                ownerRootFingerprint, resumesBranch);
         }
         else if (unmetAtEntry is not null)
         {
             (claimed, carriedForward) = PrepareInteractiveClaimFromBlocked(
                 task, context.OwnerId, unmetAtEntry, runId, claimedAt, acknowledgeUnmetDependencies,
-                ownerRootFingerprint: ownerRootFingerprint);
+                ownerRootFingerprint: ownerRootFingerprint, resumesBranch: resumesBranch);
             unmet = unmetAtEntry;
         }
         else
         {
             claimed = TaskDecider.ClaimInteractively(
-                task, context.OwnerId, runId, claimedAt, ownerRootFingerprint: ownerRootFingerprint);
+                task, context.OwnerId, runId, claimedAt, ownerRootFingerprint: ownerRootFingerprint,
+                resumesBranch: resumesBranch);
         }
 
         // The gate's own evidence rides in the same Append call, ahead of the claim it justified,
@@ -940,7 +948,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// </summary>
     internal static (TaskAssigned Assigned, TaskClaimed Claimed, IReadOnlyList<TaskDependency> UnmetDependencies) PrepareInteractiveClaimFromPublished(
         TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> dependencies, Guid runId, DateTimeOffset now,
-        bool acknowledgeUnmetDependencies, string? ownerRootFingerprint = null)
+        bool acknowledgeUnmetDependencies, string? ownerRootFingerprint = null, string? resumesBranch = null)
     {
         TaskAssigned assigned = TaskDecider.Assign(task, ownerId, dependencies, now, ownerId, ownerRootFingerprint);
         IReadOnlyList<TaskDependency> unmet =
@@ -977,7 +985,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         task.Apply(assigned);
         TaskClaimed claimed = TaskDecider.ClaimInteractively(
             task, ownerId, runId, now, unmet.Count > 0 || task.AwaitsRemoteStackedParent,
-            ownerRootFingerprint: ownerRootFingerprint);
+            ownerRootFingerprint: ownerRootFingerprint, resumesBranch: resumesBranch);
         return (assigned, claimed, unmet);
     }
 
@@ -1048,7 +1056,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// </summary>
     internal static (TaskClaimed Claimed, bool CarriedForward) PrepareInteractiveClaimFromBlocked(
         TaskAggregate task, Guid ownerId, IReadOnlyList<TaskDependency> unmetDependencies, Guid runId, DateTimeOffset now,
-        bool acknowledgeUnmetDependencies, string? ownerRootFingerprint = null)
+        bool acknowledgeUnmetDependencies, string? ownerRootFingerprint = null, string? resumesBranch = null)
     {
         bool carriedForward = !acknowledgeUnmetDependencies && task.UnmetDependenciesAlreadyAcknowledged;
         // A remote stacked parent with no local blocker behind it: the ordinary refusal below would
@@ -1077,7 +1085,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         TaskClaimed claimed = TaskDecider.ClaimInteractively(
             task, ownerId, runId, now, dependencyOverrideAcknowledged: true,
-            dependencyOverrideCarriedForward: carriedForward, ownerRootFingerprint: ownerRootFingerprint);
+            dependencyOverrideCarriedForward: carriedForward, ownerRootFingerprint: ownerRootFingerprint,
+            resumesBranch: resumesBranch);
         return (claimed, carriedForward);
     }
 
