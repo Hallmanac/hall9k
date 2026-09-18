@@ -1,0 +1,25 @@
+hall9k-task-record: 1
+task-id: 01a0b4ad-58f5-7105-af07-5a84fbac576a
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#469
+objective: |-
+  InviteCommandsTests no longer fails with the calendar: the invite expiry a test seeds is measured against the same clock the join command reads, so A_member_of_project_invite_with_no_existing_root_gets_the_joiners_own_root_at_join passes on any date
+criteria:
+  - |-
+    No invite record InviteCommandsTests seeds can read as already expired to the code under test, whatever the wall-clock date: either ProjectJoinCommand and InviteSweepEngine read an injected clock the test controls, or the test derives every ExpiresAt it seeds from the real clock the production code compares against; the fix touches nothing about what the join command or the sweep decides
+  - A_member_of_project_invite_with_no_existing_root_gets_the_joiners_own_root_at_join passes on 2026-09-18 and on every later date, and no other test in the suite compares a hard-coded date against DateTimeOffset.UtcNow through code under test (the fixed Now in MessageTransportTests and InviteDeciderTests is checked and left alone if it never reaches a real-clock comparison)
+  - dotnet build and dotnet test pass
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/fbac576a-invitecommandstests-no-longer
+published: 2026-09-18 13:20:59Z
+context: |-
+  Platform defect surfaced by the distributed-team chain (idea 202383dc), captured under the dogfood rule. Since 2026-09-18 08:00 EDT every test gate on this project fails deterministically on one test, on every branch and on a clean checkout of main at 22e0ed92.
+
+  Evidence: InviteCommandsTests.cs line 48 fixes `Now = 2026-09-15 12:00:00Z`; the failing test (line 522 on main) seeds a member-of-project invite with `ExpiresAt = Now.AddHours(72)` = 2026-09-18 12:00:00Z; ProjectJoinCommand.RunAsync (src/Hall9k.Cli/Commands/ProjectJoinCommand.cs lines 186 and 277) compares that against `DateTimeOffset.UtcNow` and throws "Invite ... expired at 2026-09-18 12:00:00Z". The wall clock crossed that instant at 08:00 EDT today. Bites observed: C prime 28953e7d run 01a0b47b gate at 09:04 (1 of 6235 failed, this test) and a67fa552 run 01a0b47c gate at 09:05 (this test plus one of its own); both verify-test.log files under tasks/<id>/runs/<run>/ carry the exception. Lineage: the test arrived with T2 invites (commit 74ca9f3e, 2026-09-15, PR #405), a feature, not a fix; nothing loops back. a67fa552's build session noticed the same bomb and left it alone as out of scope (its handoff.md).
+
+  Smallest fix preferred: keep the test's fixed clock for everything that never reaches the production clock, and seed the expiry the join command reads from `DateTimeOffset.UtcNow.AddHours(72)` (or inject a clock). Do not weaken the expiry check itself.
