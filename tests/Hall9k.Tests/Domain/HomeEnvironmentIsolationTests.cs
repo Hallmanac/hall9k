@@ -84,6 +84,7 @@ public sealed class HomeEnvironmentIsolationTests
 {
     private const string SelfFileName = "HomeEnvironmentIsolationTests.cs";
     private const string CollectionAttribute = "[Collection(\"Hall9kHome\")]";
+    private const string TraitAttribute = """[Trait("Category", "Hall9kHome")]""";
     private const string PostgresFixtureDeclaration = "IClassFixture<PostgresFixture>";
 
     private static readonly string[] RiskyMembers =
@@ -247,6 +248,19 @@ public sealed class HomeEnvironmentIsolationTests
         @"^[ \t]*\[Collection\(""Hall9kHome""\)\]",
         RegexOptions.Multiline | RegexOptions.Compiled);
 
+    // Same shape and same reasoning as CollectionAttributeLine immediately above: this guard
+    // requires [Collection("Hall9kHome")] mechanically, but nothing previously required the
+    // [Trait("Category", "Hall9kHome")] that commit 85066d2f added alongside it and that
+    // --verify-gate-filter actually selects on, so the two could silently diverge — a class
+    // could gain the collection (satisfying this guard) and never gain the trait, and its
+    // home-touching tests would keep running in the ordinary gate on every review lap
+    // (independent pre-PR review, cycle 3, conformance lens, medium). PublishesBinary already
+    // has this same "carries both attributes" pairing enforced (PublishLaneGuardTests); this is
+    // the same pairing for Hall9kHome.
+    private static readonly Regex TraitAttributeLine = new(
+        @"^[ \t]*\[Trait\(""Category"",\s*""Hall9kHome""\)\]",
+        RegexOptions.Multiline | RegexOptions.Compiled);
+
     [Fact]
     public void Every_test_class_touching_the_platform_home_environment_shares_the_serialized_collection()
     {
@@ -282,7 +296,10 @@ public sealed class HomeEnvironmentIsolationTests
             $"one unless it shares the {CollectionAttribute} xUnit collection — xUnit does not " +
             "inherit [Collection] from a containing type, so a nested class needs its own " +
             "attribute even when its enclosing class already carries one; add it directly above " +
-            "the offending class (see RunPathsTests or UpdateCommandTests) rather than special-casing it here");
+            "the offending class (see RunPathsTests or UpdateCommandTests) rather than special-casing it here. " +
+            $"It also needs {TraitAttribute} beside {CollectionAttribute}, not just the collection alone — " +
+            "that trait is what --verify-gate-filter actually selects a host-coupled gate's tests on, so a " +
+            "class carrying only the collection still runs in the ordinary gate on every review lap");
 
         // A floor on what the scan actually saw, so this test can pass green while checking
         // nothing — TestSourceTree.RootDirectory() no longer resolving to tests/Hall9k.Tests, or
@@ -515,6 +532,13 @@ public sealed class HomeEnvironmentIsolationTests
                 {
                     offenders.Add(frame.Name);
                 }
+                else if (!frame.HasTrait)
+                {
+                    // The collection is present but the filterable trait is not — the two can
+                    // otherwise drift silently apart, since this guard only ever required the
+                    // former (see TraitAttributeLine's own doc comment above).
+                    offenders.Add($"{frame.Name} (carries {CollectionAttribute} but not {TraitAttribute})");
+                }
 
                 start = index + member.Length;
             }
@@ -528,6 +552,7 @@ public sealed class HomeEnvironmentIsolationTests
         int BodyStart,
         int BodyEnd,
         bool HasAttribute,
+        bool HasTrait,
         bool TakesPostgresFixture);
 
     private static ClassFrame? InnermostFrame(List<ClassFrame> frames, int codeIndex)
@@ -574,11 +599,11 @@ public sealed class HomeEnvironmentIsolationTests
     {
         HashSet<int> codePositions = [.. originalIndex];
         List<ClassFrame> frames = [];
-        Stack<(string Name, bool HasAttribute, bool TakesPostgresFixture, int BodyDepth, int BodyStart)> open = [];
+        Stack<(string Name, bool HasAttribute, bool HasTrait, bool TakesPostgresFixture, int BodyDepth, int BodyStart)> open = [];
         Dictionary<int, int> lastBoundaryAtDepth = new() { [0] = 0 };
         Match[] declarations = [.. ClassDeclaration.Matches(code).Cast<Match>()];
         int nextDeclaration = 0;
-        (string Name, bool HasAttribute, int KeywordOriginalIndex)? armed = null;
+        (string Name, bool HasAttribute, bool HasTrait, int KeywordOriginalIndex)? armed = null;
         int depth = 0;
 
         for (int i = 0; i < code.Length; i++)
@@ -594,8 +619,10 @@ public sealed class HomeEnvironmentIsolationTests
                 string window = source.Substring(windowStart, keywordOriginalIndex - windowStart);
                 bool hasAttribute = CollectionAttributeLine.Matches(window).Any(
                     attributeMatch => codePositions.Contains(windowStart + attributeMatch.Index));
+                bool hasTrait = TraitAttributeLine.Matches(window).Any(
+                    attributeMatch => codePositions.Contains(windowStart + attributeMatch.Index));
 
-                armed = (match.Groups["name"].Value, hasAttribute, keywordOriginalIndex);
+                armed = (match.Groups["name"].Value, hasAttribute, hasTrait, keywordOriginalIndex);
             }
 
             char c = code[i];
@@ -616,6 +643,7 @@ public sealed class HomeEnvironmentIsolationTests
                     open.Push((
                         pendingClass.Name,
                         pendingClass.HasAttribute,
+                        pendingClass.HasTrait,
                         declaration.Contains(PostgresFixtureDeclaration, StringComparison.Ordinal),
                         depth,
                         i + 1));
@@ -630,8 +658,8 @@ public sealed class HomeEnvironmentIsolationTests
             {
                 if (open.Count > 0 && open.Peek().BodyDepth == depth)
                 {
-                    (string name, bool hasAttribute, bool takesPostgresFixture, _, int bodyStart) = open.Pop();
-                    frames.Add(new ClassFrame(name, bodyStart, i, hasAttribute, takesPostgresFixture));
+                    (string name, bool hasAttribute, bool hasTrait, bool takesPostgresFixture, _, int bodyStart) = open.Pop();
+                    frames.Add(new ClassFrame(name, bodyStart, i, hasAttribute, hasTrait, takesPostgresFixture));
                 }
 
                 depth--;
