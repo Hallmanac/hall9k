@@ -14,6 +14,7 @@ using Hall9k.Domain.Features.Run.Queries;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
@@ -480,6 +481,21 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         await WriteRemoteStackedParentAsync(session, details, cancellationToken);
+
+        if (details.HandoffNote.IsNotBlank())
+        {
+            // idea 202383dc, item 3: a note the holding node left for whoever holds this task next
+            // — ahead of the agent context below, the same "ahead of the work prompt's own context"
+            // placement the resuming prompt gives it (WorkPromptBuilder.Build).
+            AnsiConsole.MarkupLine(
+                "\n[bold]Handoff note[/] [dim](left by the previous holder for whoever holds this task next)[/]");
+            AnsiConsole.WriteLine(ExternalText.ForTerminal(details.HandoffNote));
+            string author = details.HandoffNoteAuthorNodeId is { } authorNodeId
+                ? $"node {DomainId.Short(authorNodeId)}"
+                : "an unrecorded node";
+            string when = details.HandoffNoteAt is { } notedAt ? notedAt.ToLocalTime().ToString("g") : "an unrecorded time";
+            AnsiConsole.MarkupLine($"  [dim]— {author.EscapeMarkup()} at {when}[/]");
+        }
 
         if (details.AgentContext.IsNotBlank())
         {
