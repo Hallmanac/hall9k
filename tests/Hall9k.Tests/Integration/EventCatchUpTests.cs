@@ -129,7 +129,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             firstRead.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -147,7 +147,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(6), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(6), trustChain: null, cts.Token);
             secondRead.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -174,7 +174,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(9), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9), trustChain: null, cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0, "task1's own envelope at seq 1 still applies cleanly");
             read.StalledAtSeq.Should().Be(3, "task2's own envelope is gone, so the read stops short of task3's own, later one");
         }
@@ -226,7 +226,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult fillRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeC, projectId, Now.AddSeconds(13), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(13), trustChain: null, cts.Token);
             fillRead.EventsApplied.Should().BeGreaterThan(0, "task2's own events, forwarded by node C, now apply");
         }
 
@@ -325,7 +325,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectIdA, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectIdA, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -365,7 +365,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult bootstrapRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeC, projectIdB, Now.AddSeconds(7), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeC, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(7), trustChain: null, cts.Token);
             bootstrapRead.EventsApplied.Should().BeGreaterThan(0, "node C's answer bootstraps node B's own, empty store");
         }
 
@@ -895,7 +895,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             read.EventsApplied.Should().BeGreaterThan(0);
         }
 
@@ -937,7 +937,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult fillRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeC, projectId, Now.AddSeconds(7), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(7), trustChain: null, cts.Token);
             fillRead.EventsApplied.Should().BeGreaterThan(0, "node C's answer brings the broadcast stream in");
         }
 

@@ -105,7 +105,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             read.SenderIgnored.Should().BeFalse();
             read.EventsApplied.Should().BeGreaterThan(0);
         }
@@ -174,7 +174,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectIdB, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             read.SenderIgnored.Should().BeFalse();
             read.EventsApplied.Should().BeGreaterThan(0);
         }
@@ -262,7 +262,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectIdB, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             read.SenderIgnored.Should().BeFalse("the envelope's own project key resolves to this exact local project");
             read.EventsApplied.Should().BeGreaterThan(0);
         }
@@ -341,7 +341,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, scopedProjectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             read.SenderIgnored.Should().BeTrue("the envelope's own project key resolves to a different local project");
             read.EventsApplied.Should().Be(0);
         }
@@ -423,7 +423,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(3), trustChain: liveTrustChain, cts.Token);
+                session, RepositoryPath, nodeA, scopedProjectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: liveTrustChain, cts.Token);
             read.SenderIgnored.Should().BeTrue("the live trust chain's own key already answers the question directly");
             read.EventsApplied.Should().Be(0);
         }
@@ -519,7 +519,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectIdB, Now.AddSeconds(4), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4), trustChain: null, cts.Token);
             read.SenderIgnored.Should().BeFalse();
             // Exactly the team event: ProjectRegistered (identity) and ProjectSettingsChanged
             // (node-scoped) are both never eligible to travel at all.
@@ -611,7 +611,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectIdB, Now.AddSeconds(4), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4), trustChain: null, cts.Token);
             read.SenderIgnored.Should().BeFalse();
             // Exactly the addendum event: ProjectRegistered (identity) is never eligible to travel.
             read.EventsApplied.Should().Be(1);
@@ -702,7 +702,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectIdB, Now.AddSeconds(4), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4), trustChain: null, cts.Token);
             read.SenderIgnored.Should().BeFalse();
             // Both events are still recorded — as facts, never applied to B's own project.
             read.EventsApplied.Should().Be(2);
@@ -816,7 +816,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             firstApplied = (await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(3), trustChain: null, cts.Token)).EventsApplied;
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token)).EventsApplied;
         }
 
         firstApplied.Should().BeGreaterThan(0);
@@ -824,7 +824,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult redelivered = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(4), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4), trustChain: null, cts.Token);
             redelivered.EventsApplied.Should().Be(0);
         }
 
@@ -984,7 +984,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             read.SenderIgnored.Should().BeTrue();
             read.EventsApplied.Should().Be(0);
         }
@@ -1326,7 +1326,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(4), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4), trustChain: null, cts.Token);
             read.SenderIgnored.Should().BeFalse();
             read.EventsApplied.Should().Be(
                 eventsInOneOriginalBatch, "each origin event id must apply exactly once, however many copies land in one read");
@@ -1388,7 +1388,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(4), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4), trustChain: null, cts.Token);
         }
 
         // Node B's own dispatch-style read of Queued candidates never sees this task once the
@@ -1481,7 +1481,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, scopedProjectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             firstRead.SenderIgnored.Should().BeTrue("the envelope's own project key resolves to a different local project");
         }
 
@@ -1491,7 +1491,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(4), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, scopedProjectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4), trustChain: null, cts.Token);
             secondRead.SenderIgnored.Should().BeTrue("nothing new was inspected, so the standing mismatch mark must carry forward");
             secondRead.EventsApplied.Should().Be(0);
         }
@@ -1573,7 +1573,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, scopedProjectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             firstRead.SenderIgnored.Should().BeTrue("the events envelope's own project key resolves to a different local project");
         }
 
@@ -1595,7 +1595,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, scopedProjectId, Now.AddSeconds(5), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, scopedProjectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(5), trustChain: null, cts.Token);
             secondRead.SenderIgnored.Should().BeTrue(
                 "the sender is still stamping the same foreign key, even though the newest envelope is not events-kind");
             secondRead.EventsApplied.Should().Be(0);
@@ -1656,7 +1656,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(2), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(2), trustChain: null, cts.Token);
             firstRead.SenderIgnored.Should().BeTrue("no node file vouches for this sender yet");
         }
 
@@ -1667,7 +1667,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
-                session, RepositoryPath, nodeA, projectId, Now.AddSeconds(3), trustChain: null, cts.Token);
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
             secondRead.SenderIgnored.Should().BeFalse("the sender is vouched again, even though this sweep found nothing new");
         }
 

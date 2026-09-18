@@ -324,7 +324,8 @@ public sealed class MessageSweepEngine(
             {
                 await using IDocumentSession eventsSession = store.LightweightSession();
                 EventReplicationReadResult read = await eventInbox.ReadFromAsync(
-                    eventsSession, project.RepositoryPath, tip.SenderNodeId, project.Id, now, trustChain, cancellationToken);
+                    eventsSession, project.RepositoryPath, tip.SenderNodeId, project.Id, nodeId, identity.OwnerRootFingerprint,
+                    now, trustChain, cancellationToken);
 
                 eventsReadComplete = !read.SenderIgnored;
 
