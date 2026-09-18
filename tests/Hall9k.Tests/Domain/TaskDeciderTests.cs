@@ -2412,6 +2412,63 @@ public sealed class TaskDeciderTests
         return task;
     }
 
+    // ── LeaveHandoff (idea 202383dc, item 3) ────────────────────────────────────────────────────
+
+    [Fact]
+    public void LeaveHandoff_by_the_holder_appends_the_note_the_author_and_the_time()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        TaskHandoffNoted noted = TaskDecider.LeaveHandoff(
+            task, "Migration script drafted but untested.", NodeA, "owner-fingerprint", Now);
+
+        noted.Id.Should().Be(task.Id);
+        noted.Note.Should().Be("Migration script drafted but untested.");
+        noted.AuthorNodeId.Should().Be(NodeA);
+        noted.AuthorOwnerRootFingerprint.Should().Be("owner-fingerprint");
+        noted.NotedAt.Should().Be(Now);
+
+        task.Apply(noted);
+        task.HandoffNote.Should().Be("Migration script drafted but untested.");
+        task.HandoffNoteAuthorNodeId.Should().Be(NodeA);
+        task.HandoffNoteAuthorOwnerRootFingerprint.Should().Be("owner-fingerprint");
+        task.HandoffNoteAt.Should().Be(Now);
+    }
+
+    [Fact]
+    public void LeaveHandoff_refuses_a_node_that_is_not_the_holder_and_names_the_holder()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid otherNode = DomainId.New();
+
+        Action act = () => TaskDecider.LeaveHandoff(task, "Not yours to note.", otherNode, "other-fingerprint", Now);
+
+        act.Should().Throw<DomainConflictException>()
+            .WithMessage($"*{DomainId.Short(NodeA)}*", "the refusal names the actual holder");
+    }
+
+    [Fact]
+    public void LeaveHandoff_refuses_when_nobody_holds_the_task()
+    {
+        TaskAggregate task = QueuedTask();
+
+        Action act = () => TaskDecider.LeaveHandoff(task, "Nobody holds this yet.", NodeA, "owner-fingerprint", Now);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*no node*");
+    }
+
+    [Fact]
+    public void LeaveHandoff_bounds_an_over_long_note()
+    {
+        TaskAggregate task = ClaimedTask();
+        string overLong = new('x', TaskDecider.MaxHandoffNoteLength + 500);
+
+        TaskHandoffNoted noted = TaskDecider.LeaveHandoff(task, overLong, NodeA, "owner-fingerprint", Now);
+
+        noted.Note.Length.Should().BeLessThan(overLong.Length);
+        noted.Note.Should().Contain($"Truncated at {TaskDecider.MaxHandoffNoteLength} characters");
+    }
+
     /// <summary>
     /// The owner these helpers assign to. Assignment is the dispatch trigger and the claim
     /// guard reads it (Decisions Log #34), so a task only reaches Queued through a named owner.

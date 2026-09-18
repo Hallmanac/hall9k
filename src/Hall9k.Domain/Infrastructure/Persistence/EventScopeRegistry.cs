@@ -66,6 +66,7 @@ public static class EventScopeRegistry
         [typeof(TaskDependencyRecovered)] = EventScope.ProjectScoped,
         [typeof(TaskFailed)] = EventScope.ProjectScoped,
         [typeof(TaskHandedBack)] = EventScope.ProjectScoped,
+        [typeof(TaskHandoffNoted)] = EventScope.ProjectScoped,
         [typeof(TaskHolderReleased)] = EventScope.ProjectScoped,
         [typeof(TaskInteractiveClaimUnassigned)] = EventScope.ProjectScoped,
         [typeof(TaskMechanicalResolutionAttempted)] = EventScope.ProjectScoped,

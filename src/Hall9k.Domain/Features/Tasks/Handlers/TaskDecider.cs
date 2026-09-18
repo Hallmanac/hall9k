@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -1287,6 +1288,38 @@ public static class TaskDecider
     /// </summary>
     public static TaskHolderReleased ReleaseHolder(TaskAggregate task, DateTimeOffset releasedAt) =>
         new(task.Id, releasedAt);
+
+    /// <summary>
+    /// The event's own text budget (idea 202383dc, item 3, criterion 1: "the note is capped, the
+    /// envelope cap applies") — the same bound <c>HandoffParser.MaxEventLength</c> already holds a
+    /// run's own closeout handoff to, so the ledger record's composed field never grows unbounded.
+    /// </summary>
+    public const int MaxHandoffNoteLength = 4000;
+
+    /// <summary>
+    /// h9k task handoff: the holding node leaves a note for whoever holds this task next (idea
+    /// 202383dc, item 3) — refused on any node that is not the current holder, naming who is.
+    /// </summary>
+    public static TaskHandoffNoted LeaveHandoff(
+        TaskAggregate task, string note, Guid nodeId, string ownerRootFingerprint, DateTimeOffset notedAt)
+    {
+        if (task.HolderNodeId != nodeId)
+        {
+            string holderName = task.HolderNodeId is { } holderNodeId
+                ? $"node {DomainId.Short(holderNodeId)}"
+                : "no node";
+            throw new DomainConflictException(
+                $"Task {task.Id} is held by {holderName}, not this node — only the holder can leave "
+                + "a handoff note for whoever holds it next.");
+        }
+
+        string bounded = note.Length <= MaxHandoffNoteLength
+            ? note
+            : note[..MaxHandoffNoteLength].TrimEnd()
+                + $"\n\n[Truncated at {MaxHandoffNoteLength} characters.]";
+
+        return new TaskHandoffNoted(task.Id, bounded, nodeId, ownerRootFingerprint, notedAt);
+    }
 
     /// <summary>
     /// h9k task work's claim: the operator's mirror of <see cref="Claim"/>, same
