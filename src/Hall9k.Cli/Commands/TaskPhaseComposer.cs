@@ -306,19 +306,32 @@ internal static class TaskPhaseComposer
     /// recorded between two gates, or one whose stream predates this field.
     /// </summary>
     private static TaskPhase VerifyingPhase(RunDetails run, SessionLiveness session, DateTimeOffset now) =>
-        HostCoupledGateWaitPhase(run, now) ?? (run.ActiveGate is { } gate
+        run.ActiveGate is { } gate
             ? GatePhase(gate, session, now)
-            : new TaskPhase("gates", SessionLiveness.NotApplicable, "build and test running"));
+            : HostCoupledGateWaitPhase(run, now) ?? new TaskPhase("gates", SessionLiveness.NotApplicable, "build and test running");
 
     /// <summary>
     /// The wait for the node-wide host-coupled-gate permit, when this run is in it (task: at most
-    /// one host-coupled gate runs on a node at a time — PLACEHOLDER-609bd344) — checked ahead of
-    /// <see cref="ActiveGate"/> in every phase a gate can run under, since a run waiting on the
-    /// permit has not spawned a process yet and so has no <c>ActiveGate</c> recorded at all. Never
-    /// counted as a failure: another run's own host-coupled gate finishing is what ends it.
+    /// one host-coupled gate runs on a node at a time — PLACEHOLDER-609bd344) — checked in every
+    /// phase a gate can run under, since a run waiting on the permit has not spawned a process yet
+    /// and so has no <c>ActiveGate</c> recorded at all. Never counted as a failure: another run's
+    /// own host-coupled gate finishing is what ends it.
+    /// <para>
+    /// Checked AFTER <see cref="ActiveGate"/> by both callers, and gated here on
+    /// <see cref="RunDetails.ActiveSessions"/> being empty, never trusted on its own (adversarial
+    /// review, medium): the daemon deliberately never writes <c>RunHostCoupledGateWaitEnded</c>
+    /// across its own abrupt shutdown mid-wait, so a restart that acquires the permit on its very
+    /// first try — nothing else was holding it — never appends a matching end either, and
+    /// <see cref="RunDetails.HostCoupledGateWaitStartedAt"/> stays set for the rest of the run's
+    /// life. A gate that has since actually started (<see cref="ActiveGate"/> non-null) or a
+    /// session that has since actually started (<c>ActiveSessions</c> non-empty) is concrete,
+    /// observed proof the wait ended in fact, whether or not the record admits it — either one
+    /// checked first is what keeps that stale flag from masking the genuinely running gate or
+    /// session it would otherwise report over for the rest of the run's life.
+    /// </para>
     /// </summary>
     private static TaskPhase? HostCoupledGateWaitPhase(RunDetails run, DateTimeOffset now) =>
-        run.HostCoupledGateWaitStartedAt is { } waitStartedAt
+        run.HostCoupledGateWaitStartedAt is { } waitStartedAt && run.ActiveSessions.Count == 0
             ? new TaskPhase(
                 "waiting for the host-coupled gate slot", SessionLiveness.NotApplicable,
                 $"another run on this node is using it; waited {DurationFormat.Short(now - waitStartedAt)} so far")
@@ -363,14 +376,19 @@ internal static class TaskPhaseComposer
         // empty while a gate runs — a resumed session after that exact stale-record shutdown
         // records one — so reading the gate unconditionally here would show its stale name and
         // elapsed time over the genuinely running session instead.
-        if (HostCoupledGateWaitPhase(run, now) is { } waitPhase)
-        {
-            return waitPhase;
-        }
-
+        //
+        // ActiveGate checked first, ahead of the host-coupled wait (adversarial review, medium):
+        // a gate that has actually started is concrete proof the wait already ended, whichever way
+        // the record reads it, so it must win over a HostCoupledGateWaitStartedAt a shutdown mid-wait
+        // stranded — see that phase's own doc comment for the origin shape.
         if (run.ActiveGate is { } gate && run.ActiveSessions.Count == 0)
         {
             return GatePhase(gate, session, now);
+        }
+
+        if (HostCoupledGateWaitPhase(run, now) is { } waitPhase)
+        {
+            return waitPhase;
         }
 
         // Named only past Discovery (task: review cycles after the first): Discovery is the shape
