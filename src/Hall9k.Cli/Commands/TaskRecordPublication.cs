@@ -111,6 +111,20 @@ internal static class TaskRecordPublication
             TaskRecord record = await ComposeAsync(
                 session, task, project, nodeId, nodeName, ownerFingerprint, publishedAt, existing?.Holder,
                 cancellationToken);
+            // A writer that is not this record's own origin node — a holder that took the task
+            // over from elsewhere calling in through h9k task handoff, the first reachable
+            // off-origin-node WriteAsync caller (independent pre-PR review, cycle 1, adversarial
+            // lens) — must not restamp origin-node/-node-name/-owner-fingerprint/-branch with its
+            // own identity: that would corrupt this record's provenance rather than merely revise
+            // its content. Carried through unchanged instead, the same "never invent or clear a
+            // claim that is not its own to make" discipline Holder already gets above. The origin
+            // node's own write (publish, revise, or its own handoff) is unaffected: it still
+            // refreshes this block every time, exactly as it always has.
+            if (existing is not null && existing.Origin.NodeId != nodeId)
+            {
+                record = record with { Origin = existing.Origin, OriginOwnerFingerprint = existing.OriginOwnerFingerprint };
+            }
+
             string content = record.ToYaml();
             if (current.Content == content)
             {

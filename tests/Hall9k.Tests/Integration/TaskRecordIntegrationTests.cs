@@ -385,6 +385,53 @@ public sealed class TaskRecordIntegrationTests(PostgresFixture postgres) : IClas
             "the write composes every other field fresh from the task, but the holder is never its own to invent or clear");
     }
 
+    /// <summary>
+    /// The sibling defect the holder test above already guards against, for the record's own
+    /// provenance block instead of its holder lock (independent pre-PR review, cycle 1, adversarial
+    /// lens): a write from a node OTHER than the one this record already names as its origin — a
+    /// holder that took the task over from elsewhere calling in through <c>h9k task handoff</c>, the
+    /// first reachable off-origin-node <see cref="TaskRecordPublication.WriteAsync"/> caller — must
+    /// not restamp origin-node/-node-name/-owner-fingerprint/-branch with its own identity. The
+    /// origin node's own write is unaffected: it still refreshes that block every time, which the
+    /// existing goldens throughout this file already exercise.
+    /// </summary>
+    [Fact]
+    public async Task WriteAsync_never_restamps_the_origin_block_when_the_writer_is_not_the_origin_node()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Install install = await SeedAsync(store, cts.Token);
+        Guid taskId = await AddTaskAsync(
+            store, install, "Migrate the widgets table", ["Migration completes cleanly"], null, cts.Token);
+        await PublishAsync(store, install, taskId, cts.Token);
+
+        FakeLedger ledger = new();
+        await WriteRecordAsync(store, install, taskId, ledger, cts.Token);
+        LedgerFile originalFile = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token);
+        TaskRecord original = TaskRecord.TryParse(originalFile.Content)!;
+
+        // A different node — the shape a holder that took the task over from elsewhere has — writes
+        // the record next, e.g. via h9k task handoff.
+        Guid otherNodeId = DomainId.New();
+        await using (IQuerySession session = store.QuerySession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            ProjectDetails project = (await session.LoadAsync<ProjectDetails>(install.ProjectId, cts.Token))!;
+            (await TaskRecordPublication.WriteAsync(
+                    session, task, project, otherNodeId, "OTHER-NODE", "other-node-fingerprint", Now.AddMinutes(1),
+                    ledger, Committer, SigningKey, cts.Token))
+                .Should().Be(TaskRecordPublication.WriteOutcome.Written);
+        }
+
+        LedgerFile rewrittenFile = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), cts.Token);
+        TaskRecord rewritten = TaskRecord.TryParse(rewrittenFile.Content)!;
+        rewritten.Origin.Should().Be(original.Origin,
+            "a writer that is not this record's own origin node must not restamp its provenance");
+        rewritten.OriginOwnerFingerprint.Should().Be(original.OriginOwnerFingerprint);
+    }
+
     /// <summary>Writes a record carrying <paramref name="holder"/> directly to <paramref name="ledger"/>, at the task's own path — the seam the holder carry-through test reads back through.</summary>
     private static async Task SeedRecordWithHolderAsync(
         FakeLedger ledger, Guid taskId, TaskRecordHolder holder, CancellationToken cancellationToken)
