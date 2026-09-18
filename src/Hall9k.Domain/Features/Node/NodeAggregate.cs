@@ -22,6 +22,10 @@ public sealed class NodeAggregate
 
     public DateTimeOffset? ClaimedOwnerAt { get; private set; }
 
+    /// <summary>The owner root fingerprint that minted the invite this node joined on, if any; see
+    /// <see cref="NodeInviterRecorded"/>. Null for a node that established its own genesis root.</summary>
+    public string? InviterOwnerRootFingerprint { get; private set; }
+
     /// <summary>
     /// This node's switch-on point for event replication (idea 202383dc, M2a) — null until
     /// <see cref="ReplicationSwitchedOn"/> is appended the first time replication ever runs here.
@@ -113,6 +117,11 @@ public sealed class NodeAggregate
     {
         ClaimedOwnerFingerprint = @event.OwnerFingerprint;
         ClaimedOwnerAt = @event.ClaimedAt;
+    }
+
+    public void Apply(NodeInviterRecorded @event)
+    {
+        InviterOwnerRootFingerprint = @event.InviterOwnerRootFingerprint;
     }
 
     public void Apply(ReplicationSwitchedOn @event)

@@ -47,6 +47,16 @@ public static class NodeDecider
         return new NodeOwnerClaimed(node.Id, ownerFingerprint, claimedAt);
     }
 
+    public static NodeInviterRecorded RecordInviter(NodeAggregate node, string inviterOwnerRootFingerprint, DateTimeOffset recordedAt)
+    {
+        if (inviterOwnerRootFingerprint.IsBlank())
+        {
+            throw new DomainValidationException("Recording a node's inviter needs that owner's root fingerprint.");
+        }
+
+        return new NodeInviterRecorded(node.Id, inviterOwnerRootFingerprint, recordedAt);
+    }
+
     /// <summary>
     /// Idea 202383dc, M2a: the caller checks <see cref="NodeAggregate.ReplicationSwitchOnSequence"/>
     /// is still null before ever calling this — switch-on happens exactly once per node, the first

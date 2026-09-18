@@ -388,6 +388,17 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             session.Events.Append(context.NodeId, NodeDecider.ClaimOwner(node, claimedFingerprint, now));
         }
 
+        // Recorded so a later brand-new bootstrap (MessageSweepEngine.ResolveVoucherNodeId) can name
+        // the inviting owner as its own voucher tier — the ranking EventCatchUpCoordinator.RankCandidates
+        // already implements but which was otherwise unreachable in production: a brand-new node is
+        // brand-new precisely because it just joined on someone's invite, and this is the one place
+        // that invite's own minting owner is ever in hand (independent pre-PR review, cycle 1,
+        // conformance lens, medium).
+        if (inviteMinterRoot is not null && node.InviterOwnerRootFingerprint != inviteMinterRoot)
+        {
+            session.Events.Append(context.NodeId, NodeDecider.RecordInviter(node, inviteMinterRoot, now));
+        }
+
         await RecordProjectKeyAsync(session, project, justWrittenProjectKey, chainReader, now, cancellationToken);
 
         await session.SaveChangesAsync(cancellationToken);

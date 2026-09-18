@@ -1,6 +1,8 @@
 using FluentAssertions;
 using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Trust;
 using Hall9k.Daemon.Messaging;
+using Hall9k.Domain.Features.Node;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -137,5 +139,59 @@ public sealed class MessageSweepEngineTests
         bool activeCadence = MessageSweepEngine.ComputeActiveCadence(hasUnflushedOrUnread: true, hasActiveRun: false);
 
         activeCadence.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The voucher tier <see cref="Hall9k.Connectors.Replication.EventCatchUpCoordinator.RankCandidates"/>
+    /// already implements but which a hard-coded null voucher left unreachable at the one bootstrap
+    /// site that actually has an inviter to name (independent pre-PR review, cycle 1, conformance
+    /// lens, medium): <see cref="MessageSweepEngine.ResolveVoucherNodeId"/> is the pure resolution
+    /// from a node's own recorded inviter to one of that owner's own current node ids.
+    /// </summary>
+    [Fact]
+    public void The_inviting_owners_own_node_resolves_as_the_voucher()
+    {
+        Guid inviterNodeId = Guid.Parse("55555555-5555-5555-5555-555555555555");
+        NodeDetails nodeDetails = new() { InviterOwnerRootFingerprint = "inviter-root" };
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                ["inviter-root"] = new TrustedOwner(
+                    "inviter-root", "ssh-ed25519 AAAAFAKE inviter-root",
+                    [new TrustedNode(inviterNodeId.ToString(), "ssh-ed25519 AAAAFAKE inviter-node", "inviter-node-fingerprint", DateTimeOffset.UtcNow)]),
+            },
+            []);
+
+        Guid? voucherNodeId = MessageSweepEngine.ResolveVoucherNodeId(nodeDetails, trustChain);
+
+        voucherNodeId.Should().Be(inviterNodeId);
+    }
+
+    [Fact]
+    public void A_node_that_established_its_own_genesis_root_has_no_voucher()
+    {
+        NodeDetails nodeDetails = new() { InviterOwnerRootFingerprint = null };
+
+        Guid? voucherNodeId = MessageSweepEngine.ResolveVoucherNodeId(nodeDetails, TrustChain.Empty);
+
+        voucherNodeId.Should().BeNull("a node that established its own genesis root was never invited by anyone");
+    }
+
+    [Fact]
+    public void No_node_details_at_all_has_no_voucher()
+    {
+        Guid? voucherNodeId = MessageSweepEngine.ResolveVoucherNodeId(nodeDetails: null, TrustChain.Empty);
+
+        voucherNodeId.Should().BeNull();
+    }
+
+    [Fact]
+    public void An_inviter_no_longer_recognized_by_the_live_trust_chain_has_no_voucher()
+    {
+        NodeDetails nodeDetails = new() { InviterOwnerRootFingerprint = "revoked-root" };
+
+        Guid? voucherNodeId = MessageSweepEngine.ResolveVoucherNodeId(nodeDetails, TrustChain.Empty);
+
+        voucherNodeId.Should().BeNull("a revoked owner's chain no longer appears in the live trust chain at all");
     }
 }

@@ -24,6 +24,9 @@ public sealed class NodeDetails
 
     public DateTimeOffset? ClaimedOwnerAt { get; set; }
 
+    /// <summary>Mirrors <see cref="NodeAggregate.InviterOwnerRootFingerprint"/>.</summary>
+    public string? InviterOwnerRootFingerprint { get; set; }
+
     /// <summary>Mirrors <see cref="NodeAggregate.ReplicationSwitchOnSequence"/>.</summary>
     public long? ReplicationSwitchOnSequence { get; set; }
 
@@ -116,6 +119,11 @@ public sealed class NodeDetailsProjection : SingleStreamProjection<NodeDetails, 
     {
         view.ClaimedOwnerFingerprint = @event.Data.OwnerFingerprint;
         view.ClaimedOwnerAt = @event.Data.ClaimedAt;
+    }
+
+    public void Apply(IEvent<NodeInviterRecorded> @event, NodeDetails view)
+    {
+        view.InviterOwnerRootFingerprint = @event.Data.InviterOwnerRootFingerprint;
     }
 
     public void Apply(IEvent<ReplicationSwitchedOn> @event, NodeDetails view)
