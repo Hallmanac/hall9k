@@ -906,7 +906,13 @@ demanding an attestation for it.
 ### Install and the daemon
 
 `h9k install` · `h9k update` · `h9k uninstall [--purge-data]` · `h9k daemon start | stop | status` ·
-`h9k daemon autostart enable | disable`
+`h9k daemon autostart enable | disable` · `h9k daemon autostart launch`
+
+`h9k daemon autostart launch` is the one command in this section nobody types: it is the vehicle
+the Windows logon task runs, and it exists to open `h9kd.log` with an append handle the daemon can
+inherit, since a handle cannot be passed through the VBScript command line the registration
+composes (Decisions Log PLACEHOLDER-d4e64dfa). See [INSTALL.md](INSTALL.md) for the Windows mechanics around it,
+including the one-time `h9k daemon autostart enable` an already-registered machine needs.
 
 `uninstall` takes the platform off the machine — binaries, PATH link, autostart, and everything
 else `install` itself wrote under `~/.hall9k` — but leaves a registered project's home,
