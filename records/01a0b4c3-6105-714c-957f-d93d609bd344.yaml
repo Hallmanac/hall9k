@@ -21,3 +21,7 @@ origin-branch: task/609bd344-host-coupled-tests-run-in-thei
 published: 2026-09-18 14:51:51Z
 context: |-
   Test-hygiene move 2 of 3 from the 2026-09-18 analysis (notes/decisions-2026-09-18-hall9k-fb.md). Evidence over the last 14 days: 59 of 539 test-gate runs failed, and the failures concentrate in about ten classes that reach outside the process (NonInteractiveGitTests 14, TaskHolderClaimTests 7, StackedChildTests 6, RunSupervisorTests 6, DecisionsLogNumberingGuardTests 6, publish/doctor/process-manager tests), colliding when three gates run in parallel on a memory-limited Mac. The categories already exist in the suite (54 RequiresDocker traits; the Hall9kHome, RealProcessSpawn, PublishesBinary collections fence 103 classes); the gate does not use them. VerificationRunner already narrows a dotnet test gate by scope (TestScopeResolver, TestGateScope), so this extends a mechanism rather than adding one. Parked unassigned until the distributed-team chain (idea 202383dc) drains (Brian, 2026-09-18). Container cap (4) is an OOM guard and stays.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-09-18 14:52:02Z
