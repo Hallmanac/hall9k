@@ -845,7 +845,34 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Skipped;
         }
 
-        // A newer run owns this task's PR now (a follow-up pushed after this one) — this
+        // Closeout, review re-request, merge, and follow-up dispatch act on a run only while this
+        // node is the task's ledger holder (idea 202383dc, A3b): a produced run whose task has
+        // since been held elsewhere is skipped here, before the network call below and before the
+        // CurrentRunId check that follows, with the run record left open — nothing supersedes it,
+        // nothing completes it, and the very next sweep asks the identical question again. Ahead
+        // of the CurrentRunId check on purpose, not merely cheaper than it: HolderNodeId is written
+        // only by Apply(TaskClaimed), which sets CurrentRunId to the very same claim's own run id
+        // in the same append, so a real cross-node handoff — a different node's TaskClaimed
+        // replicated here — always leaves task.CurrentRunId naming that other node's run, never
+        // this one's. Run below the CurrentRunId check, that branch would see this run superseded
+        // by a run it does not own and append RunSuperseded for it before this node's own holder
+        // check ever ran, closing the run record the criterion says must stay open for whichever
+        // node still holds the task (independent pre-PR review, this branch's fix cycle). Guid.Empty
+        // is never "held elsewhere": it is the interactive/deliberate self-claim sentinel (h9k task
+        // work, h9k task start — TaskAggregate.IsInteractiveClaim's own discriminator), inherently
+        // single-node by construction, and the ledger never carries a holder write for one at all
+        // (DispatchEngine's own claim path is the only writer).
+        if (task.HolderNodeId is { } holderNodeId && holderNodeId != Guid.Empty && holderNodeId != node.NodeId)
+        {
+            logger.LogInformation(
+                "Task {TaskId}: this node no longer holds it (idea 202383dc, A3b) — skipping closeout "
+                + "for run {RunId}; its record stays open for whichever node does",
+                task.Id, run.Id);
+            return InspectionOutcome.Skipped;
+        }
+
+        // A newer run owns this task's PR now (a follow-up pushed after this one, on this same
+        // node — the holder check above has already ruled out a foreign node's own handoff) — this
         // run's watch is over; retire it so the watch set stays bounded.
         if (task.CurrentRunId != run.Id)
         {
@@ -868,28 +895,6 @@ public sealed class CloseoutEngine(
         if ((task.State != TaskState.Done && task.State != TaskState.Blocked)
             || task.PullRequestUrl.IsBlank() || run.PullRequestNumber is not > 0)
         {
-            return InspectionOutcome.Skipped;
-        }
-
-        // Closeout, review re-request, merge, and follow-up dispatch act on a run only while this
-        // node is the task's ledger holder (idea 202383dc, A3b): a produced run whose task has
-        // since been held elsewhere is skipped here, before the network call below, with the run
-        // record left open — nothing supersedes it, nothing completes it, and the very next sweep
-        // asks the identical question again. This is deliberately cheaper than the CurrentRunId
-        // check above rather than a substitute for it: that check catches a newer run on this same
-        // node's own task; this one catches the task having changed hands to a different node
-        // entirely while this run's watch was still open (the holder released — this node's own
-        // lease expired — and a different node claimed it back before this sweep got here).
-        // Guid.Empty is never "held elsewhere": it is the interactive/deliberate self-claim
-        // sentinel (h9k task work, h9k task start — TaskAggregate.IsInteractiveClaim's own
-        // discriminator), inherently single-node by construction, and the ledger never carries a
-        // holder write for one at all (DispatchEngine's own claim path is the only writer).
-        if (task.HolderNodeId is { } holderNodeId && holderNodeId != Guid.Empty && holderNodeId != node.NodeId)
-        {
-            logger.LogInformation(
-                "Task {TaskId}: this node no longer holds it (idea 202383dc, A3b) — skipping closeout "
-                + "for run {RunId}; its record stays open for whichever node does",
-                task.Id, run.Id);
             return InspectionOutcome.Skipped;
         }
 

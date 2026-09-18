@@ -2348,6 +2348,44 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// The scenario <see cref="A_produced_run_whose_task_is_held_elsewhere_is_skipped_before_any_network_call"/>
+    /// manufactures directly rather than reaches: a genuine cross-node handoff, where
+    /// <see cref="TaskAggregate.CurrentRunId"/> names the foreign node's own follow-up run rather
+    /// than the run this node's own sweep is watching (independent pre-PR review, this branch's
+    /// fix cycle). Before the holder check ran ahead of the CurrentRunId check, this exact shape
+    /// tripped the "a newer run owns this task's PR now" branch instead, appending RunSuperseded
+    /// onto a run this node no longer holds the task to conclude — the very thing the criterion
+    /// says must not happen.
+    /// </summary>
+    [Fact]
+    public async Task A_genuine_cross_node_handoff_never_supersedes_the_run_it_leaves_behind()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid originalRunId, Guid foreignHolderNodeId) =
+            await SeedAwaitingReviewSupersededByForeignFollowUpClaimAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { IsMerged = true } };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.Inspections.Should().Be(0, "the holder gate skips before this node ever asks gh anything");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(originalRunId, cts.Token))!;
+        run.State.Should().Be(RunState.AwaitingReview,
+            "the original run stays open for whichever node now holds the task — it must not read Superseded");
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.HolderNodeId.Should().Be(foreignHolderNodeId, "this sweep never claimed anything from the other node");
+        aggregate.CurrentRunId.Should().NotBe(originalRunId, "the foreign node's own follow-up claim owns a fresh run id");
+
+        await RetireWatchAsync(store, originalRunId, cts.Token);
+    }
+
+    /// <summary>
     /// Backlog 44's whole point: GitHub's own CONFLICTING read dispatches a rebase follow-up
     /// through the same reopen pipeline as a failing check or unresolved thread, spending the
     /// same budget — once the mechanical fast path (task fc85f609 recommendation 3) has tried and
@@ -5726,6 +5764,85 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         await session.SaveChangesAsync(cancellationToken);
         return (taskId, runId, foreignNodeId);
+    }
+
+    /// <summary>
+    /// The shape a real cross-node handoff actually produces, unlike
+    /// <see cref="SeedAwaitingReviewHeldByForeignNodeAsync"/>, which manufactures HolderNodeId and
+    /// CurrentRunId disagreeing with each other by construction (that method's own doc comment says
+    /// so). This one dispatches a genuine local run, reopens it the ordinary way
+    /// (<see cref="TaskDecider.Reopen"/>), releases this node's own ledger holder the same shape the
+    /// platform's own handoff path always gives it (<see cref="TaskDecider.Requeue"/>'s own sibling
+    /// event, <see cref="TaskDecider.ReleaseHolder"/> — a lease expiring on the now-Queued task,
+    /// say), and only then lets a different node claim the follow-up. <c>Apply(TaskClaimed)</c>
+    /// writes <see cref="TaskAggregate.HolderNodeId"/> and <see cref="TaskAggregate.CurrentRunId"/>
+    /// from that one event together, so the resulting <c>CurrentRunId</c> names the foreign node's
+    /// own follow-up run — never the original run this node's own sweep still watches, exactly the
+    /// disagreement a real handoff leaves behind.
+    /// </summary>
+    private static async Task<(Guid TaskId, Guid OriginalRunId, Guid ForeignHolderNodeId)> SeedAwaitingReviewSupersededByForeignFollowUpClaimAsync(
+        DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string repoPath, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = node.OwnerId;
+        Guid projectId = DomainId.New();
+        Guid foreignNodeId = DomainId.New();
+
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out", BranchNameTemplate.Default, ExternalReference: null), cancellationToken);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null, null, Now, ownerId);
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, ownerId, Now);
+        List<object> taskEvents = [.. lifecycle];
+
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+            TaskDecider.Claim(task, node.NodeId, ownerId, DomainId.New(), Now);
+        task.Apply(claimed);
+        taskEvents.Add(claimed);
+        Guid originalRunId = task.CurrentRunId!.Value;
+        int originalLeaseGeneration = task.LeaseGeneration;
+
+        Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+            TaskDecider.Complete(task, originalRunId, PullRequestUrl, Now);
+        task.Apply(completed);
+        taskEvents.Add(completed);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskReopened reopened = TaskDecider.Reopen(
+            task, originalRunId, worktree.Branch, "CI checks failing.", FollowUpKind.FailingChecks,
+            automatic: true, Now, ownerId);
+        task.Apply(reopened);
+        taskEvents.Add(reopened);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskHolderReleased released = TaskDecider.ReleaseHolder(task, Now);
+        task.Apply(released);
+        taskEvents.Add(released);
+
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed foreignClaimed =
+            TaskDecider.Claim(task, foreignNodeId, ownerId, DomainId.New(), Now, "owner-b-fingerprint");
+        task.Apply(foreignClaimed);
+        taskEvents.Add(foreignClaimed);
+
+        session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+        session.Events.StartStream<RunAggregate>(originalRunId,
+            new RunDispatched(originalRunId, taskId, node.NodeId, ownerId, originalLeaseGeneration, DomainId.New(),
+                worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(originalRunId, Now),
+            new VerificationPassed(originalRunId, Now),
+            new PullRequestOpened(originalRunId, PullRequestUrl, 7, Now));
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, ownerId, DomainId.New(), $"closeout-{taskId:N}", repoPath, null, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, originalRunId, foreignNodeId);
     }
 
     /// <summary>
