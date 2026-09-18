@@ -1,0 +1,21 @@
+hall9k-task-record: 1
+task-id: 01a0b58e-a3bd-76d6-aec1-451c2d2c34de
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#476
+objective: A pending ledger holder release that cannot reach origin is retried with backoff, not on every dispatch tick, so an outage produces a handful of attempts and a handful of log lines instead of one every five seconds
+criteria:
+  - A TaskHolderReleasePending row (and the matching claim and release mirror pending rows) records its attempt count and last attempt time, and the sweep retries it only once its backoff has elapsed, on the same schedule the tracker-mirror retries already use (TrackerMirrorRetryBackoff, capped at an hour)
+  - The warning for a failed release attempt is logged once per episode and once more when the attempt count crosses each backoff step, never on every tick; the first success after failures logs one line saying how many attempts it took
+  - |-
+    Tests through the dispatch engine's existing fakes: a release that fails is not retried before its backoff elapses; a release that succeeds after failures clears the row and logs the recovery once; the pending row survives a daemon restart with its attempt count
+  - dotnet build and dotnet test pass; the decision log carries one entry
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/2d2c34de-a-pending-ledger-holder-releas
+published: 2026-09-18 17:27:24Z
+context: |-
+  Platform defect captured under the dogfood rule. Evidence: on 2026-09-18 GitHub was unreachable from this Mac (DNS) from 13:03 to about 13:23. a67fa552 was abandoned at 13:19, and its holder release could not fetch refs/hall9k/ledger/records; the dispatch engine retried it on every tick, every five seconds, for four minutes (38 attempts, three warn lines each: two GitLedger fetch failures and one "releasing the ledger holder failed"), until the network came back. The tracker-mirror pending rows already have a backoff table (DispatchEngine.TrackerMirrorRetryBackoff, added in #467's fix cycle); the holder-release pending row does not use it. Small and self-contained; published unassigned in the fixes lane behind the distributed-team chain (Brian, 2026-09-18).
