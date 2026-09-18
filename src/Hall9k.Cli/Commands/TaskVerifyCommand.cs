@@ -201,8 +201,36 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         foreach (VerifyCommand gate in project.VerifyCommands)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]Running gate '{gate.Name}'...[/]");
+
+            // At most one host-coupled gate runs on this node at a time (task: host-coupled tests
+            // run in their own gate once per task, never in parallel with another run's copy —
+            // PLACEHOLDER-609bd344), the identical guarantee VerificationRunner's own daemon-side
+            // gate already gives — an operator's own h9k task verify shares the same node and the
+            // same lock file, so it waits its turn too rather than running a second copy of the
+            // Docker/git/process-table tests this whole feature exists to keep apart.
+            IAsyncDisposable? hostCoupledPermit = null;
+            if (gate.IsHostCoupled)
+            {
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[dim]Gate '{gate.Name}' is host-coupled — waiting for the node-wide slot if another run is using it...[/]");
+                hostCoupledPermit = await HostCoupledGate.AcquirePermitAsync(cancellationToken);
+            }
+
             Stopwatch gateStopwatch = Stopwatch.StartNew();
-            (bool passed, string summary) = await RunGateAsync(run.WorktreePath, gate, cancellationToken);
+            bool passed;
+            string summary;
+            try
+            {
+                (passed, summary) = await RunGateAsync(run.WorktreePath, gate, cancellationToken);
+            }
+            finally
+            {
+                if (hostCoupledPermit is not null)
+                {
+                    await hostCoupledPermit.DisposeAsync();
+                }
+            }
+
             TimeSpan gateElapsed = gateStopwatch.Elapsed;
             if (passed)
             {
@@ -452,6 +480,13 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
         string gateWaitDirectory = Directory.CreateTempSubdirectory("hall9k-verify-gate-wait-").FullName;
         process.StartInfo.Environment[GateWaitEvidenceDirectoryEnvironmentVariable] = gateWaitDirectory;
 
+        // A host-coupled gate's own filter always applies when it runs here too (independent
+        // pre-PR review, cycle 1, adversarial lens, medium): mirrors
+        // VerificationRunner.ComposeGateCommand, so what h9k task verify runs for that gate
+        // matches what the daemon runs for it, rather than the unfiltered command defeating the
+        // split this feature exists to draw.
+        string command = HostCoupledGate.ComposeGateCommand(gate);
+
         if (OperatingSystem.IsWindows())
         {
             process.StartInfo.FileName = "cmd.exe";
@@ -472,13 +507,13 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
             // in one extra pair and set as the raw Arguments string exactly as
             // VerificationRunner.RunGateAsync already does for the identical cmd.exe path
             // (adversarial review, cycle 1).
-            process.StartInfo.Arguments = WindowsCommandLine.WrapForCmdExe(gate.Command);
+            process.StartInfo.Arguments = WindowsCommandLine.WrapForCmdExe(command);
         }
         else
         {
             process.StartInfo.FileName = "/bin/sh";
             process.StartInfo.ArgumentList.Add("-c");
-            process.StartInfo.ArgumentList.Add(gate.Command);
+            process.StartInfo.ArgumentList.Add(command);
         }
 
         // Streamed to the console line by line as it arrives, and buffered in parallel for the

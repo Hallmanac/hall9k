@@ -253,4 +253,24 @@ public sealed class ProjectSetCommandTests
         act.Should().Throw<DomainValidationException>()
             .WithMessage("*name=filter*");
     }
+
+    /// <summary>
+    /// VerificationRunner.ComposeGateCommand injects a host-coupled gate's own filter as a
+    /// `dotnet test --filter`, unconditionally, for whichever gate this designation names
+    /// (independent pre-PR review, cycle 1, both lenses, medium) — a build gate, a lint gate, or
+    /// any other shell command would have that flag spliced into it and fail (or, for a wrapper
+    /// that ignores unknown arguments, silently run unfiltered) the first time the daemon actually
+    /// spawns it. Refused here, at set time, rather than only failing later against a live run.
+    /// </summary>
+    [Fact]
+    public void A_verify_gate_filter_naming_a_non_dotnet_test_gate_is_a_refusal_naming_the_command()
+    {
+        VerifyCommand[] gates = [new VerifyCommand("build", "dotnet build")];
+
+        Action act = () => ProjectSetCommand.ApplyHostCoupledGateFilter(gates, "build=Category=RequiresDocker");
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*'build'*")
+            .WithMessage("*dotnet test*");
+    }
 }
