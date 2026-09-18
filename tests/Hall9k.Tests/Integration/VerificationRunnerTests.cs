@@ -2121,6 +2121,145 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// Task: host-coupled tests run in their own gate once per task, never in parallel with
+    /// another run's copy. A host-coupled gate runs at the run's first verification and its
+    /// final full pass — both unscoped, <c>scopeSinceSha</c> null — and is skipped on an
+    /// intermediate review-cycle pass in between, which is always scoped to the fix's own
+    /// commits. Exercised as one continuing run's own three passes, the same run VerifyAsync is
+    /// called on repeatedly a real fix cycle would.
+    /// </summary>
+    [Fact]
+    public async Task Host_coupled_gate_runs_at_first_and_final_passes_and_is_skipped_between_them()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        string marker = Path.Combine(Path.GetTempPath(), $"hall9k-vt-hostcoupled-{Guid.NewGuid():N}");
+        VerifyCommand ordinary = new("build", GateScript.Passes);
+        VerifyCommand hostCoupled = new(
+            "host",
+            GateScript.New().Print("start").CreateFile(marker).Exit(0).Command,
+            HostCoupledFilter: "Category=RequiresDocker");
+        (Guid taskId, Guid runId) = await SeedAsync(store, [ordinary, hostCoupled], cts.Token);
+
+        try
+        {
+            bool firstPassed = await NewRunner(store).VerifyAsync(
+                runId, taskId, scopeSinceSha: null, "first verification", RunSessionLeg.Build, cts.Token);
+            firstPassed.Should().BeTrue();
+            File.Exists(marker).Should().BeTrue("the run's first verification runs the host-coupled gate");
+            File.Delete(marker);
+
+            bool secondPassed = await NewRunner(store).VerifyAsync(
+                runId, taskId, scopeSinceSha: "deadbeef", "intermediate review cycle", RunSessionLeg.ReviewPass, cts.Token);
+            secondPassed.Should().BeTrue();
+            File.Exists(marker).Should().BeFalse("an intermediate review-cycle pass skips the host-coupled gate");
+
+            bool thirdPassed = await NewRunner(store).VerifyAsync(
+                runId, taskId, scopeSinceSha: null, "final full pass", RunSessionLeg.ReviewPass, cts.Token);
+            thirdPassed.Should().BeTrue();
+            File.Exists(marker).Should().BeTrue("the final full pass runs the host-coupled gate again");
+
+            await using IQuerySession query = store.QuerySession();
+            var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+            List<VerificationPassed> passes = [.. events.Select(e => e.Data).OfType<VerificationPassed>()];
+            passes.Should().HaveCount(3);
+
+            GateDuration firstHostGate = passes[0].GateDurations!.Single(g => g.Gate == "host");
+            firstHostGate.HostCoupledSkipped.Should().BeFalse();
+            firstHostGate.Passed.Should().BeTrue();
+
+            GateDuration secondHostGate = passes[1].GateDurations!.Single(g => g.Gate == "host");
+            secondHostGate.HostCoupledSkipped.Should().BeTrue("h9k task show has to say this pass skipped it");
+            secondHostGate.Duration.Should().Be(TimeSpan.Zero);
+            secondHostGate.Passed.Should().BeTrue("a deliberate skip is never a failure");
+            GateDuration secondOrdinaryGate = passes[1].GateDurations!.Single(g => g.Gate == "build");
+            secondOrdinaryGate.HostCoupledSkipped.Should().BeFalse("only the host-coupled gate is ever skipped this way");
+            secondOrdinaryGate.Passed.Should().BeTrue();
+
+            GateDuration thirdHostGate = passes[2].GateDurations!.Single(g => g.Gate == "host");
+            thirdHostGate.HostCoupledSkipped.Should().BeFalse("the final full pass runs it again");
+            thirdHostGate.Passed.Should().BeTrue();
+        }
+        finally
+        {
+            File.Delete(marker);
+        }
+    }
+
+    /// <summary>
+    /// Task: at most one host-coupled gate runs on a node at a time — a second run wanting one
+    /// waits for the first to finish, and the wait is recorded and shown as the run's own phase
+    /// rather than counted as a failure. Two runs seeded here share this test process's own
+    /// <c>HALL9K_HOME</c> (<see cref="PlatformPaths.Home"/>, redirected by <c>_home</c> for the
+    /// whole test class), so both contend for the identical cross-process permit file regardless
+    /// of which node id each was seeded with — verifying them concurrently proves serialization
+    /// the same way two real daemon processes on one machine would.
+    /// </summary>
+    [Fact]
+    public async Task Two_concurrent_runs_serialize_on_the_host_coupled_gate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        string overlapLog = Path.Combine(Path.GetTempPath(), $"hall9k-vt-hostcoupled-overlap-{Guid.NewGuid():N}");
+        VerifyCommand hostCoupled = new(
+            "host",
+            GateScript.New()
+                .Print("start")
+                .AppendTo("enter", overlapLog)
+                .Pause(TimeSpan.FromMilliseconds(400))
+                .AppendTo("exit", overlapLog)
+                .Exit(0).Command,
+            HostCoupledFilter: "Category=RequiresDocker");
+
+        Guid projectId = DomainId.New();
+        Guid nodeId = DomainId.New();
+        (Guid taskId1, Guid runId1) = await SeedAsync(
+            store, [hostCoupled], cts.Token, projectId: projectId, nodeId: nodeId);
+        (Guid taskId2, Guid runId2) = await SeedAsync(
+            store, [hostCoupled], cts.Token, projectId: projectId, nodeId: nodeId, registerProject: false);
+
+        try
+        {
+            VerificationRunner runner = NewRunner(store);
+            Task<bool> first = runner.VerifyAsync(
+                runId1, taskId1, scopeSinceSha: null, "first run", RunSessionLeg.Build, cts.Token);
+            Task<bool> second = runner.VerifyAsync(
+                runId2, taskId2, scopeSinceSha: null, "second run", RunSessionLeg.Build, cts.Token);
+            bool[] results = await Task.WhenAll(first, second);
+
+            results.Should().AllSatisfy(passed => passed.Should().BeTrue());
+
+            string[] lines = File.ReadAllLines(overlapLog);
+            lines.Should().HaveCount(4, "each of the two runs enters and exits the host-coupled gate once");
+            for (int i = 0; i < lines.Length; i += 2)
+            {
+                lines[i].Should().Be("enter");
+                lines[i + 1].Should().Be(
+                    "exit", "the host-coupled gate never overlaps: one run's own exit always precedes the next run's enter");
+            }
+
+            await using IQuerySession query = store.QuerySession();
+            var events1 = await query.Events.FetchStreamAsync(runId1, token: cts.Token);
+            var events2 = await query.Events.FetchStreamAsync(runId2, token: cts.Token);
+            int waitStarts = events1.Select(e => e.Data).OfType<RunHostCoupledGateWaitStarted>().Count()
+                + events2.Select(e => e.Data).OfType<RunHostCoupledGateWaitStarted>().Count();
+            int waitEnds = events1.Select(e => e.Data).OfType<RunHostCoupledGateWaitEnded>().Count()
+                + events2.Select(e => e.Data).OfType<RunHostCoupledGateWaitEnded>().Count();
+            waitStarts.Should().Be(1, "exactly one of the two runs had to wait for the other's own host-coupled gate");
+            waitEnds.Should().Be(1, "the wait it recorded also ended once the permit was granted");
+
+            RunDetails run1 = (await query.LoadAsync<RunDetails>(runId1, cts.Token))!;
+            RunDetails run2 = (await query.LoadAsync<RunDetails>(runId2, cts.Token))!;
+            run1.HostCoupledGateWaitStartedAt.Should().BeNull("the wait always clears once the permit is granted");
+            run2.HostCoupledGateWaitStartedAt.Should().BeNull();
+        }
+        finally
+        {
+            File.Delete(overlapLog);
+        }
+    }
+
+    /// <summary>
     /// Seeds the worktree as a real repo shaped like this one — `main`, a task branch ahead of it
     /// (the same shape <see cref="InitGitWorktreeAsync"/> gives the uncommitted-files tests,
     /// needed here too: <see cref="VerificationRunner"/>'s own no-commit check would otherwise

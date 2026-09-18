@@ -227,6 +227,16 @@ public sealed partial class VerificationRunner(
                 runId, scope.IsScoped ? "scoped" : "full", scope.Reason);
         }
 
+        // A host-coupled gate only ever runs at the first verification and the final full pass —
+        // both unscoped (scopeSinceSha null) — and is skipped on every intermediate review-cycle
+        // pass, which is always scoped to the fix's own commits (task: host-coupled tests run in
+        // their own gate once per task, never in parallel with another run's copy —
+        // PLACEHOLDER-609bd344). This is the identical condition the scope block above already
+        // uses to decide Full vs. a resolved scope, so a host-coupled gate needs no separate
+        // signal threaded down from RunSupervisor's own first-verification call or ReviewEngine's
+        // own ReviewMode: unscoped IS "first or final pass", scoped IS "intermediate cycle".
+        bool runHostCoupledGate = scopeSinceSha is null;
+
         // Counted per gate rather than OR'd into one flag (independent pre-PR review, cycle 4):
         // a project can configure more than one `dotnet test`-shaped gate, and a single shared
         // flag recorded the whole pass as full-scope the moment ANY one of them fell back, even
@@ -234,7 +244,11 @@ public sealed partial class VerificationRunner(
         // this HEAD — exactly the gap the mandatory pre-Settling full gate exists to close.
         // dotnetTestGateCount and dotnetTestGateFellBackCount together answer "did every
         // configured test gate actually run at full scope", never guessed from a single gate's
-        // own outcome.
+        // own outcome. A host-coupled gate never counts here (PLACEHOLDER-609bd344): its own
+        // run/skip axis is orthogonal to fix-scope narrowing, tracked separately on
+        // GateDuration.HostCoupledSkipped instead, and mixing it in would make a project with a
+        // configured host-coupled gate never read as allTestGatesFellBack on a scoped pass that
+        // skipped it outright rather than falling back to full.
         int dotnetTestGateCount = 0;
         int dotnetTestGateFellBackCount = 0;
 
@@ -270,9 +284,26 @@ public sealed partial class VerificationRunner(
         foreach (VerifyCommand gate in gates)
         {
             bool gateIsDotnetTest = IsDotnetTestGate(gate.Command);
-            if (gateIsDotnetTest)
+            if (gateIsDotnetTest && !gate.IsHostCoupled)
             {
                 dotnetTestGateCount++;
+            }
+
+            // Skipped outright, not run at full scope and discarded (PLACEHOLDER-609bd344): an
+            // intermediate review-cycle pass never pays for the categories of tests this gate's
+            // own filter selects — the ones that reach outside the process (git, the process
+            // table, the toolchain, Docker) — only the run's first verification and its final
+            // full pass do. Recorded with a zero duration and Passed true (a skip is never a
+            // failure) so h9k task show can say which passes ran this gate and which skipped it,
+            // rather than the skip reading as silence the way an absent entry would.
+            if (gate.IsHostCoupled && !runHostCoupledGate)
+            {
+                gateDurations.Add(new GateDuration(
+                    gate.Name, TimeSpan.Zero, Passed: true, RanFullScope: true, HostCoupledSkipped: true));
+                logger.LogInformation(
+                    "Run {RunId} gate '{Gate}' skipped: host-coupled, and this pass is an intermediate review cycle",
+                    runId, gate.Name);
+                continue;
             }
 
             Stopwatch gateStopwatch = Stopwatch.StartNew();
@@ -282,7 +313,7 @@ public sealed partial class VerificationRunner(
             bool gateFellBackToFull = fellBackToFull;
             if (passed)
             {
-                if (gateIsDotnetTest && gateFellBackToFull)
+                if (gateIsDotnetTest && !gate.IsHostCoupled && gateFellBackToFull)
                 {
                     dotnetTestGateFellBackCount++;
                 }
@@ -344,7 +375,7 @@ public sealed partial class VerificationRunner(
             gateFellBackToFull = retryFellBackToFull;
             if (retryPassed)
             {
-                if (gateIsDotnetTest && gateFellBackToFull)
+                if (gateIsDotnetTest && !gate.IsHostCoupled && gateFellBackToFull)
                 {
                     dotnetTestGateFellBackCount++;
                 }
@@ -1035,9 +1066,15 @@ public sealed partial class VerificationRunner(
         }
         Directory.CreateDirectory(gateWaitDirectory);
 
+        // A host-coupled gate's own filter always applies when it runs — never combined with
+        // scope narrowing, since this method is only ever called for one with runHostCoupledGate
+        // true, which is exactly the condition under which `scope` below is never IsScoped
+        // (PLACEHOLDER-609bd344). Applied before the scope block so the scope header, when one is
+        // written, still describes the gate that actually ran (host-coupled and full).
+        string command = ComposeGateCommand(gate);
+
         // Scoping only ever touches a `dotnet test`-shaped gate's own command — a build gate, a
         // lint gate, anything else configured runs exactly as the project wrote it, scope or not.
-        string command = gate.Command;
         string? header = null;
         if (scope is not null && IsDotnetTestGate(gate.Command))
         {
@@ -1060,6 +1097,45 @@ public sealed partial class VerificationRunner(
         string redirect = header is null ? ">" : ">>";
         string innerCommand = $"({command}) {redirect} \"{logFile}\" 2>&1";
 
+        // At most one host-coupled gate runs on this node at a time (task: host-coupled tests run
+        // in their own gate once per task, never in parallel with another run's copy —
+        // PLACEHOLDER-609bd344): held for the whole spawn-and-wait span below, released in the
+        // same finally block that already records GateEnded, so a second run's own host-coupled
+        // gate never runs concurrently with this one's on the same machine.
+        IAsyncDisposable? hostCoupledPermit = gate.IsHostCoupled
+            ? await AcquireHostCoupledGatePermitAsync(runId, cancellationToken)
+            : null;
+        try
+        {
+            return await RunGateProcessAsync(
+                runId, runDirectory, worktreePath, gate, scope, logFile, gateWaitDirectory, innerCommand,
+                cancellationToken);
+        }
+        finally
+        {
+            if (hostCoupledPermit is not null)
+            {
+                await hostCoupledPermit.DisposeAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// The spawn, wait, and classification half of <see cref="RunGateAsync"/> — split out only so
+    /// the node-wide host-coupled-gate permit (<see cref="AcquireHostCoupledGatePermitAsync"/>)
+    /// can wrap this whole span in one try/finally without disturbing this method's own internal
+    /// control flow (PLACEHOLDER-609bd344). <paramref name="innerCommand"/> is already the fully
+    /// composed shell command — scope filter, host-coupled filter, and log redirection all
+    /// applied — so this method never reads <c>gate.Command</c> for anything but
+    /// <see cref="IsDotnetTestGate"/> checks and its own recursive fallback call, which goes back
+    /// through <see cref="RunGateAsync"/> (never this method directly) so a fallback run acquires
+    /// its own permit too, when the gate it is falling back for happens to be host-coupled.
+    /// </summary>
+    private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt, bool FellBackToFull)>
+        RunGateProcessAsync(
+        Guid runId, string runDirectory, string worktreePath, VerifyCommand gate, TestGateScope? scope,
+        string logFile, string gateWaitDirectory, string innerCommand, CancellationToken cancellationToken)
+    {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
         {
@@ -1579,6 +1655,110 @@ public sealed partial class VerificationRunner(
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new GateEnded(runId, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The file name a host-coupled gate's own cross-process permit locks — one fixed name under
+    /// <see cref="PlatformPaths.Home"/>, so every run on this node contends for the identical file
+    /// regardless of which task or project it belongs to (task: at most one host-coupled gate runs
+    /// on a node at a time — PLACEHOLDER-609bd344). <c>FileShare.None</c> gives an exclusive lock
+    /// that the operating system releases automatically if the holding process dies, the same
+    /// idiom <c>GitWorktreeManager.AcquireLockFileAsync</c> already uses for repository/checkout
+    /// serialization — no reclaim or heartbeat bookkeeping needed.
+    /// </summary>
+    private const string HostCoupledGateLockFileName = ".h9k-host-coupled-gate.lock";
+
+    /// <summary>
+    /// Acquires the node-wide host-coupled-gate permit, waiting when another run's own
+    /// host-coupled gate already holds it (task: at most one host-coupled gate runs on a node at a
+    /// time — PLACEHOLDER-609bd344). The first attempt is silent: a permit acquired on the first
+    /// try means there was nothing to wait for, so no wait is recorded on the run at all. Only a
+    /// genuine wait appends <see cref="RunHostCoupledGateWaitStarted"/> before polling and
+    /// <see cref="RunHostCoupledGateWaitEnded"/> the moment the permit is actually granted, so
+    /// <c>h9k task show</c> reads the wait as this run's own phase rather than as a failure.
+    /// </summary>
+    private async Task<IAsyncDisposable> AcquireHostCoupledGatePermitAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(PlatformPaths.Home);
+        string lockFilePath = Path.Combine(PlatformPaths.Home, HostCoupledGateLockFileName);
+
+        FileStream? stream = TryOpenHostCoupledGateLockFile(lockFilePath);
+        if (stream is not null)
+        {
+            return new HostCoupledGatePermit(stream);
+        }
+
+        await RecordHostCoupledGateWaitStartedAsync(runId, cancellationToken);
+        try
+        {
+            while (true)
+            {
+                await Task.Delay(200, cancellationToken);
+                stream = TryOpenHostCoupledGateLockFile(lockFilePath);
+                if (stream is not null)
+                {
+                    return new HostCoupledGatePermit(stream);
+                }
+            }
+        }
+        finally
+        {
+            // CancellationToken.None, not the (possibly already-cancelled) cancellationToken this
+            // wait was given: unlike GateEnded, nothing ever rechecks a stuck wait flag against an
+            // observable fact later — ActiveGate's own stuck-on-shutdown case is safe to leave
+            // standing because a restart's adoption re-reads the gate's real OS process id and
+            // reports honestly either way, but a wait has no such ground truth to recheck against,
+            // so a daemon shutdown that lands here must still clear it or the run reads as waiting
+            // on the host-coupled-gate slot forever, even once it moves on to something else
+            // entirely. Best-effort: a database this cannot reach either is a rarer, harder failure
+            // this catch leaves for the next thing to touch this run to surface honestly, rather
+            // than losing the genuine cancellation this method is already propagating underneath it.
+            try
+            {
+                await RecordHostCoupledGateWaitEndedAsync(runId, CancellationToken.None);
+            }
+            catch (Exception exception)
+            {
+                logger.LogWarning(exception,
+                    "Run {RunId}: could not record the host-coupled-gate wait as ended", runId);
+            }
+        }
+    }
+
+    private static FileStream? TryOpenHostCoupledGateLockFile(string lockFilePath)
+    {
+        try
+        {
+            return new FileStream(lockFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>The permit's own disposable — releasing the file's exclusive lock is the whole release.</summary>
+    private sealed class HostCoupledGatePermit(FileStream stream) : IAsyncDisposable
+    {
+        public ValueTask DisposeAsync()
+        {
+            stream.Dispose();
+            return ValueTask.CompletedTask;
+        }
+    }
+
+    private async Task RecordHostCoupledGateWaitStartedAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new RunHostCoupledGateWaitStarted(runId, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task RecordHostCoupledGateWaitEndedAsync(Guid runId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new RunHostCoupledGateWaitEnded(runId, DateTimeOffset.UtcNow));
         await session.SaveChangesAsync(cancellationToken);
     }
 
@@ -2218,6 +2398,20 @@ public sealed partial class VerificationRunner(
         ExecutedTestTotalPattern().IsMatch(output) || NoTestMatchesWarningPattern().IsMatch(output)
             ? "the scoped filter matched no tests"
             : "no executed-test summary was found in the gate's output";
+
+    /// <summary>
+    /// The command a gate actually runs: its own configured <see cref="VerifyCommand.Command"/>,
+    /// with <see cref="VerifyCommand.HostCoupledFilter"/> injected via <see cref="ApplyTestFilter"/>
+    /// when the gate is host-coupled (task: host-coupled tests run in their own gate once per
+    /// task, never in parallel with another run's copy — PLACEHOLDER-609bd344). This is the whole
+    /// of what "the filter splits the two gates" means: an ordinary gate's own command already
+    /// carries whatever exclusion the project configured it with (<c>--verify</c> is free-form
+    /// shell), and a host-coupled gate's command gets its own inclusion filter injected here,
+    /// combined with anything it already carries the identical way a fix cycle's own scoped
+    /// reverify combines one in.
+    /// </summary>
+    internal static string ComposeGateCommand(VerifyCommand gate) =>
+        gate.IsHostCoupled ? ApplyTestFilter(gate.Command, gate.HostCoupledFilter!) : gate.Command;
 
     /// <summary>
     /// Injects <paramref name="filterExpression"/> into a `dotnet test` command, combining with
