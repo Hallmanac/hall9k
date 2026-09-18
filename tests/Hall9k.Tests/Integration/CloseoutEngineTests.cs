@@ -2313,6 +2313,41 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// Idea 202383dc, A3b: closeout, review re-request, merge, and follow-up dispatch act on a
+    /// run only while this node is the task's ledger holder. A produced run whose task's holder
+    /// has moved elsewhere is skipped before the network call, with the run record left exactly
+    /// as it was — nothing supersedes it, nothing completes it, and no gh call is ever made.
+    /// </summary>
+    [Fact]
+    public async Task A_produced_run_whose_task_is_held_elsewhere_is_skipped_before_any_network_call()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+
+        (Guid taskId, Guid runId, Guid foreignHolderNodeId) =
+            await SeedAwaitingReviewHeldByForeignNodeAsync(store, node, worktrees, repoPath, cts.Token);
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { IsMerged = true } };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        await engine.PollOnceAsync(cts.Token);
+
+        inspector.Inspections.Should().Be(0, "the holder gate skips before this node ever asks gh anything");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.AwaitingReview, "the run record stays open for whichever node holds the task");
+
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "nothing here completes, supersedes, or otherwise touches the task");
+
+        TaskAggregate aggregate = (await query.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        aggregate.HolderNodeId.Should().Be(foreignHolderNodeId, "this sweep never claimed anything from the other node");
+
+        await RetireWatchAsync(store, runId, cts.Token);
+    }
+
+    /// <summary>
     /// Backlog 44's whole point: GitHub's own CONFLICTING read dispatches a rebase follow-up
     /// through the same reopen pipeline as a failing check or unresolved thread, spending the
     /// same budget — once the mechanical fast path (task fc85f609 recommendation 3) has tried and
@@ -4620,10 +4655,19 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         await NewEngine(store, node, inspector, worktrees, github: github).PollOnceAsync(cts.Token);
 
         (string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory) call =
-            github.Calls.Should().ContainSingle("a GitHub reference is told through gh, not Jira's REST API").Subject;
+            github.Calls.Should().ContainSingle(
+                c => c.Arguments.Contains("comment"),
+                "a GitHub reference is told through gh, not Jira's REST API").Subject;
         call.FileName.Should().Be("gh");
         call.Arguments.Should().ContainInOrder("issue", "comment", "42", "--repo", "o/r", "--body");
         call.Arguments[^1].Should().Contain(PullRequestUrl).And.Contain(taskId.ToString());
+
+        // The release-side tracker-assignee mirror (criterion 5, idea 202383dc, A3b) reads this
+        // install's own gh login as part of releasing the ledger holder true completion gives
+        // back — the one other gh call this closeout makes, alongside the merge comment above.
+        github.Calls.Should().ContainSingle(
+            c => !c.Arguments.Contains("comment"),
+            "the tracker-release mirror's own login read is the only other gh call this closeout makes");
     }
 
     /// <summary>
@@ -5184,7 +5228,16 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         };
         await NewEngine(store, node, inspector, worktrees, jira: jira).PollOnceAsync(cts.Token);
 
-        jira.Requests.Should().ContainSingle("the write is attempted once and never retried blind");
+        jira.Requests.Should().ContainSingle(
+            request => request.Method == HttpMethod.Post, "the write is attempted once and never retried blind");
+
+        // The release-side tracker-assignee mirror (criterion 5, idea 202383dc, A3b) reads this
+        // install's own Jira identity as part of releasing the ledger holder true completion gives
+        // back — the one other Jira call this closeout makes, alongside the merge-comment write above.
+        jira.Requests.Should().ContainSingle(
+            request => request.Method == HttpMethod.Get,
+            "the tracker-release mirror's own identity read is the only other call this closeout makes");
+
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<RunDetails>(runId, cts.Token))!.State.Should().Be(RunState.Completed);
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(TaskState.Done);
@@ -5226,15 +5279,26 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
             outstanding.Outcome.Should().Be(JiraWriteOutcome.PendingAuthentication);
         }
 
-        RecordingJiraRequester mustNotRun = RecordingJiraRequester.RespondingTo(
-            _ => throw new InvalidOperationException("a second write in flight would race Jira against itself"));
+        // The release-side tracker-assignee mirror (criterion 5, idea 202383dc, A3b) reads this
+        // install's own Jira identity as part of releasing the ledger holder true completion gives
+        // back — a plain read through TrackerAssignmentTake.ReleaseAsync, which deliberately never
+        // goes through JiraWriteCoordinator (that class's own doc comment), so it is not held back
+        // by the coordinator's own outstanding-write guard the way a second comment write would be.
+        // The guard below only ever forbade a write, never this mirror's own read.
+        RecordingJiraRequester mustNotWrite = RecordingJiraRequester.RespondingTo(request =>
+            request.Method == HttpMethod.Get
+                ? new JiraResponse(403, """{"errorMessages":["No permission"]}""")
+                : throw new InvalidOperationException("a second write in flight would race Jira against itself"));
         FakeInspector inspector = new()
         {
             Snapshot = FakeInspector.Quiet() with { IsMerged = true, MergedAt = Now.AddHours(2) },
         };
-        await NewEngine(store, node, inspector, worktrees, jira: mustNotRun).PollOnceAsync(cts.Token);
+        await NewEngine(store, node, inspector, worktrees, jira: mustNotWrite).PollOnceAsync(cts.Token);
 
-        mustNotRun.Requests.Should().BeEmpty("Jira is not touched again while the first write is still outstanding");
+        mustNotWrite.Requests.Should().ContainSingle(
+            request => request.Method == HttpMethod.Get,
+            "Jira is not written to again while the first write is still outstanding, but the tracker-release "
+            + "mirror's own read still runs");
 
         await using IQuerySession query = store.QuerySession();
         (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!.State.Should().Be(
@@ -5604,6 +5668,64 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
         await session.SaveChangesAsync(cancellationToken);
         return (taskId, lastClaimRunId, worktree, blockerId);
+    }
+
+    /// <summary>
+    /// The same shape <see cref="SeedAwaitingReviewAsync"/> leaves behind, except the original
+    /// claim (idea 202383dc, A3b) named a different, foreign node as holder rather than this
+    /// test's own seeded <paramref name="node"/> — <see cref="TaskAggregate.HolderNodeId"/> stays
+    /// that foreign id even though the run itself dispatched under this node (a real
+    /// <c>DispatchEngine</c> claim never produces that combination; this manufactures the end
+    /// state directly, the same way <see cref="SeedAwaitingReviewWithUnmetDependencyAsync"/>
+    /// manufactures a Blocked-with-CurrentRunId-preserved task no ordinary decider call reaches
+    /// either) so the gate has something concrete to skip.
+    /// </summary>
+    private static async Task<(Guid TaskId, Guid RunId, Guid ForeignHolderNodeId)> SeedAwaitingReviewHeldByForeignNodeAsync(
+        DocumentStore store, NodeContext node, GitWorktreeManager worktrees, string repoPath, CancellationToken cancellationToken)
+    {
+        Guid taskId = DomainId.New();
+        Guid ownerId = node.OwnerId;
+        Guid projectId = DomainId.New();
+        Guid foreignNodeId = DomainId.New();
+
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, DomainId.New(), "Close me out", BranchNameTemplate.Default, ExternalReference: null), cancellationToken);
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm work");
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        await using IDocumentSession session = store.LightweightSession();
+
+        Hall9k.Domain.Features.Tasks.Events.TaskAdded added = TaskDecider.Add(
+            taskId, projectId, "Close me out", ["merged"], TaskType.Chore, null, null, null, Now, ownerId);
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(added, ownerId, Now);
+        List<object> taskEvents = [.. lifecycle];
+
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+            TaskDecider.Claim(task, foreignNodeId, ownerId, DomainId.New(), Now, "owner-b-fingerprint");
+        task.Apply(claimed);
+        taskEvents.Add(claimed);
+        Hall9k.Domain.Features.Tasks.Events.TaskCompleted completed =
+            TaskDecider.Complete(task, task.CurrentRunId!.Value, PullRequestUrl, Now);
+        task.Apply(completed);
+        taskEvents.Add(completed);
+
+        Guid runId = task.CurrentRunId!.Value;
+        session.Events.StartStream<TaskAggregate>(taskId, [.. taskEvents]);
+        session.Events.StartStream<RunAggregate>(runId,
+            new RunDispatched(runId, taskId, node.NodeId, ownerId, task.LeaseGeneration, DomainId.New(),
+                worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+            new AgentSessionCompleted(runId, Now),
+            new VerificationPassed(runId, Now),
+            new PullRequestOpened(runId, PullRequestUrl, 7, Now));
+
+        var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+            projectId, ownerId, DomainId.New(), $"closeout-{taskId:N}", repoPath, null, "main", Now);
+        session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+
+        await session.SaveChangesAsync(cancellationToken);
+        return (taskId, runId, foreignNodeId);
     }
 
     /// <summary>
