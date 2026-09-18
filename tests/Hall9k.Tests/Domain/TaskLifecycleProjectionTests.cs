@@ -435,6 +435,44 @@ public sealed class TaskLifecycleProjectionTests
         view.ClaimedFromDifferentHolder.Should().BeFalse();
     }
 
+    /// <summary>
+    /// Independent pre-PR review, cycle 2, verify pass: <c>WorkPromptBuilder.Build</c> gates the
+    /// handoff-note section on this view's own <see cref="TaskDetails.RetryBranchResumesForeignNode"/>,
+    /// not the aggregate's — so the same staleness the aggregate-level fix closes must also be
+    /// closed here, on <see cref="TaskDetailsProjection"/>'s own mirrored <c>TaskClaimed</c>
+    /// handling, which never reset the flag on its own.
+    /// </summary>
+    [Fact]
+    public void RetryBranchResumesForeignNode_clears_on_a_same_node_reclaim_that_follows_a_foreign_resume()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid nodeA = DomainId.New();
+        TaskDetailsProjection projection = new();
+
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId)));
+        projection.Apply(new FakeEvent<TaskPublished>(new TaskPublished(id, Now, ownerId)), view);
+        projection.Apply(new FakeEvent<TaskAssigned>(new TaskAssigned(id, ownerId, [], Now, ownerId)), view);
+
+        // NodeA resumes a foreign node's own leftover branch.
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(
+            id, nodeA, ownerId, 1, DomainId.New(), Now, ResumesBranch: "task/left-by-another-node")), view);
+        view.RetryBranchResumesForeignNode.Should().BeTrue();
+
+        // NodeA reclaims its own prior run: ForeignResumeBranchResolver leaves ResumesBranch blank,
+        // so this is not a foreign-node resume, and the flag must not still say it is.
+        projection.Apply(new FakeEvent<TaskRequeued>(new TaskRequeued(id, RequeueReason.LeaseExpired, Now)), view);
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(id, nodeA, ownerId, 2, DomainId.New(), Now)), view);
+
+        view.RetryBranchResumesForeignNode.Should().BeFalse(
+            "NodeA reclaiming its own prior run is not a foreign-node resume, even though an "
+            + "earlier claim on this same task was");
+        view.RetryBranch.Should().Be(
+            "task/left-by-another-node",
+            "the branch this task's work actually lives on does not change just because a later "
+            + "claim's own classification does");
+    }
+
     [Fact]
     public void The_atomic_unassign_clears_the_claim_off_the_list_row_so_the_dispatcher_reads_published()
     {

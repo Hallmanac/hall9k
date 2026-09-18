@@ -823,6 +823,14 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
             view.RetryBranch = @event.Data.ResumesBranch;
             view.RetryBranchResumesForeignNode = true;
         }
+        else
+        {
+            // Mirrors TaskAggregate.Apply(TaskClaimed)'s own else branch (independent pre-PR
+            // review, cycle 2, verify pass): without this, a same-node reclaim following an
+            // earlier foreign-node resume would leave this view's own flag stuck true forever,
+            // exactly the drift RetryBranch's own doc promises this view will never have.
+            view.RetryBranchResumesForeignNode = false;
+        }
 
         // Mirrors the same holder-changed condition TaskAggregate.Apply(TaskClaimed) computes off
         // its own HolderNodeId/_lastReleasedHolderNodeId — see ClaimedFromDifferentHolder's own
