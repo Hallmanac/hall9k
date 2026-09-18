@@ -869,9 +869,17 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
         string arriving = "nothing is created here now.";
         if (ownerRootFingerprint.IsNotBlank())
         {
-            await new EventCatchUpCoordinator().RequestStreamBroadcastAsync(
+            bool broadcastQueued = await new EventCatchUpCoordinator().RequestStreamBroadcastAsync(
                 session, project.Id, located.TaskId, nodeId, ownerRootFingerprint, DateTimeOffset.UtcNow, cancellationToken);
-            arriving = "an events-request for that stream is on its way to this project's other members now.";
+            // A broadcast request never times out and never exhausts on its own (only a targeted
+            // gap-fill/bootstrap cascade does), so RequestStreamBroadcastAsync's own alreadyOutstanding
+            // guard returning false here means one is already on its way from an earlier run of this
+            // same command, not that this run's ask was suppressed — telling the human otherwise would
+            // have them keep re-running a command that never queues anything new for that outcome
+            // (independent pre-PR review, cycle 1, adversarial lens, low).
+            arriving = broadcastQueued
+                ? "an events-request for that stream is on its way to this project's other members now."
+                : "an events-request for that stream is already on its way to this project's other members.";
         }
 
         throw new DomainValidationException(
