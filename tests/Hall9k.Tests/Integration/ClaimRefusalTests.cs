@@ -724,6 +724,24 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         return repositoryPath;
     }
 
+    /// <summary>
+    /// Leaves <paramref name="branch"/> on origin only, with a commit ahead of main and no local
+    /// ref — the shape a foreign node's own claim leaves behind (its worktree, its branch, on a
+    /// machine this repository clone never touched): <c>GitWorktreeManager.CheckoutExistingAsync</c>'s
+    /// <c>remoteExists</c> arm is what a foreign-node resume actually exercises, not the
+    /// already-checked-out-locally shortcut a same-machine retry would take.
+    /// </summary>
+    private void PushForeignBranch(string repositoryPath, string branch)
+    {
+        Git(repositoryPath, $"checkout -b {branch}");
+        File.WriteAllText(Path.Combine(repositoryPath, "foreign-work.md"), "# foreign node's own work\n");
+        Git(repositoryPath, "add -A");
+        Git(repositoryPath, "-c user.name=Test -c user.email=test@test commit -m \"foreign node's own work\"");
+        Git(repositoryPath, $"push origin {branch}");
+        Git(repositoryPath, "checkout main");
+        Git(repositoryPath, $"branch -D {branch}");
+    }
+
     private static void Git(string workingDirectory, string arguments)
     {
         using Process process = new();
@@ -801,6 +819,84 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         }
     }
 
+
+    /// <summary>
+    /// Idea 202383dc, piece C's residual, criterion 1, threaded through this door's own claim
+    /// rather than the daemon's: <see cref="Hall9k.Domain.Features.Tasks.Queries.ForeignResumeBranchResolver"/>
+    /// is shared by three callers (<c>DispatchEngine.TryClaimAsync</c>, <c>h9k task work</c>, and
+    /// this one), but nothing exercised either CLI door's own call into it before this test and its
+    /// <c>_by_task_work</c> sibling — <c>DispatchEngineTests</c> only pins the daemon's own claim
+    /// (independent pre-PR review, cycle 2, conformance lens, at TaskWorkCommand.cs:722).
+    /// </summary>
+    [Fact]
+    public async Task A_foreign_nodes_latest_run_is_resumed_through_the_resolver_by_task_start()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid foreignNodeId = DomainId.New();
+        const string foreignBranch = "task/foreign-node-branch-start";
+        string repositoryPath = CreateRepository();
+        PushForeignBranch(repositoryPath, foreignBranch);
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+            });
+            seed.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(taskId, projectId, "Resume a foreign node's own latest run via task start",
+                    ["it is done"], TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now));
+            seed.Store(new RunDetails
+            {
+                Id = DomainId.New(),
+                TaskId = taskId,
+                NodeId = foreignNodeId,
+                Branch = foreignBranch,
+                DispatchedAt = Now.AddMinutes(-30),
+            });
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            StreamState fence = (await session.Events.FetchStreamStateAsync(taskId, cts.Token))!;
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cts.Token))!;
+            BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
+
+            string? previousConnectionString =
+                Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
+            try
+            {
+                (_, _, string branch, _, bool resumesPreviousWork, _, _, _) = await TaskStartCommand.ClaimAndCutAsync(
+                    store, session, task, fence, context, DomainId.New(),
+                    SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build),
+                    acknowledgeUnmetDependencies: false, interactiveMode: false, trackerClaimGate: null, cts.Token);
+
+                branch.Should().Be(foreignBranch, "the resolver's own latest-run branch, not a fresh cut off main");
+                resumesPreviousWork.Should().BeTrue();
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
+            }
+        }
+
+        await using IQuerySession verify = store.QuerySession();
+        TaskAggregate final = (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        final.RetryBranch.Should().Be(foreignBranch);
+        final.RetryBranchResumesForeignNode.Should().BeTrue(
+            "ForeignResumeBranchResolver's own answer reached TaskClaimed.ResumesBranch, not a human-requested retry");
+    }
 
     // ── h9k task work ──
     private static readonly DateTimeOffset WorkClaimNow = new(2026, 9, 2, 12, 0, 0, TimeSpan.Zero);
@@ -1237,6 +1333,84 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         final.State.Should().Be(TaskState.Claimed);
         final.IsInteractiveClaim.Should().BeTrue();
         final.AssignedOwnerId.Should().Be(ownerId);
+    }
+
+    /// <summary>
+    /// The <c>_by_task_start</c> sibling's own doc explains why this pair exists: neither CLI
+    /// door's own call into <see cref="Hall9k.Domain.Features.Tasks.Queries.ForeignResumeBranchResolver"/>
+    /// had a test before this one, only the daemon's (<c>DispatchEngineTests</c>). Needs a real
+    /// repository, like every other success path in this class: <c>CheckoutFreshOrRetryAsync</c>'s
+    /// foreign-node arm calls <c>GitWorktreeManager.CheckoutExistingAsync</c> directly, with no
+    /// injectable seam here.
+    /// </summary>
+    [Fact]
+    public async Task A_foreign_nodes_latest_run_is_resumed_through_the_resolver_by_task_work()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid foreignNodeId = DomainId.New();
+        const string foreignBranch = "task/foreign-node-branch-work";
+        string repositoryPath = CreateRepository();
+        PushForeignBranch(repositoryPath, foreignBranch);
+
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            seed.Store(new ProjectDetails
+            {
+                Id = projectId,
+                RepositoryPath = repositoryPath,
+                BaseBranch = "main",
+                BranchNameTemplate = BranchNameTemplate.Default,
+            });
+            seed.Events.StartStream<TaskAggregate>(taskId, TaskSeed.Dispatchable(
+                TaskDecider.Add(taskId, projectId, "Resume a foreign node's own latest run via task work",
+                    ["it is done"], TaskType.Chore, null, null, null, WorkClaimNow, ownerId),
+                ownerId, WorkClaimNow));
+            seed.Store(new RunDetails
+            {
+                Id = DomainId.New(),
+                TaskId = taskId,
+                NodeId = foreignNodeId,
+                Branch = foreignBranch,
+                DispatchedAt = WorkClaimNow.AddMinutes(-30),
+            });
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            StreamState fence = (await session.Events.FetchStreamStateAsync(taskId, cts.Token))!;
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cts.Token))!;
+            BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
+
+            string? previousConnectionString =
+                Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
+            try
+            {
+                (_, _, string branch, _, bool resumesPreviousWork, _, _) = await TaskWorkCommand.ClaimAndCutAsync(
+                    store, session, task, fence, context, DomainId.New(),
+                    SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
+                    acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
+
+                branch.Should().Be(foreignBranch, "the resolver's own latest-run branch, not a fresh cut off main");
+                resumesPreviousWork.Should().BeTrue();
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
+            }
+        }
+
+        await using IQuerySession verify = store.QuerySession();
+        TaskAggregate final = (await verify.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        final.RetryBranch.Should().Be(foreignBranch);
+        final.RetryBranchResumesForeignNode.Should().BeTrue(
+            "ForeignResumeBranchResolver's own answer reached TaskClaimed.ResumesBranch, not a human-requested retry");
     }
 
     /// <summary>
