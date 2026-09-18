@@ -1725,6 +1725,39 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens: an ordinary, automatic
+    /// <see cref="TaskDecider.Complete"/> must not disarm <see cref="TaskAggregate.ResumedAfterHolderChange"/>
+    /// just because it is the run that opens this task's very first pull request —
+    /// <see cref="TaskAggregate.ResetAutomaticCloseoutState"/> runs for that shape too (a task
+    /// retried onto a pull request its earlier spend was never scoped to), but only a human's own
+    /// look — a manual reopen or <c>h9k task resolve</c> — is the "a human has looked" event this
+    /// flag waits for. The scenario above only ever completes onto an UNCHANGED
+    /// <see cref="TaskAggregate.PullRequestUrl"/>, which never runs the reset at all, so it cannot
+    /// catch this: a takeover whose resumed run opens the task's first pull request is exactly the
+    /// shape the reset's own "fresh pull request" branch touches.
+    /// </summary>
+    [Fact]
+    public void An_automatic_completion_onto_a_fresh_pull_request_does_not_clear_a_taken_over_task_s_park()
+    {
+        TaskAggregate task = QueuedTask();
+        task.Apply(TaskDecider.Claim(task, NodeA, Owner, DomainId.New(), Now));
+
+        task.Apply(TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now));
+        task.Apply(TaskDecider.ReleaseHolder(task, Now));
+        Guid nodeB = DomainId.New();
+        task.Apply(TaskDecider.Claim(task, nodeB, Owner, DomainId.New(), Now));
+        task.ResumedAfterHolderChange.Should().BeTrue();
+
+        task.Apply(TaskDecider.Complete(
+            task, task.CurrentRunId!.Value, "https://github.com/x/y/pull/11", Now));
+
+        task.ResumedAfterHolderChange.Should().BeTrue(
+            "the run that just completed is the takeover's own first pull request, opened by an "
+            + "automatic engine, not by a human looking this task over — the park criterion 3 exists "
+            + "for must survive it");
+    }
+
+    /// <summary>
     /// Idea 202383dc, piece C's residual, criterion 1: <see cref="TaskDecider.Claim"/>'s own
     /// <c>resumesBranch</c> parameter applies onto <see cref="TaskAggregate.RetryBranch"/> exactly
     /// as <see cref="TaskDecider.Retry"/> and <see cref="TaskDecider.HandBack"/> already do, and

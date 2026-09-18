@@ -293,9 +293,12 @@ public sealed class TaskAggregate
     /// this way parks instead of auto-replaying, trigger "a stacked in-flight task changes
     /// holder" — the new holder's own node has none of the review or build context the previous
     /// node's agent built up, so a mechanical replay run here would be reasoning about a stack it
-    /// never watched. Cleared by <see cref="ResetAutomaticCloseoutState"/>, the same reset a
-    /// human's own manual reopen or h9k pr resolve already triggers, which is what actually lets
-    /// automatic replay resume once a human has looked.
+    /// never watched. Cleared explicitly by a human's own manual reopen (<see cref="Apply(TaskReopened)"/>'s
+    /// non-automatic branch, which is what h9k pr resolve triggers) and by <see cref="Apply(TaskResolved)"/>
+    /// (h9k task resolve) — both call <see cref="ResetAutomaticCloseoutState"/> too, but that shared
+    /// reset does not clear this flag itself, because an ordinary automatic <see cref="Apply(TaskCompleted)"/>
+    /// calls it too, whenever a run lands on a fresh pull request, and must not disarm the park by
+    /// that route.
     /// </summary>
     public bool ResumedAfterHolderChange { get; private set; }
 
@@ -1455,6 +1458,12 @@ public sealed class TaskAggregate
         else
         {
             ResetAutomaticCloseoutState();
+            // A human's own manual reopen is exactly the "a human has looked" event that lets
+            // automatic stack replay resume for a taken-over child (ResumedAfterHolderChange's own
+            // doc) — cleared here rather than inside the shared reset, which an ordinary automatic
+            // TaskCompleted also runs whenever a run lands on a fresh pull request and must not
+            // disarm this flag by that route (independent pre-PR review, cycle 1, adversarial lens).
+            ResumedAfterHolderChange = false;
         }
 
         _knownHumanReviewThreadIds.Clear();
@@ -1531,10 +1540,6 @@ public sealed class TaskAggregate
         ConsecutiveObstructionLaps = 0;
         LastAutomaticObstructionKey = null;
         _automaticLapHistory.Clear();
-        // A human's own manual reopen or h9k pr resolve is exactly the "a human has looked" event
-        // that lets automatic stack replay resume for a taken-over child (ResumedAfterHolderChange's
-        // own doc) — cleared alongside the rest of this reset rather than on its own trigger.
-        ResumedAfterHolderChange = false;
         _knownHumanReviewThreadIds.Clear();
         // Cleared beside the ids, never apart from them: the two lists name the same threads, and
         // a reset that wiped one and kept the other would carry a PREVIOUS pull request's thread
@@ -1585,6 +1590,10 @@ public sealed class TaskAggregate
         if (@event.PullRequestUrl is not null && @event.PullRequestUrl != PullRequestUrl)
         {
             ResetAutomaticCloseoutState();
+            // h9k task resolve is a human's own explicit call on where the work landed — the same
+            // "a human has looked" event a manual TaskReopened clears this flag for (see that
+            // branch's own comment) — never reached by an automatic engine the way TaskCompleted is.
+            ResumedAfterHolderChange = false;
         }
 
         PullRequestUrl = @event.PullRequestUrl ?? PullRequestUrl;
