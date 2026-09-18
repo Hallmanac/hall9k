@@ -203,6 +203,36 @@ left open for whichever node does hold it; the interactive/deliberate self-claim
 (`Guid.Empty`, `h9k task work`/`h9k task start`) is never treated as held elsewhere, since it is
 inherently single-node and the ledger never carries a holder write for one at all.
 
+**A claim resumes work another node started** (idea 202383dc, piece C's residual): once a
+release (any of the levers above) hands a Queued task to a node other than the one whose run last
+touched it, `DispatchEngine.TryClaimAsync` reads that task's latest run — replicated here exactly
+as readily as one this node dispatched itself — and, when it was dispatched by a real node other
+than this one, carries its branch onto the fresh `TaskClaimed` as `ResumesBranch`. Applied onto
+`TaskAggregate.RetryBranch` exactly as a human-requested `h9k task retry` or `h9k task handback`
+already lands one, so the next launch resumes it through the identical `RetryBranch` path, fetches
+first, and dispatches the resuming prompt — no branch of its own on the claim, no new lever to
+learn. The one difference from an ordinary retry: a branch gone from both this node's own copy and
+origin fails the run loudly, by name, rather than quietly starting clean the way an ordinary
+retry's missing branch does — silently cutting a fresh branch here would abandon a foreign node's
+own work rather than surfacing that it is gone.
+`PullRequestOpener.OpenAsync` looks up an already-open pull request for the run's own branch
+before ever calling `gh pr create`, on every delivery (not only a resumed one — a first delivery
+whose own `PullRequestOpened` event never committed reaches the identical shape), and adopts it —
+recorded as a fresh `PullRequestOpened`, never `PullRequestUpdated`, since nothing about this task
+named a pull request or a follow-up branch when the run dispatched. This is what stops a retry on
+an already-delivered branch from being refused by gh's own duplicate-pull-request check. An
+adopted run's own recorded base is the adopted pull request's own base branch, read fresh from gh,
+never this run's own `ResolveOpenBaseAsync` answer — the adoption is standing in for a pull
+request this run never opened, so what it actually opened against is the only honest answer.
+A stacked child taken over this way — its holder changed to this node while a run was still in
+flight for it, `TaskAggregate.ResumedAfterHolderChange` — has its own automatic stack replay parked
+instead of dispatched, trigger "a stacked in-flight task changes holder"
+(`CloseoutEngine.TryReplayStackedChildAsync`): the new holder's own node never watched whatever
+review or build context the previous holder's run built up, so a mechanical replay here would be
+reasoning about a stack it has no history with. `h9k pr resolve` clears the flag the same way it
+already clears every other automatic-closeout counter, letting replay resume once a human has
+looked.
+
 Node-to-node messages: a note one node sends another, an owner, or the whole project, the first
 payload kind, replacing `notes/node-mailbox.md`'s GitHub-issue workaround for that traffic (that
 file is retired for node-to-node use; whatever else, if anything, it still serves is noted there).
