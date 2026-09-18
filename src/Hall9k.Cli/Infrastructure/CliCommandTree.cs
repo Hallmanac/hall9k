@@ -1263,6 +1263,20 @@ public static class CliCommandTree
                 .WithExample("task", "handback", "28b19893", "--reason", "\"Need to step away; the migration script is drafted but untested\"")
                 .WithExample("task", "handback", "28b19893", "--first")
                 .WithExample("task", "handback", "28b19893", "--now");
+            task.AddCommand<TaskHandoffCommand>("handoff")
+                .WithDescription(
+                    "Leave a note for whoever holds this task next (idea 202383dc, item 3): what is done, "
+                    + "what is half done, what to watch — for work still in flight, unlike the closeout handoff "
+                    + "a merge hands a dependent (Decisions Log #36). Appends a task-stream event carrying the "
+                    + "note, its author, and the time; refused on any node that is not the current holder, "
+                    + "naming who is. The record writer rewrites the task's own ledger record with the latest "
+                    + "note the same way it rewrites every other field, and h9k task show prints it. A nudge — "
+                    + "never the note's own text — is queued to the project (or --to one owner); receiving "
+                    + "nodes see it as an unread message in h9k status. The next holder's first run that resumes "
+                    + "this task's branch on a new node opens with the note ahead of its own agent context.")
+                .WithExample("task", "handoff", "28b19893", "--text", "\"Migration script drafted but untested; watch for a schema drift on the staging table.\"")
+                .WithExample("task", "handoff", "28b19893", "--file", "handoff-note.md")
+                .WithExample("task", "handoff", "28b19893", "--text", "\"Heads up before you pick this up.\"", "--to", "a1b2c3d4owner");
             task.AddCommand<TaskDelegateCommand>("delegate")
                 .WithDescription(
                     "Delegate the build to a contractor for one phase while staying at the wheel — distinct from "
