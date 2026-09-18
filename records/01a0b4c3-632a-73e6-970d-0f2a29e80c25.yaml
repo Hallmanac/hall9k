@@ -1,0 +1,24 @@
+hall9k-task-record: 1
+task-id: 01a0b4c3-632a-73e6-970d-0f2a29e80c25
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#473
+objective: Every test gate records how many tests ran, how many failed, and how long it took, on the run, so the suite's growth and flake rate are numbers the board shows rather than figures computed by hand from log files
+criteria:
+  - When a dotnet test-shaped gate finishes, the daemon parses the run's own summary line (Failed, Passed, Skipped, Total, Duration) and appends it to the run as a gate-result event, whether the gate passed or failed, with the names of the failed tests when there are any
+  - |-
+    h9k task show prints each gate pass's count, duration, and failed test names under its passage line, and h9k status prints one line for the project: the mean gate duration and the gate failure rate over the last 14 days, with the three test classes that failed most often
+  - |-
+    A retry reason of a gate flake is joinable to the failing test: h9k task retry records the failed test names of the run being retried on the retry event, so a later query can tell a flake retry from a code fix retry without reading logs
+  - |-
+    Tests through the runner's existing fakes and the projection: a parsed summary lands as an event; the status line aggregates over a seeded 14-day window; a summary line the parser cannot read records the gate with unknown counts rather than failing the gate
+  - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/29e80c25-every-test-gate-records-how-ma
+published: 2026-09-18 14:51:55Z
+context: |-
+  Test-hygiene move 3 of 3 from the 2026-09-18 analysis (notes/decisions-2026-09-18-hall9k-fb.md): the measurement half of the test-growth budget, in the spirit of tools before tokens (the daemon does the deterministic counting; the review prompt only judges). Today the window computed these numbers by hand from 539 verify-test.log files (mean 12.3 minutes, 59 failures, top classes) and the suite grew by 878, 1,742, and 1,132 tests over the last three weeks with nothing on the board saying so. The judgment half (a review finding when a new test duplicates existing coverage) is a project prompt addendum on the agent builder, set by the window on 2026-09-18, not code. Parked unassigned until the distributed-team chain (idea 202383dc) drains (Brian, 2026-09-18).
