@@ -36,9 +36,10 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         string repositoryPath, string refName, string path, CancellationToken cancellationToken)
     {
         RequireRegistered(refName);
-        await FetchRefAsync(repositoryPath, refName, cancellationToken);
+        bool fetchFailed = await FetchRefAsync(repositoryPath, refName, cancellationToken);
         string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
-        return await ReadAtTipAsync(repositoryPath, tip, path, cancellationToken);
+        LedgerFile file = await ReadAtTipAsync(repositoryPath, tip, path, cancellationToken);
+        return fetchFailed ? file with { FetchFailed = true } : file;
     }
 
     public async Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken)
@@ -262,7 +263,15 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         }
     }
 
-    private async Task FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
+    /// <summary>
+    /// Fetches <paramref name="refName"/> fresh, and reports whether that genuinely failed — never
+    /// true for the expected "nothing to bring down yet" outcome, since a caller that already
+    /// treats an empty ref as absent must not also read it as a failure. <see cref="LedgerFile.FetchFailed"/>
+    /// is what carries this answer back to <see cref="ReadAsync"/>'s own caller (idea 202383dc,
+    /// A3b): a claim's own existence guard has to tell "confirmed nothing here" apart from
+    /// "could not confirm either way", which a bare <see cref="LedgerFile.Absent"/> cannot.
+    /// </summary>
+    private async Task<bool> FetchRefAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
     {
         (int exitCode, _, string error) = await RunGitAsync(
             repositoryPath, ["fetch", "origin", $"+{refName}:{refName}"], null, null, cancellationToken);
@@ -280,15 +289,17 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                     "Fetch of {RefName} from origin in {Repository} found nothing to bring down ({Error}) "
                     + "— proceeding as though the ref does not exist there yet",
                     refName, repositoryPath, error.Trim());
+                return false;
             }
-            else
-            {
-                logger.LogWarning(
-                    "Fetch of {RefName} from origin in {Repository} failed ({Error}) — proceeding "
-                    + "with whatever this node last had locally for that ref",
-                    refName, repositoryPath, error.Trim());
-            }
+
+            logger.LogWarning(
+                "Fetch of {RefName} from origin in {Repository} failed ({Error}) — proceeding "
+                + "with whatever this node last had locally for that ref",
+                refName, repositoryPath, error.Trim());
+            return true;
         }
+
+        return false;
     }
 
     private static async Task<string?> ResolveTipAsync(

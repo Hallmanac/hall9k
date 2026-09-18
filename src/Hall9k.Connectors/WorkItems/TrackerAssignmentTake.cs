@@ -254,6 +254,25 @@ public sealed record TrackerTake(
 }
 
 /// <summary>
+/// What one holder-release mirror concluded (idea 202383dc, A3b, criterion 5: "on every holder
+/// change the tracker assignee is set to match ... a named outcome retried next sweep") — the
+/// release-side counterpart of <see cref="TrackerTake"/>. An in-process outcome, never persisted
+/// as itself (AGENTS.md: enums only for unpersisted in-process outcomes); what actually persists
+/// on a failure is the pending row <c>DispatchEngine</c> stores for the next lease sweep to retry.
+/// </summary>
+public sealed record TrackerRelease(bool Succeeded, string? FailureReason)
+{
+    /// <summary>Nothing to clear: the gate is off, the task carries no gated reference, the item
+    /// already shows nobody or somebody else — every one of those already reads the way a release
+    /// wants it to, so nothing was written and nothing failed.</summary>
+    public static readonly TrackerRelease NothingToDo = new(true, null);
+
+    public static TrackerRelease Cleared() => new(true, null);
+
+    public static TrackerRelease Failed(string reason) => new(false, reason);
+}
+
+/// <summary>
 /// The write behind <c>h9k task assign --take</c> (idea 64c75e43, Decisions Log #143): claiming
 /// stops being a two-place act, because one command moves the tracker and the board together and
 /// the gate then passes on its own.
@@ -288,11 +307,37 @@ public sealed record TrackerTake(
 /// carries the assignment are two different facts (AGENTS.md, never guess at unobserved facts).
 /// </para>
 /// </summary>
-public sealed class TrackerAssignmentTake(
-    ProcessRunner? processRunner = null, JiraRequester? requester = null, CredentialVault? vault = null)
+public sealed class TrackerAssignmentTake
 {
-    private readonly ProcessRunner processRunner = processRunner ?? ExternalProcess.Runner;
-    private readonly TrackerClaimGate claimGate = new(processRunner, requester, vault);
+    private readonly ProcessRunner processRunner;
+    private readonly TrackerClaimGate claimGate;
+    private readonly JiraRequester? requester;
+    private readonly CredentialVault? vault;
+
+    public TrackerAssignmentTake(
+        ProcessRunner? processRunner = null, JiraRequester? requester = null, CredentialVault? vault = null)
+    {
+        this.processRunner = processRunner ?? ExternalProcess.Runner;
+        this.requester = requester;
+        this.vault = vault;
+        claimGate = new TrackerClaimGate(this.processRunner, requester, vault);
+    }
+
+    /// <summary>
+    /// Shares an already-built <see cref="TrackerClaimGate"/> rather than constructing a second
+    /// one over an unrelated runner (idea 202383dc, A3b) — the mirror's own read
+    /// (<see cref="TakeAsync"/>'s own <c>claimGate.CheckAsync</c>) has to go through the exact
+    /// same gate instance a claim door's own check does, so a caller — or a test — that injects
+    /// one for the gate reaches the identical instance here rather than a silently unrelated
+    /// default. <paramref name="processRunner"/> still backs this take's own GitHub write
+    /// (<see cref="TakeGitHubAsync"/>'s <c>gh issue edit --add-assignee</c>), which the gate
+    /// itself never runs.
+    /// </summary>
+    public TrackerAssignmentTake(TrackerClaimGate claimGate, ProcessRunner processRunner)
+    {
+        this.claimGate = claimGate;
+        this.processRunner = processRunner;
+    }
 
     /// <summary>
     /// The read on its own, for a caller deciding whether a take is worth offering at all — an
@@ -495,6 +540,173 @@ public sealed class TrackerAssignmentTake(
 
         TrackerAssigneeRead read = await issues.ReadAssigneesAsync(item, workingDirectory, cancellationToken);
         return Confirm(decision, read, identity, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    /// The release half of the mirror (idea 202383dc, A3b, criterion 5: "on every holder change
+    /// the tracker assignee is set to match"): once this node's own ledger holder is given back,
+    /// best effort, its tracker identity is cleared off the linked item too — the symmetrical
+    /// write to <see cref="TakeAsync"/>'s own take. Reads through the identical
+    /// <see cref="TrackerClaimGate"/> a take reads through, so this reaches the same interception
+    /// a test that intercepts the claim gate's own reads already gives <see cref="TakeAsync"/>.
+    /// <para>
+    /// Only ever clears THIS install's own identity: an item the fresh read shows assigned to
+    /// somebody else, or to nobody at all, has nothing here to release — the same narrow footprint
+    /// <see cref="TakeAsync"/> holds on the way in, mirrored on the way out. There is no read-then-
+    /// clear race to close here the way <see cref="TakeAsync"/>'s own read-write-read closes one:
+    /// clearing an assignee that already changed underneath this call simply fails the read-back
+    /// below and is retried, rather than needing a Contested-shaped verdict of its own.
+    /// </para>
+    /// </summary>
+    public async Task<TrackerRelease> ReleaseAsync(
+        IDocumentStore store,
+        ClaimGate gate,
+        ExternalReference? reference,
+        string workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        TrackerClaimDecision decision = await claimGate.CheckAsync(
+            store, gate, reference, workingDirectory, cancellationToken);
+
+        if (decision.Verdict == TrackerClaimVerdict.Unreadable)
+        {
+            return TrackerRelease.Failed(
+                $"{decision.Tracker} could not be read, so this install cannot tell whether it still holds "
+                + $"{decision.Item} to clear it off. {decision.Error}");
+        }
+
+        // Assigned is the only verdict with anything to clear: NotGated has no gated item,
+        // Unassigned already reads the way a release wants it to, and HeldByOther names somebody
+        // else — a release only ever gives back what this install itself put there.
+        if (decision.Verdict != TrackerClaimVerdict.Assigned)
+        {
+            return TrackerRelease.NothingToDo;
+        }
+
+        if (reference is not { } item || decision.Identity is not { } identity)
+        {
+            return TrackerRelease.Failed(
+                "the tracker answered that this install holds the item, but this install could not tell "
+                + "which item or which identity to clear, so it wrote nothing.");
+        }
+
+        return item.Provider == WorkItemProvider.Jira
+            ? await ClearJiraAsync(store, item, identity, decision, cancellationToken)
+            : await ClearGitHubAsync(item, identity, workingDirectory, cancellationToken);
+    }
+
+    /// <summary>
+    /// Jira: the assignee field set to <c>null</c> through the identical
+    /// <see cref="JiraWriteExecutor"/> <see cref="TakeJiraAsync"/> writes through — an ordinary
+    /// field update, never <see cref="JiraWriteCoordinator"/>, for the same reason
+    /// <see cref="TakeJiraAsync"/>'s own doc gives.
+    /// </summary>
+    private async Task<TrackerRelease> ClearJiraAsync(
+        IDocumentStore store, ExternalReference item, string identity, TrackerClaimDecision decision,
+        CancellationToken cancellationToken)
+    {
+        if (!JiraIssueKey.TryParseBareKey(item.Key, out JiraIssueKey key))
+        {
+            return TrackerRelease.Failed(
+                $"'{Text.RelayedText.OneLine(item.ToString())}' does not read as a Jira key, so there is no "
+                + "card whose assignee could be cleared.");
+        }
+
+        JiraWorkItemProvider provider;
+        JiraWriteExecutor executor;
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+            ConnectionDetails? connection = await WorkItemConnections.FindJiraConnectionAsync(query, cancellationToken);
+            if (connection is null)
+            {
+                return TrackerRelease.Failed(WorkItemConnections.NoJiraConnection);
+            }
+
+            JiraAccount account = WorkItemConnections.Account(connection, vault);
+            provider = new JiraWorkItemProvider(account, requester);
+            executor = new JiraWriteExecutor(account, requester);
+        }
+        catch (DomainException exception)
+        {
+            return TrackerRelease.Failed(exception.Message);
+        }
+
+        JiraWritePayload payload = new(
+            null,
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["assignee"] = "null" },
+            null);
+
+        try
+        {
+            // No Validate() call here, deliberately: JiraWritePayload.Validate's HasAnyField check
+            // exists to refuse a *composed* template with an unfilled slot (independent pre-PR
+            // review, adversarial lens, cycle 4) — a JSON null decodes to blank precisely so an
+            // unfilled "{"summary":null}" cannot sail through as if it were content. This payload is
+            // not composed; it is this method's own fixed, hardcoded release write, whose only field
+            // is an intentional JSON null clearing the assignee. Under that same blank-content rule
+            // it would refuse every time, which is exactly the defect that made this release mirror
+            // fail unconditionally for Jira before this fix (window ruling, this task's own retry).
+            await executor.UpdateAsync(key.Value, payload, cancellationToken);
+        }
+        // Mirrors TakeJiraAsync's own catch: the update call itself already succeeded and only
+        // the executor's own existence read-back after it failed, so this is not the write
+        // refusing — the assignee read below decides instead.
+        catch (JiraWriteExecutionException exception) when (exception.WriteAlreadyRan)
+        {
+        }
+        catch (JiraWriteExecutionException exception)
+        {
+            return TrackerRelease.Failed(exception.Message);
+        }
+        catch (DomainException exception)
+        {
+            return TrackerRelease.Failed(exception.Message);
+        }
+
+        TrackerAssigneeRead read = await provider.ReadAssigneeAsync(key, cancellationToken);
+        return ConfirmCleared(read, identity);
+    }
+
+    /// <summary>
+    /// GitHub: <c>gh issue edit --remove-assignee</c> against the login read live on this very
+    /// check, the release-flavoured sibling of <see cref="TakeGitHubAsync"/>.
+    /// </summary>
+    private async Task<TrackerRelease> ClearGitHubAsync(
+        ExternalReference item, string identity, string workingDirectory, CancellationToken cancellationToken)
+    {
+        GitHubWorkItemProvider issues = new(processRunner);
+        TrackerAssignmentWrite write = await issues.RemoveAssigneeAsync(
+            item, identity, workingDirectory, cancellationToken);
+        if (write.Error is { } error)
+        {
+            return TrackerRelease.Failed(error);
+        }
+
+        TrackerAssigneeRead read = await issues.ReadAssigneesAsync(item, workingDirectory, cancellationToken);
+        return ConfirmCleared(read, identity);
+    }
+
+    /// <summary>
+    /// The read-back, turned into the release's verdict — cleared once the read-back no longer
+    /// shows this install among the assignees, and retried otherwise: a read that failed outright,
+    /// and one that still names this install, are both "cannot confirm the clear landed" rather
+    /// than two different outcomes, the same way <see cref="Confirm"/> treats a take's own
+    /// read-back.
+    /// </summary>
+    private static TrackerRelease ConfirmCleared(TrackerAssigneeRead read, string identity)
+    {
+        if (read.Error is { } error)
+        {
+            return TrackerRelease.Failed($"the clear was sent, but reading the item back afterwards failed: {error}");
+        }
+
+        bool stillThere = read.Assignees.Any(assignee =>
+            string.Equals(assignee.Identity, identity, read.IdentityComparison));
+        return stillThere
+            ? TrackerRelease.Failed(
+                "the clear was sent, but reading the item back afterwards still shows this install holding it.")
+            : TrackerRelease.Cleared();
     }
 
     /// <summary>
