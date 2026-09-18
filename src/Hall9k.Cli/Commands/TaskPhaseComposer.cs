@@ -306,9 +306,23 @@ internal static class TaskPhaseComposer
     /// recorded between two gates, or one whose stream predates this field.
     /// </summary>
     private static TaskPhase VerifyingPhase(RunDetails run, SessionLiveness session, DateTimeOffset now) =>
-        run.ActiveGate is { } gate
+        HostCoupledGateWaitPhase(run, now) ?? (run.ActiveGate is { } gate
             ? GatePhase(gate, session, now)
-            : new TaskPhase("gates", SessionLiveness.NotApplicable, "build and test running");
+            : new TaskPhase("gates", SessionLiveness.NotApplicable, "build and test running"));
+
+    /// <summary>
+    /// The wait for the node-wide host-coupled-gate permit, when this run is in it (task: at most
+    /// one host-coupled gate runs on a node at a time — PLACEHOLDER-609bd344) — checked ahead of
+    /// <see cref="ActiveGate"/> in every phase a gate can run under, since a run waiting on the
+    /// permit has not spawned a process yet and so has no <c>ActiveGate</c> recorded at all. Never
+    /// counted as a failure: another run's own host-coupled gate finishing is what ends it.
+    /// </summary>
+    private static TaskPhase? HostCoupledGateWaitPhase(RunDetails run, DateTimeOffset now) =>
+        run.HostCoupledGateWaitStartedAt is { } waitStartedAt
+            ? new TaskPhase(
+                "waiting for the host-coupled gate slot", SessionLiveness.NotApplicable,
+                $"another run on this node is using it; waited {DurationFormat.Short(now - waitStartedAt)} so far")
+            : null;
 
     /// <summary>
     /// The gate named and timed, shared by every run state a gate can actually be executing
@@ -349,6 +363,11 @@ internal static class TaskPhaseComposer
         // empty while a gate runs — a resumed session after that exact stale-record shutdown
         // records one — so reading the gate unconditionally here would show its stale name and
         // elapsed time over the genuinely running session instead.
+        if (HostCoupledGateWaitPhase(run, now) is { } waitPhase)
+        {
+            return waitPhase;
+        }
+
         if (run.ActiveGate is { } gate && run.ActiveSessions.Count == 0)
         {
             return GatePhase(gate, session, now);

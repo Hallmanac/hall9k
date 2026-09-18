@@ -85,6 +85,22 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         [Description("Verification gate, e.g. --verify \"test=dotnet test\"; repeat for more. Replaces the whole list.")]
         public string[] Verify { get; init; } = [];
 
+        [CommandOption("--verify-gate-filter <NAME=FILTER|none>")]
+        [Description(
+            "Marks one of this project's --verify gates host-coupled: the daemon only runs it at a run's "
+            + "first verification and its final full pass, waits its turn when another run's own "
+            + "host-coupled gate is already running on the same node (h9k task show reports the wait as "
+            + "the run's own phase, never as a failure), and skips it on every intermediate review-cycle "
+            + "pass in between — so the ordinary gates stay free of tests that reach outside the process "
+            + "(git, the process table, the toolchain, Docker). NAME must already be configured, by "
+            + "--verify in this same invocation or a prior one. FILTER is the dotnet test --filter "
+            + "expression injected into that gate's own command when it runs, combined with any --filter "
+            + "the command already carries the same way a fix cycle's own scoped reverify combines one in. "
+            + "'none' clears the host-coupled designation, leaving every gate ordinary. At most one gate "
+            + "can be host-coupled at a time; setting a new one clears any other (task: host-coupled "
+            + "tests run in their own gate once per task, never in parallel with another run's copy).")]
+        public string? HostCoupledGateFilter { get; init; }
+
         [CommandOption("--accept-broken-gate")]
         [Description(
             "Records a --verify gate that fails when run once against a clean checkout of this "
@@ -424,6 +440,19 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         Optional<IReadOnlyList<VerifyCommand>> verifyCommands = settings.Verify.Length > 0
             ? Optional<IReadOnlyList<VerifyCommand>>.Of([.. settings.Verify.Select(ParseVerify)])
             : Optional<IReadOnlyList<VerifyCommand>>.None;
+
+        // Folded into the same verifyCommands Optional, on top of whatever --verify itself just
+        // set, or on top of the project's own already-recorded gates when --verify was not given
+        // this invocation (PLACEHOLDER-609bd344): --verify-gate-filter names an EXISTING gate
+        // rather than a whole new list, so it needs the resolved list either way.
+        if (settings.HostCoupledGateFilter is { } hostCoupledGateFilterValue)
+        {
+            IReadOnlyList<VerifyCommand> gatesToMark = verifyCommands is { HasValue: true, Value: { } newlySetGates }
+                ? newlySetGates
+                : details.VerifyCommands;
+            verifyCommands = Optional<IReadOnlyList<VerifyCommand>>.Of(
+                ApplyHostCoupledGateFilter(gatesToMark, hostCoupledGateFilterValue));
+        }
 
         // Each gate is run once against a clean checkout of the base branch here, before it is
         // ever attached to the project, rather than discovered the first time a dispatched run
@@ -1086,6 +1115,49 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         }
 
         return new VerifyCommand(name, command);
+    }
+
+    /// <summary>
+    /// Folds --verify-gate-filter's own NAME=FILTER (or 'none') onto <paramref name="gates"/>,
+    /// the project's already-configured list or the one --verify just set in this same invocation
+    /// (task: host-coupled tests run in their own gate once per task, never in parallel with
+    /// another run's copy — PLACEHOLDER-609bd344). At most one gate is ever host-coupled: setting
+    /// a new one clears any other, so a second --verify-gate-filter call simply moves the
+    /// designation rather than requiring 'none' first.
+    /// </summary>
+    internal static IReadOnlyList<VerifyCommand> ApplyHostCoupledGateFilter(
+        IReadOnlyList<VerifyCommand> gates, string value)
+    {
+        if (ClearingWord(value))
+        {
+            return [.. gates.Select(gate => gate.HostCoupledFilter is null ? gate : gate with { HostCoupledFilter = null })];
+        }
+
+        int separator = value.IndexOf('=');
+        if (separator <= 0)
+        {
+            throw new DomainValidationException(
+                $"--verify-gate-filter expects name=filter (or 'none' to clear), got '{value}'.");
+        }
+
+        string name = value[..separator].Trim();
+        string filter = value[(separator + 1)..].Trim();
+        if (name.Length == 0 || filter.Length == 0)
+        {
+            throw new DomainValidationException(
+                $"--verify-gate-filter expects name=filter (or 'none' to clear), got '{value}'.");
+        }
+
+        if (!gates.Any(gate => gate.Name == name))
+        {
+            throw new DomainValidationException(
+                $"--verify-gate-filter names gate '{name}', which is not configured. Configure it first "
+                + "with --verify, in this same invocation or a prior one.");
+        }
+
+        return [.. gates.Select(gate => gate.Name == name
+            ? gate with { HostCoupledFilter = filter }
+            : gate.HostCoupledFilter is null ? gate : gate with { HostCoupledFilter = null })];
     }
 
     private static CommitStyle ParseCommitStyle(string value) => value.Trim().ToLowerInvariant() switch

@@ -223,7 +223,10 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Verify gates", project.VerifyCommands.Count == 0
             ? $"[dim]none — add one: h9k project set {project.Name.EscapeMarkup()} --verify \"test=dotnet test\"[/]"
             : string.Join("\n", project.VerifyCommands.Select(gate =>
-                $"{gate.Name.EscapeMarkup()} [dim]→[/] {gate.Command.EscapeMarkup()}")));
+                $"{gate.Name.EscapeMarkup()} [dim]→[/] {gate.Command.EscapeMarkup()}"
+                + (gate.IsHostCoupled
+                    ? $" [dim](host-coupled, filter: {gate.HostCoupledFilter!.EscapeMarkup()})[/]"
+                    : string.Empty))));
         table.AddRow("Jira board", project.JiraProjectKey.HasValue
             ? $"{project.JiraProjectKey.Value.EscapeMarkup()} [dim]— new cards are filed here; a reported "
               + "card key is checked against it[/]"
