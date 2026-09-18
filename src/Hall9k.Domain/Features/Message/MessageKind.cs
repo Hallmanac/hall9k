@@ -39,6 +39,16 @@ public sealed record MessageKind
     /// </summary>
     public static readonly MessageKind EventsUnavailable = new("events-unavailable");
 
+    /// <summary>
+    /// A holder's nudge that a task's handoff note changed (idea 202383dc, item 3): the note itself
+    /// travels on the task's own event stream and lands in the ledger record, never in this
+    /// envelope's body — this kind carries no payload beyond pointing the reader at the task, and
+    /// nothing but <c>h9k status</c>'s own unread count reads it (the same "the message is the nudge
+    /// only" rule <see cref="Note"/> does not need to state, since a note's whole payload IS its
+    /// body).
+    /// </summary>
+    public static readonly MessageKind Handoff = new("handoff");
+
     public string Value { get; }
 
     private MessageKind(string value) => Value = value;
@@ -49,12 +59,14 @@ public sealed record MessageKind
         "events" => Events,
         "events-request" => EventsRequest,
         "events-unavailable" => EventsUnavailable,
+        "handoff" => Handoff,
         _ => new MessageKind(raw),
     };
 
     /// <summary>Whether this is a kind Hall9k actually interprets, rather than one stored as-is for
     /// a future version — or a future kind this version has not learned yet — to make sense of.</summary>
-    public bool IsRecognized => this == Note || this == Events || this == EventsRequest || this == EventsUnavailable;
+    public bool IsRecognized =>
+        this == Note || this == Events || this == EventsRequest || this == EventsUnavailable || this == Handoff;
 
     public override string ToString() => Value;
 }
