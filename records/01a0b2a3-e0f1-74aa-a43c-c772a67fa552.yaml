@@ -1,0 +1,21 @@
+hall9k-task-record: 1
+task-id: 01a0b2a3-e0f1-74aa-a43c-c772a67fa552
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#468
+objective: |-
+  TaskHolderClaimTests cannot claim a sibling test's leftover task: each test's claim pass sees only the task it seeded, so the empty-holder test passes regardless of test order or what an earlier test left Queued
+criteria:
+  - NodeBootstrap.EnsureAsync's first-owner lookup no longer makes every NewIsolatedNodeAsync node in one class database share one owner, or TaskHolderClaimTests seeds each test's task under an owner private to that test; either way a claim pass in one test can never return another test's task
+  - The tests that deliberately leave their task Queued (write failure, fetch failure, gated projects) leave nothing a later test's engine can claim
+  - An_empty_holder_claims_and_the_run_launches_only_after_the_ledger_write_lands asserts on the one ClaimedWork for its own task and passes across the full suite with the gates running in parallel
+  - dotnet build and dotnet test pass
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/a67fa552-taskholderclaimtests-cannot-cl
+published: 2026-09-18 12:27:03Z
+context: |-
+  EVIDENCE ONLY, held by the window; do not publish without Brian's word. Bite: f8e6dd8f run 01a0b172 gate at 2026-09-17 23:39 EDT failed this one test of 6083; the assertion shows ClaimEligibleAsync returned a ClaimedWork for a TaskId the test never seeded (verify-test.log in that run). Cause verified in the worktree wt-f8e6dd8f-c6599ef1: NodeBootstrap.EnsureAsync (src/Hall9k.Domain/Infrastructure/Bootstrap/NodeBootstrap.cs:46) takes the first OwnerDetails row, so NewIsolatedNodeAsync mints a fresh node but the same owner; DispatchEngine's claim query filters by AssignedOwnerId only (DispatchEngine.cs:935) and stops at the node's capacity, so a sibling test's leftover Queued task (several tests in the class leave theirs Queued on purpose) can take the slot. The test class is new on f8e6dd8f's branch (A3b, idea 202383dc), so if that branch is still open the fix belongs on it; if it has merged, this is a follow-up. Different mechanism from #455/#465 (process-wide statics). Retried once at 23:50 with no code change (notes/decisions-2026-09-17-hall9k-0a.md).
