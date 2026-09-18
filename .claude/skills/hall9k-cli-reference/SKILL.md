@@ -134,8 +134,8 @@ every node (Brian, 2026-09-13) — a tracker key differs per provider and is abs
 no tracker item at all. `Hall9k.Cli.Commands.TaskRecordPublication.WriteAsync` is the one writer,
 called from `h9k task publish` and `h9k task revise`: it composes the record fresh from the
 task's current state every time (a projection, never the event log) and carries through, unchanged,
-whatever holder block the record already had — the claim lock A3b adds, empty until that task
-writes it. The record carries the readiness contract, the agent context, the caps this task
+whatever holder block the record already had — that block is the claim lock, A3b, and it is now
+built. The record carries the readiness contract, the agent context, the caps this task
 overrode, its external reference (absent when the task has none), its dependencies and its epic by
 task id, and where it was published from (node, owner root fingerprint, branch, when). A task
 adopted from elsewhere (`task.Origin is not null`) never writes its own copy of the origin's
@@ -152,6 +152,48 @@ fabricating a copy from the record's own fields — the events-request that actu
 stream up is event catch-up's own job (idea 202383dc, task 9408d525). An item with no record
 anywhere and no local task adopts exactly as it always did: title to objective, body to context,
 criteria typed by hand.
+
+**The record's holder block is the claim lock** (idea 202383dc, A3b): the ledger record's own
+holder — owner root fingerprint, node id, node name, since — is the truth about who has a task,
+independent of and more durable than the local `Claimed` state. `DispatchEngine`'s claim path
+(`Hall9k.Connectors.WorkItems.TaskLedgerHolder.TryClaimAsync`) reads the record and, when the
+holder is empty (or already this node's own — an ordinary automatic-follow-up reclaim), writes it
+as a conditional write through A1 *before* `TaskClaimed` is ever built or appended; a rejected push
+re-reads and re-decides, a holder that names another node stands the claim down (the task stays
+Queued, and a `TaskHolderClaimHold` names that holder and time — the identical fact a replicated
+claim's own HeldElsewhere rendering shows), and a write that cannot complete at all — a fetch,
+push, signing, or read failure — holds the task the same way, for every project, with no exemption
+setting. A task with no ledger record yet (never published, or not replicated here) is not a
+failure; there is nothing to guard, so the claim proceeds exactly as before this feature existed.
+The project's `tracker-assignee` claim gate, when set, still reads the tracker first, exactly as
+it always has — the ledger write only ever runs after that check passes, so a gated project's
+tracker assignee and its ledger holder always agree; `Off` never consults the tracker on claim at
+all. On every successful claim this install also mirrors its own identity onto the tracker
+assignee, best effort, through the identical unassigned-only write `h9k task assign --take` uses —
+invoked independent of the project's own configured gate, so it runs even for a project whose gate
+is `Off`; a mirror failure is logged and never fails the claim, and leaves a
+`TaskTrackerAssignMirrorPending` row for the daemon's own lease sweep to retry rather than waiting
+on the next holder change to re-evaluate it. The release half mirrors this on the identical
+cadence: once the lease-expiry sweep gives this node's own ledger holder back, its tracker
+identity is cleared off the linked item too, and a mirror failure there leaves the matching
+`TaskTrackerReleaseMirrorPending` row for the same sweep to retry — the ledger's own release lands
+regardless, on either half's failure.
+
+Release — clearing the holder back to empty by the same conditional write, with a
+`TaskHolderReleased` event on the task's own stream — happens at the task's true completion (the
+merge/closeout that actually concludes it, not the earlier `TaskCompleted` that only opens the
+pull request), at `h9k task abandon`, and at the sweep that finds a task whose holder is still
+this node but whose lease and run are both gone (lease expiry): a ledger write that cannot
+complete at any of those moments leaves a `TaskHolderReleasePending` row for the next sweep to
+retry, so the release is durable even when the git push it needs is temporarily unreachable.
+Closeout, review re-request, merge, and follow-up dispatch (`CloseoutEngine.InspectAndActAsync`)
+all act on a produced run only while this node still names itself as `TaskAggregate.HolderNodeId`
+— a run whose task has since been held elsewhere is skipped before any network call, its record
+left open for whichever node does hold it; the interactive/deliberate self-claim sentinel
+(`Guid.Empty`, `h9k task work`/`h9k task start`) is never treated as held elsewhere, since it is
+inherently single-node and the ledger never carries a holder write for one at all. `h9k task
+release` remains scoped to this node's own interactive claim exactly as before and never touches
+the ledger holder.
 
 Node-to-node messages: a note one node sends another, an owner, or the whole project, the first
 payload kind, replacing `notes/node-mailbox.md`'s GitHub-issue workaround for that traffic (that
