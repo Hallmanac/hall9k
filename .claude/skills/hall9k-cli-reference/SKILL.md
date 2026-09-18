@@ -219,6 +219,25 @@ learn. The one difference from an ordinary retry: a branch gone from both this n
 origin fails the run loudly, by name, rather than quietly starting clean the way an ordinary
 retry's missing branch does — silently cutting a fresh branch here would abandon a foreign node's
 own work rather than surfacing that it is gone.
+
+**A holder can leave a handoff note for whoever holds this task next** (idea 202383dc, item 3) —
+`h9k task handoff <id> --text "<note>"` or `--file <path>`: what is done, what is half done, what
+to watch, for work still in flight. Not `RunHandoffRecorded`, the closeout handoff a merge hands a
+dependent task (Decisions Log #36, appended only at true closeout); this is a task-stream event
+(`TaskHandoffNoted`) appended by whoever `TaskAggregate.HolderNodeId` currently names, refused on
+any other node with the actual holder named. The note is capped
+(`TaskDecider.MaxHandoffNoteLength`, the same bound a run's own closeout handoff holds itself to)
+so it never grows the ledger record without limit. The event's own author (owner root fingerprint,
+node) and time mirror onto `TaskAggregate.HandoffNote`/`HandoffNoteAuthorOwnerRootFingerprint`/
+`HandoffNoteAuthorNodeId`/`HandoffNoteAt`, and `TaskRecordPublication` composes the ledger record's
+own `TaskRecordHandoffNote` field from those the same way it composes every other field — unlike
+`TaskRecordHolder`, which the writer only ever carries through unchanged. `h9k task show` prints
+it, and a `handoff`-kind message envelope (to the project, or `--to <owner>`) queues alongside the
+event purely as a nudge — its body carries no copy of the note, and nothing but `h9k status`'s own
+unread-message count reads it. The next holder's first run that resumes a foreign node's branch
+(`TaskDetails.RetryBranchResumesForeignNode`, above) opens with the note ahead of the work prompt's
+own agent context (`WorkPromptBuilder.Build`).
+
 `PullRequestOpener.OpenAsync` looks up an already-open pull request for the run's own branch
 before ever calling `gh pr create`, on every delivery (not only a resumed one — a first delivery
 whose own `PullRequestOpened` event never committed reaches the identical shape), and adopts it —
@@ -707,6 +726,9 @@ h9k task handback <id> --first   # same release, plus the queue-first marker: th
 h9k task handback <id> --now     # same release, dispatched immediately, ceiling-exempt, through h9k task start's own mechanism — refused together with --first
 h9k task release <id>                # give an untouched claim back to the dispatch queue; clears interactive mode by default (an exit door alongside handback)
 h9k task release <id> --keep-interactive   # same release, but the task's interactive-mode flag survives it, so a later headless run still parks at each boundary
+h9k task handoff <id> --text "<note>"   # leave a note for whoever holds this task next (idea 202383dc, item 3); refused on any node that is not the current ledger holder, naming who is
+h9k task handoff <id> --file <path>     # same, read from a file instead of typing it
+h9k task handoff <id> --text "<note>" --to <owner>   # nudge one owner's every node instead of the whole project (their root fingerprint — h9k owner show prints it)
 ```
 
 A deliberate human kick-off dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead
