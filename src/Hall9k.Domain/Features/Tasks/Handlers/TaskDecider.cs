@@ -1309,10 +1309,14 @@ public static class TaskDecider
     /// the caller's own warn-and-ask flow, not a substitute for it.
     /// </para>
     /// </summary>
+    /// <param name="resumesBranch">See <see cref="TaskClaimed.ResumesBranch"/>'s own doc — the
+    /// caller (<c>TaskWorkCommand</c>) resolves this through <see cref="Queries.ForeignResumeBranchResolver"/>
+    /// before calling in, the same way <c>DispatchEngine.TryClaimAsync</c> resolves it for
+    /// <see cref="Claim"/>.</param>
     public static TaskClaimed ClaimInteractively(
         TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt,
         bool dependencyOverrideAcknowledged = false, bool dependencyOverrideCarriedForward = false,
-        string? ownerRootFingerprint = null)
+        string? ownerRootFingerprint = null, string? resumesBranch = null)
     {
         if (task.State == TaskState.Blocked)
         {
@@ -1343,7 +1347,7 @@ public static class TaskDecider
         return new TaskClaimed(
             task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
             dependencyOverrideAcknowledged, dependencyOverrideAcknowledged && dependencyOverrideCarriedForward,
-            InteractiveMode: true, OwnerRootFingerprint: ownerRootFingerprint);
+            InteractiveMode: true, OwnerRootFingerprint: ownerRootFingerprint, ResumesBranch: resumesBranch);
     }
 
     /// <summary>
@@ -1380,10 +1384,15 @@ public static class TaskDecider
     /// boundaries by hand.
     /// </para>
     /// </summary>
+    /// <param name="resumesBranch">See <see cref="TaskClaimed.ResumesBranch"/>'s own doc — the
+    /// <c>h9k task start</c> caller resolves this through <see cref="Queries.ForeignResumeBranchResolver"/>
+    /// before calling in, the same way <c>DispatchEngine.TryClaimAsync</c> resolves it for
+    /// <see cref="Claim"/>; <c>AutoPrReviewEngine</c>'s own automated claim leaves it null, since
+    /// the resolver already answers null for a pr-review task regardless.</param>
     public static TaskClaimed ClaimDeliberately(
         TaskAggregate task, Guid ownerId, Guid runId, DateTimeOffset claimedAt, bool dependencyOverrideAcknowledged,
         bool dependencyOverrideCarriedForward = false, bool interactiveMode = false,
-        string? ownerRootFingerprint = null)
+        string? ownerRootFingerprint = null, string? resumesBranch = null)
     {
         if (task.State == TaskState.Blocked)
         {
@@ -1410,7 +1419,7 @@ public static class TaskDecider
         return new TaskClaimed(
             task.Id, Guid.Empty, ownerId, task.LeaseGeneration + 1, runId, claimedAt, dependencyOverrideAcknowledged,
             dependencyOverrideAcknowledged && dependencyOverrideCarriedForward, interactiveMode,
-            OwnerRootFingerprint: ownerRootFingerprint);
+            OwnerRootFingerprint: ownerRootFingerprint, ResumesBranch: resumesBranch);
     }
 
     /// <summary>
