@@ -219,7 +219,7 @@ database that was just destroyed — check it before your next `h9k install` if 
 ## Windows notes
 
 The daemon lifecycle works the same way on Windows as on macOS — `h9k daemon start` / `stop` /
-`status`, and `h9k daemon autostart enable` / `disable` — with three Windows-specific mechanics
+`status`, and `h9k daemon autostart enable` / `disable` — with four Windows-specific mechanics
 worth knowing:
 
 - **Autostart is a Task Scheduler logon task, never a Windows service** (Decisions Log #3): a
@@ -245,6 +245,19 @@ worth knowing:
   string at all yet, doctor will not help either — the variable already resolves ahead of
   `config.json` in `Hall9kDatabase.Resolve()`, so doctor reports healthy without ever touching
   `config.json`; add `{"connectionString": "…"}` there by hand instead.)
+- **The daemon's log handle is opened by whatever launches it, not by a shell redirect.** Both
+  Windows launch paths open `~/.hall9k/h9kd.log` with `FILE_APPEND_DATA` and a share mode that
+  admits readers, other writers and a delete, hand that handle to `h9kd` as its stdout and stderr,
+  and close their own copy — so the daemon is the only writer left on its own log, its own
+  rotation-safe takeover succeeds, and the 8 MB budget is enforced on the five-minute tick while
+  it runs (Decisions Log PLACEHOLDER-d4e64dfa). On the autostart path the vehicle for that handle is `h9k` itself,
+  `h9k daemon autostart launch`, sitting between `cmd.exe` and `h9kd`: a handle cannot be passed
+  through the VBScript command line the registration composes. The one thing that does not update
+  itself is an existing registration's launch script — no `h9k install` and no `h9k update`
+  rewrites it, only `h9k daemon autostart enable` does. A machine registered before this landed
+  keeps launching through `cmd.exe`'s own `>>` redirect, which holds the log with
+  `FILE_SHARE_READ` for the daemon's whole run; `h9kd` logs a sharing-violation warning naming
+  that remedy at start, and `h9k daemon start` names it too.
 - **`h9k daemon stop` asks gracefully rather than sending a signal**, because Windows has no
   SIGTERM for an arbitrary process the way Unix does: it writes a small stop-request file the
   running `h9kd` polls for and acts on itself. The effect is identical either way — in-flight

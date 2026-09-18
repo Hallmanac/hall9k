@@ -218,25 +218,20 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   Use a literal path, not `$HOME`, for either one: the Bash tool on this platform runs Git Bash
   even when the rest of the session targets PowerShell, and a path composed under Git Bash's own
   `$HOME` expands to a `/c/...`-style path that `pwsh` cannot open, and dies at once.
-- **The log-handoff warning at start is expected, and it is not about a reader.** On Windows
-  today `h9kd` always fails to open its own append-only handle onto `h9kd.log`, and the holder it
-  loses to is its own launcher: both launch paths run it as
-  `cmd.exe /c "h9kd < NUL >> h9kd.log 2>&1"`, and cmd.exe holds an append redirect's target with
-  `FILE_SHARE_READ` only — readers welcome, a second writer refused — for the whole run. The
-  warning names that holder, and because that holder is the daemon's own launcher, which no wait
-  can outlive, the warning appears at once rather than a few seconds in: `h9kd` recognizes its own
-  inherited stdout and skips the retry it keeps for any *other* holder that might let go (a backup
-  pass, an on-access scanner, an editor left open on the log). It then keeps logging to the same
-  `h9kd.log` through the inherited handle. What that costs is the log's 8 MB budget while the
-  daemon runs: the same share mode also refuses the rotation's own open, so a log past its budget
-  stays that way, with a warning every five minutes, until the CLI's own start path rolls it aside
-  while nothing holds it. That path is the only Windows one that rotates, whether you reach it
-  with `h9k daemon start` or with an `h9k install` or `h9k update` that restarts the daemon for
-  you, so on a node brought up only by the logon autostart task the budget goes unenforced until
-  you run one of them by hand. Two things follow. Your own `Get-Content -Wait` reader is never the
-  cause: cmd.exe admits readers, and so does the handle `h9kd` tries to open. And nothing is
-  hidden from you by the fallback: every subsequent line still lands in that same `h9kd.log`, this
-  is a printed warning rather than a silent switch, and it is not a switch to a separate console.
+- **If you registered autostart before the launcher opened the daemon's log for it (Decisions Log
+  PLACEHOLDER-d4e64dfa), re-run `h9k daemon autostart enable` once.** The
+  daemon's log used to reach it through a shell redirect, `cmd.exe /c "h9kd < NUL >> h9kd.log
+  2>&1"`, and cmd.exe holds an append redirect's target with `FILE_SHARE_READ` only for the whole
+  run: readers welcome, a second writer refused. So `h9kd` could never take its own log over with a
+  rotation-safe append handle, and the log's 8 MB budget went unenforced while it ran. Both launch
+  paths now open that handle for it and hand it over, and nothing holds the log but the daemon
+  itself. The one thing that does not update itself is an autostart registration's launch script:
+  no `h9k install` and no `h9k update` rewrites it, only `h9k daemon autostart enable` does. Until
+  you run that, an autostarted daemon keeps launching the old way and logs a sharing-violation
+  warning at start naming this remedy. Two things are worth knowing if you see that warning. Your
+  own `Get-Content -Wait` reader is never the cause: cmd.exe admits readers, and so does the handle
+  `h9kd` tries to open. And nothing is hidden from you by it: every line still lands in that same
+  `h9kd.log`, and this is a printed warning rather than a silent switch to some other console.
   After any restart, confirm rather than trust a quiet pane:
 
   ```bash
