@@ -30,6 +30,7 @@ namespace Hall9k.Tests.Integration;
 // Both classes redirect the process-wide HALL9K_HOME; sharing a collection serializes
 // them so one test's home is never yanked out from under the other's tail loop.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
@@ -2179,6 +2180,16 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             GateDuration thirdHostGate = passes[2].GateDurations!.Single(g => g.Gate == "host");
             thirdHostGate.HostCoupledSkipped.Should().BeFalse("the final full pass runs it again");
             thirdHostGate.Passed.Should().BeTrue();
+
+            // Adversarial review, high: a pass that skips its own configured host-coupled gate
+            // must never record the WHOLE pass as RanFullScope true — ReviewEngine's pre-Settling
+            // waiver (GateAlreadyRanFullOverCurrentHeadAsync) reads exactly that fact plus a
+            // matching HeadSha to decide the mandatory final full gate already ran and can be
+            // skipped, and this run's own host-coupled gate did not run at all on this pass.
+            passes[1].RanFullScope.Should().BeFalse(
+                "this pass skipped the host-coupled gate outright, so it never covered the project's full configured suite");
+            passes[0].RanFullScope.Should().BeTrue("the first verification ran every configured gate, host-coupled included");
+            passes[2].RanFullScope.Should().BeTrue("the final full pass ran every configured gate, host-coupled included");
         }
         finally
         {
@@ -2241,12 +2252,22 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             await using IQuerySession query = store.QuerySession();
             var events1 = await query.Events.FetchStreamAsync(runId1, token: cts.Token);
             var events2 = await query.Events.FetchStreamAsync(runId2, token: cts.Token);
+            // waitStarts is bounded, not pinned to exactly 1 (independent pre-PR review, cycle 1,
+            // both lenses, medium): each VerifyAsync call pays for its own Marten loads, stranded-
+            // work detection, and git spawns before it ever reaches the permit, and on a loaded
+            // host (the very Windows CI leg RealProcessSpawn exists for) the second run's own
+            // prelude can finish more than the first run's 400ms gate pause after the first
+            // started — the first has already released the permit by then, so the second acquires
+            // it uncontended and records no wait at all, with serialization still holding. The
+            // enter/exit overlap log above is what actually proves the gate never runs
+            // concurrently; this only checks that a wait, when one happens, is recorded and
+            // cleared consistently.
             int waitStarts = events1.Select(e => e.Data).OfType<RunHostCoupledGateWaitStarted>().Count()
                 + events2.Select(e => e.Data).OfType<RunHostCoupledGateWaitStarted>().Count();
             int waitEnds = events1.Select(e => e.Data).OfType<RunHostCoupledGateWaitEnded>().Count()
                 + events2.Select(e => e.Data).OfType<RunHostCoupledGateWaitEnded>().Count();
-            waitStarts.Should().Be(1, "exactly one of the two runs had to wait for the other's own host-coupled gate");
-            waitEnds.Should().Be(1, "the wait it recorded also ended once the permit was granted");
+            waitStarts.Should().BeLessThanOrEqualTo(1, "at most one of the two runs ever needed to wait for the other's own host-coupled gate");
+            waitEnds.Should().Be(waitStarts, "every wait it recorded also ended once the permit was granted");
 
             RunDetails run1 = (await query.LoadAsync<RunDetails>(runId1, cts.Token))!;
             RunDetails run2 = (await query.LoadAsync<RunDetails>(runId2, cts.Token))!;

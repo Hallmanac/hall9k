@@ -252,6 +252,20 @@ public sealed partial class VerificationRunner(
         int dotnetTestGateCount = 0;
         int dotnetTestGateFellBackCount = 0;
 
+        // Whether this pass skipped its configured host-coupled gate outright (adversarial
+        // review, high — PLACEHOLDER-609bd344): a scoped reverify whose commits touch a non-C#
+        // file falls back to TestGateScope.Full the identical way an ordinary dotnet-test gate
+        // does, which used to make the pass-level ranFullScope below true even though the
+        // host-coupled gate itself was still skipped (runHostCoupledGate is keyed only on
+        // scopeSinceSha, never on what the scope resolver decided). RunAggregate.LastGateRanFullScope
+        // then read this pass as a genuine full pass over the current HEAD, and
+        // ReviewEngine.GateAlreadyRanFullOverCurrentHeadAsync waived the mandatory pre-Settling
+        // full gate on the strength of it — so the host-coupled gate could reach a merge having
+        // never once run against the tip that actually ships. Folded into ranFullScope below so a
+        // pass that skips it can never satisfy that waiver; the run's own next full pass
+        // (scopeSinceSha null) is unscoped and so always runs the host-coupled gate for real.
+        bool anyHostCoupledGateSkipped = false;
+
         // Every gate's own wall-clock duration this pass (task: gate wall-clock duration is
         // recorded and surfaced), in the order the gates ran — GateDuration.cs's own doc comment
         // covers why a retried gate sums both attempts into one entry rather than recording two.
@@ -298,8 +312,9 @@ public sealed partial class VerificationRunner(
             // rather than the skip reading as silence the way an absent entry would.
             if (gate.IsHostCoupled && !runHostCoupledGate)
             {
+                anyHostCoupledGateSkipped = true;
                 gateDurations.Add(new GateDuration(
-                    gate.Name, TimeSpan.Zero, Passed: true, RanFullScope: true, HostCoupledSkipped: true));
+                    gate.Name, TimeSpan.Zero, Passed: true, RanFullScope: false, HostCoupledSkipped: true));
                 logger.LogInformation(
                     "Run {RunId} gate '{Gate}' skipped: host-coupled, and this pass is an intermediate review cycle",
                     runId, gate.Name);
@@ -307,9 +322,9 @@ public sealed partial class VerificationRunner(
             }
 
             Stopwatch gateStopwatch = Stopwatch.StartNew();
-            (bool passed, string summary, bool isInfrastructureFailure, string? excerpt, bool fellBackToFull) =
+            (bool passed, string summary, bool isInfrastructureFailure, string? excerpt, bool fellBackToFull, TimeSpan permitWaitElapsed) =
                 await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, cancellationToken);
-            TimeSpan gateElapsed = gateStopwatch.Elapsed;
+            TimeSpan gateElapsed = gateStopwatch.Elapsed - permitWaitElapsed;
             bool gateFellBackToFull = fellBackToFull;
             if (passed)
             {
@@ -364,9 +379,9 @@ public sealed partial class VerificationRunner(
                 runId, gate.Name, summary);
 
             Stopwatch retryStopwatch = Stopwatch.StartNew();
-            (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _, bool retryFellBackToFull) =
+            (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _, bool retryFellBackToFull, TimeSpan retryPermitWaitElapsed) =
                 await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, cancellationToken);
-            TimeSpan totalGateElapsed = gateElapsed + retryStopwatch.Elapsed;
+            TimeSpan totalGateElapsed = gateElapsed + retryStopwatch.Elapsed - retryPermitWaitElapsed;
 
             // The retry's own outcome replaces the first attempt's, not OR's with it (adversarial
             // review): only the attempt that actually passed is what the recorded RanFullScope fact
@@ -410,7 +425,13 @@ public sealed partial class VerificationRunner(
         // "full scope" — a sibling gate that ran genuinely scoped means the pass did not.
         bool anyTestGateFellBack = dotnetTestGateFellBackCount > 0;
         bool allTestGatesFellBack = dotnetTestGateCount > 0 && dotnetTestGateFellBackCount == dotnetTestGateCount;
-        bool ranFullScope = scope is null || !scope.IsScoped || allTestGatesFellBack;
+
+        // anyHostCoupledGateSkipped is checked regardless of what the block above concluded
+        // (adversarial review, high): a pass that skipped its own configured host-coupled gate
+        // never covered the project's FULL configured suite, however the ordinary dotnet-test
+        // gates' own scope resolved, so it can never be recorded as the "already ran full over
+        // this HEAD" fact ReviewEngine's pre-Settling waiver reads.
+        bool ranFullScope = (scope is null || !scope.IsScoped || allTestGatesFellBack) && !anyHostCoupledGateSkipped;
 
         // "No executed tests were recorded" rather than "the scoped filter matched no tests"
         // (conformance review finding): at this point only the per-gate fallback count is known,
@@ -1038,7 +1059,7 @@ public sealed partial class VerificationRunner(
         return discarded;
     }
 
-    private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt, bool FellBackToFull)>
+    private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt, bool FellBackToFull, TimeSpan PermitWaitElapsed)>
         RunGateAsync(
         Guid runId, string runDirectory, string worktreePath, VerifyCommand gate, TestGateScope? scope,
         CancellationToken cancellationToken)
@@ -1102,14 +1123,25 @@ public sealed partial class VerificationRunner(
         // PLACEHOLDER-609bd344): held for the whole spawn-and-wait span below, released in the
         // same finally block that already records GateEnded, so a second run's own host-coupled
         // gate never runs concurrently with this one's on the same machine.
+        //
+        // Timed separately from the gate process itself (independent pre-PR review, cycle 1, both
+        // lenses, low): the caller's own Stopwatch wraps this whole method, so without subtracting
+        // this wait back out, two runs racing for the permit would record a gate duration that is
+        // queue time plus run time rather than the gate's own cost — the exact number
+        // h9k task show's Gates cell prints, the anomaly flag compares against, and
+        // AdHocGateRunner.ComputeComparisonBudget budgets the next clean-base comparison from.
+        Stopwatch permitStopwatch = Stopwatch.StartNew();
         IAsyncDisposable? hostCoupledPermit = gate.IsHostCoupled
             ? await AcquireHostCoupledGatePermitAsync(runId, cancellationToken)
             : null;
+        TimeSpan permitWaitElapsed = hostCoupledPermit is null ? TimeSpan.Zero : permitStopwatch.Elapsed;
         try
         {
-            return await RunGateProcessAsync(
-                runId, runDirectory, worktreePath, gate, scope, logFile, gateWaitDirectory, innerCommand,
-                cancellationToken);
+            (bool passed, string summary, bool isInfrastructureFailure, string? infrastructureExcerpt, bool fellBackToFull) =
+                await RunGateProcessAsync(
+                    runId, runDirectory, worktreePath, gate, scope, logFile, gateWaitDirectory, innerCommand,
+                    cancellationToken);
+            return (passed, summary, isInfrastructureFailure, infrastructureExcerpt, fellBackToFull, permitWaitElapsed);
         }
         finally
         {
@@ -1128,8 +1160,22 @@ public sealed partial class VerificationRunner(
     /// composed shell command — scope filter, host-coupled filter, and log redirection all
     /// applied — so this method never reads <c>gate.Command</c> for anything but
     /// <see cref="IsDotnetTestGate"/> checks and its own recursive fallback call, which goes back
-    /// through <see cref="RunGateAsync"/> (never this method directly) so a fallback run acquires
-    /// its own permit too, when the gate it is falling back for happens to be host-coupled.
+    /// through <see cref="RunGateAsync"/> (never this method directly) rather than calling itself.
+    /// <para>
+    /// That fallback only ever triggers under <c>scope is {{ IsScoped: true }}</c> (a scoped
+    /// filter that intersected to nothing), and a host-coupled gate only ever runs unscoped —
+    /// <c>runHostCoupledGate</c> is keyed on <c>scopeSinceSha is null</c>, the identical condition
+    /// that resolves <c>scope</c> to <see cref="TestGateScope.Full"/> — so the two paths can never
+    /// meet as this code stands (independent pre-PR review, cycle 1, conformance lens: an earlier
+    /// version of this comment called that a safety property, "a fallback run acquires its own
+    /// permit too, when the gate it is falling back for happens to be host-coupled" — the opposite
+    /// is true. If a host-coupled gate's fallback ever became reachable, the nested
+    /// <c>RunGateAsync</c> would try to acquire this same node's permit while the OUTER call still
+    /// holds the <c>FileShare.None</c> lock, the reopen would fail with the identical
+    /// <see cref="IOException"/> the lock is designed to raise against anyone else, and the 200ms
+    /// poll loop in <see cref="AcquireHostCoupledGatePermitAsync"/> would spin until this run's own
+    /// cancellation fired — a hung verification, not a second permit.
+    /// </para>
     /// </summary>
     private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt, bool FellBackToFull)>
         RunGateProcessAsync(
@@ -1317,7 +1363,7 @@ public sealed partial class VerificationRunner(
                             "Gate '{Gate}': {Description} (filter \"{Filter}\" combined with the gate's own " +
                             "configured filter); falling back to a full run of this gate",
                             gate.Name, vacuityDescription, scope.FilterExpression);
-                        (bool fallbackPassed, string fallbackSummary, bool fallbackIsInfrastructureFailure, string? fallbackExcerpt, _) =
+                        (bool fallbackPassed, string fallbackSummary, bool fallbackIsInfrastructureFailure, string? fallbackExcerpt, _, _) =
                             await RunGateAsync(
                                 runId, runDirectory, worktreePath, gate,
                                 TestGateScope.Full($"{vacuityDescription} ({scope.Reason})"),
@@ -2411,7 +2457,7 @@ public sealed partial class VerificationRunner(
     /// reverify combines one in.
     /// </summary>
     internal static string ComposeGateCommand(VerifyCommand gate) =>
-        gate.IsHostCoupled ? ApplyTestFilter(gate.Command, gate.HostCoupledFilter!) : gate.Command;
+        gate.HostCoupledFilter is { } filter ? ApplyTestFilter(gate.Command, filter) : gate.Command;
 
     /// <summary>
     /// Injects <paramref name="filterExpression"/> into a `dotnet test` command, combining with

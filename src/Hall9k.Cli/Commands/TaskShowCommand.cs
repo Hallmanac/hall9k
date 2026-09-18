@@ -1625,7 +1625,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         List<string> lines = [];
         foreach (GateDuration gate in durations)
         {
-            if (!gate.Passed)
+            // A skipped host-coupled gate recorded a zero duration for never having run at all,
+            // not for having run quickly (independent pre-PR review, cycle 1, both lenses, medium,
+            // swept alongside GateDurationHistoryQuery's own identical filtering gap) — comparing
+            // it here would never itself flag as anomalous (zero is never >= 1.5x an average), but
+            // it is not "this pass's own gate duration" either, so it earns no place in a report
+            // whose whole point is what THIS run's own gates actually cost.
+            if (!gate.Passed || gate.HostCoupledSkipped)
             {
                 continue;
             }
