@@ -359,7 +359,22 @@ public sealed class DispatchEngine(
         foreach ((Guid taskId, Guid projectId) in holdersToRelease)
         {
             await ReleaseLedgerHolderBestEffortAsync(taskId, projectId, cancellationToken);
-            await MirrorTrackerReleaseBestEffortAsync(taskId, projectId, cancellationToken);
+
+            // A lease expiry is a transient handback, not a conclusion, unlike the other two
+            // release sites (closeout true completion, h9k task abandon) where the task really is
+            // over: on a project whose claim gate IS the tracker assignee, clearing this install's
+            // own identity off the item here would destroy the very signal that gate reads to let
+            // this same tick's own ClaimEligibleAsync re-claim the just-requeued task automatically
+            // — crash recovery would stall until a human re-assigns the issue by hand (adversarial
+            // review, this branch's fix cycle). Skipped outright, not merely retried differently:
+            // nothing here for SweepPendingTrackerMirrorsAsync to ever pick back up either, since no
+            // pending row is written when the call is never made.
+            await using IDocumentSession gateSession = store.LightweightSession();
+            ProjectDetails? gateProject = await gateSession.LoadAsync<ProjectDetails>(projectId, cancellationToken);
+            if (gateProject is null || gateProject.ClaimGate != ClaimGate.TrackerAssignee)
+            {
+                await MirrorTrackerReleaseBestEffortAsync(taskId, projectId, cancellationToken);
+            }
         }
 
         await SweepPendingHolderReleasesAsync(cancellationToken);
@@ -1803,6 +1818,7 @@ public sealed class DispatchEngine(
         string pendingKey, Guid taskId, Guid projectId, string reason, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
+        TaskTrackerAssignMirrorPending? existing = await session.LoadAsync<TaskTrackerAssignMirrorPending>(pendingKey, cancellationToken);
         session.Store(new TaskTrackerAssignMirrorPending
         {
             Id = pendingKey,
@@ -1811,6 +1827,7 @@ public sealed class DispatchEngine(
             NodeId = node.NodeId,
             RecordedAt = DateTimeOffset.UtcNow,
             LastFailureReason = reason,
+            AttemptCount = (existing?.AttemptCount ?? 0) + 1,
         });
         await session.SaveChangesAsync(cancellationToken);
     }
@@ -1878,6 +1895,7 @@ public sealed class DispatchEngine(
         string pendingKey, Guid taskId, Guid projectId, string reason, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
+        TaskTrackerReleaseMirrorPending? existing = await session.LoadAsync<TaskTrackerReleaseMirrorPending>(pendingKey, cancellationToken);
         session.Store(new TaskTrackerReleaseMirrorPending
         {
             Id = pendingKey,
@@ -1886,8 +1904,41 @@ public sealed class DispatchEngine(
             NodeId = node.NodeId,
             RecordedAt = DateTimeOffset.UtcNow,
             LastFailureReason = reason,
+            AttemptCount = (existing?.AttemptCount ?? 0) + 1,
         });
         await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// How long a pending tracker mirror row waits before <see cref="SweepPendingTrackerMirrorsAsync"/>
+    /// retries it again, keyed off how many consecutive attempts have already failed (idea
+    /// 202383dc, A3b's fix cycle): a permanently unpassable outcome — an item HeldByOther for as
+    /// long as this node holds the task, say — would otherwise cost two live gh calls
+    /// (<c>gh api user</c>, <c>gh issue view</c>) every <see cref="DaemonOptions.PollInterval"/>
+    /// (5 s by default) for the rest of the task's lifetime, hours or days, and four such tasks
+    /// exhaust GitHub's 5000/hour authenticated rate limit and degrade every other gh-backed sweep
+    /// on this install. Every attempt still retries promptly at first, since most failures really
+    /// are transient (a momentary gh hiccup, a brief rate limit) and criterion 5 wants those picked
+    /// back up quickly — only a row that keeps failing backs off, capped rather than growing
+    /// unbounded, so a genuinely transient outage still recovers within the hour once it clears.
+    /// </summary>
+    private static readonly TimeSpan[] TrackerMirrorRetryBackoff =
+    [
+        TimeSpan.Zero,
+        TimeSpan.FromMinutes(1),
+        TimeSpan.FromMinutes(5),
+        TimeSpan.FromMinutes(15),
+        TimeSpan.FromMinutes(30),
+    ];
+
+    private static readonly TimeSpan TrackerMirrorMaxRetryBackoff = TimeSpan.FromHours(1);
+
+    private static bool TrackerMirrorRetryDue(DateTimeOffset lastAttemptAt, int attemptCount, DateTimeOffset now)
+    {
+        TimeSpan backoff = attemptCount > 0 && attemptCount <= TrackerMirrorRetryBackoff.Length
+            ? TrackerMirrorRetryBackoff[attemptCount - 1]
+            : TrackerMirrorMaxRetryBackoff;
+        return now >= lastAttemptAt + backoff;
     }
 
     /// <summary>
@@ -1901,11 +1952,17 @@ public sealed class DispatchEngine(
     {
         await using IDocumentSession session = store.LightweightSession();
         Guid nodeId = node.NodeId;
+        DateTimeOffset now = DateTimeOffset.UtcNow;
 
         IReadOnlyList<TaskTrackerAssignMirrorPending> pendingAssigns = await session
             .Query<TaskTrackerAssignMirrorPending>().Where(row => row.NodeId == nodeId).ToListAsync(cancellationToken);
         foreach (TaskTrackerAssignMirrorPending row in pendingAssigns)
         {
+            if (!TrackerMirrorRetryDue(row.RecordedAt, row.AttemptCount, now))
+            {
+                continue;
+            }
+
             TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(row.TaskId, token: cancellationToken);
             ProjectDetails? project = await session.LoadAsync<ProjectDetails>(row.ProjectId, cancellationToken);
             if (task is not null && task.HolderNodeId == nodeId)
@@ -1938,6 +1995,28 @@ public sealed class DispatchEngine(
             .Query<TaskTrackerReleaseMirrorPending>().Where(row => row.NodeId == nodeId).ToListAsync(cancellationToken);
         foreach (TaskTrackerReleaseMirrorPending row in pendingReleases)
         {
+            if (!TrackerMirrorRetryDue(row.RecordedAt, row.AttemptCount, now))
+            {
+                continue;
+            }
+
+            // Blind unlike the assign-side loop above, this would clear the tracker assignee off
+            // an item whose run is live again: this node can reclaim the very task a release row
+            // is still pending for (the release mirror itself failed transiently while the ledger
+            // release and the requeue both landed), and a retry that runs after that reclaim would
+            // strip the assignment a fresh MirrorTrackerAssigneeBestEffortAsync call just wrote
+            // (adversarial review, this branch's fix cycle). Nothing here for a later sweep to
+            // retry either — the row is stale, not merely premature, and this node's own next
+            // release (whenever it next gives the task back) leaves a fresh row of its own if that
+            // one fails.
+            TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(row.TaskId, token: cancellationToken);
+            if (task is not null && task.HolderNodeId == nodeId)
+            {
+                session.Delete<TaskTrackerReleaseMirrorPending>(TaskTrackerReleaseMirrorPending.KeyFor(row.TaskId, node.NodeId));
+                await session.SaveChangesAsync(cancellationToken);
+                continue;
+            }
+
             await MirrorTrackerReleaseBestEffortAsync(row.TaskId, row.ProjectId, cancellationToken);
         }
     }

@@ -24,5 +24,15 @@ public sealed class TaskTrackerAssignMirrorPending
 
     public string LastFailureReason { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Consecutive failed attempts this row has recorded, including the one that first wrote it —
+    /// what <c>DispatchEngine.SweepPendingTrackerMirrorsAsync</c>'s own backoff schedule reads to
+    /// decide whether a retry is due yet, rather than retrying every sweep for as long as this
+    /// node holds the task (conformance review, idea 202383dc A3b's fix cycle: a permanently
+    /// HeldByOther outcome was otherwise retried with two live gh calls every lease sweep for the
+    /// task's whole remaining lifetime).
+    /// </summary>
+    public int AttemptCount { get; set; }
+
     public static string KeyFor(Guid taskId, Guid nodeId) => $"{taskId:D}:{nodeId:D}";
 }
