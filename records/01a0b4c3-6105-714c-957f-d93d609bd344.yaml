@@ -1,0 +1,23 @@
+hall9k-task-record: 1
+task-id: 01a0b4c3-6105-714c-957f-d93d609bd344
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#472
+objective: Host-coupled tests run in their own gate once per task, never in parallel with another run's copy, so the ordinary test gate on every review lap is free of tests that touch git, the process table, the toolchain, or Docker
+criteria:
+  - A project can declare a test gate as host-coupled with a dotnet test filter (h9k project set --verify-gate-filter or the equivalent shape the verify-gate setting already has), and hall9k's own configuration puts the RequiresDocker and PublishesBinary traits and the Hall9kHome, RealProcessSpawn, and PublishesBinary collections behind that gate while the ordinary gate excludes them
+  - The verification runner runs a host-coupled gate at a run's first verification and at its final full pass only, and skips it on the intermediate review-cycle passes, recording the skip on the run so h9k task show says which passes ran it
+  - |-
+    At most one host-coupled gate runs on a node at a time: a second run wanting one waits for the first to finish, and the wait is recorded and shown as the run's phase rather than counted as a failure
+  - |-
+    Tests through the runner's existing fakes: the filter splits the two gates, an intermediate pass skips the host-coupled gate, the final pass runs it, two concurrent runs serialize on it
+  - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/609bd344-host-coupled-tests-run-in-thei
+published: 2026-09-18 14:51:51Z
+context: |-
+  Test-hygiene move 2 of 3 from the 2026-09-18 analysis (notes/decisions-2026-09-18-hall9k-fb.md). Evidence over the last 14 days: 59 of 539 test-gate runs failed, and the failures concentrate in about ten classes that reach outside the process (NonInteractiveGitTests 14, TaskHolderClaimTests 7, StackedChildTests 6, RunSupervisorTests 6, DecisionsLogNumberingGuardTests 6, publish/doctor/process-manager tests), colliding when three gates run in parallel on a memory-limited Mac. The categories already exist in the suite (54 RequiresDocker traits; the Hall9kHome, RealProcessSpawn, PublishesBinary collections fence 103 classes); the gate does not use them. VerificationRunner already narrows a dotnet test gate by scope (TestScopeResolver, TestGateScope), so this extends a mechanism rather than adding one. Parked unassigned until the distributed-team chain (idea 202383dc) drains (Brian, 2026-09-18). Container cap (4) is an OOM guard and stays.
