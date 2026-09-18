@@ -8,13 +8,20 @@ namespace Hall9k.Cli.Commands;
 /// The CLI's own mirror of <c>VerificationRunner</c>'s host-coupled-gate command composition and
 /// node-wide permit (task: host-coupled tests run in their own gate once per task, never in
 /// parallel with another run's copy — PLACEHOLDER-609bd344). Hall9k.Cli cannot reference
-/// Hall9k.Daemon (AGENTS.md's own reference graph — Cli references only Domain and Connectors), so
-/// <c>ProjectSetCommand</c>'s own set-time validation and <c>TaskVerifyCommand</c>'s own on-demand
-/// gate run both need this logic here rather than shared through a project reference — the
-/// identical reason <c>TaskVerifyCommand.RunGateAsync</c> already mirrors
-/// <c>VerificationRunner.RunGateAsync</c> instead of calling it. Kept in exactly one place inside
-/// this assembly, though, so its two callers here do not duplicate it a second time from each
-/// other.
+/// Hall9k.Daemon (AGENTS.md's own reference graph — Cli references only Domain and Connectors), but
+/// that is not, on its own, why this is duplicated rather than shared (independent pre-PR review,
+/// cycle 3, both lenses, low: an earlier version of this comment claimed it was, which does not
+/// hold up — <c>ComposeGateCommand</c>, <c>ApplyTestFilter</c> and <c>IsDotnetTestGate</c> are pure
+/// functions with no dependency on anything <c>Hall9k.Daemon</c>-scoped, and both assemblies
+/// already reference <c>Hall9k.Domain</c>, where <c>VerifyCommand</c> and
+/// <c>PlatformPaths.Home</c> already live, so all three, plus the permit's lock file name, could
+/// move there and be called from both sides with no reference-graph violation at all). They stay
+/// mirrored here instead, the identical shape <c>TaskVerifyCommand.RunGateAsync</c> already takes
+/// for <c>VerificationRunner.RunGateAsync</c> itself, which genuinely cannot move (it does depend
+/// on the daemon's own <c>ILogger</c> and Marten session). Kept in exactly one place inside this
+/// assembly, though, so its two callers here do not duplicate it a second time from each other, and
+/// pinned against the daemon's own copy by
+/// <see cref="Hall9k.Tests.Cli.HostCoupledGateParityTests"/> so the two cannot silently diverge.
 /// </summary>
 internal static partial class HostCoupledGate
 {
@@ -115,11 +122,29 @@ internal static partial class HostCoupledGate
     /// a verbose gate's own real summary can sit outside it — a false negative (missing a genuine
     /// vacuous filter) is the safe direction for a best-effort warning to be wrong in, a false
     /// positive is not.
+    /// <para>
+    /// Once any `Total:` line exists, it — not the warning — decides: the warning is emitted once
+    /// per SOURCE, so a multi-project solution where the scoped filter matched in one project and
+    /// missed another prints it right alongside a genuine, nonzero `Total:` line from the project
+    /// that actually ran (the identical multi-project shape
+    /// <c>VerificationRunner.ScopedRunExecutedNoTests</c>'s own doc names as a cycle-3 fix; this
+    /// method never received it — independent pre-PR review, cycle 3, adversarial lens, low). Only
+    /// with no `Total:` line seen at all does the warning alone count. A `Total:` line whose own
+    /// count cannot be parsed (`\d+` matches any run of decimal digits, including one too wide for
+    /// <c>int</c>) is treated as a genuine, unreadable count — not confirmed zero, so it must not
+    /// count toward "every `Total:` line read zero" the way `!int.TryParse(...) || count == 0`
+    /// used to (same review pass, same finding): an unparseable count satisfying the "looks like
+    /// zero" side was the identical false-positive direction this method's own doc says it must
+    /// never take.
+    /// </para>
     /// </summary>
-    internal static bool LooksLikeNoTestsExecuted(string output) =>
-        NoTestMatchesWarningPattern().IsMatch(output)
-        || ExecutedTestTotalPattern().Matches(output) is { Count: > 0 } totals
-            && totals.All(match => !int.TryParse(match.Groups["count"].Value, out int count) || count == 0);
+    internal static bool LooksLikeNoTestsExecuted(string output)
+    {
+        MatchCollection totals = ExecutedTestTotalPattern().Matches(output);
+        return totals.Count > 0
+            ? totals.All(match => int.TryParse(match.Groups["count"].Value, out int count) && count == 0)
+            : NoTestMatchesWarningPattern().IsMatch(output);
+    }
 
     /// <summary>
     /// Acquires the node-wide host-coupled-gate permit, waiting (polling every 200ms) when another
