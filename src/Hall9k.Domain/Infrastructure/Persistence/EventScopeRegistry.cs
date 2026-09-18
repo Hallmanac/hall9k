@@ -240,6 +240,9 @@ public static class EventScopeRegistry
         [typeof(NodeLaunchHoldRunHeld)] = EventScope.NodeScoped,
         [typeof(NodeOwnerClaimed)] = EventScope.NodeScoped,
         [typeof(NodeRegistered)] = EventScope.NodeScoped,
+        // idea 202383dc, M2b, task 9408d525: this node's own record of who invited it in — a fact
+        // about this install alone, never a team fact, and meaningless read from another node.
+        [typeof(NodeInviterRecorded)] = EventScope.NodeScoped,
         // idea 202383dc, M2a: this node's own switch-on point — never a team fact, and reading it
         // from another node would be meaningless (each node's own global sequence is local).
         [typeof(ReplicationSwitchedOn)] = EventScope.NodeScoped,

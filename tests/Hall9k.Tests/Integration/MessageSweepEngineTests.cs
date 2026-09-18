@@ -7,11 +7,16 @@ using Hall9k.Connectors.Trust;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Messaging;
 using Hall9k.Domain.Features.Message;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Trust;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Tests.Fakes;
@@ -144,6 +149,104 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         transport.ProbeCount.Should().Be(2, "the second sweep still probes every tick");
         transport.ReadCount.Should().Be(
             3, "node A's tip has not moved since the first sweep cached it, so the second sweep must skip all three reads");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, adversarial lens, high: before this fix,
+    /// <c>MessageSweepEngine.AdvanceCatchUpAsync</c>'s own "has any local history at all" check ran
+    /// AFTER this same tick's peer read loop had already applied node A's outbox — so on an active
+    /// project's very first sweep, that check always found SOME history (whatever the read loop just
+    /// supplied) and the brand-new bootstrap the check exists for never fired at all. This node is
+    /// brand new (no local history for the project whatsoever) and node A's outbox already holds one
+    /// real task when the first sweep runs, so this sweep both applies node A's task by replication
+    /// AND must still mint a bootstrap request — proving the "no history" snapshot the gate reads is
+    /// taken before this tick's own reads, not after.
+    /// </summary>
+    [Fact]
+    public async Task A_brand_new_node_still_bootstraps_on_its_first_sweep_even_though_that_same_sweep_already_applied_some_peer_content()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerAId = DomainId.New();
+        Guid senderProjectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox senderEventOutbox = new(new ReplicationProjectResolver());
+        MessageOutbox senderOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = (
+            new LedgerCommitter("node-a", "node-a@hall9k.local"), new LedgerSigningKey("/dev/null/node-a"));
+
+        // Node A: register, switch replication on (before any task exists, so the task below counts
+        // as post-switch-on), then produce one real task — landing on its own outbox by the time
+        // node B's first sweep ever probes it.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerAId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await senderEventOutbox.QueuePendingAsync(session, nodeA, senderProjectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                taskId, senderProjectId, "Node A's own pre-existing task", ["it ships"], TaskType.Feature, null, null, null,
+                Now.AddSeconds(1), ownerAId);
+            session.Events.StartStream<TaskAggregate>(taskId, added);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await senderEventOutbox.QueuePendingAsync(session, nodeA, senderProjectId, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await senderOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, senderProjectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(2), cts.Token);
+        }
+
+        // Node B: a genuinely brand-new node with no local history for this project at all, joining
+        // the identical real-world project under its own, differently-minted local id.
+        (NodeContext nodeB, Guid projectId) = await SeedOwnerAndProjectAsync(_postgres.Store, "brand-new", cts.Token);
+
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                ["owner-a-root"] = new TrustedOwner(
+                    "owner-a-root", "ssh-ed25519 AAAAFAKE owner-a-root",
+                    [new TrustedNode(nodeA.ToString(), "ssh-ed25519 AAAAFAKEnodea test", "node-a-fingerprint", Now)]),
+            },
+            [new ProjectMember("owner-a-root", MembershipRole.Owner, Now)],
+            ProjectKey: "shared-project-key");
+
+        MessageSweepEngine engine = new(
+            _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            new FakeLedgerChainReader(trustChain), new MessageNodeIdentityResolver(new NodeKeyStore()),
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver())),
+            new EventCatchUpCoordinator());
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        await using (IDocumentSession verifySession = _postgres.Store.LightweightSession())
+        {
+            bool appliedSomethingThisTick = await verifySession.Query<ReplicatedEventRecord>()
+                .Where(record => record.ProjectId == projectId).AnyAsync(cts.Token);
+            appliedSomethingThisTick.Should().BeTrue(
+                "node A's own task must already have applied by replication within this very first sweep — the "
+                + "exact condition that used to suppress the bootstrap check below");
+
+            EventCatchUpRequest? bootstrapRequest = await verifySession.Query<EventCatchUpRequest>()
+                .Where(request => request.ProjectId == projectId && request.ForOriginNodeId == null && request.ForStreamId == null)
+                .FirstOrDefaultAsync(cts.Token);
+            bootstrapRequest.Should().NotBeNull(
+                "this project showed zero local history at the START of this tick, so the brand-new bootstrap "
+                + "must still fire even though this same tick's own peer read already applied some of node A's "
+                + "history");
+            bootstrapRequest!.Candidates.Should().Contain(nodeA, "node A is the only project member this tick's probe found");
+        }
     }
 
     /// <summary>

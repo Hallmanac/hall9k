@@ -241,13 +241,35 @@ public sealed class MessageSweepEngine(
             return;
         }
 
+        // Snapshotted before this tick's own peer reads apply anything below: AdvanceCatchUpAsync's
+        // bootstrap check reads this back at the END of this method, and on an active project's very
+        // first sweep the read loop below applies every peer's outbox within MessageRetention before
+        // that check would otherwise run — reading "has local history" only then always found some
+        // (whatever the retention window just supplied), so the bootstrap request that exists
+        // precisely for "no local history at all" never fired, and this node silently kept only the
+        // retention window's own history forever (independent pre-PR review, cycle 1, adversarial
+        // lens, high).
+        bool hasAnyLocalHistoryBeforeThisTick = true;
+        try
+        {
+            hasAnyLocalHistoryBeforeThisTick = await HasAnyLocalHistoryAsync(project.Id, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Checking for existing local history failed for project {ProjectId}; bootstrap check "
+                + "deferred to next sweep", project.Id);
+        }
+
         IReadOnlyList<MessageOutboxTip> toRead = SendersToRead(tips, nodeId, project.RepositoryPath, _lastKnownTips);
         if (toRead.Count == 0)
         {
             // Still worth a look even when nothing moved: a candidate cascade's own per-candidate
             // timeout (idea 202383dc, M2b) elapses on the wall clock, never on some other sender's
             // outbox moving, so it must be checked every tick regardless.
-            await AdvanceCatchUpAsync(project, nodeId, identity, trustChain, tips, movedThisTick: [], now, cancellationToken);
+            await AdvanceCatchUpAsync(
+                project, nodeId, identity, trustChain, tips, movedThisTick: [], hasAnyLocalHistoryBeforeThisTick, now,
+                cancellationToken);
             return;
         }
 
@@ -340,12 +362,20 @@ public sealed class MessageSweepEngine(
                     + "will retry next sweep", tip.SenderNodeId, project.Id);
             }
 
+            // Shares the identical "only ever caches on a read that actually finished looking" rule
+            // the notes and events reads above already apply, for the identical reason: a read that
+            // threw never actually inspected this sender's catch-up envelopes, so caching the tip
+            // here would skip re-reading them until the sender pushes again — silently stranding an
+            // outstanding events-request this node was addressed by (independent pre-PR review,
+            // cycle 1, conformance lens, medium).
+            bool catchUpReadComplete = false;
             try
             {
                 await using IDocumentSession catchUpSession = store.LightweightSession();
                 await eventCatchUpInbox.ReadFromAsync(
                     catchUpSession, project.RepositoryPath, tip.SenderNodeId, project.Id, nodeId,
                     identity.OwnerRootFingerprint, now, trustChain, cancellationToken);
+                catchUpReadComplete = true;
             }
             catch (Exception exception)
             {
@@ -354,47 +384,60 @@ public sealed class MessageSweepEngine(
                     + "will retry next sweep", tip.SenderNodeId, project.Id);
             }
 
-            if (notesReadComplete && eventsReadComplete)
+            if (notesReadComplete && eventsReadComplete && catchUpReadComplete)
             {
                 _lastKnownTips[(project.RepositoryPath, tip.SenderNodeId)] = tip.Tip;
             }
         }
 
-        await AdvanceCatchUpAsync(project, nodeId, identity, trustChain, tips, toRead, now, cancellationToken);
+        await AdvanceCatchUpAsync(
+            project, nodeId, identity, trustChain, tips, toRead, hasAnyLocalHistoryBeforeThisTick, now, cancellationToken);
+    }
+
+    /// <summary>Whether this project shows any applied history at all — no replicated event ever
+    /// landed, and this node has produced no Task or Idea of its own either — the "brand-new node"
+    /// gate <see cref="AdvanceCatchUpAsync"/>'s own bootstrap check reads. Must be read BEFORE this
+    /// tick's own peer reads apply anything (<see cref="ProbeAndReadAsync"/>'s own doc explains why):
+    /// this query alone is what a mid-tick read would otherwise see already answered.</summary>
+    private async Task<bool> HasAnyLocalHistoryAsync(Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        return await session.Query<ReplicatedEventRecord>().Where(record => record.ProjectId == projectId).AnyAsync(cancellationToken)
+            || await session.Query<TaskListItem>().Where(task => task.ProjectId == projectId).AnyAsync(cancellationToken)
+            || await session.Query<IdeaDetails>().Where(idea => idea.ProjectId == projectId).AnyAsync(cancellationToken);
     }
 
     /// <summary>
     /// A brand-new node's own bootstrap (idea 202383dc, M2b: "a brand-new node requests everything
-    /// and bootstraps its project from the answer"), started once this project shows no applied
-    /// history at all — no replicated event ever landed, and this node has produced no Task of its
-    /// own either — and cascades every outstanding catch-up request past its per-candidate timeout
-    /// to the next ranked candidate.
+    /// and bootstraps its project from the answer"), started once this project showed no applied
+    /// history at all as of the START of this tick (<paramref name="hasAnyLocalHistoryBeforeThisTick"/>,
+    /// <see cref="HasAnyLocalHistoryAsync"/>'s own snapshot) — no replicated event ever landed, and
+    /// this node has produced no Task of its own either — and cascades every outstanding catch-up
+    /// request past its per-candidate timeout to the next ranked candidate.
     /// </summary>
     private async Task AdvanceCatchUpAsync(
         ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, TrustChain trustChain,
-        IReadOnlyList<MessageOutboxTip> tips, IReadOnlyList<MessageOutboxTip> movedThisTick, DateTimeOffset now,
-        CancellationToken cancellationToken)
+        IReadOnlyList<MessageOutboxTip> tips, IReadOnlyList<MessageOutboxTip> movedThisTick,
+        bool hasAnyLocalHistoryBeforeThisTick, DateTimeOffset now, CancellationToken cancellationToken)
     {
         IReadOnlyList<Guid> knownNodeIds = OrderByRecency(tips, movedThisTick);
-        if (knownNodeIds.Count > 0)
+        if (knownNodeIds.Count > 0 && !hasAnyLocalHistoryBeforeThisTick)
         {
             try
             {
                 await using IDocumentSession bootstrapCheckSession = store.LightweightSession();
-                bool hasAnyLocalHistory = await bootstrapCheckSession.Query<ReplicatedEventRecord>()
-                    .Where(record => record.ProjectId == project.Id).AnyAsync(cancellationToken)
-                    || await bootstrapCheckSession.Query<TaskListItem>()
-                        .Where(task => task.ProjectId == project.Id).AnyAsync(cancellationToken)
-                    || await bootstrapCheckSession.Query<IdeaDetails>()
-                        .Where(idea => idea.ProjectId == project.Id).AnyAsync(cancellationToken);
-                if (!hasAnyLocalHistory)
-                {
-                    IReadOnlyList<Guid> candidates = EventCatchUpCoordinator.RankCandidates(
-                        knownNodeIds, nodeId, voucherNodeId: null, trustChain);
-                    await eventCatchUpCoordinator.RequestBootstrapAsync(
-                        bootstrapCheckSession, project.Id, nodeId, identity.OwnerRootFingerprint, candidates,
-                        options.Value.EventCatchUpRequestTimeout, now, cancellationToken);
-                }
+                // The joining node's own invite-minting owner, when this node was actually invited
+                // in rather than establishing genesis itself — the voucher tier RankCandidates
+                // already implements but which is otherwise unreachable in production, since a
+                // brand-new node is brand-new precisely because it just joined on someone's invite
+                // (independent pre-PR review, cycle 1, conformance lens, medium).
+                NodeDetails? nodeDetails = await bootstrapCheckSession.LoadAsync<NodeDetails>(nodeId, cancellationToken);
+                Guid? voucherNodeId = ResolveVoucherNodeId(nodeDetails, trustChain);
+                IReadOnlyList<Guid> candidates = EventCatchUpCoordinator.RankCandidates(
+                    knownNodeIds, nodeId, voucherNodeId, trustChain);
+                await eventCatchUpCoordinator.RequestBootstrapAsync(
+                    bootstrapCheckSession, project.Id, nodeId, identity.OwnerRootFingerprint, candidates,
+                    options.Value.EventCatchUpRequestTimeout, now, cancellationToken);
             }
             catch (Exception exception)
             {
@@ -536,6 +579,37 @@ public sealed class MessageSweepEngine(
                 exception, "Persisting this sweep's unverifiable ledger writers failed for project {ProjectId}; "
                 + "will retry next sweep", project.Id);
         }
+    }
+
+    /// <summary>
+    /// <see cref="EventCatchUpCoordinator.RankCandidates"/>'s own voucher tier, resolved from the
+    /// invite-minting owner recorded on this node's own <see cref="NodeDetails.InviterOwnerRootFingerprint"/>
+    /// (<c>ProjectJoinCommand</c>) to one of that owner's own current node ids, via the live trust
+    /// chain — the only local source of "which node ids belong to this root" a receiver has, the
+    /// identical source <see cref="EventCatchUpCoordinator"/>'s own <c>ResolveMemberRole</c> reads.
+    /// Null when this node was never invited (it established its own genesis root), or when the
+    /// inviting root is not a chain this project's own trust chain currently recognizes at all (a
+    /// revoked owner, say) — RankCandidates already treats a null voucher as "no voucher tier", so
+    /// no caller needs its own fallback. Pure and side-effect-free, the same reason
+    /// <see cref="SendersToRead"/> is its own static method: unit-testable without a document store.
+    /// </summary>
+    internal static Guid? ResolveVoucherNodeId(NodeDetails? nodeDetails, TrustChain trustChain)
+    {
+        if (nodeDetails?.InviterOwnerRootFingerprint is not { } inviterRoot
+            || !trustChain.OwnerChains.TryGetValue(inviterRoot, out TrustedOwner? inviter))
+        {
+            return null;
+        }
+
+        foreach (TrustedNode candidate in inviter.Nodes)
+        {
+            if (Guid.TryParse(candidate.NodeId, out Guid parsed))
+            {
+                return parsed;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>
