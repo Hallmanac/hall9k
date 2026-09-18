@@ -88,7 +88,7 @@ public sealed class PostgresFixture : IAsyncLifetime
     // reached anyone, live or after the fact, under a real entireProcessTree kill). The notice it
     // does still emit goes to CrossProcessContainerGate.WaitNotice, a trace source, precisely
     // because the process-wide console it used to go to belongs to no one class here and landed in
-    // whatever test happened to be capturing stderr at the time (PLAN.md §16 #PLACEHOLDER-093b54f0). What actually
+    // whatever test happened to be capturing stderr at the time (PLAN.md §16 #220). What actually
     // makes a wedged wait discoverable now is the evidence file CrossProcessContainerGate.AcquireAsync
     // writes directly into GateDirectory itself once a wait genuinely queues — no parent process
     // has to survive anything for a direct file write to land, so `ls`/`cat` against that fixed,

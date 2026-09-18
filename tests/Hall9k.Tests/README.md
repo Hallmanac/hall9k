@@ -73,7 +73,7 @@ other test running at that moment sees — and for the two `Console` writers and
 save-swap-restore idiom cannot fix that, because the redirect it installs is process-wide for as
 long as it is installed. (`CultureInfo` is the exception, and the bullet below says why it is
 guarded anyway.) Capture through the
-`TestSupport` helpers instead (PLAN.md §16 #PLACEHOLDER-093b54f0):
+`TestSupport` helpers instead (PLAN.md §16 #220):
 
 - `ScopedConsoleCapture.StandardError()` / `.StandardOutput()` — what this test's own async flow
   wrote to `Console.Error` / `Console.Out`, and nothing else.

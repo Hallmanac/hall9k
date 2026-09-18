@@ -119,7 +119,7 @@ public static class Hall9kDatabase
     /// <para>
     /// Exists for a caller that has to be told where to read rather than discovering it — a
     /// doctor probe under test, chiefly, whose whole point is to answer against a config file and
-    /// a database the test controls rather than against the machine's own (PLAN.md §16 #PLACEHOLDER-093b54f0).
+    /// a database the test controls rather than against the machine's own (PLAN.md §16 #220).
     /// </para>
     /// </summary>
     public static ConnectionStringResolution ResolveFromConfigFile(string configFilePath)

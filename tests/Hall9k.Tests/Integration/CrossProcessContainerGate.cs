@@ -60,7 +60,7 @@ internal static class CrossProcessContainerGate
     /// <c>TrackerAssignmentTests.Assign_records_what_the_tracker_showed_when_the_gate_passes(github)</c>
     /// asserted its captured stderr was empty and found this notice in it, emitted by another class
     /// while a second full gate ran in parallel; the same tip passed the suite when run alone. It
-    /// cost that chain a retry and a full gate (PLAN.md §16 #PLACEHOLDER-093b54f0).
+    /// cost that chain a retry and a full gate (PLAN.md §16 #220).
     /// </para>
     /// <para>
     /// A <see cref="TraceSource"/> is the channel that costs nothing to leave unread and is

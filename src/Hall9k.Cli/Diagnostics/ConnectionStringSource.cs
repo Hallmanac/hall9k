@@ -12,7 +12,7 @@ namespace Hall9k.Cli.Diagnostics;
 /// process-wide: on 2026-09-17 11:15 EDT (run 01a0af3c) it failed with live rows from a reachable
 /// local Postgres in the output it had captured, because process-wide state is not a test's to own
 /// while the rest of the suite runs beside it. Handing the probe its source closes that for good —
-/// under test, nothing anywhere in the resolution chain is consulted (PLAN.md §16 #PLACEHOLDER-093b54f0).
+/// under test, nothing anywhere in the resolution chain is consulted (PLAN.md §16 #220).
 /// </para>
 /// <para>
 /// Three sources, one per way a connection string legitimately arrives: the process's own

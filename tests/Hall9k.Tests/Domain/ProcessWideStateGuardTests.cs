@@ -15,7 +15,7 @@ namespace Hall9k.Tests.Domain;
 /// enforcement <see cref="HomeEnvironmentIsolationTests"/> gives the platform home, rather than
 /// trusting every future test author to remember a rule two incidents and a near miss deep.
 /// <para>
-/// The incidents, all in one week (PLAN.md §16 #PLACEHOLDER-093b54f0): a captured
+/// The incidents, all in one week (PLAN.md §16 #220): a captured
 /// <see cref="Console.Error"/> holding <c>PostgresFixture</c>'s container-gate wait notice, written
 /// by a class the capturing test had never heard of (2026-09-17 03:25 EDT, run 01a0ad80); a
 /// captured <c>AnsiConsole</c> holding <c>StatusCommandMergedWithoutCopilotReviewTests</c>' rows
