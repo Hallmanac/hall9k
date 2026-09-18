@@ -175,4 +175,82 @@ public sealed class ProjectSetCommandTests
         message.Should().Contain("'build'").And.Contain("error CS0000");
         message.Should().Contain("'test'").And.Contain("MSB4019");
     }
+
+    /// <summary>
+    /// The pure half of <c>--verify-gate-filter</c> (task: host-coupled tests run in their own
+    /// gate once per task, never in parallel with another run's copy — PLACEHOLDER-609bd344):
+    /// composing the updated gate list without touching the project stream or spawning anything.
+    /// </summary>
+    [Fact]
+    public void A_verify_gate_filter_marks_the_named_gate_host_coupled_and_leaves_the_others_alone()
+    {
+        VerifyCommand[] gates =
+        [
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("test", "dotnet test"),
+        ];
+
+        IReadOnlyList<VerifyCommand> updated =
+            ProjectSetCommand.ApplyHostCoupledGateFilter(gates, "test=Category=RequiresDocker");
+
+        updated.Should().Equal(
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("test", "dotnet test", HostCoupledFilter: "Category=RequiresDocker"));
+    }
+
+    [Fact]
+    public void A_second_verify_gate_filter_call_moves_the_designation_rather_than_stacking_it()
+    {
+        VerifyCommand[] gates =
+        [
+            new VerifyCommand("build", "dotnet build", HostCoupledFilter: "Category=RequiresDocker"),
+            new VerifyCommand("test", "dotnet test"),
+        ];
+
+        IReadOnlyList<VerifyCommand> updated =
+            ProjectSetCommand.ApplyHostCoupledGateFilter(gates, "test=Category=RequiresDocker");
+
+        updated.Should().Equal(
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("test", "dotnet test", HostCoupledFilter: "Category=RequiresDocker"));
+    }
+
+    [Fact]
+    public void None_clears_the_host_coupled_designation_from_every_gate()
+    {
+        VerifyCommand[] gates =
+        [
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("test", "dotnet test", HostCoupledFilter: "Category=RequiresDocker"),
+        ];
+
+        IReadOnlyList<VerifyCommand> updated = ProjectSetCommand.ApplyHostCoupledGateFilter(gates, "none");
+
+        updated.Should().Equal(
+            new VerifyCommand("build", "dotnet build"),
+            new VerifyCommand("test", "dotnet test"));
+    }
+
+    [Fact]
+    public void A_verify_gate_filter_naming_an_unconfigured_gate_is_a_refusal_naming_it()
+    {
+        VerifyCommand[] gates = [new VerifyCommand("build", "dotnet build")];
+
+        Action act = () => ProjectSetCommand.ApplyHostCoupledGateFilter(gates, "test=Category=RequiresDocker");
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*'test'*")
+            .WithMessage("*--verify*");
+    }
+
+    [Fact]
+    public void A_verify_gate_filter_with_no_separator_is_a_refusal_naming_the_expected_shape()
+    {
+        VerifyCommand[] gates = [new VerifyCommand("test", "dotnet test")];
+
+        Action act = () => ProjectSetCommand.ApplyHostCoupledGateFilter(gates, "not-a-name-filter-pair");
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*name=filter*");
+    }
 }

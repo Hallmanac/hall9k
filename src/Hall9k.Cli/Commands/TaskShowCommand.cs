@@ -1583,12 +1583,17 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// "no gates configured" pass) rather than leaving the field unset. Both read as "-" here
     /// because there is nothing to show either way; <see cref="GateDuration"/>'s own null-vs-empty
     /// distinction is preserved on the read model for anything that needs to tell them apart.
+    /// A host-coupled gate this pass deliberately never ran (<see cref="GateDuration.HostCoupledSkipped"/>)
+    /// reads "skipped (host-coupled)" rather than a zero duration, so an intermediate review-cycle
+    /// pass says which gate it left out on purpose instead of that gate reading like an
+    /// instantaneous pass (PLACEHOLDER-609bd344).
     /// </summary>
     private static string FormatGateDurations(List<GateDuration>? gateDurations) =>
         gateDurations is not { Count: > 0 } durations
             ? "-"
-            : string.Join(", ", durations.Select(gate =>
-                $"{gate.Gate.EscapeMarkup()} {DurationFormat.Short(gate.Duration)}{(gate.Passed ? string.Empty : " [red]✗[/]")}"));
+            : string.Join(", ", durations.Select(gate => gate.HostCoupledSkipped
+                ? $"{gate.Gate.EscapeMarkup()} [dim]skipped (host-coupled)[/]"
+                : $"{gate.Gate.EscapeMarkup()} {DurationFormat.Short(gate.Duration)}{(gate.Passed ? string.Empty : " [red]✗[/]")}"));
 
     /// <summary>
     /// The plain flag for a gate whose newest recorded duration materially exceeds this
