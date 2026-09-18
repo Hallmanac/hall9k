@@ -406,6 +406,20 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // fate with the daemon's own claim (independent pre-PR review, cycle 1, conformance lens).
         string? resumesBranch = await ForeignResumeBranchResolver.ResolveAsync(
             session, task, task.Id, Guid.Empty, cancellationToken);
+        // taskDetails was loaded above, before this claim decided resumesBranch — the inline
+        // TaskDetailsProjection's own write, further down inside the SaveChangesAsync below, does
+        // not mutate this already-loaded instance in place. CheckoutFreshOrRetryAsync reads
+        // taskDetails.RetryBranch straight off it, so a foreign-node resume THIS claim is the one
+        // discovering (as opposed to one already on record from an earlier event) would otherwise
+        // silently cut a fresh branch off the base instead of resuming the very branch just
+        // recorded on TaskClaimed.ResumesBranch a few lines below (self-review, this task: a test
+        // proving the resolver's own wiring into the worktree cut, not just into the event, caught
+        // it).
+        if (resumesBranch is not null)
+        {
+            taskDetails.RetryBranch = resumesBranch;
+            taskDetails.RetryBranchResumesForeignNode = true;
+        }
 
         TaskAssigned? assigned = null;
         TaskClaimed claimed;
