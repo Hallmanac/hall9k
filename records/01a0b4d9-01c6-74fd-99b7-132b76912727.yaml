@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a0b4d9-01c6-74fd-99b7-132b76912727
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#474
+objective: |-
+  TaskHolderClaimTests runs again in the test gate and passes on every run: the eleven skipped tests are rewritten so each one drives the claim lock and the tracker mirror through injected seams that cannot see another test's state, and the skips come off
+criteria:
+  - |-
+    The cause of the empty-claim failures is found and named in the pull request with evidence from a reproduction, before any test is rewritten: why ClaimEligibleAsync returned nothing for a test's own freshly seeded task in four of five full-suite runs on 2026-09-18 (every failing test seeded an external reference and so ran the claim-side tracker mirror; two lock-only tests also failed once each)
+  - Every test in the class drives the tracker mirror and the claim gate through an injected runner or fake (never the real gh process runner, never a shared static, never a shared owner or node), and reads time through the same injected clock the engine reads, so no test can observe another test's state or the wall clock
+  - All eleven Skip attributes added on 2026-09-18 are removed, the class passes in the full suite with the gates running in parallel across three worktrees, and the claim-lock behaviors the class documents (empty holder claims, foreign holder stands down, write failure holds, release on lease expiry, mirror pending rows) are each still asserted
+  - dotnet build and dotnet test pass
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/76912727-taskholderclaimtests-runs-agai
+published: 2026-09-18 14:51:59Z
+context: |-
+  Origin: the holder lock f8e6dd8f merged as #467 on 2026-09-18 04:44 with this new test class. Of the five full test gates that ran after it, four failed one to three tests of the class (06:21 C prime: ClaimGate_Off and Release_clears; the daemon's clean-main baseline: A_stale_release_mirror_row; 09:05 a67fa552, with its owner-isolation fix applied: A_lease_expiry_release; 09:55 fbac576a: ClaimGate_Off, A_mirror_failure, A_release_mirror_failure). Every failure is "Expected ClaimEligibleAsync {empty} to have an item matching taskId" for the test's own task. Ruled out by reading (notes/decisions-2026-09-18-hall9k-fb.md): per-node slot counting, per-class Postgres containers, the per-task tracker hold cache. Not ruled out: the claim-side mirror path with trackerClaimGate null, and the class's fixed clock (Now = 2026-09-17 12:00Z) meeting the engine's real clock. Brian, 2026-09-18 10:2x: the eleven tests were skipped by hand on main to get every gate green again (each Skip names this task); the three previous fixes in this area (#465 HALL9K_HOME, a67fa552 shared owner, fbac576a invite clock) are the chain the no-whack-a-mole rule stops at, so this task starts from a reproduction, not a guess. Held unassigned until the distributed-team chain drains, unless the mirror regresses in use first.
