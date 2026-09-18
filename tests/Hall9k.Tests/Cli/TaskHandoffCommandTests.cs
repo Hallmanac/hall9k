@@ -74,6 +74,16 @@ public sealed class TaskHandoffCommandTests
     }
 
     [Fact]
+    public async Task Refuses_a_missing_file_with_a_domain_exception()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"handoff-note-{Guid.NewGuid():N}-missing.md");
+
+        Func<Task> act = () => TaskHandoffCommand.ResolveNoteAsync(Settings(file: path), CancellationToken.None);
+
+        await act.Should().ThrowAsync<DomainNotFoundException>().WithMessage("*not found*");
+    }
+
+    [Fact]
     public async Task Reads_a_file_note()
     {
         string path = Path.Combine(Path.GetTempPath(), $"handoff-note-{Guid.NewGuid():N}.md");

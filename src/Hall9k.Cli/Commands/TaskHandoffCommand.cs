@@ -97,8 +97,14 @@ public sealed class TaskHandoffCommand : Hall9kAsyncCommand<TaskHandoffCommand.S
         // TaskRecordPublication.ComposeAsync will read, so the record it writes below is never a
         // fact this command merely believes landed.
         TaskAggregate updated = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
-        await RewriteRecordAsync(session, updated, context, cancellationToken);
-        await QueueNudgeAsync(session, updated.ProjectId, taskId, context, ownerRootFingerprint, settings.To, now, cancellationToken);
+        // Loaded once and passed to both: RewriteRecordAsync's own eligibility for a ledger write
+        // and QueueNudgeAsync's own for a sweep that can flush it are two different questions the
+        // same ProjectDetails row answers, so it is read from the store once rather than twice.
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(updated.ProjectId, cancellationToken);
+        await RewriteRecordAsync(session, updated, project, context, cancellationToken);
+        await QueueNudgeAsync(
+            session, project, updated.ProjectId, taskId, context, ownerRootFingerprint, settings.To, now,
+            cancellationToken);
 
         return ExitCodes.Ok;
     }
@@ -123,6 +129,11 @@ public sealed class TaskHandoffCommand : Hall9kAsyncCommand<TaskHandoffCommand.S
             throw new DomainValidationException("--text and --file both name the note; pass one.");
         }
 
+        if (hasFile && !System.IO.File.Exists(settings.File))
+        {
+            throw new DomainNotFoundException($"Handoff note file not found: {settings.File}");
+        }
+
         string note = hasText
             ? settings.Text!
             : await System.IO.File.ReadAllTextAsync(settings.File!, cancellationToken);
@@ -139,9 +150,9 @@ public sealed class TaskHandoffCommand : Hall9kAsyncCommand<TaskHandoffCommand.S
     /// idempotent — the next handoff, publish, or revise writes it again.
     /// </summary>
     private static async Task RewriteRecordAsync(
-        IDocumentSession session, TaskAggregate task, BootstrapContext context, CancellationToken cancellationToken)
+        IDocumentSession session, TaskAggregate task, ProjectDetails? project, BootstrapContext context,
+        CancellationToken cancellationToken)
     {
-        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
         if (project is null)
         {
             return;
@@ -152,10 +163,23 @@ public sealed class TaskHandoffCommand : Hall9kAsyncCommand<TaskHandoffCommand.S
             NodeDetails? node = await session.LoadAsync<NodeDetails>(context.NodeId, cancellationToken);
             (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
                 await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
-            await TaskRecordPublication.WriteAsync(
+            TaskRecordPublication.WriteOutcome outcome = await TaskRecordPublication.WriteAsync(
                 session, task, project, context.NodeId, node?.MachineName ?? Environment.MachineName,
                 ownerFingerprint, DateTimeOffset.UtcNow, new GitLedger(new ConsoleWorktreeLogger<GitLedger>()),
                 committer, signingKey, cancellationToken);
+            // Mirror is the one outcome worth telling the operator about here, the same reason
+            // TaskReviseCommand.DescribeRewrite gives it its own line: a task adopted from another
+            // install (task.Origin is not null) owns no record of its own to rewrite, so criterion
+            // 2's ledger write simply never happened, silently, unless this says so
+            // (independent pre-PR review, cycle 1, conformance lens).
+            if (outcome == TaskRecordPublication.WriteOutcome.Mirror)
+            {
+                AnsiConsole.MarkupLine(
+                    "[yellow]  Note:[/] [dim]Nothing was written to the ledger: this task was adopted "
+                    + "from another node's own record, so that record belongs to the install that "
+                    + "published it. The note landed on the task stream and the next holder's prompt "
+                    + "still carries it; the shared record keeps describing the origin's task.[/]");
+            }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
@@ -172,7 +196,7 @@ public sealed class TaskHandoffCommand : Hall9kAsyncCommand<TaskHandoffCommand.S
     /// task's own event stream and is what the ledger record and the resuming prompt both read.
     /// </summary>
     private static async Task QueueNudgeAsync(
-        IDocumentSession session, Guid projectId, Guid taskId, BootstrapContext context,
+        IDocumentSession session, ProjectDetails? project, Guid projectId, Guid taskId, BootstrapContext context,
         string ownerRootFingerprint, string? to, DateTimeOffset now, CancellationToken cancellationToken)
     {
         MessageAudience audience = to.IsNotBlank() ? MessageAudience.Owner(to) : MessageAudience.Project;
@@ -180,7 +204,13 @@ public sealed class TaskHandoffCommand : Hall9kAsyncCommand<TaskHandoffCommand.S
             session, context.NodeId, projectId, ownerRootFingerprint, audience, about: taskId.ToString(),
             MessageKind.Handoff, $"Task {taskId} got a handoff note — see h9k task show {taskId}.", now,
             cancellationToken);
-        AnsiConsole.MarkupLine(
-            $"[dim]Nudge queued to {audience.Value} — the daemon's next message sweep sends it.[/]");
+        // The same false promise MessageSendCommand was corrected not to make (independent pre-PR
+        // review, cycle 1, both lenses): an archived project, or one with no repository yet, is
+        // never flushed by MessageSweepEngine, so the envelope stays queued rather than sent by
+        // "the daemon's next message sweep".
+        string disposition = project?.IsEligibleForMessaging() == true
+            ? "the daemon's next message sweep sends it."
+            : "it stays queued until this project is eligible for messaging (not archived, with a repository) — the daemon's sweep cannot send it yet.";
+        AnsiConsole.MarkupLine($"[dim]Nudge queued to {audience.Value} — {disposition}[/]");
     }
 }
