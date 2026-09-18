@@ -205,9 +205,13 @@ inherently single-node and the ledger never carries a holder write for one at al
 
 **A claim resumes work another node started** (idea 202383dc, piece C's residual): once a
 release (any of the levers above) hands a Queued task to a node other than the one whose run last
-touched it, `DispatchEngine.TryClaimAsync` reads that task's latest run — replicated here exactly
-as readily as one this node dispatched itself — and, when it was dispatched by a real node other
-than this one, carries its branch onto the fresh `TaskClaimed` as `ResumesBranch`. Applied onto
+touched it, `ForeignResumeBranchResolver.ResolveAsync` reads that task's latest run — replicated
+here exactly as readily as one this node dispatched itself — and, when it was dispatched by a real
+node other than this one, hands its branch to the claim as `ResumesBranch`. Shared by all three
+doors a claim can arrive through: `DispatchEngine.TryClaimAsync` (the daemon's own headless claim),
+and `h9k task work`/`h9k task start` (an interactive or deliberate claim, each calling the resolver
+with the `Guid.Empty` sentinel in place of a real node id, since every real node's own latest run is
+foreign to a human's own claim). Applied onto
 `TaskAggregate.RetryBranch` exactly as a human-requested `h9k task retry` or `h9k task handback`
 already lands one, so the next launch resumes it through the identical `RetryBranch` path, fetches
 first, and dispatches the resuming prompt — no branch of its own on the claim, no new lever to
@@ -229,9 +233,12 @@ flight for it, `TaskAggregate.ResumedAfterHolderChange` — has its own automati
 instead of dispatched, trigger "a stacked in-flight task changes holder"
 (`CloseoutEngine.TryReplayStackedChildAsync`): the new holder's own node never watched whatever
 review or build context the previous holder's run built up, so a mechanical replay here would be
-reasoning about a stack it has no history with. `h9k pr resolve` clears the flag the same way it
-already clears every other automatic-closeout counter, letting replay resume once a human has
-looked.
+reasoning about a stack it has no history with. The flag is cleared by two explicit call sites,
+never by the shared `ResetAutomaticCloseoutState` an ordinary automatic `TaskCompleted` also runs
+(that reset must not disarm this park just because a run landed on a fresh pull request): a human's
+own manual `TaskReopened` — the event `h9k pr resolve` appends, letting replay resume once a human
+has looked — and, separately, a `TaskResolved` that names a different pull request than the one
+already on record.
 
 Node-to-node messages: a note one node sends another, an owner, or the whole project, the first
 payload kind, replacing `notes/node-mailbox.md`'s GitHub-issue workaround for that traffic (that
