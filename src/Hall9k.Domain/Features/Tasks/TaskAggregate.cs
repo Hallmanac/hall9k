@@ -1277,6 +1277,19 @@ public sealed class TaskAggregate
             RetryBranch = @event.ResumesBranch;
             RetryBranchResumesForeignNode = true;
         }
+        else
+        {
+            // A same-node reclaim after an earlier foreign-node resume (idea 202383dc, piece C's
+            // residual): ForeignResumeBranchResolver sees this claim's own node already named the
+            // latest run and leaves ResumesBranch blank, but without this the flag set true by
+            // that earlier foreign claim would never clear, misreporting every later same-node
+            // reclaim as a fresh foreign handoff (independent pre-PR review, cycle 2, verify pass).
+            // RetryBranch itself is left untouched — it still names the branch this task's work
+            // actually lives on, foreign-resumed or not, and only the classification for gating
+            // (WorkPromptBuilder's handoff-note section, RunLauncher's loud-vs-fallback choice)
+            // is scoped to this one claim.
+            RetryBranchResumesForeignNode = false;
+        }
 
         // The ledger record's own holder mirrors only a real node's claim (idea 202383dc, A3b):
         // an interactive or deliberate claim (h9k task work, h9k task start) carries the

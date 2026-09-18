@@ -1825,6 +1825,36 @@ public sealed class TaskDeciderTests
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 2, verify pass: a same-node reclaim following an earlier
+    /// foreign-node resume must also clear the flag, not just a later human-requested retry or
+    /// handback. <see cref="Hall9k.Domain.Features.Tasks.Queries.ForeignResumeBranchResolver"/>
+    /// leaves <c>resumesBranch</c> null once this same node already owns the task's latest run, so
+    /// <see cref="TaskDecider.Claim"/>'s own caller passes null here exactly as it would in that
+    /// case — without <see cref="TaskAggregate.Apply(TaskClaimed)"/> resetting the flag on that
+    /// blank branch, it would stay stuck true from the earlier foreign claim on every later
+    /// same-node reclaim.
+    /// </summary>
+    [Fact]
+    public void A_same_node_reclaim_after_a_foreign_node_resume_clears_the_stale_flag()
+    {
+        TaskAggregate task = QueuedTask();
+        task.Apply(TaskDecider.Claim(
+            task, NodeA, Owner, DomainId.New(), Now, resumesBranch: "task/left-by-another-node"));
+        task.RetryBranchResumesForeignNode.Should().BeTrue();
+
+        task.Apply(TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now));
+        task.Apply(TaskDecider.Claim(task, NodeA, Owner, DomainId.New(), Now, resumesBranch: null));
+
+        task.RetryBranchResumesForeignNode.Should().BeFalse(
+            "NodeA reclaiming its own prior run is not a foreign-node resume, even though an "
+            + "earlier claim on this same task was");
+        task.RetryBranch.Should().Be(
+            "task/left-by-another-node",
+            "the branch this task's work actually lives on does not change just because a later "
+            + "claim's own classification does");
+    }
+
+    /// <summary>
     /// A `h9k task retry` that lands the work on a second pull request must not carry the
     /// first PR's closeout spend into the second — otherwise the second PR starts pre-debited
     /// and pre-capped, and a park message would misattribute the first PR's lap history to a
