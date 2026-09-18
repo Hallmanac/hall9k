@@ -25,6 +25,7 @@ namespace Hall9k.Tests.Daemon;
 /// real-<c>git</c>-subprocess test classes so they never run concurrently with each other.
 /// </summary>
 [Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class StackReplayOntoResolverTests : IDisposable
 {
     private readonly string _originPath = Path.Combine(Path.GetTempPath(), $"hall9k-sror-origin-{Guid.NewGuid():N}");

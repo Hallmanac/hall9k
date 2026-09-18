@@ -27,6 +27,7 @@ namespace Hall9k.Tests.Daemon.Review;
 /// </para>
 /// </summary>
 [Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class DecisionsLogRenumbererTransitionTests : IDisposable
 {
     private readonly string _repoPath = Path.Combine(Path.GetTempPath(), $"hall9k-dlrt-{Guid.NewGuid():N}");

@@ -17,6 +17,7 @@ namespace Hall9k.Tests.Cli;
 // to a temp directory here keeps that write off a developer's or CI runner's real home,
 // and sharing the collection serializes this against every other HALL9K_HOME redirect.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class ContainerRuntimeProbeTests : IDisposable
 {
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-runtime-probe-{Path.GetRandomFileName()}");

@@ -32,6 +32,7 @@ namespace Hall9k.Tests.Daemon;
 // HALL9K_HOME-derived path) whenever this checkout's own .claude/templates does not carry a file it
 // asks for, so a stale real install on this machine must never be what these fixtures read.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class AgentPromptBuilderGoldenTests : IDisposable
 {
     private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-apb-golden-home-{Guid.NewGuid():N}");

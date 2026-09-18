@@ -14,6 +14,7 @@ namespace Hall9k.Tests.Connectors;
 /// what it names.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class CredentialVaultTests : IDisposable
 {
     private const string Variable = "HALL9K_TEST_VAULT_TOKEN";

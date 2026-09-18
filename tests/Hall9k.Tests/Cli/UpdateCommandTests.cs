@@ -32,6 +32,7 @@ namespace Hall9k.Tests.Cli;
 // ComputeUserPath already have direct unit coverage with fake paths in
 // InstallCommandTests, so skipping the step here loses no coverage.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class UpdateCommandTests : IDisposable
 {
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-update-{Path.GetRandomFileName()}");

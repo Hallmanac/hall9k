@@ -14,6 +14,7 @@ namespace Hall9k.Tests.Cli;
 /// </summary>
 // Redirects the process-wide HALL9K_HOME, the same collection every other test touching it joins.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class RecipeSkillPublisherTests : IDisposable
 {
     private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"hall9k-recipe-skill-{Guid.NewGuid():N}");

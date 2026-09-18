@@ -28,6 +28,7 @@ namespace Hall9k.Tests.Cli;
 /// helper's attribute does not extend serialization to a caller that omits it.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class InteractiveSessionLivenessTests
 {
     [Fact]

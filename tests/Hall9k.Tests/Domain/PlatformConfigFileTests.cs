@@ -12,6 +12,7 @@ namespace Hall9k.Tests.Domain;
 /// <see cref="Hall9kDatabase"/>) or a hand-edited key this feature does not model.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class PlatformConfigFileTests : IDisposable
 {
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-cfg-{Path.GetRandomFileName()}");

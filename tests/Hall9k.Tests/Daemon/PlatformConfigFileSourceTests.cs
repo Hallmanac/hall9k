@@ -15,6 +15,7 @@ namespace Hall9k.Tests.Daemon;
 /// property that matters is what ends up bound, not which provider produced it.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class PlatformConfigFileSourceTests : IDisposable
 {
     // Every DaemonOptions env var this feature covers, so a variable the dev-loop happens to

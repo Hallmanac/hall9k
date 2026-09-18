@@ -18,6 +18,7 @@ namespace Hall9k.Tests.Connectors;
 /// against recorded gh output.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class JiraWorkItemProviderTests : IDisposable
 {
     private const string TokenVariable = "HALL9K_TEST_JIRA_TOKEN";

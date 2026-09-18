@@ -17,6 +17,7 @@ using Xunit;
 namespace Hall9k.Tests.Daemon;
 
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class AgentPromptBuilderTests : IDisposable
 {
     private readonly string _worktreePath =

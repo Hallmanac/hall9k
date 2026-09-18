@@ -12,6 +12,7 @@ namespace Hall9k.Tests.Domain;
 /// built-in default.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class OperatingSettingsResolverTests : IDisposable
 {
     // Every environment variable this resolver reads, so a variable the dev-loop happens to

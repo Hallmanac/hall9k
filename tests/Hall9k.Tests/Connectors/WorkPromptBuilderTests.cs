@@ -23,6 +23,7 @@ namespace Hall9k.Tests.Connectors;
 /// all, which stopped being true the moment that sweep started adopting it).
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class WorkPromptBuilderTests
 {
     private readonly string _worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-work-prompt-{Guid.NewGuid():N}");

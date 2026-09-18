@@ -25,6 +25,7 @@ namespace Hall9k.Tests.Domain;
 // AnticipateDirectoryAfterSweepTests classes below take an explicit home directory rather than
 // reading PlatformPaths.Home, so they carry no attribute of their own.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class RunPathsTests
 {
     [Fact]

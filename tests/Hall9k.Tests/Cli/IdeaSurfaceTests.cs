@@ -21,6 +21,7 @@ namespace Hall9k.Tests.Cli;
 // HALL9K_HOME. Sharing the collection serializes this file against every test that
 // redirects that variable, so a concurrent home swap can never be read mid-assertion.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class IdeaSurfaceTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);

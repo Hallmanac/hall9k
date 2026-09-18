@@ -15,6 +15,7 @@ namespace Hall9k.Tests.Domain;
 /// RunCompleted its reserved meaning.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class RunCloseoutProjectionTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 17, 12, 0, 0, TimeSpan.Zero);

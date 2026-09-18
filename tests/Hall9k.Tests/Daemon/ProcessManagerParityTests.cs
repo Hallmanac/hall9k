@@ -49,6 +49,7 @@ namespace Hall9k.Tests.Daemon;
 /// </para>
 /// </summary>
 [Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class ProcessManagerParityTests : IDisposable
 {
     private readonly string _directory = Directory.CreateTempSubdirectory("hall9k-process-manager-parity-").FullName;

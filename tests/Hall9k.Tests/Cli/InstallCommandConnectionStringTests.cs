@@ -17,6 +17,7 @@ namespace Hall9k.Tests.Cli;
 // HALL9K_HOME and HALL9K_CONNECTION_STRING are process-wide state; sharing the collection
 // serializes this against every other test that redirects the same environment.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class InstallCommandConnectionStringTests : IDisposable
 {
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-install-conn-{Path.GetRandomFileName()}");

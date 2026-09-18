@@ -99,6 +99,7 @@ namespace Hall9k.Tests.Integration;
 // mutate Hall9k__SpendBudgetTokens and Hall9k__SpendPeriod. All of it is process-wide state, same
 // as DatabaseDoctorTests, which is what puts this class in the Hall9kHome collection.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {

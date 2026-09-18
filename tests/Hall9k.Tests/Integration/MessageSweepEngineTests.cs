@@ -40,6 +40,7 @@ namespace Hall9k.Tests.Integration;
 /// </summary>
 [Trait("Category", "RequiresDocker")]
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
     private const string RepositoryPath = "/does/not/matter/on/a/fake/ledger";

@@ -17,6 +17,7 @@ namespace Hall9k.Tests.Cli;
 // Redirects the process-wide HALL9K_HOME (the canonical skill set hangs off it), so it shares
 // the collection with the other tests that do.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class ProjectHomeRecipeTests : IDisposable
 {
     private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"hall9k-recipe-{Guid.NewGuid():N}");

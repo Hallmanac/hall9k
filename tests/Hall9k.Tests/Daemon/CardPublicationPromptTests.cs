@@ -19,6 +19,7 @@ namespace Hall9k.Tests.Daemon;
 /// rules with the platform's guess.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class CardPublicationPromptTests : IDisposable
 {
     private readonly string _repository = Path.Combine(Path.GetTempPath(), $"hall9k-repo-{Guid.NewGuid():N}");

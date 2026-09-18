@@ -13,6 +13,7 @@ namespace Hall9k.Tests.Domain;
 // variable PlatformPaths.Home resolves, so this races any test that redirects it the same way
 // RunPathsTests does; see the note there for the origin incident.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class RunAggregateTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);

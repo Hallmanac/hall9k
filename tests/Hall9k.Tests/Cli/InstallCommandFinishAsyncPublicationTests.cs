@@ -16,6 +16,7 @@ namespace Hall9k.Tests.Cli;
 // Redirects the process-wide HALL9K_HOME (both canonical directories hang off it), so it shares
 // the collection with every other test that does.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class InstallCommandFinishAsyncPublicationTests : IDisposable
 {
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-install-finish-{Path.GetRandomFileName()}");

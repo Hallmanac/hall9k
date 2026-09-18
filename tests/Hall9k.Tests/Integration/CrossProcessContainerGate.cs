@@ -41,6 +41,7 @@ namespace Hall9k.Tests.Integration;
 // the scan; it is inert here since this class carries no test methods of its own for xUnit to
 // schedule.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 internal static class CrossProcessContainerGate
 {
     // Between sweeps of the whole permit set: short enough that a permit released elsewhere is

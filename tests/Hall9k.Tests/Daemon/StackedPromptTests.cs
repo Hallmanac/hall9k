@@ -21,6 +21,7 @@ namespace Hall9k.Tests.Daemon;
 /// the parent's commits and recomposes them as if they were this task's history.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class StackedPromptTests
 {
     private const string ParentBranch = "task/parent-slice-one";

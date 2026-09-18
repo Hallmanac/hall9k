@@ -28,6 +28,7 @@ namespace Hall9k.Tests.Cli;
 /// </para>
 /// </summary>
 [Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class RepoMaterialiserTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hall9k-mat-{Guid.NewGuid():N}");

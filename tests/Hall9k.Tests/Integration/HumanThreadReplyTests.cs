@@ -36,6 +36,7 @@ namespace Hall9k.Tests.Integration;
 // which resolves its connection off HALL9K_CONNECTION_STRING rather than this fixture, so this
 // joins the collection every other test that redirects a process-wide variable does.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {

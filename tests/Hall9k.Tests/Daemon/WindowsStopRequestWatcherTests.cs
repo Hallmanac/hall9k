@@ -16,6 +16,7 @@ namespace Hall9k.Tests.Daemon;
 /// HALL9K_HOME redirect.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class WindowsStopRequestWatcherTests : IDisposable
 {
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-stop-watcher-{Path.GetRandomFileName()}");

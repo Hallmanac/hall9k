@@ -14,6 +14,7 @@ namespace Hall9k.Tests.Cli;
 /// process-wide variable (see HomeEnvironmentIsolationTests).
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class DaemonProcessBootStatusTests : IDisposable
 {
     private readonly string _home = Path.Combine(Path.GetTempPath(), $"h9k-bootstatus-{Path.GetRandomFileName()}");

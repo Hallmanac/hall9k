@@ -23,6 +23,7 @@ namespace Hall9k.Tests.Cli;
 /// nested here.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class TaskRegisterSessionCommandTests
 {
     [Fact]

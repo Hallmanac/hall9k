@@ -34,6 +34,7 @@ namespace Hall9k.Tests.Connectors;
 // ReviewLapPromptBuilderTests, rather than left to whatever a real install already published to
 // this machine (independent pre-PR review, cycle 1).
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class ReviewLapPromptBuilderGoldenTests : IDisposable
 {
     private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-review-lap-golden-{Guid.NewGuid():N}");

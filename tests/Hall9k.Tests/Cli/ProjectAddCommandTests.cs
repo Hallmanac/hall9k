@@ -31,6 +31,7 @@ namespace Hall9k.Tests.Cli;
 // the collection with the other tests that do: serialized, never racing a concurrent test that
 // points it somewhere else mid-assertion.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class ProjectAddCommandTests : IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 12, 12, 0, 0, TimeSpan.Zero);

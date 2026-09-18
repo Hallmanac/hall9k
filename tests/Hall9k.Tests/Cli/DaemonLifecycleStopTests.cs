@@ -17,6 +17,7 @@ namespace Hall9k.Tests.Cli;
 /// redirects the same process-wide variable (see HomeEnvironmentIsolationTests).
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class DaemonLifecycleStopTests : IDisposable
 {
     private readonly string _home = Path.Combine(Path.GetTempPath(), $"h9k-stop-{Path.GetRandomFileName()}");
