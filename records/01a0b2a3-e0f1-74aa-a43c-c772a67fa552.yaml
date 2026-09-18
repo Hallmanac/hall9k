@@ -19,7 +19,3 @@ origin-branch: task/a67fa552-taskholderclaimtests-cannot-cl
 published: 2026-09-18 12:27:03Z
 context: |-
   EVIDENCE ONLY, held by the window; do not publish without Brian's word. Bite: f8e6dd8f run 01a0b172 gate at 2026-09-17 23:39 EDT failed this one test of 6083; the assertion shows ClaimEligibleAsync returned a ClaimedWork for a TaskId the test never seeded (verify-test.log in that run). Cause verified in the worktree wt-f8e6dd8f-c6599ef1: NodeBootstrap.EnsureAsync (src/Hall9k.Domain/Infrastructure/Bootstrap/NodeBootstrap.cs:46) takes the first OwnerDetails row, so NewIsolatedNodeAsync mints a fresh node but the same owner; DispatchEngine's claim query filters by AssignedOwnerId only (DispatchEngine.cs:935) and stops at the node's capacity, so a sibling test's leftover Queued task (several tests in the class leave theirs Queued on purpose) can take the slot. The test class is new on f8e6dd8f's branch (A3b, idea 202383dc), so if that branch is still open the fix belongs on it; if it has merged, this is a follow-up. Different mechanism from #455/#465 (process-wide statics). Retried once at 23:50 with no code change (notes/decisions-2026-09-17-hall9k-0a.md).
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-09-18 14:46:36Z
