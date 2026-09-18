@@ -93,7 +93,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "the run's own phase, never as a failure), and skips it on every intermediate review-cycle "
             + "pass in between — so the ordinary gates stay free of tests that reach outside the process "
             + "(git, the process table, the toolchain, Docker). NAME must already be configured, by "
-            + "--verify in this same invocation or a prior one. FILTER is the dotnet test --filter "
+            + "--verify in this same invocation or a prior one, and its command must be a `dotnet test` "
+            + "invocation — the filter is injected as `dotnet test --filter`, which only that shape of "
+            + "gate accepts. FILTER is the dotnet test --filter "
             + "expression injected into that gate's own command when it runs, combined with any --filter "
             + "the command already carries the same way a fix cycle's own scoped reverify combines one in. "
             + "'none' clears the host-coupled designation, leaving every gate ordinary. At most one gate "
@@ -441,6 +443,25 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             ? Optional<IReadOnlyList<VerifyCommand>>.Of([.. settings.Verify.Select(ParseVerify)])
             : Optional<IReadOnlyList<VerifyCommand>>.None;
 
+        // --verify replaces the whole list (its own --help text says so), and ParseVerify always
+        // builds a fresh VerifyCommand with a null HostCoupledFilter, so a bare --verify silently
+        // un-marks whichever gate was host-coupled before — every other standing consequence this
+        // command can flip (auto-pr-review, the claim gate, priority, reduced review) is announced
+        // the moment it changes; this one was not (independent pre-PR review, cycle 1, both
+        // lenses, low). Announced only when this same invocation is not also the one carrying it
+        // forward via --verify-gate-filter, which folds in just below and would make the warning
+        // describe a state that never actually lands.
+        if (settings.Verify.Length > 0 && settings.HostCoupledGateFilter is null
+            && details.VerifyCommands.FirstOrDefault(gate => gate.IsHostCoupled) is { } previousHostCoupledGate)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]--verify replaces the whole gate list: '{previousHostCoupledGate.Name.EscapeMarkup()}' "
+                + "was this project's host-coupled gate and the designation is not carried forward — no gate "
+                + "in the new list is serialized against another run's own copy or skipped between the first "
+                + "and final pass. Pass --verify-gate-filter \"NAME=...\" in this same invocation to mark one "
+                + "host-coupled again.[/]");
+        }
+
         // Folded into the same verifyCommands Optional, on top of whatever --verify itself just
         // set, or on top of the project's own already-recorded gates when --verify was not given
         // this invocation (PLACEHOLDER-609bd344): --verify-gate-filter names an EXISTING gate
@@ -601,11 +622,25 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         if (verifyCommands is { HasValue: true, Value: { } gatesToValidate })
         {
-            bool acceptedBrokenGate = await ValidateGatesAgainstCleanBaseAsync(
-                validationTarget, gatesToValidate, settings.AcceptBrokenGate, cancellationToken);
-            if (acceptedBrokenGate)
+            // Only gates whose recorded configuration is actually about to change, never the
+            // whole resolved list unconditionally (independent pre-PR review, cycle 1, conformance
+            // lens, low): a bare --verify-gate-filter re-designating which already-configured gate
+            // is host-coupled used to re-run every OTHER unrelated gate against a clean checkout
+            // too, holding the checkout lock and paying this project's own 11-12 minute suite for a
+            // change that touched none of their commands. VerifyCommand's own record equality
+            // already covers Command and HostCoupledFilter together, so a gate whose filter just
+            // changed is still caught (ApplyHostCoupledGateFilter clears the old designee's filter
+            // too, so both the old and new host-coupled gate are validated, and only them).
+            IReadOnlyList<VerifyCommand> changedGates =
+                [.. gatesToValidate.Where(gate => !details.VerifyCommands.Contains(gate))];
+            if (changedGates.Count > 0)
             {
-                changed = BuildChangedEvent(acceptedBrokenGateValue: true);
+                bool acceptedBrokenGate = await ValidateGatesAgainstCleanBaseAsync(
+                    validationTarget, changedGates, settings.AcceptBrokenGate, cancellationToken);
+                if (acceptedBrokenGate)
+                {
+                    changed = BuildChangedEvent(acceptedBrokenGateValue: true);
+                }
             }
         }
 
@@ -1044,8 +1079,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
             await using (gateLock)
             {
+                // The command actually composed for a host-coupled gate — its own filter injected
+                // exactly as VerificationRunner.ComposeGateCommand injects it when the daemon
+                // spawns this gate for real (independent pre-PR review, cycle 1, adversarial lens,
+                // medium) — not the gate's raw, unfiltered Command: validating the unfiltered form
+                // proves nothing about whether the filtered one that will actually run can pass, or
+                // whether it matches any test at all.
+                string composedCommand = HostCoupledGate.ComposeGateCommand(gate);
                 GateCheckResult result = await AdHocGateRunner.RunAsync(
-                    checkout, gate.Command, AdHocGateRunner.CleanBaseCheckTimeoutCap, cancellationToken);
+                    checkout, composedCommand, AdHocGateRunner.CleanBaseCheckTimeoutCap, cancellationToken);
                 switch (result.Outcome)
                 {
                     case GateCheckOutcome.Failed:
@@ -1058,6 +1100,23 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                             + "— recording it without this validation.[/]");
                         break;
                     case GateCheckOutcome.Passed:
+                        // Best-effort: a filter that matches nothing exits 0 under VSTest's default
+                        // TreatNoTestsAsError=false, so a typo'd --verify-gate-filter would
+                        // otherwise pass this validation and every later run forever, having run
+                        // zero tests every time (independent pre-PR review, cycle 1, adversarial
+                        // lens, medium). Checked only for the gate this designation just touched —
+                        // HostCoupledGate.IsDotnetTestGate(gate.Command) is already guaranteed by
+                        // ApplyHostCoupledGateFilter's own refusal for a gate that carries a filter
+                        // at all, so this only ever fires for one.
+                        if (gate.IsHostCoupled && HostCoupledGate.LooksLikeNoTestsExecuted(result.OutputTail))
+                        {
+                            AnsiConsole.MarkupLine(
+                                $"[yellow]Gate '{gate.Name.EscapeMarkup()}' passed against {checkoutDescription}, "
+                                + $"but its own output shows no tests were executed — its host-coupled filter "
+                                + $"'{gate.HostCoupledFilter?.EscapeMarkup()}' may not be matching anything. "
+                                + "Confirm the filter actually selects tests before relying on this gate.[/]");
+                        }
+
                         break;
                 }
             }
@@ -1148,11 +1207,29 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 $"--verify-gate-filter expects name=filter (or 'none' to clear), got '{value}'.");
         }
 
-        if (!gates.Any(gate => gate.Name == name))
+        VerifyCommand? namedGate = gates.FirstOrDefault(gate => gate.Name == name);
+        if (namedGate is null)
         {
             throw new DomainValidationException(
                 $"--verify-gate-filter names gate '{name}', which is not configured. Configure it first "
                 + "with --verify, in this same invocation or a prior one.");
+        }
+
+        // Refused here rather than left to corrupt whatever the gate actually runs (independent
+        // pre-PR review, cycle 1, both lenses, medium): VerificationRunner.ComposeGateCommand
+        // injects the host-coupled filter as a `dotnet test --filter`, unconditionally, for
+        // whichever gate this designation names — a build gate, a lint gate, a shell wrapper —
+        // and every sibling path that touches a gate's command guards on IsDotnetTestGate first.
+        // Without this check, `--verify-gate-filter "build=Category=RequiresDocker"` records
+        // silently and only fails for real the next time the daemon spawns
+        // `dotnet build --filter "..."` against a live run.
+        if (!HostCoupledGate.IsDotnetTestGate(namedGate.Command))
+        {
+            throw new DomainValidationException(
+                $"--verify-gate-filter names gate '{name}', whose command ('{namedGate.Command}') is not "
+                + "`dotnet test`-shaped. A host-coupled gate's own filter is injected as a `dotnet test "
+                + "--filter`, which only a gate that runs `dotnet test` can accept — point "
+                + "--verify-gate-filter at that gate instead.");
         }
 
         return [.. gates.Select(gate => gate.Name == name
