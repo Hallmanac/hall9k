@@ -28,15 +28,16 @@ namespace Hall9k.Tests.Integration;
 /// <see cref="TaskRecordPublication"/> directly — exactly what the command's own body does — rather
 /// than touching that command.
 /// <para>
-/// Only the replication test below opens a genuinely second store: the one place in this class that
-/// claims an event crossed to another node, so it is the one place that has to actually run it
-/// through <see cref="EventReplicationOutbox"/>/<see cref="EventReplicationInbox"/> into a second
+/// The one test below opens a genuinely second store: it is the only place in this class that
+/// claims an event crossed to another node, so it has to actually run that event through
+/// <see cref="EventReplicationOutbox"/>/<see cref="EventReplicationInbox"/> into a second
 /// <see cref="DocumentStore"/> in its own schema, the same "a test that genuinely needs a store of
 /// its own" shape <c>EventReplicationTests</c> already establishes (independent pre-PR review, cycle
 /// 1, conformance lens: a shared-schema re-aggregation of the same rows it just wrote never touches
-/// the replication seam at all). Neither other test claims that, so both stay on the single shared
-/// Postgres schema <c>MessageTransportTests</c> and <c>TaskRecordIntegrationTests</c> already
-/// establish for a claim that is genuinely node-agnostic.
+/// the replication seam at all). The class's other two tests, which claimed nothing about crossing
+/// nodes, were dropped as duplicates of coverage <c>MessageTransportTests</c> and
+/// <c>TaskRecordIntegrationTests</c> already establish on the single shared Postgres schema
+/// (independent pre-PR review, cycle 2).
 /// </para>
 /// </summary>
 [Trait("Category", "RequiresDocker")]
