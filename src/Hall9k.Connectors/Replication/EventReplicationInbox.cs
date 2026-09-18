@@ -57,6 +57,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         string repositoryPath,
         Guid senderNodeId,
         Guid projectId,
+        Guid myNodeId,
+        string myOwnerFingerprint,
         DateTimeOffset now,
         TrustChain? trustChain,
         CancellationToken cancellationToken)
@@ -162,6 +164,21 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 logger?.LogWarning(
                     "Sender {SenderNodeId}'s events envelope {Seq} carries a project key that does not match "
                     + "this project's own ledger-derived key, refused", senderNodeId, raw.Seq);
+                continue;
+            }
+
+            // A catch-up answer (EventCatchUpResponder.AnswerAsync) addresses its own "events"
+            // envelope to the one requester by node id, but every OTHER project member's own sweep
+            // reads the identical answering node's outbox ref too — with no audience check, each of
+            // them would apply the same forwarded batch onto its own store, including the batch's
+            // own true origin node, which holds no ReplicatedEventRecord for events it produced
+            // natively and would re-append them as an undeduped second copy onto its own stream
+            // (independent pre-PR review, cycle 1, adversarial lens, high). An ordinary outbox
+            // flush's own "events" envelope is always MessageAudience.Project (EventReplicationOutbox
+            // never targets one node), so this check is a no-op for it — Matches("project", ...)
+            // always returns true — and only ever refuses a catch-up answer addressed elsewhere.
+            if (!envelope.To.Matches(myNodeId, myOwnerFingerprint))
+            {
                 continue;
             }
 
