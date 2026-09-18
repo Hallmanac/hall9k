@@ -1,5 +1,6 @@
-using System.Diagnostics;
+using System.Text;
 using FluentAssertions;
+using Hall9k.Cli.DaemonControl;
 using Hall9k.Daemon;
 using Hall9k.Domain.Infrastructure.Storage;
 using Xunit;
@@ -16,15 +17,33 @@ public sealed class WindowsAppendOnlyLogTests : IDisposable
         try
         {
             File.Delete(logFile);
+            // The rotation tests roll a previous generation aside; nothing else creates one, and
+            // File.Delete on a path that was never created is a no-op.
+            File.Delete(DaemonLogRotation.PreviousLogFile(logFile));
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // Teardown, not an assertion. Every test here deliberately puts a holder on the
+            // Teardown, not an assertion. Several tests here deliberately put a holder on the
             // log, and a delete needs DELETE access that a holder's share mode may refuse, so
             // an unlinkable temp file is worth leaving in %TEMP% rather than failing a test
-            // whose own checks already passed. The waits below are what keep that from being
-            // the normal outcome.
+            // whose own checks already passed.
         }
+    }
+
+    /// <summary>
+    /// Reads a log through a share mode that admits other writers, rather than
+    /// <see cref="File.ReadAllText(string)"/>'s own default of <see cref="FileShare.Read"/>. None
+    /// of these assertions are about who else has the file open, and on a real machine something
+    /// transient (an on-access scanner, the search indexer) touches a freshly written temp file
+    /// often enough that the stricter read is a coin flip: observed as an intermittent "used by
+    /// another process" on the restart-handoff test below, 2026-09-17, with the Restart Manager
+    /// naming no holder at all a tenth of a second later.
+    /// </summary>
+    private static string ReadSharing(string path)
+    {
+        using FileStream stream = new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using StreamReader text = new(stream);
+        return text.ReadToEnd();
     }
 
     [Fact]
@@ -211,86 +230,133 @@ public sealed class WindowsAppendOnlyLogTests : IDisposable
     }
 
     [Fact]
-    public void The_launcher_handoff_shape_refuses_the_open_and_still_admits_a_reader()
+    public void The_launcher_handoff_shape_admits_the_takeover_on_the_first_attempt_and_a_reader_with_it()
     {
-        // The handoff shape itself, run for real rather than described: both shipped Windows
-        // launch paths start h9kd as cmd.exe /c "h9kd < NUL >> h9kd.log 2>&1", and cmd.exe
-        // opens an append redirect's target with FILE_SHARE_READ only and holds it for the
-        // whole run. So this is what a daemon's own takeover attempt is actually up against,
-        // and the two facts this asserts are the two the mailbox reports each got half of:
-        // the open is refused no matter how long it retries (the holder is the daemon's own
-        // launcher, which outlives it), and a reader following the log is entirely unaffected
-        // — the node's orchestrator window was never blinded by this.
+        // The handoff shape itself, run for real rather than described. Both shipped Windows
+        // launch paths now hand h9kd an inheritable FILE_APPEND_DATA handle their launcher
+        // opened with FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE (PLAN.md §16 PLACEHOLDER-d4e64dfa),
+        // and this holds a handle of exactly that shape while asserting what h9kd can do
+        // underneath it: take the log over on the FIRST attempt, with no wait and no Win32
+        // error 32 warning at start, and leave a reader following the log unaffected.
         //
-        // This test runs on the Windows CI leg, which is the leg that matters: it is a
-        // cmd.exe fact, and the ubuntu leg has no cmd.exe and no mandatory sharing to
-        // reproduce it with. The one piece no test in this file can reach is the short
-        // circuit for that same holder inside OpenAppendWriter, which keys on this process's
-        // own stdout already being the log: pointing a test process's real standard handles
-        // at a file mid-run would corrupt every other test's output in the same collection,
-        // so its path comparison is covered directly through DescribesSameFile below instead.
+        // What this replaces is the same test written against the shape that shipped before:
+        // cmd.exe /c "h9kd < NUL >> h9kd.log 2>&1", where cmd.exe held the log with
+        // FILE_SHARE_READ only for the daemon's whole run and the takeover was refused every
+        // single time. That is the regression this asserts against — a launcher-held handle
+        // that excludes writers, whatever opens it.
+        //
+        // Windows-only, and the Windows CI leg is the leg that matters: mandatory sharing and
+        // an inherited standard handle have no ubuntu equivalent to reproduce them with.
         if (!OperatingSystem.IsWindows())
         {
             return;
         }
 
-        const string marker = "h9k-handoff-marker";
-        string inner = $"(echo {marker}& ping -n 60 127.0.0.1) >> \"{logFile}\" 2>&1";
-        ProcessStartInfo launcher = new()
-        {
-            FileName = "cmd.exe",
-            Arguments = WindowsCommandLine.WrapForCmdExe(inner),
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+        // The FileStream owns the handle from here, exactly as WindowsAppendOnlyLog's own writer
+        // does, so disposing it is what releases the launcher's hold.
+        using FileStream inherited = new(WindowsDaemonLaunch.OpenInheritableAppendLog(logFile), FileAccess.Write);
 
-        using Process? holder = Process.Start(launcher);
-        holder.Should().NotBeNull();
-        try
-        {
-            // Waiting on the marker rather than on a clock: once a reader has read it
-            // through cmd.exe's own live redirect, the redirect is provably open — and that
-            // read is itself the reader half of the assertion.
-            ReadUntilMarkerVisible(marker);
+        // Stands in for a line written before Main — a missing runtime, an assembly that would
+        // not load — which is the whole reason the handle is passed down rather than left for the
+        // daemon to open once it is already running.
+        inherited.Write(Encoding.UTF8.GetBytes("a line through the launcher's own handle\r\n"));
+        inherited.Flush();
 
-            Action open = () => WindowsAppendOnlyLog.OpenAppendWriter(logFile);
-            open.Should().Throw<IOException>()
-                .Which.Message.Should()
-                    .Contain("Win32 error 32")
-                    // The image name, not the Restart Manager's own FileDescription prose
-                    // ("Windows Command Processor"), which is localized and would make this
-                    // assertion a statement about the runner's display language.
-                    .And.Contain("cmd (pid");
-        }
-        finally
+        List<TimeSpan> waits = [];
+        using StreamWriter takenOver = WindowsAppendOnlyLog.OpenAppendWriter(
+            logFile, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(150), waits.Add);
+        waits.Should().BeEmpty("the launcher's share mode refuses nobody, so there is nothing to retry");
+
+        takenOver.WriteLine("a line through the daemon's own handle");
+
+        using FileStream reader = new(
+            logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using StreamReader text = new(reader);
+        text.ReadToEnd().Should()
+            .Contain("a line through the launcher's own handle")
+            .And.Contain("a line through the daemon's own handle");
+    }
+
+    [Fact]
+    public void An_oversized_log_rotates_while_the_daemon_and_its_launcher_both_hold_it()
+    {
+        // LogRotationService's five-minute tick, which is what enforces the 8 MB budget while a
+        // daemon runs, and which on Windows never once succeeded before PLAN.md §16 PLACEHOLDER-d4e64dfa: the
+        // cmd.exe redirect's FILE_SHARE_READ refused DaemonLogRotation's FileAccess.ReadWrite
+        // open just as flatly as it refused the takeover, so every tick logged "Log rotation
+        // failed; will retry next tick" instead. The handles held here are the two a running
+        // daemon actually has — the inherited launcher handle and its own taken-over writer.
+        if (!OperatingSystem.IsWindows())
         {
-            holder!.Kill(entireProcessTree: true);
-            // Waited on, not fired and forgotten: Dispose deletes the log, and cmd.exe's
-            // redirect handle carries no FILE_SHARE_DELETE, so a delete racing a not-quite-dead
-            // holder cannot land — and cmd.exe is not the only holder, which is why waiting on
-            // it alone is not enough. The `ping` inside the redirected block inherited that same
-            // handle when cmd.exe created it, Kill(entireProcessTree) issues TerminateProcess
-            // across the tree and returns without waiting on any of it, and each process's
-            // handle table is torn down on its own schedule. So wait on the condition that
-            // actually matters rather than on one of the two processes: that no handle onto the
-            // log is left at all. Dispose tolerates a delete that still cannot land, so this
-            // wait is what keeps the log from merely leaking into %TEMP% on every run.
-            holder.WaitForExit();
-            WaitUntilNothingHoldsTheLog();
+            return;
         }
+
+        using FileStream inherited = new(WindowsDaemonLaunch.OpenInheritableAppendLog(logFile), FileAccess.Write);
+        using StreamWriter daemonWriter = WindowsAppendOnlyLog.OpenAppendWriter(logFile);
+        daemonWriter.WriteLine(new string('x', 4096));
+
+        DaemonLogRotation.RotateIfOversized(logFile, thresholdBytes: 1024).Should().BeTrue();
+
+        // The truncation landed, and the writer that was open across it still appends at the
+        // new end of file rather than at a position cached when it was opened.
+        daemonWriter.WriteLine("after the rotation");
+        new FileInfo(logFile).Length.Should().BeLessThan(1024);
+        ReadSharing(DaemonLogRotation.PreviousLogFile(logFile)).Should().Contain("xxxx");
+    }
+
+    [Fact]
+    public void The_restart_handoff_lands_both_daemons_lines_with_no_nul_padding()
+    {
+        // h9k daemon restart and h9k update --restart stop one daemon and start another, and the
+        // start path rotates the log on its way in (DaemonLifecycle.StartAsync). Under cmd.exe's
+        // >> redirect that sequence had two failure modes: a second redirect's open could be
+        // refused outright by the first cmd.exe's FILE_SHARE_READ if it had not finished dying,
+        // and a handle whose write position was cached at open time would, after a truncation,
+        // write at the old offset and leave Windows to zero-fill the gap — a log that reads back
+        // at its pre-rotation size, padded with NULs. Both handles here are FILE_APPEND_DATA, so
+        // the outgoing and incoming daemons can overlap freely and a rotation between them costs
+        // nothing but the lines it rolled aside.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using (FileStream outgoingInherited = new(
+            WindowsDaemonLaunch.OpenInheritableAppendLog(logFile), FileAccess.Write))
+        using (StreamWriter outgoingWriter = WindowsAppendOnlyLog.OpenAppendWriter(logFile))
+        {
+            outgoingWriter.WriteLine(new string('o', 4096));
+
+            // The incoming daemon's launcher opens its own handle while the outgoing daemon still
+            // holds both of its own — the overlap a restart genuinely has, since nothing waits for
+            // a dying process's handle table to be torn down.
+            using FileStream incomingInherited = new(
+                WindowsDaemonLaunch.OpenInheritableAppendLog(logFile), FileAccess.Write);
+            using StreamWriter incomingWriter = WindowsAppendOnlyLog.OpenAppendWriter(logFile);
+
+            DaemonLogRotation.RotateIfOversized(logFile, thresholdBytes: 1024).Should().BeTrue();
+
+            outgoingWriter.WriteLine("the outgoing daemon's last line");
+            incomingWriter.WriteLine("the incoming daemon's first line");
+        }
+
+        string written = ReadSharing(logFile);
+        written.Should().Contain("the outgoing daemon's last line");
+        written.Should().Contain("the incoming daemon's first line");
+        written.Should().NotContain("\0", "a cached write position is what leaves a zero-filled gap behind a truncation");
     }
 
     [Theory]
     // GetFinalPathNameByHandle always answers in extended-length form; DaemonRuntime.LogFile
     // never holds one, so a comparison that skipped the prefix would never match and the
-    // short circuit would silently never fire.
+    // legacy-launcher remedy would silently never be named.
     [InlineData(@"\\?\C:\Users\someone\.hall9k\h9kd.log", @"C:\Users\someone\.hall9k\h9kd.log", true)]
     [InlineData(@"\\?\UNC\fileserver\logs\h9kd.log", @"\\fileserver\logs\h9kd.log", true)]
     // Windows paths are case-insensitive, and the two sides come from different places: one
     // from the kernel, one from a config file or a default composed at startup.
     [InlineData(@"\\?\C:\Users\someone\.hall9k\H9KD.LOG", @"C:\Users\someone\.hall9k\h9kd.log", true)]
-    // A different file in the same directory is the case that must not short-circuit: it
-    // would report a structurally permanent holder where the real one may well let go.
+    // A different file in the same directory is the case that must not match: it would send a
+    // reader after a stale autostart registration that has nothing to do with the real holder.
     [InlineData(@"\\?\C:\Users\someone\.hall9k\h9kd.log.1", @"C:\Users\someone\.hall9k\h9kd.log", false)]
     [InlineData(@"\\?\C:\Users\someone\.hall9k\h9kd.log", @"C:\Users\someone\.hall9k\other.log", false)]
     public void An_extended_length_handle_path_is_matched_against_the_configured_log_path(
@@ -321,56 +387,4 @@ public sealed class WindowsAppendOnlyLogTests : IDisposable
         WindowsFileLockHolders.Describe(logFile).Should().Contain($"pid {Environment.ProcessId}");
     }
 
-    /// <summary>
-    /// Blocks until an exclusive open of the log succeeds, which is true only once every handle
-    /// onto it is gone — the launcher's own, and any child that inherited the launcher's. The
-    /// deadline is generous and falling through it is not a failure: <see cref="Dispose"/>
-    /// tolerates a file it cannot unlink, so the worst a loaded runner costs here is a stray
-    /// temp file rather than a hung suite or a red test.
-    /// </summary>
-    private void WaitUntilNothingHoldsTheLog()
-    {
-        DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (!File.Exists(logFile))
-            {
-                return;
-            }
-
-            try
-            {
-                using FileStream exclusive = new(logFile, FileMode.Open, FileAccess.Read, FileShare.None);
-                return;
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                Thread.Sleep(100);
-            }
-        }
-    }
-
-    private void ReadUntilMarkerVisible(string marker)
-    {
-        DateTimeOffset deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
-        while (DateTimeOffset.UtcNow < deadline)
-        {
-            if (File.Exists(logFile))
-            {
-                using FileStream reader = new(
-                    logFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
-                using StreamReader text = new(reader);
-                if (text.ReadToEnd().Contains(marker, StringComparison.Ordinal))
-                {
-                    return;
-                }
-            }
-
-            Thread.Sleep(100);
-        }
-
-        throw new InvalidOperationException(
-            $"cmd.exe never wrote {marker} into {logFile} — its >> redirect was never observed open, "
-            + "so this test cannot say anything about what happens while it is.");
-    }
 }
