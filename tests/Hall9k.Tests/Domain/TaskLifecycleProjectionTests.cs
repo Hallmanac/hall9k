@@ -391,6 +391,50 @@ public sealed class TaskLifecycleProjectionTests
             "a default release clears the flag exactly as handback does; --keep-interactive leaves it standing");
     }
 
+    /// <summary>
+    /// <see cref="TaskDetails.ClaimedFromDifferentHolder"/> gates <c>WorkPromptBuilder.Build</c>'s
+    /// own handoff-note fragment (independent pre-PR review, cycle 1, both lenses): unlike the
+    /// aggregate's own <see cref="TaskAggregate.ResumedAfterHolderChange"/>, which stays true across
+    /// an unrelated same-node reclaim by design (cleared only by a human reopen or a resolve naming
+    /// a new pull request), this one is recomputed fresh on every claim, so it answers "did THIS
+    /// claim change the holder" and nothing longer.
+    /// </summary>
+    [Fact]
+    public void ClaimedFromDifferentHolder_flips_only_on_the_claim_that_changes_the_real_node_holder()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        TaskDetailsProjection projection = new();
+
+        TaskDetails view = projection.Create(new FakeEvent<TaskAdded>(Drafted(id, ownerId)));
+        projection.Apply(new FakeEvent<TaskPublished>(new TaskPublished(id, Now, ownerId)), view);
+        projection.Apply(new FakeEvent<TaskAssigned>(new TaskAssigned(id, ownerId, [], Now, ownerId)), view);
+
+        // The first-ever claim has no previous holder to differ from.
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(id, nodeA, ownerId, 1, DomainId.New(), Now)), view);
+        view.ClaimedFromDifferentHolder.Should().BeFalse();
+
+        // An interactive/deliberate reclaim always carries the Guid.Empty sentinel, never a real
+        // node id, so it neither flips the flag nor updates which real node this task tracks.
+        projection.Apply(new FakeEvent<TaskRequeued>(new TaskRequeued(id, RequeueReason.HumanRequested, Now)), view);
+        projection.Apply(new FakeEvent<TaskClaimed>(
+            new TaskClaimed(id, Guid.Empty, ownerId, 2, DomainId.New(), Now, InteractiveMode: true)), view);
+        view.ClaimedFromDifferentHolder.Should().BeFalse();
+
+        // A different real node claims: the flag flips true on that exact claim.
+        projection.Apply(new FakeEvent<TaskRequeued>(new TaskRequeued(id, RequeueReason.HumanRequested, Now)), view);
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(id, nodeB, ownerId, 3, DomainId.New(), Now)), view);
+        view.ClaimedFromDifferentHolder.Should().BeTrue();
+
+        // The same node reclaiming again — not sticky, unlike ResumedAfterHolderChange — flips it
+        // back to false rather than staying true across the rest of this holder's own runs.
+        projection.Apply(new FakeEvent<TaskRequeued>(new TaskRequeued(id, RequeueReason.HumanRequested, Now)), view);
+        projection.Apply(new FakeEvent<TaskClaimed>(new TaskClaimed(id, nodeB, ownerId, 4, DomainId.New(), Now)), view);
+        view.ClaimedFromDifferentHolder.Should().BeFalse();
+    }
+
     [Fact]
     public void The_atomic_unassign_clears_the_claim_off_the_list_row_so_the_dispatcher_reads_published()
     {

@@ -454,10 +454,32 @@ public sealed class WorkPromptBuilderTests
     }
 
     /// <summary>
+    /// The other reachable holder-change path (independent pre-PR review, cycle 1, both lenses):
+    /// <c>RetryBranchResumesForeignNode</c> is false whenever the predecessor's latest run carried
+    /// the interactive/deliberate <c>Guid.Empty</c> sentinel, or the task is a
+    /// <c>TaskType.PrReview</c> one — <c>ClaimedFromDifferentHolder</c> covers those off the ledger
+    /// holder instead, so the note still shows.
+    /// </summary>
+    [Fact]
+    public void A_claim_from_a_different_holder_carries_the_handoff_note_even_with_no_branch_to_resume()
+    {
+        TaskDetails task = SomeTask();
+        task.ClaimedFromDifferentHolder = true;
+        task.HandoffNote = "Migration script drafted but untested.";
+        task.AgentContext = "Watch the staging schema for drift.";
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), branch: "task/abc12345-do-the-thing", worktreePath: _worktreePath,
+            resumesPreviousWork: true);
+
+        prompt.Should().Contain("Migration script drafted but untested.");
+    }
+
+    /// <summary>
     /// An ordinary same-node resume (a retained worktree, a retry, a handback) never carries a
-    /// foreign-node handoff note, even when the task happens to record one from an earlier holder
-    /// change: <c>RetryBranchResumesForeignNode</c> is the one signal this section gates on, not
-    /// merely the note's own presence.
+    /// handoff note, even when the task happens to record one from an earlier holder change:
+    /// neither <c>RetryBranchResumesForeignNode</c> nor <c>ClaimedFromDifferentHolder</c> is set on
+    /// this claim, and the note's mere presence is not enough on its own.
     /// </summary>
     [Fact]
     public void A_same_node_resume_never_shows_a_handoff_note()
@@ -470,6 +492,48 @@ public sealed class WorkPromptBuilderTests
             resumesPreviousWork: true);
 
         prompt.Should().NotContain("Should never appear on a same-node resume.");
+    }
+
+    /// <summary>
+    /// The note is attributed to whoever actually left it, never to "whoever held this task before
+    /// you" (independent pre-PR review, cycle 1, adversarial lens): this render site cannot know the
+    /// current claimant is the note author's immediate successor, so it states the recorded author
+    /// and timestamp instead — the same fact <c>h9k task show</c> renders this field with.
+    /// </summary>
+    [Fact]
+    public void The_handoff_note_is_attributed_to_its_recorded_author_and_time()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryBranchResumesForeignNode = true;
+        task.HandoffNote = "Migration script drafted but untested.";
+        Guid authorNodeId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+        task.HandoffNoteAuthorNodeId = authorNodeId;
+        task.HandoffNoteAt = new DateTimeOffset(2026, 9, 18, 9, 0, 0, TimeSpan.Zero);
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), branch: "task/abc12345-do-the-thing", worktreePath: _worktreePath,
+            resumesPreviousWork: true);
+
+        prompt.Should().Contain(DomainId.Short(authorNodeId));
+        prompt.Should().NotContain("Whoever held this task before you");
+    }
+
+    /// <summary>
+    /// The never-guess-at-unobserved-facts fallback (AGENTS.md), for a note whose author or
+    /// timestamp a replay never recorded.
+    /// </summary>
+    [Fact]
+    public void The_handoff_note_falls_back_to_an_unrecorded_author_and_time()
+    {
+        TaskDetails task = SomeTask();
+        task.RetryBranchResumesForeignNode = true;
+        task.HandoffNote = "Migration script drafted but untested.";
+
+        string prompt = WorkPromptBuilder.Build(
+            task, SomeProject(), branch: "task/abc12345-do-the-thing", worktreePath: _worktreePath,
+            resumesPreviousWork: true);
+
+        prompt.Should().Contain("an unrecorded node").And.Contain("an unrecorded time");
     }
 
     private string Build(bool isInteractive, bool isDeliberateHeadlessStart) =>
