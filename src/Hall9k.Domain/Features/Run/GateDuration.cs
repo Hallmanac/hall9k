@@ -20,5 +20,13 @@ namespace Hall9k.Domain.Features.Run;
 /// averaged in against a full-scope one. Defaults true on a stream written before this field
 /// existed, the same "assume comparable to full scope" default the no-gates-configured pass
 /// already records for its own <c>RanFullScope</c>.
+/// <see cref="HostCoupledSkipped"/> is true only for a host-coupled gate this pass deliberately
+/// never ran — an intermediate review-cycle pass, never the first verification or the final full
+/// pass (PLACEHOLDER-609bd344) — recorded with a zero <see cref="Duration"/> and
+/// <see cref="Passed"/> true (a skip is never a failure) so <c>h9k task show</c> can say which
+/// passes ran the gate and which skipped it, rather than the skip reading as silence the way an
+/// absent entry would. Defaults false on a stream written before this field existed: no run ever
+/// skipped a gate for this reason before host-coupled gates existed.
 /// </summary>
-public sealed record GateDuration(string Gate, TimeSpan Duration, bool Passed, bool RanFullScope = true);
+public sealed record GateDuration(
+    string Gate, TimeSpan Duration, bool Passed, bool RanFullScope = true, bool HostCoupledSkipped = false);

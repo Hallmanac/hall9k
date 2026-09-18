@@ -161,6 +161,12 @@ public static class EventScopeRegistry
         [typeof(RunDispatched)] = EventScope.ProjectScoped,
         [typeof(RunFailed)] = EventScope.ProjectScoped,
         [typeof(RunHandoffRecorded)] = EventScope.ProjectScoped,
+        // The host-coupled-gate permit's own start/clear, the identical liveness-marker shape
+        // GateStarted/GateEnded already stay node-scoped for: no other node has any use for
+        // which run on THIS node is waiting on, or holding, this node's own permit file
+        // (PLACEHOLDER-609bd344).
+        [typeof(RunHostCoupledGateWaitEnded)] = EventScope.NodeScoped,
+        [typeof(RunHostCoupledGateWaitStarted)] = EventScope.NodeScoped,
         [typeof(RunKilled)] = EventScope.ProjectScoped,
         [typeof(RunLaunchHeld)] = EventScope.NodeScoped,
         [typeof(RunPhaseDelegated)] = EventScope.ProjectScoped,

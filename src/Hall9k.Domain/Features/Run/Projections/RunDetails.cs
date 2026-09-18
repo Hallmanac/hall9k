@@ -97,6 +97,15 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// run's own stream ever writes to the agent stream file while one runs.
     /// </summary>
     public ActiveGate? ActiveGate { get; set; }
+    /// <summary>
+    /// When this run started waiting on the node-wide host-coupled-gate permit, or null when it
+    /// is not waiting (task: at most one host-coupled gate runs on a node at a time —
+    /// PLACEHOLDER-609bd344). Set by <see cref="Events.RunHostCoupledGateWaitStarted"/>, cleared
+    /// by <see cref="Events.RunHostCoupledGateWaitEnded"/> — the identical start/clear shape
+    /// <see cref="ActiveGate"/> already carries for a gate actually running, so
+    /// <c>TaskPhaseComposer</c> can show the wait as this run's own phase rather than as silence.
+    /// </summary>
+    public DateTimeOffset? HostCoupledGateWaitStartedAt { get; set; }
     public string? PullRequestUrl { get; set; }
     public int? PullRequestNumber { get; set; }
     /// <summary>
@@ -1154,6 +1163,12 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ActiveGate = new ActiveGate(@event.Data.GateName, @event.Data.ProcessId, @event.Data.StartedAt);
 
     public void Apply(IEvent<GateEnded> @event, RunDetails view) => view.ActiveGate = null;
+
+    public void Apply(IEvent<RunHostCoupledGateWaitStarted> @event, RunDetails view) =>
+        view.HostCoupledGateWaitStartedAt = @event.Data.StartedAt;
+
+    public void Apply(IEvent<RunHostCoupledGateWaitEnded> @event, RunDetails view) =>
+        view.HostCoupledGateWaitStartedAt = null;
 
     public void Apply(IEvent<ReviewDispatched> @event, RunDetails view)
     {
