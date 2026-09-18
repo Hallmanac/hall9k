@@ -9,6 +9,7 @@ namespace Hall9k.Tests.Cli;
 [Collection("Hall9kHome")]
 public sealed class WindowsDaemonAutostartTests
 {
+    private const string Launcher = @"C:\Users\someone\.hall9k\bin\h9k.exe";
     private const string Binary = @"C:\Users\someone\.hall9k\bin\h9kd.exe";
     private const string Log = @"C:\Users\someone\.hall9k\h9kd.log";
 
@@ -74,25 +75,63 @@ public sealed class WindowsDaemonAutostartTests
         // would make RestartOnFailure silently never fire. Proving that requires actually
         // running the generated script through cscript.exe against a real process exit code,
         // not reading the script's text.
+        //
+        // The launcher is stubbed rather than real: this covers the wscript-and-cmd half of the
+        // chain, and WindowsDaemonLaunchTests covers the other half — that h9k daemon autostart
+        // launch answers with h9kd's own exit code rather than its own.
         if (!OperatingSystem.IsWindows())
         {
             return;
         }
 
-        ExitCodeThroughLaunchScript(7).Should().Be(7, "a crashing h9kd's exit code must reach wscript.exe for RestartOnFailure to see it");
-        ExitCodeThroughLaunchScript(0).Should().Be(0, "h9kd's own clean-stop exit code must also reach wscript.exe unchanged");
+        RunLaunchScript(7).ExitCode.Should().Be(7, "a crashing h9kd's exit code must reach wscript.exe for RestartOnFailure to see it");
+        RunLaunchScript(0).ExitCode.Should().Be(0, "h9kd's own clean-stop exit code must also reach wscript.exe unchanged");
     }
 
-    private static int ExitCodeThroughLaunchScript(int simulatedExitCode)
+    [Fact]
+    public void The_launcher_is_invoked_with_the_daemon_and_log_paths_intact_through_cmds_own_quoting()
+    {
+        // cmd.exe parses its own /c argument with a fallback rule nothing else uses (see
+        // WindowsCommandLine), and this command line now nests three levels of quoting: a
+        // VBScript string literal around a cmd.exe /c wrapper around two quoted path arguments.
+        // Reading the generated script proves what was written; only running it proves what
+        // cmd.exe actually hands the launcher, which is the boundary that silently mangles
+        // quotes when it is wrong.
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        (int exitCode, string arguments, string daemonPath, string logPath) = RunLaunchScript(0);
+
+        exitCode.Should().Be(0);
+        arguments.Trim().Should().Be($"daemon autostart launch --binary \"{daemonPath}\" --log \"{logPath}\"");
+    }
+
+    private static (int ExitCode, string Arguments, string DaemonPath, string LogPath) RunLaunchScript(
+        int simulatedExitCode)
     {
         string directory = Directory.CreateTempSubdirectory("h9k-launch-script-").FullName;
         try
         {
-            string fakeDaemon = Path.Combine(directory, "fake-h9kd.cmd");
-            File.WriteAllText(fakeDaemon, $"@exit /b {simulatedExitCode}\r\n");
+            string fakeDaemon = Path.Combine(directory, "fake-h9kd.exe");
             string log = Path.Combine(directory, "h9kd.log");
+            string recordedArguments = Path.Combine(directory, "arguments.txt");
+
+            // Stands in for the installed h9k the script invokes: it records the arguments cmd.exe
+            // actually handed it and exits with whatever the real one would have relayed from
+            // h9kd. Nothing here ever reaches h9kd itself, so the daemon path only has to be a
+            // path — the stub never runs it.
+            string fakeLauncher = Path.Combine(directory, "fake-h9k.cmd");
+            File.WriteAllText(
+                fakeLauncher,
+                $"@echo off\r\necho %*>\"{recordedArguments}\"\r\nexit /b {simulatedExitCode}\r\n");
+
             string script = Path.Combine(directory, "launch.vbs");
-            File.WriteAllText(script, WindowsDaemonAutostart.LaunchScriptContent(fakeDaemon, log, []), Encoding.Unicode);
+            File.WriteAllText(
+                script,
+                WindowsDaemonAutostart.LaunchScriptContent(fakeLauncher, fakeDaemon, log, []),
+                Encoding.Unicode);
 
             using Process process = Process.Start(new ProcessStartInfo
             {
@@ -101,12 +140,39 @@ public sealed class WindowsDaemonAutostartTests
                 UseShellExecute = false,
             })!;
             process.WaitForExit();
-            return process.ExitCode;
+            return (
+                process.ExitCode,
+                File.Exists(recordedArguments) ? File.ReadAllText(recordedArguments) : string.Empty,
+                fakeDaemon,
+                log);
         }
         finally
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    [Fact]
+    public void A_launch_script_this_version_writes_is_not_read_as_predating_the_append_handle()
+    {
+        WindowsDaemonAutostart.LaunchScriptPredatesTheAppendHandle(
+            WindowsDaemonAutostart.LaunchScriptContent(Launcher, Binary, Log, Environment))
+            .Should().BeFalse();
+    }
+
+    [Fact]
+    public void A_launch_script_that_still_redirects_through_cmd_is_read_as_predating_the_append_handle()
+    {
+        // The script as it shipped before the launcher opened the log, verbatim: nothing but
+        // h9k daemon autostart enable rewrites one of these, so an updated machine keeps
+        // launching h9kd behind cmd.exe's own FILE_SHARE_READ append handle until someone
+        // re-runs it — which is what h9k daemon start warns about when it sees this.
+        const string legacy =
+            "WScript.Quit CreateObject(\"WScript.Shell\").Run(\"cmd.exe /c \"\"set PATH=C:\\tools& "
+            + "set HALL9K_DAEMON_APPEND_ONLY_LOG=1& \"\"C:\\Users\\someone\\.hall9k\\bin\\h9kd.exe\"\" "
+            + "< NUL >> \"\"C:\\Users\\someone\\.hall9k\\h9kd.log\"\" 2>&1\"\", 0, True)\n";
+
+        WindowsDaemonAutostart.LaunchScriptPredatesTheAppendHandle(legacy).Should().BeTrue();
     }
 
     [Fact]
@@ -137,59 +203,75 @@ public sealed class WindowsDaemonAutostartTests
     [Fact]
     public void The_launch_script_hides_cmd_and_waits_for_it_to_exit()
     {
-        string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, Environment);
+        string script = WindowsDaemonAutostart.LaunchScriptContent(Launcher, Binary, Log, Environment);
 
         // Window style 0 is SW_HIDE; True waits for cmd.exe to exit, so the task instance's
         // own lifetime keeps tracking the daemon's the same way it did when cmd.exe was the
         // action directly, and closing the (now nonexistent) window can no longer cut the
         // 30s graceful-shutdown budget down to Windows's ~5s console-close grace period.
+        // Waiting is load-bearing at every link: h9k daemon autostart launch waits on h9kd,
+        // cmd.exe waits on it, and this waits on cmd.exe.
         script.Should().Contain("CreateObject(\"WScript.Shell\").Run");
         script.Should().Contain(", 0, True");
     }
 
     [Fact]
-    public void The_launch_script_runs_the_binary_through_cmd_with_the_log_redirected()
+    public void The_launch_script_starts_the_daemon_through_the_h9k_launcher_rather_than_a_shell_redirect()
     {
-        string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, Environment);
+        string script = WindowsDaemonAutostart.LaunchScriptContent(Launcher, Binary, Log, Environment);
 
+        // The structural fix (PLAN.md §16 PLACEHOLDER-d4e64dfa). cmd.exe is still here, because its
+        // `set NAME=VALUE&` prefixes are the only per-job environment Task Scheduler has, but it
+        // no longer opens the log: h9k daemon autostart launch does, with a share mode that
+        // refuses nobody, and hands the handle to h9kd. A `>>` anywhere in this script means
+        // cmd.exe is holding the log with FILE_SHARE_READ for the daemon's whole run again,
+        // which is exactly what kept h9kd's own rotation-safe takeover and its 8 MB log budget
+        // from ever working on Windows.
         script.Should().Contain("cmd.exe");
-        script.Should().Contain(Binary);
-        script.Should().Contain(Log);
-        script.Should().Contain("2>&1", "the redirection syntax lands in a VBScript string literal, not an XML element");
+        script.Should().Contain(Launcher);
+        script.Should().Contain("daemon autostart launch");
+        script.Should().Contain($"--binary \"\"{Binary}\"\"");
+        script.Should().Contain($"--log \"\"{Log}\"\"");
+        script.Should().NotContain(">>", "cmd.exe must hold no handle on the log at all");
+        script.Should().NotContain("2>&1");
+        script.Should().NotContain("< NUL", "stdin comes from a NUL handle the launcher opens, not a cmd.exe redirect");
     }
 
     [Fact]
     public void The_captured_environment_is_set_scoped_to_this_one_process_tree()
     {
-        string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, Environment);
+        string script = WindowsDaemonAutostart.LaunchScriptContent(Launcher, Binary, Log, Environment);
 
         // Not a registry mutation (Decisions Log #3's Windows answer to launchd's per-job
-        // EnvironmentVariables dict): each captured variable is a `set` ahead of h9kd
+        // EnvironmentVariables dict): each captured variable is a `set` ahead of the launch
         // inside the same cmd.exe invocation, so it never touches anything outside this
-        // one task.
+        // one task. h9kd inherits them by way of the launcher, which copies its own
+        // environment into the block it creates the daemon with.
         script.Should().Contain("PATH=");
         script.Should().Contain("HALL9K_CLAUDE_PATH=");
         script.Should().NotContain("HKCU", "the environment travels with this one task, never through the registry");
     }
 
     [Fact]
-    public void The_launch_script_marks_h9kd_as_running_behind_the_append_only_log_redirect()
+    public void The_launch_script_leaves_the_append_only_log_marker_to_the_launcher()
     {
-        // Program.cs only takes over its own console output with WindowsAppendOnlyLog when
-        // it sees this marker (Hall9k.Domain.Infrastructure.Storage.DaemonRuntime.
-        // AppendOnlyLogEnvironmentVariable) — without it, every other way of starting h9kd
-        // on Windows would have its console silently redirected into the installed
-        // daemon's log too. This launch path is one of the two that actually is the
-        // cmd.exe >> redirect that gate exists to recognize, so it must set the marker.
-        string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, Environment);
+        // Program.cs only takes over its own console output with WindowsAppendOnlyLog when it
+        // sees this marker (DaemonRuntime.AppendOnlyLogEnvironmentVariable) — without it, every
+        // other way of starting h9kd on Windows would have its console silently redirected into
+        // the installed daemon's log too. The script used to set it, back when the script itself
+        // was what redirected the log; now WindowsDaemonLaunch puts it on h9kd's own environment
+        // block (proven by WindowsDaemonLaunchTests), which is the one place both launch paths
+        // get it from. Setting it here as well would put it on the LAUNCHER's environment, where
+        // it means nothing and would be inherited by anything else h9k happened to spawn.
+        string script = WindowsDaemonAutostart.LaunchScriptContent(Launcher, Binary, Log, Environment);
 
-        script.Should().Contain("HALL9K_DAEMON_APPEND_ONLY_LOG=1");
+        script.Should().NotContain("HALL9K_DAEMON_APPEND_ONLY_LOG");
     }
 
     [Fact]
     public void An_unobserved_environment_is_left_out_rather_than_invented()
     {
-        string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, []);
+        string script = WindowsDaemonAutostart.LaunchScriptContent(Launcher, Binary, Log, []);
 
         script.Should().NotContain("HALL9K_CLAUDE_PATH");
         script.Should().Contain(Binary);
@@ -260,7 +342,7 @@ public sealed class WindowsDaemonAutostartTests
     {
         KeyValuePair<string, string>[] environment = [new("HALL9K_CLAUDE_PATH", "C:\\tools\\p&ss\\claude.exe")];
 
-        string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, environment);
+        string script = WindowsDaemonAutostart.LaunchScriptContent(Launcher, Binary, Log, environment);
 
         // Caret-escaped at the cmd.exe layer, same as before the launch script existed — the
         // caret survives being embedded in the VBScript string literal (VBScript has no
@@ -285,7 +367,7 @@ public sealed class WindowsDaemonAutostartTests
             new("PATH", @"C:\tools"),
         ];
 
-        string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, environment);
+        string script = WindowsDaemonAutostart.LaunchScriptContent(Launcher, Binary, Log, environment);
 
         script.Should().NotContain("super-secret");
         script.Should().Contain("PATH=");
@@ -320,7 +402,7 @@ public sealed class WindowsDaemonAutostartTests
         // command line carries (the binary path, the log path) crosses this boundary, so a
         // single un-doubled quote here would terminate the Run(...) argument early and cut
         // the rest of the command off as a second, unrelated VBScript argument.
-        string script = WindowsDaemonAutostart.LaunchScriptContent(Binary, Log, []);
+        string script = WindowsDaemonAutostart.LaunchScriptContent(Launcher, Binary, Log, []);
 
         script.Should().Contain($"\"\"{Binary}\"\"");
     }

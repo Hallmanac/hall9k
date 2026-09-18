@@ -605,6 +605,20 @@ public static class CliCommandTree
                 autostart.AddCommand<DaemonAutostartDisableCommand>("disable")
                     .WithDescription("Fully unregister start-at-login (stops an autostart-owned daemon and says so)")
                     .WithExample("daemon", "autostart", "disable");
+                autostart.AddCommand<DaemonAutostartLaunchCommand>("launch")
+                    .WithDescription(
+                        "Windows only, and not a command to type: this is the vehicle the registered logon task "
+                        + "runs, through wscript.exe and cmd.exe, at every login. It opens ~/.hall9k/h9kd.log with "
+                        + "FILE_APPEND_DATA and a share mode that admits readers, other writers and a delete, hands "
+                        + "that handle to h9kd as its stdout and stderr, closes its own copy, then waits for the "
+                        + "daemon and exits with its exit code so Task Scheduler's restart-on-failure still sees a "
+                        + "crash. A handle cannot be passed through the VBScript command line the registration "
+                        + "composes, which is the whole reason this stands between cmd.exe and h9kd rather than a "
+                        + "shell redirect (PLAN.md §16 PLACEHOLDER-d4e64dfa). Run h9k daemon start for an on-demand daemon.")
+                    .WithExample(
+                        "daemon", "autostart", "launch",
+                        "--binary", @"C:\Users\you\.hall9k\bin\h9kd.exe",
+                        "--log", @"C:\Users\you\.hall9k\h9kd.log");
             });
         });
 
