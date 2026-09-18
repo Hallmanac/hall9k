@@ -1159,8 +1159,25 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     // retry still leaves later gates in the same VerifyAsync call to run.
     public void Apply(IEvent<GateRetried> @event, RunDetails view) => view.PendingGateRetry = @event.Data.Gate;
 
-    public void Apply(IEvent<GateStarted> @event, RunDetails view) =>
+    public void Apply(IEvent<GateStarted> @event, RunDetails view)
+    {
         view.ActiveGate = new ActiveGate(@event.Data.GateName, @event.Data.ProcessId, @event.Data.StartedAt);
+
+        // A gate cannot start spawning until any pending host-coupled-permit acquisition for
+        // THIS run has already returned — VerificationRunner.RunGateAsync always awaits
+        // AcquireHostCoupledGatePermitAsync before it ever records GateStarted — so this event
+        // is concrete, observed proof any stranded HostCoupledGateWaitStartedAt already ended in
+        // fact, exactly like the ActiveGate/ActiveSessions read-time checks TaskPhaseComposer
+        // already applies (independent pre-PR review, cycle 3, adversarial lens, low: those
+        // checks close the mask only while this run's own ActiveGate or a session is still live;
+        // once GateEnded clears ActiveGate and the run sits between review sessions with no
+        // session recorded either, a wait a shutdown mid-poll stranded — RunHostCoupledGateWaitEnded
+        // never appended, see AcquireHostCoupledGatePermitAsync's own doc comment — stayed set
+        // forever and masked the "review cycle N" line for the rest of the run's life). Clearing
+        // it here, in the projection, makes the fact permanent rather than a read-time bypass
+        // that only holds as long as this exact gate is still active.
+        view.HostCoupledGateWaitStartedAt = null;
+    }
 
     public void Apply(IEvent<GateEnded> @event, RunDetails view) => view.ActiveGate = null;
 
