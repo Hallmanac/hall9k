@@ -3097,6 +3097,7 @@ public sealed class CloseoutEngine(
         string pendingKey, Guid taskId, Guid projectId, string reason, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
+        TaskTrackerReleaseMirrorPending? existing = await session.LoadAsync<TaskTrackerReleaseMirrorPending>(pendingKey, cancellationToken);
         session.Store(new TaskTrackerReleaseMirrorPending
         {
             Id = pendingKey,
@@ -3105,6 +3106,7 @@ public sealed class CloseoutEngine(
             NodeId = node.NodeId,
             RecordedAt = DateTimeOffset.UtcNow,
             LastFailureReason = reason,
+            AttemptCount = (existing?.AttemptCount ?? 0) + 1,
         });
         await session.SaveChangesAsync(cancellationToken);
     }

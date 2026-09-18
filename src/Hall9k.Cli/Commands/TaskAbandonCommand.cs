@@ -171,14 +171,17 @@ public sealed class TaskAbandonCommand : Hall9kAsyncCommand<TaskAbandonCommand.S
         CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
+        string pendingKey = TaskTrackerReleaseMirrorPending.KeyFor(task.Id, context.NodeId);
+        TaskTrackerReleaseMirrorPending? existing = await session.LoadAsync<TaskTrackerReleaseMirrorPending>(pendingKey, cancellationToken);
         session.Store(new TaskTrackerReleaseMirrorPending
         {
-            Id = TaskTrackerReleaseMirrorPending.KeyFor(task.Id, context.NodeId),
+            Id = pendingKey,
             TaskId = task.Id,
             ProjectId = task.ProjectId,
             NodeId = context.NodeId,
             RecordedAt = DateTimeOffset.UtcNow,
             LastFailureReason = failureReason,
+            AttemptCount = (existing?.AttemptCount ?? 0) + 1,
         });
         await session.SaveChangesAsync(cancellationToken);
     }
