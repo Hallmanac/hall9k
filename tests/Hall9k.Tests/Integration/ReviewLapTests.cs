@@ -54,6 +54,7 @@ namespace Hall9k.Tests.Integration;
 // under HALL9K_HOME. All of it is process-wide, so this joins the Hall9kHome collection every
 // other test that redirects them does.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
 {

@@ -58,6 +58,13 @@ stays out; `GitWorktreeManagerTests` and `Hall9k.Tests.Cli.RepoMaterialiserTests
 times per test and join, so membership here is a judgment call recorded in the Decisions Log entry
 above, not a mechanically-enforced one, and there is no guard test for it.
 
+Every class in this collection also carries `[Trait("Category", "RealProcessSpawn")]` (task:
+host-coupled tests run in their own gate once per task, never in parallel with another run's copy
+— PLACEHOLDER-609bd344), the same "carries both attributes" shape `PublishesBinary` already has:
+`--verify-gate-filter` selects a host-coupled gate by `Category`, and a bare `[Collection]` gives
+`dotnet test --filter` nothing to match. `h9k project set --verify-gate-filter` can fold this trait
+into a project's own host-coupled filter expression alongside `RequiresDocker`/`PublishesBinary`.
+
 ## `Hall9k.Tests.LockHolder`
 
 Not a third tier: a standalone executable `CrossProcessContainerGateTests` launches and kills to

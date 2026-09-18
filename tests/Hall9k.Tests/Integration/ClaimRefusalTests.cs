@@ -56,6 +56,7 @@ namespace Hall9k.Tests.Integration;
 // cycle 4: a developer's own ~/.hall9k/config.json setting modelByRole.build made the test pass
 // for the wrong reason, and would fail outright on a machine configuring a different model there).
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {

@@ -31,6 +31,7 @@ namespace Hall9k.Tests.Connectors;
 /// </para>
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class WorkPromptBuilderGoldenTests : IDisposable
 {
     private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-work-prompt-golden-{Guid.NewGuid():N}");

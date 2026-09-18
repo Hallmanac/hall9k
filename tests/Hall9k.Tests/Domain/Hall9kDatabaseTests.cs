@@ -15,6 +15,7 @@ namespace Hall9k.Tests.Domain;
 // does the same (IdeaSurfaceTests and friends), so a concurrent swap can never be read
 // mid-assertion.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class Hall9kDatabaseTests : IDisposable
 {
     private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-db-{Path.GetRandomFileName()}");

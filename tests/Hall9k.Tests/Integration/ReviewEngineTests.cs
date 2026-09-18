@@ -42,6 +42,7 @@ namespace Hall9k.Tests.Integration;
 /// honestly.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginFixture origins)
     : IClassFixture<PostgresFixture>, IClassFixture<SeededGitOriginFixture>, IDisposable, IAsyncLifetime

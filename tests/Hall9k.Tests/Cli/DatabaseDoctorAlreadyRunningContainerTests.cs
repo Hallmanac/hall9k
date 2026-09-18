@@ -25,6 +25,7 @@ namespace Hall9k.Tests.Cli;
 // writes to and reads back from, so leaving it set to whatever the ambient environment names
 // would let that value, not the code under test, decide what these tests observe.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
 {
     private static readonly TimeSpan ShortTimeout = TimeSpan.FromMilliseconds(200);

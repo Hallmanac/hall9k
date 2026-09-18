@@ -29,6 +29,7 @@ namespace Hall9k.Tests.Connectors;
 // empty temp home itself so a fixture never accidentally reads whatever a real install already
 // published to this machine (independent pre-PR review, cycle 1).
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class ReviewLapPromptBuilderTests : IDisposable
 {
     private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-review-lap-prompt-builder-{Guid.NewGuid():N}");

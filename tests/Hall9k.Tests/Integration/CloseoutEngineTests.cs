@@ -41,6 +41,7 @@ namespace Hall9k.Tests.Integration;
 // owns HALL9K_HOME for its duration (Decisions Log #36) and shares the serializing
 // collection with every other test that does.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {

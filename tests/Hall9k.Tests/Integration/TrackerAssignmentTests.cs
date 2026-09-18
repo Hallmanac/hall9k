@@ -81,6 +81,7 @@ namespace Hall9k.Tests.Integration;
 /// </para>
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDisposable
 {

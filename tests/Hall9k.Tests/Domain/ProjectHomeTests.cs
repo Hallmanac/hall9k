@@ -20,6 +20,7 @@ namespace Hall9k.Tests.Domain;
 // Redirects the process-wide HALL9K_HOME, so it shares the collection with the other tests
 // that do: serialized, never yanking a home out from under a running one.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class ProjectHomeTests : IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 23, 12, 0, 0, TimeSpan.Zero);

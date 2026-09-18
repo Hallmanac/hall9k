@@ -32,6 +32,7 @@ namespace Hall9k.Tests.Domain;
 /// </para>
 /// </summary>
 [Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class CrossProcessContainerGateTests
 {
     [Fact]

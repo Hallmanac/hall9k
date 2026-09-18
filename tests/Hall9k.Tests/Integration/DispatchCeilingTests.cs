@@ -31,6 +31,7 @@ namespace Hall9k.Tests.Integration;
 // One test asks whether a run's result reached disk, so this class redirects the
 // process-wide HALL9K_HOME too and joins the collection that serializes the classes doing it.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {

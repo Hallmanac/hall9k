@@ -24,6 +24,7 @@ namespace Hall9k.Tests.Integration;
 /// </summary>
 [Trait("Category", "RequiresDocker")]
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class ProjectMembersCommandTests : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 15, 12, 0, 0, TimeSpan.Zero);

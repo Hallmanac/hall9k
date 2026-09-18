@@ -29,6 +29,7 @@ namespace Hall9k.Tests.Integration;
 // The full-check test points HALL9K_CONNECTION_STRING at the fixture, which is process-wide
 // state; sharing the collection serializes this against every other test that redirects it.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {

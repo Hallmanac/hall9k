@@ -29,6 +29,7 @@ namespace Hall9k.Tests.Connectors;
 // TemplateLibraryPaths.CanonicalDirectory both hang off it), so it shares the collection with
 // every other test that does.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class TemplateSkillDiscoveryIsolationTests : IDisposable
 {
     private readonly string _worktreePath = Path.Combine(Path.GetTempPath(), $"h9k-template-isolation-{Guid.NewGuid():N}");

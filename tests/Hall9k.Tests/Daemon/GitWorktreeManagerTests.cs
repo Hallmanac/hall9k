@@ -17,6 +17,7 @@ namespace Hall9k.Tests.Daemon;
 /// class's own doc comment for the evidence and the shared collection this joins.
 /// </summary>
 [Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class GitWorktreeManagerTests : IDisposable
 {
     private readonly string _root;

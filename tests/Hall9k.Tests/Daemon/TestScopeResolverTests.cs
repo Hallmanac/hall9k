@@ -18,6 +18,7 @@ namespace Hall9k.Tests.Daemon;
 /// </para>
 /// </summary>
 [Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class TestScopeResolverTests : IDisposable
 {
     private readonly string _root;

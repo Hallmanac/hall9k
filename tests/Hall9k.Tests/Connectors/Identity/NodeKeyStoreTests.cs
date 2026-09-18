@@ -12,6 +12,7 @@ namespace Hall9k.Tests.Connectors.Identity;
 /// <c>~/.hall9k/keys</c>.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class NodeKeyStoreTests : IDisposable
 {
     private readonly string _home = Path.Combine(Path.GetTempPath(), $"hall9k-node-key-store-{Guid.NewGuid():N}");

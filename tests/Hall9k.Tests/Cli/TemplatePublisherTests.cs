@@ -15,6 +15,7 @@ namespace Hall9k.Tests.Cli;
 // Redirects the process-wide HALL9K_HOME (the canonical template set hangs off it), so it shares
 // the collection with every other test that does.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class TemplatePublisherTests : IDisposable
 {
     private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-templates-{Guid.NewGuid():N}");

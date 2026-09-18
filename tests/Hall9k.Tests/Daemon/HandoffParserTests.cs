@@ -19,6 +19,7 @@ namespace Hall9k.Tests.Daemon;
 // other HALL9K_HOME-touching test class is covered, rather than relying on that distinction
 // holding as this file changes.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class HandoffParserTests
 {
     [Fact]

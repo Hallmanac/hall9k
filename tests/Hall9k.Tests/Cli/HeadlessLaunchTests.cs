@@ -17,6 +17,7 @@ namespace Hall9k.Tests.Cli;
 /// <c>DaemonLifecycle.SpawnDetachedWindows</c>, rather than independently verified here).
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class HeadlessLaunchTests : IDisposable
 {
     private readonly string _scratchDirectory = Path.Combine(Path.GetTempPath(), $"hall9k-headless-launch-{Guid.NewGuid():N}");

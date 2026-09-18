@@ -13,6 +13,7 @@ namespace Hall9k.Tests.Domain;
 // Redirects the process-wide HALL9K_HOME (the canonical directory PromptTemplates falls back to),
 // so it shares the collection with every other test that does.
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class PromptTemplatesTests : IDisposable
 {
     private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-prompt-templates-{Guid.NewGuid():N}");

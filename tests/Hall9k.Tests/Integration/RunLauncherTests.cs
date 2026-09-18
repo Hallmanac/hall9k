@@ -40,6 +40,7 @@ namespace Hall9k.Tests.Integration;
 /// rebuild the feature that was already on main).
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {

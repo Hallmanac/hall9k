@@ -21,6 +21,7 @@ using Xunit;
 namespace Hall9k.Tests.Integration;
 
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {

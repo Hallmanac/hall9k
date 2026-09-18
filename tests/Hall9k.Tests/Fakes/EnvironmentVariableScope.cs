@@ -12,6 +12,7 @@ namespace Hall9k.Tests.Fakes;
 /// caller that omits it.
 /// </summary>
 [Collection("Hall9kHome")]
+[Trait("Category", "Hall9kHome")]
 public sealed class EnvironmentVariableScope : IDisposable
 {
     private readonly (string Name, string? Previous)[] _saved;
