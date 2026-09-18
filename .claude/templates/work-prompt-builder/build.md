@@ -27,6 +27,12 @@ Do not start over when usable work exists; redoing finished work is the
 failure mode this note exists to prevent.
 ===retry-reason-is-handback-causeless===
 Why this run resumes here, in the requester's own words: {{RetryReason}}
+===handoff-note-heading===
+## A note from the previous holder
+===handoff-note-body===
+Whoever held this task before you left this note for whoever holds it next:
+
+{{Note}}
 ===acceptance-criteria-heading===
 ## Acceptance criteria
 ===context-heading===
