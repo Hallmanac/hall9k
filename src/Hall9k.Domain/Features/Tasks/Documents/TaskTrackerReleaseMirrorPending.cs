@@ -21,5 +21,12 @@ public sealed class TaskTrackerReleaseMirrorPending
 
     public string LastFailureReason { get; set; } = string.Empty;
 
+    /// <summary>
+    /// Consecutive failed attempts this row has recorded, including the one that first wrote it —
+    /// the release-side twin of <see cref="TaskTrackerAssignMirrorPending.AttemptCount"/>, read by
+    /// the identical backoff schedule in <c>DispatchEngine.SweepPendingTrackerMirrorsAsync</c>.
+    /// </summary>
+    public int AttemptCount { get; set; }
+
     public static string KeyFor(Guid taskId, Guid nodeId) => $"{taskId:D}:{nodeId:D}";
 }

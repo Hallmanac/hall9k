@@ -266,6 +266,157 @@ public sealed class TaskHolderClaimTests(PostgresFixture postgres) : IClassFixtu
         await ArchiveProjectAsync(store, projectId, cts.Token);
     }
 
+    /// <summary>
+    /// A lease expiry is a transient handback, never a conclusion — unlike true completion or
+    /// h9k task abandon, where the task really is over. On a project whose claim gate IS the
+    /// tracker assignee, clearing this install's own identity off the item at lease expiry would
+    /// destroy the very signal that gate reads to decide the very next claim, stalling crash
+    /// recovery until a human re-assigns the issue by hand (adversarial review, this branch's fix
+    /// cycle). The release mirror is skipped outright on that one path; the ledger holder itself is
+    /// still given back exactly as it is everywhere else.
+    /// </summary>
+    [Fact]
+    public async Task A_lease_expiry_release_never_clears_the_tracker_assignee_on_a_tracker_assignee_gated_project()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        // A full owner/repo#number reference: this test needs the claim's own tracker-assignee
+        // gate read to actually succeed (Assigned/AlreadyMine) rather than merely refuse, unlike
+        // the bare "42" the refusal-only gate test above uses.
+        ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#42");
+        Guid taskId = await SeedQueuedTaskAsync(store, node.OwnerId, projectId, reference, cts.Token);
+        await SeedProjectAsync(store, projectId, ClaimGate.TrackerAssignee, cts.Token);
+
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, taskId, holder: null, cts.Token);
+
+        // The item already shows assigned to this install throughout (AlreadyMine): both the
+        // claim-time gate check and the claim-side mirror's own read pass without a write, so the
+        // claim succeeds entirely through this recorder-backed gate with no dependency on the
+        // real, non-injected runner TakeGitHubAsync's own write path would otherwise need.
+        RecordingProcessRunner recorder = new(arguments => arguments switch
+        {
+            ["api", "user", ..] => new ProcessResult(0, "this-install\n", string.Empty),
+            ["issue", "view", ..] => new ProcessResult(
+                0, """{"assignees":[{"login":"this-install"}]}""", string.Empty),
+            _ => throw new InvalidOperationException($"Unexpected gh call: {string.Join(' ', arguments)}"),
+        });
+        TrackerClaimGate gate = new(recorder.Runner, FakeJiraRequester.NeverInvoked());
+
+        DispatchEngine engine = NewEngine(store, node, ledger, trackerClaimGate: gate, leaseTimeout: TimeSpan.FromMinutes(10));
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().Contain(w => w.TaskId == taskId);
+
+        int callsAfterClaim = recorder.Calls.Count;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskLease lease = (await session.Query<TaskLease>().Where(l => l.Id == taskId).ToListAsync(cts.Token))[0];
+            lease.HeartbeatAt = DateTimeOffset.UtcNow.AddMinutes(-30);
+            session.Store(lease);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await engine.SweepExpiredLeasesAsync(DateTimeOffset.UtcNow, cts.Token);
+
+        recorder.Calls.Should().HaveCount(callsAfterClaim,
+            "the lease-expiry release skips the tracker mirror outright on a tracker-assignee-gated project — nothing here for it to have called");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskRecord record = TaskRecord.TryParse(
+            (await ledger.ReadAsync(
+                RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId),
+                cts.Token)).Content)!;
+        record.Holder.Should().BeNull("the ledger holder release still lands — only the tracker mirror is skipped");
+
+        (await query.LoadAsync<TaskTrackerReleaseMirrorPending>(
+            TaskTrackerReleaseMirrorPending.KeyFor(taskId, node.NodeId), cts.Token)).Should().BeNull(
+            "no pending row either — the mirror was never called in the first place, so there is nothing to retry");
+
+        await ArchiveProjectAsync(store, projectId, cts.Token);
+    }
+
+    /// <summary>
+    /// A stale <c>TaskTrackerReleaseMirrorPending</c> row must not be retried blind: this node can
+    /// reclaim the very task the row is still pending a release mirror for (the release mirror
+    /// itself failed transiently while the ledger release and the requeue both landed), and a
+    /// retry that runs after that reclaim would be clearing a tracker assignee a fresh claim-side
+    /// mirror just wrote, off an item whose run is live again (adversarial review, this branch's
+    /// fix cycle). The row is dropped as stale instead of being retried.
+    /// </summary>
+    [Fact]
+    public async Task A_stale_release_mirror_row_is_dropped_rather_than_retried_once_this_node_reclaims_the_task()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        // A Jira reference with no Jira connection registered anywhere in this database — the
+        // release mirror's own read fails fast and deterministically, no network involved either
+        // way, the same reason A_release_mirror_failure_leaves_a_pending_row_for_the_next_sweep_to_retry
+        // above uses one.
+        ExternalReference reference = new(WorkItemProvider.Jira, "PROJ-9");
+        Guid taskId = await SeedQueuedTaskAsync(store, node.OwnerId, projectId, reference, cts.Token);
+        await SeedProjectAsync(store, projectId, ClaimGate.Off, cts.Token);
+
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, taskId, holder: null, cts.Token);
+
+        DispatchEngine engine = NewEngine(store, node, ledger, leaseTimeout: TimeSpan.FromMinutes(10));
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().Contain(w => w.TaskId == taskId);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskLease lease = (await session.Query<TaskLease>().Where(l => l.Id == taskId).ToListAsync(cts.Token))[0];
+            lease.HeartbeatAt = DateTimeOffset.UtcNow.AddMinutes(-30);
+            session.Store(lease);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await engine.SweepExpiredLeasesAsync(DateTimeOffset.UtcNow, cts.Token);
+
+        string pendingKey = TaskTrackerReleaseMirrorPending.KeyFor(taskId, node.NodeId);
+        await using (IDocumentSession backdateSession = store.LightweightSession())
+        {
+            (await backdateSession.LoadAsync<TaskTrackerReleaseMirrorPending>(pendingKey, cts.Token)).Should().NotBeNull(
+                "the release mirror failed and left a pending row, exactly as the sibling test above confirms");
+
+            // Backdated past every backoff tier: SweepExpiredLeasesAsync's own tail immediately
+            // retries a freshly-failed row once more in this same call (attempt 1's own backoff is
+            // zero), so by here the row may already have backed off past "due again in 0-5
+            // minutes" — this test is about the holder check, not the backoff schedule, so the
+            // clock is moved out of its way rather than chasing the exact attempt count.
+            TaskTrackerReleaseMirrorPending pending = (await backdateSession.LoadAsync<TaskTrackerReleaseMirrorPending>(pendingKey, cts.Token))!;
+            pending.RecordedAt = DateTimeOffset.UtcNow.AddHours(-2);
+            backdateSession.Store(pending);
+            await backdateSession.SaveChangesAsync(cts.Token);
+        }
+
+        // This same node reclaims the requeued task — the ledger holder is empty again (the
+        // release itself landed), so the ordinary claim path takes it right back.
+        (await engine.ClaimEligibleAsync(cts.Token)).Should().Contain(w => w.TaskId == taskId,
+            "the task requeued cleanly and nothing else is holding it");
+
+        await using (IQuerySession afterReclaim = store.QuerySession())
+        {
+            TaskAggregate reclaimed = (await afterReclaim.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            reclaimed.HolderNodeId.Should().Be(node.NodeId, "this node holds the task again");
+        }
+
+        // No lease is actually expired on this tick, so this exercises only the pending-row sweeps
+        // at the tail of SweepExpiredLeasesAsync — the same path the stale row would otherwise wait
+        // out for however long the daemon keeps running.
+        await engine.SweepExpiredLeasesAsync(DateTimeOffset.UtcNow, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskTrackerReleaseMirrorPending>(
+            TaskTrackerReleaseMirrorPending.KeyFor(taskId, node.NodeId), cts.Token)).Should().BeNull(
+            "the stale row is dropped once this node holds the task again, never blindly retried");
+
+        await ArchiveProjectAsync(store, projectId, cts.Token);
+    }
+
     [Fact]
     public async Task The_gated_project_holds_when_the_assignee_is_elsewhere_even_with_the_ledger_holder_empty()
     {
@@ -306,26 +457,69 @@ public sealed class TaskHolderClaimTests(PostgresFixture postgres) : IClassFixtu
     }
 
     [Fact]
-    public async Task ClaimGate_Off_never_consults_the_tracker_on_claim()
+    public async Task ClaimGate_Off_never_consults_the_tracker_to_decide_the_claim_though_the_mirror_still_runs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
         NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(store, cts.Token);
         Guid projectId = DomainId.New();
-        ExternalReference reference = new(WorkItemProvider.GitHub, "42");
+        // A full owner/repo#number reference: GitHubWorkItemProvider.TryParseCanonical needs one
+        // to resolve a repository and issue number at all, the same shape the other GitHub-linked
+        // tests in this file that reach a real read use (unlike the bare "42" the refusal-only
+        // tests above use, which never gets far enough to need it).
+        ExternalReference reference = new(WorkItemProvider.GitHub, "o/r#42");
         Guid taskId = await SeedQueuedTaskAsync(store, node.OwnerId, projectId, reference, cts.Token);
         await SeedProjectAsync(store, projectId, ClaimGate.Off, cts.Token);
 
         FakeLedger ledger = new();
         await SeedRecordAsync(ledger, taskId, holder: null, cts.Token);
 
-        RecordingProcessRunner recorder = new(_ => throw new InvalidOperationException(
-            "ClaimGate.Off must never call the tracker on the claim path at all."));
+        // ClaimGate.Off means the claim itself never reads the tracker to decide whether to claim
+        // (TrackerClaimGate.Gates requires TrackerAssignee) — but the mirror still runs
+        // unconditionally on every successful claim, independent of the project's own gate (this
+        // feature's own doc comment: "invoked with ClaimGate.TrackerAssignee unconditionally"). The
+        // item already shows assigned to this install (AlreadyMine), deliberately: the mirror's
+        // own write and read-back confirmation (TakeGitHubAsync) run through a runner this test
+        // cannot intercept — DispatchEngine.BuildTrackerClaimStack always builds a fresh
+        // ProjectScopedGitHubRunner for that half, shared with the gate only for the read
+        // (TrackerAssignmentTake's own doc comment names this split) — so a scenario needing an
+        // actual write would reach the real `gh` nondeterministically rather than this recorder.
+        // AlreadyMine still needs a real tracker read to reach (it is not the NotGated verdict a
+        // gate skip would answer with) and still lets the mirror complete successfully end to end,
+        // entirely through the recorder-backed gate read.
+        //
+        // A throwing recorder used to mask the whole distinction: the mirror's own throw was
+        // caught and swallowed into a TaskTrackerAssignMirrorPending row, so the claim still
+        // succeeded and this test's one assertion passed whether or not the tracker was ever
+        // actually called (independent pre-PR review, this branch's fix cycle — the throw was
+        // never reached by anything this test checked). This recorder answers instead, so what it
+        // actually recorded — and the pending row's absence — say what happened.
+        RecordingProcessRunner recorder = new(arguments => arguments switch
+        {
+            ["api", "user", ..] => new ProcessResult(0, "this-install\n", string.Empty),
+            ["issue", "view", ..] => new ProcessResult(
+                0, """{"assignees":[{"login":"this-install"}]}""", string.Empty),
+            _ => throw new InvalidOperationException(
+                $"Unexpected gh call for a ClaimGate.Off project: {string.Join(' ', arguments)}"),
+        });
+
         TrackerClaimGate gate = new(recorder.Runner, FakeJiraRequester.NeverInvoked());
 
         DispatchEngine engine = NewEngine(store, node, ledger, trackerClaimGate: gate);
         (await engine.ClaimEligibleAsync(cts.Token)).Should().Contain(
             w => w.TaskId == taskId, "an ungated project claims on the ledger alone");
+
+        // Exactly the mirror's own AlreadyMine read (an identity read, then one assignee read
+        // showing the item already held) and nothing beyond it — a regression that made the
+        // claim-time gate check consult the tracker too, under ClaimGate.Off, would add its own
+        // identity-and-read pair ahead of these two and this count would catch it.
+        recorder.Calls.Should().HaveCount(2,
+            "one identity read and one assignee read — the mirror's own AlreadyMine check, with no separate gate check ahead of it");
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskTrackerAssignMirrorPending>(
+            TaskTrackerAssignMirrorPending.KeyFor(taskId, node.NodeId), cts.Token)).Should().BeNull(
+            "the mirror actually completed (AlreadyMine — nothing to write) rather than being silently swallowed into a pending row");
     }
 
     [Fact]
