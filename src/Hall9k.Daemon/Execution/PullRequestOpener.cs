@@ -1,5 +1,6 @@
 using Hall9k.Domain.Infrastructure.Storage;
 using System.Diagnostics;
+using System.Text.Json;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
@@ -135,12 +136,28 @@ public sealed class PullRequestOpener(
             string? openBase = task.PullRequestUrl is null && await IsGitHubOriginAsync(run.WorktreePath, cancellationToken)
                 ? await ResolveOpenBaseAsync(run, project, cancellationToken)
                 : null;
+
+            // Looked up before ever calling gh pr create (idea 202383dc, piece C's residual,
+            // criterion 2): a retry resuming a branch this task's own delivery already pushed —
+            // its own earlier run on this node whose PullRequestOpened event never committed, or a
+            // foreign node's run this claim resumed through RetryBranch (criterion 1) — can find
+            // gh pr create refusing a second pull request for a head that already has one open.
+            // Adopting it here, ahead of the create, is what makes that refusal disappear: the
+            // adoption is recorded exactly as an opened one below (followUp reads false for this
+            // shape, since neither task.FollowUpBranch nor task.PullRequestUrl named anything when
+            // this run dispatched), on every delivery rather than only a cross-node one.
+            (string Url, int Number, string BaseRefName)? adopted = task.PullRequestUrl is null && openBase is not null
+                ? await TryFindOpenPullRequestByHeadAsync(project.RepositoryPath, run.Branch, cancellationToken)
+                : null;
+
             (string? pullRequestUrl, int pullRequestNumber) = task.PullRequestUrl is { } existingUrl
                 ? (existingUrl, PullRequestUrls.ParseNumber(existingUrl))
-                : openBase is not null
-                    ? await CreatePullRequestAsync(
-                        run, task, openBase, project.RepositoryPath, project.WritingConventions, cancellationToken)
-                    : (null, 0);
+                : adopted is { } found
+                    ? (found.Url, found.Number)
+                    : openBase is not null
+                        ? await CreatePullRequestAsync(
+                            run, task, openBase, project.RepositoryPath, project.WritingConventions, cancellationToken)
+                        : (null, 0);
 
             // The run's own already-recorded fact stands when this open resolves no fresh base of
             // its own — an existing pull request URL (openBase is left null above on purpose) or a
@@ -150,9 +167,17 @@ public sealed class PullRequestOpener(
             // retry resuming this branch through task.RetryBranch rather than task.FollowUpBranch
             // reaches here exactly that way). Apply(PullRequestOpened) below overwrites this field
             // unconditionally, so what is passed here is what survives.
-            string? openedAgainstBaseBranch = openBase is null
-                ? run.OpenedAgainstBaseBranch
-                : OpenedAgainstBaseBranchFor(openBase, run.BaseBranchOr(project.BaseBranch));
+            //
+            // An adopted pull request's own recorded base (criterion 3) takes priority over
+            // openBase's own resolution: openBase answers "where would THIS run have opened it",
+            // which is beside the point once an already-open pull request is being adopted instead
+            // — what a later reader needs is where that pull request actually lives on GitHub, not
+            // a base this run never asked gh to open against.
+            string? openedAgainstBaseBranch = adopted is { } adoptedPullRequest && adoptedPullRequest.BaseRefName.IsNotBlank()
+                ? OpenedAgainstBaseBranchFor(adoptedPullRequest.BaseRefName, run.BaseBranchOr(project.BaseBranch))
+                : openBase is null
+                    ? run.OpenedAgainstBaseBranch
+                    : OpenedAgainstBaseBranchFor(openBase, run.BaseBranchOr(project.BaseBranch));
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
             await using IDocumentSession session = store.LightweightSession();
@@ -546,6 +571,82 @@ public sealed class PullRequestOpener(
     /// </summary>
     internal static string? OpenedAgainstBaseBranchFor(string openBase, string recordedBase) =>
         openBase != recordedBase ? openBase : null;
+
+    /// <summary>
+    /// An already-open pull request whose head is <paramref name="branch"/> — the lookup
+    /// <see cref="OpenAsync"/> makes ahead of every <c>gh pr create</c> so a retry on a branch this
+    /// task's delivery already pushed adopts that pull request rather than being refused a second
+    /// one for the same head (idea 202383dc, piece C's residual, criterion 2). Null when none is
+    /// open, including when the lookup itself could not be read — a failure here costs only the
+    /// adoption, and <c>gh pr create</c> below answers definitively either way (adopting nothing
+    /// leads straight into the ordinary create, which itself fails loudly if gh still refuses a
+    /// duplicate).
+    /// </summary>
+    private async Task<(string Url, int Number, string BaseRefName)?> TryFindOpenPullRequestByHeadAsync(
+        string repositoryPath, string branch, CancellationToken cancellationToken)
+    {
+        ProcessResult result;
+        try
+        {
+            result = await processRunner(
+                "gh",
+                ["pr", "list", "--head", branch, "--state", "open", "--json", "number,url,baseRefName"],
+                repositoryPath, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Could not look up an already-open pull request for branch {Branch} before creating one; "
+                + "creating fresh", branch);
+            return null;
+        }
+
+        if (result.ExitCode != 0)
+        {
+            logger.LogWarning(
+                "gh pr list --head {Branch} exited {ExitCode}: {Error} — creating fresh rather than adopting",
+                branch, result.ExitCode, result.StandardError.Trim());
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(result.StandardOutput);
+            if (document.RootElement.ValueKind != JsonValueKind.Array || document.RootElement.GetArrayLength() == 0)
+            {
+                return null;
+            }
+
+            JsonElement first = document.RootElement[0];
+            if (!first.TryGetProperty("number", out JsonElement numberElement)
+                || numberElement.ValueKind != JsonValueKind.Number
+                || !numberElement.TryGetInt32(out int number)
+                || !first.TryGetProperty("url", out JsonElement urlElement)
+                || urlElement.ValueKind != JsonValueKind.String
+                || urlElement.GetString() is not { Length: > 0 } url)
+            {
+                return null;
+            }
+
+            string baseRefName = first.TryGetProperty("baseRefName", out JsonElement baseElement)
+                && baseElement.ValueKind == JsonValueKind.String
+                ? baseElement.GetString() ?? string.Empty
+                : string.Empty;
+
+            logger.LogInformation(
+                "Branch {Branch} already has an open pull request {Url} — adopting it rather than opening a "
+                + "second one",
+                branch, url);
+            return (url, number, baseRefName);
+        }
+        catch (JsonException exception)
+        {
+            logger.LogWarning(exception,
+                "Could not parse gh pr list output while looking up an open pull request for branch {Branch}; "
+                + "creating fresh", branch);
+            return null;
+        }
+    }
 
     private async Task<(string Url, int Number)> CreatePullRequestAsync(
         RunDetails run, TaskDetails task, string baseBranch, string repositoryPath, WritingConventions conventions,

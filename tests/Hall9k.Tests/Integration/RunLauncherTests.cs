@@ -701,7 +701,13 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
             await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, aggregate.LeaseGeneration, cts.Token);
 
-            gh.Calls.Should().ContainSingle(call => call.FileName == "gh", "the retry re-attempts gh pr create directly");
+            // The opener looks up an already-open pull request for this branch before ever
+            // calling gh pr create (idea 202383dc, piece C's residual, criterion 2) — this fake's
+            // own non-JSON "succeeding" output finds nothing to adopt, so the retry's own gh pr
+            // create still runs right after it.
+            gh.Calls.Should().ContainSingle(
+                call => call.Arguments.Count >= 2 && call.Arguments[0] == "pr" && call.Arguments[1] == "create",
+                "the retry re-attempts gh pr create directly");
 
             await using IQuerySession query = store.QuerySession();
             TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;

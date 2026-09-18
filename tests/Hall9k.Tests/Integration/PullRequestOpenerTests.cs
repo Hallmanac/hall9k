@@ -1,11 +1,13 @@
 using System.Diagnostics;
 using FluentAssertions;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -189,16 +191,121 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
         PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance, inspector: null, processRunner: gh.Runner);
         await opener.OpenAsync(runId, taskId, cts.Token);
 
-        gh.Calls.Should().ContainSingle(call => call.FileName == "gh")
-            .Which.WorkingDirectory.Should().Be(
-                repoPath, "ProjectScopedGitHubRunner only pins an account when the working directory "
-                + "it is given equals a registered project's RepositoryPath exactly — the worktree "
-                + "path never does");
+        // Two gh calls now, not one: the opener looks up an already-open pull request for this
+        // branch before ever creating one (idea 202383dc, piece C's residual, criterion 2), and
+        // this fake's own non-JSON "succeeding" output finds nothing to adopt, so the ordinary
+        // create still runs. Every gh call this test's own fixture makes shares the identical
+        // working-directory constraint under test, lookup included.
+        gh.Calls.Should().OnlyContain(call => call.FileName == "gh" && call.WorkingDirectory == repoPath,
+            "ProjectScopedGitHubRunner only pins an account when the working directory it is given "
+            + "equals a registered project's RepositoryPath exactly — the worktree path never does, "
+            + "and neither the lookup nor the create ever run from it");
+        gh.Calls.Should().ContainSingle(
+            call => call.Arguments.Count >= 2 && call.Arguments[0] == "pr" && call.Arguments[1] == "create",
+            "the lookup finds nothing to adopt, so exactly one gh pr create still runs");
 
         await using IQuerySession query = store.QuerySession();
         TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
         task2.State.Value.Should().Be("Done");
         task2.PullRequestUrl.Should().Be("https://github.com/x/y/pull/42");
+    }
+
+    /// <summary>
+    /// Idea 202383dc, piece C's residual, criteria 2 and 3: before ever calling <c>gh pr create</c>,
+    /// the opener looks up an open pull request whose head is this run's own branch and adopts it —
+    /// recorded exactly as an opened one (a fresh <c>PullRequestOpened</c>, never
+    /// <c>PullRequestUpdated</c>, since <c>run.IsFollowUp</c> reads false here just as it does for
+    /// an ordinary first delivery) rather than being refused by gh's own duplicate-pull-request
+    /// check. The adopted run's own recorded base is the adopted pull request's own base branch —
+    /// <c>release/1.0</c> below — not whatever this run's own <c>ResolveOpenBaseAsync</c> would
+    /// otherwise have answered (<c>main</c>, the project's base, since this run records no stacked
+    /// edge of its own).
+    /// </summary>
+    [Fact]
+    public async Task Opening_a_pull_request_adopts_an_already_open_one_for_the_branch_instead_of_creating_a_second()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        Directory.CreateDirectory(_root);
+        string originPath = Path.Combine(_root, "github.com-origin.git");
+        string repoPath = Path.Combine(_root, "repo");
+        Git(_root, $"init --bare -b main \"{originPath}\"");
+        Git(_root, $"clone \"{originPath}\" \"{repoPath}\"");
+        File.WriteAllText(Path.Combine(repoPath, "README.md"), "# adoption test\n");
+        Git(repoPath, "add -A");
+        Git(repoPath, "-c user.name=Test -c user.email=t@t commit -qm init");
+        Git(repoPath, "push -q origin main");
+
+        GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Worktree worktree = await worktrees.CreateAsync(
+            new WorktreeRequest(repoPath, "main", taskId, runId, "Adopt an already-open pull request",
+                BranchNameTemplate.Default, ExternalReference: null), cts.Token);
+
+        File.WriteAllText(Path.Combine(worktree.Path, "WORK.md"), "agent output\n");
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"Add WORK.md\"");
+        // Already on origin — the shape a delivery this task's own record never learned about
+        // leaves behind: this node's own earlier run whose PullRequestOpened event never
+        // committed, or (idea 202383dc, criterion 1) a foreign node's run this claim resumed —
+        // either way gh already has an open pull request for this exact head.
+        Git(worktree.Path, $"push -q origin {worktree.Branch}");
+
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = new();
+            (task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, projectId, "Adopt an already-open pull request", ["adopts, does not duplicate"],
+                    TaskType.Chore, null, null, null, Now, ownerId),
+                ownerId, Now);
+            var claimed = TaskDecider.Claim(task, DomainId.New(), ownerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = claimed.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+            session.Events.StartStream<RunAggregate>(runId,
+                new RunDispatched(runId, taskId, claimed.NodeId, ownerId, 1, DomainId.New(),
+                    worktree.Path, worktree.Branch, ExecutorMode.Subscription, Now),
+                new AgentSessionCompleted(runId, Now),
+                new VerificationPassed(runId, Now));
+
+            var registered = Hall9k.Domain.Features.Project.Handlers.ProjectDecider.Register(
+                projectId, ownerId, DomainId.New(), $"pr-{taskId:N}", repoPath, null, "main", Now);
+            session.Events.StartStream<Hall9k.Domain.Features.Project.ProjectAggregate>(registered.Id, registered);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Directory.CreateDirectory(RunPaths.GlobalDirectory(runId));
+
+        const string adoptedUrl = "https://github.com/x/y/pull/77";
+        RecordingProcessRunner gh = new(arguments =>
+            arguments.Count >= 2 && arguments[0] == "pr" && arguments[1] == "list"
+                ? new ProcessResult(
+                    0, $"[{{\"number\":77,\"url\":\"{adoptedUrl}\",\"baseRefName\":\"release/1.0\"}}]", string.Empty)
+                : throw new InvalidOperationException(
+                    "an open pull request was already found for this branch, so gh must never be asked to "
+                    + $"create a second one — got '{string.Join(' ', arguments)}'"));
+        PullRequestOpener opener = new(store, NullLogger<PullRequestOpener>.Instance, inspector: null, processRunner: gh.Runner);
+        await opener.OpenAsync(runId, taskId, cts.Token);
+
+        gh.Calls.Should().ContainSingle(
+            call => call.FileName == "gh" && call.Arguments[0] == "pr" && call.Arguments[1] == "list",
+            "the lookup runs exactly once, and gh pr create never does");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskListItem task2 = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+        task2.State.Value.Should().Be("Done");
+        task2.PullRequestUrl.Should().Be(adoptedUrl, "the adopted pull request becomes this task's own");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.PullRequestUrl.Should().Be(adoptedUrl);
+        run.PullRequestNumber.Should().Be(77);
+        run.OpenedAgainstBaseBranch.Should().Be(
+            "release/1.0",
+            "the adopted run's base is the adopted pull request's own base branch, not this run's own resolved one");
     }
 
     /// <summary>
