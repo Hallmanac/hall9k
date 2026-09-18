@@ -88,6 +88,20 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using DocumentStore storeC = OpenStore("event_catchup_gap_node_c");
         await using DocumentStore storeB = OpenStore("event_catchup_gap_node_b");
 
+        // Node C answers the gap-fill request below, so its own store needs its own Node stream
+        // registered first, and its own switch-on point established EARLY — before it ever applies
+        // anything — so everything it later applies by replication counts as post-switch-on:
+        // EventCatchUpResponder.AnswerAsync now reads that same point (independent pre-PR review,
+        // cycle 1, conformance lens, high) the identical way an ordinary outbox flush already
+        // requires it, and establishing it late (only once the responder itself first runs, well
+        // after content already arrived) would wrongly exclude everything node C is about to forward.
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeC, new NodeRegistered(nodeC, ownerId, "node-c", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeC, Now, cts.Token);
+        }
+
         // Node A: register, switch replication on, then publish task1 — landing at seq 1 on its own outbox.
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
@@ -280,6 +294,20 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, Environment.MachineName, "macOS", Now));
             await session.SaveChangesAsync(cts.Token);
             await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        // Node C answers the bootstrap request below, so its own store needs its own Node stream
+        // registered first, and its own switch-on point established EARLY — before it ever applies
+        // anything — so everything it later applies by replication counts as post-switch-on:
+        // EventCatchUpResponder.AnswerAsync now reads that same point (independent pre-PR review,
+        // cycle 1, conformance lens, high) the identical way an ordinary outbox flush already
+        // requires it, and establishing it late (only once the responder itself first runs, well
+        // after content already arrived) would wrongly exclude everything node C is about to forward.
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeC, new NodeRegistered(nodeC, ownerId, "node-c", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeC, Now, cts.Token);
         }
 
         Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectIdA, ownerId, Now.AddSeconds(1), cts.Token);
@@ -484,6 +512,19 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         MessageOutbox messageOutbox = new(transport);
         (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
 
+        // Node A answers below, so its own store needs its own Node stream registered first, and its
+        // own switch-on point established EARLY — before either task exists — so both tasks count as
+        // post-switch-on: EventCatchUpResponder.AnswerAsync now reads that same point (independent
+        // pre-PR review, cycle 1, conformance lens, high) the identical way an ordinary outbox flush
+        // already requires it, and establishing it late (only once the responder itself first runs,
+        // well after both tasks already exist) would wrongly exclude both of them.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeA, Now, cts.Token);
+        }
+
         Guid publicTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now, cts.Token);
         Guid privateTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
@@ -548,6 +589,19 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         MessageOutbox messageOutbox = new(transport);
         (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
 
+        // Node A answers below, so its own store needs its own Node stream registered first, and its
+        // own switch-on point established EARLY — before either task exists — so both tasks count as
+        // post-switch-on: EventCatchUpResponder.AnswerAsync now reads that same point (independent
+        // pre-PR review, cycle 1, conformance lens, high) the identical way an ordinary outbox flush
+        // already requires it, and establishing it late (only once the responder itself first runs,
+        // well after both tasks already exist) would wrongly exclude both of them.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeA, Now, cts.Token);
+        }
+
         // ownTaskId's own origin is the REQUESTER itself — node A holds it as though it arrived by
         // replication earlier (the identical way EventReplicationInbox.ApplyAsync stamps a freshly
         // applied record's origin, before that append is ever committed). A bootstrap request from
@@ -571,10 +625,11 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
 
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
-            await responder.AnswerAsync(
+            int envelopesQueued = await responder.AnswerAsync(
                 session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
                 Now.AddSeconds(2), cts.Token);
+            envelopesQueued.Should().BeGreaterThan(0, "the other task's own events still answer");
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -627,6 +682,16 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         (LedgerCommitter committerC, LedgerSigningKey signingKeyC) = Signing("node-c");
 
         await using DocumentStore storeC = OpenStore("event_catchup_decline_node_c");
+
+        // Node C answers (declines) the request below, so its own store needs its own Node stream
+        // registered first — EventCatchUpResponder.AnswerAsync now reads its own switch-on point
+        // (independent pre-PR review, cycle 1, conformance lens, high) the identical way an ordinary
+        // outbox flush already requires it.
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeC, new NodeRegistered(nodeC, DomainId.New(), "node-c", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
 
         bool started;
         await using (IDocumentSession session = storeC.LightweightSession())
@@ -800,6 +865,20 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, Environment.MachineName, "macOS", Now));
             await session.SaveChangesAsync(cts.Token);
             await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        // Node C answers the broadcast request below, so its own store needs its own Node stream
+        // registered first, and its own switch-on point established EARLY — before it ever applies
+        // anything — so everything it later applies by replication counts as post-switch-on:
+        // EventCatchUpResponder.AnswerAsync now reads that same point (independent pre-PR review,
+        // cycle 1, conformance lens, high) the identical way an ordinary outbox flush already
+        // requires it, and establishing it late (only once the responder itself first runs, well
+        // after content already arrived) would wrongly exclude everything node C is about to forward.
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeC, new NodeRegistered(nodeC, ownerId, "node-c", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeC, Now, cts.Token);
         }
 
         Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);

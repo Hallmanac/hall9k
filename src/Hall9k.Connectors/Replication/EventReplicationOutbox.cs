@@ -285,8 +285,13 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
     /// sequence as its switch-on point (idea 202383dc: "the first time replication runs on a node it
     /// records that node's current global sequence as its switch-on point on the Node stream; events
     /// before it never travel"). Idempotent: a node that has already switched on just replays its
-    /// recorded point back.</summary>
-    private static async Task<long> EnsureSwitchedOnAsync(
+    /// recorded point back. Internal rather than private: <see cref="EventCatchUpResponder"/> calls
+    /// this identical method to learn the same switch-on point before forwarding ANY held event to a
+    /// catch-up requester — a pre-switch-on event is this node's own migration-era history, ruled to
+    /// never travel (idea 202383dc; Brian's 2026-09-13 ruling), and a catch-up answer must honor that
+    /// exclusion exactly as an ordinary outbox flush already does (independent pre-PR review, cycle 1,
+    /// conformance lens, high).</summary>
+    internal static async Task<long> EnsureSwitchedOnAsync(
         IDocumentSession session, Guid nodeId, DateTimeOffset now, CancellationToken cancellationToken)
     {
         NodeAggregate node = await session.Events.AggregateStreamAsync<NodeAggregate>(nodeId, token: cancellationToken)
