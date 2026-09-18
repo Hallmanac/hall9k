@@ -1,0 +1,23 @@
+hall9k-task-record: 1
+task-id: 01a0b551-58b0-758c-b02e-f88f92b3b7eb
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#475
+objective: |-
+  A retried or resumed run verifies against the base branch as it is now, not as it was when the branch was cut: before the initial build and test gates run, the branch is replayed onto the current tip of its base (or, for a stacked child whose parent has merged, onto the project's base branch), so a fix already merged to main is never missing from a gate that needs it
+criteria:
+  - Before a resumed run's initial verification, the daemon fetches the base and replays the branch onto its current tip by the same mechanical rebase the pre-push step already uses (the recorded boundary, never merge-base); for a stacked child whose parent has merged, the target is the project's base branch and the stacked edge is treated as satisfied; a conflict routes to the existing guided fix session instead of running the gates on the stale base
+  - A first-run build session is told, in its prompt, the base commit its branch stands on and that the daemon replays before verifying, so it never has to rebase itself and never reports a known-stale gate as its own failure
+  - h9k task show names the base commit each verification pass ran against, and a gate that fails on a test which passes on the current base is marked as such in the failure reason rather than only in the clean-base comparison
+  - |-
+    Tests through the runner's existing fakes: a resumed run on a branch behind main is replayed before its gates; a stacked child with a merged parent is replayed onto the base branch; a replay conflict skips the gates and routes to the fix session
+  - dotnet build and dotnet test pass; the CLI reference and the decision log carry one entry each
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/92b3b7eb-a-retried-or-resumed-run-verif
+published: 2026-09-18 16:20:20Z
+context: |-
+  Platform defect captured under the dogfood rule (idea 202383dc chain). Evidence, 2026-09-18: C prime 28953e7d was retried at 10:47 right after #470 merged to main (f0e15114: the TaskHolderClaimTests skips and the invite clock fix). The resumed build session (run 01a0b4fb) found its branch on 22e0ed92, one commit behind main, wrote in its handoff.md that "dotnet test will keep failing on exactly one test, InviteCommandsTests.A_member_of_project_invite_..., until this branch is rebased past origin/main", and correctly did not rebase itself. The daemon then ran the initial verification on that stale base at 11:27 and the gate failed at 11:44 on exactly that test (1 of 6236), costing the chain another lap; the pre-push rebase that would have brought main's fix in runs only after the gates. The clean-base comparison could not exempt it because clean main passes. The window rebased the worktree's branch onto origin/main by hand at 12:2x and retried. Lineage: not a fix of a fix; the pre-push rebase order predates this week's changes. Published unassigned: it interferes with the chain (one lap lost today) but the slots are full and the chain comes first (Brian, 2026-09-18).
