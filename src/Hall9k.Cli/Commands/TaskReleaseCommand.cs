@@ -1,12 +1,17 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Handlers;
+using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
 using JasperFx.Events;
 using Marten;
@@ -44,6 +49,19 @@ namespace Hall9k.Cli.Commands;
 /// unchanged — --unassign only changes which event this decider produces once the claim is found
 /// releasable.
 /// </para>
+/// <para>
+/// A second, unrelated meaning lives here too (idea 202383dc, A3b, criterion 3): a task this node
+/// still names itself the ledger holder of, but that is no longer <see cref="TaskState.Claimed"/>
+/// at all — the window a Done or Blocked task with an open pull request deliberately survives
+/// into, since the holder is released only at true completion, <c>h9k task abandon</c>, or lease
+/// expiry, never at the earlier <c>TaskCompleted</c> that only opened the pull request. That is
+/// the first way a holder moves without one of those three, and until this existed the only lever
+/// on it was abandoning the task outright. This self-release never touches the interactive-claim
+/// machinery above (there is none to touch — <see cref="Hall9k.Domain.Features.Tasks.TaskAggregate.IsInteractiveClaim"/>
+/// is never set for it), and never reaches past this node's own holder: a task this node does not
+/// hold refuses exactly as it always has, through the same decider guard every other refusal above
+/// goes through.
+/// </para>
 /// </summary>
 public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.Settings>
 {
@@ -77,6 +95,23 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
                 taskId, version: fence.Version, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
+
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+
+        // The self-release lever criterion 3 calls for (idea 202383dc, A3b): a task the ledger
+        // still names this node the holder of, but that is no longer TaskState.Claimed at all —
+        // the window a Done or Blocked task with an open pull request deliberately survives into,
+        // since the holder is released only at true completion, h9k task abandon, or lease
+        // expiry, never at the earlier TaskCompleted. Claimed is excluded outright, headless and
+        // interactive alike: that state is a live run, the worktree/commit guards below exist for
+        // exactly that case, and releasing the ledger holder out from under a live run would race
+        // it — an active headless claim keeps its own refusal, via the interactive-claim decider
+        // below, exactly as before this existed.
+        if (task.State != TaskState.Claimed && task.HolderNodeId == context.NodeId)
+        {
+            await ReleaseLedgerHolderOnlyAsync(session, store, context, task, taskId, fence, settings, cancellationToken);
+            return ExitCodes.Ok;
+        }
 
         // Mirrors TaskWorkCommand.ReenterAsync's own guard: once h9k task deliver (or handback)
         // hands the run to the standard pipeline, the task can still read Claimed+interactive
@@ -398,5 +433,188 @@ public sealed class TaskReleaseCommand : Hall9kAsyncCommand<TaskReleaseCommand.S
                 + "whether from this claim or one it resumed, the branch is not empty and release is only for "
                 + "a claim nothing has been done in yet. " + recovery);
         }
+    }
+
+    /// <summary>
+    /// The self-release path (idea 202383dc, A3b, criterion 3): this node gives back a ledger
+    /// holder it still names itself for a task with no active claim of its own left to protect —
+    /// the same conditional write <see cref="TaskAbandonCommand"/>'s own release uses, with a
+    /// <see cref="Hall9k.Domain.Features.Tasks.Events.TaskHolderReleased"/> event on the task's
+    /// own stream, but no <see cref="Hall9k.Domain.Features.Tasks.Events.TaskRequeued"/> or
+    /// <see cref="Hall9k.Domain.Features.Tasks.Events.TaskInteractiveClaimUnassigned"/>: the
+    /// task's own <see cref="TaskState"/> is untouched, since this never was an interactive claim
+    /// to give back in the first place.
+    /// </summary>
+    private static async Task ReleaseLedgerHolderOnlyAsync(
+        IDocumentSession session, Marten.DocumentStore store, BootstrapContext context, TaskAggregate task,
+        Guid taskId, StreamState fence, Settings settings, CancellationToken cancellationToken)
+    {
+        if (settings.Unassign)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} is {task.State.Value} with no active interactive claim to unassign — "
+                + "this node still names itself its ledger holder from an earlier headless run. "
+                + $"h9k task release {taskId} (without --unassign) gives that back.");
+        }
+
+        session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleaseHolder(task, DateTimeOffset.UtcNow));
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (EventStreamUnexpectedMaxEventIdException)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} changed while releasing it — check h9k status and try again.");
+        }
+
+        await Doorbell.RingAsync($"task-released:{taskId}", cancellationToken);
+        await ReleaseLedgerHolderBestEffortAsync(store, context, task, cancellationToken);
+        await MirrorTrackerReleaseBestEffortAsync(store, context, task, cancellationToken);
+
+        AnsiConsole.MarkupLine(
+            $"[dim]Task {taskId}'s ledger holder released[/] — this node no longer names itself the holder; the task's own state ({task.State.Value}) is unchanged.");
+    }
+
+    /// <summary>
+    /// Release: the same conditional write a claim used (idea 202383dc, A3b), best effort — the
+    /// domain-side release has already landed above by the time this runs; a write that cannot
+    /// complete here is retried by whichever node's own dispatch sweep next finds this task's
+    /// holder pointing at nothing that still needs it (<c>SweepPendingHolderReleasesAsync</c>),
+    /// the identical shape <see cref="TaskAbandonCommand"/>'s own release helper uses.
+    /// </summary>
+    private static async Task ReleaseLedgerHolderBestEffortAsync(
+        Marten.DocumentStore store, BootstrapContext context, TaskAggregate task, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+            if (project is null)
+            {
+                return;
+            }
+
+            ILedger ledger = new GitLedger(Microsoft.Extensions.Logging.Abstractions.NullLogger<GitLedger>.Instance);
+            string recordsRef = LedgerRefRegistry.Records.RefspecSource;
+            string recordPath = LedgerRefRegistry.RecordPath(task.Id);
+            LedgerFile record = await ledger.ReadAsync(project.RepositoryPath, recordsRef, recordPath, cancellationToken);
+            if (!record.Exists)
+            {
+                // A fetch that itself failed is not a confirmed absence (LedgerFile.FetchFailed):
+                // the domain-side release has already landed by the time this runs, so silently
+                // returning here would drop the ledger's own release for good, with no pending row
+                // for any later sweep to ever pick back up (mirrors TaskAbandonCommand's identical
+                // guard).
+                if (record.FetchFailed)
+                {
+                    await StorePendingReleaseAsync(
+                        store, task, context,
+                        "the ledger's own fetch failed before this node could tell whether a record exists "
+                        + "here at all",
+                        cancellationToken);
+                }
+
+                return;
+            }
+
+            (LedgerCommitter committer, LedgerSigningKey signingKey, _) =
+                await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
+            HolderReleaseResult result = await TaskLedgerHolder.TryReleaseAsync(
+                ledger, project.RepositoryPath, task.Id, context.NodeId, committer, signingKey, cancellationToken);
+
+            if (result.Verdict == HolderReleaseVerdict.Failed)
+            {
+                await StorePendingReleaseAsync(store, task, context, result.FailureReason ?? string.Empty, cancellationToken);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await StorePendingReleaseAsync(store, task, context, exception.Message, cancellationToken);
+        }
+    }
+
+    private static async Task StorePendingReleaseAsync(
+        Marten.DocumentStore store,
+        TaskAggregate task,
+        BootstrapContext context,
+        string failureReason,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Store(new TaskHolderReleasePending
+        {
+            Id = TaskHolderReleasePending.KeyFor(task.Id, context.NodeId),
+            TaskId = task.Id,
+            ProjectId = task.ProjectId,
+            NodeId = context.NodeId,
+            RecordedAt = DateTimeOffset.UtcNow,
+            LastFailureReason = failureReason,
+        });
+        await session.SaveChangesAsync(cancellationToken);
+        AnsiConsole.MarkupLineInterpolated(
+            $"[yellow]Releasing task {task.Id}'s ledger holder failed; it is retried on this node's next dispatch sweep. ({failureReason})[/]");
+    }
+
+    /// <summary>
+    /// The tracker-assignee twin of <see cref="ReleaseLedgerHolderBestEffortAsync"/> (criterion 5,
+    /// idea 202383dc, A3b): this self-release gives the ledger holder back, so this install's own
+    /// tracker identity is cleared off the linked item too, best effort — a named outcome short of
+    /// a confirmed clear leaves a <see cref="TaskTrackerReleaseMirrorPending"/> row for
+    /// <c>DispatchEngine</c>'s own <c>SweepPendingTrackerMirrorsAsync</c> to retry, the identical
+    /// row every other holder-change mirror already retries through.
+    /// </summary>
+    private static async Task MirrorTrackerReleaseBestEffortAsync(
+        Marten.DocumentStore store, BootstrapContext context, TaskAggregate task, CancellationToken cancellationToken)
+    {
+        if (task.ExternalReference is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+            if (project is null)
+            {
+                return;
+            }
+
+            TrackerAssignmentTake trackerAssignmentTake = new(new ProjectScopedGitHubRunner(store).Runner);
+            TrackerRelease release = await trackerAssignmentTake.ReleaseAsync(
+                store, ClaimGate.TrackerAssignee, task.ExternalReference, project.RepositoryPath, cancellationToken);
+            if (!release.Succeeded)
+            {
+                await StorePendingTrackerReleaseMirrorAsync(
+                    store, task, context, release.FailureReason ?? string.Empty, cancellationToken);
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]Clearing task {task.Id}'s tracker assignee failed; it is retried on this node's next dispatch sweep. ({release.FailureReason})[/]");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await StorePendingTrackerReleaseMirrorAsync(store, task, context, exception.Message, cancellationToken);
+        }
+    }
+
+    private static async Task StorePendingTrackerReleaseMirrorAsync(
+        Marten.DocumentStore store,
+        TaskAggregate task,
+        BootstrapContext context,
+        string failureReason,
+        CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Store(new TaskTrackerReleaseMirrorPending
+        {
+            Id = TaskTrackerReleaseMirrorPending.KeyFor(task.Id, context.NodeId),
+            TaskId = task.Id,
+            ProjectId = task.ProjectId,
+            NodeId = context.NodeId,
+            RecordedAt = DateTimeOffset.UtcNow,
+            LastFailureReason = failureReason,
+        });
+        await session.SaveChangesAsync(cancellationToken);
     }
 }
