@@ -21,9 +21,15 @@ namespace Hall9k.Cli.DaemonControl;
 /// the user's persistent registry environment — would be a global, hard-to-reverse
 /// mutation for what should be a per-job setting (and would balloon on every re-enable,
 /// since the next capture already includes what the last enable wrote). Instead the
-/// captured variables are set inside the SAME cmd.exe invocation that then runs h9kd, with
+/// captured variables are set inside the SAME cmd.exe invocation that then launches h9kd, with
 /// <c>set NAME=VALUE&amp;</c> prefixes scoped to that one process tree only — Windows's
 /// answer to launchd's per-job env dict, touching nothing outside this task.
+/// </para>
+/// <para>
+/// cmd.exe is the environment vehicle and nothing more: the daemon itself is started by
+/// <c>h9k daemon autostart launch</c>, which hands h9kd an inheritable append handle onto the
+/// log instead of the <c>&gt;&gt;</c> redirect this chain used to end in (PLAN.md §16 PLACEHOLDER-d4e64dfa;
+/// <see cref="InnerCommand"/> has the whole reasoning).
 /// </para>
 /// <para>
 /// "Stopped means stopped" (Decisions Log #31) needs no explicit unload step here the way
@@ -60,6 +66,17 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// mirrors the task's own rather than needing separate uninstall bookkeeping.
     /// </summary>
     private static string LaunchScriptFile => Path.Combine(RunPaths.Root, "h9kd-autostart-launch.vbs");
+
+    /// <summary>
+    /// The installed h9k the launch script runs as the daemon's own launcher (<c>h9k daemon
+    /// autostart launch</c>, see <see cref="InnerCommand"/>) — the installed one, never
+    /// <see cref="Environment.ProcessPath"/>, for the same reason
+    /// <see cref="Hall9k.Cli.Commands.DaemonAutostartEnableCommand"/> points the registration at
+    /// the installed h9kd: a dev-loop build output would go stale or vanish under a
+    /// registration that outlives it.
+    /// </summary>
+    private static string LauncherBinaryFile =>
+        Path.Combine(DaemonRuntime.BinDirectory, Commands.InstallCommand.BinaryFileName("h9k"));
 
     public bool IsSupported => true;
 
@@ -108,6 +125,19 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     {
         cancellationToken.ThrowIfCancellationRequested();
 
+        string launcher = LauncherBinaryFile;
+        if (!File.Exists(launcher))
+        {
+            // Checked here rather than left to fail silently at some future logon: the script
+            // this is about to write invokes h9k itself as the daemon's launcher (see
+            // InnerCommand), so a registration written without it would sit on disk looking
+            // healthy and start nothing. DaemonAutostartEnableCommand makes the same check for
+            // h9kd and reports this the same way.
+            throw new InvalidOperationException(
+                $"The launch script starts h9kd through the installed h9k ({launcher}), which does not exist. "
+                + "Run h9k install first.");
+        }
+
         // Written before the task is registered, so the very first logon that fires the
         // trigger already finds a script in place — overwritten on every re-enable the same
         // way the task registration itself is (schtasks /Create /F).
@@ -118,7 +148,7 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
         // line silently. The task XML two lines below already makes this same choice.
         await File.WriteAllTextAsync(
             LaunchScriptFile,
-            LaunchScriptContent(daemonBinaryPath, DaemonRuntime.LogFile, environment),
+            LaunchScriptContent(launcher, daemonBinaryPath, DaemonRuntime.LogFile, environment),
             Encoding.Unicode,
             cancellationToken);
 
@@ -213,9 +243,66 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
 
     public async Task<bool> StartAsync(CancellationToken cancellationToken)
     {
+        await WarnIfTheLaunchScriptPredatesTheAppendHandleAsync(cancellationToken);
         ExecResult result = await Exec.RunAsync("schtasks.exe", ["/Run", "/TN", TaskName], cancellationToken);
         return result.Succeeded;
     }
+
+    /// <summary>
+    /// A registration written before PLAN.md §16 PLACEHOLDER-d4e64dfa left a launch script that still redirects
+    /// h9kd's output with cmd.exe's own <c>&gt;&gt;</c>, and nothing in an <c>h9k install</c> or
+    /// <c>h9k update</c> rewrites it — only <see cref="EnableAsync"/> does. So an updated machine
+    /// keeps launching the old way, with cmd.exe holding the log for the daemon's whole run, until
+    /// someone re-enables autostart. That is not something this command can fix on its own (it has
+    /// no captured environment to write a new script from), so it is named here instead, once, on
+    /// the path that is about to start exactly that stale script.
+    /// <para>
+    /// Best-effort throughout: the script is advisory evidence, and a read that fails (a file
+    /// removed by hand, a permissions problem) must not stop a start that would otherwise work.
+    /// </para>
+    /// </summary>
+    private static async Task WarnIfTheLaunchScriptPredatesTheAppendHandleAsync(CancellationToken cancellationToken)
+    {
+        string script;
+        try
+        {
+            if (!File.Exists(LaunchScriptFile))
+            {
+                return;
+            }
+
+            script = await File.ReadAllTextAsync(LaunchScriptFile, cancellationToken);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        if (!LaunchScriptPredatesTheAppendHandle(script))
+        {
+            return;
+        }
+
+        await Console.Error.WriteLineAsync(
+            $"The registered launch script ({LaunchScriptFile}) still redirects h9kd's output through cmd.exe's "
+            + ">> append, which holds ~/.hall9k/h9kd.log with FILE_SHARE_READ for the daemon's whole run: the "
+            + "daemon will log a sharing violation at start and its 8 MB log budget will go unenforced while it "
+            + "runs. Only h9k daemon autostart enable rewrites that script — re-run it to start this daemon "
+            + "through the launcher-supplied append handle instead.");
+    }
+
+    /// <summary>
+    /// Whether <paramref name="launchScript"/> is one written before the launcher opened the
+    /// daemon's log for it. A single <c>&gt;&gt;</c> anywhere is the whole test: every script
+    /// this version writes runs <c>h9k daemon autostart launch</c> with no redirection at all,
+    /// and no path a script carries can contain that sequence. Internal for direct unit
+    /// coverage, the same way <see cref="LaunchScriptContent"/> and
+    /// <see cref="EscapeForCmdExe"/> are: this predicate is the only thing standing between an
+    /// updated machine and silently keeping its old launch behaviour, and asserting it needs no
+    /// live registration.
+    /// </summary>
+    internal static bool LaunchScriptPredatesTheAppendHandle(string launchScript) =>
+        launchScript.Contains(">>", StringComparison.Ordinal);
 
     public async Task<bool> StopAsync(CancellationToken cancellationToken)
     {
@@ -329,9 +416,11 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// action process (<c>&lt;Hidden&gt;</c> hides the task from the Task Scheduler UI, not
     /// the window a console-subsystem action creates), and an InteractiveToken principal runs
     /// the action on the signed-in user's own visible desktop precisely so h9kd inherits their
-    /// Claude Code/git/gh credentials, the same reason
-    /// <see cref="DaemonLifecycle.SpawnDetachedWindows"/> gives up passing
-    /// <c>CREATE_NO_WINDOW</c> the way it can for a CLI-launched daemon. cmd.exe run this way
+    /// Claude Code/git/gh credentials. Task Scheduler has no equivalent of the
+    /// <c>CREATE_NO_WINDOW</c> a CLI-launched daemon gets from
+    /// <see cref="WindowsDaemonLaunch"/>, and it is the ACTION's window that cannot be
+    /// suppressed here, not the daemon's own — h9kd is still created with that flag, one link
+    /// further down. cmd.exe run as the action instead
     /// would sit on the desktop as a visible window for the daemon's entire life, and closing
     /// it — the obvious reaction — delivers CTRL_CLOSE_EVENT, cutting the 30s graceful-shutdown
     /// budget down to Windows's ~5s console-close grace period. <c>wscript.exe</c> is a
@@ -414,11 +503,22 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// that code out to wscript.exe's own exit code, which is what Task Scheduler's action
     /// result — and so <see cref="RestartOnFailure"/> above, which restarts only on a nonzero
     /// exit — actually observes.
+    /// <para>
+    /// The chain is four deep (wscript.exe, cmd.exe, h9k, h9kd) and each link earns its place:
+    /// wscript.exe because it allocates no console, cmd.exe because its <c>set NAME=VALUE&amp;</c>
+    /// prefixes are the only per-job environment Task Scheduler has, and h9k because a handle
+    /// cannot be passed through a VBScript command line — see <see cref="InnerCommand"/>.
+    /// </para>
     /// </summary>
     internal static string LaunchScriptContent(
-        string daemonBinaryPath, string logFilePath, IReadOnlyList<KeyValuePair<string, string>> environment)
+        string launcherBinaryPath,
+        string daemonBinaryPath,
+        string logFilePath,
+        IReadOnlyList<KeyValuePair<string, string>> environment)
     {
-        string commandLine = "cmd.exe " + WindowsCommandLine.WrapForCmdExe(InnerCommand(daemonBinaryPath, logFilePath, environment));
+        string commandLine = "cmd.exe "
+            + WindowsCommandLine.WrapForCmdExe(
+                InnerCommand(launcherBinaryPath, daemonBinaryPath, logFilePath, environment));
         return $"WScript.Quit CreateObject(\"WScript.Shell\").Run({VbScriptStringLiteral(commandLine)}, 0, True)\n";
     }
 
@@ -431,9 +531,9 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
 
     /// <summary>
     /// The full <c>cmd.exe /c "..."</c> command line the launch script runs: every captured
-    /// variable set ahead of h9kd, scoped to this one process tree (see the type-level doc
+    /// variable set ahead of the launch, scoped to this one process tree (see the type-level doc
     /// on why this is the Windows answer to launchd's per-job EnvironmentVariables dict),
-    /// then h9kd itself with stdin from NUL and stdout/stderr appended to the log — wrapped
+    /// then <c>h9k daemon autostart launch</c>, which is what actually starts h9kd — wrapped
     /// for cmd.exe's own quote handling by <see cref="WindowsCommandLine"/>, the same as
     /// every other cmd.exe invocation on this platform that carries embedded quotes. cmd.exe
     /// parses its own <c>/c</c> argument with this same quirky fallback rule regardless of
@@ -441,6 +541,25 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// <c>WScript.Shell.Run</c> (which hands it to <c>CreateProcess</c> unmodified, the same
     /// as <see cref="System.Diagnostics.ProcessStartInfo.Arguments"/> did before) needs no
     /// change to the wrapping itself.
+    /// <para>
+    /// <strong>Why h9k stands between cmd.exe and h9kd.</strong> This used to end in
+    /// <c>"h9kd" &lt; NUL &gt;&gt; "h9kd.log" 2&gt;&amp;1</c>, and cmd.exe opens an append
+    /// redirect's target with <c>FILE_SHARE_READ</c> only and holds it for the whole run — so
+    /// h9kd could never take the log over with a rotation-safe append handle of its own, and
+    /// <see cref="DaemonLogRotation"/> could never truncate it, which is what left this path
+    /// enforcing the log's 8 MB budget not at all rather than merely late (PLAN.md §16 PLACEHOLDER-d4e64dfa).
+    /// A handle cannot be passed through a command line, so the vehicle that opens one has to
+    /// be a process: <c>h9k daemon autostart launch</c> opens the log with
+    /// <c>FILE_APPEND_DATA</c> and a share mode that refuses nobody, hands it to h9kd as an
+    /// inheritable standard handle, closes its own copy, and then waits for the daemon so this
+    /// chain's lifetime still tracks it exactly as cmd.exe's own <c>/c</c> did. cmd.exe stays
+    /// for the environment and nothing else; it holds no handle on the log at all now.
+    /// </para>
+    /// <para>
+    /// <see cref="DaemonRuntime.AppendOnlyLogEnvironmentVariable"/> is no longer set here
+    /// either: <c>WindowsDaemonLaunch</c> puts it on h9kd's own environment block, which is
+    /// the single place both launch paths get it from.
+    /// </para>
     /// <para>
     /// <see cref="Hall9kDatabase.EnvironmentVariableName"/> is deliberately left out of the
     /// captured set here even when <see cref="EnableAsync"/> is handed it: unlike PATH or
@@ -457,7 +576,10 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
     /// </para>
     /// </summary>
     private static string InnerCommand(
-        string daemonBinaryPath, string logFilePath, IReadOnlyList<KeyValuePair<string, string>> environment)
+        string launcherBinaryPath,
+        string daemonBinaryPath,
+        string logFilePath,
+        IReadOnlyList<KeyValuePair<string, string>> environment)
     {
         IReadOnlyList<string> recordedNames = RecordedVariableNames(environment);
         StringBuilder inner = new();
@@ -471,13 +593,11 @@ public sealed class WindowsDaemonAutostart : IDaemonAutostart
             inner.Append("set ").Append(EscapeForCmdExe(name)).Append('=').Append(EscapeForCmdExe(value)).Append("& ");
         }
 
-        // Tells h9kd this is the cmd.exe `>>` redirect WindowsAppendOnlyLog exists to
-        // survive a rotation of — never one of the operator's own captured variables, so
-        // it is set unconditionally here rather than threaded through RecordedVariableNames.
-        inner.Append("set ").Append(DaemonRuntime.AppendOnlyLogEnvironmentVariable).Append("=1& ");
-
-        inner.Append('"').Append(daemonBinaryPath).Append('"')
-            .Append(" < NUL >> \"").Append(logFilePath).Append("\" 2>&1");
+        // Both paths quoted, and neither escaped with EscapeForCmdExe: they sit INSIDE quotes,
+        // where cmd.exe treats a metacharacter as data, unlike the `set NAME=VALUE&` text above.
+        inner.Append('"').Append(launcherBinaryPath).Append('"')
+            .Append(" daemon autostart launch --binary \"").Append(daemonBinaryPath)
+            .Append("\" --log \"").Append(logFilePath).Append('"');
         return inner.ToString();
     }
 
