@@ -1238,7 +1238,11 @@ public static class CliCommandTree
                     + "attests you confirmed by hand that it has exited. --unassign takes the same untouched claim "
                     + "straight to Published instead of back to the queue, in one atomic act — nothing between "
                     + "them ever leaves the task visible to the dispatcher as claimable, unlike a separate release "
-                    + "followed by h9k task unassign.")
+                    + "followed by h9k task unassign. A second, unrelated case: a task this node still names "
+                    + "itself the ledger holder of, but that is no longer claimed at all (Done or Blocked with an "
+                    + "open pull request, the window the holder deliberately survives into) — releases just that "
+                    + "holder, untouched by --unassign or --keep-interactive, leaving the task's own state exactly "
+                    + "as it was.")
                 .WithExample("task", "release", "28b19893")
                 .WithExample("task", "release", "28b19893", "--keep-interactive")
                 .WithExample("task", "release", "28b19893", "--unassign");

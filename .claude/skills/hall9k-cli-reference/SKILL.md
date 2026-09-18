@@ -182,18 +182,25 @@ regardless, on either half's failure.
 Release — clearing the holder back to empty by the same conditional write, with a
 `TaskHolderReleased` event on the task's own stream — happens at the task's true completion (the
 merge/closeout that actually concludes it, not the earlier `TaskCompleted` that only opens the
-pull request), at `h9k task abandon`, and at the sweep that finds a task whose holder is still
-this node but whose lease and run are both gone (lease expiry): a ledger write that cannot
-complete at any of those moments leaves a `TaskHolderReleasePending` row for the next sweep to
+pull request), at `h9k task abandon`, at the sweep that finds a task whose holder is still
+this node but whose lease and run are both gone (lease expiry), and at an explicit
+`h9k task release <id>` on a task this node still names itself the holder of but that is no
+longer `TaskState.Claimed` at all — the window a Done or Blocked task with an open pull request
+deliberately survives into, since the holder is released only at true completion, abandonment, or
+lease expiry, never at the earlier `TaskCompleted`. That release never touches the
+interactive-claim machinery `h9k task release` otherwise runs (a task in that window was never an
+interactive claim to begin with — `TaskAggregate.IsInteractiveClaim` was never set), and never
+reaches a *foreign* holder: a task this node does not hold refuses exactly as it always has. A
+task still `TaskState.Claimed` — an active headless run, or a live interactive session — refuses
+release through the ordinary interactive-claim guard below, unchanged. A ledger write that cannot
+complete at any of these moments leaves a `TaskHolderReleasePending` row for the next sweep to
 retry, so the release is durable even when the git push it needs is temporarily unreachable.
 Closeout, review re-request, merge, and follow-up dispatch (`CloseoutEngine.InspectAndActAsync`)
 all act on a produced run only while this node still names itself as `TaskAggregate.HolderNodeId`
 — a run whose task has since been held elsewhere is skipped before any network call, its record
 left open for whichever node does hold it; the interactive/deliberate self-claim sentinel
 (`Guid.Empty`, `h9k task work`/`h9k task start`) is never treated as held elsewhere, since it is
-inherently single-node and the ledger never carries a holder write for one at all. `h9k task
-release` remains scoped to this node's own interactive claim exactly as before and never touches
-the ledger holder.
+inherently single-node and the ledger never carries a holder write for one at all.
 
 Node-to-node messages: a note one node sends another, an owner, or the whole project, the first
 payload kind, replacing `notes/node-mailbox.md`'s GitHub-issue workaround for that traffic (that
