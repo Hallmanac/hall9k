@@ -1461,8 +1461,9 @@ public sealed class DispatchEngine(
             return null;
         }
 
+        string? resumesBranch = await ResolveForeignResumeBranchAsync(session, task, taskId, cancellationToken);
         TaskClaimed claimed = TaskDecider.Claim(
-            task, node.NodeId, node.OwnerId, runId, claimedAt, ownerRootFingerprint);
+            task, node.NodeId, node.OwnerId, runId, claimedAt, ownerRootFingerprint, resumesBranch);
 
         // The gate's own evidence rides ahead of the claim it justified, in the same transaction
         // and under the same expected version, so the stream reads in the order the two things
@@ -1507,6 +1508,42 @@ public sealed class DispatchEngine(
         await ReleaseHolderClaimHoldAsync(taskId, cancellationToken);
         await MirrorTrackerAssigneeBestEffortAsync(task, project, cancellationToken);
         return new ClaimedWork(taskId, runId, claimed.LeaseGeneration);
+    }
+
+    /// <summary>
+    /// The branch to hand <see cref="TaskDecider.Claim"/> as <c>resumesBranch</c> (idea 202383dc,
+    /// piece C's residual, criterion 1): this task's own latest run — by
+    /// <see cref="RunDetails.DispatchedAt"/>, replicated here exactly as readily as one this node
+    /// dispatched itself — when it was dispatched by a real node OTHER than this one and still
+    /// names a branch. Null for every other shape: no run yet, the latest run is this node's own
+    /// (an ordinary same-node reclaim, which already resumes through
+    /// <see cref="TaskAggregate.RetryBranch"/> when one of <see cref="Events.TaskRetried"/> or
+    /// <see cref="Events.TaskHandedBack"/> set it), or the latest run carries the interactive/
+    /// deliberate <see cref="Guid.Empty"/> sentinel (a human's own <c>h9k task work</c> or
+    /// <c>h9k task start</c> — never a foreign NODE's work, whichever machine it ran on). A
+    /// pr-review task never resumes a branch of its own (every dispatch cuts a fresh, detached
+    /// checkout — <c>RunLauncher.LaunchAsync</c>'s own <c>isPrReview</c> branch), so it is excluded
+    /// outright rather than handed a branch nothing downstream would ever check out.
+    /// </summary>
+    private async Task<string?> ResolveForeignResumeBranchAsync(
+        IDocumentSession session, TaskAggregate task, Guid taskId, CancellationToken cancellationToken)
+    {
+        if (task.Type == TaskType.PrReview)
+        {
+            return null;
+        }
+
+        RunDetails? latestRun = await session.Query<RunDetails>()
+            .Where(r => r.TaskId == taskId)
+            .OrderByDescending(r => r.DispatchedAt)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return latestRun is not null
+            && latestRun.NodeId != Guid.Empty
+            && latestRun.NodeId != node.NodeId
+            && latestRun.Branch.IsNotBlank()
+            ? latestRun.Branch
+            : null;
     }
 
     /// <summary>

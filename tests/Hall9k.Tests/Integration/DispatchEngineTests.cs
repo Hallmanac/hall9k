@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -493,6 +494,80 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             details.RetryReason.Should().Be("Push bug fixed; the work is intact.");
             details.RetryBranch.Should().Be("task/abc12345-retry-walk", "the launcher resumes it when it survives");
             details.RetryPending.Should().BeTrue("the retry has not yet been superseded by a completion");
+        }
+    }
+
+    /// <summary>
+    /// Idea 202383dc, piece C's residual, criterion 1: a claim on a task whose latest run
+    /// (replicated here exactly as it would be from another node, through the ordinary
+    /// <c>RunDispatched</c> event replay) was dispatched by a NODE OTHER than the one claiming
+    /// makes that run's own branch the branch the new claim resumes, through the existing
+    /// RetryBranch path — no human-requested retry or handback in this task's history at all.
+    /// The foreign node's own claim is requeued back to Queued first (the shape A3b's holder
+    /// release produces), the same way <c>h9k task release</c> or a lease-expiry sweep would leave
+    /// it before this node's own <see cref="DispatchEngine"/> ever sees it.
+    /// </summary>
+    [Fact]
+    public async Task A_claim_after_a_foreign_node_run_resumes_that_runs_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid foreignNodeId = DomainId.New();
+
+        DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DispatchEngine engine = new(
+            store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            Options.Create(options), NullLogger<DispatchEngine>.Instance);
+
+        Guid taskId = DomainId.New();
+        Guid foreignRunId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(taskId, DomainId.New(), "Foreign resume walk", ["done"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            TaskClaimed foreignClaim = TaskDecider.Claim(task, foreignNodeId, node.OwnerId, foreignRunId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, foreignClaim]);
+
+            session.Events.StartStream<RunAggregate>(foreignRunId,
+                new RunDispatched(foreignRunId, taskId, foreignNodeId, node.OwnerId, 1,
+                    DomainId.New(), "/wt/foreign", "task/foreign-node-branch", ExecutorMode.Subscription, Now));
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The foreign node's own holder gives the task back — a lease expiry, an abandon, or
+        // (once A3b's own follow-on tasks land) a release or takeover all reach the identical
+        // Queued state this test only needs the shape of, not the lever that produced it.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Requeue(task, RequeueReason.HumanRequested, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        IReadOnlyList<ClaimedWork> claimed = await engine.ClaimEligibleAsync(cts.Token);
+        claimed.Should().ContainSingle(w => w.TaskId == taskId);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            details.State.Value.Should().Be("Claimed", "this node's own claim, not the foreign node's");
+            details.ClaimedByNodeId.Should().Be(node.NodeId);
+            details.RetryBranch.Should().Be(
+                "task/foreign-node-branch", "the foreign node's own latest run left this branch behind");
+            details.RetryBranchResumesForeignNode.Should().BeTrue(
+                "so a branch missing both locally and on origin fails the run loudly rather than quietly cutting a fresh one");
+        }
+
+        await using (IDocumentSession cleanup = store.LightweightSession())
+        {
+            cleanup.Delete<TaskLease>(taskId);
+            await cleanup.SaveChangesAsync(cts.Token);
         }
     }
 }

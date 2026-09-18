@@ -1452,6 +1452,21 @@ public sealed class RunLauncher(
     {
         if (task.RetryBranch.IsNotBlank())
         {
+            // A claim resuming another node's own latest run (idea 202383dc, piece C's residual,
+            // criterion 1) never falls back to a clean cut the way an ordinary retry's missing
+            // branch does just below: silently starting over here would quietly abandon whatever
+            // that foreign node's own run left behind rather than surfacing that it is gone, and
+            // "fails the run loudly by name" is the stated acceptance criterion for exactly this
+            // shape. GitWorktreeManager.CheckoutExistingAsync's own WorktreeException already names
+            // the branch, so letting it propagate (through this method's caller, LaunchAsync's own
+            // catch) is the whole of what "loudly" needs here.
+            if (task.RetryBranchResumesForeignNode)
+            {
+                return (await worktrees.CheckoutExistingAsync(
+                    new FollowUpWorktreeRequest(project.RepositoryPath, task.RetryBranch, taskId, runId),
+                    cancellationToken), true);
+            }
+
             try
             {
                 return (await worktrees.CheckoutExistingAsync(

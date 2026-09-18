@@ -290,6 +290,8 @@ public sealed class TaskDetails
     public Guid? FailedRunId { get; set; }
     /// <summary>The failed run's branch while a human-requested retry is pending: the launcher resumes it when it survives (Decisions Log #25).</summary>
     public string? RetryBranch { get; set; }
+    /// <summary>See <see cref="TaskAggregate.RetryBranchResumesForeignNode"/>'s own doc.</summary>
+    public bool RetryBranchResumesForeignNode { get; set; }
     /// <summary>
     /// The branch this node most recently force-with-lease pushed for this task — the durable
     /// record <c>ForceWithLeasePusher</c> checks before refusing a push whose reflog was wiped by
@@ -782,6 +784,12 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
             view.InteractiveModeEnabled = true;
         }
 
+        if (@event.Data.ResumesBranch.IsNotBlank())
+        {
+            view.RetryBranch = @event.Data.ResumesBranch;
+            view.RetryBranchResumesForeignNode = true;
+        }
+
         view.State = TaskState.Claimed;
     }
 
@@ -857,6 +865,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.HumanReviewThreads = [];
         view.FollowUpReason = null;
         view.RetryBranch = null;
+        view.RetryBranchResumesForeignNode = false;
         view.RetryPending = false;
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.CompletedAt;
@@ -915,6 +924,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskRetried> @event, TaskDetails view)
     {
         view.RetryBranch = @event.Data.Branch;
+        view.RetryBranchResumesForeignNode = false;
         EndAnyOpenReviewLap(view);
         view.RetryReason = @event.Data.Reason;
         view.RetryReasonIsHandback = false;
@@ -936,6 +946,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskHandedBack> @event, TaskDetails view)
     {
         view.RetryBranch = @event.Data.Branch;
+        view.RetryBranchResumesForeignNode = false;
         EndAnyOpenReviewLap(view);
         view.RetryReason = @event.Data.Reason;
         view.RetryReasonIsHandback = true;
@@ -971,6 +982,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.HumanReviewThreads = [];
         view.FollowUpReason = null;
         view.RetryBranch = null;
+        view.RetryBranchResumesForeignNode = false;
         view.RetryPending = false;
         view.State = TaskState.Done;
         view.FinishedAt = @event.Data.ResolvedAt;
@@ -994,6 +1006,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.HumanReviewThreads = [];
         view.FollowUpReason = null;
         view.RetryBranch = null;
+        view.RetryBranchResumesForeignNode = false;
         view.RetryPending = false;
         view.State = TaskState.Abandoned;
         view.FinishedAt = @event.Data.AbandonedAt;
