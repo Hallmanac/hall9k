@@ -51,6 +51,14 @@ namespace Hall9k.Cli.Commands;
 /// with no entry says nothing about a tracker rather than inventing a wait nobody observed
 /// (AGENTS.md, the never-guess rule).
 /// </param>
+/// <param name="HolderClaimHolds">
+/// Why this machine's own dispatch sweep last stood a claim down at the ledger record's own
+/// holder lock (idea 202383dc, A3b) — a stand-down naming another node, or a fail-closed hold
+/// naming a write that could not complete — keyed by task id and freshness-gated exactly as
+/// <paramref name="Pressure"/> and <paramref name="TrackerHolds"/> are. Absent for every task
+/// nothing is holding, the same never-guess reasoning <paramref name="TrackerHolds"/> already
+/// documents.
+/// </param>
 internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, RunDetails> Runs,
     IReadOnlyDictionary<Guid, RunActivity> Activity,
@@ -62,7 +70,8 @@ internal sealed record TaskStatusContext(
     DispatchPressure? Pressure = null,
     IReadOnlyDictionary<Guid, int>? BudgetParkedRuns = null,
     IReadOnlyDictionary<Guid, TrackerClaimHold>? TrackerHolds = null,
-    int InteractiveClaimStaleAfterDays = OperatingSettings.DefaultInteractiveClaimStaleAfterDays);
+    int InteractiveClaimStaleAfterDays = OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
+    IReadOnlyDictionary<Guid, TaskHolderClaimHold>? HolderClaimHolds = null);
 
 /// <summary>
 /// The one truth about how a task reads. Every surface that shows a task — h9k status,
@@ -190,7 +199,8 @@ internal static class TaskStatusComposer
             await DispatchPressure.ReadAsync(session, now, cancellationToken),
             BudgetParkedByProject(tasks, runs),
             await ReadTrackerHoldsAsync(session, tasks, now, cancellationToken),
-            operatingSettings.InteractiveClaimStaleAfterDays ?? OperatingSettings.DefaultInteractiveClaimStaleAfterDays);
+            operatingSettings.InteractiveClaimStaleAfterDays ?? OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
+            await ReadHolderClaimHoldsAsync(session, tasks, now, cancellationToken));
     }
 
     /// <summary>
@@ -237,6 +247,37 @@ internal static class TaskStatusComposer
     }
 
     /// <summary>
+    /// Why this machine's own dispatch sweep last stood a claim down at the ledger record's own
+    /// holder lock (idea 202383dc, A3b), loaded by id for the tasks actually on screen — the same
+    /// reasoning and the same freshness gate <see cref="ReadTrackerHoldsAsync"/> gives the
+    /// tracker-assignee gate's own hold, and for the identical reason: a stand-down left behind by
+    /// a daemon that has since stopped, or by a task claimed elsewhere since, must not go on
+    /// explaining a wait that has already ended.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<Guid, TaskHolderClaimHold>> ReadHolderClaimHoldsAsync(
+        IQuerySession session,
+        IReadOnlyList<TaskListItem> tasks,
+        DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        Guid[] queued = [.. tasks.Where(task => task.State == TaskState.Queued).Select(task => task.Id)];
+        if (queued.Length == 0)
+        {
+            return new Dictionary<Guid, TaskHolderClaimHold>();
+        }
+
+        string machineName = Environment.MachineName;
+        return (await session.Query<TaskHolderClaimHold>()
+                .Where(hold => hold.MachineName == machineName && hold.TaskId.IsOneOf(queued))
+                .ToListAsync(cancellationToken))
+            .Where(hold => now - hold.ObservedAt <= DispatchPressure.Freshness)
+            .GroupBy(hold => hold.TaskId)
+            .ToDictionary(
+                holds => holds.Key,
+                holds => holds.OrderByDescending(hold => hold.ObservedAt).First());
+    }
+
+    /// <summary>
     /// One row's three surfaces. The lifecycle state is composed first because it decides
     /// whether a phase applies at all; the session is observed once and shared by the phase and
     /// the attention line, so the two cannot disagree about whether anything is running.
@@ -257,6 +298,7 @@ internal static class TaskStatusComposer
         // than inventing a contention nobody observed (AGENTS.md, the never-guess rule).
         QueueHold? held = QueueHold.For(task, project, context.Pressure);
         TrackerClaimDecision? heldByTracker = HeldByTracker(task, context);
+        TaskHolderClaimHold? heldByLedgerHolder = HeldByLedgerHolder(task, context);
 
         TaskPhase phase = TaskPhaseComposer.Compose(task, run, state, session, now, held, heldByTracker);
         (bool stalled, string activity) = Silence(task, run, state, session, context, now);
@@ -276,7 +318,7 @@ internal static class TaskStatusComposer
             phase,
             attention,
             group,
-            PublishedFacts.Compose(task, state, held, heldByTracker, now),
+            PublishedFacts.Compose(task, state, held, heldByTracker, now, heldByLedgerHolder),
             project,
             task.Objective,
             task.Type.Value,
@@ -330,6 +372,17 @@ internal static class TaskStatusComposer
         task.State == TaskState.Queued && context.TrackerHolds?.GetValueOrDefault(task.Id) is { } hold
             ? TrackerClaimDecision.FromHold(hold)
             : null;
+
+    /// <summary>
+    /// Whether this claim last stood down at the ledger record's own holder lock (idea 202383dc,
+    /// A3b), read off the measurement the dispatcher published rather than by reading the ledger
+    /// here — the identical reasoning <see cref="HeldByTracker"/> gives its own hold, and for the
+    /// same reason: a board render must never touch the ledger itself, and the board and the
+    /// dispatcher must not disagree about why a queue is not moving. Null covers every task
+    /// nothing is holding this way.
+    /// </summary>
+    private static TaskHolderClaimHold? HeldByLedgerHolder(TaskListItem task, TaskStatusContext context) =>
+        task.State == TaskState.Queued ? context.HolderClaimHolds?.GetValueOrDefault(task.Id) : null;
 
     /// <summary>
     /// What can honestly be said about the sessions a run has in flight — plural, because a

@@ -318,6 +318,11 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
         return await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
     }
 
+    // A project here is registered through ProjectDecider.Register with a repository path
+    // ("/repos/{name}.git") that names no real repository (SeedProjectAsync below) — the identical
+    // reason ProjectRunCeilingDispatchTests' own Engine() helper now passes a FakeLedger: a real
+    // GitLedger against a path it cannot reach answers FetchFailed, which DispatchEngine's own
+    // fail-closed existence check now holds a claim on (class sweep, this branch's fix cycle).
     private DispatchEngine Engine(
         IDocumentStore store, NodeContext node, int maxConcurrentRuns,
         ILogger<DispatchEngine>? logger = null) => new(
@@ -328,7 +333,8 @@ public sealed class CrossProjectRotationDispatchTests(PostgresFixture postgres) 
             MaxConcurrentTaskRuns = maxConcurrentRuns,
             LeaseTimeout = TimeSpan.FromSeconds(60),
         }),
-        logger ?? NullLogger<DispatchEngine>.Instance);
+        logger ?? NullLogger<DispatchEngine>.Instance,
+        ledger: new FakeLedger());
 
     /// <summary>A registered project carrying the tier (and cap) under test, through its own real events.</summary>
     private static async Task<Guid> SeedProjectAsync(

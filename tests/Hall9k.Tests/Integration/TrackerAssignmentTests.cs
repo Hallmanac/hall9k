@@ -1586,6 +1586,13 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
             acknowledgeUnmetDependencies: false, interactiveMode: false, gate, cancellationToken);
     }
 
+    // SeedProjectAsync below points a project at a real, empty temp directory — real enough for
+    // gh's own working-directory read, but not a git repository, so a real GitLedger's fetch
+    // against it answers FetchFailed rather than a genuine absence. DispatchEngine's own
+    // fail-closed existence check now holds a claim on that signal (Brian's 2026-09-13 ruling),
+    // and this class is about the tracker-assignee gate, not the ledger holder — a FakeLedger
+    // answering Absent is what these tests mean by "no ledger record here" (class sweep, this
+    // branch's fix cycle).
     private DispatchEngine Engine(
         DocumentStore store, NodeContext node, TrackerClaimGate gate, TimeSpan reReadInterval) =>
         new(
@@ -1602,7 +1609,8 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
                 PullRequestPollInterval = reReadInterval,
             }),
             NullLogger<DispatchEngine>.Instance,
-            gate);
+            gate,
+            ledger: new FakeLedger());
 
     /// <summary>Jira answers <c>/myself</c> with this install's own account, and the card with a fixed holder.</summary>
     private static TrackerClaimGate JiraGate(string key, string? assigneeAccountId) =>

@@ -1,3 +1,6 @@
+using Hall9k.Connectors.Identity;
+using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
@@ -41,17 +44,71 @@ public sealed class DispatchEngine(
     LaunchHoldEngine launchHold,
     IOptions<DaemonOptions> options,
     ILogger<DispatchEngine> logger,
-    TrackerClaimGate? trackerClaimGate = null)
+    TrackerClaimGate? trackerClaimGate = null,
+    ILedger? ledger = null)
 {
     private readonly DaemonOptions _options = options.Value;
+
+    /// <summary>
+    /// Builds <see cref="_trackerClaimGate"/> and <see cref="_trackerAssignmentTake"/> together,
+    /// off one gh-backed runner, rather than as two separate field initializers each re-deriving
+    /// <c>trackerClaimGate ?? new TrackerClaimGate(...)</c> on its own: a field initializer cannot
+    /// read another field in this type (CS0236), so the only way to make the two genuinely share
+    /// one gate and one runner is to compute both in a single call. Two independent computations
+    /// would each construct their own <see cref="ProjectScopedGitHubRunner"/>, which keeps its own
+    /// in-memory, TTL-cached GitHub account resolution keyed by working directory — so production
+    /// (the injected <paramref name="injectedClaimGate"/> is only ever non-null in a test) built a
+    /// second gate over a second, separately-caching runner, exactly the "unrelated runner"
+    /// <see cref="_trackerAssignmentTake"/>'s own doc comment says never happens (adversarial
+    /// review, this branch's fix cycle — the claim was true only for the injected/test case).
+    /// </summary>
+    private static (TrackerClaimGate Gate, TrackerAssignmentTake Take) BuildTrackerClaimStack(
+        IDocumentStore store, TrackerClaimGate? injectedClaimGate)
+    {
+        ProcessRunner runner = new ProjectScopedGitHubRunner(store).Runner;
+        TrackerClaimGate gate = injectedClaimGate ?? new TrackerClaimGate(runner);
+        return (gate, new TrackerAssignmentTake(gate, runner));
+    }
+
+    private readonly (TrackerClaimGate Gate, TrackerAssignmentTake Take) _trackerClaimStack =
+        BuildTrackerClaimStack(store, trackerClaimGate);
 
     /// <summary>
     /// The project claim gate this node's claims go through (idea 64c75e43). Optional so a test
     /// that never touches a gated project constructs this engine as it always has; the default is
     /// the real gate, which for an ungated project makes not one call.
     /// </summary>
-    private readonly TrackerClaimGate _trackerClaimGate =
-        trackerClaimGate ?? new TrackerClaimGate(new ProjectScopedGitHubRunner(store).Runner);
+    private TrackerClaimGate _trackerClaimGate => _trackerClaimStack.Gate;
+
+    /// <summary>
+    /// The mirror's own write (idea 202383dc, A3b) — reads through <see cref="_trackerClaimGate"/>
+    /// itself, injected test double included, rather than a second gate built over an unrelated
+    /// runner: a test that intercepts the claim gate's own reads has to reach the identical
+    /// interception here, since the mirror calls <c>claimGate.CheckAsync</c> before it ever writes
+    /// (<see cref="TrackerAssignmentTake.TakeAsync"/>). Genuinely shares both the gate and the
+    /// runner with <see cref="_trackerClaimGate"/> via <see cref="_trackerClaimStack"/>, in every
+    /// build, not only the injected/test one.
+    /// </summary>
+    private TrackerAssignmentTake _trackerAssignmentTake => _trackerClaimStack.Take;
+
+    /// <summary>
+    /// The ledger a claim's holder write goes through (idea 202383dc, A3b). Optional for the
+    /// identical reason <see cref="_trackerClaimGate"/> is, but every caller through this seam
+    /// now has to supply one explicitly rather than lean on the default: a real
+    /// <see cref="GitLedger"/> pointed at a bogus or unreachable repository path answers
+    /// <see cref="LedgerFile.FetchFailed"/>, not a bare <see cref="LedgerFile.Absent"/>, and
+    /// <see cref="TryClaimLedgerHolderAsync"/>'s own existence guard now holds the claim on that
+    /// signal rather than reading it as "nothing to guard yet" (Brian's 2026-09-13 fail-closed
+    /// ruling — a claim's fetch failure is one of the four ways a holder write cannot complete,
+    /// for every project). Production wiring supplies the real, DI-registered
+    /// <see cref="ILedger"/>; every test through this feature's own seam supplies a
+    /// <c>FakeLedger</c>, seeded with the task record under test or left empty for the ordinary
+    /// "no record published yet" case — a fake's own unseeded read answers a genuine
+    /// <see cref="LedgerFile.Absent"/> with no fetch involved at all, which is what a test meaning
+    /// "this project has no ledger record" has to reach for now, rather than a bogus real path.
+    /// </summary>
+    private readonly ILedger _ledger = ledger ?? new GitLedger(
+        Microsoft.Extensions.Logging.Abstractions.NullLogger<GitLedger>.Instance);
 
     /// <summary>
     /// When the last sweep started, by this process's wall clock — the baseline for
@@ -190,6 +247,7 @@ public sealed class DispatchEngine(
             .ToListAsync(cancellationToken);
 
         int requeued = 0;
+        List<(Guid TaskId, Guid ProjectId)> holdersToRelease = [];
         foreach (TaskLease lease in expired)
         {
             TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
@@ -235,8 +293,20 @@ public sealed class DispatchEngine(
                 continue;
             }
 
-            session.Events.Append(lease.Id, TaskDecider.Requeue(task, RequeueReason.LeaseExpired, now));
+            // A task whose holder is this node but whose run is gone (idea 202383dc, A3b): the
+            // lease expiring is precisely that observation, so this is where "the run is gone" is
+            // decided and the local half of the release lands in the same transaction as the
+            // requeue. Only this node's own lease releases its own holder — another node's stale
+            // lease, left alone above, is not this node's to give back either.
+            object[] leaseEvents = lease.NodeId == node.NodeId && task.HolderNodeId == node.NodeId
+                ? [TaskDecider.Requeue(task, RequeueReason.LeaseExpired, now), TaskDecider.ReleaseHolder(task, now)]
+                : [TaskDecider.Requeue(task, RequeueReason.LeaseExpired, now)];
+            session.Events.Append(lease.Id, leaseEvents);
             session.Delete<TaskLease>(lease.Id);
+            if (leaseEvents.Length > 1)
+            {
+                holdersToRelease.Add((task.Id, task.ProjectId));
+            }
 
             // The run the lease belonged to ends here too, in the same transaction — but only
             // when it is this node's own run that the lease was covering. Dispatched and Running
@@ -285,7 +355,176 @@ public sealed class DispatchEngine(
         }
 
         await session.SaveChangesAsync(cancellationToken);
+
+        foreach ((Guid taskId, Guid projectId) in holdersToRelease)
+        {
+            await ReleaseLedgerHolderBestEffortAsync(taskId, projectId, cancellationToken);
+            await MirrorTrackerReleaseBestEffortAsync(taskId, projectId, cancellationToken);
+        }
+
+        await SweepPendingHolderReleasesAsync(cancellationToken);
+        await SweepPendingTrackerMirrorsAsync(cancellationToken);
+
         return requeued;
+    }
+
+    /// <summary>
+    /// The release: the same conditional write the claim used, clearing the ledger record's
+    /// holder back to empty. Best effort — the domain-side release has already landed by the time
+    /// this runs, so a write that cannot complete here does not undo it — and durable: a failure
+    /// is recorded as a <see cref="TaskHolderReleasePending"/> row for <see cref="SweepPendingHolderReleasesAsync"/>
+    /// to retry, rather than left for nothing to ever pick back up.
+    /// <para>
+    /// A pending row's own two permanent exits — the project this task belonged to was purged
+    /// (<c>ProjectPurgeEngine</c> destroys <see cref="ProjectDetails"/> along with the task's own
+    /// streams), or the ledger genuinely confirms no record at this path — both delete the row:
+    /// neither has anything left for a later sweep to usefully retry, and leaving it behind would
+    /// pay a query, and in the second case a full <c>git fetch</c>, on every lease sweep for the
+    /// life of the install (adversarial review, this branch). A fetch that itself <em>failed</em>
+    /// is not one of those two exits — <see cref="LedgerFile.FetchFailed"/> tells it apart from a
+    /// genuine absence — since a node that could not reach origin this sweep has not actually
+    /// confirmed anything, and deleting the row there would drop a release this node still owes
+    /// the moment the outage clears.
+    /// </para>
+    /// </summary>
+    private async Task ReleaseLedgerHolderBestEffortAsync(
+        Guid taskId, Guid projectId, CancellationToken cancellationToken)
+    {
+        string pendingKey = TaskHolderReleasePending.KeyFor(taskId, node.NodeId);
+
+        // Every step below is real I/O — Postgres, a git fetch/push, this node's own on-disk
+        // signing key — and this helper is called from a foreach over every expired lease in a
+        // sweep, and again from SweepPendingHolderReleasesAsync's own foreach over every pending
+        // row: an unhandled exception here must not propagate past one task's release and strand
+        // every other item still waiting in the same loop, the identical reasoning
+        // CompleteCloseoutAsync's own call site now guards (conformance review, this branch's fix
+        // cycle). An outcome this method cannot itself classify as NotHeld/Released/Failed is
+        // recorded the same way Failed already is — a pending row for the next sweep to retry —
+        // rather than silently dropping the release this node still owes.
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+
+            // A stale pending row (this node's own earlier release attempt that failed to write)
+            // is never retried past a fresh claim: a TaskLease for this task naming this node
+            // means ClaimEligibleAsync has since reclaimed it — the ordinary "lease died, then
+            // recovered before the sweep got back to it" window — and this row belongs to the
+            // release that reclaim already superseded. Retrying it here would clear the ledger
+            // record's holder out from under a task this node is actively running right now, the
+            // exact hole the ledger holder feature exists to close (adversarial review, this
+            // branch's fix cycle).
+            if (await session.LoadAsync<TaskLease>(taskId, cancellationToken) is { NodeId: var leaseNodeId }
+                && leaseNodeId == node.NodeId)
+            {
+                session.Delete<TaskHolderReleasePending>(pendingKey);
+                await session.SaveChangesAsync(cancellationToken);
+                return;
+            }
+
+            ProjectDetails? project = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
+            if (project is null)
+            {
+                session.Delete<TaskHolderReleasePending>(pendingKey);
+                await session.SaveChangesAsync(cancellationToken);
+                return;
+            }
+
+            // Same cheap-read-before-signing-key guard TryClaimLedgerHolderAsync gives the claim
+            // side: a task never guarded by a ledger write in the first place (no record at all)
+            // has nothing here to release either, and this node's own signing key is real I/O not
+            // worth paying for a release that TaskLedgerHolder.TryReleaseAsync would answer
+            // NotHeld to regardless.
+            string recordsRef = LedgerRefRegistry.Records.RefspecSource;
+            string recordPath = LedgerRefRegistry.RecordPath(taskId);
+            LedgerFile record = await _ledger.ReadAsync(project.RepositoryPath, recordsRef, recordPath, cancellationToken);
+            if (!record.Exists)
+            {
+                if (!record.FetchFailed)
+                {
+                    session.Delete<TaskHolderReleasePending>(pendingKey);
+                    await session.SaveChangesAsync(cancellationToken);
+                }
+
+                return;
+            }
+
+            (LedgerCommitter committer, LedgerSigningKey signingKey, _) =
+                await ResolveLedgerIdentityAsync(session, ownerRootFingerprint: null, cancellationToken);
+            HolderReleaseResult result = await TaskLedgerHolder.TryReleaseAsync(
+                _ledger, project.RepositoryPath, taskId, node.NodeId, committer, signingKey, cancellationToken);
+
+            if (result.Verdict == HolderReleaseVerdict.Failed)
+            {
+                session.Store(new TaskHolderReleasePending
+                {
+                    Id = pendingKey,
+                    TaskId = taskId,
+                    ProjectId = projectId,
+                    NodeId = node.NodeId,
+                    RecordedAt = DateTimeOffset.UtcNow,
+                    LastFailureReason = result.FailureReason ?? string.Empty,
+                });
+                await session.SaveChangesAsync(cancellationToken);
+                logger.LogWarning(
+                    "Task {TaskId}: releasing the ledger holder failed — {Reason} Retried next sweep.",
+                    taskId, result.FailureReason);
+            }
+            else
+            {
+                session.Delete<TaskHolderReleasePending>(pendingKey);
+                await session.SaveChangesAsync(cancellationToken);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            try
+            {
+                await using IDocumentSession pendingSession = store.LightweightSession();
+                pendingSession.Store(new TaskHolderReleasePending
+                {
+                    Id = pendingKey,
+                    TaskId = taskId,
+                    ProjectId = projectId,
+                    NodeId = node.NodeId,
+                    RecordedAt = DateTimeOffset.UtcNow,
+                    LastFailureReason = exception.Message,
+                });
+                await pendingSession.SaveChangesAsync(cancellationToken);
+            }
+            catch (Exception storeException) when (storeException is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    storeException,
+                    "Task {TaskId}: could not even record the ledger holder release as pending after it failed; "
+                    + "it self-heals once Postgres recovers, via the next lease sweep",
+                    taskId);
+            }
+
+            logger.LogWarning(
+                exception,
+                "Task {TaskId}: releasing the ledger holder threw rather than answering. Retried next sweep.",
+                taskId);
+        }
+    }
+
+    /// <summary>
+    /// Retries every ledger holder release this node owed but could not confirm landed — "a task
+    /// whose holder is this node but whose run is gone is released on the next sweep" (idea
+    /// 202383dc, A3b), the durable half: the domain side already released on the sweep that first
+    /// found the run gone, and this is what keeps trying the ledger write until it actually lands.
+    /// </summary>
+    private async Task SweepPendingHolderReleasesAsync(CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        Guid nodeId = node.NodeId;
+        IReadOnlyList<TaskHolderReleasePending> pending = await session.Query<TaskHolderReleasePending>()
+            .Where(row => row.NodeId == nodeId)
+            .ToListAsync(cancellationToken);
+
+        foreach (TaskHolderReleasePending row in pending)
+        {
+            await ReleaseLedgerHolderBestEffortAsync(row.TaskId, row.ProjectId, cancellationToken);
+        }
     }
 
     /// <summary>
@@ -1190,8 +1429,25 @@ public sealed class DispatchEngine(
         Guid runId = DomainId.New();
         string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
             session, node.OwnerId, cancellationToken);
+        DateTimeOffset claimedAt = DateTimeOffset.UtcNow;
+
+        // The ledger record's holder is the truth about who has a task (idea 202383dc, A3b): a
+        // conditional write through A1, ahead of TaskDecider.Claim and its own commit, exactly
+        // the same ordering the tracker gate above already gives its own check. TaskClaimed is
+        // only ever built and appended once this write is confirmed — a rejected or failed write
+        // never reaches it, so no run is ever launched for a claim the ledger did not actually
+        // grant. A project with no document at all (the same pre-existing shape the archive check
+        // above tolerates) has no repository path to write a holder against either, so it stays
+        // uncapped here too rather than refused — never a widened hole, since a project without
+        // even its own document was never a candidate this feature could have guarded regardless.
+        if (project is not null && !await TryClaimLedgerHolderAsync(
+            session, task, project, ownerRootFingerprint, claimedAt, cancellationToken))
+        {
+            return null;
+        }
+
         TaskClaimed claimed = TaskDecider.Claim(
-            task, node.NodeId, node.OwnerId, runId, DateTimeOffset.UtcNow, ownerRootFingerprint);
+            task, node.NodeId, node.OwnerId, runId, claimedAt, ownerRootFingerprint);
 
         // The gate's own evidence rides ahead of the claim it justified, in the same transaction
         // and under the same expected version, so the stream reads in the order the two things
@@ -1213,13 +1469,477 @@ public sealed class DispatchEngine(
         catch (EventStreamUnexpectedMaxEventIdException)
         {
             logger.LogDebug("Lost the claim race for task {TaskId} — another claimant won", taskId);
+
+            // The ledger holder write above already landed — pushed and confirmed — before this
+            // commit ever ran, and a claim that lost the race here never happened: TaskClaimed was
+            // never appended, so nothing else this platform ships will ever release a holder this
+            // node's own aggregate never recorded taking (adversarial review, this branch). Best
+            // effort and safe to call even when nothing was actually written (TryClaimLedgerHolderAsync's
+            // own NoRecord/HeldByOther/Failed paths write nothing): TaskLedgerHolder.TryReleaseAsync
+            // only ever clears a holder that names this node, so a release with nothing to release
+            // is simply NotHeld.
+            if (project is not null)
+            {
+                await ReleaseLedgerHolderBestEffortAsync(taskId, project.Id, cancellationToken);
+            }
+
             return null;
         }
 
         logger.LogInformation(
             "Claimed task {TaskId} at generation {Generation}, run {RunId}",
             taskId, claimed.LeaseGeneration, runId);
+        await ReleaseHolderClaimHoldAsync(taskId, cancellationToken);
+        await MirrorTrackerAssigneeBestEffortAsync(task, project, cancellationToken);
         return new ClaimedWork(taskId, runId, claimed.LeaseGeneration);
+    }
+
+    /// <summary>
+    /// The claim's own conditional write of the ledger holder (idea 202383dc, A3b): when the
+    /// record's holder is empty (or already this node's — a reclaim), writes owner root
+    /// fingerprint, node id, node name and since; a holder that names another node stands this
+    /// claim down, leaving the task Queued with a published hold naming that holder and time; a
+    /// write that cannot complete at all — a fetch, push, signing, or read failure — holds the
+    /// task the identical way, for every project, with no exemption setting (Brian, 2026-09-13).
+    /// A task with no ledger record yet (not published, or not replicated to this node) is not a
+    /// failure: there is nothing here to guard, so the claim proceeds exactly as it did before
+    /// this feature existed.
+    /// </summary>
+    private async Task<bool> TryClaimLedgerHolderAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        ProjectDetails project,
+        string? ownerRootFingerprint,
+        DateTimeOffset claimedAt,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await TryClaimLedgerHolderCoreAsync(
+                session, task, project, ownerRootFingerprint, claimedAt, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // ClaimEligibleAsync's own while loop is not exception-guarded per candidate: an
+            // unforeseen failure here — a connector throwing instead of answering, this node's own
+            // signing key failing to load — must hold this one claim exactly as a confirmed Failed
+            // verdict already does below, rather than unwind out of the loop and strand every lease
+            // already committed for a candidate earlier in the same sweep (adversarial review, this
+            // branch's fix cycle — the identical reasoning CheckTrackerGateAsync's own catch already
+            // gives its tracker connector read).
+            await PublishHolderClaimHoldAsync(
+                task.Id, holder: null,
+                cause: "writing the holder to the task's ledger record threw rather than answering — "
+                    + $"{exception.GetType().Name}: {exception.Message}",
+                cancellationToken);
+            logger.LogWarning(
+                exception,
+                "Task {TaskId} stays queued: checking or writing its ledger record's holder threw. It is "
+                + "retried on the next sweep",
+                task.Id);
+            return false;
+        }
+    }
+
+    private async Task<bool> TryClaimLedgerHolderCoreAsync(
+        IDocumentSession session,
+        TaskAggregate task,
+        ProjectDetails project,
+        string? ownerRootFingerprint,
+        DateTimeOffset claimedAt,
+        CancellationToken cancellationToken)
+    {
+        // A cheap existence read first, before touching this node's own signing key at all: the
+        // overwhelming majority of claims in a database with no ledger record for this task at
+        // all (every task never published through h9k task publish, which is every task most
+        // tests here ever seed) have nothing to guard, and resolving a real signing key
+        // (NodeKeyStore.EnsureAsync, which touches this node's own on-disk key material) is real
+        // I/O this claim path never used to pay for at all — worth skipping outright rather than
+        // paying it only to immediately discard the answer on a NoRecord verdict. The full
+        // conditional-write retry loop re-reads regardless, so a record published in the gap
+        // between this check and that loop is still caught there, not missed here.
+        //
+        // FetchFailed is checked ahead of Exists, deliberately: both read false for a fetch that
+        // could not reach origin at all (a bogus path, a network outage, a credential failure),
+        // and Brian's 2026-09-13 fail-closed ruling names "fetch ... or read failure" as one of
+        // the four ways a holder write cannot complete, for every project, with no exemption —
+        // the identical rule this method's own Failed branch below already applies once a record
+        // is confirmed to exist. Treating a read failure as "confirmed absent" here would let a
+        // node whose fetch is broken claim past a holder it never actually saw, which is exactly
+        // the hole this existence guard exists to close (window ruling, this branch's fix cycle).
+        string recordsRef = LedgerRefRegistry.Records.RefspecSource;
+        string recordPath = LedgerRefRegistry.RecordPath(task.Id);
+        LedgerFile existenceRead = await _ledger.ReadAsync(project.RepositoryPath, recordsRef, recordPath, cancellationToken);
+        if (existenceRead.FetchFailed)
+        {
+            await PublishHolderClaimHoldAsync(
+                task.Id, holder: null,
+                cause: "the ledger's own record could not be confirmed — the fetch failed, so this claim cannot "
+                    + "tell whether a holder already exists.",
+                cancellationToken);
+            logger.LogWarning(
+                "Task {TaskId} stays queued: its ledger record could not be read to check for a holder — the "
+                + "fetch failed. It is retried on the next sweep",
+                task.Id);
+            return false;
+        }
+
+        if (!existenceRead.Exists)
+        {
+            return true;
+        }
+
+        (LedgerCommitter committer, LedgerSigningKey signingKey, string fingerprint) =
+            await ResolveLedgerIdentityAsync(session, ownerRootFingerprint, cancellationToken);
+        string nodeName = (await session.LoadAsync<NodeDetails>(node.NodeId, cancellationToken))?.MachineName
+            ?? Environment.MachineName;
+        TaskRecordHolder candidate = new(fingerprint, node.NodeId, nodeName, claimedAt);
+
+        HolderClaimResult result = await TaskLedgerHolder.TryClaimAsync(
+            _ledger, project.RepositoryPath, task.Id, candidate, committer, signingKey, cancellationToken);
+
+        switch (result.Verdict)
+        {
+            case HolderClaimVerdict.Claimed:
+            case HolderClaimVerdict.NoRecord:
+                return true;
+            case HolderClaimVerdict.HeldByOther:
+                await PublishHolderClaimHoldAsync(task.Id, result.Holder, cause: null, cancellationToken);
+                logger.LogInformation(
+                    "Task {TaskId} stays queued: its ledger record's holder is {HolderNode} ({HolderFingerprint}), "
+                    + "held since {Since:u} — this claim stands down",
+                    task.Id, result.Holder!.NodeName, result.Holder.OwnerFingerprint, result.Holder.Since);
+                return false;
+            case HolderClaimVerdict.Failed:
+            default:
+                await PublishHolderClaimHoldAsync(task.Id, holder: null, result.FailureReason, cancellationToken);
+                logger.LogWarning(
+                    "Task {TaskId} stays queued: its ledger record's holder could not be written — {Reason} "
+                    + "It is retried on the next sweep",
+                    task.Id, result.FailureReason);
+                return false;
+        }
+    }
+
+    /// <summary>
+    /// This node's own identity for a ledger commit, resolved the same way <c>TaskRecordPublication.ResolveIdentityAsync</c>
+    /// does for a publish or a revise — duplicated rather than shared because that method is
+    /// internal to the CLI assembly and this daemon-side claim needs the identical answer. The
+    /// owner fingerprint returned here always has a value (unlike <paramref name="ownerRootFingerprint"/>,
+    /// which the claim event itself is free to carry as null): a ledger holder block has nowhere to
+    /// leave an absent fingerprint, so an owner that has not claimed a root yet falls back to this
+    /// node's own key fingerprint, exactly as a record's own <c>origin-owner-fingerprint</c> does.
+    /// </summary>
+    private async Task<(LedgerCommitter Committer, LedgerSigningKey SigningKey, string Fingerprint)>
+        ResolveLedgerIdentityAsync(
+            IDocumentSession session, string? ownerRootFingerprint, CancellationToken cancellationToken)
+    {
+        OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(node.OwnerId, cancellationToken);
+        NodeSigningKey key = await new NodeKeyStore().EnsureAsync(node.NodeId, cancellationToken);
+        LedgerCommitter committer = new(
+            owner?.Name.IsNotBlank() == true ? owner.Name : Environment.UserName,
+            owner?.Email.IsNotBlank() == true ? owner.Email : $"{node.NodeId}@hall9k.local");
+        return (committer, new LedgerSigningKey(key.PrivateKeyPath), ownerRootFingerprint ?? key.Fingerprint);
+    }
+
+    /// <summary>
+    /// Publishes the stand-down or fail-closed hold so <c>h9k status</c>/<c>h9k task show</c> can
+    /// eventually read the same sentence this sweep's own log line states — its own transaction,
+    /// same reason <see cref="PublishTrackerHoldAsync"/> is: the claim session this refusal
+    /// belongs to is never saved.
+    /// </summary>
+    private async Task PublishHolderClaimHoldAsync(
+        Guid taskId, TaskRecordHolder? holder, string? cause, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession holdSession = store.LightweightSession();
+            holdSession.Store(new TaskHolderClaimHold
+            {
+                Id = TaskHolderClaimHold.KeyFor(taskId, node.NodeId),
+                TaskId = taskId,
+                NodeId = node.NodeId,
+                MachineName = Environment.MachineName,
+                HolderNodeId = holder?.NodeId,
+                HolderOwnerFingerprint = holder?.OwnerFingerprint,
+                HolderNodeName = holder?.NodeName,
+                HolderSince = holder?.Since,
+                Cause = cause,
+                ObservedAt = DateTimeOffset.UtcNow,
+            });
+            await holdSession.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Task {TaskId} is held by its ledger holder lock, but recording why for h9k status failed; "
+                + "the hold itself is unaffected",
+                taskId);
+        }
+    }
+
+    /// <summary>
+    /// Forgets a published holder-claim hold once a claim for that task actually lands. Runs on
+    /// the caller's own <paramref name="cancellationToken"/> rather than a private timeout: a
+    /// bounded <c>CancellationTokenSource</c> this method minted itself used to answer with
+    /// <see cref="OperationCanceledException"/> indistinguishable from a genuine shutdown, and the
+    /// catch below deliberately never swallows that — so a slow Postgres write past that private
+    /// deadline threw out of an already-committed claim and, uncaught up the call chain, cost
+    /// every task this sweep's own <c>while</c> loop had left to claim (adversarial review,
+    /// this branch).
+    /// </summary>
+    private async Task ReleaseHolderClaimHoldAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession holdSession = store.LightweightSession();
+            holdSession.Delete<TaskHolderClaimHold>(TaskHolderClaimHold.KeyFor(taskId, node.NodeId));
+            await holdSession.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception, "Clearing the ledger-holder hold for task {TaskId} failed; it self-heals once stale", taskId);
+        }
+    }
+
+    /// <summary>
+    /// The mirror: on every holder change, best effort, the tracker assignee is set to match this
+    /// node's own identity — both providers, via the exact "move an unassigned item to this
+    /// install" write <c>h9k task assign --take</c> already uses, deliberately reused rather than
+    /// re-authored: it already knows both providers' write-then-read-back shape, and its own
+    /// refusal when someone else already holds the item is exactly what a mirror wants too — a
+    /// courtesy sync never forces an assignment off another person. Called with
+    /// <see cref="ClaimGate.TrackerAssignee"/> unconditionally, independent of the project's own
+    /// configured gate (which already decided, above, whether the tracker gated this claim at
+    /// all): the mirror is a write, not a gate, and applies to a linked item on every project.
+    /// Never throws and never affects the claim, which has already committed by the time this
+    /// runs — but criterion 5 ("on every holder change ... a named outcome retried next sweep")
+    /// means every outcome short of a confirmed match has to leave something for a later sweep to
+    /// pick back up, not merely a log line: an exception, or a take that ran and reported a named
+    /// outcome short of landing (held by somebody else, an unreadable tracker, a refused or
+    /// unconfirmed write), both leave a <see cref="TaskTrackerAssignMirrorPending"/> row for
+    /// <see cref="SweepPendingTrackerMirrorsAsync"/> to retry (window ruling, this branch's fix
+    /// cycle).
+    /// </summary>
+    private async Task MirrorTrackerAssigneeBestEffortAsync(
+        TaskAggregate task, ProjectDetails? project, CancellationToken cancellationToken)
+    {
+        string pendingKey = TaskTrackerAssignMirrorPending.KeyFor(task.Id, node.NodeId);
+
+        // The doc's own first two exits: the reference changed kind, or the project is gone.
+        // Neither will ever pass a retry, so nothing is left here for SweepPendingTrackerMirrorsAsync
+        // to usefully retry, and leaving the row behind would pay a live tracker read (gh api user,
+        // gh issue view) on every lease sweep for the rest of the install's life (conformance
+        // review, this branch's fix cycle). The doc's third exit — this node is no longer the
+        // task's holder at all — is checked by SweepPendingTrackerMirrorsAsync itself, off a fresh
+        // re-aggregation, rather than here: the claim-side caller (TryClaimAsync) passes the very
+        // TaskAggregate it fetched before appending TaskClaimed, whose own HolderNodeId is still
+        // last sweep's answer — never re-read from the stream it just wrote to — so checking it
+        // here would read the claim this call exists to mirror as already stale (self-review, this
+        // branch's fix cycle).
+        if (task.ExternalReference is null || project is null)
+        {
+            await DeletePendingTrackerAssignMirrorAsync(pendingKey, cancellationToken);
+            return;
+        }
+
+        try
+        {
+            TrackerTake take = await _trackerAssignmentTake.TakeAsync(
+                store, ClaimGate.TrackerAssignee, task.ExternalReference, project.RepositoryPath, cancellationToken);
+            if (take.Verdict == TrackerTakeVerdict.NotGated)
+            {
+                await DeletePendingTrackerAssignMirrorAsync(pendingKey, cancellationToken);
+                return;
+            }
+
+            if (!take.Passes)
+            {
+                await StorePendingTrackerAssignMirrorAsync(pendingKey, task.Id, project.Id, take.RefusalLine, cancellationToken);
+                logger.LogWarning(
+                    "Task {TaskId}: mirroring the new holder onto the tracker assignee did not land — {Verdict} "
+                    + "It is retried on the next sweep",
+                    task.Id, take.Verdict);
+                return;
+            }
+
+            if (take.Wrote)
+            {
+                await using IDocumentSession mirrorSession = store.LightweightSession();
+                mirrorSession.Events.Append(
+                    task.Id,
+                    new TrackerAssignmentWritten(
+                        task.Id, task.ExternalReference.ToString(), take.Assignee!.Identity,
+                        take.Assignee.Name, take.ObservedAt));
+                await mirrorSession.SaveChangesAsync(cancellationToken);
+            }
+
+            await DeletePendingTrackerAssignMirrorAsync(pendingKey, cancellationToken);
+
+            logger.LogDebug(
+                "Task {TaskId}: mirrored the new holder onto the tracker assignee — {Verdict}",
+                task.Id, take.Verdict);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await StorePendingTrackerAssignMirrorAsync(pendingKey, task.Id, project.Id, exception.Message, cancellationToken);
+            logger.LogInformation(
+                exception,
+                "Task {TaskId}: mirroring the new holder onto the tracker assignee failed; the claim is "
+                + "unaffected and it is retried on the next sweep",
+                task.Id);
+        }
+    }
+
+    private async Task DeletePendingTrackerAssignMirrorAsync(string pendingKey, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Delete<TaskTrackerAssignMirrorPending>(pendingKey);
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    private async Task StorePendingTrackerAssignMirrorAsync(
+        string pendingKey, Guid taskId, Guid projectId, string reason, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Store(new TaskTrackerAssignMirrorPending
+        {
+            Id = pendingKey,
+            TaskId = taskId,
+            ProjectId = projectId,
+            NodeId = node.NodeId,
+            RecordedAt = DateTimeOffset.UtcNow,
+            LastFailureReason = reason,
+        });
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The release-side twin of <see cref="MirrorTrackerAssigneeBestEffortAsync"/> (criterion 5):
+    /// once this node gives the ledger holder back, best effort, its own tracker identity is
+    /// cleared off the linked item too, through <see cref="TrackerAssignmentTake.ReleaseAsync"/> —
+    /// the release-flavoured sibling of the take the claim side already reuses. Never throws and
+    /// never blocks the release, which has already committed locally by the time this runs; a
+    /// named outcome short of a confirmed clear leaves a <see cref="TaskTrackerReleaseMirrorPending"/>
+    /// row for <see cref="SweepPendingTrackerMirrorsAsync"/> to retry.
+    /// </summary>
+    private async Task MirrorTrackerReleaseBestEffortAsync(
+        Guid taskId, Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectDetails? project = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken);
+        string pendingKey = TaskTrackerReleaseMirrorPending.KeyFor(taskId, node.NodeId);
+        if (project is null)
+        {
+            session.Delete<TaskTrackerReleaseMirrorPending>(pendingKey);
+            await session.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
+        if (task?.ExternalReference is null)
+        {
+            session.Delete<TaskTrackerReleaseMirrorPending>(pendingKey);
+            await session.SaveChangesAsync(cancellationToken);
+            return;
+        }
+
+        try
+        {
+            TrackerRelease release = await _trackerAssignmentTake.ReleaseAsync(
+                store, ClaimGate.TrackerAssignee, task.ExternalReference, project.RepositoryPath, cancellationToken);
+            if (!release.Succeeded)
+            {
+                await StorePendingTrackerReleaseMirrorAsync(
+                    pendingKey, taskId, projectId, release.FailureReason ?? string.Empty, cancellationToken);
+                logger.LogWarning(
+                    "Task {TaskId}: clearing the tracker assignee on release did not land — {Reason} It is "
+                    + "retried on the next sweep",
+                    taskId, release.FailureReason);
+                return;
+            }
+
+            session.Delete<TaskTrackerReleaseMirrorPending>(pendingKey);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            await StorePendingTrackerReleaseMirrorAsync(pendingKey, taskId, projectId, exception.Message, cancellationToken);
+            logger.LogInformation(
+                exception,
+                "Task {TaskId}: clearing the tracker assignee on release failed; the release is unaffected and "
+                + "it is retried on the next sweep",
+                taskId);
+        }
+    }
+
+    private async Task StorePendingTrackerReleaseMirrorAsync(
+        string pendingKey, Guid taskId, Guid projectId, string reason, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Store(new TaskTrackerReleaseMirrorPending
+        {
+            Id = pendingKey,
+            TaskId = taskId,
+            ProjectId = projectId,
+            NodeId = node.NodeId,
+            RecordedAt = DateTimeOffset.UtcNow,
+            LastFailureReason = reason,
+        });
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Retries every tracker-assignee mirror this node owed but could not confirm landed —
+    /// criterion 5's own retry half, the tracker-assignee counterpart of
+    /// <see cref="SweepPendingHolderReleasesAsync"/>. Runs both the claim-side and release-side
+    /// pending rows on the same lease-sweep cadence, node-scoped exactly as the ledger-holder
+    /// retry is.
+    /// </summary>
+    private async Task SweepPendingTrackerMirrorsAsync(CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        Guid nodeId = node.NodeId;
+
+        IReadOnlyList<TaskTrackerAssignMirrorPending> pendingAssigns = await session
+            .Query<TaskTrackerAssignMirrorPending>().Where(row => row.NodeId == nodeId).ToListAsync(cancellationToken);
+        foreach (TaskTrackerAssignMirrorPending row in pendingAssigns)
+        {
+            TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(row.TaskId, token: cancellationToken);
+            ProjectDetails? project = await session.LoadAsync<ProjectDetails>(row.ProjectId, cancellationToken);
+            if (task is not null && task.HolderNodeId == nodeId)
+            {
+                await MirrorTrackerAssigneeBestEffortAsync(task, project, cancellationToken);
+            }
+            else if (task is not null)
+            {
+                // This node has stopped being the task's holder since the row was recorded — true
+                // completion, h9k task abandon, or a lease-expiry release have each already given
+                // it back. None of those will ever pass a retry, so nothing here for the next sweep
+                // to usefully retry (conformance review, this branch's fix cycle: the row otherwise
+                // outlives the holder change it was mirroring by design, pulling a live tracker
+                // read — gh api user, gh issue view — on every lease sweep for good).
+                await DeletePendingTrackerAssignMirrorAsync(
+                    TaskTrackerAssignMirrorPending.KeyFor(row.TaskId, node.NodeId), cancellationToken);
+            }
+            else
+            {
+                // The task's own stream is gone entirely (ProjectPurgeEngine destroys it along
+                // with ProjectDetails) — nothing left to ever re-aggregate and retry, the identical
+                // permanent exit ReleaseLedgerHolderBestEffortAsync's own project-purged branch
+                // already gives its pending row (conformance review, this branch's fix cycle).
+                await DeletePendingTrackerAssignMirrorAsync(
+                    TaskTrackerAssignMirrorPending.KeyFor(row.TaskId, node.NodeId), cancellationToken);
+            }
+        }
+
+        IReadOnlyList<TaskTrackerReleaseMirrorPending> pendingReleases = await session
+            .Query<TaskTrackerReleaseMirrorPending>().Where(row => row.NodeId == nodeId).ToListAsync(cancellationToken);
+        foreach (TaskTrackerReleaseMirrorPending row in pendingReleases)
+        {
+            await MirrorTrackerReleaseBestEffortAsync(row.TaskId, row.ProjectId, cancellationToken);
+        }
     }
 
     /// <summary>
