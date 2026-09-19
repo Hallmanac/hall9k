@@ -327,6 +327,24 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "override flag; a tracker that cannot be read holds the claim rather than releasing it")]
         public string? ClaimGate { get; init; }
 
+        [CommandOption("--take-policy <auto|ask>")]
+        [Description(
+            "Who answers a member's cooperative claim request for this project's own tasks (idea "
+            + "202383dc, item 5, h9k task take with no --force). Default 'auto': the holder's own node "
+            + "answers on receipt — it grants when no run is live for the task, releasing the ledger "
+            + "holder and reassigning the task to the requester's own owner, or refuses naming the live "
+            + "run's own start time. 'ask' parks every request for the holder's own human instead, who "
+            + "answers with h9k task grant <id> or h9k task refuse <id> --reason; a parked request shows "
+            + "in h9k status.")]
+        public string? TakePolicy { get; init; }
+
+        [CommandOption("--take-timeout <MINUTES>")]
+        [Description(
+            "How long a cooperative take request waits for an answer before h9k task take names --force "
+            + "as the way on (idea 202383dc, item 5). Default 30 minutes; 'default' clears an override "
+            + "back to it.")]
+        public string? TakeTimeout { get; init; }
+
         [CommandOption("--close-linked-issue <on-closeout|never|when-all-tasks-close|default>")]
         [Description(
             "Whether true closeout closes a task's linked GitHub issue, and when (task: a task's linked "
@@ -397,6 +415,8 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         Optional<int?> maxParallelTasks = ClearableCapOption.Parse(
             settings.MaxParallelTasks ?? settings.MaxParallelAlias,
             settings.MaxParallelTasks is null ? "--max-parallel" : "--max-parallel-tasks");
+
+        Optional<int?> takeTimeoutMinutes = ClearableCapOption.Parse(settings.TakeTimeout, "--take-timeout");
 
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
@@ -593,6 +613,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             claimGate: settings.ClaimGate is { } claimGate
                 ? Optional<ClaimGate>.Of(ClaimGate.Parse(claimGate))
                 : Optional<ClaimGate>.None,
+            takePolicy: settings.TakePolicy is { } takePolicy
+                ? Optional<TakePolicy>.Of(TakePolicy.Parse(takePolicy))
+                : Optional<TakePolicy>.None,
+            takeTimeoutMinutes: takeTimeoutMinutes,
             // 'default' is the clearing word and reaches CloseLinkedIssueRule.Parse as the word
             // rather than as a rule, the --priority idiom: it restores when-all-tasks-close, the
             // rule a new project starts in, so clearing an override and never setting one read
@@ -726,6 +750,18 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 + "satisfying the gate stays one command rather than a second trip to the tracker; that "
                 + "is the one place Hall9k writes to your board, and only ever onto an item nobody "
                 + "holds.[/]");
+        }
+
+        // Same reasoning again: take-policy ask hands every cooperative claim request in this
+        // project to a human rather than letting the holder's own node answer it, which is worth
+        // saying once at the moment of consent.
+        if (settings.TakePolicy is not null && TakePolicy.Parse(settings.TakePolicy) == TakePolicy.Ask)
+        {
+            AnsiConsole.MarkupLine(
+                "[yellow]From now on, a cooperative claim request against this project (h9k task take with "
+                + "no --force) parks for the holder's own human instead of being answered automatically — "
+                + "it shows in h9k status, and h9k task grant <id> or h9k task refuse <id> --reason is the "
+                + "way to answer it.[/]");
         }
 
         // Said at the moment of consent, the same discipline every standing consequence above
