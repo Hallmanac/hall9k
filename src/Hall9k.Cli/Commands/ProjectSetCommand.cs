@@ -464,7 +464,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
 
         // Folded into the same verifyCommands Optional, on top of whatever --verify itself just
         // set, or on top of the project's own already-recorded gates when --verify was not given
-        // this invocation (PLACEHOLDER-609bd344): --verify-gate-filter names an EXISTING gate
+        // this invocation (#225): --verify-gate-filter names an EXISTING gate
         // rather than a whole new list, so it needs the resolved list either way.
         if (settings.HostCoupledGateFilter is { } hostCoupledGateFilterValue)
         {
@@ -1191,7 +1191,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
     /// Folds --verify-gate-filter's own NAME=FILTER (or 'none') onto <paramref name="gates"/>,
     /// the project's already-configured list or the one --verify just set in this same invocation
     /// (task: host-coupled tests run in their own gate once per task, never in parallel with
-    /// another run's copy — PLACEHOLDER-609bd344). At most one gate is ever host-coupled: setting
+    /// another run's copy — #225). At most one gate is ever host-coupled: setting
     /// a new one clears any other, so a second --verify-gate-filter call simply moves the
     /// designation rather than requiring 'none' first.
     /// </summary>

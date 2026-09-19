@@ -31,7 +31,7 @@ public sealed record VerifyCommand(string Name, string Command, string? HostCoup
     /// formats an int against <see cref="System.Globalization.CultureInfo.CurrentCulture"/>,
     /// which renders non-ASCII digit shapes under some cultures and would make an identical gate
     /// configuration fingerprint differently on a node running under one of them).
-    /// <see cref="HostCoupledFilter"/> feeds the same fingerprint (PLACEHOLDER-609bd344): which
+    /// <see cref="HostCoupledFilter"/> feeds the same fingerprint (#225): which
     /// gate is host-coupled, and what it is filtered to, changes what a pass actually covers just
     /// as much as a changed <see cref="Command"/> does.
     /// </summary>

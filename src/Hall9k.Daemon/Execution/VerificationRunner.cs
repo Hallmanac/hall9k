@@ -231,7 +231,7 @@ public sealed partial class VerificationRunner(
         // both unscoped (scopeSinceSha null) — and is skipped on every intermediate review-cycle
         // pass, which is always scoped to the fix's own commits (task: host-coupled tests run in
         // their own gate once per task, never in parallel with another run's copy —
-        // PLACEHOLDER-609bd344). This is the identical condition the scope block above already
+        // #225). This is the identical condition the scope block above already
         // uses to decide Full vs. a resolved scope, so a host-coupled gate needs no separate
         // signal threaded down from RunSupervisor's own first-verification call or ReviewEngine's
         // own ReviewMode: unscoped IS "first or final pass", scoped IS "intermediate cycle".
@@ -244,7 +244,7 @@ public sealed partial class VerificationRunner(
         // this HEAD — exactly the gap the mandatory pre-Settling full gate exists to close.
         // dotnetTestGateCount and dotnetTestGateFellBackCount together answer "did every
         // configured test gate actually run at full scope", never guessed from a single gate's
-        // own outcome. A host-coupled gate never counts here (PLACEHOLDER-609bd344): its own
+        // own outcome. A host-coupled gate never counts here (#225): its own
         // run/skip axis is orthogonal to fix-scope narrowing, tracked separately on
         // GateDuration.HostCoupledSkipped instead, and mixing it in would make a project with a
         // configured host-coupled gate never read as allTestGatesFellBack on a scoped pass that
@@ -253,7 +253,7 @@ public sealed partial class VerificationRunner(
         int dotnetTestGateFellBackCount = 0;
 
         // Whether this pass skipped its configured host-coupled gate outright (adversarial
-        // review, high — PLACEHOLDER-609bd344): a scoped reverify whose commits touch a non-C#
+        // review, high — #225): a scoped reverify whose commits touch a non-C#
         // file falls back to TestGateScope.Full the identical way an ordinary dotnet-test gate
         // does, which used to make the pass-level ranFullScope below true even though the
         // host-coupled gate itself was still skipped (runHostCoupledGate is keyed only on
@@ -303,7 +303,7 @@ public sealed partial class VerificationRunner(
                 dotnetTestGateCount++;
             }
 
-            // Skipped outright, not run at full scope and discarded (PLACEHOLDER-609bd344): an
+            // Skipped outright, not run at full scope and discarded (#225): an
             // intermediate review-cycle pass never pays for the categories of tests this gate's
             // own filter selects — the ones that reach outside the process (git, the process
             // table, the toolchain, Docker) — only the run's first verification and its final
@@ -1090,7 +1090,7 @@ public sealed partial class VerificationRunner(
         // A host-coupled gate's own filter always applies when it runs — never combined with
         // scope narrowing, since this method is only ever called for one with runHostCoupledGate
         // true, which is exactly the condition under which `scope` below is never IsScoped
-        // (PLACEHOLDER-609bd344). Applied before the scope block so the scope header, when one is
+        // (#225). Applied before the scope block so the scope header, when one is
         // written, still describes the gate that actually ran (host-coupled and full).
         string command = ComposeGateCommand(gate);
 
@@ -1120,7 +1120,7 @@ public sealed partial class VerificationRunner(
 
         // At most one host-coupled gate runs on this node at a time (task: host-coupled tests run
         // in their own gate once per task, never in parallel with another run's copy —
-        // PLACEHOLDER-609bd344): held for the whole spawn-and-wait span below, released in the
+        // #225): held for the whole spawn-and-wait span below, released in the
         // same finally block that already records GateEnded, so a second run's own host-coupled
         // gate never runs concurrently with this one's on the same machine.
         //
@@ -1156,7 +1156,7 @@ public sealed partial class VerificationRunner(
     /// The spawn, wait, and classification half of <see cref="RunGateAsync"/> — split out only so
     /// the node-wide host-coupled-gate permit (<see cref="AcquireHostCoupledGatePermitAsync"/>)
     /// can wrap this whole span in one try/finally without disturbing this method's own internal
-    /// control flow (PLACEHOLDER-609bd344). <paramref name="innerCommand"/> is already the fully
+    /// control flow (#225). <paramref name="innerCommand"/> is already the fully
     /// composed shell command — scope filter, host-coupled filter, and log redirection all
     /// applied — so this method never reads <c>gate.Command</c> for anything but
     /// <see cref="IsDotnetTestGate"/> checks and its own recursive fallback call, which goes back
@@ -1708,7 +1708,7 @@ public sealed partial class VerificationRunner(
     /// The file name a host-coupled gate's own cross-process permit locks — one fixed name under
     /// <see cref="PlatformPaths.Home"/>, so every run on this node contends for the identical file
     /// regardless of which task or project it belongs to (task: at most one host-coupled gate runs
-    /// on a node at a time — PLACEHOLDER-609bd344). <c>FileShare.None</c> gives an exclusive lock
+    /// on a node at a time — #225). <c>FileShare.None</c> gives an exclusive lock
     /// that the operating system releases automatically if the holding process dies, the same
     /// idiom <c>GitWorktreeManager.AcquireLockFileAsync</c> already uses for repository/checkout
     /// serialization — no reclaim or heartbeat bookkeeping needed.
@@ -1718,7 +1718,7 @@ public sealed partial class VerificationRunner(
     /// <summary>
     /// Acquires the node-wide host-coupled-gate permit, waiting when another run's own
     /// host-coupled gate already holds it (task: at most one host-coupled gate runs on a node at a
-    /// time — PLACEHOLDER-609bd344). The first attempt is silent: a permit acquired on the first
+    /// time — #225). The first attempt is silent: a permit acquired on the first
     /// try means there was nothing to wait for, so no wait is recorded on the run at all. Only a
     /// genuine wait appends <see cref="RunHostCoupledGateWaitStarted"/> before polling and
     /// <see cref="RunHostCoupledGateWaitEnded"/> the moment the permit is actually granted, so
@@ -2458,7 +2458,7 @@ public sealed partial class VerificationRunner(
     /// The command a gate actually runs: its own configured <see cref="VerifyCommand.Command"/>,
     /// with <see cref="VerifyCommand.HostCoupledFilter"/> injected via <see cref="ApplyTestFilter"/>
     /// when the gate is host-coupled (task: host-coupled tests run in their own gate once per
-    /// task, never in parallel with another run's copy — PLACEHOLDER-609bd344). This is the whole
+    /// task, never in parallel with another run's copy — #225). This is the whole
     /// of what "the filter splits the two gates" means: an ordinary gate's own command already
     /// carries whatever exclusion the project configured it with (<c>--verify</c> is free-form
     /// shell), and a host-coupled gate's command gets its own inclusion filter injected here,

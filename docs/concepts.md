@@ -453,7 +453,7 @@ When it does run, it is serialized against every other run's own host-coupled ga
 node — at most one runs at a time — and a run waiting its turn reports that wait as its own phase
 (`h9k task show` says "waiting for the host-coupled gate slot"), never as a failure.
 
-Depth: PLAN.md §16, Decisions Log PLACEHOLDER-609bd344.
+Depth: PLAN.md §16, Decisions Log #225.
 
 A session also never generates host load to reproduce or prove a flaky or timing-dependent test:
 no parallel copies of a suite or test, no stress or spin loops, no deliberate memory pressure, no
