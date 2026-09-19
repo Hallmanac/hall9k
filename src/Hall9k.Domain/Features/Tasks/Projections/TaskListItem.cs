@@ -215,6 +215,12 @@ public sealed class TaskListItem
     public List<Guid> DeadDependencies { get; set; } = [];
     /// <summary>Why the newest dead blocker died: what makes h9k status read this task as NeedsHuman.</summary>
     public string? DependencyFailureReason { get; set; }
+    /// <summary>See <see cref="TaskAggregate.TakenOverFromNodeId"/>'s own doc — mirrored here so h9k status can name a forced takeover (idea 202383dc, item 4).</summary>
+    public Guid? TakenOverFromNodeId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.TakenOverReason"/>'s own doc.</summary>
+    public string? TakenOverReason { get; set; }
+    /// <summary>See <see cref="TaskAggregate.TakenOverAt"/>'s own doc.</summary>
+    public DateTimeOffset? TakenOverAt { get; set; }
     /// <summary>
     /// Why this Blocked task needs a human, whichever of the two holds produced it — the twin of
     /// <see cref="TaskDetails.BlockingHoldReason"/>, so the board and the task surface read the
@@ -587,6 +593,20 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // clears it, only Assign does — and Queued is only ever reachable with every dependency
         // closed out. Landing back on Blocked instead keeps this view honest with the aggregate
         // it mirrors.
+        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+    }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskHolderTakenOver)"/> — see <see cref="TakenOverFromNodeId"/>'s own doc.</summary>
+    public void Apply(IEvent<TaskHolderTakenOver> @event, TaskListItem view)
+    {
+        view.TakenOverFromNodeId = @event.Data.PreviousHolderNodeId;
+        view.TakenOverReason = @event.Data.Reason;
+        view.TakenOverAt = @event.Data.TakenAt;
+
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+        view.AssignedOwnerId = @event.Data.NewHolderOwnerId;
+        view.QueuePriorityMarked = false;
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 

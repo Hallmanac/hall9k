@@ -247,6 +247,26 @@ public sealed class TaskAggregate
     /// <summary>When <see cref="HandoffNote"/> was left.</summary>
     public DateTimeOffset? HandoffNoteAt { get; private set; }
 
+    /// <summary>
+    /// The node an owner-role member's forced <c>h9k task take --force</c> most recently overrode
+    /// (idea 202383dc, item 4), or null when this task has never been taken over. Set by
+    /// <see cref="Apply(Events.TaskHolderTakenOver)"/> from that event's own
+    /// <see cref="Events.TaskHolderTakenOver.PreviousHolderNodeId"/> and never cleared afterward —
+    /// unlike <see cref="HolderNodeId"/> itself, this is provenance about what happened, not a live
+    /// lock, so <c>h9k task show</c>/<c>h9k status</c> can keep naming it long after the new holder
+    /// has claimed, run, and finished.
+    /// </summary>
+    public Guid? TakenOverFromNodeId { get; private set; }
+
+    /// <summary>The reason the operator gave for the most recent forced takeover; see <see cref="TakenOverFromNodeId"/>.</summary>
+    public string? TakenOverReason { get; private set; }
+
+    /// <summary>Who ran the most recent forced takeover; see <see cref="TakenOverFromNodeId"/>.</summary>
+    public Guid? TakenOverByOwnerId { get; private set; }
+
+    /// <summary>When the most recent forced takeover landed; see <see cref="TakenOverFromNodeId"/>.</summary>
+    public DateTimeOffset? TakenOverAt { get; private set; }
+
     public Guid? CurrentRunId { get; private set; }
     public Guid? PendingQuestionId { get; private set; }
     public string? PullRequestUrl { get; private set; }
@@ -1350,6 +1370,61 @@ public sealed class TaskAggregate
         HandoffNoteAuthorOwnerRootFingerprint = @event.AuthorOwnerRootFingerprint;
         HandoffNoteAuthorNodeId = @event.AuthorNodeId;
         HandoffNoteAt = @event.NotedAt;
+    }
+
+    /// <summary>
+    /// An owner-role member's forced takeover (idea 202383dc, item 4) — see
+    /// <see cref="Events.TaskHolderTakenOver"/>'s own doc for the whole shape. Both halves land
+    /// together: the audit trail (<see cref="TakenOverFromNodeId"/> and friends) and the same
+    /// give-the-claim-back-and-reassign transition <see cref="Apply(TaskRequeued)"/> and
+    /// <see cref="Apply(TaskAssigned)"/> perform separately for their own ordinary doors, folded
+    /// into one event here because neither of those deciders' own guards accepts a task that is
+    /// still mid-claim the way this one always is.
+    /// </summary>
+    public void Apply(Events.TaskHolderTakenOver @event)
+    {
+        TakenOverFromNodeId = @event.PreviousHolderNodeId;
+        TakenOverReason = @event.Reason;
+        TakenOverByOwnerId = @event.TakenByOwnerId;
+        TakenOverAt = @event.TakenAt;
+
+        // The identical cross-node obstruction reset Apply(TaskClaimed) performs for an ordinary
+        // handoff (idea 202383dc, A3b) — computed here instead, from the event's own recorded
+        // PreviousHolderNodeId, because this event (not the taker's later TaskClaimed) is what
+        // actually moves HolderNodeId: by the time the new node's own claim lands, HolderNodeId
+        // already names it, and Apply(TaskClaimed)'s own "previousHolderNodeId != event.NodeId"
+        // check would read that as no handoff at all.
+        if (@event.PreviousHolderNodeId is { } previousHolderNodeId && previousHolderNodeId != @event.NewHolderNodeId)
+        {
+            ConsecutiveObstructionLaps = 0;
+            LastAutomaticObstructionKey = null;
+            _automaticLapHistory.Clear();
+            ResumedAfterHolderChange = true;
+        }
+
+        _lastReleasedHolderNodeId = null;
+        HolderNodeId = @event.NewHolderNodeId;
+        HolderOwnerRootFingerprint = @event.NewHolderOwnerRootFingerprint;
+        HolderSince = @event.TakenAt;
+
+        // Reassigned to the taker's own owner — Decisions Log #34's claim guard ("a node claims
+        // only its own owner's work") would otherwise strand this task, since the overrider's own
+        // node never enumerates work assigned to somebody else's owner id.
+        AssignedOwnerId = @event.NewHolderOwnerId;
+
+        ClaimedByNodeId = null;
+        CurrentRunId = null;
+        PendingQuestionId = null;
+        EndAnyOpenReviewLap();
+
+        // An explicit human override of who runs this task at all is the same "returning it to
+        // the machine" act h9k task handback and a default h9k task release already clear
+        // interactive mode for (R6) — the previous holder's own human, if any, is no longer in
+        // the loop, so headless dispatch on the new node must not keep parking at boundaries
+        // waiting for them.
+        InteractiveModeEnabled = false;
+
+        State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     public void Apply(TaskRequeued @event)
