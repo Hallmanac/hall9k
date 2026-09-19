@@ -267,6 +267,49 @@ public sealed class TaskAggregate
     /// <summary>When the most recent forced takeover landed; see <see cref="TakenOverFromNodeId"/>.</summary>
     public DateTimeOffset? TakenOverAt { get; private set; }
 
+    /// <summary>
+    /// A member's outstanding cooperative claim request (idea 202383dc, item 5), or null when
+    /// nothing is currently asked of this task's own holder. Set by
+    /// <see cref="Apply(Events.TaskTakeRequested)"/>; cleared the moment it is answered, one way
+    /// or the other — by <see cref="Apply(Events.TaskHolderReleased)"/> on a grant, or by
+    /// <see cref="Apply(Events.TaskTakeRefused)"/> on a refusal.
+    /// </summary>
+    public Guid? PendingTakeRequestedByNodeId { get; private set; }
+
+    /// <summary>See <see cref="PendingTakeRequestedByNodeId"/>'s own doc.</summary>
+    public Guid? PendingTakeRequestedByOwnerId { get; private set; }
+
+    /// <summary>See <see cref="PendingTakeRequestedByNodeId"/>'s own doc.</summary>
+    public string? PendingTakeRequestedByOwnerFingerprint { get; private set; }
+
+    /// <summary>The requester's own stated reason; see <see cref="PendingTakeRequestedByNodeId"/>'s own doc.</summary>
+    public string? PendingTakeReason { get; private set; }
+
+    /// <summary>See <see cref="Events.TaskTakeRequested.RequesterTrackerIdentity"/>'s own doc — carried here so it survives until whichever grant answers this request.</summary>
+    public string? PendingTakeRequesterTrackerIdentity { get; private set; }
+
+    /// <summary>When the request landed; see <see cref="PendingTakeRequestedByNodeId"/>'s own doc — <c>h9k task show</c>/<c>status</c> measure the take-timeout from this.</summary>
+    public DateTimeOffset? PendingTakeRequestedAt { get; private set; }
+
+    /// <summary>
+    /// Who a cooperative grant most recently released this task's ledger holder for (idea
+    /// 202383dc, item 5) — provenance, like <see cref="TakenOverFromNodeId"/>, never cleared
+    /// afterward so <c>h9k task show</c> can keep naming it once the requester has claimed.
+    /// </summary>
+    public Guid? LastGrantedToOwnerId { get; private set; }
+
+    /// <summary>When the most recent cooperative grant landed; see <see cref="LastGrantedToOwnerId"/>.</summary>
+    public DateTimeOffset? LastGrantedAt { get; private set; }
+
+    /// <summary>The requester a cooperative refusal most recently answered; provenance, never cleared, see <see cref="LastGrantedToOwnerId"/>'s own doc.</summary>
+    public Guid? LastTakeRefusedRequesterOwnerId { get; private set; }
+
+    /// <summary>Why the most recent cooperative take request was refused; see <see cref="LastTakeRefusedRequesterOwnerId"/>.</summary>
+    public string? LastTakeRefusedReason { get; private set; }
+
+    /// <summary>When the most recent cooperative refusal landed; see <see cref="LastTakeRefusedRequesterOwnerId"/>.</summary>
+    public DateTimeOffset? LastTakeRefusedAt { get; private set; }
+
     public Guid? CurrentRunId { get; private set; }
     public Guid? PendingQuestionId { get; private set; }
     public string? PullRequestUrl { get; private set; }
@@ -1361,6 +1404,67 @@ public sealed class TaskAggregate
         HolderNodeId = null;
         HolderOwnerRootFingerprint = null;
         HolderSince = null;
+
+        // A cooperative grant (idea 202383dc, item 5) is a release with a destination: reassign
+        // AssignedOwnerId and land the task back on Queued/Blocked, the identical
+        // give-the-claim-back-and-reassign shape Apply(TaskHolderTakenOver) performs for a forced
+        // takeover — so the requester's own node (or a sibling node under the same owner) picks
+        // this up through its ordinary dispatch sweep, no second claim mechanism needed. An
+        // ordinary release (true completion, h9k task abandon, a lease-gone sweep) carries neither
+        // field and leaves everything below exactly as it always has.
+        if (@event.GrantedToNodeId is { } grantedToNodeId)
+        {
+            LastGrantedToOwnerId = @event.GrantedToOwnerId;
+            LastGrantedAt = @event.ReleasedAt;
+
+            AssignedOwnerId = @event.GrantedToOwnerId;
+            ClaimedByNodeId = null;
+            CurrentRunId = null;
+            PendingQuestionId = null;
+            EndAnyOpenReviewLap();
+            InteractiveModeEnabled = false;
+            State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        }
+
+        // Answered either way: a grant clears it above the same as a refusal does below, since
+        // the request this task was carrying no longer describes anything outstanding.
+        PendingTakeRequestedByNodeId = null;
+        PendingTakeRequestedByOwnerId = null;
+        PendingTakeRequestedByOwnerFingerprint = null;
+        PendingTakeReason = null;
+        PendingTakeRequestedAt = null;
+        PendingTakeRequesterTrackerIdentity = null;
+    }
+
+    /// <summary>
+    /// A member asked this task's own holder for it (idea 202383dc, item 5) — parks the request
+    /// whether or not it is about to be answered automatically in the same batch (an auto-grant or
+    /// auto-refusal appends this event immediately ahead of its own answer), so <c>h9k task show</c>
+    /// always has a record of who asked, why, and when.
+    /// </summary>
+    public void Apply(Events.TaskTakeRequested @event)
+    {
+        PendingTakeRequestedByNodeId = @event.RequesterNodeId;
+        PendingTakeRequestedByOwnerId = @event.RequesterOwnerId;
+        PendingTakeRequestedByOwnerFingerprint = @event.RequesterOwnerFingerprint;
+        PendingTakeReason = @event.Reason;
+        PendingTakeRequestedAt = @event.RequestedAt;
+        PendingTakeRequesterTrackerIdentity = @event.RequesterTrackerIdentity;
+    }
+
+    /// <summary>The holder refused a cooperative take request (idea 202383dc, item 5) — see <see cref="Events.TaskTakeRefused"/>'s own doc.</summary>
+    public void Apply(Events.TaskTakeRefused @event)
+    {
+        LastTakeRefusedRequesterOwnerId = @event.RequesterOwnerId;
+        LastTakeRefusedReason = @event.Reason;
+        LastTakeRefusedAt = @event.RefusedAt;
+
+        PendingTakeRequestedByNodeId = null;
+        PendingTakeRequestedByOwnerId = null;
+        PendingTakeRequestedByOwnerFingerprint = null;
+        PendingTakeReason = null;
+        PendingTakeRequestedAt = null;
+        PendingTakeRequesterTrackerIdentity = null;
     }
 
     /// <summary>Replaces the whole note wholesale (idea 202383dc, item 3) — see <see cref="HandoffNote"/>'s own doc.</summary>

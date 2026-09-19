@@ -29,6 +29,10 @@ public sealed record ProjectTeamSettingsChanged(
     Optional<IReadOnlyList<VerifyCommand>> VerifyCommands = default,
     bool AcceptedBrokenGate = false,
     Optional<ClaimGate> ClaimGate = default,
+    /// <summary>Who answers a cooperative claim request (idea 202383dc, item 5) — every teammate's node needs the same answer, so this travels with the team half.</summary>
+    Optional<TakePolicy> TakePolicy = default,
+    /// <summary>How long a cooperative take request waits for an answer (idea 202383dc, item 5) — see <see cref="ProjectSettingsChanged.TakeTimeoutMinutes"/>'s own doc.</summary>
+    Optional<int?> TakeTimeoutMinutes = default,
     Optional<BranchNameTemplate> BranchNameTemplate = default,
     Optional<BacklogPolicy> BacklogPolicy = default,
     Optional<string> BacklogRoutingGuidance = default,
@@ -57,6 +61,8 @@ public sealed record ProjectTeamSettingsChanged(
     {
         bool anyTeamField = changed.VerifyCommands.HasValue
             || changed.ClaimGate.HasValue
+            || changed.TakePolicy.HasValue
+            || changed.TakeTimeoutMinutes.HasValue
             || changed.BranchNameTemplate.HasValue
             || changed.BacklogPolicy.HasValue
             || changed.BacklogRoutingGuidance.HasValue
@@ -82,6 +88,8 @@ public sealed record ProjectTeamSettingsChanged(
                 changed.VerifyCommands,
                 changed.AcceptedBrokenGate,
                 changed.ClaimGate,
+                changed.TakePolicy,
+                changed.TakeTimeoutMinutes,
                 changed.BranchNameTemplate,
                 changed.BacklogPolicy,
                 changed.BacklogRoutingGuidance,

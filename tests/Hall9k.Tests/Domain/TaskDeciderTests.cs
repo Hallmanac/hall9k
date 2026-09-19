@@ -2568,6 +2568,191 @@ public sealed class TaskDeciderTests
         task.ResumedAfterHolderChange.Should().BeTrue("a takeover is always a cross-node handoff");
     }
 
+    // ── Cooperative take (idea 202383dc, item 5) ────────────────────────────────────────────────
+
+    [Fact]
+    public void RequestTake_records_the_requester_the_reason_and_the_time()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+
+        TaskTakeRequested requested = TaskDecider.RequestTake(
+            task, requesterNodeId, requesterOwnerId, "requester-fingerprint", "Picking this back up.", Now,
+            "requester-tracker-identity");
+
+        requested.Id.Should().Be(task.Id);
+        requested.RequesterNodeId.Should().Be(requesterNodeId);
+        requested.RequesterOwnerId.Should().Be(requesterOwnerId);
+        requested.RequesterOwnerFingerprint.Should().Be("requester-fingerprint");
+        requested.Reason.Should().Be("Picking this back up.");
+        requested.RequestedAt.Should().Be(Now);
+        requested.RequesterTrackerIdentity.Should().Be("requester-tracker-identity");
+    }
+
+    [Fact]
+    public void RequestTake_refuses_a_task_with_no_current_holder()
+    {
+        TaskAggregate task = QueuedTask();
+
+        Action act = () => TaskDecider.RequestTake(task, DomainId.New(), DomainId.New(), null!, "Why", Now);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*no ledger holder*");
+    }
+
+    [Fact]
+    public void RequestTake_refuses_asking_the_node_that_already_holds_it()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.RequestTake(task, NodeA, DomainId.New(), null!, "Why", Now);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*already held by this node*");
+    }
+
+    [Fact]
+    public void RequestTake_refuses_a_blank_reason()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.RequestTake(task, DomainId.New(), DomainId.New(), null!, "   ", Now);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*reason*");
+    }
+
+    [Fact]
+    public void Apply_TaskTakeRequested_parks_the_request_on_the_aggregate()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        TaskTakeRequested requested = TaskDecider.RequestTake(
+            task, requesterNodeId, requesterOwnerId, "requester-fingerprint", "Picking this back up.", Now);
+
+        task.Apply(requested);
+
+        task.PendingTakeRequestedByNodeId.Should().Be(requesterNodeId);
+        task.PendingTakeRequestedByOwnerId.Should().Be(requesterOwnerId);
+        task.PendingTakeRequestedByOwnerFingerprint.Should().Be("requester-fingerprint");
+        task.PendingTakeReason.Should().Be("Picking this back up.");
+        task.PendingTakeRequestedAt.Should().Be(Now);
+    }
+
+    [Fact]
+    public void GrantTake_releases_the_holder_naming_the_requester()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+
+        TaskHolderReleased granted = TaskDecider.GrantTake(task, requesterNodeId, requesterOwnerId, Now);
+
+        granted.Id.Should().Be(task.Id);
+        granted.ReleasedAt.Should().Be(Now);
+        granted.GrantedToNodeId.Should().Be(requesterNodeId);
+        granted.GrantedToOwnerId.Should().Be(requesterOwnerId);
+    }
+
+    [Fact]
+    public void GrantTake_refuses_a_task_with_no_current_holder()
+    {
+        TaskAggregate task = QueuedTask();
+
+        Action act = () => TaskDecider.GrantTake(task, DomainId.New(), DomainId.New(), Now);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*no current holder*");
+    }
+
+    [Fact]
+    public void Apply_GrantTake_reassigns_the_owner_and_lands_the_task_back_on_queued()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        TaskHolderReleased granted = TaskDecider.GrantTake(task, requesterNodeId, requesterOwnerId, Now);
+
+        task.Apply(granted);
+
+        task.HolderNodeId.Should().BeNull("a grant is an ordinary release — the requester claims through the ordinary lock");
+        task.AssignedOwnerId.Should().Be(requesterOwnerId, "the requester's own node claims only its own owner's work (Decisions Log #34)");
+        task.State.Should().Be(TaskState.Queued);
+        task.ClaimedByNodeId.Should().BeNull();
+        task.CurrentRunId.Should().BeNull();
+        task.LastGrantedToOwnerId.Should().Be(requesterOwnerId);
+        task.LastGrantedAt.Should().Be(Now);
+    }
+
+    [Fact]
+    public void Apply_GrantTake_clears_a_pending_request()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        task.Apply(TaskDecider.RequestTake(task, requesterNodeId, requesterOwnerId, "fp", "Why", Now));
+
+        task.Apply(TaskDecider.GrantTake(task, requesterNodeId, requesterOwnerId, Now));
+
+        task.PendingTakeRequestedByNodeId.Should().BeNull();
+        task.PendingTakeReason.Should().BeNull();
+    }
+
+    [Fact]
+    public void Apply_TaskHolderReleased_with_no_grantee_never_touches_assignment_or_state()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        task.Apply(TaskDecider.ReleaseHolder(task, Now));
+
+        task.HolderNodeId.Should().BeNull();
+        task.AssignedOwnerId.Should().Be(Owner, "an ordinary release carries no destination and must not reassign or requeue");
+        task.State.Should().Be(TaskState.Claimed, "an ordinary release is orthogonal to lifecycle state");
+    }
+
+    [Fact]
+    public void RefuseTake_records_the_requester_and_the_reason()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+
+        TaskTakeRefused refused = TaskDecider.RefuseTake(
+            task, requesterNodeId, requesterOwnerId, "A run is live for this task.", Now);
+
+        refused.Id.Should().Be(task.Id);
+        refused.RequesterNodeId.Should().Be(requesterNodeId);
+        refused.RequesterOwnerId.Should().Be(requesterOwnerId);
+        refused.Reason.Should().Be("A run is live for this task.");
+        refused.RefusedAt.Should().Be(Now);
+    }
+
+    [Fact]
+    public void RefuseTake_refuses_a_blank_reason()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.RefuseTake(task, DomainId.New(), DomainId.New(), "   ", Now);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*reason*");
+    }
+
+    [Fact]
+    public void Apply_RefuseTake_leaves_the_holder_and_claim_untouched_but_clears_the_pending_request()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        task.Apply(TaskDecider.RequestTake(task, requesterNodeId, requesterOwnerId, "fp", "Why", Now));
+
+        task.Apply(TaskDecider.RefuseTake(task, requesterNodeId, requesterOwnerId, "A run is live.", Now));
+
+        task.HolderNodeId.Should().Be(NodeA, "a refusal changes nothing about who holds the task");
+        task.State.Should().Be(TaskState.Claimed);
+        task.PendingTakeRequestedByNodeId.Should().BeNull();
+        task.LastTakeRefusedRequesterOwnerId.Should().Be(requesterOwnerId);
+        task.LastTakeRefusedReason.Should().Be("A run is live.");
+        task.LastTakeRefusedAt.Should().Be(Now);
+    }
+
     /// <summary>
     /// The owner these helpers assign to. Assignment is the dispatch trigger and the claim
     /// guard reads it (Decisions Log #34), so a task only reaches Queued through a named owner.

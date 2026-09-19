@@ -49,6 +49,29 @@ public sealed record MessageKind
     /// </summary>
     public static readonly MessageKind Handoff = new("handoff");
 
+    /// <summary>
+    /// A member asks a holder for a task (idea 202383dc, item 5, "the cooperative take"): the
+    /// body is a JSON <see cref="ClaimEnvelopeCodec.ClaimRequestRecord"/> naming the task, the
+    /// requester's node and owner, and the reason. Addressed to the holder's own node
+    /// (<see cref="MessageAudience.Node"/>) so only that node ever reacts to it.
+    /// </summary>
+    public static readonly MessageKind ClaimRequest = new("claim-request");
+
+    /// <summary>
+    /// The holder's own answer that a <see cref="ClaimRequest"/> is granted — the body is a JSON
+    /// <see cref="ClaimEnvelopeCodec.ClaimGrantedRecord"/> naming the task. The ledger holder is
+    /// already released by the time this is queued; the requester's own node claims through the
+    /// ordinary lock once it sees this.
+    /// </summary>
+    public static readonly MessageKind ClaimGranted = new("claim-granted");
+
+    /// <summary>
+    /// The holder's own answer that a <see cref="ClaimRequest"/> is refused — the body is a JSON
+    /// <see cref="ClaimEnvelopeCodec.ClaimRefusedRecord"/> naming the task and the reason (a live
+    /// run's own start time, or the holder's own human's stated reason).
+    /// </summary>
+    public static readonly MessageKind ClaimRefused = new("claim-refused");
+
     public string Value { get; }
 
     private MessageKind(string value) => Value = value;
@@ -60,13 +83,27 @@ public sealed record MessageKind
         "events-request" => EventsRequest,
         "events-unavailable" => EventsUnavailable,
         "handoff" => Handoff,
+        "claim-request" => ClaimRequest,
+        "claim-granted" => ClaimGranted,
+        "claim-refused" => ClaimRefused,
         _ => new MessageKind(raw),
     };
 
     /// <summary>Whether this is a kind Hall9k actually interprets, rather than one stored as-is for
     /// a future version — or a future kind this version has not learned yet — to make sense of.</summary>
     public bool IsRecognized =>
-        this == Note || this == Events || this == EventsRequest || this == EventsUnavailable || this == Handoff;
+        this == Note || this == Events || this == EventsRequest || this == EventsUnavailable || this == Handoff
+        || this == ClaimRequest || this == ClaimGranted || this == ClaimRefused;
+
+    /// <summary>
+    /// Every kind stored as an ordinary received message (unlike <see cref="Events"/>,
+    /// <see cref="EventsRequest"/>, and <see cref="EventsUnavailable"/>, which never are) but still
+    /// carrying a JSON payload for a daemon reactor alone rather than user-visible prose — so
+    /// <c>h9k messages</c> and <c>h9k status</c>'s own unread count both skip it the same way they
+    /// already skip a kind that is never stored at all. A plain string array, not a computed
+    /// property, so a caller's own Marten query can push it down as a SQL <c>IN</c> list.
+    /// </summary>
+    public static readonly IReadOnlyList<string> MechanicalKindValues = [ClaimRequest.Value, ClaimGranted.Value, ClaimRefused.Value];
 
     public override string ToString() => Value;
 }

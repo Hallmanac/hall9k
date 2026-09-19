@@ -102,6 +102,10 @@ public sealed class ProjectDetails
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
     /// </summary>
     public ClaimGate ClaimGate { get; set; } = ClaimGate.Off;
+    /// <summary>Who answers a cooperative claim request (idea 202383dc, item 5) — see <see cref="Events.ProjectSettingsChanged.TakePolicy"/>'s own doc; Auto is the default.</summary>
+    public TakePolicy TakePolicy { get; set; } = TakePolicy.Auto;
+    /// <summary>Override of how long a cooperative take request waits for an answer, in minutes; null defers to the platform default (30). See <see cref="Events.ProjectSettingsChanged.TakeTimeoutMinutes"/>'s own doc.</summary>
+    public int? TakeTimeoutMinutes { get; set; }
     /// <summary>
     /// Whether true closeout closes this project's tasks' linked GitHub issues, and when (task: a
     /// task's linked GitHub issue is closed at true closeout under a configurable rule); a
@@ -305,6 +309,16 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
             view.ClaimGate = @event.Data.ClaimGate.Value ?? ClaimGate.Off;
         }
 
+        if (@event.Data.TakePolicy.HasValue)
+        {
+            view.TakePolicy = @event.Data.TakePolicy.Value ?? TakePolicy.Auto;
+        }
+
+        if (@event.Data.TakeTimeoutMinutes.HasValue)
+        {
+            view.TakeTimeoutMinutes = @event.Data.TakeTimeoutMinutes.Value;
+        }
+
         if (@event.Data.LaunchTexts.HasValue)
         {
             view.LaunchTexts = [.. @event.Data.LaunchTexts.Value ?? []];
@@ -396,6 +410,16 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.ClaimGate.HasValue)
         {
             view.ClaimGate = @event.Data.ClaimGate.Value ?? ClaimGate.Off;
+        }
+
+        if (@event.Data.TakePolicy.HasValue)
+        {
+            view.TakePolicy = @event.Data.TakePolicy.Value ?? TakePolicy.Auto;
+        }
+
+        if (@event.Data.TakeTimeoutMinutes.HasValue)
+        {
+            view.TakeTimeoutMinutes = @event.Data.TakeTimeoutMinutes.Value;
         }
 
         if (@event.Data.CloseLinkedIssue.HasValue)

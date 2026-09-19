@@ -222,6 +222,81 @@ public sealed class ProjectDeciderTests
         changed.MaxParallelTasks.Value.Should().Be(1);
     }
 
+    // ── Take policy / take timeout (idea 202383dc, item 5) ──────────────────────────────────────
+
+    [Fact]
+    public void ChangeSettings_refuses_a_take_policy_outside_the_closed_set()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            takePolicy: Optional<TakePolicy>.Of("sometimes"));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*take policy must be*");
+    }
+
+    [Fact]
+    public void ChangeSettings_records_take_policy_ask()
+    {
+        ProjectAggregate project = RegisteredProject();
+        project.TakePolicy.Should().Be(TakePolicy.Auto, "an untouched project answers automatically");
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            takePolicy: Optional<TakePolicy>.Of(TakePolicy.Ask)));
+
+        project.TakePolicy.Should().Be(TakePolicy.Ask);
+    }
+
+    [Fact]
+    public void ChangeSettings_refuses_a_take_timeout_of_zero_or_less()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            takeTimeoutMinutes: Optional<int?>.Of(0));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*TakeTimeoutMinutes must be greater than 0*");
+    }
+
+    [Fact]
+    public void ChangeSettings_lets_a_cleared_take_timeout_hand_the_decision_back_to_the_platform_default()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            takeTimeoutMinutes: Optional<int?>.Of(45)));
+        project.TakeTimeoutMinutes.Should().Be(45);
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            takeTimeoutMinutes: Optional<int?>.Of(null)));
+        project.TakeTimeoutMinutes.Should().BeNull("'default' clears the override back to the platform default (30 minutes)");
+    }
+
     [Fact]
     public void ChangeSettings_rejects_a_review_cap_below_one()
     {

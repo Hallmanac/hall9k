@@ -1290,6 +1290,79 @@ public static class TaskDecider
         new(task.Id, releasedAt);
 
     /// <summary>
+    /// A member asks the current holder for this task (idea 202383dc, item 5, "a member can ask a
+    /// holder for a task"): appended on the HOLDER's own node the moment its own claim-request
+    /// envelope is received, ahead of whatever answer follows. A task with no current holder has
+    /// nothing to ask — <c>h9k task take</c> claims it directly instead — and asking the node that
+    /// already holds it is asking itself, which this decider refuses the same way.
+    /// </summary>
+    public static TaskTakeRequested RequestTake(
+        TaskAggregate task, Guid requesterNodeId, Guid requesterOwnerId, string requesterOwnerFingerprint,
+        string reason, DateTimeOffset requestedAt, string? requesterTrackerIdentity = null)
+    {
+        if (task.HolderNodeId is not { } holderNodeId)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} carries no ledger holder — nothing here for a cooperative take to ask "
+                + "for. It claims directly through the ordinary lock instead.");
+        }
+
+        if (holderNodeId == requesterNodeId)
+        {
+            throw new DomainConflictException($"Task {task.Id} is already held by this node — nothing to ask for.");
+        }
+
+        if (reason.IsBlank())
+        {
+            throw new DomainValidationException("A cooperative take needs --reason: why this task is being asked for.");
+        }
+
+        return new TaskTakeRequested(
+            task.Id, requesterNodeId, requesterOwnerId, requesterOwnerFingerprint, reason.Trim(), requestedAt,
+            requesterTrackerIdentity);
+    }
+
+    /// <summary>
+    /// The holder grants a cooperative take request (idea 202383dc, item 5) — auto, when no run is
+    /// live for this task, or by the holder's own human's <c>h9k task grant</c> under
+    /// <c>take-policy ask</c>. The ledger write itself is an ordinary release
+    /// (<see cref="Connectors.WorkItems.TaskLedgerHolder.TryReleaseAsync"/>, called by the caller
+    /// ahead of this); this decider only ever produces the domain event naming who it was released
+    /// for, which is what lets the requester's own node (or a sibling under the same owner) pick
+    /// this back up through its ordinary dispatch sweep. Same holder guard <see cref="TakeOver"/>
+    /// carries: only a task with a live claim has a holder for a grant to release.
+    /// </summary>
+    public static TaskHolderReleased GrantTake(
+        TaskAggregate task, Guid requesterNodeId, Guid requesterOwnerId, DateTimeOffset grantedAt)
+    {
+        if (task.State != TaskState.Claimed && task.State != TaskState.NeedsHuman)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — it has no current holder for a cooperative grant "
+                + "to release.");
+        }
+
+        return new TaskHolderReleased(task.Id, grantedAt, requesterNodeId, requesterOwnerId);
+    }
+
+    /// <summary>
+    /// The holder refuses a cooperative take request (idea 202383dc, item 5) — auto, because a run
+    /// is live for this task (the reason names its own start time), or by the holder's own
+    /// human's <c>h9k task refuse --reason</c> under <c>take-policy ask</c>. Carries no holder
+    /// change: the ledger and the task's claim are both left exactly as they were.
+    /// </summary>
+    public static TaskTakeRefused RefuseTake(
+        TaskAggregate task, Guid requesterNodeId, Guid requesterOwnerId, string reason, DateTimeOffset refusedAt)
+    {
+        if (reason.IsBlank())
+        {
+            throw new DomainValidationException("A cooperative refusal needs --reason: why this task is not being handed over.");
+        }
+
+        return new TaskTakeRefused(task.Id, requesterNodeId, requesterOwnerId, reason.Trim(), refusedAt);
+    }
+
+    /// <summary>
     /// The event's own text budget (idea 202383dc, item 3, criterion 1: "the note is capped, the
     /// envelope cap applies") — the same bound <c>HandoffParser.MaxEventLength</c> already holds a
     /// run's own closeout handoff to, so the ledger record's composed field never grows unbounded.
