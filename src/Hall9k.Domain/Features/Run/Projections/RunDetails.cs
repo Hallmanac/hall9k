@@ -55,6 +55,25 @@ public sealed class RunDetails : IJsonOnDeserialized
     public string BaseBranch { get; set; } = string.Empty;
     /// <summary>See <see cref="Events.RunDispatched"/>'s own doc — this branch's fork point as observed, blank when nothing was.</summary>
     public string BaseCommit { get; set; } = string.Empty;
+    /// <summary>
+    /// The branch this run meant to resume and could not find on either side, so it was cut fresh
+    /// from <see cref="BaseBranch"/> instead (<see cref="Events.RunStartedCleanAfterBranchGone"/>).
+    /// Null for every run that resumed what it meant to and every run that never meant to resume
+    /// anything, which is nearly all of them. Read with
+    /// <see cref="StartedCleanAfterGoneBranchWasForeignNodes"/>, which says whether the lost work
+    /// was another node's.
+    /// </summary>
+    public string? StartedCleanAfterGoneBranch { get; set; }
+    /// <summary>
+    /// The branch the fresh worktree was actually cut from instead, always spelled out — unlike
+    /// <see cref="BaseBranch"/>, whose blank means "the project's own". Null whenever
+    /// <see cref="StartedCleanAfterGoneBranch"/> is.
+    /// </summary>
+    public string? StartedCleanFromBaseBranch { get; set; }
+    /// <summary>The worktree layer's own sentence for why that branch could not be resumed, carried verbatim. Null whenever <see cref="StartedCleanAfterGoneBranch"/> is.</summary>
+    public string? StartedCleanAfterGoneBranchReason { get; set; }
+    /// <summary>See <see cref="Events.RunStartedCleanAfterBranchGone.ResumedForeignNode"/>. Meaningless while <see cref="StartedCleanAfterGoneBranch"/> is null, and never cleared independently of it.</summary>
+    public bool StartedCleanAfterGoneBranchWasForeignNodes { get; set; }
     public string ExecutorMode { get; set; } = string.Empty;
     /// <summary>The model the build session was spawned on (Decisions Log #33); Unknown for runs dispatched before the chain existed.</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
@@ -1085,6 +1104,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ExitedUnattendedReason = @event.Data.Reason;
         view.ExitedUnattendedDeliverConfirmedRefuses = @event.Data.DeliverConfirmedRefuses;
+    }
+
+    public void Apply(IEvent<RunStartedCleanAfterBranchGone> @event, RunDetails view)
+    {
+        view.StartedCleanAfterGoneBranch = @event.Data.GoneBranch;
+        view.StartedCleanFromBaseBranch = @event.Data.BaseBranch;
+        view.StartedCleanAfterGoneBranchReason = @event.Data.Reason;
+        view.StartedCleanAfterGoneBranchWasForeignNodes = @event.Data.ResumedForeignNode;
     }
 
     // A resume records the new process whole — pid plus start time (log #2's identity) — since
