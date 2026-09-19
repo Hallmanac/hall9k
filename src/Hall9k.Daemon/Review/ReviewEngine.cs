@@ -2808,7 +2808,15 @@ public sealed class ReviewEngine(
     /// A fetch or read failure is logged and treated as <see cref="RebaseGateOutcome.Proceed"/>
     /// rather than failing or parking the run: a transient network blip is not this run's fault,
     /// and the ordinary post-push closeout mechanical rebase (<see cref="Events.PullRequestMechanicalRebaseAttempted"/>)
-    /// still covers whatever residual staleness this step could not observe.
+    /// still covers whatever residual staleness the REBASE itself could not observe. That is never
+    /// true for a placeholder still sitting at PLAN.md's own tail, which nothing on the ordinary
+    /// mechanical paths ever assigns a number to (Decisions Log #162) — every one of these skip
+    /// paths also routes through <see cref="RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync"/>
+    /// before returning, so a placeholder still gets its number here whenever this branch turns out
+    /// to already be current with its locally known base, and is otherwise left for a later pass
+    /// rather than risk a duplicate number against a base this call could not confirm (two
+    /// placeholders reached <c>origin/main</c> unnumbered before this existed — see that method's own
+    /// doc).
     /// </para>
     /// </summary>
     private async Task<RebaseGateOutcome> EnsureRebasedBeforeFinalPassAsync(
@@ -2937,6 +2945,13 @@ public sealed class ReviewEngine(
         // point to confirm a rebase actually landed, and that is the SAME value this same fetch
         // already read moments earlier, not worth a second read.
         string? mergeBaseForStuckRebase = null;
+
+        // Set only by the TimeoutException catch below, never returned from directly: the git call
+        // that just timed out has already proven this repository or the network unresponsive, so
+        // the retry this skip owes is deferred until AFTER repositoryLock below is released, under a
+        // freshly acquired lock of its own (independent pre-PR review, cycle 1, adversarial lens —
+        // see the comment where timedOutSkipDetail is read, after the lock scope, for why).
+        string? timedOutSkipDetail = null;
         await using (IAsyncDisposable repositoryLock =
             await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
         {
@@ -3113,15 +3128,42 @@ public sealed class ReviewEngine(
                     exception,
                     "Run {RunId}: a git call exceeded its deadline checking origin/{Base} before the mandatory final pass — proceeding unrebased",
                     context.RunId, baseBranch);
-                await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
-                    context, run, git, worktreePath, baseBranch,
-                    $"a git call exceeded its deadline checking origin/{baseBranch} before the mandatory final pass",
-                    cancellationToken);
-                return RebaseGateOutcome.Proceed;
+
+                // Deliberately NOT the retry call itself: the fetch that just proved this call's own
+                // GitDeadline unresponsive is the single slowest git operation this whole method can
+                // run, and RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync's own first act is
+                // an identical fetch under the identical deadline. Running it here, still inside
+                // repositoryLock, would hold the node-wide repository lock every other run's own
+                // worktree-add/fetch already serializes behind (Decisions Log #4) for a second full
+                // GitDeadline window on the one skip site where the retry is guaranteed to be that
+                // slow — and gains nothing, since the same hang that caused this catch would defeat
+                // the retry too. Recorded here and read after the lock scope ends instead (independent
+                // pre-PR review, cycle 1, adversarial lens).
+                timedOutSkipDetail = $"a git call exceeded its deadline checking origin/{baseBranch} before the mandatory final pass";
             }
         }
 
-        // Reached only on a conflict: every other path above returns from inside the lock scope.
+        if (timedOutSkipDetail is { } skipDetail)
+        {
+            await using IAsyncDisposable timeoutRenumberLock =
+                await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken);
+
+            // The lock's own wait is unbounded, exactly like every other repository-lock acquisition
+            // in this method — re-checked immediately after acquiring it and before anything in the
+            // worktree is touched, for the identical reason (independent pre-PR review, cycle 1, both
+            // lenses).
+            if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
+            {
+                return RebaseGateOutcome.Stop;
+            }
+
+            await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                context, run, git, worktreePath, baseBranch, skipDetail, cancellationToken);
+            return RebaseGateOutcome.Proceed;
+        }
+
+        // Reached only on a conflict: every other path above returns from inside the lock scope, or
+        // (the git-deadline timeout) from the block just above this comment.
         // Dispatches the pre-existing rebase-recovery session directly, unconditionally — this
         // path's conflicts have always been that session's own territory, and stay so (task: the
         // stack assessment runs only where a checkpoint would otherwise park). The one read-only
@@ -3313,15 +3355,13 @@ public sealed class ReviewEngine(
         ReviewContext context, RunAggregate run, ProcessRunner git, string worktreePath, string baseBranch,
         string skipDetail, CancellationToken cancellationToken)
     {
-        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
-        {
-            logger.LogInformation(
-                "Run {RunId}: {SkipDetail} — its own worktree is unavailable, so the Decisions Log renumbering "
-                + "this task's own tail placeholder may still need could not be attempted here",
-                context.RunId, skipDetail);
-            return;
-        }
-
+        // The worktree-availability check this method used to open with now runs in
+        // RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync instead, ahead of ITS OWN git
+        // fetch: this method is only ever reached through that wrapper (every one of the five skip
+        // sites routes through it), and a fetch spawned against a worktreePath that does not exist
+        // throws before this method's own check could ever run, logging the wrong cause (independent
+        // pre-PR review, cycle 1, both lenses).
+        //
         // One of the skips this method exists to cover is the preflight's own "the worktree is not
         // checked out on its own branch" refusal — reachable whenever a human, or another process
         // on this shared node, left the worktree pointed somewhere else. Every read below trusts
@@ -3498,6 +3538,21 @@ public sealed class ReviewEngine(
         ReviewContext context, RunAggregate run, ProcessRunner git, string worktreePath, string baseBranch,
         string skipDetail, CancellationToken cancellationToken)
     {
+        // Checked here, before this method's own `git fetch` below, rather than only inside
+        // TryRenumberDecisionsLogPlaceholderOnSkipAsync (which this method always calls next): a
+        // process spawned with a WorkingDirectory that does not exist throws rather than exiting
+        // non-zero, so a missing-worktree skip reaching this method first would otherwise be logged
+        // as an unconfirmable origin rather than the unavailable worktree it actually is
+        // (independent pre-PR review, cycle 1, both lenses).
+        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        {
+            logger.LogInformation(
+                "Run {RunId}: {SkipDetail} — its own worktree is unavailable, so the Decisions Log renumbering "
+                + "this task's own tail placeholder may still need could not be attempted here",
+                context.RunId, skipDetail);
+            return;
+        }
+
         ProcessResult? fetch = null;
         try
         {
@@ -5048,14 +5103,18 @@ public sealed class ReviewEngine(
     /// this method's last parameter (AGENTS.md; conformance review, cycle 1).
     /// </param>
     /// <param name="decisionsLogRenumbered">
-    /// See <see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>. True only on the no-op-rebase
-    /// call site, and only when its own renumbering call actually landed a commit — the one outcome
-    /// where <paramref name="wasNoOp"/> alone does not already raise the mandatory gate. The
-    /// clean-rebase and stuck-pipe-rebase call sites always pass false here, even on a rebase whose
-    /// own renumbering call did land a commit, because their <paramref name="wasNoOp"/>: false
-    /// already raises that gate; this field is not a general "did this rebase renumber the
-    /// Decisions Log" audit flag, only the one gap wasNoOp itself can't cover (independent pre-PR
-    /// review, cycle 1, conformance lens).
+    /// See <see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>. True on two call sites, both of
+    /// them a <paramref name="wasNoOp"/>: true outcome whose own renumbering call actually landed a
+    /// commit — the one shape where <paramref name="wasNoOp"/> alone does not already raise the
+    /// mandatory gate: the no-op-rebase call site inside <c>EnsureRebasedBeforeFinalPassAsync</c>'s
+    /// own repository-lock block, and <c>TryRenumberDecisionsLogPlaceholderOnSkipAsync</c>'s own call
+    /// site, reached on every preflight refusal and every caught fetch/read/deadline/stuck-pipe skip
+    /// that still finds this branch current with its locally known base. The clean-rebase and
+    /// stuck-pipe-rebase call sites always pass false here, even on a rebase whose own renumbering
+    /// call did land a commit, because their <paramref name="wasNoOp"/>: false already raises that
+    /// gate; this field is not a general "did this rebase renumber the Decisions Log" audit flag,
+    /// only the gap wasNoOp itself can't cover (independent pre-PR review, cycle 1, conformance
+    /// lens).
     /// </param>
     /// <param name="forkPointAdvanced">
     /// See <see cref="RunRebasedOntoBase.ForkPointAdvanced"/>. True only on the stacked checkpoint's
