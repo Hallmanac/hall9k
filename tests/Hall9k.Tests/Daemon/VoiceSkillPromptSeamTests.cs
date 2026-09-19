@@ -57,25 +57,86 @@ public sealed class VoiceSkillPromptSeamTests : IDisposable
     }
 
     /// <summary>
-    /// The same bullet, one level up: naming a voice skill also settles who owns the prose there.
-    /// The bullet has always ended "that rule wins for the prose", which is right for an owner who
-    /// named no skill and flatly contradicts the voice line for one who did — a session obeying the
-    /// first sentence writes the pull request body in the repository's voice and never loads the
-    /// skill, at the feature's most visible seam (independent pre-PR review, cycle 1). Voiced, the
-    /// repository's rule keeps the structure and the owner keeps the sentences, which is what the
-    /// pr-summary skill itself says.
+    /// The same bullet, one level up: who owns the prose there. The bullet used to end "that rule
+    /// wins for the prose", which was right for an owner who named no skill and flatly
+    /// contradicted the voice line for one who did (independent pre-PR review, cycle 1). Both arms
+    /// now split the same way, because both arms can end up with a voice: named, or found by name
+    /// under `my-voice`. The difference is only whether the voice is certain.
     /// </summary>
     [Fact]
-    public void The_pull_request_summary_step_moves_prose_authority_to_the_voice_only_when_one_is_named()
+    public void The_pull_request_summary_step_leaves_structure_with_the_repository_on_either_arm()
     {
         string voiced = Flatten(CheckpointCommitRules(MyVoice));
         string unvoiced = Flatten(CheckpointCommitRules(voiceSkill: null));
 
-        unvoiced.Should().Contain("That rule wins for the prose.");
         voiced.Should().NotContain("That rule wins for the prose.")
             .And.Contain(
                 "That rule wins for the structure, the shape and the title convention; "
                 + "the owner's own voice below wins for the prose.");
+        unvoiced.Should().NotContain("That rule wins for the prose.")
+            .And.Contain(
+                "That rule wins for the structure, the shape and the title convention; "
+                + "the owner's own voice below wins for the prose when you find one, and the "
+                + "rule's own plain colleague voice when you do not.");
+    }
+
+    /// <summary>
+    /// An owner who never ran <c>h9k owner set --voice-skill</c> may still have written the voice,
+    /// so this one seam looks for it by name rather than falling straight back to the repository's
+    /// house voice: `my-voice`, in the owner's own user skills directory first and this
+    /// worktree's `.claude/skills/` second, with the code-review context and an honest "there was
+    /// none" when neither tier has it (Brian's ruling, 2026-09-19).
+    /// </summary>
+    [Fact]
+    public void The_pull_request_summary_step_looks_for_my_voice_by_name_when_none_is_named()
+    {
+        string unvoiced = Flatten(CheckpointCommitRules(voiceSkill: null));
+
+        unvoiced.Should()
+            .Contain("The owner has named no voice skill, so look for one by name.")
+            .And.Contain("Check for a skill called `my-voice`, first in the owner's own user skills "
+                + "directory (`~/.claude/skills/my-voice`, which this session can already see) and "
+                + "then in this worktree's own `.claude/skills/my-voice`.")
+            .And.Contain($"load it with its `{WorkPromptBuilder.CodeReviewVoiceContext}` context")
+            .And.Contain("When neither tier has one, say so in one line of your final summary and "
+                + "write the body in the plain colleague voice the rule itself describes.");
+    }
+
+    /// <summary>
+    /// The other half of that: an owner who DID name a skill is told to load that one and nothing
+    /// else. Rendering both would hand the session two candidate voices and no rule for choosing
+    /// between them.
+    /// </summary>
+    [Fact]
+    public void The_pull_request_summary_step_never_offers_my_voice_alongside_a_named_skill()
+    {
+        Flatten(CheckpointCommitRules(MyVoice)).Should()
+            .NotContain("The owner has named no voice skill")
+            .And.Contain("load `my-voice`", "the named skill here happens to be that one");
+    }
+
+    /// <summary>
+    /// The fallback is this one seam's, not the shared rule's: every other seam
+    /// <see cref="WorkPromptBuilder.AppendOwnerVoiceRule"/> serves still renders nothing at all
+    /// for an owner who named none, which is what holds their goldens byte-identical.
+    /// </summary>
+    [Fact]
+    public void No_other_seam_gains_the_look_for_my_voice_fallback()
+    {
+        string[] unvoiced =
+        [
+            AgentPromptBuilder.BuildFollowUp(
+                SomeTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7",
+                CommitStyle.Narrative),
+            AgentPromptBuilder.BuildReviewRequestedChanges(
+                ChangesRequestedTask(), SomeProject(), "task/1-slug", "https://github.com/x/y/pull/7",
+                CommitStyle.Narrative),
+            MintAddendum(voiceSkill: null),
+            SettlingGateRepair(voiceSkill: null),
+        ];
+
+        unvoiced.Should().OnlyContain(
+            prompt => !prompt.Contains("look for one by name", StringComparison.Ordinal));
     }
 
     /// <summary>

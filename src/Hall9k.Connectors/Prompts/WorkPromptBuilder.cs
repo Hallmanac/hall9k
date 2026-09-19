@@ -847,6 +847,17 @@ public static class WorkPromptBuilder
     /// names that path outright instead of describing the shape and hoping.
     /// </para>
     /// <para>
+    /// Three of its bullets are the 2026-09-19 ruling (origin: bioage-calculator pull request #4,
+    /// a 3,837-byte body for a 56-line file). The sizing bullet says the body is proportionate to
+    /// the diff, so a one-file or documentation-only change gets a couple of sentences rather than
+    /// the full shape. The title bullet names the external key's form as the repository's own
+    /// commit subjects write it, rather than hard-coding a colon the way
+    /// <c>PullRequestBody.WithExternalKey</c> has to when it repairs a title that carries no key
+    /// at all. The leave-out bullet names what the body is not: the work-item link the platform
+    /// writes, a restatement of the diff, build and test attestations, the handoff this same
+    /// message is already carrying, and the acceptance criteria, which live on the card.
+    /// </para>
+    /// <para>
     /// Headless only, like every other rule inside <see cref="AppendCheckpointCommitRules"/>: the
     /// parser this text promises reads a headless session's own stream-json result payload, which
     /// an attended interactive session never produces. An operator's own pull request text arrives
@@ -864,8 +875,11 @@ public static class WorkPromptBuilder
     /// The owner's own voice skill, when they named one — rendered as one more line inside the
     /// Whose voice bullet below, immediately after the skill-order sentences it qualifies, and
     /// swapping that bullet's own prose-authority sentence for the voiced one so the two do not
-    /// contradict each other (#193). Null for an owner who named none, which
-    /// renders this step exactly as it rendered before the preference existed.
+    /// contradict each other (#193). Null for an owner who named none, which renders the
+    /// look-for-one-by-name line in its place: this is the one seam where the absence of a named
+    /// skill is not the end of the question, because a pull request body is the artifact the
+    /// 2026-09-19 ruling is about and an owner who wrote a <c>my-voice</c> skill without ever
+    /// running <c>h9k owner set --voice-skill</c> still wants it used here.
     /// </param>
     private static void AppendPullRequestSummaryStep(
         StringBuilder prompt, ProjectDetails project, bool asNumberedStep, VoiceSkillName? voiceSkill = null)
@@ -899,10 +913,27 @@ public static class WorkPromptBuilder
         // the repository's own rule is still what decides the structure, and both the voiced
         // sentence above and this line say so.
         AppendOwnerVoiceRule(prompt, $"{indent}  ", voiceSkill, CodeReviewVoiceContext);
+        if (voiceSkill is not { HasValue: true })
+        {
+            // The unnamed half of the same bullet. An owner who never ran
+            // `h9k owner set --voice-skill` may still have written the voice this project's own
+            // reference one is called, so the step looks for it by name rather than falling
+            // straight back to the repository's house voice. Deliberately local to this step
+            // rather than folded into AppendOwnerVoiceRule: every other seam that rule serves
+            // keeps rendering nothing at all for an owner who named none, which is what holds
+            // their goldens byte-identical.
+            AppendFragment(
+                prompt, file, "no-voice-skill-named",
+                ("Indent", $"{indent}  "), ("VoiceContext", CodeReviewVoiceContext));
+        }
+
+        AppendFragment(prompt, file, "how-long", ("Indent", indent));
+        AppendFragment(prompt, file, "the-title", ("Indent", indent));
         AppendFragment(prompt, file, "where-it-goes",
             ("Indent", indent), ("PrSummaryMarker", PrSummaryParser.Marker),
             ("HandoffMarker", HandoffParser.Marker), ("PrSummaryTitlePrefix", PrSummaryParser.TitlePrefix));
-        AppendFragment(prompt, file, "what-to-leave-out", ("Indent", indent));
+        AppendFragment(prompt, file, "what-to-leave-out",
+            ("Indent", indent), ("HandoffMarker", HandoffParser.Marker));
         AppendWritingConventions(
             prompt, indent, project.WritingConventions, PromptTemplates.Load(file, "writing-conventions-lead-in"));
         AppendFragment(prompt, file, "do-not-run-gh", ("Indent", indent));
