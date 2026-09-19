@@ -59,6 +59,15 @@ public sealed class TaskListItem
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }
     /// <summary>
+    /// Mirrors <see cref="TaskAggregate.AssignedOwnerFingerprint"/> (idea 20723ef8) — carried on
+    /// this lean row too, and not merely on <see cref="TaskDetails"/>, because the daemon's own
+    /// queue read (this class's own doc) is the one place a forged <see cref="AssignedOwnerId"/>
+    /// would otherwise hide the true grantee's own task from its own queue: filtering on the Guid
+    /// alone would exclude a row a cooperative grant forged to a different owner's id even from the
+    /// node whose own fingerprint the grant actually verified.
+    /// </summary>
+    public string? AssignedOwnerFingerprint { get; set; }
+    /// <summary>
     /// When a human said "do this" — the moment that made the task claimable, and so the key
     /// the dispatcher queues on (Decisions Log #64). It is deliberately not <see cref="AddedAt"/>:
     /// a task drafted in January and assigned today is newer work than one drafted and assigned
@@ -415,6 +424,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     public void Apply(IEvent<TaskAssigned> @event, TaskListItem view)
     {
         view.AssignedOwnerId = @event.Data.AssignedOwnerId;
+        view.AssignedOwnerFingerprint = null;
         view.AssignedAt = @event.Data.AssignedAt;
         view.UnmetDependencies = [.. @event.Data.UnmetDependencies];
         view.DeadDependencies = [];
@@ -429,6 +439,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     public void Apply(IEvent<TaskUnassigned> @event, TaskListItem view)
     {
         view.AssignedOwnerId = null;
+        view.AssignedOwnerFingerprint = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
@@ -445,6 +456,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.CurrentRunId = null;
 
         view.AssignedOwnerId = null;
+        view.AssignedOwnerFingerprint = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
@@ -614,6 +626,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.AssignedOwnerId = @event.Data.NewHolderOwnerId;
+        view.AssignedOwnerFingerprint = null;
         // Reassigned to the taker's own owner, the same "unassigning and assigning again" shape
         // AssignedAt's own doc gives a reassignment — mirrors TaskDetails.Apply(TaskHolderTakenOver),
         // which sets it to TakenAt for the identical reason (conformance pre-PR review, cycle 1:
@@ -652,6 +665,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
             view.ClaimedByNodeId = null;
             view.CurrentRunId = null;
             view.AssignedOwnerId = @event.Data.GrantedToOwnerId;
+            view.AssignedOwnerFingerprint = @event.Data.GrantedToOwnerFingerprint;
             view.AssignedAt = @event.Data.ReleasedAt;
             view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
         }

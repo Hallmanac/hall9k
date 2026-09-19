@@ -126,6 +126,8 @@ public sealed class TaskDetails
     public bool HasQueuedJiraMergeNotice { get; set; }
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.AssignedOwnerFingerprint"/> — see its own doc (idea 20723ef8).</summary>
+    public string? AssignedOwnerFingerprint { get; set; }
     /// <summary>
     /// When a human said "do this": the moment that made the task claimable, and the key the
     /// dispatcher queues on once the concurrency ceiling makes the tail of the queue wait
@@ -652,6 +654,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskAssigned> @event, TaskDetails view)
     {
         view.AssignedOwnerId = @event.Data.AssignedOwnerId;
+        view.AssignedOwnerFingerprint = null;
         view.AssignedAt = @event.Data.AssignedAt;
         view.UnmetDependencies = [.. @event.Data.UnmetDependencies];
         view.DeadDependencies = [];
@@ -668,6 +671,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskUnassigned> @event, TaskDetails view)
     {
         view.AssignedOwnerId = null;
+        view.AssignedOwnerFingerprint = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
@@ -689,6 +693,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.DependencyOverrideCarriedForward = false;
 
         view.AssignedOwnerId = null;
+        view.AssignedOwnerFingerprint = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
@@ -900,6 +905,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.DependencyOverrideCarriedForward = false;
 
         view.AssignedOwnerId = @event.Data.NewHolderOwnerId;
+        view.AssignedOwnerFingerprint = null;
         view.AssignedAt = @event.Data.TakenAt;
 
         view.InteractiveModeEnabled = false;
@@ -938,6 +944,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
             view.DependencyOverrideCarriedForward = false;
 
             view.AssignedOwnerId = @event.Data.GrantedToOwnerId;
+            view.AssignedOwnerFingerprint = @event.Data.GrantedToOwnerFingerprint;
             view.AssignedAt = @event.Data.ReleasedAt;
 
             view.InteractiveModeEnabled = false;

@@ -24,5 +24,21 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// which behaves exactly as before this feature existed.
 /// </para>
 /// </summary>
+/// <param name="GrantedToOwnerFingerprint">
+/// <see cref="GrantedToOwnerId"/>'s own cross-node root fingerprint (idea 20723ef8) — added
+/// beside it, never a retyping, mirroring <see cref="TaskAssigned.AssignedOwnerRootFingerprint"/>'s
+/// existing precedent. Carries whatever <c>ClaimRequestWatchLoop.IsRequesterOwnerVerified</c>
+/// already verified against the ledger's own trust chain before this grant's own
+/// <see cref="TaskTakeRequested"/> was ever appended — the granting node cannot itself verify a
+/// foreign owner's Guid (Owner events never replicate), so it is <see cref="GrantedToOwnerId"/>
+/// that stays self-declared and unverifiable cross-node, while this field is the one fact every
+/// reading node can actually check against its own local record of itself — the daemon's own
+/// dispatch claim gate is where that check lives. Null for every ordinary release (no grantee at
+/// all) and for any event written before this field existed.
+/// </param>
 public sealed record TaskHolderReleased(
-    Guid Id, DateTimeOffset ReleasedAt, Guid? GrantedToNodeId = null, Guid? GrantedToOwnerId = null);
+    Guid Id,
+    DateTimeOffset ReleasedAt,
+    Guid? GrantedToNodeId = null,
+    Guid? GrantedToOwnerId = null,
+    string? GrantedToOwnerFingerprint = null);

@@ -165,28 +165,27 @@ public sealed class ClaimRequestWatchLoop(
         }
 
         // request.RequesterOwnerId/RequesterOwnerFingerprint are the same shape of self-declared,
-        // unverified pair RequesterNodeId was above: TaskDecider.RequestTake records
-        // RequesterOwnerFingerprint verbatim on the task's own stream, and under take-policy auto,
-        // TaskAggregate.Apply(TaskHolderReleased) hands AssignedOwnerId — the exact field
-        // DispatchEngine's own claim gate compares against a node's own owner id — straight from
-        // it too (independent pre-PR review, cycle 6, adversarial lens, medium). Node B's own
-        // outbox can only ever carry B's own genuine content, but B still fully controls what that
-        // content claims about which owner is asking; this is the one check available that does
-        // not just trust it back: node.yaml is the identical self-announcement
-        // GitLedgerMessageTransport.ReadSinceAsync already fingerprints to authenticate B's own
-        // outbox in the first place, so resolving it again here and checking the claimed root
-        // against the ledger's own trust chain (TrustedOwner.ContainsForNode, the same primitive
-        // IsAllowedSigner itself uses) proves the claimed fingerprint is really B's own owner,
-        // never an owner B merely knows the fingerprint of from this project's own replicated
-        // history. RequesterOwnerId itself stays exactly as unverifiable as ClaimEnvelopeCodec's
-        // own doc already says it is — no registry here or anywhere else in this project ever
-        // carries a remote owner's local Guid, since Owner events are OwnerScoped and never travel
-        // (EventScopeRegistry) — so a request naming a genuine fingerprint alongside a wrong
-        // RequesterOwnerId still is not caught by this check; closing that fully needs
-        // TaskHolderReleased to carry a verified root fingerprint beside GrantedToOwnerId the way
-        // TaskAssigned.AssignedOwnerRootFingerprint already does for an ordinary assignment, and
-        // DispatchEngine's own claim gate to verify through it, which is beyond this fix's own
-        // scope (see this fix's own commit message and the PR summary).
+        // unverified pair RequesterNodeId was above. Node B's own outbox can only ever carry B's
+        // own genuine content, but B still fully controls what that content claims about which
+        // owner is asking; this is the one check available that does not just trust it back:
+        // node.yaml is the identical self-announcement GitLedgerMessageTransport.ReadSinceAsync
+        // already fingerprints to authenticate B's own outbox in the first place, so resolving it
+        // again here and checking the claimed root against the ledger's own trust chain
+        // (TrustedOwner.ContainsForNode, the same primitive IsAllowedSigner itself uses) proves the
+        // claimed fingerprint is really B's own owner, never an owner B merely knows the
+        // fingerprint of from this project's own replicated history. RequesterOwnerId itself stays
+        // exactly as unverifiable as ClaimEnvelopeCodec's own doc already says it is — no registry
+        // here or anywhere else in this project ever carries a remote owner's local Guid, since
+        // Owner events are OwnerScoped and never travel (EventScopeRegistry) — so a request naming
+        // a genuine fingerprint alongside a wrong RequesterOwnerId is not caught by this check
+        // alone (independent pre-PR review, cycle 6, adversarial lens, medium). What closes it:
+        // this exact verified value — request.RequesterOwnerFingerprint, already checked below —
+        // is what TaskDecider.RequestTake records on TaskTakeRequested, what GrantTake carries
+        // forward onto TaskHolderReleased.GrantedToOwnerFingerprint beside the self-declared
+        // GrantedToOwnerId, and what the daemon's own dispatch claim gate compares against this
+        // node's own owner fingerprint rather than the bare Guid (idea 20723ef8) — a forged
+        // RequesterOwnerId can still land on the task's own stream as an audit fact, but it can no
+        // longer steal a claim on the receiving node or block the true grantee's own.
         string? senderFingerprint = await NodeSelfAnnouncedKeyResolver.ResolveFingerprintAsync(
             ledger, project.RepositoryPath, message.FromNodeId, cancellationToken);
         TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
