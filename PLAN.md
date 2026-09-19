@@ -2210,6 +2210,37 @@ surface, and nothing the P2P layer (§16 #38-#58) touches.
 > Every citation of the placeholder elsewhere in this repository was rewritten to
 > `#229` in the same commit.
 
+230. **The Decisions Log renumbering runs on every pre-final-pass rebase skip, not only the no-op path, and closeout refuses to merge a pull request whose PLAN.md tail still carries its own placeholder.** Why: two placeholders reached main unnumbered (PLACEHOLDER-609bd344 and PLACEHOLDER-5e0cbfeb, both resolved above as #225 and #226) because `ReviewEngine.EnsureRebasedBeforeFinalPassAsync`'s own skip paths — a failed fetch, an unreadable origin, a stuck output pipe, a git deadline, or `RebasePreflightAsync`'s own missing-worktree/dirty/wrong-branch/retargeted-base refusals — logged "closeout's own mechanical rebase still covers a stale push" and returned without ever calling the renumberer, true for the rebase itself but never true for a placeholder nothing else on the mechanical paths ever assigns a number to (task 609bd344 run 01a0b500, PR #479: two fetch failures an hour apart with no renumbering line either time, then the same run's dirty-worktree skip with its PR opened five seconds later). **The fix.** A new `TryRenumberDecisionsLogPlaceholderOnSkipAsync` runs at every one of those skip sites, both inside `EnsureRebasedBeforeFinalPassAsync`'s own try block and wrapped around its call into the shared `RebasePreflightAsync` — never from `RebaseOntoStackedParentAsync`'s own call into that same preflight, so a stacked child's own placeholder stays exactly as unrenumbered as Decisions Log #162 already scopes it. It reads this branch's own already-fetched `origin/<base>` locally (no fetch of its own — the caller's own fetch is what just failed or was never attempted), confirms the worktree is genuinely still checked out on this run's own branch first (self-review finding: a wrong-branch skip must never compute a merge base, let alone a commit, against whatever HEAD happens to name), and — only when that local ref already equals this branch's own merge base, the identical no-op shape the existing renumbering call already trusts — runs `DecisionsLogRenumberer.RenumberIfNeededAsync` and records `RunRebasedOntoBase` with `WasNoOp: true` exactly as the pre-existing no-op path does, raising the same mandatory gate over the moved tip. Origin having moved further than the locally known ref confirms is left alone rather than committed against a base this branch was never actually rebased onto. **The closeout guard.** A new, read-only `DecisionsLogRenumberer.TailEntryIsThisTasksUnresolvedPlaceholderAsync` lets `CloseoutEngine.TryAutoMergeAsync` check PLAN.md's own tail immediately before its merge call: every stacked shape that would still owe a replay lap to renumber it (the existing `ParentMergedAligned` `StackReplay` dispatch) has already had its chance earlier the same sweep, so a placeholder surviving to this check parks instead of merging an unnumbered entry onto the project's base. **Tests.** Two `ReviewEngineTests` exercise the renumbering running on the fetch-failed and dirty-worktree skip paths against a real git worktree and origin (the dirty case plants an untracked file and asserts it is never swept into the renumbering commit); a `CloseoutEngineTests` case seeds a pre-approved task with every GitHub gate clean but its own placeholder still at PLAN.md's tail and asserts closeout parks naming the token rather than merging; the existing `StackedChildTests` suite (38 cases, unchanged) still passes, confirming the `ParentMergedAligned` replay-lap path is unaffected since it never reaches the new guard. `dotnet build` and `dotnet test` pass. **Does this block the later vision?** No — both changes are read/commit operations against this branch's own worktree and PLAN.md, using the identical mechanical renumbering step and lock convention already in place; nothing here touches the P2P identity layer (§16 #38-#58).
+
+> Renumbering placement note: this entry was appended under placeholder
+> `PLACEHOLDER-fc7b9494` and first assigned **#225** by this branch's own earlier
+> mechanical pre-final-pass rebase step — the log's next free number as of that
+> rebase. A later rebase onto main, done by hand because this branch's history had
+> gone on to conflict with its base, found `#225` already taken by the verify-gate
+> host-coupling entry (appended under `PLACEHOLDER-609bd344`, above), which had
+> reached main first along with `#226` (appended under `PLACEHOLDER-5e0cbfeb`) and
+> `#227`, both also above. Hand-renumbered here to **#228**, the log's next free
+> number as of this rebase, for the same reason a standalone follow-up's own
+> merge-base makes the mechanical step's transition check decline the reassignment
+> on its own. No citation of `#225` nor of the placeholder existed elsewhere in
+> this repository to rewrite.
+
+> Renumbering placement note: a further rebase onto main, done by hand for the same
+> reason as above, found `#228` already taken by the pull-request-body-composition
+> entry (appended under `PLACEHOLDER-26e2df63`, above), which reached main first.
+> Hand-renumbered here to **#229**, the log's next free number as of this rebase, for
+> the same reason a standalone follow-up's own merge-base makes the mechanical
+> step's transition check decline the reassignment on its own. No citation of `#228`
+> nor of the placeholder existed elsewhere in this repository to rewrite.
+
+> Renumbering placement note: a further rebase onto main, done by hand for the same
+> reason as above, found `#229` already taken by the cooperative-take entry
+> (appended under `PLACEHOLDER-777f0e18`, above), which reached main first.
+> Hand-renumbered here to **#230**, the log's next free number as of this rebase, for
+> the same reason a standalone follow-up's own merge-base makes the mechanical
+> step's transition check decline the reassignment on its own. No citation of `#229`
+> nor of the placeholder existed elsewhere in this repository to rewrite.
+
 ---
 
 ## 17. Reference Materials
