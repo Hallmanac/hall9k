@@ -13,6 +13,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
@@ -27,6 +28,10 @@ namespace Hall9k.Tests.Integration;
 /// chain read, and a scripted <see cref="ProcessRunner"/> stand-in for <c>gh</c> (Brian's
 /// 2026-09-13 testing rule).
 /// </summary>
+// The two success-path tests drive RunAsync all the way through, which rings the doorbell
+// (Hall9k.Cli.Infrastructure.Doorbell). That resolves its connection off the ambient
+// HALL9K_CONNECTION_STRING rather than this fixture, so each points it at the fixture for the
+// duration of its own call, the same way ClaimRefusalTests and StoreBackedCommandTests do.
 [Trait("Category", "RequiresDocker")]
 [Collection("Hall9kHome")]
 [Trait("Category", "Hall9kHome")]
@@ -162,8 +167,18 @@ public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyn
         TrackerAssignmentTake take = new(gh, requester: null);
 
         TaskTakeCommand.Settings settings = new() { Id = taskId.ToString(), Force = true, Reason = "Offline for six hours." };
-        int exitCode = await TaskTakeCommand.RunAsync(
-            _postgres.Store, session, settings, ledger, chainReader, take, new NodeKeyStore(), CancellationToken.None);
+        string? previousConnectionString = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, _postgres.ConnectionString);
+        int exitCode;
+        try
+        {
+            exitCode = await TaskTakeCommand.RunAsync(
+                _postgres.Store, session, settings, ledger, chainReader, take, new NodeKeyStore(), CancellationToken.None);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
+        }
 
         exitCode.Should().Be(
             ExitCodes.Ok, "the tracker take's own event append must not permanently stale the takeover's own expected version");
@@ -176,6 +191,85 @@ public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyn
         task.HolderNodeId.Should().Be(context.NodeId);
         task.TakenOverFromNodeId.Should().Be(previousHolderNodeId);
         task.State.Should().Be(TaskState.Queued);
+    }
+
+    [Fact]
+    public async Task A_lease_expiry_requeue_landing_during_the_tracker_take_rolls_the_override_back_to_no_holder()
+    {
+        // The high-severity defect this test guards against (adversarial pre-PR review, cycle 6):
+        // a race landing between the tracker take and the takeover's own re-validated read can
+        // move the task out of Claimed — a lease-expiry requeue, simulated here — and the
+        // rollback must then release the ledger to no holder rather than restore the ORIGINAL
+        // holder, a value the domain no longer recognises and no live command could ever clear
+        // again.
+        ExternalReference reference = new(WorkItemProvider.GitHub, "acme/web#7");
+        (ProjectDetails project, Guid taskId, Guid previousHolderNodeId) =
+            await SeedClaimedTaskAsync(ClaimGate.TrackerAssignee, reference);
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("holder-fingerprint", previousHolderNodeId, "OLD-NODE", Now.AddHours(-6)));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (string myFingerprint, string myPublicKeyLine) = await EstablishOwnRootAsync(session, CancellationToken.None);
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myFingerprint] = new(myFingerprint, myPublicKeyLine, []) },
+            [new ProjectMember(myFingerprint, MembershipRole.Owner, Now)]));
+
+        // The same "unassigned, then written" shape as the gated-project success test above: the
+        // item starts unassigned, this install's own edit writes it, and the read-back afterwards
+        // shows it holding — the one path that reaches TrackerAssignmentWritten rather than
+        // refusing outright. The lease-expiry requeue is injected on that read-back, after the
+        // tracker write itself has already landed, mirroring a sweep racing the round trip rather
+        // than something that happens before this install's own write.
+        bool written = false;
+        bool requeued = false;
+        ProcessRunner gh = async (_, arguments, _, cancellationToken) =>
+        {
+            if (arguments.Contains("edit"))
+            {
+                written = true;
+                return new ProcessResult(0, string.Empty, string.Empty);
+            }
+
+            if (written && !requeued)
+            {
+                requeued = true;
+                // The previous holder's own daemon, still alive locally, sweeping its own expired
+                // lease during this command's tracker round trip — DispatchEngine's own pairing
+                // (Requeue + ReleaseHolder together, in the one case a node's own lease expiry
+                // clears its own holder) through a separate session, exactly like the real sweep
+                // would use.
+                await using IDocumentSession requeueSession = _postgres.Store.LightweightSession();
+                TaskAggregate task = (await requeueSession.Events.AggregateStreamAsync<TaskAggregate>(
+                    taskId, token: cancellationToken))!;
+                requeueSession.Events.Append(
+                    taskId,
+                    TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now),
+                    TaskDecider.ReleaseHolder(task, Now));
+                await requeueSession.SaveChangesAsync(cancellationToken);
+            }
+
+            return arguments switch
+            {
+                ["api", "user", ..] => new ProcessResult(0, "this-install-login\n", string.Empty),
+                _ => new ProcessResult(
+                    0,
+                    written ? "{\"assignees\":[{\"login\":\"this-install-login\"}]}" : "{\"assignees\":[]}",
+                    string.Empty),
+            };
+        };
+        TrackerAssignmentTake take = new(gh, requester: null);
+
+        TaskTakeCommand.Settings settings = new() { Id = taskId.ToString(), Force = true, Reason = "Offline for six hours." };
+        Func<Task> act = () => TaskTakeCommand.RunAsync(
+            _postgres.Store, session, settings, ledger, chainReader, take, new NodeKeyStore(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<DomainConflictException>();
+
+        LedgerFile record = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), CancellationToken.None);
+        TaskRecord.TryParse(record.Content)!.Holder.Should().BeNull(
+            "the domain no longer recognises any holder for this task, so the rollback releases it "
+            + "rather than restoring the original holder, which nothing could ever clear again");
     }
 
     [Fact]
@@ -194,8 +288,18 @@ public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyn
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, CancellationToken.None);
 
         TaskTakeCommand.Settings settings = new() { Id = taskId.ToString(), Force = true, Reason = "Offline for six hours." };
-        int exitCode = await TaskTakeCommand.RunAsync(
-            _postgres.Store, session, settings, ledger, chainReader, take: null, new NodeKeyStore(), CancellationToken.None);
+        string? previousConnectionString = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, _postgres.ConnectionString);
+        int exitCode;
+        try
+        {
+            exitCode = await TaskTakeCommand.RunAsync(
+                _postgres.Store, session, settings, ledger, chainReader, take: null, new NodeKeyStore(), CancellationToken.None);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
+        }
 
         exitCode.Should().Be(ExitCodes.Ok);
 

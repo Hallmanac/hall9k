@@ -182,13 +182,23 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         catch (DomainConflictException)
         {
             // The task moved out of Claimed/NeedsHuman during the tracker take or the ledger
-            // override above — the exact race the re-validation above exists to catch. The ledger
-            // override already landed, so it is rolled back here exactly as it would be had the
-            // append itself lost the race below; RestoreLedgerOverrideBestEffortAsync reports its
-            // own outcome to the operator, and the decider's own conflict message (naming the
-            // task's actual current state) is left to propagate unchanged.
+            // override above — the exact race the re-validation above exists to catch. Unlike the
+            // append-race path below, freshTask is already in hand here, and by construction the
+            // decider just refused because ITS state — not its holder identity — no longer
+            // qualifies. When freshTask.HolderNodeId is null (the ordinary case: a release or
+            // requeue is exactly what moved the state), the domain no longer recognises ANY holder
+            // for this task, so restoring result.PreviousHolder would leave the ledger naming a
+            // node no live command can ever clear again (adversarial pre-PR review, cycle 6) —
+            // the correct rollback there is a release to null instead. Only when freshTask still
+            // names a holder (state left Claimed/NeedsHuman without ever releasing it, e.g. Done)
+            // does restoring result.PreviousHolder — the holder TryOverrideAsync actually
+            // overwrote — stay right, because freshTask.HolderNodeId still names it. This is not
+            // the cycle-2 restore-rather-than-null ruling being re-litigated: that ruling governs
+            // the append-race path below, where the stream moved but the aggregate can still
+            // legitimately name the original holder.
             await RestoreLedgerOverrideBestEffortAsync(
-                ledger, project.RepositoryPath, taskId, context.NodeId, result.PreviousHolder, committer,
+                ledger, project.RepositoryPath, taskId, context.NodeId,
+                freshTask.HolderNodeId is null ? null : result.PreviousHolder, committer,
                 signingKey, cancellationToken);
             throw;
         }
@@ -251,8 +261,16 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
 
         await Doorbell.RingAsync($"task-taken-over:{taskId}", cancellationToken);
 
+        // Named off the event actually appended, not the first read at the top of this method
+        // (conformance + adversarial pre-PR review, cycle 6): a re-claim landing during the
+        // tracker take or the ledger override moves takenOver.PreviousHolderNodeId away from
+        // previousHolderNodeId, and the durable record — not the stale first read — is what this
+        // line must agree with.
+        string takenFrom = takenOver.PreviousHolderNodeId is { } takenFromNodeId
+            ? $"node {DomainId.Short(takenFromNodeId)}"
+            : "no node";
         AnsiConsole.MarkupLine(
-            $"[green]Task {taskId} taken over[/] from node {DomainId.Short(previousHolderNodeId)} — "
+            $"[green]Task {taskId} taken over[/] from {takenFrom} — "
             + $"reason: {settings.Reason!.EscapeMarkup()}");
         AnsiConsole.MarkupLine(
             "[dim]This node claims it on its next dispatch sweep and resumes the branch where the "
