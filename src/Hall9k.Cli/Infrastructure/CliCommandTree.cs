@@ -1114,7 +1114,10 @@ public static class CliCommandTree
                 .WithDescription(
                     "Requeue a failed task for another run (human-only; Failed tasks only — Abandoned stays terminal). "
                     + "The failure stays on the stream; the new run resumes the failed run's branch when it survives, "
-                    + "or starts clean from the base branch when the artifacts are gone. "
+                    + "or starts clean from the base branch when the artifacts are gone. A branch the failed run "
+                    + "never pushed cannot be resumed from another machine — after h9k task take --force it exists "
+                    + "neither locally nor on origin, so the next run starts clean and that work does not come with "
+                    + "it. "
                     + "Failed's other exits: h9k task resolve (objective already met), h9k task abandon (walk away).")
                 .WithExample("task", "retry", "28b19893")
                 .WithExample("task", "retry", "28b19893", "--reason", "\"Daemon push bug fixed; the completed work is intact in the worktree\"");
@@ -1301,7 +1304,9 @@ public static class CliCommandTree
                     + "still has a live run for this task, that node stops it the next time this takeover "
                     + "replicates there — recorded as superseded by takeover, never Failed, transcript kept, no "
                     + "pull request action follows from it. This node claims the task on its own next dispatch "
-                    + "sweep and resumes whatever branch the previous run left behind.\n"
+                    + "sweep, and resumes the superseded run's branch only if that run pushed it: a branch that "
+                    + "never left the other machine exists neither here nor on origin, so the next run starts "
+                    + "clean from the base branch with none of that work in it.\n"
                     + "Without --force this asks cooperatively instead: a task with no current holder claims "
                     + "directly through the ordinary lock (nothing to negotiate), a task this node already "
                     + "holds says so, and a task another node holds gets a claim-request envelope queued for "

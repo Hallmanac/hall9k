@@ -20,6 +20,13 @@ namespace Hall9k.Cli.Commands;
 /// erases — and the next run resumes the failed run's branch when it survives, or starts
 /// clean from the base branch when the artifacts are gone. Human-only: no monitor drives
 /// this path (never loop on judgment, log #11).
+/// <para>
+/// "When it survives" is load-bearing after a forced takeover: a branch the superseded run never
+/// pushed exists only on that run's own machine, so the retry starts clean and that work does not
+/// come with it (#PLACEHOLDER-5c46cd1d). This command says what the stream actually records when it
+/// can see that shape, rather than leaving the human with only the hopeful reading — hedged on
+/// what it cannot check from here, which is origin itself and which node claims the retry.
+/// </para>
 /// </summary>
 public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Settings>
 {
@@ -159,6 +166,24 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
         {
             AnsiConsole.MarkupLineInterpolated(
                 $"[dim]Task {taskId} requeued — the next run starts clean from the base branch.[/]");
+        }
+        else if (previousRun is not null
+            && previousRun.NodeId != Guid.Empty
+            && previousRun.NodeId != context.NodeId
+            && task.LastPushedBranch != branch)
+        {
+            // The forced-takeover shape, said plainly rather than folded into the hopeful "resumes
+            // if it survives" below (#PLACEHOLDER-5c46cd1d). Two facts already observed, not a
+            // guess — RunDetails.NodeId and TaskAggregate.LastPushedBranch — say the failed run
+            // belongs to another node and that nothing on this task's stream records that branch
+            // ever being pushed. Neither settles where the branch actually is, so the message says
+            // what is on record and hedges the rest: TaskBranchPushed is appended only by
+            // PullRequestOpener and CloseoutEngine, so a branch a human pushed by hand leaves no
+            // mark here, and which node claims this retry is not decided by this command either —
+            // the node that ran it would find its own retained worktree and resume after all
+            // (both review lenses, cycle 1).
+            AnsiConsole.MarkupLineInterpolated(
+                $"[dim]Task {taskId} requeued — branch {branch} belongs to a run on another node and nothing on record says it was ever pushed. Unless it reached origin by some route that left no mark here, or the node that ran it claims this retry itself and still has the branch, the next run starts clean from the base branch, with none of that run's work in it. Once it launches, h9k task show says which way it went.[/]");
         }
         else
         {
