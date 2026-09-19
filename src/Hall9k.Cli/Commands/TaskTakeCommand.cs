@@ -370,8 +370,10 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             $"[green]Task {taskId} taken over[/] from {takenFrom} — "
             + $"reason: {reason.EscapeMarkup()}");
         AnsiConsole.MarkupLine(
-            "[dim]This node claims it on its next dispatch sweep and resumes the branch where the "
-            + "previous run left it.[/]");
+            "[dim]This node claims it on its next dispatch sweep. It can only resume the superseded "
+            + "run's branch if that run pushed it: a branch that never left the other machine exists "
+            + "neither here nor on origin, and the next run starts clean from the base branch with "
+            + "none of that work in it (h9k task show says so on the run once it launches).[/]");
 
         return ExitCodes.Ok;
     }

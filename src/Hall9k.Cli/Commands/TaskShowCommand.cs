@@ -644,8 +644,9 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             }
 
             AnsiConsole.Write(runsTable);
-            WriteCoordinates(runs, runDetailsById);
+            await WriteCoordinatesAsync(session, runs, runDetailsById, cancellationToken);
             RunDetails? newestRun = runDetailsById.GetValueOrDefault(runs[^1].Id);
+            WriteStartedCleanAfterBranchGone(newestRun);
             WriteReviewScopeSeed(newestRun);
             WriteReviewOutcome(newestRun);
             WriteReviewEndedByMerge(newestRun);
@@ -1243,6 +1244,31 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
     }
 
+    /// <summary>
+    /// The run meant to resume a branch and found it on neither side, so it started over from the
+    /// base branch (<c>RunStartedCleanAfterBranchGone</c>, #PLACEHOLDER-5c46cd1d). Said out loud
+    /// because everything else on this screen — the task's own retry, the previous run's recorded
+    /// branch — reads as though the work carried forward, and it did not. Normally there is
+    /// nothing here and this prints nothing.
+    /// </summary>
+    private static void WriteStartedCleanAfterBranchGone(RunDetails? run)
+    {
+        if (run?.StartedCleanAfterGoneBranch is not { } goneBranch)
+        {
+            return;
+        }
+
+        string whose = run.StartedCleanAfterGoneBranchWasForeignNodes
+            ? "another node's run built it and never pushed it, so nothing of that work reached this node"
+            : "an earlier attempt's artifacts are gone";
+        AnsiConsole.MarkupLine(
+            $"\n[bold]Started clean[/]  [yellow]branch {goneBranch.EscapeMarkup()} could not be resumed[/] "
+            + $"[dim]({whose})[/]");
+        AnsiConsole.MarkupLine(
+            $"  [dim]cut fresh from {(run.StartedCleanFromBaseBranch ?? "the base branch").EscapeMarkup()}; "
+            + $"{(run.StartedCleanAfterGoneBranchReason ?? "no reason recorded").EscapeMarkup()}[/]");
+    }
+
     private static string SessionErrorRetryLabel(SessionErrorRetryRecord retry)
     {
         string label = LegLabel(retry.Leg)
@@ -1805,9 +1831,26 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// <see cref="WriteSessionsAsync"/> already uses for the same reason, header included. A run
     /// whose coordinates were never recorded (a stream written before this task, or a
     /// reconstructed record) prints nothing for that run rather than a bare "-" line.
+    /// <para>
+    /// A run from ANOTHER node prints no path at all — only its branch and the machine it was last
+    /// seen on (#PLACEHOLDER-5c46cd1d). The path a foreign run recorded is a directory on somebody
+    /// else's disk; printing it in a column headed "Worktree" on this machine invites a reader to
+    /// cd into a path that does not exist here, and after a forced takeover it is exactly the
+    /// reader who most needs to know the work is elsewhere. Which node a run belongs to is read the
+    /// same way <see cref="WriteSessionsAsync"/> reads it, by machine name off
+    /// <see cref="NodeDetails"/>, so the two blocks can never disagree about what counts as here.
+    /// </para>
+    /// <para>
+    /// The one shape this cannot attribute is a run whose <see cref="RunDetails.NodeId"/> is the
+    /// <see cref="Guid.Empty"/> sentinel an interactive <c>h9k task work</c> claim carries: nothing
+    /// on that record names a node or a machine at all. Those keep printing their path, which is
+    /// right on the machine that ran the claim and wrong on any other node the record replicates
+    /// to — a known gap, named here rather than papered over with a guess.
+    /// </para>
     /// </summary>
-    private static void WriteCoordinates(
-        IReadOnlyList<RunListItem> runs, IReadOnlyDictionary<Guid, RunDetails> runDetailsById)
+    private static async Task WriteCoordinatesAsync(
+        IQuerySession session, IReadOnlyList<RunListItem> runs,
+        IReadOnlyDictionary<Guid, RunDetails> runDetailsById, CancellationToken cancellationToken)
     {
         List<(RunListItem Run, RunDetails Details)> withCoordinates = [.. runs
             .Select(run => (Run: run, Details: runDetailsById.GetValueOrDefault(run.Id)))
@@ -1819,15 +1862,50 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             return;
         }
 
+        Guid[] nodeIds = [.. withCoordinates
+            .Select(pair => OwningNodeOf(pair.Details))
+            .Where(nodeId => nodeId != Guid.Empty)
+            .Distinct()];
+        Dictionary<Guid, string> nodeMachines = (await session.Query<NodeDetails>()
+                .Where(n => n.Id.IsOneOf(nodeIds))
+                .ToListAsync(cancellationToken))
+            .ToDictionary(n => n.Id, n => n.MachineName);
+        string thisMachine = Environment.MachineName;
+
         AnsiConsole.MarkupLine("\n[bold]Worktree and branch[/]");
         foreach ((RunListItem run, RunDetails details) in withCoordinates)
         {
-            string worktree = details.WorktreePath.IsNotBlank() ? details.WorktreePath : "-";
             string branch = details.Branch.IsNotBlank() ? details.Branch : "-";
-            AnsiConsole.MarkupLine(
-                $"  [dim]{TaskListCommand.ShortId(run.Id)}[/]  {worktree.EscapeMarkup()}  {branch.EscapeMarkup()}");
+            Guid owningNode = OwningNodeOf(details);
+            string? machine = owningNode == Guid.Empty ? thisMachine : nodeMachines.GetValueOrDefault(owningNode);
+            string line = machine == thisMachine
+                ? $"{(details.WorktreePath.IsNotBlank() ? details.WorktreePath : "-").EscapeMarkup()}  {branch.EscapeMarkup()}"
+                : $"[dim]no worktree on this machine[/] — branch {branch.EscapeMarkup()}, "
+                    + $"last seen on {ElsewhereMarkup(owningNode, machine)}";
+            AnsiConsole.MarkupLine($"  [dim]{TaskListCommand.ShortId(run.Id)}[/]  {line}");
         }
     }
+
+    /// <summary>
+    /// Which node a run's worktree actually lives on: its own <see cref="RunDetails.NodeId"/>, or
+    /// <see cref="RunDetails.DispatchingNodeId"/> when that is the <see cref="Guid.Empty"/> sentinel
+    /// a deliberate <c>h9k task start</c> claim carries — that claim records the real dispatching
+    /// node precisely so a later reader can tell one node's sentinel runs from another's
+    /// (<c>RunDispatched.DispatchingNodeId</c>'s own doc). <see cref="Guid.Empty"/> when neither
+    /// names anything, which is an interactive claim or a stream written before that field existed.
+    /// </summary>
+    private static Guid OwningNodeOf(RunDetails details) =>
+        details.NodeId != Guid.Empty ? details.NodeId : details.DispatchingNodeId;
+
+    /// <summary>
+    /// Where a foreign run was last seen, naming the machine when this node has the node record to
+    /// name it with and admitting the gap when it does not — never a bare Guid dressed up as a
+    /// location (AGENTS.md's never-guess rule).
+    /// </summary>
+    private static string ElsewhereMarkup(Guid nodeId, string? machine) =>
+        machine.IsNotBlank()
+            ? $"{machine.EscapeMarkup()} [dim](node {DomainId.Short(nodeId)})[/]"
+            : $"[dim]node {DomainId.Short(nodeId)} — no machine recorded here[/]";
 
     /// <summary>
     /// The session identities each run's stream actually recorded (task: h9k task show surfaces
