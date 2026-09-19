@@ -96,6 +96,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         header.AddColumns("k", "v");
         header.AddRow("[bold]Objective[/]", ExternalText.OneLineMarkup(details.Objective));
         header.AddRow("Type", details.Type.Value.EscapeMarkup());
+        if (details.Type == TaskType.Spike)
+        {
+            WriteSpikeRows(header, details);
+        }
+
         header.AddRow("Id", $"[dim]{details.Id}[/]");
         header.AddRow("Assigned to", await AssigneeMarkupAsync(session, details, cancellationToken));
         if (details.InteractiveModeEnabled)
@@ -720,6 +725,41 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// A spike's own fields (task: a spike is a run, not a walk): kind, exit criterion, budget,
+    /// verdict, and findings path once one exists — added to the header table right after Type.
+    /// </summary>
+    private static void WriteSpikeRows(Table header, TaskDetails details)
+    {
+        header.AddRow("Kind", details.SpikeKind == SpikeKind.Unknown
+            ? "[yellow]none yet[/] [dim](required to publish — h9k task revise --kind <research|experiment|prototype>)[/]"
+            : details.SpikeKind.Value.EscapeMarkup());
+        header.AddRow("Exit criterion", details.ExitCriterion.IsBlank()
+            ? "[yellow]none yet[/] [dim](required to publish — h9k task revise --exit-criterion <sentence>)[/]"
+            : ExternalText.OneLineMarkup(details.ExitCriterion));
+        header.AddRow("Budget", details.Constraints is { } budget
+            ? $"max turns {budget.MaxTurns?.ToString() ?? "none"}, max tokens {budget.MaxTokens?.ToString() ?? "none"}, "
+              + $"max wall clock {budget.MaxWallClock?.ToString() ?? "none"}"
+            : "[dim]none — nothing is ever auto-killed[/]");
+        if (details.SpikeVerdict != SpikeVerdict.Unknown)
+        {
+            string verdictMarkup = details.SpikeVerdict.Value switch
+            {
+                "Met" => "[green]met[/]",
+                "NotMet" => "[red]not-met[/]",
+                _ => "[yellow]budget-exhausted[/]",
+            };
+            header.AddRow("Verdict", details.SpikeVerdictReason.IsNotBlank()
+                ? $"{verdictMarkup} — {ExternalText.OneLineMarkup(details.SpikeVerdictReason)}"
+                : verdictMarkup);
+        }
+
+        if (details.SpikeFindingsPath.IsNotBlank())
+        {
+            header.AddRow("Findings", $"[dim]{details.SpikeFindingsPath.EscapeMarkup()}[/]");
+        }
     }
 
     /// <summary>

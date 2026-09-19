@@ -84,9 +84,50 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         [CommandOption("--type <TYPE>")]
         [Description(
-            "feature | bugfix | refactor | chore | research | pr-review. pr-review is set for you by "
-            + "--from-pr and needs no explicit --type of its own")]
+            "feature | bugfix | refactor | chore | research | pr-review | spike. pr-review is set for "
+            + "you by --from-pr and needs no explicit --type of its own")]
         public string? Type { get; init; }
+
+        [CommandOption("--kind <KIND>")]
+        [Description(
+            "A spike's own kind (task: a spike is a run, not a walk), required with --type spike: "
+            + "research (read and measure, no code — no gates, branch kept locally), experiment (run "
+            + "and measure, code discarded — no gates, branch deleted locally once its findings are "
+            + "copied out), or prototype (build enough to demonstrate — the build and test gates run, "
+            + "and the branch is pushed to origin as evidence). Refused on any other task type")]
+        public string? Kind { get; init; }
+
+        [CommandOption("--exit-criterion <SENTENCE>")]
+        [Description(
+            "A spike's own exit criterion, required with --type spike: one checkable sentence its "
+            + "review cycle — exactly one review pass and at most one fix lap, fixed by the type — "
+            + "judges the findings document and the branch against, and nothing else. Refused on any "
+            + "other task type")]
+        public string? ExitCriterion { get; init; }
+
+        [CommandOption("--max-turns <N>")]
+        [Description(
+            "This task's own turn budget (PLAN.md §4 item 4): passed to the build session's agent "
+            + "launch as its own hard turn limit. Null (the default) means no limit — no declared "
+            + "budget means nothing is ever auto-killed (Decisions Log #11). For a spike, crossing "
+            + "this ends the build session and records a budget-exhausted verdict rather than failing "
+            + "the task")]
+        public int? MaxTurns { get; init; }
+
+        [CommandOption("--max-tokens <N>")]
+        [Description(
+            "This task's own token budget (PLAN.md §4 item 4). Null (the default) means no limit. For "
+            + "a spike, a build session whose cumulative spend has already crossed this by the time it "
+            + "ends is recorded budget-exhausted rather than proceeding to review")]
+        public long? MaxTokens { get; init; }
+
+        [CommandOption("--max-wall-clock <DURATION>")]
+        [Description(
+            "This task's own wall-clock budget (PLAN.md §4 item 4), as a duration the .NET "
+            + "TimeSpan parser accepts (e.g. 00:30:00 for thirty minutes, 1.00:00:00 for a day). Null "
+            + "(the default) means no limit. For a spike, a build session still running once this "
+            + "elapses is ended and recorded budget-exhausted rather than failed")]
+        public string? MaxWallClock { get; init; }
 
         [CommandOption("--context <CONTEXT>")]
         [Description("Agent-facing context (pointers, constraints, boundaries)")]
@@ -419,6 +460,25 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 + "--from-pr <url> naming it.");
         }
 
+        // A spike's kind and exit criterion are required WITH --type spike, and meaningless on any
+        // other type — the identical bidirectional shape --from-pr/pr-review already enforces above
+        // (task: a spike is a run, not a walk).
+        if (taskType == TaskType.Spike && (settings.Kind.IsBlank() || settings.ExitCriterion.IsBlank()))
+        {
+            throw new DomainValidationException(
+                "A spike needs both --kind <research|experiment|prototype> and --exit-criterion "
+                + "<one checkable sentence> to be created.");
+        }
+
+        if (taskType != TaskType.Spike && (settings.Kind.IsNotBlank() || settings.ExitCriterion.IsNotBlank()))
+        {
+            throw new DomainValidationException(
+                "--kind and --exit-criterion are a spike's own fields — pass --type spike, or drop them.");
+        }
+
+        SpikeKind? spikeKind = settings.Kind.IsNotBlank() ? SpikeKind.Parse(settings.Kind) : null;
+        TaskConstraints? constraints = BuildConstraints(settings.MaxTurns, settings.MaxTokens, settings.MaxWallClock);
+
         AgentModel taskModel = TaskDecider.VetModel(AgentModel.FromInput(model));
         // Vetted early, on the near side of the prompts below, for the same reason taskModel is
         // (adversarial review, cycle 1 — the comment above this one says why): refusing an
@@ -527,7 +587,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             criteria,
             taskType,
             agentContext,
-            constraints: null,
+            constraints,
             imported?.Reference,
             DateTimeOffset.UtcNow,
             context.OwnerId,
@@ -546,7 +606,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             // 202383dc, A3a; the record's own doc comment carries the fuller argument).
             origin: null,
             sourceIdeaId: sourceIdea?.Id,
-            secondaryExternalReference: secondaryImported?.Reference);
+            secondaryExternalReference: secondaryImported?.Reference,
+            spikeKind: spikeKind,
+            exitCriterion: settings.ExitCriterion);
         session.Events.StartStream<TaskAggregate>(taskId, added);
 
         if (sourceIdea is not null)
@@ -753,6 +815,25 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                     + "a project default: h9k project set <project> --primary-tracker github|jira.");
 
         return chosen == WorkItemProvider.GitHub ? (issue, jira) : (jira, issue);
+    }
+
+    /// <summary>
+    /// This task's own budget (PLAN.md §4 item 4) out of the three raw options, or null when none
+    /// were passed — no declared budget means nothing is ever auto-killed (Decisions Log #11).
+    /// </summary>
+    internal static TaskConstraints? BuildConstraints(int? maxTurns, long? maxTokens, string? maxWallClock)
+    {
+        TimeSpan? wallClock = maxWallClock.IsBlank()
+            ? null
+            : TimeSpan.TryParse(maxWallClock, out TimeSpan parsed)
+                ? parsed
+                : throw new DomainValidationException(
+                    $"--max-wall-clock '{maxWallClock}' is not a duration .NET can parse. Try "
+                    + "00:30:00 for thirty minutes, or 1.00:00:00 for a day.");
+
+        return maxTurns is null && maxTokens is null && wallClock is null
+            ? null
+            : new TaskConstraints(maxTurns, maxTokens, wallClock);
     }
 
     /// <summary>The strict form --primary-tracker's own input goes through — a typo here would silently pick a tracker nobody asked for.</summary>
