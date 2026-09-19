@@ -20,6 +20,14 @@ public sealed record TaskType
     /// (dismiss, comment themselves, or have the session post on their behalf), never a diff.
     /// </summary>
     public static readonly TaskType PrReview = new("PrReview");
+    /// <summary>
+    /// Answers a stated question under a stated budget (task: a spike is a run, not a walk): one
+    /// review cycle and at most one fix lap, fixed by the type, judging only the findings document
+    /// and the branch against the exit criterion — never a pull request, draft or otherwise. Exits
+    /// with a findings document and a recorded verdict (<see cref="SpikeVerdict"/>), whatever the
+    /// kind (<see cref="SpikeKind"/>).
+    /// </summary>
+    public static readonly TaskType Spike = new("Spike");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly TaskType Unknown = new("");
 
@@ -41,7 +49,8 @@ public sealed record TaskType
         TryParse(value, out TaskType? parsed)
             ? parsed
             : throw new DomainValidationException(
-                $"Unknown task type '{value}'. Use feature, bugfix, refactor, chore, research, or pr-review.");
+                $"Unknown task type '{value}'. Use feature, bugfix, refactor, chore, research, "
+                + "pr-review, or spike.");
 
     /// <summary>
     /// The same vocabulary as <see cref="Parse"/>, answering false instead of refusing. For a
@@ -62,6 +71,7 @@ public sealed record TaskType
             "chore" => Chore,
             "research" => Research,
             "pr-review" or "pr_review" or "prreview" => PrReview,
+            "spike" => Spike,
             _ => null,
         };
 

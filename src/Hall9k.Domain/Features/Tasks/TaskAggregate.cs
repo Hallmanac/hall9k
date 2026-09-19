@@ -16,6 +16,21 @@ public sealed class TaskAggregate
     public TaskConstraints? Constraints { get; private set; }
     public ExternalReference? ExternalReference { get; private set; }
 
+    /// <summary>A spike's own kind (task: a spike is a run, not a walk); <see cref="SpikeKind.Unknown"/> on every non-spike task.</summary>
+    public SpikeKind SpikeKind { get; private set; } = Hall9k.Domain.Features.Tasks.SpikeKind.Unknown;
+
+    /// <summary>A spike's own exit criterion, one checkable sentence the review cycle judges the findings and the branch against; null on every non-spike task.</summary>
+    public string? ExitCriterion { get; private set; }
+
+    /// <summary>A spike's own recorded verdict, set once its review cycle concludes; <see cref="SpikeVerdict.Unknown"/> until then.</summary>
+    public SpikeVerdict SpikeVerdict { get; private set; } = Hall9k.Domain.Features.Tasks.SpikeVerdict.Unknown;
+
+    /// <summary>The reviewer's own reason for the verdict, or the budget-exhaustion reason.</summary>
+    public string? SpikeVerdictReason { get; private set; }
+
+    /// <summary>Where the spike's findings document landed, set alongside the verdict.</summary>
+    public string? SpikeFindingsPath { get; private set; }
+
     /// <summary>
     /// A second external item, shown and linked but never gating or written to (task: a task may
     /// link to both a GitHub issue and a Jira card). <see cref="ExternalReference"/> is the primary
@@ -936,6 +951,8 @@ public sealed class TaskAggregate
         PreApproval = @event.EffectivePreApproval;
         Origin = @event.Origin;
         StackedOnPullRequestNumber = @event.StackedOnPullRequestNumber;
+        SpikeKind = @event.SpikeKind ?? Hall9k.Domain.Features.Tasks.SpikeKind.Unknown;
+        ExitCriterion = @event.ExitCriterion;
 
         if (@event.StartsAsDraft)
         {
@@ -1054,6 +1071,21 @@ public sealed class TaskAggregate
         if (@event.CloseLinkedIssue.HasValue)
         {
             CloseLinkedIssue = @event.CloseLinkedIssue.Value;
+        }
+
+        if (@event.SpikeKind.HasValue)
+        {
+            SpikeKind = @event.SpikeKind.Value ?? Hall9k.Domain.Features.Tasks.SpikeKind.Unknown;
+        }
+
+        if (@event.ExitCriterion.HasValue)
+        {
+            ExitCriterion = @event.ExitCriterion.Value;
+        }
+
+        if (@event.Constraints.HasValue)
+        {
+            Constraints = @event.Constraints.Value;
         }
 
         // The fourth clearing act alongside Apply(TaskHandedBack), a default Apply(TaskRequeued),
@@ -1842,6 +1874,20 @@ public sealed class TaskAggregate
     }
 
     public void Apply(TaskFailed @event) => State = TaskState.Failed;
+
+    /// <summary>
+    /// Records a spike's own verdict (task: a spike is a run, not a walk). Never changes
+    /// <see cref="State"/> itself — this is always appended alongside a <see cref="TaskCompleted"/>
+    /// in the same batch, which is what actually reaches Done, exactly as
+    /// <see cref="Apply(PullRequestReviewFollowThroughOpened)"/>'s sibling event does for its own
+    /// finalize.
+    /// </summary>
+    public void Apply(SpikeConcluded @event)
+    {
+        SpikeVerdict = @event.Verdict;
+        SpikeVerdictReason = @event.Reason;
+        SpikeFindingsPath = @event.FindingsPath;
+    }
 
     // The failure stays on the stream; resolve only moves the state and records where the
     // work landed. A resolved task is Done like any other — reopenable when it has a PR.

@@ -61,6 +61,13 @@ public sealed class IdeaAggregate
 
     public void Apply(IdeaTaskCut @event) => cutTaskIds.Add(@event.TaskId);
 
+    /// <summary>
+    /// Bookkeeping only — <c>h9k idea show</c> renders a spike's verdict off the task's own live
+    /// projection, joined through <see cref="CutTaskIds"/>, never off this replay (see
+    /// <see cref="IdeaSpikeConcluded"/>'s own doc for why).
+    /// </summary>
+    public void Apply(IdeaSpikeConcluded @event) { }
+
     public void Apply(IdeaConcluded @event)
     {
         ConcludeReason = @event.Reason;

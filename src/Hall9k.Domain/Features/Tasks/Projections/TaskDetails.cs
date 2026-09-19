@@ -27,6 +27,16 @@ public sealed class TaskDetails
     public TaskState State { get; set; } = TaskState.Unknown;
     public string? AgentContext { get; set; }
     public TaskConstraints? Constraints { get; set; }
+    /// <summary>A spike's own kind (task: a spike is a run, not a walk); <see cref="Tasks.SpikeKind.Unknown"/> on every non-spike task.</summary>
+    public SpikeKind SpikeKind { get; set; } = SpikeKind.Unknown;
+    /// <summary>A spike's own exit criterion, one checkable sentence the review cycle judges the findings and the branch against.</summary>
+    public string? ExitCriterion { get; set; }
+    /// <summary>A spike's own recorded verdict, set once its review cycle concludes; <see cref="Tasks.SpikeVerdict.Unknown"/> until then.</summary>
+    public SpikeVerdict SpikeVerdict { get; set; } = SpikeVerdict.Unknown;
+    /// <summary>The reviewer's own reason for the verdict, or the budget-exhaustion reason.</summary>
+    public string? SpikeVerdictReason { get; set; }
+    /// <summary>Where the spike's findings document landed, set alongside the verdict.</summary>
+    public string? SpikeFindingsPath { get; set; }
     public string? ExternalReference { get; set; }
     /// <summary>
     /// A second external item, shown and linked but never gating or written to (task: a task may
@@ -502,6 +512,8 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         StackedOnPullRequestNumber = @event.Data.StackedOnPullRequestNumber,
         AgentContext = @event.Data.AgentContext,
         Constraints = @event.Data.Constraints,
+        SpikeKind = @event.Data.SpikeKind ?? SpikeKind.Unknown,
+        ExitCriterion = @event.Data.ExitCriterion,
         ExternalReference = @event.Data.ExternalReference?.ToString(),
         SecondaryExternalReference = @event.Data.SecondaryExternalReference?.ToString(),
         Model = @event.Data.Model ?? AgentModel.Unknown,
@@ -610,6 +622,21 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         if (@event.Data.CloseLinkedIssue.HasValue)
         {
             view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value;
+        }
+
+        if (@event.Data.SpikeKind.HasValue)
+        {
+            view.SpikeKind = @event.Data.SpikeKind.Value ?? SpikeKind.Unknown;
+        }
+
+        if (@event.Data.ExitCriterion.HasValue)
+        {
+            view.ExitCriterion = @event.Data.ExitCriterion.Value;
+        }
+
+        if (@event.Data.Constraints.HasValue)
+        {
+            view.Constraints = @event.Data.Constraints.Value;
         }
 
         // Mirrors TaskAggregate.Apply(TaskRevised): the third clearing act alongside
@@ -1040,6 +1067,14 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         }
 
         view.State = TaskState.Claimed;
+    }
+
+    /// <summary>Records a spike's own verdict; never touches <see cref="TaskDetails.State"/> — the sibling <see cref="TaskCompleted"/> appended in the same batch is what reaches Done.</summary>
+    public void Apply(IEvent<SpikeConcluded> @event, TaskDetails view)
+    {
+        view.SpikeVerdict = @event.Data.Verdict;
+        view.SpikeVerdictReason = @event.Data.Reason;
+        view.SpikeFindingsPath = @event.Data.FindingsPath;
     }
 
     public void Apply(IEvent<TaskCompleted> @event, TaskDetails view)

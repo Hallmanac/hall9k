@@ -79,4 +79,15 @@ public sealed record TaskRevised(
     /// decides again, live, exactly as <see cref="ReviewStageComposition"/>'s own clearing idiom
     /// works for its setting.
     /// </summary>
-    Optional<CloseLinkedIssueRule?> CloseLinkedIssue = default);
+    Optional<CloseLinkedIssueRule?> CloseLinkedIssue = default,
+    /// <summary>
+    /// A spike's own kind, absent leaves it alone (task: a spike is a run, not a walk). One of the
+    /// three fields <c>Handlers.TaskDecider.Revise</c> lets through on a Published spike, alongside
+    /// <see cref="ExitCriterion"/> and <see cref="Constraints"/> — every other field here stays
+    /// Draft-only.
+    /// </summary>
+    Optional<SpikeKind> SpikeKind = default,
+    /// <summary>A spike's own exit criterion, absent leaves it alone. Settable on a Published spike, the same carve-out <see cref="SpikeKind"/> gets.</summary>
+    Optional<string> ExitCriterion = default,
+    /// <summary>A spike's own budget, absent leaves it alone, present-with-null clears it. Settable on a Published spike, the same carve-out <see cref="SpikeKind"/> gets.</summary>
+    Optional<TaskConstraints?> Constraints = default);
