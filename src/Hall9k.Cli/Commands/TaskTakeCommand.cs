@@ -664,20 +664,38 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                         + "sweep will never claim it, and there is no cooperative lever here for a task nobody "
                         + $"holds yet. Move it first: h9k task unassign {taskId} && h9k task assign {taskId} <owner>.");
                 }
-                else
+                else if (task.State.IsTerminal)
                 {
                     // task.State.IsAssigned (Queued||Blocked) is not the same fact as "AssignedOwnerId is
-                    // null": a closeout path (Abandon, Fail, the terminal Done) appends its own ordinary
+                    // null": a closeout path (Abandon, the terminal Done) appends its own ordinary
                     // TaskHolderReleased alongside the closeout event, clearing HolderNodeId but leaving
                     // AssignedOwnerId and the terminal State untouched (independent pre-PR review, cycle 4,
                     // adversarial lens) — so a task can reach here with a non-null AssignedOwnerId while its
                     // State is neither Queued/Blocked nor unassigned. Neither remedy applies: TaskDecider.Assign
                     // and TaskDecider.Unassign both refuse anything but Published/Queued/Blocked
-                    // (TaskDecider.cs:1044, 1091) — its story has already ended.
+                    // (TaskDecider.cs:1044, 1091) — its story has already ended. TaskState.IsTerminal (Done or
+                    // Abandoned) is the actual boundary here, not merely "not Queued/Blocked" (independent
+                    // pre-PR review, cycle 5, conformance lens): Claimed, NeedsHuman, AwaitingAuthor and Failed
+                    // all reach this branch too, and none of them has ended.
                     AnsiConsole.MarkupLine(
                         $"[yellow]Task {taskId} has no current holder[/] — it is {task.State.Value}, and its "
                         + $"story has already ended. It is still recorded as assigned to "
                         + $"{assignedOwnerLabel.EscapeMarkup()}, but nothing here can move or reclaim it.");
+                }
+                else
+                {
+                    // Claimed, NeedsHuman, AwaitingAuthor and Failed all reach here with no ledger holder:
+                    // an interactive claim (h9k task work/start) records TaskClaimed with the Guid.Empty
+                    // sentinel, which TaskAggregate.Apply skips the holder write for (TaskAggregate.cs:1366)
+                    // — so the task can be under active human work, or waiting on that human's own next
+                    // decision, without ever naming a ledger holder to ask (independent pre-PR review, cycle
+                    // 5, conformance lens: the terminal wording above wrongly told a reader that a live claim
+                    // was over).
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Task {taskId} has no current holder[/] — it is {task.State.Value}, which "
+                        + "records no ledger holder for an interactive claim. It is still recorded as assigned "
+                        + $"to {assignedOwnerLabel.EscapeMarkup()}; there is no cooperative lever here, since "
+                        + "nothing holds it to ask.");
                 }
             }
 
