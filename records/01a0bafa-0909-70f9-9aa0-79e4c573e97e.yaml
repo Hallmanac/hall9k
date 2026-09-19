@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a0bafa-0909-70f9-9aa0-79e4c573e97e
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#495
+objective: |-
+  h9k task show renders a task another node holds correctly: the HeldElsewhere state is named, the holder is the node, and the worktree section shows only paths on this machine
+criteria:
+  - TaskShowCommand's state text names HeldElsewhere (the LifecycleState exists; the show's switch falls to 'this build does not recognize the recorded state') with the same wording h9k status uses
+  - The 'held by' fact names the holder node id and its owner's login or root, never the owner root alone as if it were a node
+  - The worktree and branch section omits a worktree path recorded by another node and says which node holds the worktree instead
+  - Golden or unit tests cover the three renders; no test creates branches or touches GitHub
+  - dotnet build and dotnet test pass; the decision log carries one entry under this task's placeholder
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/c573e97e-h9k-task-show-renders-a-task-a
+published: 2026-09-19 18:50:18Z
+context: |-
+  Captured 2026-09-19 14:4x EDT by the Mac project window. Evidence, verbatim from the Windows project window (mailbox 14:34 and 14:36 EDT) for a56cf16e while the Mac held it: 'State HeldElsewhere (this build does not recognize the recorded state)', 'held by c8f5c85900da since 11m ago' (the owner root fingerprint, not a node), and the worktree line showing /Users/brianhallmanac/.hall9k/projects/hall9k/repo/wt-a56cf16e-f5944e13 on Windows even after Windows claimed. The Mac shows the same unrecognized-state text for a56cf16e now that Windows holds it. Pointers: src/Hall9k.Cli/Commands/TaskShowCommand.cs about line 928 (the state switch default), PublishedFacts.HeldElsewhereFact, LifecycleState.HeldElsewhere. Windows's own draft 5c46cd1d covers the foreign worktree path from the retry angle; coordinate, do not duplicate. Lineage: rendering gaps in M2a, not a fix of a fix.
