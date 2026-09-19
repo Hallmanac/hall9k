@@ -118,6 +118,67 @@ public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyn
     }
 
     [Fact]
+    public async Task A_gated_projects_own_tracker_take_that_succeeds_still_appends_the_takeover()
+    {
+        // The stale-fence bug this test guards against (conformance pre-PR review, cycle 1): the
+        // tracker take's own successful write appends TrackerAssignmentWritten onto this exact
+        // task stream, ahead of the takeover's own append — an expected version read before that
+        // write runs would conflict every time, so a gated project's take could never succeed.
+        ExternalReference reference = new(WorkItemProvider.GitHub, "acme/web#7");
+        (ProjectDetails project, Guid taskId, Guid previousHolderNodeId) =
+            await SeedClaimedTaskAsync(ClaimGate.TrackerAssignee, reference);
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("holder-fingerprint", previousHolderNodeId, "OLD-NODE", Now.AddHours(-6)));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (string myFingerprint, string myPublicKeyLine) = await EstablishOwnRootAsync(session, CancellationToken.None);
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myFingerprint] = new(myFingerprint, myPublicKeyLine, []) },
+            [new ProjectMember(myFingerprint, MembershipRole.Owner, Now)]));
+
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, CancellationToken.None);
+
+        // The item starts unassigned, so the take writes this install's own identity into it and
+        // the read-back afterward shows it holding — the "Taken" verdict, the one path that
+        // appends an event (TrackerAssignmentWritten) onto the task's own stream.
+        bool written = false;
+        ProcessRunner gh = (_, arguments, _, _) =>
+        {
+            if (arguments.Contains("edit"))
+            {
+                written = true;
+                return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+            }
+
+            return Task.FromResult(arguments switch
+            {
+                ["api", "user", ..] => new ProcessResult(0, "this-install-login\n", string.Empty),
+                _ => new ProcessResult(
+                    0,
+                    written ? "{\"assignees\":[{\"login\":\"this-install-login\"}]}" : "{\"assignees\":[]}",
+                    string.Empty),
+            });
+        };
+        TrackerAssignmentTake take = new(gh, requester: null);
+
+        TaskTakeCommand.Settings settings = new() { Id = taskId.ToString(), Force = true, Reason = "Offline for six hours." };
+        int exitCode = await TaskTakeCommand.RunAsync(
+            _postgres.Store, session, settings, ledger, chainReader, take, new NodeKeyStore(), CancellationToken.None);
+
+        exitCode.Should().Be(
+            ExitCodes.Ok, "the tracker take's own event append must not permanently stale the takeover's own expected version");
+
+        LedgerFile record = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), CancellationToken.None);
+        TaskRecord.TryParse(record.Content)!.Holder!.NodeId.Should().Be(context.NodeId);
+
+        TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: CancellationToken.None))!;
+        task.HolderNodeId.Should().Be(context.NodeId);
+        task.TakenOverFromNodeId.Should().Be(previousHolderNodeId);
+        task.State.Should().Be(TaskState.Queued);
+    }
+
+    [Fact]
     public async Task An_owner_role_member_forces_the_takeover_writes_the_new_holder_and_appends_the_event()
     {
         (ProjectDetails project, Guid taskId, Guid previousHolderNodeId) = await SeedClaimedTaskAsync(ClaimGate.Off, externalReference: null);

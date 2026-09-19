@@ -222,7 +222,7 @@ internal static class PublishedFacts
         return
         [
             .. facts,
-            .. task.TakenOverAt is { } takenOverAt ? (string[])[TakenOverFact(task, takenOverAt)] : [],
+            .. task.TakenOverAt is { } takenOverAt ? (string[])[TakenOverFact(task, takenOverAt, now)] : [],
             .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
             .. task.EffectivePreApproval.MergesAutomatically
                 ? (string[])[PreApprovedFact(task.EffectivePreApproval)]
@@ -237,12 +237,12 @@ internal static class PublishedFacts
     /// claim can be a sweep or two away and a human reading the board in the meantime should not
     /// have to already know to look at <c>h9k task show</c> for it.
     /// </summary>
-    private static string TakenOverFact(TaskListItem task, DateTimeOffset takenOverAt)
+    private static string TakenOverFact(TaskListItem task, DateTimeOffset takenOverAt, DateTimeOffset now)
     {
         string from = task.TakenOverFromNodeId is { } fromNodeId
             ? $"node {TaskListCommand.ShortId(fromNodeId)}"
             : "an unrecorded previous holder";
-        string since = TaskStatusComposer.RelativeAge(DateTimeOffset.UtcNow - takenOverAt);
+        string since = TaskStatusComposer.RelativeAge(now - takenOverAt);
         return task.TakenOverReason.IsNotBlank()
             ? $"taken over from {from} {since} ago — {task.TakenOverReason}"
             : $"taken over from {from} {since} ago";

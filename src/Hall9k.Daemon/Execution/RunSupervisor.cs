@@ -552,8 +552,8 @@ public sealed class RunSupervisor(
     public async Task StopRunsSupersededByTakeoverAsync(CancellationToken cancellationToken)
     {
         Guid nodeId = node.NodeId;
-        await using IDocumentSession session = store.LightweightSession();
-        IReadOnlyList<RunDetails> candidates = await session.Query<RunDetails>()
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<RunDetails> candidates = await query.Query<RunDetails>()
             .Where(run => run.NodeId == nodeId)
             .Where(run => run.MatchesSql(
                 "d.data ->> 'state' in (?, ?, ?, ?)",
@@ -567,6 +567,15 @@ public sealed class RunSupervisor(
             {
                 continue;
             }
+
+            // A session of its own per candidate (adversarial pre-PR review, cycle 1): Marten's
+            // own DocumentSessionBase.SaveChangesAsync clears the unit of work only on success, so
+            // a session shared across this whole loop would replay an earlier iteration's own
+            // failed append on every later save — silently dropping every kill behind the first
+            // conflict this sweep hits. AdoptOrphansAsync's own RetireStaleAdoptionCandidateAsync
+            // and CardPublicationEngine.PollOnceAsync already give each loop item this same
+            // isolation.
+            await using IDocumentSession session = store.LightweightSession();
 
             StreamState? taskFence = await session.Events.FetchStreamStateAsync(run.TaskId, cancellationToken);
             if (taskFence is null)

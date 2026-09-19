@@ -107,6 +107,22 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
 
         await PrintEvidenceAsync(session, previousHolderNodeId, task.HolderSince, cancellationToken);
 
+        (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
+            await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
+        NodeDetails? myNode = await session.LoadAsync<NodeDetails>(context.NodeId, cancellationToken);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        // The state/reason guard runs before anything external is written (adversarial +
+        // conformance pre-PR review, cycle 1): a task this decider refuses has no holder for a
+        // forced take to override, and finding that out only after the tracker take and the
+        // ledger override have already changed two external systems leaves both stuck with no
+        // event ever recorded to show for it — unrecoverable by re-running, since neither write is
+        // idempotent against a state that never changes. Building the event here, before either
+        // external write, validates the guard first and carries the exact same data to the append
+        // below.
+        TaskHolderTakenOver takenOver = TaskDecider.TakeOver(
+            task, context.NodeId, context.OwnerId, ownerFingerprint, settings.Reason!, context.OwnerId, now);
+
         // Gated projects run the existing tracker take first (idea 202383dc, item 4, criterion 2):
         // its own refusal — DomainBusinessRuleException, Program.cs's own exit 70 mapping — stops
         // the override outright, before the ledger holder is ever touched, with the tracker's own
@@ -114,10 +130,6 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         await TrackerClaimCheck.TakeOrRefuseAsync(
             store, taskId, project, task.ExternalReference?.ToString(), take, cancellationToken);
 
-        (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
-            await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
-        NodeDetails? myNode = await session.LoadAsync<NodeDetails>(context.NodeId, cancellationToken);
-        DateTimeOffset now = DateTimeOffset.UtcNow;
         TaskRecordHolder candidate = new(ownerFingerprint, context.NodeId, myNode?.MachineName ?? Environment.MachineName, now);
 
         HolderOverrideResult result = await TaskLedgerHolder.TryOverrideAsync(
@@ -141,19 +153,35 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                 break;
         }
 
-        TaskHolderTakenOver takenOver = TaskDecider.TakeOver(
-            task, context.NodeId, context.OwnerId, ownerFingerprint, settings.Reason!, context.OwnerId, now);
-        session.Events.Append(taskId, expectedVersion: fence.Version + 1, takenOver);
+        // Re-fenced immediately before the append (conformance pre-PR review, cycle 1): the
+        // tracker take above commits its own event onto this exact stream on a gated project, so
+        // the fence read at the top of this method is stale by the time this line runs —
+        // appending against it would conflict every time. Refetched here, as close to the append
+        // as this method gets, the same discipline DispatchEngine.TryClaimAsync's own re-read
+        // gives its claim right before its own commit.
+        StreamState? freshFence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        session.Events.Append(taskId, expectedVersion: freshFence.Version + 1, takenOver);
         try
         {
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (EventStreamUnexpectedMaxEventIdException)
         {
+            // The ledger override above already landed — pushed and confirmed — before this
+            // commit ever ran, and a takeover that loses this race here never happened:
+            // TaskHolderTakenOver was never appended, so nothing else this platform ships will
+            // ever release a holder this node's own aggregate never recorded taking (adversarial
+            // pre-PR review, cycle 1 — the same hazard DispatchEngine.TryClaimAsync's own
+            // ReleaseLedgerHolderBestEffortAsync exists to close for the ordinary claim path).
+            // Best effort: this call is safe even if the release itself cannot land, since a
+            // failure here is reported rather than silently swallowed.
+            await ReleaseLedgerOverrideBestEffortAsync(
+                ledger, project.RepositoryPath, taskId, context.NodeId, committer, signingKey, cancellationToken);
             throw new DomainConflictException(
-                $"Task {taskId} changed while recording this takeover — the ledger holder now names this "
-                + "node regardless, so re-running h9k task take --force will pick up cleanly. Check "
-                + "h9k task show and try again.");
+                $"Task {taskId} changed while recording this takeover — the ledger holder override was "
+                + "rolled back rather than left pointing at a node whose own task stream never recorded "
+                + "taking it. Check h9k task show and re-run h9k task take --force once that settles.");
         }
 
         await Doorbell.RingAsync($"task-taken-over:{taskId}", cancellationToken);
@@ -166,6 +194,38 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             + "previous run left it.[/]");
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Best-effort undo of the ledger override this command just wrote, for the one path where
+    /// this command's own final append never lands (a concurrent change on the task's own stream
+    /// between the refetch and the commit): a failure to release here is reported to the operator
+    /// rather than left silent, since — unlike <c>DispatchEngine.ReleaseLedgerHolderBestEffortAsync</c>'s
+    /// own retry sweep — this CLI process has no later tick to retry it on.
+    /// </summary>
+    private static async Task ReleaseLedgerOverrideBestEffortAsync(
+        ILedger ledger, string repositoryPath, Guid taskId, Guid nodeId, LedgerCommitter committer,
+        LedgerSigningKey signingKey, CancellationToken cancellationToken)
+    {
+        try
+        {
+            HolderReleaseResult release = await TaskLedgerHolder.TryReleaseAsync(
+                ledger, repositoryPath, taskId, nodeId, committer, signingKey, cancellationToken);
+            if (release.Verdict == HolderReleaseVerdict.Failed)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Warning:[/] the ledger holder override for task {taskId} could not be rolled "
+                    + $"back — {release.FailureReason} It still names this node; an owner-role member "
+                    + "will need to force a takeover away from it again.");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Warning:[/] rolling back the ledger holder override for task {taskId} failed — "
+                + $"{exception.Message} It still names this node; an owner-role member will need to force "
+                + "a takeover away from it again.");
+        }
     }
 
     /// <summary>
