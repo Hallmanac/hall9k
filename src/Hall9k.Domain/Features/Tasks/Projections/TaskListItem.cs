@@ -59,12 +59,12 @@ public sealed class TaskListItem
     /// <summary>Whose work this is; null until an explicit assignment says (Decisions Log #34).</summary>
     public Guid? AssignedOwnerId { get; set; }
     /// <summary>
-    /// Mirrors <see cref="TaskAggregate.AssignedOwnerFingerprint"/> (idea 20723ef8) — carried on
-    /// this lean row too, and not merely on <see cref="TaskDetails"/>, because the daemon's own
-    /// queue read (this class's own doc) is the one place a forged <see cref="AssignedOwnerId"/>
-    /// would otherwise hide the true grantee's own task from its own queue: filtering on the Guid
-    /// alone would exclude a row a cooperative grant forged to a different owner's id even from the
-    /// node whose own fingerprint the grant actually verified.
+    /// Mirrors <see cref="TaskAggregate.AssignedOwnerFingerprint"/> — carried on this lean row too,
+    /// and not merely on <see cref="TaskDetails"/>, because the daemon's own queue read (this
+    /// class's own doc) is the one place this matters most: filtering on <see cref="AssignedOwnerId"/>
+    /// alone would exclude a row from the queue of the node whose own fingerprint an ordinary
+    /// cross-node assignment (idea f72138e1) or a cooperative grant (idea 20723ef8) actually named,
+    /// whenever that id is a local Guid this node never registered.
     /// </summary>
     public string? AssignedOwnerFingerprint { get; set; }
     /// <summary>
@@ -424,7 +424,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     public void Apply(IEvent<TaskAssigned> @event, TaskListItem view)
     {
         view.AssignedOwnerId = @event.Data.AssignedOwnerId;
-        view.AssignedOwnerFingerprint = null;
+        view.AssignedOwnerFingerprint = @event.Data.AssignedOwnerRootFingerprint;
         view.AssignedAt = @event.Data.AssignedAt;
         view.UnmetDependencies = [.. @event.Data.UnmetDependencies];
         view.DeadDependencies = [];

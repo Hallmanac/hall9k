@@ -681,7 +681,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     public void Apply(IEvent<TaskAssigned> @event, TaskDetails view)
     {
         view.AssignedOwnerId = @event.Data.AssignedOwnerId;
-        view.AssignedOwnerFingerprint = null;
+        view.AssignedOwnerFingerprint = @event.Data.AssignedOwnerRootFingerprint;
         view.AssignedAt = @event.Data.AssignedAt;
         view.UnmetDependencies = [.. @event.Data.UnmetDependencies];
         view.DeadDependencies = [];
