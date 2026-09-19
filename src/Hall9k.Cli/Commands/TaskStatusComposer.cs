@@ -360,16 +360,26 @@ internal static class TaskStatusComposer
     /// carries one: <paramref name="ownerId"/> is the assigning node's own local Guid for that
     /// owner, which means nothing on a peer node that never registered it (Owner events are
     /// OwnerScoped and never replicate), while the fingerprint is the one fact every node of the
-    /// same owner can recognize. Falls back to the plain id lookup only for an assignment written
-    /// before the field existed. The bare fingerprint itself when no local <c>OwnerDetails</c>
-    /// matches it — never <paramref name="ownerId"/>, a foreign Guid this board would otherwise
-    /// print with no way for a reader to act on it — and "?" only when neither the id nor a
+    /// same owner can recognize. Falls back to the plain id lookup — for an assignment written
+    /// before the field existed, or for one this node happens to recognize <paramref
+    /// name="ownerId"/> against despite the fingerprint itself resolving nothing (the same
+    /// root-rewrite shape <c>h9k task show</c>'s own <c>AssigneeMarkupAsync</c> names by id) —
+    /// before falling back further to the fingerprint's own short prefix, the same truncation
+    /// <c>PublishedFacts.HeldElsewhereFact</c> already uses for a foreign root fingerprint in a
+    /// table column, rather than the full 64 hex characters. "?" only when neither the id nor a
     /// fingerprint resolves anything at all.
     /// </summary>
-    private static string AssigneeDisplay(Guid ownerId, string? ownerFingerprint, TaskStatusContext context) =>
-        ownerFingerprint is { } fingerprint
-            ? context.OwnersByFingerprint?.GetValueOrDefault(fingerprint) ?? fingerprint
-            : context.Owners.GetValueOrDefault(ownerId) ?? "?";
+    private static string AssigneeDisplay(Guid ownerId, string? ownerFingerprint, TaskStatusContext context)
+    {
+        if (ownerFingerprint is not { } fingerprint)
+        {
+            return context.Owners.GetValueOrDefault(ownerId) ?? "?";
+        }
+
+        return context.OwnersByFingerprint?.GetValueOrDefault(fingerprint)
+            ?? context.Owners.GetValueOrDefault(ownerId)
+            ?? fingerprint[..Math.Min(12, fingerprint.Length)];
+    }
 
     /// <summary>
     /// How many of the loaded rows each project is holding on the exhausted subscription window
