@@ -1279,12 +1279,12 @@ public static class CliCommandTree
                 .WithExample("task", "handoff", "28b19893", "--text", "\"Heads up before you pick this up.\"", "--to", "a1b2c3d4owner");
             task.AddCommand<TaskTakeCommand>("take")
                 .WithDescription(
-                    "Force a task away from its current holder (idea 202383dc, item 4) — owner-role members "
-                    + "only, and only --force: the cooperative take (no --force, item 5) is not built yet, so "
-                    + "the command refuses outright without it. Absence is never detected — presence detection "
-                    + "is dead, never parked — so this prints the evidence it has (who holds it, since when, "
-                    + "when this node last heard anything from that node's own outbox) and overrides on your "
-                    + "own judgment. A gated project's own tracker take runs first; its refusal stops the "
+                    "Take a task from its current holder, cooperatively by default or unilaterally with "
+                    + "--force (idea 202383dc, items 4 and 5) — --reason is required either way. --force is an "
+                    + "owner-role member's own unilateral override: absence is never detected — presence "
+                    + "detection is dead, never parked — so it prints the evidence it has (who holds it, since "
+                    + "when, when this node last heard anything from that node's own outbox) and overrides on "
+                    + "your own judgment. A gated project's own tracker take runs first; its refusal stops the "
                     + "override with the tracker's own sentence. The ledger holder write is conditional on the "
                     + "value this command itself read (idea 202383dc, A1): two overriders racing the same task "
                     + "never both win, and the loser's own attempt reports back whoever actually landed first. "
@@ -1293,8 +1293,40 @@ public static class CliCommandTree
                     + "still has a live run for this task, that node stops it the next time this takeover "
                     + "replicates there — recorded as superseded by takeover, never Failed, transcript kept, no "
                     + "pull request action follows from it. This node claims the task on its own next dispatch "
-                    + "sweep and resumes whatever branch the previous run left behind.")
-                .WithExample("task", "take", "28b19893", "--force", "--reason", "\"Node has been offline for six hours; a release deadline can't wait on it\"");
+                    + "sweep and resumes whatever branch the previous run left behind.\n"
+                    + "Without --force this asks cooperatively instead: a task with no current holder claims "
+                    + "directly through the ordinary lock (nothing to negotiate), a task this node already "
+                    + "holds says so, and a task another node holds gets a claim-request envelope queued for "
+                    + "it (the daemon's next message sweep sends it). The project's own take-policy decides how "
+                    + "the holder's node answers: auto (the default) grants it on receipt when no run is live "
+                    + "there, releasing the ledger holder and reassigning the task to the requester's owner so "
+                    + "this node's own dispatch sweep — or a sibling node under the same owner — claims it "
+                    + "through the ordinary lock, or refuses naming the live run's own start time; ask parks "
+                    + "the request for the holder's own human, who answers with h9k task grant/refuse. A gated "
+                    + "project also moves the tracker assignee to the requester's own account on grant, best "
+                    + "effort. Check h9k task show or h9k status for the answer; no answer within the project's "
+                    + "own take-timeout (30 minutes by default, h9k project set --take-timeout) means --force "
+                    + "is the way on.")
+                .WithExample("task", "take", "28b19893", "--force", "--reason", "\"Node has been offline for six hours; a release deadline can't wait on it\"")
+                .WithExample("task", "take", "28b19893", "--reason", "\"Picking this back up after the sprint handoff\"");
+            task.AddCommand<TaskGrantCommand>("grant")
+                .WithDescription(
+                    "Grant a parked cooperative take request (idea 202383dc, item 5, take-policy ask): runs "
+                    + "the identical auto release a take-policy auto grant runs — the ledger holder is released "
+                    + "by conditional write, a task-stream event names the requester, the task is reassigned "
+                    + "and requeued for the requester's own owner, a gated project's tracker assignee moves to "
+                    + "the requester's account best effort, and a claim-granted envelope is queued for the "
+                    + "requester's own node. Refused when this node does not hold the task, or when there is no "
+                    + "pending request to answer.")
+                .WithExample("task", "grant", "28b19893");
+            task.AddCommand<TaskRefuseCommand>("refuse")
+                .WithDescription(
+                    "Refuse a parked cooperative take request (idea 202383dc, item 5, take-policy ask) with "
+                    + "--reason: appends a task-stream event naming the requester and the reason and queues a "
+                    + "claim-refused envelope for the requester's own node. Carries no ledger or claim change. "
+                    + "Refused when this node does not hold the task, or when there is no pending request to "
+                    + "answer.")
+                .WithExample("task", "refuse", "28b19893", "--reason", "\"Still mid-refactor here; ask again once the pull request lands\"");
             task.AddCommand<TaskDelegateCommand>("delegate")
                 .WithDescription(
                     "Delegate the build to a contractor for one phase while staying at the wheel — distinct from "

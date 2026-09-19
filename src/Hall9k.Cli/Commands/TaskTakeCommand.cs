@@ -2,11 +2,13 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -24,16 +26,28 @@ using Spectre.Console.Cli;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// h9k task take --force: an owner-role member overrides an absent holder (idea 202383dc, item
-/// 4). Absence is never detected — presence detection is dead, never parked — so this command
-/// prints whatever evidence it has and proceeds on the operator's own judgment: the holder it
-/// currently reads, since when, and the last time anything from that node's own outbox was
-/// observed here. The cooperative take (<c>h9k task take &lt;id&gt;</c> with no <c>--force</c>,
-/// idea 202383dc, item 5) is a separate, not-yet-built door — this command refuses without
-/// <c>--force</c> rather than silently doing nothing.
+/// h9k task take: <c>--force</c> is an owner-role member's own unilateral override of an absent
+/// holder (idea 202383dc, item 4). Absence is never detected — presence detection is dead, never
+/// parked — so that path prints whatever evidence it has and proceeds on the operator's own
+/// judgment: the holder it currently reads, since when, and the last time anything from that
+/// node's own outbox was observed here.
+/// <para>
+/// Without <c>--force</c> this is the cooperative take instead (idea 202383dc, item 5, "a member
+/// can ask a holder for a task"): a task with no current holder claims directly through the
+/// ordinary lock (nothing to negotiate), a task this node already holds says so, and a task held
+/// by another node sends that node a <see cref="MessageKind.ClaimRequest"/> envelope naming this
+/// node's own owner and <c>--reason</c>, then prints that it asked and is waiting — this command
+/// only ever queues that envelope; the daemon's own message sweep is what actually sends it, and
+/// the holder's own <c>ClaimRequestWatchLoop</c> is what actually answers it, exactly the way
+/// <c>h9k message send</c> never blocks on the transport either. <c>h9k task show</c> and
+/// <c>h9k status</c> are where the answer — granted, refused, or timed out — is read back.
+/// </para>
 /// </summary>
 public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Settings>
 {
+    /// <summary>The platform default when a project has never set its own <c>--take-timeout</c> — see <see cref="ProjectDetails.TakeTimeoutMinutes"/>'s own doc.</summary>
+    internal const int DefaultTakeTimeoutMinutes = 30;
+
     public sealed class Settings : CommandSettings
     {
         [CommandArgument(0, "<ID>")]
@@ -42,13 +56,15 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
 
         [CommandOption("--force")]
         [Description(
-            "Override the current holder unilaterally, on the operator's own judgment — the only "
-            + "form this command supports today. The cooperative take (no --force, idea 202383dc, "
-            + "item 5) is not built yet.")]
+            "Override the current holder unilaterally, on the operator's own judgment, rather than "
+            + "asking it (idea 202383dc, item 4). Without this flag, the same command asks "
+            + "cooperatively instead (idea 202383dc, item 5).")]
         public bool Force { get; init; }
 
         [CommandOption("--reason <REASON>")]
-        [Description("Why the current holder is being overridden — required with --force, recorded on the task's own stream.")]
+        [Description(
+            "Why the current holder is being overridden (--force) or asked for (cooperative) — "
+            + "required either way, recorded on the task's own stream.")]
         public string? Reason { get; init; }
     }
 
@@ -72,20 +88,21 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         NodeKeyStore keyStore,
         CancellationToken cancellationToken)
     {
-        if (!settings.Force)
-        {
-            throw new DomainValidationException(
-                "h9k task take needs --force --reason \"<why>\": the cooperative take (idea 202383dc, "
-                + "item 5) is not built yet, so a forced override is the only door this command opens today.");
-        }
-
         if (settings.Reason.IsBlank())
         {
             throw new DomainValidationException(
-                "A forced take needs --reason: why the current holder is being overridden.");
+                settings.Force
+                    ? "A forced take needs --reason: why the current holder is being overridden."
+                    : "A cooperative take needs --reason: why this task is being asked for.");
         }
 
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
+
+        if (!settings.Force)
+        {
+            return await RunCooperativeAsync(store, session, taskId, settings.Reason!, take, cancellationToken);
+        }
+
         StreamState? fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
@@ -565,6 +582,93 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         }
 
         AnsiConsole.MarkupLine($"[yellow]Tracker:[/] {note.Trim().EscapeMarkup()}");
+    }
+
+    /// <summary>
+    /// The cooperative take (idea 202383dc, item 5): a task with no current holder claims directly
+    /// through the ordinary lock (nothing to negotiate — the daemon's own dispatch sweep is what
+    /// actually claims it, exactly as a forced takeover's own final message already defers to that
+    /// sweep), a task this node already holds says so, and a task held by another node gets a
+    /// <see cref="MessageKind.ClaimRequest"/> envelope queued for it. Queues only — never flushes:
+    /// the daemon's own message sweep sends it, the same <c>h9k message send</c> convention.
+    /// </summary>
+    private static async Task<int> RunCooperativeAsync(
+        IDocumentStore store, IDocumentSession session, Guid taskId, string reason, TrackerAssignmentTake? take,
+        CancellationToken cancellationToken)
+    {
+        StreamState? fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+        TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, version: fence.Version, token: cancellationToken)
+            ?? throw new DomainNotFoundException($"No task {taskId}.");
+
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        await session.SaveChangesAsync(cancellationToken);
+
+        if (task.HolderNodeId is not { } holderNodeId)
+        {
+            AnsiConsole.MarkupLine(
+                $"[green]Task {taskId} has no current holder[/] — nothing to ask. It claims through "
+                + "the ordinary lock on this node's next dispatch sweep.");
+            return ExitCodes.Ok;
+        }
+
+        if (holderNodeId == context.NodeId)
+        {
+            AnsiConsole.MarkupLine($"[green]This node already holds task {taskId}.[/]");
+            return ExitCodes.Ok;
+        }
+
+        ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No project {task.ProjectId}.");
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(session, context.OwnerId, cancellationToken);
+        if (ownerRootFingerprint is null)
+        {
+            throw new DomainValidationException(
+                "This node's owner has not claimed a root fingerprint yet, so a claim request's own "
+                + "from-owner field has nothing to carry. Run h9k project join first.");
+        }
+
+        // The requester's own tracker identity, read locally and carried on the envelope, because
+        // the holder's own node has no other way to learn it: every teammate's tracker credentials
+        // are local to their own install (ClaimGate's own doc). Best effort — a project that is not
+        // gated, or a task with no gated item, or a read that fails, all carry null, which the
+        // grant's own gated tracker move reads as "assign it to the requester by hand" rather than
+        // as a reason to refuse the request outright.
+        string? trackerIdentity = null;
+        if (project.ClaimGate != ClaimGate.Off && task.ExternalReference is not null)
+        {
+            try
+            {
+                TrackerAssignmentTake tracking = take ?? new TrackerAssignmentTake(new ProjectScopedGitHubRunner(store).Runner);
+                trackerIdentity = await tracking.ResolveOwnIdentityAsync(
+                    store, project.ClaimGate, task.ExternalReference, project.RepositoryPath, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Warning:[/] this install's own tracker identity could not be read — "
+                    + $"{exception.Message.EscapeMarkup()} If node {DomainId.Short(holderNodeId)} grants this "
+                    + "request, the gated tracker move will need to be done by hand.");
+            }
+        }
+
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        ClaimEnvelopeCodec.ClaimRequestRecord request = new(
+            taskId, context.NodeId, context.OwnerId, ownerRootFingerprint, reason.Trim(), trackerIdentity);
+        await MessageOutbox.QueueAsync(
+            session, context.NodeId, project.Id, ownerRootFingerprint, MessageAudience.Node(holderNodeId),
+            taskId.ToString(), MessageKind.ClaimRequest, ClaimEnvelopeCodec.Encode(request), now, cancellationToken);
+
+        int timeoutMinutes = project.TakeTimeoutMinutes ?? DefaultTakeTimeoutMinutes;
+        AnsiConsole.MarkupLine(
+            $"[blue]Asked[/] node {DomainId.Short(holderNodeId)} for task {taskId} — reason: "
+            + $"{reason.Trim().EscapeMarkup()}");
+        AnsiConsole.MarkupLine(
+            "[dim]Waiting — the daemon's next message sweep sends it, and its own reaction on node "
+            + $"{DomainId.Short(holderNodeId)} answers it. Check h9k task show {taskId} or h9k status for the "
+            + $"answer; no answer within {timeoutMinutes} minute(s) means --force is the way on.[/]");
+        return ExitCodes.Ok;
     }
 
     /// <summary>
