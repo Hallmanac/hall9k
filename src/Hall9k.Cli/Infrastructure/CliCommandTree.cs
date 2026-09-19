@@ -841,8 +841,10 @@ public static class CliCommandTree
             task.AddCommand<TaskAddCommand>("add")
                 .WithDescription(
                     "Create a draft (flags, --file task.md, --from-idea to cut it from an idea's "
-                    + "discovery, --from-issue to adopt a GitHub issue, or --from-pr to adopt a pull "
-                    + "request to review — a pr-review task, read-only until you direct otherwise). "
+                    + "discovery, --from-issue to adopt a GitHub issue, --from-pr to adopt a pull "
+                    + "request to review — a pr-review task, read-only until you direct otherwise — or "
+                    + "--type spike with --kind and --exit-criterion for a bounded, budgeted spike that "
+                    + "answers one stated question and never opens a pull request). "
                     + "Creation is identity, not readiness: a project and an objective are all it takes, "
                     + "and the draft is invisible to the dispatcher until you publish and assign it. "
                     + "Acceptance criteria are what h9k task publish demands, and an adopted issue or "
@@ -871,11 +873,15 @@ public static class CliCommandTree
                     "--objective", "\"Playwright coverage for the new checkout flow\"",
                     "--stacked-on-pull-request", "264")
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Prototype the new endpoint\"",
-                    "--review-stage-composition", "none", "--accept-reduced-review");
+                    "--review-stage-composition", "none", "--accept-reduced-review")
+                .WithExample("task", "add", "--project", "hall9k", "--type", "spike", "--kind", "research",
+                    "--objective", "\"Does the flag survive\"", "--exit-criterion", "\"It resumes after a restart\"");
             task.AddCommand<TaskReviseCommand>("revise")
                 .WithDescription(
-                    "Revise a draft: objective, acceptance criteria, agent context, type, model, dependencies. "
-                    + "Draft-only for all of those — a published task promises it may be assigned at any moment "
+                    "Revise a draft: objective, acceptance criteria, agent context, type, model, dependencies, "
+                    + "or — settable on a Draft or a Published spike alone — its kind, exit criterion, and "
+                    + "budget (--max-turns/--max-tokens/--max-wall-clock, or --clear-budget to drop one already "
+                    + "set). Draft-only for everything else — a published task promises it may be assigned at any moment "
                     + "and an assigned one promises a node may read it at any moment, and editing them would break "
                     + "both. --queue-first/--clear-queue-first (Decisions Log #127) and --clear-interactive-mode "
                     + "(task: interactive mode becomes a recorded property of the task) are the two exceptions: "
@@ -897,7 +903,9 @@ public static class CliCommandTree
                 .WithExample("task", "revise", "28b19893", "--clear-stacked-on")
                 .WithExample("task", "revise", "28b19893", "--close-linked-issue", "on-closeout")
                 .WithExample("task", "revise", "28b19893", "--close-linked-issue", "default")
-                .WithExample("task", "revise", "28b19893", "--clear-interactive-mode");
+                .WithExample("task", "revise", "28b19893", "--clear-interactive-mode")
+                .WithExample("task", "revise", "28b19893", "--kind", "prototype", "--max-turns", "40")
+                .WithExample("task", "revise", "28b19893", "--clear-budget");
             task.AddCommand<TaskSetReviewCapsCommand>("set-review-caps")
                 .WithDescription(
                     "Override one or more of this task's four review-cycle caps — the conformance and "

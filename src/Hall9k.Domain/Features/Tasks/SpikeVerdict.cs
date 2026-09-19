@@ -10,7 +10,7 @@ namespace Hall9k.Domain.Features.Tasks;
 /// criterion), NotMet (they still do not, after the one fix lap a spike gets), or BudgetExhausted
 /// (the build session's own turn, token, or wall-clock budget was crossed before the exit
 /// criterion was ever judged — recorded with whatever findings were written, and never Failed:
-/// PLAN.md's ruling that a budget-ended spike closes out normally).
+/// PLAN.md §16 PLACEHOLDER-1d81543a's ruling that a budget-ended spike closes out normally).
 /// </summary>
 [JsonConverter(typeof(SpikeVerdictJsonConverter))]
 public sealed record SpikeVerdict

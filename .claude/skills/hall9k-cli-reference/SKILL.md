@@ -542,6 +542,8 @@ h9k task add --project <name> --from-issue 42     # adopt a GitHub issue (number
 h9k task add --project <name> --from-jira PROJ-1  # adopt a Jira card (key or URL)
 h9k task add --project <name> --from-issue 42 --from-jira PROJ-1 --primary-tracker jira   # link both trackers to one task (task: a task may link to both); the primary does every job, the other is shown and linked only. --primary-tracker overrides the project's own default and is required when neither says which wins
 h9k task add --project <name> --from-pr 42        # adopt a pull request to review (always pr-review)
+h9k task add --project <name> --type spike --kind research --objective "…" --exit-criterion "…"   # a spike answers one stated question: --kind is research|experiment|prototype (decides gates and the branch's own fate), --exit-criterion is what its one review pass judges the findings and branch against, and --max-turns/--max-tokens/--max-wall-clock are its own optional budget on the build session alone — no pull request, ever
+h9k task revise <id> --kind prototype --exit-criterion "…" --max-turns 40   # a spike's own fields, settable on a Draft or a Published spike alone; --clear-budget drops a previously set budget
 h9k task revise <id> --criteria "…" --blocked-by <id>   # Draft-only; each option replaces that part
 h9k task add --project <name> --objective "…" --stacked-on <id>   # a STACKED edge (Decisions Log #144), not a plain blocked-by — see below
 h9k task revise <id> --stacked-on <id>            # declare the stacked edge on a Draft; --clear-stacked-on drops it (leaving the blocked-by alone)
