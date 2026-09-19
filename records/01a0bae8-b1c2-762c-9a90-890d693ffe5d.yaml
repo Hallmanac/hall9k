@@ -13,7 +13,7 @@ criteria:
   - |-
     Unit tests cover: a placed task is skipped by a non-placed node and claimed by the placed node; an unplaced task is unchanged; the refusal for an unknown node; a takeover rewrites the placement; no test creates branches or touches GitHub
   - dotnet build and dotnet test pass; the decision log carries one entry under this task's placeholder; docs/concepts.md says how placement, ownership, and takeover relate
-dependencies: []
+dependencies: [01a0bafa-04e7-7228-90cf-dbd1f72138e1]
 origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
 origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
 origin-node-name: Hallmamac-Max36
