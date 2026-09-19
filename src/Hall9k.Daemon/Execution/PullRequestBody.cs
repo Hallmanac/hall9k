@@ -1,7 +1,6 @@
 using System.Text;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.Text;
-using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -188,11 +187,13 @@ internal static class PullRequestBody
     /// the note below reads as its own paragraph instead of as the tail of a half sentence.
     /// </para>
     /// <para>
-    /// The note names no path, for the reason <see cref="RideAlongNote"/> spells out at length: a
-    /// run directory is a daemon-machine-local absolute path that stops resolving the moment the
-    /// render sweep archives the task, and publishing it would put the operator's home directory,
-    /// and so their username, on a public repository. <c>h9k task show</c> is the durable pointer,
-    /// and the file's own name is enough to find it beside the run's other artifacts.
+    /// The note names no path: a run directory is a daemon-machine-local absolute path that stops
+    /// resolving the moment the render sweep archives the task, and publishing it would put the
+    /// operator's home directory, and so their username, on a public repository.
+    /// <c>h9k task show</c> is the durable pointer, and the file's own name is enough to find it
+    /// beside the run's other artifacts. This is the one pointer the 2026-09-19 ruling leaves in
+    /// place, because it is not an addition around the prose: it is the honest statement that the
+    /// prose above it is incomplete, which a body that silently dropped the rest would not make.
     /// </para>
     /// </summary>
     private static string BoundedBlock(string authored, Guid taskId)
@@ -241,44 +242,24 @@ internal static class PullRequestBody
     private const string WorkItemLabel = "Work item:";
 
     /// <summary>
-    /// Relayed text shown as an inline code span, fenced by a backtick run the text itself cannot
-    /// close: <see cref="RelayedText.FenceFor"/>'s rule, applied inline the way
-    /// <c>SweepDraftTask</c> already applies it, with the CommonMark padding space on both sides
-    /// so the span still closes when the text begins or ends with a backtick of its own.
-    /// <para>
-    /// A single hard-coded backtick pair is the obvious wrapper and is wrong here, which is the
-    /// defect this method exists to prevent (independent pre-PR review, cycle 5, adversarial
-    /// lens). <see cref="OneLine"/> has already run <see cref="RelayedText.WithoutClosingKeywords"/>
-    /// over this text, and that defusal works by <em>inserting</em> a backtick pair on both sides of
-    /// the reference it neutralises — so a location reading <c>src/Foo.cs:12 closes #500</c> arrives
-    /// here already carrying an inserted pair of backticks around <c>#500</c>. Wrapping that in one
-    /// more hard-coded single-backtick pair still breaks out: a single backtick pairs with the
-    /// nearest single-backtick run rather than the whole inserted pair, so the wrapper's opener
-    /// closes against the first inserted backtick instead of surviving to the wrapper's own closer.
-    /// That leaves <c>#500</c> bare in the rendered body and puts a cross-reference on an unrelated
-    /// issue's timeline from a pull request that has nothing to do with it — precisely the leak the
-    /// defusal had just closed. A location that carries interior backticks of its own breaks out the
-    /// same way, and takes whatever markdown follows with it.
-    /// </para>
-    /// </summary>
-    private static string InlineCode(string text)
-    {
-        string fence = RelayedText.FenceFor(text);
-        return $"{fence} {text} {fence}";
-    }
-
-    /// <summary>
     /// The whole body, composed as a pure function of what the run and the task already hold, so
     /// it can be exercised without <c>gh</c> and without a run directory.
     /// <para>
     /// <paramref name="prSummary"/> is the pull request the build session composed for itself
-    /// (<c>pr-summary.md</c>, via <see cref="PrSummaryArtifact"/>). When it carries a body, that
-    /// prose is what a reviewer reads, verbatim between the platform's own bookkeeping: the
-    /// work-item line above it, and the acceptance criteria, the review residuals and the run
-    /// footer below. The criteria stay on the page but move into a collapsed details block: the
-    /// body is the one artifact of a run that outlives Hall9k, and the reviewer of an
-    /// agent-produced change is checking it against a contract, but that contract is not the first
-    /// thing they should have to scroll past (Brian's ruling, 2026-09-09).
+    /// (<c>pr-summary.md</c>, via <see cref="PrSummaryArtifact"/>). When it carries a body, the
+    /// whole pull request is the work-item line and that prose, and nothing else: the platform
+    /// adds one line a reviewer clicks and then gets out of the way (Brian's ruling, 2026-09-19).
+    /// </para>
+    /// <para>
+    /// What used to follow the prose is gone for good rather than made configurable: the collapsed
+    /// acceptance-criteria block, the <c>Left unfixed</c> and <c>Review ride-alongs</c> notes, the
+    /// reduced-review note, and the run footer. The criteria live on the card, the review
+    /// residuals live in the run record (<c>review-N-findings.md</c>, and
+    /// <c>h9k task show</c> reads the same tally back from the run's own stream), and the
+    /// provenance is the run record too. Origin incident: bioage-calculator pull request #4
+    /// (ARX-5817, task 4442dd3a) opened on 2026-09-18 with a 3,837-byte, 36-line body for a
+    /// 56-line file, of which roughly a third was these additions and the rest read like a
+    /// transcript.
     /// </para>
     /// <para>
     /// <paramref name="agentSummary"/> is the session's closing narration, and it is relayed only
@@ -309,177 +290,52 @@ internal static class PullRequestBody
             }
 
             body.AppendLine(BoundedBlock(authored, run.TaskId));
-            if (task.AcceptanceCriteria.Count > 0)
-            {
-                body.AppendLine();
-                body.AppendLine("<details><summary>Acceptance criteria</summary>");
-                body.AppendLine();
-                foreach (string criterion in task.AcceptanceCriteria)
-                {
-                    body.AppendLine($"- [ ] {OneLine(criterion)}");
-                }
-
-                body.AppendLine();
-                body.AppendLine("</details>");
-            }
-        }
-        else
-        {
-            body.AppendLine(OneLine(task.Objective));
-            body.AppendLine();
-            body.AppendLine("## Acceptance criteria");
-            foreach (string criterion in task.AcceptanceCriteria)
-            {
-                body.AppendLine($"- [ ] {OneLine(criterion)}");
-            }
-
-            if (mention is not null)
-            {
-                body.AppendLine();
-                body.AppendLine(mention);
-            }
-
-            if (agentSummary.IsNotBlank())
-            {
-                body.AppendLine();
-                body.AppendLine("## Agent summary");
-                body.AppendLine(Block(agentSummary));
-            }
+            return body.ToString();
         }
 
-        if (run.ReviewResidualsUnfixed > 0)
-        {
-            body.AppendLine();
-            body.AppendLine(UnfixedNote(run));
-        }
-
-        if (run.ReviewResidualsRideAlong > 0)
-        {
-            body.AppendLine();
-            body.AppendLine(RideAlongNote(run));
-        }
-
-        if (run.ReviewStageComposition != ReviewStageComposition.FullPipeline)
-        {
-            body.AppendLine();
-            body.AppendLine(ReducedReviewNote(run.ReviewStageComposition));
-        }
-
-        long totalTokens = run.InputTokens + run.CacheReadInputTokens + run.CacheCreationInputTokens + run.OutputTokens;
+        body.AppendLine(OneLine(task.Objective));
         body.AppendLine();
-        body.AppendLine("---");
-        body.AppendLine($"Hall9k run `{run.Id}` · {totalTokens} tokens");
+        body.AppendLine("## Acceptance criteria");
+        foreach (string criterion in task.AcceptanceCriteria)
+        {
+            body.AppendLine($"- [ ] {OneLine(criterion)}");
+        }
+
+        if (mention is not null)
+        {
+            body.AppendLine();
+            body.AppendLine(mention);
+        }
+
+        if (agentSummary.IsNotBlank())
+        {
+            body.AppendLine();
+            body.AppendLine("## Agent summary");
+            body.AppendLine(Block(agentSummary));
+        }
+
         return body.ToString();
     }
 
     /// <summary>
-    /// What the run left unfixed, unlike a ride-along, because the platform had already decided it
-    /// met the fix bar — an in-scope medium or high — and the loop simply ran out before a fix
-    /// session ever read it (Decisions Log #87, adversarial review, the routed finding that opened
-    /// this task: the shape it exists to name is a human resolving a capped park with
-    /// <c>h9k review resolve --merge-ready</c>, so this is the one line on the pull request itself
-    /// saying so, rather than a settled line that reads as though only polish was left behind).
-    /// Named the same way <see cref="RideAlongNote"/> names its own tally, for the same reason.
-    /// </summary>
-    private static string UnfixedNote(RunDetails run)
-    {
-        string plural = run.ReviewResidualsUnfixed == 1 ? "finding" : "findings";
-        string header = $"**Left unfixed:** {run.ReviewResidualsUnfixed} {plural} the platform decided met the fix "
-            + "bar, but no fix session reached them before this review loop ended";
-        if (run.ReviewUnfixedFindings.Count == 0)
-        {
-            return $"{header} — see `h9k task show {run.TaskId}` for the review history.";
-        }
-
-        StringBuilder note = new();
-        note.AppendLine($"{header}:");
-        foreach (ReviewUnfixedFinding finding in run.ReviewUnfixedFindings)
-        {
-            string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
-            string location = finding.Location.IsBlank() ? "no location stated" : InlineCode(OneLine(finding.Location));
-            note.AppendLine($"- {severity} — {location}");
-        }
-
-        note.AppendLine();
-        note.Append($"See `h9k task show {run.TaskId}` for the full review history.");
-        return note.ToString();
-    }
-
-    /// <summary>
-    /// What the run left riding along rather than fixed (Decisions Log #87, and the
-    /// FinalFullPass-only narrowing task: a mandatory FinalFullPass records merge-ready when
-    /// every finding it attaches is below High). Nothing about a ride-along is on this pull
-    /// request's diff — it is what the review loop declined to spend a cycle on — so a reviewer
-    /// reading only the diff would never learn it exists without this line naming a way to find
-    /// it. <see cref="RunDetails.ReviewResidualsRideAlong"/> is a run-lifetime tally
-    /// (<c>RunAggregate.DeriveResidualTally</c> sums every cycle's own ride-alongs, deduplicated
-    /// against what an earlier, normally-concluded track already recorded), so it can count
-    /// residuals a single cycle's own findings file never held — pointing at one specific
-    /// `review-&lt;cycle&gt;-findings.md` would name a file that does not contain everything the
-    /// count refers to. It would also be a daemon-machine-local absolute path: the one artifact
-    /// this class exists to write outlives the run directory (reviewers read it on GitHub long
-    /// after), and the render sweep moves this very task under `tasks/_archive/` the moment it
-    /// merges, so a path resolved at PR-open time stops resolving for every reader from that
-    /// point on — and it would publish the operator's home-directory path, and thus their
-    /// username, to a public repository. <c>h9k task show</c> is the durable pointer instead: it
-    /// answers from the task's own event stream regardless of archive state or which machine
-    /// runs it.
+    /// The line that links the work back to the item it belongs to, and, since the 2026-09-19
+    /// ruling, the only thing the platform writes around a session's own prose. It is a mention of
+    /// that item's URL, which GitHub turns into a cross-reference on the issue's own timeline.
     /// <para>
-    /// The count alone used to be the whole line (independent pre-PR review, cycle 2, conformance
-    /// finding: "the owner still has no way to see, or even identify, the findings the final pass
-    /// carried"), with `h9k task show` naming only the same count back — a circular pointer that
-    /// never actually surfaced a severity or a location. <see cref="RunDetails.ReviewRideAlongFindings"/>
-    /// is what closes that: each entry's own grade and location, named inline here rather than
-    /// requiring a second command just to learn what the first one already tallied. A run settled
-    /// before that field existed still has only the count, and says so honestly rather than
-    /// pretending the detail was always there.
+    /// The link text is the key people actually say out loud rather than the URL itself:
+    /// <c>[ARX-5817](https://…/browse/ARX-5817)</c> for a Jira card, <c>[#123](…/issues/123)</c>
+    /// for a GitHub issue. A reviewer scanning the top of a pull request reads the card number,
+    /// not the host and path it happens to live under, and one short line is what makes the
+    /// platform's single addition sit above the prose without competing with it.
     /// </para>
-    /// </summary>
-    private static string RideAlongNote(RunDetails run)
-    {
-        string plural = run.ReviewResidualsRideAlong == 1 ? "finding" : "findings";
-        string header = $"Review ride-alongs: {run.ReviewResidualsRideAlong} {plural} below the fix bar of "
-            + "whichever cycle recorded them, carried rather than spending another review cycle on";
-        if (run.ReviewRideAlongFindings.Count == 0)
-        {
-            return $"{header} — see `h9k task show {run.TaskId}` for the review history.";
-        }
-
-        StringBuilder note = new();
-        note.AppendLine($"{header}:");
-        foreach (ReviewRideAlongFinding finding in run.ReviewRideAlongFindings)
-        {
-            string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
-            string location = finding.Location.IsBlank() ? "no location stated" : InlineCode(OneLine(finding.Location));
-            note.AppendLine($"- {severity} — {location}");
-        }
-
-        note.AppendLine();
-        note.Append($"See `h9k task show {run.TaskId}` for the full review history.");
-        return note.ToString();
-    }
-
-    /// <summary>
-    /// The one line stating that this run's pre-PR review was reduced or skipped outright
-    /// (task: the review pipeline's stage composition becomes configuration recorded per run),
-    /// so the human doing the merge has the signal on the page where the merge decision actually
-    /// happens rather than only on `h9k task show`'s Stages column (independent pre-PR review,
-    /// cycle 1, conformance finding: a composition-`none` settle reads exactly like a clean
-    /// full-pipeline one here, with nothing saying no reviewer ever read the diff).
-    /// </summary>
-    private static string ReducedReviewNote(ReviewStageComposition composition) =>
-        $"**Review stage composition:** `{composition.Value}` — this run's pre-PR review was reduced "
-        + "from the full pipeline; see `h9k task show` for what that means.";
-
-    /// <summary>
-    /// The line that links the work back to the item it belongs to: a plain mention of that
-    /// item's URL, which GitHub turns into a cross-reference on the issue's own timeline.
     /// <para>
     /// Deliberately a mention and not a closing keyword. "Closes #42" would make merging this
     /// pull request change the issue's state, and Hall9k does not move an external item's status:
     /// which transitions should follow a merge is a policy question (SLICE-1 S1-11, Decisions Log
     /// #65, where Jira gets a comment at merge and never a transition, for the same reason). A
     /// cross-reference gives a reviewer the round trip without the platform deciding anything.
+    /// A <c>#123</c> that is a markdown link's own text is not a second reference either: it is
+    /// already a link, so GitHub renders it and leaves it alone.
     /// </para>
     /// <para>
     /// The wording says what is true of both ways a task acquires a reference, and says no more
@@ -492,13 +348,31 @@ internal static class PullRequestBody
     /// The URL is resolved by the caller through the connection-aware resolver seam rather than
     /// formatted here, because placing a Jira reference needs the site its connection recorded
     /// and this class has no session to read one from. A reference no registered source can place
-    /// falls back to its canonical form, which is still the honest identifier.
+    /// falls back to its canonical form, unlinked, which is still the honest identifier: a link
+    /// text with no link behind it would read as a URL the platform simply failed to print.
     /// </para>
     /// </summary>
-    private static string? SourceMention(string? externalReference, Uri? sourceUrl) =>
-        externalReference.IsBlank()
-            ? null
-            : $"{WorkItemLabel} {sourceUrl?.ToString() ?? ExternalReference.Parse(externalReference).ToString()}";
+    private static string? SourceMention(string? externalReference, Uri? sourceUrl)
+    {
+        if (externalReference.IsBlank())
+        {
+            return null;
+        }
+
+        ExternalReference reference = ExternalReference.Parse(externalReference);
+        return sourceUrl is null
+            ? $"{WorkItemLabel} {reference}"
+            : $"{WorkItemLabel} [{LinkText(reference)}]({sourceUrl})";
+    }
+
+    /// <summary>
+    /// What the work-item link is called: the Jira key as written, and a GitHub issue's bare
+    /// number with the <c>#</c> people say it with, since <see cref="ExternalReference.Key"/>
+    /// deliberately drops the repository that minted it. Any other provider gets the key it
+    /// carries, unadorned, rather than a form invented for it.
+    /// </summary>
+    private static string LinkText(ExternalReference reference) =>
+        reference.Provider == WorkItemProvider.GitHub ? $"#{reference.Key}" : reference.Key;
 
     /// <summary>
     /// A closing keyword rendered so GitHub reads it as words rather than as an instruction. The
