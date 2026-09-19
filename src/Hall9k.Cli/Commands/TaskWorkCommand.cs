@@ -829,11 +829,12 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         Worktree worktree;
         bool resumesPreviousWork;
+        RunStartedCleanAfterBranchGone? startedClean;
         string runDirectory;
         try
         {
             GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
-            (worktree, resumesPreviousWork) = await CheckoutFreshOrRetryAsync(
+            (worktree, resumesPreviousWork, startedClean) = await CheckoutFreshOrRetryAsync(
                 worktrees, taskDetails, project, task.Id, runId, stackedBase.BaseBranch, cancellationToken);
 
             string? existingTaskDirectory = project.HomeDirectory.HasValue
@@ -906,6 +907,15 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 // and BaseCommit are just above (StackedBaseResolver.ResumedBase's own doc) — null
                 // for a fresh cut, which is every ordinary claim.
                 OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
+            // Appended right behind the dispatch, in the same commit, so this claim's record can
+            // never exist saying "resumed" while the fact that it did not is still in flight
+            // (#PLACEHOLDER-5c46cd1d). Null for every claim that resumed what it meant to and every
+            // claim that never meant to resume anything.
+            if (startedClean is not null)
+            {
+                session.Events.Append(runId, startedClean);
+            }
+
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -1311,41 +1321,51 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
     /// stacked task must cut from the same branch the daemon would, or the two doors onto the same
     /// task produce branches with different histories.
     /// </param>
-    internal static async Task<(Worktree Worktree, bool ResumesPreviousWork)> CheckoutFreshOrRetryAsync(
-        IWorktreeManager worktrees, TaskDetails taskDetails, ProjectDetails project, Guid taskId, Guid runId,
-        string baseBranch, CancellationToken cancellationToken)
+    /// <returns>
+    /// The checkout, whether it resumed previous work, and — only when a resume was meant and the
+    /// branch turned out to be gone — the event recording that this claim started clean instead,
+    /// for the caller to append alongside its own <see cref="RunDispatched"/>.
+    /// </returns>
+    internal static async Task<(Worktree Worktree, bool ResumesPreviousWork, RunStartedCleanAfterBranchGone? StartedClean)>
+        CheckoutFreshOrRetryAsync(
+            IWorktreeManager worktrees, TaskDetails taskDetails, ProjectDetails project, Guid taskId, Guid runId,
+            string baseBranch, CancellationToken cancellationToken)
     {
+        RunStartedCleanAfterBranchGone? startedClean = null;
         if (taskDetails.RetryBranch.IsNotBlank())
         {
-            // A branch this task's RetryBranch names because a headless claim resumed it from
-            // another node (idea 202383dc, piece C's residual, criterion 1) never falls back to a
-            // clean cut here either — the same loud-by-name failure
-            // RunLauncher.CheckoutFreshOrRetryAsync gives this exact shape, mirrored for the
-            // reason this method's own summary states: an interactive claim shares this branch's
-            // fate with the daemon's own claim, and silently starting over would quietly abandon
-            // whatever that foreign node's own run left behind. The flag survives on a Queued task
-            // even after a headless claim that set it requeues without ever launching, so a human
-            // reaching this same task through h9k task work or h9k task start still owes it the
-            // loud failure, not just the daemon's own next claim.
-            if (taskDetails.RetryBranchResumesForeignNode)
-            {
-                Worktree resumed = await worktrees.CheckoutExistingAsync(
-                    new FollowUpWorktreeRequest(project.RepositoryPath, taskDetails.RetryBranch, taskId, runId),
-                    cancellationToken);
-                return (resumed, true);
-            }
-
             try
             {
                 Worktree resumed = await worktrees.CheckoutExistingAsync(
                     new FollowUpWorktreeRequest(project.RepositoryPath, taskDetails.RetryBranch, taskId, runId),
                     cancellationToken);
-                return (resumed, true);
+                return (resumed, true, null);
             }
+            // A branch this task's RetryBranch names because a headless claim resumed it from
+            // another node (idea 202383dc, piece C's residual, criterion 1) keeps the loud-by-name
+            // failure RunLauncher.CheckoutFreshOrRetryAsync gives it — for everything except a
+            // branch that is simply on neither side, which brought no foreign work here to abandon
+            // (#PLACEHOLDER-5c46cd1d, and that method's own doc for the incident). Mirrored here for
+            // the reason this method's own summary states: an interactive claim shares this
+            // branch's fate with the daemon's own claim, and the flag survives on a Queued task
+            // even after a headless claim that set it requeues without ever launching, so a human
+            // reaching this same task through h9k task work or h9k task start meets the identical
+            // rule rather than a second one.
             catch (WorktreeException exception)
+                when (exception is BranchGoneException || !taskDetails.RetryBranchResumesForeignNode)
             {
                 AnsiConsole.MarkupLineInterpolated(
                     $"[yellow]Could not resume branch {taskDetails.RetryBranch} ({exception.Message}); starting clean from {baseBranch}.[/]");
+                // Recorded only for the failure that actually observed the branch on neither side,
+                // for the reason RunLauncher.CheckoutFreshOrRetryAsync's own catch states: log
+                // #25's other fallback reaches here too, on a branch still sitting in this
+                // repository, and an event named "branch gone" would assert a gap nobody observed.
+                if (exception is BranchGoneException gone)
+                {
+                    startedClean = new RunStartedCleanAfterBranchGone(
+                        runId, gone.Branch, baseBranch, exception.Message,
+                        taskDetails.RetryBranchResumesForeignNode, DateTimeOffset.UtcNow);
+                }
             }
         }
 
@@ -1354,7 +1374,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 project.RepositoryPath, baseBranch, taskId, runId, taskDetails.Objective,
                 project.BranchNameTemplate, taskDetails.ExternalReference),
             cancellationToken);
-        return (fresh, false);
+        return (fresh, false, startedClean);
     }
 
     /// <summary>

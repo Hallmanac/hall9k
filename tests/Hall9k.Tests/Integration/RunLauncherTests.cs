@@ -265,15 +265,75 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// Idea 202383dc, piece C's residual, criterion 1's other half: a claim that resumes another
-    /// node's own latest run through <c>TaskClaimed.ResumesBranch</c> (<c>TaskAggregate.RetryBranchResumesForeignNode</c>)
-    /// fails the run loudly, by name, when that branch exists neither locally nor on origin —
-    /// never the silent fallback to a fresh cut <c>CheckoutFreshOrRetryAsync</c>'s own catch gives
-    /// an ordinary human-requested retry (<see cref="A_retry_that_resumes_a_stacked_childs_branch_carries_the_recorded_fork_point_forward"/>
-    /// and its siblings exercise that ordinary path; this test is its foreign-node counterpart).
+    /// The forced-takeover shape end to end (#PLACEHOLDER-5c46cd1d): another node's run built a
+    /// branch and never pushed it, <c>h9k task take --force</c> moved the task here, and the
+    /// resulting claim resumes that branch through <c>TaskClaimed.ResumesBranch</c>
+    /// (<c>TaskAggregate.RetryBranchResumesForeignNode</c>). The branch is on neither side, so the
+    /// run launches clean from the base branch rather than dying at the checkout — and records
+    /// that it did, since nothing else on the task would tell a reader the resumed work is not in
+    /// this worktree.
+    /// <para>
+    /// This narrows Decisions Log #224's loud failure rather than removing it: its sibling,
+    /// <see cref="A_foreign_node_resume_fails_loudly_when_the_worktree_layer_could_not_do_the_job"/>,
+    /// pins the half that still fails. Origin incident 2026-09-19 14:33 and 14:35 EDT, task
+    /// a56cf16e, runs 01a0baf1 and 01a0baf3, after a forced take from a Mac run that had built
+    /// eleven minutes without pushing.
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task A_foreign_node_resumes_missing_branch_fails_the_run_loudly_by_name()
+    public async Task A_forced_takeover_of_an_unpushed_branch_launches_the_retry_from_the_base_branch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid foreignRunId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid foreignNodeId = DomainId.New();
+        const string unpushedBranch = "task/never-left-the-other-machine";
+        int leaseGeneration = await SeedForeignNodeResumeAsync(
+            store, node, taskId, projectId, foreignNodeId, foreignRunId, runId, unpushedBranch, cts.Token);
+
+        CapturingExecutor executor = new();
+        BranchGoneWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, leaseGeneration, cts.Token);
+
+        worktrees.FreshCut.Should().NotBeNull("a branch on neither side leaves nothing to resume");
+        worktrees.FreshCut!.BaseBranch.Should().Be("main", "the clean start comes off the project's base branch");
+        executor.Request.Should().NotBeNull("the run launches rather than failing at the checkout");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        details.State.Value.Should().NotBe("Failed");
+
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.Branch.Should().Be("task/fresh-cut");
+        run.StartedCleanAfterGoneBranch.Should().Be(unpushedBranch,
+            "the run records which branch it could not resume, rather than reading as an ordinary fresh dispatch");
+        run.StartedCleanFromBaseBranch.Should().Be("main");
+        run.StartedCleanAfterGoneBranchWasForeignNodes.Should().BeTrue(
+            "the lost work was another node's, which is the difference between a cleaned-up worktree "
+            + "and somebody else's eleven minutes still on their laptop");
+        run.StartedCleanAfterGoneBranchReason.Should().Contain("neither locally nor on origin");
+    }
+
+    /// <summary>
+    /// The half of Decisions Log #224 that survives #PLACEHOLDER-5c46cd1d: a foreign-node resume
+    /// still fails the run loudly, by name, when the worktree layer could not do the job at all —
+    /// a <c>worktree add</c> that failed, an unreadable repository — because starting clean there
+    /// really would discard work that is still sitting on the branch. Only the branch-is-gone
+    /// failure earns the fresh cut, and only because it means there is nothing left to discard.
+    /// </summary>
+    [Fact]
+    public async Task A_foreign_node_resume_fails_loudly_when_the_worktree_layer_could_not_do_the_job()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
@@ -285,45 +345,11 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         Guid projectId = DomainId.New();
         Guid foreignNodeId = DomainId.New();
         const string missingBranch = "task/gone-with-the-foreign-node";
-        int leaseGeneration;
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            ProjectRegistered registered = ProjectDecider.Register(
-                projectId, node.OwnerId, DomainId.New(), $"foreign-missing-{taskId:N}",
-                "/tmp/foreign-missing-repo", null, "main", Now);
-            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
-
-            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
-                TaskDecider.Add(
-                    taskId, projectId, "Taken over from a foreign node", ["done"], TaskType.Chore,
-                    null, null, null, Now, node.OwnerId),
-                node.OwnerId, Now);
-            Hall9k.Domain.Features.Tasks.Events.TaskClaimed foreignClaim =
-                TaskDecider.Claim(task, foreignNodeId, node.OwnerId, foreignRunId, Now);
-            task.Apply(foreignClaim);
-            Hall9k.Domain.Features.Tasks.Events.TaskRequeued requeued =
-                TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
-            task.Apply(requeued);
-            Hall9k.Domain.Features.Tasks.Events.TaskClaimed resumeClaim = TaskDecider.Claim(
-                task, node.NodeId, node.OwnerId, runId, Now, resumesBranch: missingBranch);
-            task.Apply(resumeClaim);
-            leaseGeneration = task.LeaseGeneration;
-            session.Events.StartStream<TaskAggregate>(
-                taskId, [.. lifecycle, foreignClaim, requeued, resumeClaim]);
-
-            session.Events.StartStream<RunAggregate>(foreignRunId,
-                new RunDispatched(foreignRunId, taskId, foreignNodeId, node.OwnerId, 1, DomainId.New(),
-                    "/tmp/foreign-wt", missingBranch, ExecutorMode.Subscription, Now));
-
-            session.Store(new TaskLease
-            {
-                Id = taskId, NodeId = node.NodeId, LeaseGeneration = leaseGeneration, HeartbeatAt = Now,
-            });
-            await session.SaveChangesAsync(cts.Token);
-        }
+        int leaseGeneration = await SeedForeignNodeResumeAsync(
+            store, node, taskId, projectId, foreignNodeId, foreignRunId, runId, missingBranch, cts.Token);
 
         CapturingExecutor executor = new();
-        MissingBranchWorktreeManager worktrees = new();
+        UnusableRepositoryWorktreeManager worktrees = new();
         NotMergedInspector inspector = new();
         RunLauncher launcher = new(store, worktrees, executor,
             NewSupervisor(store, node), NewContextAssembler(store), inspector,
@@ -333,7 +359,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, leaseGeneration, cts.Token);
 
         worktrees.CreateAsyncCalled.Should().BeFalse(
-            "a foreign-node resume's missing branch must never quietly fall back to a fresh cut");
+            "a foreign-node resume the machine simply could not perform must never quietly fall back to a fresh cut");
         executor.Request.Should().BeNull("the run fails before any agent is spawned");
 
         await using IQuerySession query = store.QuerySession();
@@ -341,6 +367,136 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         details.State.Value.Should().Be("Failed");
         details.FailureReason.Should().Contain(missingBranch,
             "the failure names the branch, rather than silently starting over");
+    }
+
+    /// <summary>
+    /// The ordinary retry's own fallback (Decisions Log #25) keeps working and stays silent: this
+    /// node's own failed run left a branch here, the checkout fails for a reason that is not the
+    /// branch being gone, and the run still starts clean — but records nothing, because the branch
+    /// and its commits are still sitting in this repository. <c>RunStartedCleanAfterBranchGone</c>
+    /// asserts the branch was on neither side, and that was never observed here; writing it anyway
+    /// would make <c>h9k task show</c> tell a reader the artifacts are gone while they are on disk
+    /// (both review lenses, cycle 1, against AGENTS.md's never-guess rule).
+    /// </summary>
+    [Fact]
+    public async Task An_ordinary_retry_whose_checkout_merely_failed_starts_clean_without_claiming_the_branch_is_gone()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid failedRunId = DomainId.New();
+        Guid retriedRunId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string survivingBranch = "task/still-right-here";
+        int leaseGeneration;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"ordinary-retry-{taskId:N}",
+                "/tmp/ordinary-retry-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Retried on its own node", ["done"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(task, node.NodeId, node.OwnerId, failedRunId, Now);
+            task.Apply(claimed);
+            Hall9k.Domain.Features.Tasks.Events.TaskFailed failed =
+                TaskDecider.Fail(task, failedRunId, "the gates went red", Now);
+            task.Apply(failed);
+            Hall9k.Domain.Features.Tasks.Events.TaskRetried retried = TaskDecider.Retry(
+                task, failedRunId, survivingBranch, "try again", Now, node.OwnerId);
+            task.Apply(retried);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed reclaimed =
+                TaskDecider.Claim(task, node.NodeId, node.OwnerId, retriedRunId, Now);
+            task.Apply(reclaimed);
+            leaseGeneration = task.LeaseGeneration;
+            session.Events.StartStream<TaskAggregate>(
+                taskId, [.. lifecycle, claimed, failed, retried, reclaimed]);
+
+            session.Events.StartStream<RunAggregate>(failedRunId,
+                new RunDispatched(failedRunId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+                    "/tmp/failed-wt", survivingBranch, ExecutorMode.Subscription, Now),
+                new RunFailed(failedRunId, "the gates went red", Now));
+
+            session.Store(new TaskLease
+            {
+                Id = taskId, NodeId = node.NodeId, LeaseGeneration = leaseGeneration, HeartbeatAt = Now,
+            });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        UnusableRepositoryWorktreeManager worktrees = new();
+        NotMergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, retriedRunId, node.NodeId, node.OwnerId, leaseGeneration, cts.Token);
+
+        worktrees.CheckoutExistingAttemptedBranch.Should().Be(survivingBranch,
+            "the retry did mean to resume the branch — otherwise this test would prove nothing about the fallback");
+        worktrees.CreateAsyncCalled.Should().BeTrue("an ordinary retry still falls back to a fresh cut (log #25)");
+        executor.Request.Should().NotBeNull("the run launches rather than failing at the checkout");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(retriedRunId, cts.Token))!;
+        run.StartedCleanAfterGoneBranch.Should().BeNull(
+            "nothing here observed the branch missing from both sides, so nothing may claim it was");
+    }
+
+    /// <summary>
+    /// The state a forced takeover leaves behind, shared by the two tests above so they differ in
+    /// exactly one thing — which failure the worktree layer gives back: a task whose latest run
+    /// belongs to <paramref name="foreignNodeId"/> on <paramref name="branch"/>, requeued, then
+    /// re-claimed here through <c>TaskDecider.Claim</c>'s own <c>resumesBranch</c>. Returns the
+    /// lease generation the new claim landed on.
+    /// </summary>
+    private static async Task<int> SeedForeignNodeResumeAsync(
+        DocumentStore store, NodeContext node, Guid taskId, Guid projectId, Guid foreignNodeId,
+        Guid foreignRunId, Guid runId, string branch, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        ProjectRegistered registered = ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"foreign-missing-{taskId:N}",
+            "/tmp/foreign-missing-repo", null, "main", Now);
+        session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+        (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, projectId, "Taken over from a foreign node", ["done"], TaskType.Chore,
+                null, null, null, Now, node.OwnerId),
+            node.OwnerId, Now);
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed foreignClaim =
+            TaskDecider.Claim(task, foreignNodeId, node.OwnerId, foreignRunId, Now);
+        task.Apply(foreignClaim);
+        Hall9k.Domain.Features.Tasks.Events.TaskRequeued requeued =
+            TaskDecider.Requeue(task, RequeueReason.LeaseExpired, Now);
+        task.Apply(requeued);
+        Hall9k.Domain.Features.Tasks.Events.TaskClaimed resumeClaim = TaskDecider.Claim(
+            task, node.NodeId, node.OwnerId, runId, Now, resumesBranch: branch);
+        task.Apply(resumeClaim);
+        int leaseGeneration = task.LeaseGeneration;
+        session.Events.StartStream<TaskAggregate>(
+            taskId, [.. lifecycle, foreignClaim, requeued, resumeClaim]);
+
+        session.Events.StartStream<RunAggregate>(foreignRunId,
+            new RunDispatched(foreignRunId, taskId, foreignNodeId, node.OwnerId, 1, DomainId.New(),
+                "/tmp/foreign-wt", branch, ExecutorMode.Subscription, Now));
+
+        session.Store(new TaskLease
+        {
+            Id = taskId, NodeId = node.NodeId, LeaseGeneration = leaseGeneration, HeartbeatAt = Now,
+        });
+        await session.SaveChangesAsync(cancellationToken);
+        return leaseGeneration;
     }
 
     /// <summary>
@@ -1658,17 +1814,24 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// Answers <see cref="IWorktreeManager.CheckoutExistingAsync"/> exactly the way
-    /// <c>GitWorktreeManager</c>'s own real implementation does for a branch that is on neither
-    /// side (its own doc: "Branch {branch} exists neither locally nor on origin ... — cannot
-    /// resume it.") — naming the branch, so the assertion this fake exists for
-    /// (<see cref="A_foreign_node_resumes_missing_branch_fails_the_run_loudly_by_name"/>) can read
-    /// the branch straight off the recorded failure. <see cref="CreateAsyncCalled"/> is what proves
-    /// the caller never fell back to a fresh cut on this exception.
+    /// Refuses <see cref="IWorktreeManager.CheckoutExistingAsync"/> the way
+    /// <c>GitWorktreeManager</c> refuses when the machine could not do the job at all — a
+    /// <c>worktree add</c> that failed, an unreadable repository — rather than when the branch is
+    /// simply gone. That distinction is the whole of what
+    /// <see cref="A_foreign_node_resume_fails_loudly_when_the_worktree_layer_could_not_do_the_job"/>
+    /// pins: only a <see cref="BranchGoneException"/> earns a fresh cut on a foreign-node resume,
+    /// because only that one means there is no work left anywhere to abandon.
+    /// <see cref="CreateAsyncCalled"/> is what proves the caller never fell back on this one.
     /// </summary>
-    private sealed class MissingBranchWorktreeManager : IWorktreeManager
+    private sealed class UnusableRepositoryWorktreeManager : IWorktreeManager
     {
         public bool CreateAsyncCalled { get; private set; }
+
+        /// <summary>
+        /// The branch a caller tried to resume before this fake refused it, so a test asserting
+        /// that nothing was recorded cannot pass by never having reached the resume path at all.
+        /// </summary>
+        public string? CheckoutExistingAttemptedBranch { get; private set; }
 
         public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken)
         {
@@ -1677,8 +1840,61 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 Path.Combine(Path.GetTempPath(), $"hall9k-wt-{request.RunId:N}"), "task/fresh-cut", request.BaseBranch));
         }
 
-        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
+        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken)
+        {
+            CheckoutExistingAttemptedBranch = request.Branch;
             throw new WorktreeException(
+                $"git worktree add failed in {request.RepositoryPath}: could not read the repository "
+                + $"while checking out {request.Branch}.");
+        }
+
+        public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("This test never reviews a pull request.");
+
+        public Task RemoveAsync(string repositoryPath, string worktreePath, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeletePrReviewTrackingRefAsync(string repositoryPath, int pullRequestNumber, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task DeleteBranchEverywhereAsync(
+            string repositoryPath, string branch, RemoteBranchDeletionOwner remoteDeletion,
+            CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task PruneAsync(string repositoryPath, CancellationToken cancellationToken) => Task.CompletedTask;
+
+        public Task<CheckoutRefresh> RefreshReadingCheckoutAsync(
+            string checkoutPath, string branch, CancellationToken cancellationToken) =>
+            Task.FromResult(new CheckoutRefresh(UpToDate: true, "nothing here is a real repository"));
+
+        public Task<IAsyncDisposable> AcquireRepositoryLockAsync(string repositoryPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+
+        public Task<IAsyncDisposable> AcquireCheckoutLockAsync(string checkoutPath, CancellationToken cancellationToken) =>
+            Task.FromResult<IAsyncDisposable>(NoOpLock.Instance);
+    }
+
+    /// <summary>
+    /// Answers <see cref="IWorktreeManager.CheckoutExistingAsync"/> exactly the way
+    /// <c>GitWorktreeManager</c>'s own real implementation does for a branch that is on neither
+    /// side — a <see cref="BranchGoneException"/> naming the branch — and records the fresh cut
+    /// that follows, so a test can read back what base branch the retry was actually started from.
+    /// </summary>
+    private sealed class BranchGoneWorktreeManager : IWorktreeManager
+    {
+        public WorktreeRequest? FreshCut { get; private set; }
+
+        public Task<Worktree> CreateAsync(WorktreeRequest request, CancellationToken cancellationToken)
+        {
+            FreshCut = request;
+            return Task.FromResult(new Worktree(
+                Path.Combine(Path.GetTempPath(), $"hall9k-wt-{request.RunId:N}"), "task/fresh-cut", request.BaseBranch));
+        }
+
+        public Task<Worktree> CheckoutExistingAsync(FollowUpWorktreeRequest request, CancellationToken cancellationToken) =>
+            throw new BranchGoneException(
+                request.Branch,
                 $"Branch {request.Branch} exists neither locally nor on origin in {request.RepositoryPath} — cannot resume it.");
 
         public Task<Worktree> CreatePrReviewCheckoutAsync(PrReviewWorktreeRequest request, CancellationToken cancellationToken) =>

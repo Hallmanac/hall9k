@@ -484,13 +484,14 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         Worktree worktree;
         bool resumesPreviousWork;
+        RunStartedCleanAfterBranchGone? startedClean;
         string runDirectory;
         string runBaseBranch;
         string baseCommit;
         try
         {
             GitWorktreeManager worktrees = new(new ConsoleWorktreeLogger<GitWorktreeManager>());
-            (worktree, resumesPreviousWork) = await TaskWorkCommand.CheckoutFreshOrRetryAsync(
+            (worktree, resumesPreviousWork, startedClean) = await TaskWorkCommand.CheckoutFreshOrRetryAsync(
                 worktrees, taskDetails, project, task.Id, runId, stackedBase.BaseBranch, cancellationToken);
 
             string? existingTaskDirectory = project.HomeDirectory.HasValue
@@ -568,6 +569,15 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 // and BaseCommit are just above (StackedBaseResolver.ResumedBase's own doc) — null
                 // for a fresh cut, which is every ordinary claim.
                 OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
+            // Appended right behind the dispatch, in the same commit, so this claim's record can
+            // never exist saying "resumed" while the fact that it did not is still in flight
+            // (#PLACEHOLDER-5c46cd1d). Null for every claim that resumed what it meant to and every
+            // claim that never meant to resume anything.
+            if (startedClean is not null)
+            {
+                session.Events.Append(runId, startedClean);
+            }
+
             await session.SaveChangesAsync(cancellationToken);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

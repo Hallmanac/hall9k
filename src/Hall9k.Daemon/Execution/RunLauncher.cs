@@ -207,14 +207,14 @@ public sealed class RunLauncher(
                     "Task {TaskId}: run {RunId} is {Reason}", taskId, runId, stackedBase.Reason);
             }
 
-            (Worktree worktree, bool resumesPreviousWork) = isPrReview
+            (Worktree worktree, bool resumesPreviousWork, RunStartedCleanAfterBranchGone? startedClean) = isPrReview
                 ? (await worktrees.CreatePrReviewCheckoutAsync(
                     new PrReviewWorktreeRequest(project.RepositoryPath, prReviewFacts!.Number, taskId, runId),
-                    cancellationToken), false)
+                    cancellationToken), false, null)
                 : followUp is { } resume
                     ? (await worktrees.CheckoutExistingAsync(
                         new FollowUpWorktreeRequest(project.RepositoryPath, resume.Branch, taskId, runId),
-                        cancellationToken), true)
+                        cancellationToken), true, null)
                     : await CheckoutFreshOrRetryAsync(
                         task, project, stackedBase.BaseBranch, taskId, runId, cancellationToken);
 
@@ -462,6 +462,15 @@ public sealed class RunLauncher(
                 // and BaseCommit are just above (StackedBaseResolver.ResumedBase's own doc) — null
                 // for a fresh cut, which is every ordinary run.
                 OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
+            // Appended right behind the dispatch, in the same commit, so the run record can never
+            // exist saying "resumed" while the fact that it did not is still in flight
+            // (#PLACEHOLDER-5c46cd1d). Null for every run that resumed what it meant to and every
+            // run that never meant to resume anything.
+            if (startedClean is not null)
+            {
+                session.Events.Append(runId, startedClean);
+            }
+
             await session.SaveChangesAsync(cancellationToken);
 
             // The reopen's kind picks the follow-up prompt; Unknown (reopens recorded
@@ -1457,6 +1466,18 @@ public sealed class RunLauncher(
     /// branch instead of failing the run (Decisions Log #25). The flag reports which
     /// path won, so the prompt tells a resuming agent to review the previous attempt's
     /// work — possibly uncommitted in the retained worktree — before starting over.
+    /// <para>
+    /// A branch gone from both sides starts clean whoever's it was, this node's own earlier
+    /// attempt or another node's (#PLACEHOLDER-5c46cd1d, narrowing Decisions Log #224). What #224
+    /// actually protects is a foreign node's WORK, and a branch that reached neither origin nor
+    /// this repository never brought any here to abandon — the failure it was written against
+    /// (2026-09-19, task a56cf16e, runs 01a0baf1 and 01a0baf3, after a forced take from a Mac run
+    /// that had built eleven minutes without pushing) was two retries dying at launch over a
+    /// branch nothing on this node could ever have found. The loud failure stays for every OTHER
+    /// <see cref="WorktreeException"/> on a foreign-node resume — a <c>worktree add</c> that
+    /// failed, an unreadable repository — because those are a machine that could not do the job,
+    /// where a fresh cut really would discard work still sitting there.
+    /// </para>
     /// </summary>
     /// <param name="baseBranch">
     /// The resolved base this run sits on — the project's own for every ordinary task, a stacked
@@ -1464,38 +1485,47 @@ public sealed class RunLauncher(
     /// previous branch never consults it: that branch was already cut from whatever base the earlier
     /// attempt resolved, and the retry is continuing that work rather than re-basing it.
     /// </param>
-    private async Task<(Worktree Worktree, bool ResumesPreviousWork)> CheckoutFreshOrRetryAsync(
-        TaskDetails task, ProjectDetails project, string baseBranch, Guid taskId, Guid runId,
-        CancellationToken cancellationToken)
+    /// <returns>
+    /// The checkout, whether it resumed previous work, and — only when a resume was meant and the
+    /// branch was gone — the event recording that this run started clean instead, for the caller
+    /// to append alongside <see cref="RunDispatched"/>.
+    /// </returns>
+    private async Task<(Worktree Worktree, bool ResumesPreviousWork, RunStartedCleanAfterBranchGone? StartedClean)>
+        CheckoutFreshOrRetryAsync(
+            TaskDetails task, ProjectDetails project, string baseBranch, Guid taskId, Guid runId,
+            CancellationToken cancellationToken)
     {
+        RunStartedCleanAfterBranchGone? startedClean = null;
         if (task.RetryBranch.IsNotBlank())
         {
-            // A claim resuming another node's own latest run (idea 202383dc, piece C's residual,
-            // criterion 1) never falls back to a clean cut the way an ordinary retry's missing
-            // branch does just below: silently starting over here would quietly abandon whatever
-            // that foreign node's own run left behind rather than surfacing that it is gone, and
-            // "fails the run loudly by name" is the stated acceptance criterion for exactly this
-            // shape. GitWorktreeManager.CheckoutExistingAsync's own WorktreeException already names
-            // the branch, so letting it propagate (through this method's caller, LaunchAsync's own
-            // catch) is the whole of what "loudly" needs here.
-            if (task.RetryBranchResumesForeignNode)
-            {
-                return (await worktrees.CheckoutExistingAsync(
-                    new FollowUpWorktreeRequest(project.RepositoryPath, task.RetryBranch, taskId, runId),
-                    cancellationToken), true);
-            }
-
             try
             {
                 return (await worktrees.CheckoutExistingAsync(
                     new FollowUpWorktreeRequest(project.RepositoryPath, task.RetryBranch, taskId, runId),
-                    cancellationToken), true);
+                    cancellationToken), true, null);
             }
+            // Only the branch-is-gone-everywhere failure falls through to a fresh cut on a
+            // foreign-node resume; every other worktree failure keeps propagating there, through
+            // this method's caller into LaunchAsync's own catch, and fails the run by name.
             catch (WorktreeException exception)
+                when (exception is BranchGoneException || !task.RetryBranchResumesForeignNode)
             {
                 logger.LogInformation(
                     "Retry of task {TaskId} cannot resume branch {Branch} ({Reason}); starting clean from {BaseBranch}",
                     taskId, task.RetryBranch, exception.Message, baseBranch);
+                // Recorded only for the failure that actually observed the branch on neither side.
+                // The ordinary retry's OTHER fallback — log #25's, a machine that could not do the
+                // job on a branch of this node's own — reaches here too, and there the branch and
+                // its commits are still in the repository: saying "gone" about it would be the
+                // audit trail guessing at a gap nobody observed (AGENTS.md's never-guess rule;
+                // both review lenses, cycle 1). That path stays exactly as it was, a fresh cut
+                // and this log line.
+                if (exception is BranchGoneException gone)
+                {
+                    startedClean = new RunStartedCleanAfterBranchGone(
+                        runId, gone.Branch, baseBranch, exception.Message,
+                        task.RetryBranchResumesForeignNode, DateTimeOffset.UtcNow);
+                }
             }
         }
 
@@ -1503,7 +1533,7 @@ public sealed class RunLauncher(
             new WorktreeRequest(
                 project.RepositoryPath, baseBranch, taskId, runId, task.Objective,
                 project.BranchNameTemplate, task.ExternalReference),
-            cancellationToken), false);
+            cancellationToken), false, startedClean);
     }
 
     /// <summary>
