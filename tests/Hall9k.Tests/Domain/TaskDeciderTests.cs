@@ -2568,6 +2568,30 @@ public sealed class TaskDeciderTests
         task.ResumedAfterHolderChange.Should().BeTrue("a takeover is always a cross-node handoff");
     }
 
+    [Fact]
+    public void Apply_TakeOver_clears_an_outstanding_take_request_against_the_previous_holder()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        TaskTakeRequested requested = TaskDecider.RequestTake(
+            task, requesterNodeId, requesterOwnerId, "requester-fingerprint", "Picking this back up.", Now);
+        task.Apply(requested);
+
+        Guid newHolderNodeId = DomainId.New();
+        Guid newHolderOwnerId = DomainId.New();
+        TaskHolderTakenOver takenOver = TaskDecider.TakeOver(
+            task, newHolderNodeId, newHolderOwnerId, "new-owner-fingerprint", "Absent for six hours.", newHolderOwnerId, Now);
+
+        task.Apply(takenOver);
+
+        task.PendingTakeRequestedByNodeId.Should().BeNull("a forced takeover answers any outstanding cooperative-take request the same way a grant or refusal does");
+        task.PendingTakeRequestedByOwnerId.Should().BeNull();
+        task.PendingTakeRequestedByOwnerFingerprint.Should().BeNull();
+        task.PendingTakeReason.Should().BeNull();
+        task.PendingTakeRequestedAt.Should().BeNull();
+    }
+
     // ── Cooperative take (idea 202383dc, item 5) ────────────────────────────────────────────────
 
     [Fact]
