@@ -36,6 +36,8 @@ h9k project set <name> --auto-pr-review off|normal|first|now   # a GitHub review
 h9k project set <name> --max-parallel-tasks <N|default>   # this project's own ceiling in TASK RUNS, enforced by the dispatcher: a ceiling never a reservation, 0 pauses the project (held even on an idle node, and nothing but a human raises it), 'default' clears it so the node ceiling alone decides; takes effect next dispatch cycle, no restart. --max-parallel is a quiet alias; the old session-denominated value it used to record is retired, not converted (Decisions Log #140)
 h9k project set <name> --priority high|normal|low|default   # which tier this project's ready work competes in for a FREE dispatch slot. Default normal, and free slots rotate: the eligible project longest unserved wins the next one; which of its own tasks takes it is decided by rank then oldest assignment, a follow-up lap past its first pull request outranking a retry or hand-back outranking a plain first claim (nothing to set — Decisions Log #188). 'high' is focus — wins every free slot over lower tiers while it has ready work and RELEASES ITSELF when its queue drains, which is the opposite of the sticky --max-parallel-tasks 0 pause. 'default' is the clearing word, restoring normal. Nothing preempts; every claim logs why that project won (Decisions Log #141)
 h9k project set <name> --claim-gate off|tracker-assignee   # a task linked to a Jira card or GitHub issue is claimed on this install only while the tracker shows that item assigned to this install's own identity; default off (Decisions Log #142)
+h9k project set <name> --take-policy auto|ask   # who answers a member's cooperative claim request (h9k task take with no --force): auto (default) has the holder's own node grant on receipt when no run is live, or refuse naming the run's start time; ask parks it for the holder's own human, answered with h9k task grant/refuse (idea 202383dc, item 5)
+h9k project set <name> --take-timeout <minutes|default>   # how long a cooperative take request waits for an answer before h9k task take names --force as the way on; default 30 minutes, 'default' clears an override back to it (idea 202383dc, item 5)
 h9k project set <name> --close-linked-issue on-closeout|never|when-all-tasks-close|default   # whether true closeout closes a task's linked GitHub issue, and when; default when-all-tasks-close waits for every task linked to the same issue to close out or be abandoned, decided fresh at the last one — a task overrides it at publish/revise, --never-close-labels forces never for a labeled issue, Jira untouched (Decisions Log #154)
 h9k project set <name> --writing-conventions "<TEXT>"   # how prose an agent composes for people has to read here, pasted verbatim into every prompt that asks a session to write something posted under the owner's login (PR title and body, a review-feedback lap's summary comment and thread replies, the note a review lap drafts for h9k pr approve / request-changes, an attended session's commit messages). The two mechanically checkable rules are re-checked immediately before the platform posts: an em dash is rewritten by context, an attribution line is dropped, an attribution welded into a sentence is not posted at all. A run never fails over a convention miss. 'default' restores the platform text (no em dashes, full sentences, no AI attribution)
 h9k project set <name> --verify-gate-filter <NAME=FILTER|none>   # marks an already-configured --verify gate host-coupled: the daemon only runs it at a run's first verification and its final full pass, serializes it against every other host-coupled gate on the node (h9k task show reports the wait as the run's own phase, never a failure), and skips it on every intermediate review-cycle pass in between, so the ordinary gates stay free of tests that touch git, the process table, the toolchain, or Docker. FILTER is the dotnet test --filter expression injected into that gate's own command when it runs; 'none' clears the designation; at most one gate is host-coupled at a time (task: host-coupled tests run in their own gate once per task, never in parallel with another run's copy — #225)
@@ -265,10 +267,43 @@ to any of this (`EventReplicationInbox.ApplyAsync` is a bare replay, idea 202383
 tree, and records `RunKilled` with `KillReason.Superseded` — never `RunFailed` — with the
 transcript kept and no pull request action following from that node. `h9k task show` and `h9k
 status` both name the takeover: who, from whom, why, when
-(`TaskAggregate.TakenOverFromNodeId`/`TakenOverReason`/`TakenOverByOwnerId`/`TakenOverAt`). The
-cooperative take (`h9k task take <id>` with no `--force`, idea 202383dc, item 5 — a claim-request
-envelope to the holder's own node) is a separate, not-yet-built door; this command refuses without
-`--force` rather than silently doing nothing.
+(`TaskAggregate.TakenOverFromNodeId`/`TakenOverReason`/`TakenOverByOwnerId`/`TakenOverAt`).
+
+**A member can ask a holder for a task through messages** (idea 202383dc, item 5, "the cooperative
+take") — `h9k task take <id>` with no `--force` (`--reason` is required either way): a task with
+no ledger holder claims directly through the ordinary lock (nothing to negotiate — the daemon's own
+dispatch sweep picks it up, same as the forced-take's own final message defers to that sweep), a
+task this node already holds says so, and a task another node holds gets a
+`MessageKind.ClaimRequest` envelope queued for it (`ClaimEnvelopeCodec.ClaimRequestRecord`, carrying
+the requester's node, owner, reason, and — for a gated project — this install's own tracker
+identity, resolved locally via `TrackerAssignmentTake.ResolveOwnIdentityAsync` since the granting
+node has no other way to learn it: every teammate's tracker credentials are local to their own
+install). Queues only, the `h9k message send` convention — the daemon's own message sweep is what
+actually sends it. The project's own `take-policy` setting (`h9k project set --take-policy
+<auto|ask>`, default `auto`) decides how the holder's node answers, through
+`ClaimRequestWatchLoop` polling its own received-but-unhandled `ClaimRequest` messages on the
+ordinary sweep cadence and handing each to `ClaimRequestEngine.ReceiveRequestAsync`: it always
+appends `TaskTakeRequested` first (so `h9k task show`/`h9k status` can always say who asked, even
+while parked), then under `auto` checks for a live run on this node for the task
+(`ClaimRequestEngine.FindLiveRunAsync`, the same four live `RunState`s
+`RunSupervisor.StopRunsSupersededByTakeoverAsync` reads) — none live grants it
+(`ClaimRequestEngine.GrantAsync`: `TaskLedgerHolder.TryReleaseAsync` releases the ledger holder by
+conditional write, `TaskDecider.GrantTake` appends a `TaskHolderReleased` naming the requester,
+which reassigns `AssignedOwnerId` and lands the task back on Queued/Blocked exactly the way
+`TaskHolderTakenOver` does for a forced takeover, a gated project's tracker assignee moves to the
+requester's own account best effort via `TrackerAssignmentTake.GrantToAsync`, and a
+`MessageKind.ClaimGranted` envelope is queued for the requester), while a live run refuses it
+(`ClaimRequestEngine.RefuseAsync`, `TaskDecider.RefuseTake`, naming the run's own start time,
+queuing a `MessageKind.ClaimRefused` envelope). Under `take-policy ask` the request only parks —
+`h9k task grant <id>` and `h9k task refuse <id> --reason` are the holder's own human's two doors
+onto answering it, both reaching `ClaimRequestEngine.GrantAsync`/`RefuseAsync` directly (`h9k task
+grant` "runs the auto release" — the identical method). The requester's own node claims through the
+ordinary lock once its own dispatch sweep sees the task Queued and assigned to its owner again —
+including a race against a sibling node under the same owner, whichever's own `TryClaimAsync` lands
+first. No answer within the project's own `take-timeout` (`h9k project set --take-timeout
+<minutes>`, default 30) is a read-time computation, not a background loop: `h9k task show` and `h9k
+status` (`CooperativeTakeAttention.IsOverdue`) name `--force` as the way on once
+`TaskAggregate.PendingTakeRequestedAt` is older than the timeout.
 
 `PullRequestOpener.OpenAsync` looks up an already-open pull request for the run's own branch
 before ever calling `gh pr create`, on every delivery (not only a resumed one — a first delivery
@@ -762,6 +797,9 @@ h9k task handoff <id> --text "<note>"   # leave a note for whoever holds this ta
 h9k task handoff <id> --file <path>     # same, read from a file instead of typing it
 h9k task handoff <id> --text "<note>" --to <owner>   # nudge one owner's every node instead of the whole project (their root fingerprint — h9k owner show prints it)
 h9k task take <id> --force --reason "<why>"   # owner-role only: force an absent holder's task away from it (idea 202383dc, item 4); a gated project's own tracker take runs first, and the previous holder's own live run stops on its next sweep, recorded superseded by takeover
+h9k task take <id> --reason "<why>"   # the cooperative take (idea 202383dc, item 5): asks the current holder instead of forcing it — a claim-request envelope is queued, answered auto or parked per take-policy; no holder claims directly
+h9k task grant <id>                  # answers a parked cooperative take request (take-policy ask): runs the identical auto release, moves a gated project's tracker assignee to the requester
+h9k task refuse <id> --reason "<why>"   # answers a parked cooperative take request (take-policy ask) with a refusal, naming the reason
 ```
 
 A deliberate human kick-off dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead
