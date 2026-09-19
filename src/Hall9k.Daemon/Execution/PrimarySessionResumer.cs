@@ -85,7 +85,13 @@ public sealed class PrimarySessionResumer(IExecutor executor)
             // settings file, so omitting it here would silently lift the guard from the retry of
             // exactly the session it was written for — the blast-radius shape the launcher's own
             // two branches have been caught by before.
-            GuardsReviewThreadReplies: run.IsFollowUp)
+            GuardsReviewThreadReplies: run.IsFollowUp,
+            // Carried forward from the task's own declared budget, exactly as the original spawn
+            // (RunLauncher.LaunchAsync) already passes it: without this, a resumed primary session
+            // — a token-budget park's own retry, or the short-backoff error-result retry — ran
+            // with no turn cap at all despite the task's own stated one, since AgentSpawnRequest's
+            // own default is null/unbounded (independent pre-PR review, cycle 1, adversarial lens).
+            MaxTurns: task.Constraints?.MaxTurns)
         {
             SessionName = sessionName,
         }, cancellationToken);

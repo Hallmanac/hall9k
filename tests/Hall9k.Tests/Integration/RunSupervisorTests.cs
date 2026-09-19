@@ -1363,6 +1363,45 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// A spike's own declared turn budget doing its job (task: TaskConstraints gains its first
+    /// consumer): the build session's terminal result carries Claude Code's own
+    /// <c>error_max_turns</c> subtype and no result text, which the generic error path would
+    /// otherwise retry once and then fail outright, discarding whatever findings the session had
+    /// already written. This must instead read the same as a wall-clock or live-token kill: the
+    /// task closes out Done with a BudgetExhausted verdict, never Failed (independent pre-PR
+    /// review, cycle 1, adversarial lens, high).
+    /// </summary>
+    [Fact]
+    public async Task A_build_sessions_own_max_turns_cutoff_closes_a_spike_out_budget_exhausted_never_failed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedSpikeWithBudgetAsync(store, maxTurns: 5, cts.Token);
+
+        const string maxTurnsResultLine =
+            """{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":5,"usage":{"input_tokens":500,"output_tokens":200}}""";
+        int processId = SpawnFakeAgent(runId,
+            FakeAgentScript.New().Emit(AssistantLine).Emit(maxTurnsResultLine));
+        DateTimeOffset startedAt = await RecordProcessStartedAsync(store, runId, processId, cts.Token);
+
+        RunSupervisor supervisor = NewSupervisor(store, node);
+        supervisor.StartMonitoring(runId, RunPaths.GlobalDirectory(runId), taskId, processId, startedAt, cts.Token);
+
+        RunDetails details = await WaitForStateAsync(store, runId, "Completed", cts.Token);
+        details.FailureReason.Should().BeNull("a declared turn budget doing its job is not this run failing");
+
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+        task.State.Should().Be(TaskState.Done, "a budget-ended spike closes out normally");
+        task.SpikeVerdict.Should().Be(SpikeVerdict.BudgetExhausted);
+
+        List<object> runEvents = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        runEvents.OfType<RunFailed>().Should().BeEmpty("the generic error path must never also fail this run");
+        runEvents.OfType<RunSessionErrorRetried>().Should().BeEmpty(
+            "a declared turn cap doing its job is not the ordinary one-shot in-place retry's business either");
+    }
+
+    /// <summary>
     /// The zero-work shape (task: a session that exits at once with no work done is treated as
     /// the node failing to launch sessions) — one turn, zero tokens, sub-second, exactly the
     /// 2026-09-07 outage's own signature — holds the run and raises the node-wide launch hold,
@@ -3249,6 +3288,58 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
             runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
             worktreePath, "task/test", ExecutorMode.Subscription, Now));
+        await session.SaveChangesAsync(cancellationToken);
+
+        return (node, taskId, runId);
+    }
+
+    /// <summary>
+    /// A Claimed spike task carrying its own declared turn budget, with a real registered project
+    /// and a real (empty) worktree directory — <see cref="SeedClaimedTaskWithProjectAsync"/>'s
+    /// identical shape, needed here because <c>SpikeEngine.EndOverBudgetAsync</c> bails out
+    /// silently the moment it cannot load a <c>ProjectDetails</c> for the task, unlike
+    /// <see cref="SeedClaimedTaskAsync"/>'s deliberately unregistered project.
+    /// </summary>
+    private async Task<(NodeContext Node, Guid TaskId, Guid RunId)> SeedClaimedSpikeWithBudgetAsync(
+        DocumentStore store, int maxTurns, CancellationToken cancellationToken)
+    {
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cancellationToken);
+
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        string repositoryPath = Path.Combine(Path.GetTempPath(), $"hall9k-spike-turn-budget-repo-{taskId:N}");
+        string worktreePath = Path.Combine(Path.GetTempPath(), $"hall9k-spike-turn-budget-worktree-{taskId:N}");
+        Directory.CreateDirectory(worktreePath);
+        _createdWorktreePaths.Add(worktreePath);
+        await using IDocumentSession session = store.LightweightSession();
+
+        ProjectRegistered registered = ProjectDecider.Register(
+            projectId, node.OwnerId, DomainId.New(), $"spike-turn-budget-{taskId:N}", repositoryPath,
+            new Uri("https://github.com/acme/web"), "main", Now);
+        session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+        TaskAggregate task = new();
+        (task, object[] lifecycle) = TaskSeed.Start(
+            TaskDecider.Add(
+                taskId, projectId, "Spike whether the approach holds", ["the exit criterion is judged"],
+                TaskType.Spike, agentContext: null, constraints: new TaskConstraints(maxTurns, null, null),
+                externalReference: null, addedAt: Now, addedByOwnerId: node.OwnerId,
+                spikeKind: SpikeKind.Research, exitCriterion: "The findings answer the stated question."),
+            node.OwnerId, Now);
+        var claimed = TaskDecider.Claim(task, node.NodeId, node.OwnerId, runId, Now);
+        session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+        session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+
+        // RunDirectory is recorded explicitly here, unlike SeedClaimedTaskWithProjectAsync's own
+        // blank default: SpikeEngine.EndOverBudgetAsync (unlike the ordinary IsError path) reads
+        // RunDetails.RunDirectory itself to find the session's own stream file, rather than
+        // trusting the runDirectory parameter CompleteRunAsync was called with — and it has to
+        // resolve to the exact directory SpawnFakeAgent below actually writes the stream file
+        // into.
+        session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+            runId, taskId, node.NodeId, node.OwnerId, 1, DomainId.New(),
+            worktreePath, "task/test", ExecutorMode.Subscription, Now, RunDirectory: RunPaths.GlobalDirectory(runId)));
         await session.SaveChangesAsync(cancellationToken);
 
         return (node, taskId, runId);

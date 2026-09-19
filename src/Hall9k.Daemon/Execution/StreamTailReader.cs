@@ -174,4 +174,33 @@ internal static class StreamTailReader
 
         return false;
     }
+
+    /// <summary>
+    /// The running total of tokens billed so far by a session still in flight — every line's own
+    /// <see cref="StreamJsonParser.ReadLineTokenSpend"/> summed across the whole stream file so
+    /// far. Reads the whole file rather than tailing from a cursor, the same one-shot read
+    /// <see cref="HasRecordedUsageAsync"/> uses, since a budget watch calls this at most once per
+    /// poll rather than on every incremental tail. Zero, never null, when the stream file does not
+    /// exist yet — a session that has not started writing has spent nothing observable, which is
+    /// the honest reading, not an unknown one.
+    /// </summary>
+    internal static async Task<long> ReadLiveTokenSpendAsync(string streamFile, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(streamFile))
+        {
+            return 0;
+        }
+
+        await using FileStream stream = new(
+            streamFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using StreamReader reader = new(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: false);
+
+        long total = 0;
+        while (await reader.ReadLineAsync(cancellationToken) is { } line)
+        {
+            total += StreamJsonParser.ReadLineTokenSpend(line);
+        }
+
+        return total;
+    }
 }

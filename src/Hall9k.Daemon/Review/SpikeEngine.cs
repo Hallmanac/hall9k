@@ -59,8 +59,9 @@ public sealed class SpikeEngine(
     /// <summary>
     /// Polled by <c>SpikeBudgetWatchLoop</c> on the ordinary sweep cadence, mirroring
     /// <c>RunSupervisor.StopRunsSupersededByTakeoverAsync</c>'s own shape: this node's own live
-    /// build sessions for a spike with a stated wall-clock budget (ruling 3: the budget bounds the
-    /// build session only), terminated the moment they cross it rather than left to run unbounded.
+    /// build sessions for a spike with a stated wall-clock budget (PLAN.md §16 PLACEHOLDER-1d81543a:
+    /// the budget bounds the build session only), terminated the moment they cross it rather than
+    /// left to run unbounded.
     /// Scoped to <see cref="RunState.Dispatched"/>/<see cref="RunState.Running"/> only — once a
     /// spike's build session ends, its own review cycle runs on the review model, outside this
     /// budget entirely, and is never a candidate here.
@@ -94,46 +95,126 @@ public sealed class SpikeEngine(
                 continue;
             }
 
-            foreach (ActiveSession activeSession in run.ActiveSessions)
-            {
-                if (activeSession.StartedAt is { } startedAt)
-                {
-                    processManager.TerminateTree(activeSession.ProcessId, startedAt);
-                }
-            }
-
-            await using (IDocumentSession killSession = store.LightweightSession())
-            {
-                StreamState? runFence = await killSession.Events.FetchStreamStateAsync(run.Id, cancellationToken);
-                if (runFence is null)
-                {
-                    continue;
-                }
-
-                killSession.Events.Append(
-                    run.Id, expectedVersion: runFence.Version + 1,
-                    new RunKilled(run.Id, KillReason.BudgetExceeded, KilledByOwnerId: null, DateTimeOffset.UtcNow));
-                try
-                {
-                    await killSession.SaveChangesAsync(cancellationToken);
-                }
-                catch (EventStreamUnexpectedMaxEventIdException)
-                {
-                    logger.LogInformation(
-                        "Run {RunId}: lost the race recording a wall-clock budget kill — already ended some other way",
-                        run.Id);
-                    continue;
-                }
-            }
-
-            logger.LogInformation(
-                "Run {RunId} task {TaskId}: spike build session ended after {Elapsed} crossed its own "
-                + "{MaxWallClock} wall-clock budget", run.Id, run.TaskId, elapsed, maxWallClock);
-            await EndOverBudgetAsync(
-                run.Id, run.TaskId,
+            await KillOverBudgetRunAsync(
+                run, run.TaskId,
                 $"the build session's own wall-clock budget ({maxWallClock}) was crossed after {elapsed:g}",
                 cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// The token half of the same budget watch (task: TaskConstraints gains its first consumer) —
+    /// polled by <c>SpikeBudgetWatchLoop</c> alongside <see cref="EndRunsOverWallClockBudgetAsync"/>.
+    /// Unlike the wall-clock half, nothing on <see cref="RunDetails"/> itself carries a live spend
+    /// figure: <c>RunDetails.InputTokens</c> and its siblings only ever accumulate once
+    /// <c>TokensRecorded</c> lands at session end, which is exactly the moment this watch exists to
+    /// act before. <see cref="StreamTailReader.ReadLiveTokenSpendAsync"/> reads the session's own
+    /// still-growing stream file instead, summing every turn's own billed usage — the one place a
+    /// budget crossed mid-session is actually observable before the session decides to stop on its
+    /// own.
+    /// </summary>
+    public async Task EndRunsOverTokenBudgetAsync(CancellationToken cancellationToken)
+    {
+        Guid nodeId = node.NodeId;
+        await using IQuerySession query = store.QuerySession();
+        IReadOnlyList<RunDetails> candidates = await query.Query<RunDetails>()
+            .Where(run => run.NodeId == nodeId)
+            .Where(run => run.MatchesSql("d.data ->> 'state' in (?, ?)", BudgetWatchedStates[0], BudgetWatchedStates[1]))
+            .ToListAsync(cancellationToken);
+
+        foreach (RunDetails run in candidates)
+        {
+            if (run.ActiveSessions.Count == 0)
+            {
+                continue;
+            }
+
+            TaskDetails? task = await query.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
+            if (task is not { Type: var type } || type != TaskType.Spike
+                || task.Constraints?.MaxTokens is not { } maxTokens)
+            {
+                continue;
+            }
+
+            string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
+            string streamFile = RunPaths.StreamFile(runDirectory);
+            long spent = await StreamTailReader.ReadLiveTokenSpendAsync(streamFile, cancellationToken);
+            if (spent < maxTokens)
+            {
+                continue;
+            }
+
+            await KillOverBudgetRunAsync(
+                run, run.TaskId,
+                $"the build session's own live token spend ({spent}) crossed its own stated budget "
+                + $"({maxTokens}) before it finished",
+                cancellationToken);
+        }
+    }
+
+    /// <summary>
+    /// The shared tail of both budget watches above: terminate whatever process is still running,
+    /// record the kill, and hand off to <see cref="EndOverBudgetAsync"/> for the actual verdict.
+    /// Best-effort against a run that ended some other way in the same instant — the fenced append
+    /// below simply loses that race and does nothing further, exactly as <see cref="FailAsync"/>'s
+    /// own identical guard does.
+    /// </summary>
+    private async Task KillOverBudgetRunAsync(
+        RunDetails run, Guid taskId, string reason, CancellationToken cancellationToken)
+    {
+        foreach (ActiveSession activeSession in run.ActiveSessions)
+        {
+            if (activeSession.StartedAt is { } startedAt)
+            {
+                processManager.TerminateTree(activeSession.ProcessId, startedAt);
+            }
+        }
+
+        await using (IDocumentSession killSession = store.LightweightSession())
+        {
+            // Read fresh, immediately before deciding to write: FetchStreamStateAsync's own
+            // version-conflict guard below only catches an event landing AFTER this read, never
+            // one that already landed before it — a run this watch queried as still live (its own
+            // candidates query, above) can have completed naturally in the gap between that query
+            // and this kill, and a stale RunDetails read here would still see it as non-terminal
+            // and append RunKilled on top of whatever terminal event the natural completion
+            // already wrote (the identical shape FinalizeAsync's own terminal guard exists to
+            // close, independent pre-PR review, cycle 1, adversarial lens — class sweep on that
+            // same finding).
+            RunDetails? currentRun = await killSession.LoadAsync<RunDetails>(run.Id, cancellationToken);
+            if (currentRun is { State.IsTerminal: true })
+            {
+                logger.LogInformation(
+                    "Run {RunId}: already {State} by the time a budget kill was about to be recorded - not recording a kill over it",
+                    run.Id, currentRun.State.Value);
+                return;
+            }
+
+            StreamState? runFence = await killSession.Events.FetchStreamStateAsync(run.Id, cancellationToken);
+            if (runFence is null)
+            {
+                return;
+            }
+
+            killSession.Events.Append(
+                run.Id, expectedVersion: runFence.Version + 1,
+                new RunKilled(run.Id, KillReason.BudgetExceeded, KilledByOwnerId: null, DateTimeOffset.UtcNow));
+            try
+            {
+                await killSession.SaveChangesAsync(cancellationToken);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                logger.LogInformation(
+                    "Run {RunId}: lost the race recording a budget kill — already ended some other way",
+                    run.Id);
+                return;
+            }
+        }
+
+        logger.LogInformation(
+            "Run {RunId} task {TaskId}: spike build session ended — {Reason}", run.Id, taskId, reason);
+        await EndOverBudgetAsync(run.Id, taskId, reason, cancellationToken);
     }
 
     /// <summary>
@@ -209,11 +290,14 @@ public sealed class SpikeEngine(
         await EnsureFindingsRecordedAsync(runDirectory, cancellationToken);
         string findingsPath = RunPaths.SpikeFindingsFile(runDirectory);
 
-        // Reactive token-budget check (ruling: the budget bounds the build session only): the
-        // build session's own spend is already on the run stream by the time this is ever
-        // called (RunSupervisor records it before reaching this branch), so a session whose
-        // spend already crossed the stated limit is recorded budget-exhausted here rather than
-        // spending a review cycle judging findings a budget already cut short.
+        // Reactive token-budget check (PLAN.md §16 PLACEHOLDER-1d81543a: the budget bounds the
+        // build session only) — a backstop behind EndRunsOverTokenBudgetAsync's own proactive
+        // watch, for the session that finished naturally (or between two polls) with a spend that
+        // had already crossed the limit by then: the build session's own spend is already on the
+        // run stream by the time this is ever called (RunSupervisor records it before reaching
+        // this branch), so a session whose spend already crossed the stated limit is recorded
+        // budget-exhausted here rather than spending a review cycle judging findings a budget
+        // already cut short.
         if (task.Constraints?.MaxTokens is { } maxTokens)
         {
             long spent = run.InputTokens + run.CacheReadInputTokens + run.CacheCreationInputTokens + run.OutputTokens;
@@ -247,11 +331,12 @@ public sealed class SpikeEngine(
             return;
         }
 
-        // Exactly one fix lap, fixed by the type (ruling 2): dispatched into the same worktree
-        // and branch the build session already left behind, never told about a budget — ruling 3
-        // scopes TaskConstraints to the build session that already ran.
+        // Exactly one fix lap, fixed by the type (PLAN.md §16 PLACEHOLDER-1d81543a): dispatched
+        // into the same worktree and branch the build session already left behind, never told
+        // about a budget — the same entry scopes TaskConstraints to the build session that
+        // already ran.
         string fixPrompt = AgentPromptBuilder.BuildSpikeFix(
-            task, project, run.Branch, first.Reason, commandTimeout: _options.VerifyGateTimeout);
+            task, first.Reason, commandTimeout: _options.VerifyGateTimeout);
         (AgentResult Result, string ArtifactName)? fixOutcome = await DispatchAndAwaitAsync(
             runId, taskId, run, task, project, "spike-fix", fixPrompt, AgentRole.Fix, cancellationToken);
         if (fixOutcome is not { } fix)
@@ -280,8 +365,9 @@ public sealed class SpikeEngine(
         }
 
         // Whatever the second, final pass says stands — met or not-met — with no further fix lap
-        // (ruling 2): a spike that still does not satisfy the reviewer after the fix lap records
-        // not-met with the reviewer's reason and exits cleanly, never parking for a human.
+        // (PLAN.md §16 PLACEHOLDER-1d81543a): a spike that still does not satisfy the reviewer
+        // after the fix lap records not-met with the reviewer's reason and exits cleanly, never
+        // parking for a human.
         await FinalizeAsync(runId, taskId, run, task, project, second.Verdict, second.Reason, findingsPath, cancellationToken);
     }
 
@@ -290,7 +376,7 @@ public sealed class SpikeEngine(
         string findingsText, string baseBranch, int pass, bool isFixLap, CancellationToken cancellationToken)
     {
         string prompt = AgentPromptBuilder.BuildSpikeReview(
-            task, project, run.Branch, baseBranch, findingsText, isFixLap, commandTimeout: _options.VerifyGateTimeout);
+            task, run.Branch, baseBranch, findingsText, isFixLap, commandTimeout: _options.VerifyGateTimeout);
         (AgentResult Result, string ArtifactName)? outcome = await DispatchAndAwaitAsync(
             runId, taskId, run, task, project, $"spike-review-{pass}", prompt, AgentRole.Review, cancellationToken);
         if (outcome is not { } review)
@@ -455,11 +541,23 @@ public sealed class SpikeEngine(
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
 
+        // Read fresh, right before this method's own writes, rather than trusted from the `run`
+        // parameter the caller loaded earlier: a wall-clock or token-budget kill already appended
+        // RunKilled on THIS exact call path (KillOverBudgetRunAsync → EndOverBudgetAsync →
+        // here) before this method ever runs, and the two branches below must never append a
+        // second terminal event over an already-terminal run — the same discipline FailAsync's
+        // own identical guard already holds itself to (independent pre-PR review, cycle 1,
+        // adversarial lens: RunCompleted landing on top of a Killed run flipped RunDetails.State
+        // back to Completed while FailureReason still read BudgetExceeded, and the fence-rejection
+        // branch's own RunSuperseded carried the identical defect).
+        RunDetails? currentRunDetails = await session.LoadAsync<RunDetails>(runId, cancellationToken);
+        bool runAlreadyTerminal = currentRunDetails is { State.IsTerminal: true };
+
         (TaskAggregate Task, long Version)? fenced = await GenerationFence.LoadFencedAsync(session, taskId, cancellationToken);
         if (!await GenerationFence.AllowsAsync(
             session, logger, taskId, runId, run.LeaseGeneration, nameof(RunCompleted), cancellationToken))
         {
-            if (await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
+            if (!runAlreadyTerminal && await session.Events.FetchStreamStateAsync(runId, cancellationToken) is not null)
             {
                 TaskDetails? currentTask = await session.LoadAsync<TaskDetails>(taskId, cancellationToken);
                 session.Events.Append(
@@ -494,7 +592,11 @@ public sealed class SpikeEngine(
             }
         }
 
-        session.Events.Append(runId, new RunCompleted(runId, now));
+        if (!runAlreadyTerminal)
+        {
+            session.Events.Append(runId, new RunCompleted(runId, now));
+        }
+
         session.Delete<TaskLease>(taskId);
         try
         {
@@ -530,8 +632,26 @@ public sealed class SpikeEngine(
         {
             try
             {
-                await worktrees.DeleteBranchEverywhereAsync(
-                    project.RepositoryPath, run.Branch, RemoteBranchDeletionOwner.GitHub, cancellationToken);
+                // An experiment spike's branch is never pushed (task.SpikeKind.PushesBranch is
+                // false for this kind), so it never reached origin at all — neither
+                // RemoteBranchDeletionOwner value describes that honestly (independent pre-PR
+                // review, cycle 1, both lenses): .Daemon asserts this platform owes a
+                // `git push origin --delete` for a ref that was never created, and .GitHub asserts
+                // the repository's own delete-on-merge setting is why nothing needs pushing, which
+                // is simply not what happened here either. DeleteBranchEverywhereAsync's whole
+                // plan is built for a MERGED pull request's branch; local-only deletion, under the
+                // same per-repo lock every other git write in this worktree's repository takes
+                // (Decisions Log #4), is the honest and complete answer for one that never left
+                // this machine.
+                await using IAsyncDisposable repositoryLock = await worktrees.AcquireRepositoryLockAsync(
+                    project.RepositoryPath, cancellationToken);
+                ProcessResult deleted = await ExternalProcess.Runner(
+                    "git", ["branch", "-D", run.Branch], project.RepositoryPath, cancellationToken);
+                if (deleted.ExitCode != 0)
+                {
+                    logger.LogDebug(
+                        "Local branch {Branch} not deleted ({Error})", run.Branch, deleted.StandardError.Trim());
+                }
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {

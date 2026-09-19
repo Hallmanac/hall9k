@@ -955,7 +955,21 @@ public sealed class RunSupervisor(
         // treated as the node failing to launch sessions).
         bool isBudgetExhausted = result.IsError
             && result.Summary is { } observedSummary && BudgetExhaustionParser.IsBudgetExhausted(observedSummary);
-        bool isLaunchFailure = !isBudgetExhausted && result.IsError
+
+        // A spike's own declared turn budget (task: TaskConstraints gains its first consumer),
+        // read off the terminal result's own "subtype" rather than inferred from Turns crossing
+        // the declared limit — the honest signal Claude Code itself reports, never guessed at
+        // (independent pre-PR review, cycle 1, adversarial lens): without this, a build session
+        // that hit its own --max-turns cap fell through to the generic error path below exactly
+        // like an unrelated agent failure, discarded whatever findings it had written, and failed
+        // the task outright — the opposite of SpikeVerdict.BudgetExhausted's own promise that a
+        // budget-ended spike closes out normally. Loaded once, here, ahead of the session
+        // transaction below, and reused rather than re-queried once more at the spike branch
+        // further down.
+        TaskDetails? spikeTask = await LoadSpikeTaskAsync(taskId, cancellationToken);
+        bool isSpikeTurnBudgetExhausted = result is { IsError: true, Subtype: StreamJsonParser.MaxTurnsResultSubtype }
+            && spikeTask is not null;
+        bool isLaunchFailure = !isBudgetExhausted && !isSpikeTurnBudgetExhausted && result.IsError
             && LaunchFailureClassifier.IsLaunchFailure(result, _options.LaunchFailureMaxDuration);
 
         // Node-stream bookkeeping, deliberately BEFORE the run-stream transaction below (a
@@ -1000,7 +1014,8 @@ public sealed class RunSupervisor(
         // third attempt this leg was never supposed to get, misattributing its own genuine error
         // to the node.
         bool alreadyRetriedBuildLeg = run?.HasRetriedSessionError(RunSessionLeg.Build, cycle: null, lens: null) ?? false;
-        bool holdAlreadyStanding = !isBudgetExhausted && !isLaunchFailure && result.IsError && !alreadyRetriedBuildLeg
+        bool holdAlreadyStanding = !isBudgetExhausted && !isSpikeTurnBudgetExhausted && !isLaunchFailure
+            && result.IsError && !alreadyRetriedBuildLeg
             && await launchHold.JoinIfActiveAsync(node.NodeId, runId, cancellationToken);
 
         bool willRetryBuildSession;
@@ -1050,6 +1065,18 @@ public sealed class RunSupervisor(
                 logger.LogWarning(
                     "Run {RunId}: token budget exhausted — parked rather than failed; the daemon retries hourly. {Message}",
                     runId, summary);
+            }
+            else if (isSpikeTurnBudgetExhausted)
+            {
+                // Nothing further appended here on the run stream: this run's own
+                // AgentSessionCompleted/TokensRecorded above already stand, and once this session
+                // commits, the caller below hands off to SpikeEngine.EndOverBudgetAsync — the
+                // identical finalize a wall-clock or live-token kill already reaches — which
+                // records the task-level BudgetExhausted verdict and appends this run's own
+                // RunCompleted itself. Recording a generic RunFailed/TaskFailed here first, the
+                // way the ordinary error path below does, would be the exact defect this branch
+                // exists to close: a declared turn cap doing its job read back as the task simply
+                // failing.
             }
             else if (isLaunchFailure || holdAlreadyStanding)
             {
@@ -1114,6 +1141,25 @@ public sealed class RunSupervisor(
                 "Run {RunId}: retired as superseded — task {TaskId} was abandoned before this session's "
                 + "completion could be recorded",
                 runId, taskId);
+            return null;
+        }
+
+        if (isSpikeTurnBudgetExhausted)
+        {
+            // EndOverBudgetAsync recovers whatever the session had already written into its own
+            // findings document (EnsureFindingsRecordedAsync's own job) before finalizing with
+            // SpikeVerdict.BudgetExhausted — the identical path a wall-clock or live-token kill
+            // reaches through KillOverBudgetRunAsync, just entered from this run's own natural
+            // completion instead of a still-running process being torn down.
+            logger.LogWarning(
+                "Run {RunId}: the spike's own turn budget ({MaxTurns}) was crossed before it could finish — "
+                + "recorded budget-exhausted rather than failed",
+                runId, spikeTask!.Constraints?.MaxTurns);
+            await spike.EndOverBudgetAsync(
+                runId, taskId,
+                $"the build session's own turn budget ({spikeTask.Constraints?.MaxTurns}) was crossed before "
+                + "it could finish",
+                cancellationToken);
             return null;
         }
 
@@ -1182,9 +1228,11 @@ public sealed class RunSupervisor(
         // prototype (it must actually build and run); research and experiment run no gates at
         // all. Either way, SpikeEngine takes over from here — never ReviewEngine, never
         // PullRequestOpener — for its own fixed one-cycle-one-fix-lap review against the exit
-        // criterion alone. An error result is already fully handled by the generic
-        // RunFailed/TaskFailed above, exactly as the pr-review branch's own comment says.
-        if (await LoadSpikeTaskAsync(taskId, cancellationToken) is { } spikeTask)
+        // criterion alone. A generic error result (any subtype but the turn-budget one already
+        // handled above) is already fully handled by the RunFailed/TaskFailed path further up,
+        // exactly as the pr-review branch's own comment says — spikeTask was loaded once, ahead
+        // of that path, rather than re-queried here.
+        if (spikeTask is not null)
         {
             if (!result.IsError)
             {
