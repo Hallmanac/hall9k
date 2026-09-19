@@ -533,7 +533,12 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.MarkupLine($"  [dim]Reason: {details.PendingTakeReason.EscapeMarkup()}[/]");
             AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeTaskShowLine(details.Id.ToString(), overdue, takeTimeoutMinutes));
         }
-        else if (details.LastGrantedAt is { } grantedAt)
+        // Whichever of these two "last" provenance fields is actually the more recent answer:
+        // neither is ever cleared once set, so an older grant would otherwise permanently hide a
+        // newer refusal reached through a later request (independent pre-PR review, cycle 1,
+        // conformance lens).
+        else if (details.LastGrantedAt is { } grantedAt
+            && grantedAt >= (details.LastTakeRefusedAt ?? DateTimeOffset.MinValue))
         {
             AnsiConsole.MarkupLine(
                 $"\n[dim]Take granted (idea 202383dc, item 5) to owner "
