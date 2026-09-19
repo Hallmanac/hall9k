@@ -670,17 +670,30 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// carrying a pending request otherwise appears in whichever bucket its own lifecycle state
     /// already puts it in.
     /// </summary>
-    private static async Task WriteCooperativeTakeAsync(
+    internal static async Task WriteCooperativeTakeAsync(
+        IQuerySession session, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await WriteCooperativeTakeUnguardedAsync(session, now, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // Every other section writer in this pane degrades to a dim line instead of aborting
+            // the whole command (WriteMessagesLineAsync, WriteEventCatchUpRequestsAsync, and the
+            // rest) — this one carried no such guard, so a stale projection or a transient database
+            // hiccup mid-query took down every attention bucket printed after it, not just this one
+            // (independent pre-PR review, cycle 5, adversarial lens, low).
+            AnsiConsole.MarkupLineInterpolated($"[dim]cooperative take requests: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    private static async Task WriteCooperativeTakeUnguardedAsync(
         IQuerySession session, DateTimeOffset now, CancellationToken cancellationToken)
     {
         IReadOnlyList<TaskListItem> pending = await session.Query<TaskListItem>()
             .Where(task => task.PendingTakeRequestedByNodeId != null)
             .ToListAsync(cancellationToken);
-
-        if (pending.Count == 0)
-        {
-            return;
-        }
 
         string machineName = Environment.MachineName;
         NodeDetails? myNode = (await session.Query<NodeDetails>()
@@ -691,6 +704,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             return;
         }
 
+        HashSet<Guid> shown = [];
         foreach (TaskListItem task in pending)
         {
             bool isHolder = task.ClaimedByNodeId == myNode.Id;
@@ -700,6 +714,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 continue;
             }
 
+            shown.Add(task.Id);
             ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
             int timeoutMinutes = project?.TakeTimeoutMinutes ?? TaskTakeCommand.DefaultTakeTimeoutMinutes;
             bool overdue = task.PendingTakeRequestedAt is { } requestedAt
@@ -713,6 +728,48 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeStatusLine(
                 id, task.Objective.EscapeMarkup(), counterpart, task.PendingTakeReason.EscapeMarkup(), isHolder,
                 overdue, timeoutMinutes));
+        }
+
+        // A holder that never received or never processed the request at all — offline, or its own
+        // daemon not running — never appends TaskTakeRequested anywhere, so the loop above, which
+        // depends entirely on that event having replicated back to this node, never fires for
+        // exactly the case the take-timeout wording exists for hardest (independent pre-PR review,
+        // cycle 5, adversarial lens, medium). PendingOwnAskLookup reads this node's own outbox
+        // instead, which needs no reply from anyone.
+        IReadOnlyList<PendingOwnAskLookup.PendingOwnAsk> ownAsks =
+            await PendingOwnAskLookup.FindUnansweredAsync(session, myNode.Id, cancellationToken);
+        foreach (PendingOwnAskLookup.PendingOwnAsk ask in ownAsks)
+        {
+            if (shown.Contains(ask.TaskId))
+            {
+                continue;
+            }
+
+            TaskDetails? task = await session.LoadAsync<TaskDetails>(ask.TaskId, cancellationToken);
+            if (task is null || task.PendingTakeRequestedByNodeId is not null
+                || CooperativeTakeAttention.IsResolvedByDomainStream(task.LastGrantedAt, task.LastTakeRefusedAt, ask.RequestedAt))
+            {
+                // Either gone, the ordinary replicated record has since caught up (the loop above
+                // already covers it), or the domain stream's own grant/refusal has replicated even
+                // though the message-layer reply this node's own outbox is watching for has not —
+                // two independent replication paths that carry no ordering guarantee relative to
+                // each other, so PendingOwnAskLookup's own "no reply yet" alone is not enough to
+                // call this still outstanding (self-review, this branch: without this check, a
+                // request already granted or refused on the domain stream would still print as
+                // waiting for as long as the reply message itself lagged behind).
+                continue;
+            }
+
+            ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+            int timeoutMinutes = project?.TakeTimeoutMinutes ?? TaskTakeCommand.DefaultTakeTimeoutMinutes;
+            bool overdue = CooperativeTakeAttention.IsOverdue(ask.RequestedAt, timeoutMinutes, now);
+            string id = TaskListCommand.ShortId(ask.TaskId);
+            string counterpart = task.ClaimedByNodeId is { } holderNodeId
+                ? $"node {DomainId.Short(holderNodeId)}"
+                : "the holder";
+            AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeStatusLine(
+                id, task.Objective.EscapeMarkup(), counterpart, ask.Reason.EscapeMarkup(), isHolder: false, overdue,
+                timeoutMinutes));
         }
     }
 

@@ -533,6 +533,30 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.MarkupLine($"  [dim]Reason: {details.PendingTakeReason.EscapeMarkup()}[/]");
             AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeTaskShowLine(details.Id.ToString(), overdue, takeTimeoutMinutes));
         }
+        else if (await FindOwnUnansweredAskAsync(session, details.Id, cancellationToken) is { } ownAsk
+            && !CooperativeTakeAttention.IsResolvedByDomainStream(details.LastGrantedAt, details.LastTakeRefusedAt, ownAsk.RequestedAt))
+        {
+            // A holder that never received or never processed the request at all leaves
+            // PendingTakeRequestedAt null forever — TaskTakeRequested is only ever appended on the
+            // holder's own stream, so this node has nothing to read back until the holder actually
+            // acts. This node's own outbox already knows it asked, though, independent of any reply
+            // (independent pre-PR review, cycle 5, adversarial lens, medium — the same gap
+            // h9k status's own WriteCooperativeTakeAsync closes with PendingOwnAskLookup). The
+            // domain-stream check alongside it (self-review, this branch) covers the case where a
+            // grant or refusal already replicated onto this task's own stream even though the
+            // separate message-layer reply this node is watching for has not — two independent
+            // replication paths with no ordering guarantee relative to each other, so the message
+            // layer alone answering "no reply yet" is not enough to call this still outstanding.
+            int takeTimeoutMinutes = project?.TakeTimeoutMinutes ?? TaskTakeCommand.DefaultTakeTimeoutMinutes;
+            bool overdue = CooperativeTakeAttention.IsOverdue(ownAsk.RequestedAt, takeTimeoutMinutes, DateTimeOffset.UtcNow);
+            AnsiConsole.MarkupLine(
+                "\n[bold]Take requested[/] [dim](idea 202383dc, item 5 — this node's own cooperative h9k task "
+                + "take, not yet answered)[/]");
+            AnsiConsole.MarkupLine(
+                $"  [yellow]Asked at {ownAsk.RequestedAt.ToLocalTime():g} — no reply recorded on this node yet[/]");
+            AnsiConsole.MarkupLine($"  [dim]Reason: {ownAsk.Reason.EscapeMarkup()}[/]");
+            AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeTaskShowLine(details.Id.ToString(), overdue, takeTimeoutMinutes));
+        }
         // Whichever of these two "last" provenance fields is actually the more recent answer:
         // neither is ever cleared once set, so an older grant would otherwise permanently hide a
         // newer refusal reached through a later request (independent pre-PR review, cycle 1,
@@ -2310,6 +2334,22 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken);
         return owner is null ? $"[dim]{ownerId}[/]" : owner.Name.EscapeMarkup();
+    }
+
+    /// <summary>This node's own outstanding ask for <paramref name="taskId"/>, if it has one and no
+    /// reply is recorded yet — see <see cref="PendingOwnAskLookup"/>'s own doc. Null (not thrown)
+    /// when this node cannot resolve its own identity yet, the same "nothing to report" this
+    /// section's other branches already return for an absent fact.</summary>
+    private static async Task<PendingOwnAskLookup.PendingOwnAsk?> FindOwnUnansweredAskAsync(
+        IQuerySession session, Guid taskId, CancellationToken cancellationToken)
+    {
+        string machineName = Environment.MachineName;
+        NodeDetails? myNode = (await session.Query<NodeDetails>()
+            .Where(node => node.MachineName == machineName)
+            .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
+        return myNode is null
+            ? null
+            : await PendingOwnAskLookup.FindUnansweredAsync(session, taskId, myNode.Id, cancellationToken);
     }
 
     /// <summary>

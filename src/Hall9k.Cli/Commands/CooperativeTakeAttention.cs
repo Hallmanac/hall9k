@@ -14,6 +14,21 @@ internal static class CooperativeTakeAttention
         now - requestedAt > TimeSpan.FromMinutes(timeoutMinutes);
 
     /// <summary>
+    /// Whether a task's own domain stream already recorded a grant or refusal at or after
+    /// <paramref name="requestedAt"/> — the check <c>StatusCommand</c>'s and <c>TaskShowCommand</c>'s
+    /// own <c>PendingOwnAskLookup</c> fallback both need alongside that lookup's own "no reply
+    /// message received yet" check, not instead of it: message-layer replication (a
+    /// <c>ClaimGranted</c>/<c>ClaimRefused</c> reply) and domain-stream replication (the task's own
+    /// <c>TaskHolderReleased</c>/<c>TaskTakeRefused</c>) are two independent paths with no ordering
+    /// guarantee relative to each other, so a request already resolved on the domain stream can
+    /// still show as "no reply yet" by the message layer alone (self-review, this branch).
+    /// </summary>
+    public static bool IsResolvedByDomainStream(
+        DateTimeOffset? lastGrantedAt, DateTimeOffset? lastTakeRefusedAt, DateTimeOffset requestedAt) =>
+        (lastGrantedAt is { } grantedAt && grantedAt >= requestedAt)
+        || (lastTakeRefusedAt is { } refusedAt && refusedAt >= requestedAt);
+
+    /// <summary>
     /// The one-line h9k status row for an outstanding request — scoped to the one node that reads
     /// it (the caller only ever composes this for the holder or the requester, never a third node
     /// that merely replicated the same <c>TaskTakeRequested</c>, independent pre-PR review, cycle
