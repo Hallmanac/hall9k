@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a0baa9-5718-714f-880d-d28ca56cf16e
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#490
+objective: An established node can pull a named task's event stream, or a project's history since a point, from a peer on demand, so work published on one node before replication switched on can be handed to another node that already has its own history
+criteria:
+  - h9k task pull <id> (working name; match the noun-first CLI conventions) on a node that lacks that task's stream writes a targeted catch-up request naming the stream to the ranked candidate peers through the existing EventCatchUpCoordinator, and the answering peer's sweep serves that stream in full through the same envelopes the bootstrap answer uses; the task appears on the requesting node's board with its dependencies, stacking, and issue link intact, and the command prints where it stands and what to run next
+  - h9k project pull <project> --since <global-sequence|all> requests the project's history the same way for a node that has its own history and therefore never bootstraps (MessageSweepEngine.HasAnyLocalHistoryAsync gates the bootstrap to brand-new nodes); an answer is applied idempotently against streams the node already holds
+  - The --from-issue refusal for a task published elsewhere names the pull command instead of promising that catch-up will bring the stream, which is true only for a brand-new node; the docs (concepts.md, cli.md) say which node states bootstrap, which gap-fill, and which need a pull
+  - |-
+    Unit tests cover: a targeted request for one stream is written and answered; an established node's request for history since a point; idempotent application over a stream already held; the refusal text; no test creates branches or touches GitHub
+  - dotnet build and dotnet test pass; the decision log carries one entry under this task's placeholder
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/a56cf16e-an-established-node-can-pull-a
+published: 2026-09-19 17:14:53Z
+context: |-
+  Cut 2026-09-19 13:2x EDT on Brian's word after the first two-node connection (Mac genesis, Windows joined by invite 12:51 EDT on v0.10.0). Evidence: live replication works (the Mac's refs/hall9k/messages/<node> outbox carries kind=events envelopes with run events after replication_switched_on; the Mac holds an EventReplicationInboxCursor for the Windows node), but the five persona tasks published on the Mac on 2026-09-17 (ec35ceca, cd722750, b1b20c23, 0569c229, 09fad63d) never reach Windows: Windows's h9k task add --from-issue 447 answered 'already published elsewhere as task ec35ceca, but that task's own event stream has not reached this node yet ... It will appear on this node's own board once catch-up brings that stream in', while src/Hall9k.Daemon/Messaging/MessageSweepEngine.cs AdvanceCatchUpAsync requests the bootstrap (EventCatchUpCoordinator.RequestBootstrapAsync) only when HasAnyLocalHistoryAsync is false for the project (no ReplicatedEventRecord, no TaskListItem, no IdeaDetails), and RequestGapFillAsync covers outbox seq gaps, not streams that predate the switch-on sequence (ReplicationSwitchedOn.SwitchOnGlobalSequence). Windows has its own hall9k history, so it never bootstraps. Lineage: a gap in M2b (idea 202383dc), not a fix of a fix. Boundaries: reuse EventCatchUpCoordinator, the ranked candidates, the timeout and cascade; do not widen bootstrap to established nodes wholesale; a pull never overwrites a stream the node already holds. Placement: Mac; a chasing fix for the distributed-team release, candidate for v0.10.1.
