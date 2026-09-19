@@ -174,10 +174,19 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             // ever release a holder this node's own aggregate never recorded taking (adversarial
             // pre-PR review, cycle 1 — the same hazard DispatchEngine.TryClaimAsync's own
             // ReleaseLedgerHolderBestEffortAsync exists to close for the ordinary claim path).
-            // Best effort: this call is safe even if the release itself cannot land, since a
+            // Best effort: this call is safe even if the restore itself cannot land, since a
             // failure here is reported rather than silently swallowed.
-            await ReleaseLedgerOverrideBestEffortAsync(
-                ledger, project.RepositoryPath, taskId, context.NodeId, committer, signingKey, cancellationToken);
+            //
+            // Restores the ledger's PREVIOUS holder rather than releasing to null (adversarial
+            // pre-PR review, cycle 2): a null holder is freely claimable by any node's ordinary
+            // dispatch sweep (TaskLedgerHolder.TryClaimAsync treats a null Holder as unowned),
+            // which would let some other node claim and start running this task concurrently with
+            // whatever the domain aggregate — still naming the ORIGINAL holder, since this append
+            // never landed — believes about it. That is the exact double-claim hazard this rollback
+            // exists to prevent, not reintroduce.
+            await RestoreLedgerOverrideBestEffortAsync(
+                ledger, project.RepositoryPath, taskId, context.NodeId, result.PreviousHolder, committer,
+                signingKey, cancellationToken);
             throw new DomainConflictException(
                 $"Task {taskId} changed while recording this takeover — the ledger holder override was "
                 + "rolled back rather than left pointing at a node whose own task stream never recorded "
@@ -199,23 +208,27 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
     /// <summary>
     /// Best-effort undo of the ledger override this command just wrote, for the one path where
     /// this command's own final append never lands (a concurrent change on the task's own stream
-    /// between the refetch and the commit): a failure to release here is reported to the operator
-    /// rather than left silent, since — unlike <c>DispatchEngine.ReleaseLedgerHolderBestEffortAsync</c>'s
-    /// own retry sweep — this CLI process has no later tick to retry it on.
+    /// between the refetch and the commit): restores <paramref name="previousHolder"/> — the
+    /// holder <c>TryOverrideAsync</c> actually overwrote — rather than clearing the ledger to no
+    /// holder at all, so the record never sits in a state the domain aggregate itself never
+    /// recorded (adversarial pre-PR review, cycle 2). A failure to restore here is reported to the
+    /// operator rather than left silent, since — unlike
+    /// <c>DispatchEngine.ReleaseLedgerHolderBestEffortAsync</c>'s own retry sweep — this CLI
+    /// process has no later tick to retry it on.
     /// </summary>
-    private static async Task ReleaseLedgerOverrideBestEffortAsync(
-        ILedger ledger, string repositoryPath, Guid taskId, Guid nodeId, LedgerCommitter committer,
-        LedgerSigningKey signingKey, CancellationToken cancellationToken)
+    private static async Task RestoreLedgerOverrideBestEffortAsync(
+        ILedger ledger, string repositoryPath, Guid taskId, Guid nodeId, TaskRecordHolder? previousHolder,
+        LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
     {
         try
         {
-            HolderReleaseResult release = await TaskLedgerHolder.TryReleaseAsync(
-                ledger, repositoryPath, taskId, nodeId, committer, signingKey, cancellationToken);
-            if (release.Verdict == HolderReleaseVerdict.Failed)
+            HolderReleaseResult restore = await TaskLedgerHolder.TryRestoreAsync(
+                ledger, repositoryPath, taskId, nodeId, previousHolder, committer, signingKey, cancellationToken);
+            if (restore.Verdict == HolderReleaseVerdict.Failed)
             {
                 AnsiConsole.MarkupLine(
                     $"[yellow]Warning:[/] the ledger holder override for task {taskId} could not be rolled "
-                    + $"back — {release.FailureReason} It still names this node; an owner-role member "
+                    + $"back — {restore.FailureReason} It still names this node; an owner-role member "
                     + "will need to force a takeover away from it again.");
             }
         }
