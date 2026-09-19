@@ -776,6 +776,48 @@ public sealed class TaskDeciderTests
     }
 
     [Fact]
+    public void Claim_of_a_cooperative_grant_succeeds_for_the_true_grantee_despite_the_forged_guid()
+    {
+        // Closes the defect an independent pre-PR review caught on this branch: the daemon's own
+        // claim gate (DispatchEngine.IsGrantedToThisOwner, forwarding to
+        // TaskDecider.IsGrantedToThisOwner) already admits this task once the recorded fingerprint
+        // matches, but this decider's own guard — reached immediately after the gate, behind an
+        // already-committed ledger holder write — refused the identical claim before this fix,
+        // because it compared the self-declared (forged) Guid alone.
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid forgedOwnerId = DomainId.New();
+        task.Apply(TaskDecider.RequestTake(task, requesterNodeId, forgedOwnerId, "attacker-true-fingerprint", "Why", Now));
+        task.Apply(TaskDecider.GrantTake(task, requesterNodeId, forgedOwnerId, Now));
+
+        Guid trueGranteeOwnerId = DomainId.New();
+        TaskClaimed claimed = TaskDecider.Claim(
+            task, requesterNodeId, trueGranteeOwnerId, DomainId.New(), Now,
+            ownerRootFingerprint: "attacker-true-fingerprint");
+
+        claimed.OwnerId.Should().Be(trueGranteeOwnerId);
+    }
+
+    [Fact]
+    public void Claim_of_a_cooperative_grant_refuses_the_named_owner_when_the_fingerprint_does_not_match()
+    {
+        // The other half of the same scenario: the named (forged) owner's own node cannot claim
+        // through the Guid alone once a fingerprint is recorded — the fingerprint decides, and this
+        // node's own does not match the recorded one.
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid forgedOwnerId = DomainId.New();
+        task.Apply(TaskDecider.RequestTake(task, requesterNodeId, forgedOwnerId, "attacker-true-fingerprint", "Why", Now));
+        task.Apply(TaskDecider.GrantTake(task, requesterNodeId, forgedOwnerId, Now));
+
+        Action act = () => TaskDecider.Claim(
+            task, DomainId.New(), forgedOwnerId, DomainId.New(), Now,
+            ownerRootFingerprint: "not-the-attackers-fingerprint");
+
+        act.Should().Throw<DomainConflictException>();
+    }
+
+    [Fact]
     public void Requeue_after_claim_returns_to_queued_and_a_reclaim_bumps_generation_again()
     {
         TaskAggregate task = ClaimedTask();
@@ -2716,6 +2758,9 @@ public sealed class TaskDeciderTests
 
         task.HolderNodeId.Should().BeNull("a grant is an ordinary release — the requester claims through the ordinary lock");
         task.AssignedOwnerId.Should().Be(requesterOwnerId, "the requester's own node claims only its own owner's work (Decisions Log #34)");
+        task.AssignedOwnerFingerprint.Should().BeNull(
+            "nothing was ever asked for on this aggregate, so GrantTake carried no verified fingerprint forward — " +
+            "the same shape an event built without the field (the pre-existing four-argument constructor) replays as");
         task.State.Should().Be(TaskState.Queued);
         task.ClaimedByNodeId.Should().BeNull();
         task.CurrentRunId.Should().BeNull();
@@ -2745,24 +2790,6 @@ public sealed class TaskDeciderTests
         task.AssignedOwnerId.Should().Be(forgedOwnerId, "the aggregate itself cannot verify a foreign owner's Guid");
         task.AssignedOwnerFingerprint.Should().Be(
             "attacker-true-fingerprint", "this is the fact DispatchEngine's own claim gate actually trusts");
-    }
-
-    [Fact]
-    public void Apply_TaskHolderReleased_without_a_fingerprint_field_replays_exactly_as_before()
-    {
-        // What an event written before GrantedToOwnerFingerprint existed deserializes as: the
-        // trailing optional parameter simply defaults to null, and every other field replays
-        // unchanged.
-        TaskAggregate task = ClaimedTask();
-        Guid requesterNodeId = DomainId.New();
-        Guid requesterOwnerId = DomainId.New();
-        TaskHolderReleased granted = new(task.Id, Now, requesterNodeId, requesterOwnerId);
-
-        task.Apply(granted);
-
-        task.AssignedOwnerId.Should().Be(requesterOwnerId);
-        task.AssignedOwnerFingerprint.Should().BeNull();
-        task.State.Should().Be(TaskState.Queued);
     }
 
     [Fact]
