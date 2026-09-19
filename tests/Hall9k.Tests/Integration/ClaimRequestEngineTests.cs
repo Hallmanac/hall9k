@@ -318,33 +318,38 @@ public sealed class ClaimRequestEngineTests : IClassFixture<PostgresFixture>, IA
         // and without a rollback, the ledger would sit holder-less forever while this task's own
         // stream never recorded releasing it, the identical double-claim hazard TaskTakeCommand's
         // own --force rollback exists to prevent for the analogous override race.
+        //
+        // The race is injected through the ledger's own release write now, via
+        // RaceOnFirstWriteLedger below, rather than through the tracker move's own scripted gh
+        // call as before (independent pre-PR review, cycle 5, adversarial lens): GrantAsync now
+        // runs the tracker move only after its own append has already landed
+        // (ClaimRequestEngine.cs), so a gh call can no longer land inside the release-to-append
+        // window at all — this test's own race injection has to move with it.
         ExternalReference reference = new(WorkItemProvider.GitHub, "acme/web#7");
         (ProjectDetails project, Guid taskId, Guid myNodeId, BootstrapContext context) =
             await SeedHeldTaskAsync(TakePolicy.Auto, ClaimGate.TrackerAssignee, reference);
-        FakeLedger ledger = new();
-        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("my-fingerprint", myNodeId, "MY-NODE", Now.AddHours(-2)));
+        FakeLedger innerLedger = new();
+        await SeedRecordAsync(innerLedger, taskId, new TaskRecordHolder("my-fingerprint", myNodeId, "MY-NODE", Now.AddHours(-2)));
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
             await TaskRecordPublication.ResolveIdentityAsync(session, context, CancellationToken.None);
 
-        // The gated tracker move's own read (ahead of any write) is reached only after the ledger
-        // release above has already landed and only before this call's own append — exactly the
-        // window the race needs to land in, mirroring TaskTakeCommandTests's own injection through
-        // a scripted gh call.
-        bool raced = false;
-        ProcessRunner gh = async (_, arguments, _, cancellationToken) =>
+        RaceOnFirstWriteLedger ledger = new(innerLedger, async () =>
         {
-            if (!raced && !arguments.Contains("edit"))
-            {
-                raced = true;
-                await using IDocumentSession raceSession = _postgres.Store.LightweightSession();
-                TaskAggregate raceTask = (await raceSession.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken))!;
-                raceSession.Events.Append(taskId, TaskDecider.LeaveHandoff(raceTask, "racing", myNodeId, "my-fingerprint", Now));
-                await raceSession.SaveChangesAsync(cancellationToken);
-            }
+            await using IDocumentSession raceSession = _postgres.Store.LightweightSession();
+            TaskAggregate raceTask = (await raceSession.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: CancellationToken.None))!;
+            raceSession.Events.Append(taskId, TaskDecider.LeaveHandoff(raceTask, "racing", myNodeId, "my-fingerprint", Now));
+            await raceSession.SaveChangesAsync(CancellationToken.None);
+        });
 
-            return new ProcessResult(0, "{\"assignees\":[]}", string.Empty);
+        // Never scripted to race — a plain, always-empty read/write — since the tracker move now
+        // runs strictly after the append, and this test asserts below that it never runs at all.
+        bool ghCalled = false;
+        ProcessRunner gh = (_, _, _, _) =>
+        {
+            ghCalled = true;
+            return Task.FromResult(new ProcessResult(0, "{\"assignees\":[]}", string.Empty));
         };
         TrackerAssignmentTake take = new(gh, requester: null);
 
@@ -357,10 +362,53 @@ public sealed class ClaimRequestEngineTests : IClassFixture<PostgresFixture>, IA
 
         await act.Should().ThrowAsync<DomainConflictException>().WithMessage("*rolled back*");
 
-        LedgerFile record = await ledger.ReadAsync(
+        ghCalled.Should().BeFalse(
+            "the tracker move must never run before the grant's own append lands — otherwise a lost append race "
+            + "leaves the tracker permanently handed to a requester who was never actually granted the task");
+
+        LedgerFile record = await innerLedger.ReadAsync(
             RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), CancellationToken.None);
         TaskRecord.TryParse(record.Content)!.Holder!.NodeId.Should().Be(
             myNodeId, "the release is rolled back rather than left holder-less for a stream that never recorded it");
+    }
+
+    /// <summary>
+    /// Runs <paramref name="onFirstWrite"/> once, ahead of this ledger's own very first
+    /// <see cref="WriteAsync"/> call, then delegates everything to <paramref name="inner"/> — the
+    /// test-only way to land a concurrent task-stream write inside the exact window between
+    /// <see cref="ClaimRequestEngine.GrantAsync"/>'s own ledger release and its domain event
+    /// append, now that the gated tracker move (the previous injection point) runs after that
+    /// append instead of before it.
+    /// </summary>
+    private sealed class RaceOnFirstWriteLedger(ILedger inner, Func<Task> onFirstWrite) : ILedger
+    {
+        private bool _raced;
+
+        public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken) =>
+            inner.ReadAsync(repositoryPath, refName, path, cancellationToken);
+
+        public async Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken)
+        {
+            if (!_raced)
+            {
+                _raced = true;
+                await onFirstWrite();
+            }
+
+            return await inner.WriteAsync(request, cancellationToken);
+        }
+
+        public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
+            inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
+            inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 
     private async Task<(ProjectDetails Project, Guid TaskId, Guid MyNodeId, BootstrapContext Context)> SeedHeldTaskAsync(
