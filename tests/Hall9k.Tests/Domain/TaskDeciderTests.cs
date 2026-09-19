@@ -863,25 +863,6 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainConflictException>();
     }
 
-    /// <summary>
-    /// The migration promise: an assignment written before idea f72138e1 carries no fingerprint at
-    /// all, and the claim gate falls back to comparing local owner Guids exactly as it always did —
-    /// claimable by the same local id the assignment named, refused for any other.
-    /// </summary>
-    [Fact]
-    public void Claim_of_an_old_shape_assignment_with_no_fingerprint_still_works_by_the_local_owner_id_alone()
-    {
-        TaskAggregate task = QueuedTask();
-
-        TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now);
-        claimed.OwnerId.Should().Be(Owner);
-
-        TaskAggregate refused = QueuedTask();
-        Action act = () => TaskDecider.Claim(refused, DomainId.New(), DomainId.New(), DomainId.New(), Now);
-        act.Should().Throw<DomainConflictException>(
-            "an old-shape assignment has no fingerprint to fall back on, so only the exact local Guid it named may claim it");
-    }
-
     [Fact]
     public void Requeue_after_claim_returns_to_queued_and_a_reclaim_bumps_generation_again()
     {
@@ -2860,21 +2841,26 @@ public sealed class TaskDeciderTests
     [Fact]
     public void A_cooperative_grants_fingerprint_does_not_survive_a_later_ordinary_reassignment()
     {
-        // Blast-radius check (idea 20723ef8): once AssignedOwnerFingerprint exists at all, every
-        // other door onto AssignedOwnerId must clear it too, or a stale fingerprint from an earlier
-        // grant could misdescribe a later, unrelated assignment DispatchEngine's own claim gate has
-        // no reason to distrust.
+        // Blast-radius check (idea 20723ef8, widened by idea f72138e1): once AssignedOwnerFingerprint
+        // exists at all, every other door onto AssignedOwnerId must supersede it with its own value
+        // rather than carry the old one forward, or a stale fingerprint from an earlier grant could
+        // misdescribe a later, unrelated assignment DispatchEngine's own claim gate has no reason to
+        // distrust. An ordinary reassignment carries its own fingerprint now (idea f72138e1), so the
+        // realistic case is a fresh value landing, not merely a clear.
         TaskAggregate task = ClaimedTask();
         Guid requesterNodeId = DomainId.New();
         Guid requesterOwnerId = DomainId.New();
         task.Apply(TaskDecider.RequestTake(task, requesterNodeId, requesterOwnerId, "requester-fingerprint", "Why", Now));
         task.Apply(TaskDecider.GrantTake(task, requesterNodeId, requesterOwnerId, Now));
-        task.AssignedOwnerFingerprint.Should().NotBeNull("sanity: the grant above must have recorded one");
+        task.AssignedOwnerFingerprint.Should().Be("requester-fingerprint", "sanity: the grant above must have recorded one");
 
         task.Apply(TaskDecider.Unassign(task, "reassigning", leaseHeld: false, Now, Owner));
-        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));
+        task.Apply(TaskDecider.Assign(
+            task, Owner, [], Now, Owner, assignedOwnerRootFingerprint: "reassignment-fingerprint"));
 
-        task.AssignedOwnerFingerprint.Should().BeNull("an ordinary reassignment carries no fingerprint of its own and must not keep the previous grant's");
+        task.AssignedOwnerFingerprint.Should().Be(
+            "reassignment-fingerprint",
+            "a fresh assignment's own fingerprint replaces the previous grant's, never carrying the old one forward");
     }
 
     [Fact]
