@@ -59,6 +59,14 @@ namespace Hall9k.Cli.Commands;
 /// nothing is holding, the same never-guess reasoning <paramref name="TrackerHolds"/> already
 /// documents.
 /// </param>
+/// <param name="OwnersByFingerprint">
+/// Owner names by root fingerprint (idea f72138e1) — the assignee lookup a row falls back to when
+/// <see cref="Hall9k.Domain.Features.Tasks.Projections.TaskListItem.AssignedOwnerFingerprint"/> is
+/// set, since the assigning node's local owner id (<see cref="Owners"/>'s own key) means nothing on
+/// a peer node that never registered it: Owner events are OwnerScoped and never replicate. Null on
+/// every construction that never bothered to compute one, the same optional-and-absent shape
+/// <paramref name="BudgetParkedRuns"/> and the two hold dictionaries already use.
+/// </param>
 internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, RunDetails> Runs,
     IReadOnlyDictionary<Guid, RunActivity> Activity,
@@ -71,7 +79,8 @@ internal sealed record TaskStatusContext(
     IReadOnlyDictionary<Guid, int>? BudgetParkedRuns = null,
     IReadOnlyDictionary<Guid, TrackerClaimHold>? TrackerHolds = null,
     int InteractiveClaimStaleAfterDays = OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
-    IReadOnlyDictionary<Guid, TaskHolderClaimHold>? HolderClaimHolds = null);
+    IReadOnlyDictionary<Guid, TaskHolderClaimHold>? HolderClaimHolds = null,
+    IReadOnlyDictionary<string, string>? OwnersByFingerprint = null);
 
 /// <summary>
 /// The one truth about how a task reads. Every surface that shows a task — h9k status,
@@ -167,8 +176,12 @@ internal static class TaskStatusComposer
         Guid[] runIds = [.. tasks.Select(task => task.CurrentRunId).OfType<Guid>().Distinct()];
         Dictionary<Guid, string> projects = (await session.Query<ProjectDetails>().ToListAsync(cancellationToken))
             .ToDictionary(p => p.Id, p => p.Name);
-        Dictionary<Guid, string> owners = (await session.Query<OwnerDetails>().ToListAsync(cancellationToken))
-            .ToDictionary(o => o.Id, o => o.Name);
+        IReadOnlyList<OwnerDetails> ownerDetails = await session.Query<OwnerDetails>().ToListAsync(cancellationToken);
+        Dictionary<Guid, string> owners = ownerDetails.ToDictionary(o => o.Id, o => o.Name);
+        Dictionary<string, string> ownersByFingerprint = ownerDetails
+            .Where(o => o.RootFingerprint is not null)
+            .GroupBy(o => o.RootFingerprint!)
+            .ToDictionary(group => group.Key, group => group.First().Name);
         Dictionary<Guid, string> nodes = (await session.Query<NodeDetails>().ToListAsync(cancellationToken))
             .ToDictionary(n => n.Id, n => n.MachineName);
         Dictionary<Guid, RunDetails> runs = runIds.Length == 0
@@ -200,7 +213,8 @@ internal static class TaskStatusComposer
             BudgetParkedByProject(tasks, runs),
             await ReadTrackerHoldsAsync(session, tasks, now, cancellationToken),
             operatingSettings.InteractiveClaimStaleAfterDays ?? OperatingSettings.DefaultInteractiveClaimStaleAfterDays,
-            await ReadHolderClaimHoldsAsync(session, tasks, now, cancellationToken));
+            await ReadHolderClaimHoldsAsync(session, tasks, now, cancellationToken),
+            ownersByFingerprint);
     }
 
     /// <summary>
@@ -327,7 +341,7 @@ internal static class TaskStatusComposer
             stalled,
             Priority(group, state),
             task.AddedAt,
-            task.AssignedOwnerId is { } assignee ? context.Owners.GetValueOrDefault(assignee) ?? "?" : string.Empty,
+            task.AssignedOwnerId is { } assignee ? AssigneeDisplay(assignee, task.AssignedOwnerFingerprint, context) : string.Empty,
             task.UnmetDependencies,
             // Whichever hold this row carries, so a stacked child whose parent pull request closed
             // unmerged reads the same as one whose local blocker died (TaskListItem.BlockingHoldReason).
@@ -340,6 +354,22 @@ internal static class TaskStatusComposer
             ExternalReference: task.ExternalReference ?? string.Empty,
             SecondaryExternalReference: task.SecondaryExternalReference ?? string.Empty);
     }
+
+    /// <summary>
+    /// The assignee's own name, resolved by fingerprint first (idea f72138e1) when the assignment
+    /// carries one: <paramref name="ownerId"/> is the assigning node's own local Guid for that
+    /// owner, which means nothing on a peer node that never registered it (Owner events are
+    /// OwnerScoped and never replicate), while the fingerprint is the one fact every node of the
+    /// same owner can recognize. Falls back to the plain id lookup only for an assignment written
+    /// before the field existed. The bare fingerprint itself when no local <c>OwnerDetails</c>
+    /// matches it — never <paramref name="ownerId"/>, a foreign Guid this board would otherwise
+    /// print with no way for a reader to act on it — and "?" only when neither the id nor a
+    /// fingerprint resolves anything at all.
+    /// </summary>
+    private static string AssigneeDisplay(Guid ownerId, string? ownerFingerprint, TaskStatusContext context) =>
+        ownerFingerprint is { } fingerprint
+            ? context.OwnersByFingerprint?.GetValueOrDefault(fingerprint) ?? fingerprint
+            : context.Owners.GetValueOrDefault(ownerId) ?? "?";
 
     /// <summary>
     /// How many of the loaded rows each project is holding on the exhausted subscription window
