@@ -1277,6 +1277,24 @@ public static class CliCommandTree
                 .WithExample("task", "handoff", "28b19893", "--text", "\"Migration script drafted but untested; watch for a schema drift on the staging table.\"")
                 .WithExample("task", "handoff", "28b19893", "--file", "handoff-note.md")
                 .WithExample("task", "handoff", "28b19893", "--text", "\"Heads up before you pick this up.\"", "--to", "a1b2c3d4owner");
+            task.AddCommand<TaskTakeCommand>("take")
+                .WithDescription(
+                    "Force a task away from its current holder (idea 202383dc, item 4) — owner-role members "
+                    + "only, and only --force: the cooperative take (no --force, item 5) is not built yet, so "
+                    + "the command refuses outright without it. Absence is never detected — presence detection "
+                    + "is dead, never parked — so this prints the evidence it has (who holds it, since when, "
+                    + "when this node last heard anything from that node's own outbox) and overrides on your "
+                    + "own judgment. A gated project's own tracker take runs first; its refusal stops the "
+                    + "override with the tracker's own sentence. The ledger holder write is conditional on the "
+                    + "value this command itself read (idea 202383dc, A1): two overriders racing the same task "
+                    + "never both win, and the loser's own attempt reports back whoever actually landed first. "
+                    + "A task-stream event records the previous holder, the new one, the reason, and the time; "
+                    + "h9k task show and h9k status both name it afterward. If the previous holder's own node "
+                    + "still has a live run for this task, that node stops it the next time this takeover "
+                    + "replicates there — recorded as superseded by takeover, never Failed, transcript kept, no "
+                    + "pull request action follows from it. This node claims the task on its own next dispatch "
+                    + "sweep and resumes whatever branch the previous run left behind.")
+                .WithExample("task", "take", "28b19893", "--force", "--reason", "\"Node has been offline for six hours; a release deadline can't wait on it\"");
             task.AddCommand<TaskDelegateCommand>("delegate")
                 .WithDescription(
                     "Delegate the build to a contractor for one phase while staying at the wheel — distinct from "
