@@ -497,6 +497,26 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             AnsiConsole.MarkupLine($"  [dim]— {author.EscapeMarkup()} at {when}[/]");
         }
 
+        if (details.TakenOverAt is { } takenOverAt)
+        {
+            // idea 202383dc, item 4: who, from whom, why, when — the whole point of the audit
+            // trail a forced take leaves behind.
+            string from = details.TakenOverFromNodeId is { } fromNodeId
+                ? $"node {DomainId.Short(fromNodeId)}"
+                : "no recorded previous holder";
+            string by = details.TakenOverByOwnerId is { } byOwnerId
+                ? DomainId.Short(byOwnerId)
+                : "an unrecorded owner";
+            AnsiConsole.MarkupLine(
+                $"\n[bold]Taken over[/] [dim](idea 202383dc, item 4 — a forced h9k task take --force)[/]");
+            AnsiConsole.MarkupLine(
+                $"  [yellow]From {from.EscapeMarkup()}, by {by.EscapeMarkup()}, at {takenOverAt.ToLocalTime():g}[/]");
+            if (details.TakenOverReason.IsNotBlank())
+            {
+                AnsiConsole.MarkupLine($"  [dim]Reason: {details.TakenOverReason.EscapeMarkup()}[/]");
+            }
+        }
+
         if (details.AgentContext.IsNotBlank())
         {
             // Agent context is the one field on a task that can arrive from outside the machine:
