@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a0b83c-508f-71aa-9270-c68bfc7b9494
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#482
+objective: The Decisions Log renumbering runs before the mandatory final pass even when the pre-final-pass rebase is skipped, and closeout never merges a pull request whose PLAN.md tail still carries the branch's own placeholder
+criteria:
+  - When EnsureRebasedBeforeFinalPassAsync skips the rebase for any reason (origin fetch failed, origin unreadable, git deadline, worktree missing, dirty, or not on its branch, pull request base mismatch, or no rebase owed), the Decisions Log renumbering of this task's own tail placeholder still runs against the worktree's current base before the mandatory final pass, its commit moves HEAD, and the full gate runs over it like any other tip move; h9kd.log names which skip happened and that the renumbering ran
+  - |-
+    Closeout never merges a pre-approved pull request whose PLAN.md section 16 tail still carries this task's own placeholder: it reopens the task for a replay lap that renumbers (the existing StackReplay path already does this when a retarget is owed) or, when no lap is available, parks the task with a sentence naming the token and the fix
+  - |-
+    Unit tests cover: the renumbering running on the fetch-failed skip path and on the dirty-worktree skip path; closeout refusing the merge on a placeholder tail and taking the replay lap; the ordinary path unchanged when the rebase runs
+  - dotnet build and dotnet test pass; the decision log carries one entry under this task's placeholder; no test creates branches or touches GitHub
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/fc7b9494-the-decisions-log-renumbering
+published: 2026-09-19 05:56:09Z
+context: |-
+  Captured 2026-09-19 01:5x to 02:2x EDT by the hall9k project window under the dogfood rule. Two placeholders reached main unnumbered and main's guard still passed because nothing real followed them. Evidence: (1) task 609bd344 run 01a0b500-c973-755e-831a-04c6d46df0c5, h9kd.log 2026-09-18 13:53:07 and 14:54:51 'could not fetch origin/main before the mandatory final pass (Could not resolve host: github.com) — proceeding unrebased; closeout's own mechanical rebase still covers a stale push', 15:03:54 'the worktree has uncommitted changes before the mandatory final pass — proceeding unrebased', PR #479 opened 15:03:59, merged automatically 15:15:14, no renumbering line for that run; (2) task 5e0cbfeb run 01a0b5e4-7877-7163-85df-d627455f7825, 18:46:36 'could not fetch origin/task/28953e7d... before the mandatory final pass', PR #480 opened 19:15:14, merged automatically 19:27:09, no renumbering line; (3) task 7eaaf6bc run 01a0b6cd-80a1-75f0-b673-7936d295262c: 00:50:33 'No rebase owed before the mandatory final full pass' then PR #481 opened 00:50:38 with the placeholder still in place, and only the StackReplay lap (run 01a0b800-e53c-704f-8763-636cc9e28f96, 01:26:19 'origin/main has not moved ... but the Decisions Log's tail entry still needed the mechanical rebase step's own renumbering commit') renumbered it, to #225 behind the two leaked placeholders, and the full gate failed at 01:43:07 on DecisionsLogNumberingGuardTests buriedPlaceholders Line 2155 Token 609bd344. Code pointers on main at 1a298ac4: src/Hall9k.Daemon/Review/ReviewEngine.cs EnsureRebasedBeforeFinalPassAsync (about line 2814) and its 'proceeding unrebased' returns (about 2930, 2941, 3060, 3283, 3307, 3339, 3347, 3355); the replay-lap renumbering that does the right thing at about 4354; src/Hall9k.Daemon/Review/DecisionsLogRenumberer.cs lines 154 to 161 decline a different task's placeholder by design (keep that). Recovery precedent: PLAN.md entries #196 and #197, and the hand commit 8fe130a0d on task/7eaaf6bc-an-owner-role-member-can-take numbering the two leaked entries #225 and #226 with citations rewritten. Lineage: the replay-lap renumbering was the fix for the #196 incident and covers only the replay path; this is the same gap on the pre-final-pass skip paths and at closeout, not a fix of a fix that loops back. Related but separate: draft 8db2d2be (a duplicated placeholder token after conflict recovery). Boundaries: do not change which task may number a placeholder; do not renumber other tasks' placeholders; no host-load tests.
