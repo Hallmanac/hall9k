@@ -2,4 +2,4 @@ secret_hash: "f04026c5bc2f58b77c2b598d3c3287afaa37ef1ad7784eb10d31166f09101feb"
 claim: "node-of-owner"
 role: null
 expires_at: "2026-09-22T16:46:39.8576310+00:00"
-spent: "false"
+spent: "true"
