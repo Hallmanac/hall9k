@@ -1,0 +1,23 @@
+hall9k-task-record: 1
+task-id: 01a0bae8-b1c2-762c-9a90-890d693ffe5d
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#492
+objective: |-
+  An owner can place a task on one of their own nodes: h9k task assign --node <node> records the placement, only that node's dispatcher claims it, and every other node of the same owner stands down without a forced take
+criteria:
+  - h9k task assign <id> --node <node-id or unambiguous fragment> records a node placement on the task (a project-scoped event that replicates), refuses a node not vouched into the owner's fleet for that project, and h9k task show and h9k status name the placed node
+  - DispatchEngine on any node of the same owner declines to claim a task placed on another node, logging the reason once per sweep at debug level, and claims it when the placement names this node; a task with no placement behaves exactly as today (first free dispatcher of the owner claims)
+  - h9k task assign <id> --node with no node named clears the placement; a forced or cooperative take that moves the task to another node records that node as the new placement so the old node stands down after a takeover without a second command
+  - |-
+    Unit tests cover: a placed task is skipped by a non-placed node and claimed by the placed node; an unplaced task is unchanged; the refusal for an unknown node; a takeover rewrites the placement; no test creates branches or touches GitHub
+  - dotnet build and dotnet test pass; the decision log carries one entry under this task's placeholder; docs/concepts.md says how placement, ownership, and takeover relate
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/693ffe5d-an-owner-can-place-a-task-on-o
+published: 2026-09-19 18:24:51Z
+context: |-
+  Cut 2026-09-19 14:2x EDT by the hall9k project window after the first two-node placement went wrong. Evidence: Brian said 'Publish a56cf16e. Assign it on the Windows node.' Assignment is per owner (h9k task assign --help: 'Only that owner's nodes may claim it'); both nodes are his; the tracker-assignee claim gate cannot separate two installs sharing one GitHub login; ProjectSettingsChanged is NodeScoped so per-project caps bound how many, never which. The Mac assigned a56cf16e at 14:21 while its board read 3 of 3 live, a run delivered in the same seconds, and the Mac's DispatchEngine claimed it at 14:21:55 (run 01a0bae7) instead of Windows; the correction was a forced take from Windows (h9k task take --force, v0.10.0). Related: the persona stack (ec35ceca and children) that Brian wants built on Windows, and the mailbox relay that carries placement today by hand. Lineage: a gap in the distributed-team design (idea 202383dc), not a fix of a fix. Boundaries: placement is advisory to dispatch only; it never changes ownership, the ledger holder, or the claim gate; keep the takeover path as the override.
