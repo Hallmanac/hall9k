@@ -527,6 +527,102 @@ public sealed class RunSupervisor(
     }
 
     /// <summary>
+    /// The previous holder's own half of a forced takeover (idea 202383dc, item 4; Brian's
+    /// 2026-09-13 ruling: "a live run on the previous holder's node stops on receipt of the
+    /// override" — the edge case, an agent's uncommitted work, acknowledged and accepted). There is
+    /// no push-based reaction to landing a replicated <c>TaskHolderTakenOver</c>:
+    /// <c>EventReplicationInbox.ApplyAsync</c> is a bare replay with no side effect of its own
+    /// (idea 202383dc, M2a), so this sweep is what notices the consequence, the next time it runs,
+    /// exactly the "eventually consistent, next sweep" shape every other cross-node reaction on this
+    /// platform already has (<c>CloseoutEngine</c>'s own A3b criterion 9 skip is the read-only
+    /// sibling of this one — acting instead of skipping, because a live agent process does not stop
+    /// itself just because closeout stops watching it).
+    /// <para>
+    /// Scoped to a run this node actually dispatched and is still supervising — carrying a live
+    /// agent session (<see cref="ActiveSession.StartedAt"/> recorded, the identical liveness
+    /// <c>RunKillCommand</c>'s own kill requires) — whose task's ledger holder
+    /// (<see cref="TaskAggregate.HolderNodeId"/>, rehydrated fresh rather than read off a projection
+    /// that never mirrors it) now names someone else. Ends the run with <see cref="RunKilled"/>
+    /// carrying <see cref="KillReason.Superseded"/> — never <see cref="RunFailed"/>, and never a
+    /// task-stream event of any kind: the task itself already moved on, reassigned and requeued by
+    /// the very <c>TaskHolderTakenOver</c> this sweep is reacting to, and no pull request action
+    /// ever follows from here. The transcript file itself is left exactly where it sits.
+    /// </para>
+    /// </summary>
+    public async Task StopRunsSupersededByTakeoverAsync(CancellationToken cancellationToken)
+    {
+        Guid nodeId = node.NodeId;
+        await using IDocumentSession session = store.LightweightSession();
+        IReadOnlyList<RunDetails> candidates = await session.Query<RunDetails>()
+            .Where(run => run.NodeId == nodeId)
+            .Where(run => run.MatchesSql(
+                "d.data ->> 'state' in (?, ?, ?, ?)",
+                RunState.Dispatched.Value, RunState.Running.Value,
+                RunState.Verifying.Value, RunState.UnderReview.Value))
+            .ToListAsync(cancellationToken);
+
+        foreach (RunDetails run in candidates)
+        {
+            if (run.ActiveSessions.Count == 0)
+            {
+                continue;
+            }
+
+            StreamState? taskFence = await session.Events.FetchStreamStateAsync(run.TaskId, cancellationToken);
+            if (taskFence is null)
+            {
+                continue;
+            }
+
+            TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                run.TaskId, version: taskFence.Version, token: cancellationToken);
+            if (task is null || task.HolderNodeId is not { } holderNodeId || holderNodeId == nodeId)
+            {
+                continue;
+            }
+
+            foreach (ActiveSession activeSession in run.ActiveSessions)
+            {
+                if (activeSession.StartedAt is { } startedAt)
+                {
+                    processManager.TerminateTree(activeSession.ProcessId, startedAt);
+                }
+            }
+
+            StreamState? runFence = await session.Events.FetchStreamStateAsync(run.Id, cancellationToken);
+            if (runFence is null)
+            {
+                continue;
+            }
+
+            session.Events.Append(
+                run.Id, expectedVersion: runFence.Version + 1,
+                new RunKilled(run.Id, KillReason.Superseded, task.TakenOverByOwnerId, DateTimeOffset.UtcNow));
+            session.Delete<TaskLease>(run.TaskId);
+
+            try
+            {
+                await session.SaveChangesAsync(cancellationToken);
+                logger.LogInformation(
+                    "Run {RunId}: task {TaskId} was taken over by node {HolderNodeId} — this node's own "
+                    + "live run was stopped and recorded as superseded by takeover",
+                    run.Id, run.TaskId, holderNodeId);
+            }
+            catch (EventStreamUnexpectedMaxEventIdException)
+            {
+                // This run's own monitor (or a review/verification pass already in flight) drove
+                // it forward in the gap between the reads above and this append — the process is
+                // already terminated regardless, and the next tick re-checks whatever the run and
+                // task now actually say, the identical race h9k run kill's own fencing already
+                // tolerates.
+                logger.LogDebug(
+                    "Run {RunId} or task {TaskId} moved while recording a takeover stop — retried next tick",
+                    run.Id, run.TaskId);
+            }
+        }
+    }
+
+    /// <summary>
     /// Every run carrying the ceiling-exempt <see cref="Guid.Empty"/> sentinel (Decisions Log
     /// #103, #125) whose owning task is a pr-review task and whose own
     /// <see cref="RunDetails.DispatchingNodeId"/> names THIS node, in one of
