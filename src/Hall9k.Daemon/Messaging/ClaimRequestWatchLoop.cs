@@ -1,5 +1,6 @@
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
+using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Project.Projections;
@@ -38,6 +39,7 @@ public sealed class ClaimRequestWatchLoop(
     NodeContext node,
     MessageNodeIdentityResolver identityResolver,
     ILedger ledger,
+    ILedgerChainReader chainReader,
     IOptions<DaemonOptions> options,
     ILogger<ClaimRequestWatchLoop> logger) : BackgroundService
 {
@@ -162,6 +164,43 @@ public sealed class ClaimRequestWatchLoop(
             return;
         }
 
+        // request.RequesterOwnerId/RequesterOwnerFingerprint are the same shape of self-declared,
+        // unverified pair RequesterNodeId was above: TaskDecider.RequestTake records
+        // RequesterOwnerFingerprint verbatim on the task's own stream, and under take-policy auto,
+        // TaskAggregate.Apply(TaskHolderReleased) hands AssignedOwnerId — the exact field
+        // DispatchEngine's own claim gate compares against a node's own owner id — straight from
+        // it too (independent pre-PR review, cycle 6, adversarial lens, medium). Node B's own
+        // outbox can only ever carry B's own genuine content, but B still fully controls what that
+        // content claims about which owner is asking; this is the one check available that does
+        // not just trust it back: node.yaml is the identical self-announcement
+        // GitLedgerMessageTransport.ReadSinceAsync already fingerprints to authenticate B's own
+        // outbox in the first place, so resolving it again here and checking the claimed root
+        // against the ledger's own trust chain (TrustedOwner.ContainsForNode, the same primitive
+        // IsAllowedSigner itself uses) proves the claimed fingerprint is really B's own owner,
+        // never an owner B merely knows the fingerprint of from this project's own replicated
+        // history. RequesterOwnerId itself stays exactly as unverifiable as ClaimEnvelopeCodec's
+        // own doc already says it is — no registry here or anywhere else in this project ever
+        // carries a remote owner's local Guid, since Owner events are OwnerScoped and never travel
+        // (EventScopeRegistry) — so a request naming a genuine fingerprint alongside a wrong
+        // RequesterOwnerId still is not caught by this check; closing that fully needs
+        // TaskHolderReleased to carry a verified root fingerprint beside GrantedToOwnerId the way
+        // TaskAssigned.AssignedOwnerRootFingerprint already does for an ordinary assignment, and
+        // DispatchEngine's own claim gate to verify through it, which is beyond this fix's own
+        // scope (see this fix's own commit message and the PR summary).
+        string? senderFingerprint = await NodeSelfAnnouncedKeyResolver.ResolveFingerprintAsync(
+            ledger, project.RepositoryPath, message.FromNodeId, cancellationToken);
+        TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+        if (!IsRequesterOwnerVerified(chain, senderFingerprint, request.RequesterOwnerFingerprint, message.FromNodeId))
+        {
+            logger.LogWarning(
+                "Claim request {MessageId} claims requester owner root {ClaimedRequesterOwnerFingerprint}, but "
+                + "the ledger's own trust chain does not vouch sender node {ActualSenderNodeId} under that "
+                + "root — marked handled without acting",
+                message.Id, request.RequesterOwnerFingerprint, message.FromNodeId);
+            await MarkHandledAsync(message, now, cancellationToken);
+            return;
+        }
+
         TrackerAssignmentTake take = new(new ProjectScopedGitHubRunner(store).Runner);
         try
         {
@@ -238,4 +277,22 @@ public sealed class ClaimRequestWatchLoop(
         session.Events.Append(message.Id, expectedVersion: fence.Version + 1, MessageDecider.Handle(aggregate, now));
         await session.SaveChangesAsync(cancellationToken);
     }
+
+    /// <summary>
+    /// Whether the ledger's own trust chain actually vouches <paramref name="senderNodeId"/> — the
+    /// node <see cref="MessageInbox"/> already authenticated this envelope came from — under
+    /// <paramref name="claimedRequesterOwnerFingerprint"/>, the root a claim request's own body
+    /// self-declares as the asker's owner. <paramref name="senderFingerprint"/> is
+    /// <paramref name="senderNodeId"/>'s own self-announced device key, resolved by the caller from
+    /// its <c>node.yaml</c> the same way <c>GitLedgerMessageTransport.ReadSinceAsync</c> already
+    /// resolves it to authenticate the sender in the first place — null when that resolution found
+    /// nothing trustworthy, which never verifies. Pure and side-effect-free, the same reason
+    /// <c>MessageSweepEngine.ResolveVoucherNodeId</c> is its own static method: unit-testable
+    /// without a document store or a ledger.
+    /// </summary>
+    internal static bool IsRequesterOwnerVerified(
+        TrustChain chain, string? senderFingerprint, string claimedRequesterOwnerFingerprint, Guid senderNodeId) =>
+        senderFingerprint is not null
+        && chain.OwnerChains.TryGetValue(claimedRequesterOwnerFingerprint, out TrustedOwner? claimedOwner)
+        && claimedOwner.ContainsForNode(senderFingerprint, senderNodeId.ToString());
 }
