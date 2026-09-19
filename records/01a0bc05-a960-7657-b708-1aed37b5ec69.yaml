@@ -1,0 +1,29 @@
+hall9k-task-record: 1
+task-id: 01a0bc05-a960-7657-b708-1aed37b5ec69
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#502
+objective: The daemon keeps, per project on this node, an orchestrator feed of the events an orchestrator would want to know, filtered by a project setting, and h9k orchestrator feed reads and drains it, replacing the log tally an orchestrator window parses today
+criteria:
+  - |-
+    The feed is a per-project cursor over this node's own event stream plus an interest filter, never a second store: an item is an event past the cursor that the filter admits; reading it is one query and nothing is buffered elsewhere
+  - |-
+    h9k project set <name> --orchestrator-feed actionable|transitions|everything (default transitions) picks the level: actionable is parks and disputes, gate and run failures, a merge that stays failed, daemon trouble, and any message from a person or another node's window; transitions adds task state changes (published, working, delivered, done, failed, abandoned), ideas logged or updated, and claims or takeovers involving another node; everything adds run phase changes; docs/concepts.md says what each level carries
+  - h9k orchestrator feed --project <name> prints the undrained items oldest first, grouped by task, each as the one-line plain description h9k status already uses for that event, never a bare id; --drain advances the cursor after printing; --since <time> reads history without moving the cursor; the orchestrator recipe's start-up step runs the drain in place of the log tally
+  - The filter is one deterministic table from event type to level; a message from a person is admitted at every level; nothing in the feed depends on a model
+  - Unit tests cover cursor advance and idempotent re-reads, each level's membership, the person-message rule, and the grouped output as a golden; no test creates branches or touches GitHub
+  - dotnet build and dotnet test pass; the decision log carries one entry under this task's placeholder
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/37b5ec69-the-daemon-keeps-per-project-o
+published: 2026-09-19 23:46:56Z
+context: |-
+  The platform owns the orchestrator's watching: a lesser-model watcher session that polls the daemon (transport messages, actionable log lines, parks) and forwards only actionable items to the orchestrator window, spawned from the orchestrator recipe; longer term the daemon itself notifies or kicks off an agent when something actionable lands, so no window polls. Brian, 2026-09-19: no machine-level background tasks (memory limits differ per machine); something agentic that is looking for work, on a cheap model, with the high-end orchestrator deciding. First hand-written form: recipes/watcher.md in the hall9k project home; the recipe generator should emit it.
+
+  Piece 2 of 3 of idea 89471598 (the orchestrator feed and courier), walked with Brian 2026-09-19 19:3x EDT; his call: ship all three levels. Why a projection, not a buffer: every item is already an event in the store, so a cursor plus filter keeps one truth and costs one query per sweep (tools before tokens). Consumers: piece 3 (the courier, stacked on this) spawns only when the feed has items and an orchestrator is live (piece 1, 579dcd44) and drains through this command; the orchestrator recipe's start-up step drains it to learn what happened while no window was live, which replaces notes/waiters/sweep.sh's log tally and most of the journal's re-orientation. Wording: reuse the descriptions AttentionComposer and PublishedFacts already render for h9k status. Pointers: EventReplicationInboxCursor (the cursor shape to mirror), EventScopeRegistry (event types), ProjectSettingsChanged (the setting is NodeScoped like the other project settings), the h9k orchestrator command group. Name: feed, not outbox (the ledger message outbox owns that word). Siblings: piece 1 presence (579dcd44, independent), piece 3 courier (stacked on this, blocked by presence). Placement: Mac, after the fingerprint pair lands.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/89471598-the-platform-owns-the-orchestrator-s-watching-a-lesser-model/workspace
