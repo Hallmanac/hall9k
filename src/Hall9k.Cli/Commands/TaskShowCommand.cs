@@ -2323,6 +2323,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// <summary>
     /// Whose nodes may claim this task. Unassigned is a fact, not a gap: nothing dispatches
     /// until a human assigns it (Decisions Log #34).
+    /// <para>
+    /// A cooperative grant's own <see cref="TaskDetails.AssignedOwnerFingerprint"/> (idea
+    /// 20723ef8) is what actually decides whose task this is once one is recorded: the
+    /// self-declared <see cref="TaskDetails.AssignedOwnerId"/> Guid is a vouched node's own claim,
+    /// never verifiable against a different real owner's id, since Owner events never replicate.
+    /// So a fingerprint match against the Guid's own local record wins outright; a mismatch (or no
+    /// local record for that Guid at all) falls back to a reverse lookup by the fingerprint
+    /// itself, the same comparison the daemon's own dispatch claim gate makes — this node's own
+    /// owner, if the fingerprint actually names it, or else honestly "known by fingerprint only".
+    /// </para>
     /// </summary>
     private static async Task<string> AssigneeMarkupAsync(
         IQuerySession session, TaskDetails details, CancellationToken cancellationToken)
@@ -2333,7 +2343,23 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(ownerId, cancellationToken);
-        return owner is null ? $"[dim]{ownerId}[/]" : owner.Name.EscapeMarkup();
+        if (details.AssignedOwnerFingerprint is not { } fingerprint)
+        {
+            return owner is null ? $"[dim]{ownerId}[/]" : owner.Name.EscapeMarkup();
+        }
+
+        if (owner is not null && owner.RootFingerprint == fingerprint)
+        {
+            return owner.Name.EscapeMarkup();
+        }
+
+        OwnerDetails? trueOwner = await session.Query<OwnerDetails>()
+            .Where(candidate => candidate.RootFingerprint == fingerprint)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return trueOwner is not null
+            ? trueOwner.Name.EscapeMarkup()
+            : $"[dim]known by fingerprint {fingerprint} only — no local owner record matches the declared id[/]";
     }
 
     /// <summary>This node's own outstanding ask for <paramref name="taskId"/>, if it has one and no
