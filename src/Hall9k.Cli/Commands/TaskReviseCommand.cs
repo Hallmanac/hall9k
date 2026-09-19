@@ -176,9 +176,9 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
 
         [CommandOption("--max-turns <N>")]
         [Description(
-            "Change a spike's own turn budget (PLAN.md §4 item 4). Settable while the spike is Draft "
-            + "or Published; refused on any task that is not a spike. Pass alongside --max-tokens "
-            + "and --max-wall-clock to set the whole budget at once — this replaces it")]
+            "Change a spike's own turn budget (PLAN.md §16 PLACEHOLDER-1d81543a). Settable while the "
+            + "spike is Draft or Published; refused on any task that is not a spike. Pass alongside "
+            + "--max-tokens and --max-wall-clock to set the whole budget at once — this replaces it")]
         public int? MaxTurns { get; init; }
 
         [CommandOption("--max-tokens <N>")]

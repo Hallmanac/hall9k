@@ -107,26 +107,26 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         [CommandOption("--max-turns <N>")]
         [Description(
-            "This task's own turn budget (PLAN.md §4 item 4): passed to the build session's agent "
-            + "launch as its own hard turn limit. Null (the default) means no limit — no declared "
-            + "budget means nothing is ever auto-killed (Decisions Log #11). For a spike, crossing "
-            + "this ends the build session and records a budget-exhausted verdict rather than failing "
-            + "the task")]
+            "A spike's own turn budget (PLAN.md §16 PLACEHOLDER-1d81543a), optional with --type spike: "
+            + "passed to the build session's agent launch as its own hard turn limit. Crossing it ends "
+            + "the build session and records a budget-exhausted verdict rather than failing the task. "
+            + "Refused on any other task type")]
         public int? MaxTurns { get; init; }
 
         [CommandOption("--max-tokens <N>")]
         [Description(
-            "This task's own token budget (PLAN.md §4 item 4). Null (the default) means no limit. For "
-            + "a spike, a build session whose cumulative spend has already crossed this by the time it "
-            + "ends is recorded budget-exhausted rather than proceeding to review")]
+            "A spike's own token budget (PLAN.md §16 PLACEHOLDER-1d81543a), optional with --type spike: "
+            + "a build session whose cumulative spend crosses this, live or by the time it ends, is "
+            + "recorded budget-exhausted rather than proceeding to review or failing the task. Refused "
+            + "on any other task type")]
         public long? MaxTokens { get; init; }
 
         [CommandOption("--max-wall-clock <DURATION>")]
         [Description(
-            "This task's own wall-clock budget (PLAN.md §4 item 4), as a duration the .NET "
-            + "TimeSpan parser accepts (e.g. 00:30:00 for thirty minutes, 1.00:00:00 for a day). Null "
-            + "(the default) means no limit. For a spike, a build session still running once this "
-            + "elapses is ended and recorded budget-exhausted rather than failed")]
+            "A spike's own wall-clock budget (PLAN.md §16 PLACEHOLDER-1d81543a), optional with --type "
+            + "spike, as a duration the .NET TimeSpan parser accepts (e.g. 00:30:00 for thirty minutes, "
+            + "1.00:00:00 for a day): a build session still running once this elapses is ended and "
+            + "recorded budget-exhausted rather than failed. Refused on any other task type")]
         public string? MaxWallClock { get; init; }
 
         [CommandOption("--context <CONTEXT>")]
@@ -476,6 +476,21 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 "--kind and --exit-criterion are a spike's own fields — pass --type spike, or drop them.");
         }
 
+        // The identical bidirectional shape as --kind/--exit-criterion just above, for the
+        // budget options: a non-spike task accepting them at creation left h9k task revise's own
+        // spike-only budget refusal (TaskDecider.Revise) with an unrevisable, unclearable cap
+        // nothing but abandoning the task could ever undo (independent pre-PR review, cycle 1,
+        // both lenses — RunLauncher.LaunchAsync already enforces --max-turns as a hard
+        // `claude -p --max-turns` on every task type's own build session, so an ordinary task
+        // given one was also guaranteed to hit it).
+        if (taskType != TaskType.Spike
+            && (settings.MaxTurns is not null || settings.MaxTokens is not null || settings.MaxWallClock.IsNotBlank()))
+        {
+            throw new DomainValidationException(
+                "--max-turns, --max-tokens, and --max-wall-clock are a spike's own budget — pass "
+                + "--type spike, or drop them.");
+        }
+
         SpikeKind? spikeKind = settings.Kind.IsNotBlank() ? SpikeKind.Parse(settings.Kind) : null;
         TaskConstraints? constraints = BuildConstraints(settings.MaxTurns, settings.MaxTokens, settings.MaxWallClock);
 
@@ -818,8 +833,9 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     }
 
     /// <summary>
-    /// This task's own budget (PLAN.md §4 item 4) out of the three raw options, or null when none
-    /// were passed — no declared budget means nothing is ever auto-killed (Decisions Log #11).
+    /// A spike's own budget (PLAN.md §16 PLACEHOLDER-1d81543a) out of the three raw options, or
+    /// null when none were passed — no declared budget means nothing is ever auto-killed
+    /// (Decisions Log #11).
     /// </summary>
     internal static TaskConstraints? BuildConstraints(int? maxTurns, long? maxTokens, string? maxWallClock)
     {
