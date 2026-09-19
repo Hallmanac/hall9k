@@ -96,7 +96,7 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
         string repositoryPath = Path.GetFullPath(request.RepositoryPath);
         await using RepositoryLock repositoryLock = await AcquireRepositoryLockCoreAsync(repositoryPath, cancellationToken);
         {
-            await BestEffortFetchAsync(repositoryPath, cancellationToken);
+            string? originUnreadable = await BestEffortFetchAsync(repositoryPath, cancellationToken);
 
             string branch = request.Branch;
 
@@ -147,9 +147,29 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
                     cancellationToken);
                 await RunGitAsync(repositoryPath, $"worktree add \"{worktreePath}\" {branch}", cancellationToken);
             }
+            else if (originUnreadable is { } fetchFailure)
+            {
+                // A plain WorktreeException, deliberately: the branch is not here, but the fetch
+                // above failed, so refs/remotes/origin/* is whatever the last successful fetch
+                // left — on a node that never fetched this branch, nothing. Declaring it gone
+                // would turn an unreachable origin into "there is no work left anywhere" and let
+                // the callers below cut fresh over a branch another node really did push
+                // (adversarial review, cycle 1). This is a machine that could not do the job, and
+                // it fails the run loudly the same as any other.
+                throw new WorktreeException(
+                    $"Branch {branch} is not in {repositoryPath} locally and origin could not be read " +
+                    $"(git fetch origin failed: {fetchFailure}), so whether origin still holds it is " +
+                    $"unknown — cannot resume it.");
+            }
             else
             {
-                throw new WorktreeException(
+                // BranchGoneException, not a plain WorktreeException: this is the one failure here
+                // that says "there is nothing left to resume" rather than "this machine could not
+                // do the job", and the callers that fall back to a fresh cut key off exactly that
+                // distinction (the type's own doc carries the origin incident). Reached only when
+                // origin was actually consulted — the arm above holds the case where it was not.
+                throw new BranchGoneException(
+                    branch,
                     $"Branch {branch} exists neither locally nor on origin in {repositoryPath} — cannot resume it.");
             }
 
@@ -799,19 +819,34 @@ public sealed class GitWorktreeManager(ILogger<GitWorktreeManager> logger) : IWo
             : resolved;
     }
 
-    private async Task BestEffortFetchAsync(string repositoryPath, CancellationToken cancellationToken)
+    /// <summary>
+    /// Refreshes this repository's view of origin, and carries on regardless when it cannot —
+    /// every caller here would rather work from local refs than not work at all.
+    /// </summary>
+    /// <returns>
+    /// Null when this repository's view of origin is current enough to conclude something from:
+    /// the fetch succeeded, or there is no origin configured at all, in which case a branch
+    /// missing from <c>refs/remotes/origin/*</c> really is missing from origin. The fetch's own
+    /// error when it is not, so a caller about to declare a branch gone can refuse to instead
+    /// (adversarial review, cycle 1 — the remote-tracking refs behind that call are whatever the
+    /// last successful fetch left, which on a node that has never fetched this branch is nothing).
+    /// </returns>
+    private async Task<string?> BestEffortFetchAsync(string repositoryPath, CancellationToken cancellationToken)
     {
         (int exitCode, _, _) = await TryRunGitAsync(repositoryPath, "remote get-url origin", cancellationToken);
         if (exitCode != 0)
         {
-            return;
+            return null;
         }
 
         (int fetchExit, _, string fetchError) = await TryRunGitAsync(repositoryPath, "fetch origin", cancellationToken);
-        if (fetchExit != 0)
+        if (fetchExit == 0)
         {
-            logger.LogWarning("git fetch failed for {Repository} ({Error}); using local refs", repositoryPath, fetchError.Trim());
+            return null;
         }
+
+        logger.LogWarning("git fetch failed for {Repository} ({Error}); using local refs", repositoryPath, fetchError.Trim());
+        return fetchError.Trim() is { Length: > 0 } detail ? detail : $"git fetch origin exited {fetchExit}";
     }
 
     private async Task<string> ResolveStartPointAsync(string repositoryPath, string baseBranch, CancellationToken cancellationToken)

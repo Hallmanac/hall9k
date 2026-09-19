@@ -635,15 +635,50 @@ public sealed class GitWorktreeManagerTests : IDisposable
             "as if origin had rewritten the branch out from under it");
     }
 
+    /// <summary>
+    /// The branch-on-neither-side failure is its own exception type, not a plain
+    /// <see cref="WorktreeException"/> (#PLACEHOLDER-5c46cd1d): it is the one failure here that means
+    /// "there is nothing left to resume", and both dispatch doors fall back to a fresh cut on
+    /// exactly that type while still failing loudly on every other worktree failure. The branch is
+    /// carried on the exception apart from the message so a caller can name it without parsing prose.
+    /// </summary>
     [Fact]
-    public async Task Checkout_existing_of_an_unknown_branch_throws()
+    public async Task Checkout_existing_of_an_unknown_branch_throws_branch_gone()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
 
         Func<Task> act = () => _manager.CheckoutExistingAsync(
             new FollowUpWorktreeRequest(_repositoryPath, "task/never-existed", DomainId.New(), DomainId.New()), cts.Token);
 
-        await act.Should().ThrowAsync<WorktreeException>().WithMessage("*neither locally nor on origin*");
+        (await act.Should().ThrowAsync<BranchGoneException>().WithMessage("*neither locally nor on origin*"))
+            .Which.Branch.Should().Be("task/never-existed");
+    }
+
+    /// <summary>
+    /// An origin this node could not read is a machine that could not do the job, not a branch
+    /// that is gone (adversarial review, cycle 1): the fetch fails, <c>refs/remotes/origin/*</c>
+    /// stays at whatever the last successful fetch left, and on a branch this node never fetched
+    /// that is nothing at all — so origin's silence is no evidence. The plain base type is what
+    /// the dispatch doors fail loudly on, which is how a branch another node really did push
+    /// survives this node being offline instead of being quietly cut over.
+    /// </summary>
+    [Fact]
+    public async Task Checkout_existing_refuses_to_call_a_branch_gone_when_origin_could_not_be_read()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        // A remote that resolves (so the fetch is attempted) and cannot answer (so it fails),
+        // with no network reached either way.
+        Git(_repositoryPath, $"remote set-url origin \"{Path.Combine(_root, "origin-that-was-never-there.git")}\"");
+
+        Func<Task> act = () => _manager.CheckoutExistingAsync(
+            new FollowUpWorktreeRequest(
+                _repositoryPath, "task/pushed-from-another-node", DomainId.New(), DomainId.New()),
+            cts.Token);
+
+        (await act.Should().ThrowAsync<WorktreeException>().WithMessage("*origin could not be read*"))
+            .Which.Should().NotBeOfType<BranchGoneException>(
+                "a branch declared gone on refs this node never fetched is a fresh cut over work "
+                + "that may be sitting on origin");
     }
 
     [Fact]

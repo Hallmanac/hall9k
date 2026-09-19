@@ -67,7 +67,35 @@ public sealed record Worktree(string Path, string Branch, string StartPoint, str
 /// </summary>
 public sealed record CheckoutRefresh(bool UpToDate, string Detail);
 
-public sealed class WorktreeException(string message) : Exception(message);
+// Unsealed, against this repo's own seal-by-default rule, for exactly one subclass:
+// BranchGoneException below. Every catch site that wants "anything the worktree layer could not
+// do" still reads WorktreeException and keeps catching both.
+public class WorktreeException(string message) : Exception(message);
+
+/// <summary>
+/// The one <see cref="WorktreeException"/> a caller can act on rather than only report: the branch
+/// it asked to resume exists neither locally nor on origin, so there are no artifacts left to
+/// resume and a fresh cut from the base branch loses nothing. Distinct from the base type because
+/// every OTHER failure <see cref="IWorktreeManager.CheckoutExistingAsync"/> can raise — a
+/// <c>worktree add</c> that failed, an unreadable repository, a lock directory that vanished — is
+/// a machine that could not do the job, where starting over would discard work that is genuinely
+/// still there. A fetch that failed counts as one of those: origin was never actually read, so its
+/// silence about the branch says nothing, and <see cref="IWorktreeManager.CheckoutExistingAsync"/>
+/// raises the base type there rather than this one.
+/// <para>
+/// Origin incident (2026-09-19 14:33 and 14:35 EDT, task a56cf16e, runs 01a0baf1 and 01a0baf3):
+/// <c>h9k task take --force</c> pulled a task off a Mac node whose run had built for eleven minutes
+/// without ever pushing, and both retries on the taking node failed at launch on a branch that had
+/// never left the Mac. Nothing was abandoned by starting clean there — nothing had arrived in the
+/// first place — so the loud failure Decisions Log #224 gives a foreign-node resume is now scoped
+/// to the failures that really do mean lost work, and this one starts the retry clean instead.
+/// </para>
+/// </summary>
+public sealed class BranchGoneException(string branch, string message) : WorktreeException(message)
+{
+    /// <summary>The branch that is on neither side, carried apart from the message so a caller can name it without parsing prose.</summary>
+    public string Branch { get; } = branch;
+}
 
 /// <summary>
 /// One worktree per run, siblings of the repository (Decisions Log #4). The executor
