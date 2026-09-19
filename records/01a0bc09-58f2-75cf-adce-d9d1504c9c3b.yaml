@@ -1,0 +1,29 @@
+hall9k-task-record: 1
+task-id: 01a0bc09-58f2-75cf-adce-d9d1504c9c3b
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#503
+objective: When a project's orchestrator feed has items and an orchestrator is live, the daemon spawns a short-lived cheap-model courier that delivers them to the orchestrator session and exits, so no orchestrator window ever polls
+criteria:
+  - A courier role joins the model-by-role policy (h9k config set --model-courier <model>, default claude-sonnet-5, with the same node-default and project-override shape as the build and review roles); a courier runs as a run with no task, recorded on the store with its model, tokens, and outcome, and counted in h9k status's spend line
+  - |-
+    The daemon spawns a courier for a project only when all four hold: the feed has undrained items, an orchestrator is live (piece 1), no courier for that project is running, and the batching wait has elapsed; the wait is zero after ten quiet minutes and grows with recent activity up to the project's --courier-max-wait (default 60 seconds); a park, a dispute, daemon trouble, or a message from a person dispatches at once regardless of the wait; a per-day spawn cap (default 500 per project) guards a storm and logs when hit
+  - |-
+    The courier's prompt is small, no recipe and no AGENTS.md: the feed items as the drain prints them, the orchestrator's session name and CLI from the presence record, and the delivery instruction; it delivers one message grouped by task to the orchestrator session, marks the feed drained up to the last item delivered, and exits; if delivery fails the cursor stays and the daemon retries after the wait; delivery is an adapter (cross-session message on Claude Code now, other CLIs later), and with no fitting adapter the feed stays undrained and the log says so
+  - h9k status shows a courier in flight and the last delivery time; a manual h9k orchestrator feed --drain still works and the courier never runs while a manual drain holds its short lease
+  - Unit tests cover every spawn condition, the wait growth and the urgent override, the day cap, delivery success advancing the cursor and failure leaving it, and the prompt as a golden; no test spawns a real agent, creates a branch, or touches GitHub
+  - dotnet build and dotnet test pass; the decision log carries one entry; docs/concepts.md describes presence, feed, and courier together; the orchestrator-recipe-generator skill stops emitting poll crons and the watcher recipe once this ships
+dependencies: [01a0bbc6-fc7e-777a-ae8e-3f81579dcd44, 01a0bc05-a960-7657-b708-1aed37b5ec69]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/504c9c3b-when-a-project-s-orchestrator
+published: 2026-09-19 23:47:01Z
+context: |-
+  The platform owns the orchestrator's watching: a lesser-model watcher session that polls the daemon (transport messages, actionable log lines, parks) and forwards only actionable items to the orchestrator window, spawned from the orchestrator recipe; longer term the daemon itself notifies or kicks off an agent when something actionable lands, so no window polls. Brian, 2026-09-19: no machine-level background tasks (memory limits differ per machine); something agentic that is looking for work, on a cheap model, with the high-end orchestrator deciding. First hand-written form: recipes/watcher.md in the hall9k project home; the recipe generator should emit it.
+
+  Piece 3 of 3 of idea 89471598 (the orchestrator feed and courier), walked with Brian 2026-09-19 19:4x EDT; his calls: maximum wait 60 seconds by default and configurable per project, the quieter the feed the shorter the wait down to immediate; day cap 500. Stacked on piece 2 (the feed, 37b5ec69: it drains through it and builds on its code), blocked by piece 1 (presence, 579dcd44: it must never spawn without a live orchestrator). Why a courier and not a watcher: nothing runs between events, so an idle project costs nothing; the courier carries no recipe so a spawn is a few thousand tokens, not the orchestrator's 25,000-token turn one. The run-with-no-task seam is shared with the voice build-skill draft (e74d7351). Retires when shipped: recipes/watcher.md (the Sonnet watcher in a screen session, today's stopgap), the orchestrator window's poll crons, notes/waiters/sweep.sh's log parsing. Pointers: DispatchEngine and RunLauncher (spawn path), ClaudeExecutor (the Claude Code adapter; the cross-session address comes from the presence record), the model policy resolver (add the role), DaemonOptions (the wait ceiling, the quiet threshold, the day cap), the h9k orchestrator command group. Placement: Mac, after the fingerprint pair and pieces 1 and 2.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/89471598-the-platform-owns-the-orchestrator-s-watching-a-lesser-model/workspace
