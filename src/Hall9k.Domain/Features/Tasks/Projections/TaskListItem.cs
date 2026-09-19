@@ -606,7 +606,16 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.ClaimedByNodeId = null;
         view.CurrentRunId = null;
         view.AssignedOwnerId = @event.Data.NewHolderOwnerId;
-        view.QueuePriorityMarked = false;
+        // Reassigned to the taker's own owner, the same "unassigning and assigning again" shape
+        // AssignedAt's own doc gives a reassignment — mirrors TaskDetails.Apply(TaskHolderTakenOver),
+        // which sets it to TakenAt for the identical reason (conformance pre-PR review, cycle 1:
+        // the two projections must not disagree about when this task was last assigned).
+        view.AssignedAt = @event.Data.TakenAt;
+        // Left alone on purpose, unlike Apply(TaskClaimed)'s own clear: a takeover is not a
+        // dispatch, and TaskAggregate.Apply(TaskHolderTakenOver) never clears its own copy either
+        // — mirrors Apply(TaskRequeued) just above, the sibling transition this one is modelled on
+        // (adversarial pre-PR review, cycle 1: this line previously cleared the marker here while
+        // the aggregate kept it set, silently discarding a human's own queue-first instruction).
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
