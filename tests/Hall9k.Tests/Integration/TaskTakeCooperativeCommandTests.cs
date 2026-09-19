@@ -92,26 +92,36 @@ public sealed class TaskTakeCooperativeCommandTests : IClassFixture<PostgresFixt
     }
 
     [Fact]
-    public async Task Grant_and_refuse_answer_a_parked_request_through_the_identical_engine()
+    public async Task Refuse_answers_a_parked_request_through_the_engine()
     {
         (ProjectDetails project, Guid taskId, BootstrapContext context) = await SeedHeldTaskWithPendingRequestAsync();
-        FakeLedger ledger = new();
-        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("my-fingerprint", context.NodeId, "MY-NODE", Now.AddHours(-2)));
 
         await using IDocumentSession refuseSession = _postgres.Store.LightweightSession();
         TaskRefuseCommand.Settings refuseSettings = new() { Id = taskId.ToString(), Reason = "Still mid-refactor." };
         Func<Task> refuseAct = () => TaskRefuseCommand.RunAsync(_postgres.Store, refuseSession, refuseSettings, CancellationToken.None);
-        // Refusing changes nothing about the holder, so a follow-up grant on the SAME still-pending
-        // request is still answerable — proving refuse alone first, on a disposable copy of the
-        // scenario, would need its own seed; simpler to prove grant here, since "grant runs the
-        // auto release" is the criterion this file's own sibling (ClaimRequestEngineTests) already
-        // covers in depth for refuse's own text. Both doors are proven to reach the identical engine
-        // in ClaimRequestEngineTests; this file's job is proving the CLI wiring reaches it at all.
         await refuseAct.Should().NotThrowAsync();
 
         TaskAggregate afterRefuse = (await refuseSession.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: CancellationToken.None))!;
         afterRefuse.HolderNodeId.Should().Be(context.NodeId, "a refusal changes nothing about who holds the task");
         afterRefuse.LastTakeRefusedReason.Should().Be("Still mid-refactor.");
+    }
+
+    [Fact]
+    public async Task Grant_answers_a_parked_request_through_the_engine()
+    {
+        (ProjectDetails project, Guid taskId, BootstrapContext context) = await SeedHeldTaskWithPendingRequestAsync();
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("my-fingerprint", context.NodeId, "MY-NODE", Now.AddHours(-2)));
+
+        await using IDocumentSession grantSession = _postgres.Store.LightweightSession();
+        TaskGrantCommand.Settings grantSettings = new() { Id = taskId.ToString() };
+        Func<Task> grantAct = () => TaskGrantCommand.RunAsync(
+            _postgres.Store, grantSession, grantSettings, ledger, take: null, new NodeKeyStore(), CancellationToken.None);
+        await grantAct.Should().NotThrowAsync();
+
+        TaskAggregate afterGrant = (await grantSession.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: CancellationToken.None))!;
+        afterGrant.HolderNodeId.Should().BeNull("a grant releases this node's own ledger holder");
+        afterGrant.LastGrantedAt.Should().NotBeNull();
     }
 
     [Fact]

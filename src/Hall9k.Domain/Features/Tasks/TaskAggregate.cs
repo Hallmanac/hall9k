@@ -1412,7 +1412,7 @@ public sealed class TaskAggregate
         // this up through its ordinary dispatch sweep, no second claim mechanism needed. An
         // ordinary release (true completion, h9k task abandon, a lease-gone sweep) carries neither
         // field and leaves everything below exactly as it always has.
-        if (@event.GrantedToNodeId is { } grantedToNodeId)
+        if (@event.GrantedToNodeId is not null)
         {
             LastGrantedToOwnerId = @event.GrantedToOwnerId;
             LastGrantedAt = @event.ReleasedAt;
