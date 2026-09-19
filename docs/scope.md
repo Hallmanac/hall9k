@@ -7,7 +7,7 @@ Hall9k has been building Hall9k since the pipeline first ran end to end. Anythin
 but unbuilt" names the file that holds the design, so you can read it rather than take this
 page's word for it.
 
-Last reconciled against the tree on 2026-09-15.
+Last reconciled against the tree on 2026-09-19.
 
 ---
 
@@ -348,6 +348,28 @@ idea show` listing the whole fan-out and each task's current state. `h9k idea pr
 sugar over cutting one task and concluding in the same breath. An idea reaches one of its two
 terminal states only by an explicit, separate act: `h9k idea conclude` (something came of
 discovery) or `h9k idea archive` (nothing did), each with the reason kept and nothing deleted.
+
+### Spikes
+
+`h9k task add --type spike --kind <research|experiment|prototype> --exit-criterion "<sentence>"`
+answers one stated question under an optional stated budget, with one review cycle and no pull
+request — a bounded, exploratory task type distinct from an ordinary Feature or Research task's
+full pre-PR pipeline. The kind decides two things at once: whether the project's own build and
+test gates run, and what becomes of the branch once the spike concludes. A research spike reads
+and measures, writes no code, runs no gates, and keeps its branch local as the record. An
+experiment spike runs and measures expecting its code to be discarded, runs no gates, and deletes
+its branch locally once its findings are copied out. A prototype spike builds enough to
+demonstrate the exit criterion, runs the ordinary gates, and pushes its branch to origin
+afterward as evidence for a later task or another node to seed from — none of the three is ever
+merged or opens a pull request. `--max-turns`/`--max-tokens`/`--max-wall-clock` are a spike's own
+optional budget, scoped to the build session alone: crossing one ends the session and records a
+budget-exhausted verdict with whatever findings were already written, never a failure. Exactly
+one review pass judges the findings document and the branch's own diff against the stated exit
+criterion, and — only on a first not-met verdict — exactly one fix lap followed by one final
+review whose verdict stands either way, never parking for a human. `h9k task add --from-idea`
+also cuts a spike, the same as any other type; its findings are then copied into the idea's own
+workspace under `spikes/<task-id>/findings.md` alongside its own `IdeaSpikeConcluded` provenance
+record on the idea's stream.
 
 ### External work items
 
