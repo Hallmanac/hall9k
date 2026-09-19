@@ -584,8 +584,14 @@ public sealed class RunLauncher(
                 // Context routing (Decisions Log #36). The run stream exists by now, so the
                 // synthesis pass has somewhere to record itself, and the build session has not
                 // spawned yet — the whole point is that the dependent starts already knowing.
-                string? handoffs = await blockerContext.AssembleAsync(
-                    runId, runDirectory, task, project, worktree.Path, mode, cancellationToken);
+                // A spike never reads this (see the comment on the branch below): assembling it
+                // anyway would spawn — and pay for — a full synthesis session whose entire output
+                // BuildSpike then has no parameter to receive (independent pre-PR review, cycle 1,
+                // both lenses).
+                string? handoffs = task.Type == TaskType.Spike
+                    ? null
+                    : await blockerContext.AssembleAsync(
+                        runId, runDirectory, task, project, worktree.Path, mode, cancellationToken);
                 // interactiveMilestoneAddress stays null: this is a brand-new RunDispatched, so no
                 // h9k task register-session call could possibly have landed on it yet (task:
                 // agents on an interactive-mode task report outbound) — a genuinely fresh headless
@@ -609,9 +615,7 @@ public sealed class RunLauncher(
                 // follow-up and never resumes previous work (RunDispatched always cuts it a
                 // fresh branch — see the worktree checkout above).
                 prompt = task.Type == TaskType.Spike
-                    ? AgentPromptBuilder.BuildSpike(
-                        task, project, worktree.Branch, worktree.Path,
-                        commandTimeout: options.Value.VerifyGateTimeout)
+                    ? AgentPromptBuilder.BuildSpike(task, commandTimeout: options.Value.VerifyGateTimeout)
                     : AgentPromptBuilder.Build(
                         task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
                         baseBranch: runBaseBranch, baseCommit: baseCommit,

@@ -139,9 +139,7 @@ public static class AgentPromptBuilder
     /// handoff or a PR summary off a session's result rather than trusting a file write to an
     /// absolute path outside the worktree, which nothing else in this builder ever names either.
     /// </summary>
-    public static string BuildSpike(
-        TaskDetails task, ProjectDetails project, string branch, string worktreePath,
-        TimeSpan? commandTimeout = null)
+    public static string BuildSpike(TaskDetails task, TimeSpan? commandTimeout = null)
     {
         SpikeKind kind = task.SpikeKind;
         TimeSpan effectiveTimeout = commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout;
@@ -188,6 +186,19 @@ public static class AgentPromptBuilder
             "Never open a pull request, draft or otherwise, and never push this branch yourself — "
             + "the platform handles the branch's own fate once you are done, per the kind above.");
         prompt.AppendLine();
+        prompt.AppendLine(kind.Value switch
+        {
+            "Research" => "Commit your work as you go, even though nobody ever merges this branch: "
+                + "it is kept locally afterward as the record, and an uncommitted change is lost the "
+                + "moment the worktree behind it is removed.",
+            "Experiment" => "Commit your work as you go, even though the branch is deleted once your "
+                + "findings are copied out: a commit is what lets `git diff` and `git log` over this "
+                + "branch tell the review session that judges it next the real story, not just your "
+                + "own account of it.",
+            _ => "Commit your work as you go: your branch is pushed to origin afterward as evidence, "
+                + "and an uncommitted change never reaches it.",
+        });
+        prompt.AppendLine();
         AppendSharedRepositoryHistorySafetyRule(prompt);
         AppendNoHostLoadForFlakeReproductionRule(prompt, sessionRunsGates: kind.RunsGates);
         AppendExternalInteractionLoggingRule(prompt, task.Id);
@@ -222,14 +233,15 @@ public static class AgentPromptBuilder
 
     /// <summary>
     /// A spike's own judge session (task: a spike is a run, not a walk) — SpikeEngine's one review
-    /// cycle, dispatched on the review model, outside the spike's own budget (ruling 3). Judges
+    /// cycle, dispatched on the review model, outside the spike's own budget (PLAN.md §16
+    /// PLACEHOLDER-1d81543a). Judges
     /// the findings document and the branch's own diff against the exit criterion alone; nothing
     /// about production quality, style, or scope is in bounds. Read-only: never told to change
     /// anything, and never given commit-style or gate instructions, because nobody merges this
     /// branch either way.
     /// </summary>
     public static string BuildSpikeReview(
-        TaskDetails task, ProjectDetails project, string branch, string baseBranch, string findingsText,
+        TaskDetails task, string branch, string baseBranch, string findingsText,
         bool isFixLap, TimeSpan? commandTimeout = null)
     {
         StringBuilder prompt = new();
@@ -277,12 +289,12 @@ public static class AgentPromptBuilder
 
     /// <summary>
     /// A spike's own one fix lap (task: a spike is a run, not a walk), dispatched only once, and
-    /// only after the first review pass came back not-met. Never told about a budget: ruling 3
-    /// scopes TaskConstraints to the build session that already ran, not this bounded follow-up.
+    /// only after the first review pass came back not-met. Never told about a budget: PLAN.md §16
+    /// PLACEHOLDER-1d81543a scopes TaskConstraints to the build session that already ran, not this
+    /// bounded follow-up.
     /// </summary>
     public static string BuildSpikeFix(
-        TaskDetails task, ProjectDetails project, string branch, string reviewerReason,
-        TimeSpan? commandTimeout = null)
+        TaskDetails task, string reviewerReason, TimeSpan? commandTimeout = null)
     {
         StringBuilder prompt = new();
         prompt.AppendLine($"# Spike fix lap: {task.Objective}");
@@ -298,6 +310,11 @@ public static class AgentPromptBuilder
         prompt.AppendLine();
         prompt.AppendLine(
             "Never open a pull request, draft or otherwise, and never push this branch yourself.");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "Commit whatever you change here too, on top of whatever the build session already "
+            + "committed — the same reason applies: an uncommitted change is lost the moment this "
+            + "branch's own fate (pushed, kept locally, or deleted) is decided.");
         prompt.AppendLine();
         AppendSharedRepositoryHistorySafetyRule(prompt);
         AppendNoHostLoadForFlakeReproductionRule(prompt, sessionRunsGates: task.SpikeKind.RunsGates);
