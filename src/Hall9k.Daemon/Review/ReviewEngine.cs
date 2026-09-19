@@ -2873,8 +2873,8 @@ public sealed class ReviewEngine(
                 context, StackedCheckpoint.BeforeFinalPass, cancellationToken);
         }
 
-        if (await RebasePreflightAsync(context, baseBranch, "the mandatory final pass", cancellationToken)
-            is { } refused)
+        RebasePreflightResult preflight = await RebasePreflightAsync(context, baseBranch, "the mandatory final pass", cancellationToken);
+        if (preflight.Outcome is { } refused)
         {
             // The preflight's own skip is unstacked-only (RebaseOntoStackedParentAsync's own call
             // to this same preflight, above, never reaches here — it returns from its own branch
@@ -2887,42 +2887,36 @@ public sealed class ReviewEngine(
             await using (IAsyncDisposable preflightRenumberLock =
                 await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
             {
-                // Every other skip site reaches TryRenumberDecisionsLogPlaceholderOnSkipAsync only
-                // after this same run already attempted a fetch of origin/<baseBranch> (even one
-                // that failed) — this preflight refusal is the one skip that returns before that
-                // fetch is ever attempted at all, so the shared method's own read of the locally
-                // known origin/<baseBranch> could still be looking at a ref this run never
-                // refreshed. Fetched here, under the lock this block already holds, so the
-                // no-op comparison inside the shared method is judged against the freshest base
-                // this run can see rather than risking the parallel-assignment collision Decisions
-                // Log #162 exists to prevent (independent pre-PR review, cycle 1, conformance
-                // lens). A failed fetch is left for a later pass, the same stance every other skip
-                // site already takes on its own failed fetch.
-                ProcessResult? preflightFetch = null;
-                try
+                // The lock's own wait is unbounded, exactly like the repository lock the primary
+                // rebase attempt below takes — re-checked here immediately after acquiring it and
+                // before anything in the worktree is touched, the same fence re-check that block's
+                // own comment requires of itself, for the identical reason: this attempt's
+                // generation can go stale while it merely waits its turn for the lock (independent
+                // pre-PR review, cycle 1, both lenses).
+                if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
                 {
-                    preflightFetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
-                }
-                catch (Exception exception) when (exception is not OperationCanceledException)
-                {
-                    logger.LogWarning(
-                        exception,
-                        "Run {RunId}: could not fetch origin/{Base} before attempting the Decisions Log renumbering on the mandatory final pass's own pre-flight skip — left for a later pass",
-                        context.RunId, baseBranch);
+                    return RebaseGateOutcome.Stop;
                 }
 
-                if (preflightFetch is { ExitCode: 0 })
+                if (preflight.BaseWasRetargeted)
                 {
-                    await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                    // baseBranch itself is not this pull request's own base anymore — the
+                    // retargeted-base refusal above already established that — so it is never this
+                    // skip's authority to judge "already current with its base" against, whatever a
+                    // fetch or a locally known ref might say about it (independent pre-PR review,
+                    // cycle 1, adversarial lens: renumbering here risks assigning a number off a
+                    // PLAN.md that is current with the WRONG branch, duplicating whatever the
+                    // pull request's real base has landed since).
+                    logger.LogInformation(
+                        "Run {RunId}: the pull request's base was retargeted away from the base this run recorded, so the Decisions Log renumbering was left for a later pass rather than judged against a base that is no longer this branch's authoritative one",
+                        context.RunId);
+                }
+                else
+                {
+                    await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
                         context, run, git, worktreePath, baseBranch,
                         "the mandatory final pass's own pre-flight check skipped this branch's rebase",
                         cancellationToken);
-                }
-                else if (preflightFetch is not null)
-                {
-                    logger.LogWarning(
-                        "Run {RunId}: could not fetch origin/{Base} before attempting the Decisions Log renumbering on the mandatory final pass's own pre-flight skip ({Error}) — left for a later pass",
-                        context.RunId, baseBranch, FirstLine(preflightFetch.StandardError));
                 }
             }
 
@@ -2979,7 +2973,7 @@ public sealed class ReviewEngine(
                     logger.LogWarning(
                         "Run {RunId}: could not fetch origin/{Base} before the mandatory final pass ({Error}) — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
                         context.RunId, baseBranch, FirstLine(fetch.StandardError));
-                    await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                    await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
                         context, run, git, worktreePath, baseBranch,
                         $"could not fetch origin/{baseBranch} before the mandatory final pass", cancellationToken);
                     return RebaseGateOutcome.Proceed;
@@ -2993,7 +2987,7 @@ public sealed class ReviewEngine(
                     logger.LogWarning(
                         "Run {RunId}: could not read origin/{Base} or its merge-base before the mandatory final pass — proceeding unrebased",
                         context.RunId, baseBranch);
-                    await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                    await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
                         context, run, git, worktreePath, baseBranch,
                         $"could not read origin/{baseBranch} or its merge-base before the mandatory final pass", cancellationToken);
                     return RebaseGateOutcome.Proceed;
@@ -3106,7 +3100,7 @@ public sealed class ReviewEngine(
                     exception,
                     "Run {RunId}: a git call before the mandatory final pass exited 0 but its output pipe stuck past the drain grace, and the worktree does not confirm a rebase landed — proceeding unrebased",
                     context.RunId);
-                await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
                     context, run, git, worktreePath, baseBranch,
                     "a git call before the mandatory final pass exited 0 but its output pipe stuck past the drain grace",
                     cancellationToken);
@@ -3119,7 +3113,7 @@ public sealed class ReviewEngine(
                     exception,
                     "Run {RunId}: a git call exceeded its deadline checking origin/{Base} before the mandatory final pass — proceeding unrebased",
                     context.RunId, baseBranch);
-                await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
                     context, run, git, worktreePath, baseBranch,
                     $"a git call exceeded its deadline checking origin/{baseBranch} before the mandatory final pass",
                     cancellationToken);
@@ -3273,28 +3267,35 @@ public sealed class ReviewEngine(
     /// own mechanical rebase still covers a stale push" in its own log line, which is true for the
     /// REBASE itself but never true for a placeholder still sitting at PLAN.md's own tail: nothing
     /// else in this platform's mechanical paths ever assigns one a number except this exact step
-    /// (Decisions Log #162), and origin two placeholders — PLACEHOLDER-609bd344 and
-    /// PLACEHOLDER-5e0cbfeb, still unnumbered on <c>origin/main</c> at the time of writing — reached
-    /// main unnumbered on exactly these skip paths before this method existed, hand-numbered
-    /// afterwards in a recovery commit. A dirty worktree the preflight's own refusal can still leave
-    /// behind — the one skip site every OTHER site reaches only after the preflight already proved
-    /// the worktree clean — is renumbered anyway when the only thing dirty is a bare untracked file,
-    /// which <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/> never stages or commits; the
-    /// two shapes it genuinely would sweep in — content already staged in the index, since its own
-    /// closing commit has no pathspec, and an uncommitted edit to PLAN.md itself, since it
-    /// unconditionally stages that one file — are checked below and left for a later pass instead,
-    /// the same stance every other refusal this method cannot act on already takes (independent
-    /// pre-PR review, cycle 1, both lenses).
+    /// (Decisions Log #162). Two placeholders reached <c>origin/main</c> unnumbered on exactly these
+    /// skip paths before this method existed — PLACEHOLDER-609bd344 and PLACEHOLDER-5e0cbfeb, both
+    /// hand-numbered afterwards in a recovery commit (Decisions Log #225 and #226). A dirty worktree
+    /// the preflight's own refusal can still leave behind — the one skip site every OTHER site
+    /// reaches only after the preflight already proved the worktree clean — is renumbered anyway
+    /// when the only thing dirty is a bare untracked file, which
+    /// <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/> never stages or commits; any
+    /// staged or uncommitted change to a TRACKED file is left for a later pass instead, since its
+    /// own citation sweep rewrites, and its own closing commit can stage and land, any tracked file
+    /// it touches, not only PLAN.md — checked below (independent pre-PR review, cycle 1, both
+    /// lenses; narrowed further after cycle 1 shipped, once the sweep was found to reach every
+    /// tracked file, not only PLAN.md and whatever the index already held staged).
     /// <para>
     /// Deliberately narrower than a real rebase: it only ever commits when this branch's own
-    /// locally known <c>origin/&lt;baseBranch&gt;</c> — read fresh here, but never fetched, since
-    /// the caller's own fetch is what just failed or was never attempted — already equals this
-    /// branch's own merge base against it. That is the identical "no rebase owed" shape
-    /// <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own no-op branch already renumbers against,
-    /// so <c>wasNoOp: true</c> stays honest by the same test that branch already uses. Origin having
-    /// moved further than this branch's own locally known ref confirms is left alone rather than
-    /// renumbered against a base this branch was never actually rebased onto — recording
-    /// <c>wasNoOp: true</c> in that shape would misrepresent the one fact every reader of
+    /// locally known <c>origin/&lt;baseBranch&gt;</c> — read fresh here, never fetched by this
+    /// method itself — already equals this branch's own merge base against it. That is the
+    /// identical "no rebase owed" shape <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own no-op
+    /// branch already renumbers against, so <c>wasNoOp: true</c> stays honest by the same test that
+    /// branch already uses. A caller that cannot vouch for that locally known ref's own freshness —
+    /// its own fetch just failed, or the exception it caught could have interrupted one in flight —
+    /// routes through <see cref="RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync"/> first,
+    /// which retries the fetch once for itself and only calls this method when that retry confirms
+    /// the ref current, rather than handing this method's own no-op test a ref that could be stale
+    /// by an unbounded amount (independent pre-PR review, cycle 1, adversarial lens: judging
+    /// "already current with its base" against an unconfirmed ref risks assigning a number some
+    /// other branch already claimed on the base's real, current tip). Origin having moved further
+    /// than this branch's own locally known ref confirms is left alone rather than renumbered
+    /// against a base this branch was never actually rebased onto — recording <c>wasNoOp: true</c>
+    /// in that shape would misrepresent the one fact every reader of
     /// <see cref="RunRebasedOntoBase.WasNoOp"/> trusts it to carry, and recording <c>wasNoOp: false</c>
     /// would just as wrongly claim a real rebase landed here (<see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/>'s
     /// own doc). That branch is exactly what closeout's own placeholder guard before merge exists to
@@ -3397,17 +3398,19 @@ public sealed class ReviewEngine(
         // One of the refusals this method exists to cover is the preflight's own dirty-worktree
         // refusal, which every OTHER skip site reaches only after the preflight already proved the
         // worktree clean — this is the one branch-check-passing skip that can still have staged or
-        // modified content sitting in the index. DecisionsLogRenumberer.RenumberIfNeededAsync's own
-        // closing commit (DecisionsLogRenumberer.cs) has no pathspec, so it commits the whole
-        // index, not just the paths it staged — sweeping any already-staged content into a `chore:`
-        // commit that describes none of it — and it unconditionally `git add`s PLAN.md itself, so
-        // an unstaged edit already sitting in PLAN.md is force-staged and swept in the same way. A
+        // modified content sitting anywhere in the repository. DecisionsLogRenumberer.RenumberIfNeededAsync's
+        // own citation sweep (RewriteCitationsAsync) rewrites, on disk, every TRACKED file that
+        // contains a matching citation — not only PLAN.md — and its closing commit stages exactly
+        // those rewritten files and has no pathspec of its own, so it commits the whole index: any
+        // content already staged before this call ever ran rides along, and a rewritten file that
+        // was already sitting modified-but-uncommitted is force-staged and swept in the same way. A
         // renumbering failure's own recovery runs `git reset --hard`, which would just as readily
-        // discard either. An untracked file elsewhere in the worktree is neither risk — nothing
-        // this step touches ever stages one — so only these two shapes refuse the renumbering here;
-        // a bare untracked file is left alone, the same as it already is once the commit lands
-        // (independent pre-PR review, cycle 1, both lenses; the risky shapes are what the finding's
-        // own scenario named, not the untracked-only shape the pre-existing test already covers).
+        // discard whatever uncommitted work was sitting in any of those files. An untracked file is
+        // the one shape genuinely safe to leave alone: `git ls-files` never lists it, so the
+        // citation sweep never reads it and the closing commit never stages it (independent pre-PR
+        // review, cycle 1, both lenses — narrowed further after cycle 1 shipped: any tracked file's
+        // own uncommitted change is this same risk, not only a staged one or PLAN.md itself, since
+        // the citation sweep can force-stage ANY tracked file it rewrites).
         ProcessResult statusCheck;
         try
         {
@@ -3434,27 +3437,21 @@ public sealed class ReviewEngine(
 
         foreach (string statusLine in statusCheck.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
-            if (statusLine.Length < 4)
+            if (statusLine.Length < 2)
             {
                 continue;
             }
 
             char indexStatus = statusLine[0];
-            string statusPath = statusLine[3..].Trim();
-            int renameArrow = statusPath.IndexOf(" -> ", StringComparison.Ordinal);
-            if (renameArrow >= 0)
-            {
-                statusPath = statusPath[(renameArrow + 4)..];
-            }
-
-            bool alreadyStaged = indexStatus != ' ' && indexStatus != '?';
-            bool touchesPlanMarkdown = statusPath.Trim('"') == "PLAN.md";
-            if (alreadyStaged || touchesPlanMarkdown)
+            char worktreeStatus = statusLine[1];
+            bool isUntracked = indexStatus == '?' && worktreeStatus == '?';
+            if (!isUntracked)
             {
                 logger.LogInformation(
-                    "Run {RunId}: {SkipDetail} — the worktree already has staged content or an uncommitted "
-                    + "edit to PLAN.md that the renumbering commit would sweep in, so the Decisions Log "
-                    + "renumbering was left for a later pass rather than committed alongside it",
+                    "Run {RunId}: {SkipDetail} — the worktree already has staged or uncommitted changes "
+                    + "to a tracked file that the renumbering commit's own citation sweep could force-stage "
+                    + "and commit alongside it, so the Decisions Log renumbering was left for a later pass "
+                    + "rather than committed alongside it",
                     context.RunId, skipDetail);
                 return;
             }
@@ -3481,6 +3478,50 @@ public sealed class ReviewEngine(
         logger.LogInformation(
             "Run {RunId}: {SkipDetail} — renumbered the Decisions Log's tail placeholder anyway",
             context.RunId, skipDetail);
+    }
+
+    /// <summary>
+    /// The freshness half of <see cref="TryRenumberDecisionsLogPlaceholderOnSkipAsync"/>'s own
+    /// contract: that method judges "already current with its base" against this branch's own
+    /// locally known <c>origin/&lt;baseBranch&gt;</c> without ever fetching one itself, which is
+    /// only safe when a caller can vouch that ref is actually current. A caller reached after its
+    /// own fetch failed, or after an exception that could have interrupted one in flight, cannot —
+    /// the ref could be however stale this run's last successful fetch of it left behind, and
+    /// judging the no-op test against it risks committing a number some other branch has already
+    /// claimed on the base's real, current tip (independent pre-PR review, cycle 1, adversarial
+    /// lens). This retries the fetch once, under whatever repository lock the caller already holds,
+    /// and only calls through when that retry actually lands — a second failure is left for a later
+    /// pass exactly like every other skip already is, rather than falling back to the very staleness
+    /// this method exists to rule out.
+    /// </summary>
+    private async Task RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
+        ReviewContext context, RunAggregate run, ProcessRunner git, string worktreePath, string baseBranch,
+        string skipDetail, CancellationToken cancellationToken)
+    {
+        ProcessResult? fetch = null;
+        try
+        {
+            fetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: {SkipDetail} — could not confirm origin/{Base} is current before attempting the Decisions Log renumbering — left for a later pass",
+                context.RunId, skipDetail, baseBranch);
+            return;
+        }
+
+        if (fetch is not { ExitCode: 0 })
+        {
+            logger.LogWarning(
+                "Run {RunId}: {SkipDetail} — could not confirm origin/{Base} is current before attempting the Decisions Log renumbering ({Error}) — left for a later pass",
+                context.RunId, skipDetail, baseBranch, FirstLine(fetch?.StandardError ?? ""));
+            return;
+        }
+
+        await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+            context, run, git, worktreePath, baseBranch, skipDetail, cancellationToken);
     }
 
     /// <summary>
@@ -3541,15 +3582,34 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
+    /// A <see cref="RebasePreflightAsync"/> result: the outcome to return when the caller may not
+    /// proceed with its rebase (null when it may), plus whether the refusal was specifically the
+    /// retargeted-pull-request-base mismatch. That one refusal reason is called out on its own
+    /// because <paramref name="BaseWasRetargeted"/>'s whole point is different from every other
+    /// refusal this method can return: every other reason says "baseBranch is still this branch's
+    /// real base, but something about the worktree or the network stopped the rebase itself" — the
+    /// Decisions Log renumbering that runs on a skip is still safe to attempt against baseBranch
+    /// in that shape. This one reason says baseBranch is not even the RIGHT branch anymore, so
+    /// nothing downstream may use it as the authority for "is this branch already current with its
+    /// base" without risking a placeholder assigned against a base the pull request has already
+    /// moved off of (independent pre-PR review, cycle 1, adversarial lens).
+    /// </summary>
+    private readonly record struct RebasePreflightResult(RebaseGateOutcome? Outcome, bool BaseWasRetargeted)
+    {
+        public static implicit operator RebasePreflightResult(RebaseGateOutcome? outcome) => new(outcome, false);
+    }
+
+    /// <summary>
     /// The checks every rebase this engine performs runs before it touches the worktree — shared
     /// by the unstacked merge-base rebase onto the project's base and by a stacked child's
     /// checkpoint replay onto its parent's head, so neither can quietly acquire a guard the other
-    /// lacks (the two-arm shape AGENTS.md warns about by name). Returns null when the caller may
-    /// proceed with its rebase, and the outcome to return when it may not — always
-    /// <see cref="RebaseGateOutcome.Proceed"/> today: none of these is this run's fault, and each
-    /// one's own comment says what still covers the staleness left behind.
+    /// lacks (the two-arm shape AGENTS.md warns about by name). The returned
+    /// <see cref="RebasePreflightResult.Outcome"/> is null when the caller may proceed with its
+    /// rebase, and the outcome to return when it may not — always <see cref="RebaseGateOutcome.Proceed"/>
+    /// today: none of these is this run's fault, and each one's own comment says what still covers
+    /// the staleness left behind.
     /// </summary>
-    private async Task<RebaseGateOutcome?> RebasePreflightAsync(
+    private async Task<RebasePreflightResult> RebasePreflightAsync(
         ReviewContext context, string baseBranch, string step, CancellationToken cancellationToken)
     {
         string worktreePath = context.Run.WorktreePath;
@@ -3590,7 +3650,7 @@ public sealed class ReviewEngine(
                 logger.LogWarning(
                     "Run {RunId}: the pull request's actual base is {ActualBase}, not the base this run recorded ({RecordedBase}) — skipping the rebase before {Step} so it does not silently rewrite the branch onto a base it was never meant to be on; closeout's own mechanical rebase already refuses the identical mismatch",
                     context.RunId, retargetedBase, baseBranch, step);
-                return RebaseGateOutcome.Proceed;
+                return new RebasePreflightResult(RebaseGateOutcome.Proceed, BaseWasRetargeted: true);
             }
         }
 
@@ -3688,8 +3748,8 @@ public sealed class ReviewEngine(
     private async Task<RebaseGateOutcome> RebaseOntoStackedParentAsync(
         ReviewContext context, StackedCheckpoint checkpoint, CancellationToken cancellationToken)
     {
-        if (await RebasePreflightAsync(context, context.BaseBranch, checkpoint.Describe(), cancellationToken)
-            is { } refused)
+        if ((await RebasePreflightAsync(context, context.BaseBranch, checkpoint.Describe(), cancellationToken))
+            .Outcome is { } refused)
         {
             return refused;
         }
