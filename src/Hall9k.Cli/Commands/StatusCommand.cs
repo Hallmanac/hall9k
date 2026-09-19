@@ -657,13 +657,18 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     }
 
     /// <summary>
-    /// Every outstanding cooperative take request this node knows about (idea 202383dc, item 5,
-    /// "a member can ask a holder for a task") — a task parked for this node's own human to
-    /// grant/refuse (<c>take-policy ask</c>), and a task this node itself asked for that has not
-    /// been answered. A standalone section rather than a fold into <c>AttentionComposer</c>'s own
-    /// six-armed NeedsYou classification (that composer's own doc: every arm is read off a
-    /// carefully ordered precedence a new arm risks disturbing) — a task carrying a pending
-    /// request otherwise appears in whichever bucket its own lifecycle state already puts it in.
+    /// Every outstanding cooperative take request THIS node can actually act on (idea 202383dc,
+    /// item 5, "a member can ask a holder for a task") — a task parked for this node's own human
+    /// to grant/refuse (<c>take-policy ask</c>), and a task this node itself asked for that has
+    /// not been answered. Scoped to the holder and the requester alone, never a third node that
+    /// merely replicated the identical <c>TaskTakeRequested</c> (independent pre-PR review, cycle
+    /// 1, adversarial lens): an uninvolved node has neither the grant/refuse lever nor the
+    /// <c>--force</c> one, and printing either would tell it to run a command
+    /// <c>ClaimRequestEngine</c> will refuse. A standalone section rather than a fold into
+    /// <c>AttentionComposer</c>'s own six-armed NeedsYou classification (that composer's own doc:
+    /// every arm is read off a carefully ordered precedence a new arm risks disturbing) — a task
+    /// carrying a pending request otherwise appears in whichever bucket its own lifecycle state
+    /// already puts it in.
     /// </summary>
     private static async Task WriteCooperativeTakeAsync(
         IQuerySession session, DateTimeOffset now, CancellationToken cancellationToken)
@@ -677,17 +682,37 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             return;
         }
 
+        string machineName = Environment.MachineName;
+        NodeDetails? myNode = (await session.Query<NodeDetails>()
+            .Where(n => n.MachineName == machineName)
+            .Take(1).ToListAsync(cancellationToken)).FirstOrDefault();
+        if (myNode is null)
+        {
+            return;
+        }
+
         foreach (TaskListItem task in pending)
         {
+            bool isHolder = task.ClaimedByNodeId == myNode.Id;
+            bool isRequester = task.PendingTakeRequestedByNodeId == myNode.Id;
+            if (!isHolder && !isRequester)
+            {
+                continue;
+            }
+
             ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
             int timeoutMinutes = project?.TakeTimeoutMinutes ?? TaskTakeCommand.DefaultTakeTimeoutMinutes;
             bool overdue = task.PendingTakeRequestedAt is { } requestedAt
                 && CooperativeTakeAttention.IsOverdue(requestedAt, timeoutMinutes, now);
             string id = TaskListCommand.ShortId(task.Id);
-            string requester = $"node {DomainId.Short(task.PendingTakeRequestedByNodeId!.Value)}";
+            string counterpart = isHolder
+                ? $"node {DomainId.Short(task.PendingTakeRequestedByNodeId!.Value)}"
+                : task.ClaimedByNodeId is { } holderNodeId
+                    ? $"node {DomainId.Short(holderNodeId)}"
+                    : "the holder";
             AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeStatusLine(
-                id, task.Objective.EscapeMarkup(), requester, task.PendingTakeReason.EscapeMarkup(), overdue,
-                timeoutMinutes));
+                id, task.Objective.EscapeMarkup(), counterpart, task.PendingTakeReason.EscapeMarkup(), isHolder,
+                overdue, timeoutMinutes));
         }
     }
 

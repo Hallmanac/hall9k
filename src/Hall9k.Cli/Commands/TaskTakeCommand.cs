@@ -96,11 +96,13 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                     : "A cooperative take needs --reason: why this task is being asked for.");
         }
 
+        string reason = settings.Reason;
+
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
 
         if (!settings.Force)
         {
-            return await RunCooperativeAsync(store, session, taskId, settings.Reason!, take, cancellationToken);
+            return await RunCooperativeAsync(store, session, taskId, reason, take, cancellationToken);
         }
 
         StreamState? fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
@@ -140,7 +142,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         // reused from here (adversarial + conformance pre-PR review, cycle 4 — see the re-fence
         // below).
         _ = TaskDecider.TakeOver(
-            task, context.NodeId, context.OwnerId, ownerFingerprint, settings.Reason!, context.OwnerId, now);
+            task, context.NodeId, context.OwnerId, ownerFingerprint, reason, context.OwnerId, now);
 
         // Gated projects run the existing tracker take first (idea 202383dc, item 4, criterion 2):
         // its own refusal — DomainBusinessRuleException, Program.cs's own exit 70 mapping — stops
@@ -222,7 +224,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         try
         {
             takenOver = TaskDecider.TakeOver(
-                freshTask, context.NodeId, context.OwnerId, ownerFingerprint, settings.Reason!, context.OwnerId, now);
+                freshTask, context.NodeId, context.OwnerId, ownerFingerprint, reason, context.OwnerId, now);
         }
         catch (DomainConflictException)
         {
@@ -366,7 +368,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             : "no node";
         AnsiConsole.MarkupLine(
             $"[green]Task {taskId} taken over[/] from {takenFrom} — "
-            + $"reason: {settings.Reason!.EscapeMarkup()}");
+            + $"reason: {reason.EscapeMarkup()}");
         AnsiConsole.MarkupLine(
             "[dim]This node claims it on its next dispatch sweep and resumes the branch where the "
             + "previous run left it.[/]");
@@ -607,9 +609,34 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
 
         if (task.HolderNodeId is not { } holderNodeId)
         {
-            AnsiConsole.MarkupLine(
-                $"[green]Task {taskId} has no current holder[/] — nothing to ask. It claims through "
-                + "the ordinary lock on this node's next dispatch sweep.");
+            // The ordinary dispatch sweep only ever claims a Queued task whose own AssignedOwnerId
+            // matches the claiming node's owner (DispatchEngine's own queue query, Decisions Log
+            // #34) — a fact this command has to check rather than assume, since a task with no
+            // ledger holder can still be assigned to somebody else's owner (independent pre-PR
+            // review, cycle 1, conformance lens: the earlier version promised the sweep would claim
+            // it regardless, which is simply false when the owners differ, and nothing here
+            // reassigns it).
+            if (task.AssignedOwnerId == context.OwnerId)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[green]Task {taskId} has no current holder[/] — nothing to ask. It claims through "
+                    + "the ordinary lock on this node's next dispatch sweep.");
+            }
+            else
+            {
+                OwnerDetails? assignedOwner = task.AssignedOwnerId is { } assignedOwnerId
+                    ? await session.LoadAsync<OwnerDetails>(assignedOwnerId, cancellationToken)
+                    : null;
+                string assignedOwnerLabel = assignedOwner?.Name
+                    ?? task.AssignedOwnerId?.ToString()
+                    ?? "no owner";
+                AnsiConsole.MarkupLine(
+                    $"[yellow]Task {taskId} has no current holder[/], but it is assigned to "
+                    + $"{assignedOwnerLabel.EscapeMarkup()}, not this node's own owner — this node's dispatch "
+                    + "sweep will never claim it, and there is no cooperative lever here for a task nobody "
+                    + $"holds yet. Move it first: h9k task unassign {taskId} && h9k task assign {taskId} <owner>.");
+            }
+
             return ExitCodes.Ok;
         }
 

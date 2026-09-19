@@ -14,16 +14,26 @@ internal static class CooperativeTakeAttention
         now - requestedAt > TimeSpan.FromMinutes(timeoutMinutes);
 
     /// <summary>
-    /// The one-line h9k status row for an outstanding request — names <c>--force</c> as the way on
-    /// once it is overdue, and the grant/refuse levers otherwise.
+    /// The one-line h9k status row for an outstanding request — scoped to the one node that reads
+    /// it (the caller only ever composes this for the holder or the requester, never a third node
+    /// that merely replicated the same <c>TaskTakeRequested</c>, independent pre-PR review, cycle
+    /// 1, adversarial lens), and worded for that side alone: the holder always gets the grant/
+    /// refuse levers, since only the holder can pull them, and the requester gets <c>--force</c>
+    /// only once overdue — never a lever that would grant the requester's own request, and never a
+    /// line blaming the requester for the holder's own silence.
     /// </summary>
     public static string ComposeStatusLine(
-        string id, string objective, string requesterLabel, string reason, bool overdue, int timeoutMinutes) =>
-        overdue
-            ? $"[red bold]Take timed out[/] {id} {objective} [dim]— no answer from {requesterLabel} after "
-                + $"{timeoutMinutes} minute(s)[/] [dim]→[/] h9k task take {id} --force --reason \"<why>\""
-            : $"[red bold]Take requested[/] {id} {objective} [dim]— {requesterLabel} asks: {reason}[/] "
-                + $"[dim]→[/] h9k task grant {id} / h9k task refuse {id} --reason \"<why>\"";
+        string id, string objective, string counterpartLabel, string reason, bool isHolder, bool overdue,
+        int timeoutMinutes) =>
+        isHolder
+            ? $"[red bold]Take requested[/] {id} {objective} [dim]— {counterpartLabel} asks: {reason}"
+                + (overdue ? $" (no answer for {timeoutMinutes} minute(s) already)" : string.Empty) + "[/] "
+                + $"[dim]→[/] h9k task grant {id} / h9k task refuse {id} --reason \"<why>\""
+            : overdue
+                ? $"[red bold]Take timed out[/] {id} {objective} [dim]— no answer from {counterpartLabel} after "
+                    + $"{timeoutMinutes} minute(s)[/] [dim]→[/] h9k task take {id} --force --reason \"<why>\""
+                : $"[red bold]Take requested[/] {id} {objective} [dim]— waiting on {counterpartLabel} to answer: "
+                    + $"{reason}[/]";
 
     /// <summary>The h9k task show line for the same overdue fact, on a task's own detail page.</summary>
     public static string ComposeTaskShowLine(string id, bool overdue, int timeoutMinutes) =>

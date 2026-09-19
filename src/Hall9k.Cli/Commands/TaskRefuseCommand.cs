@@ -48,6 +48,8 @@ public sealed class TaskRefuseCommand : Hall9kAsyncCommand<TaskRefuseCommand.Set
             throw new DomainValidationException("A cooperative refusal needs --reason: why the take request is being refused.");
         }
 
+        string reason = settings.Reason;
+
         Guid taskId = await TaskIdResolver.ResolveAsync(session, settings.Id, cancellationToken);
         StreamState? fence = await session.Events.FetchStreamStateAsync(taskId, cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
@@ -77,12 +79,12 @@ public sealed class TaskRefuseCommand : Hall9kAsyncCommand<TaskRefuseCommand.Set
             ?? throw new DomainValidationException("This node's owner has not claimed a root fingerprint yet. Run h9k project join first.");
 
         await ClaimRequestEngine.RefuseAsync(
-            store, session, project, taskId, requesterNodeId, requesterOwnerId, settings.Reason!, context.NodeId,
+            store, session, project, taskId, requesterNodeId, requesterOwnerId, reason, context.NodeId,
             ownerRootFingerprint, DateTimeOffset.UtcNow, cancellationToken);
 
         AnsiConsole.MarkupLine(
             $"[yellow]Refused[/] the take request on task {taskId} from node {DomainId.Short(requesterNodeId)} — "
-            + $"reason: {settings.Reason!.EscapeMarkup()}");
+            + $"reason: {reason.EscapeMarkup()}");
         return ExitCodes.Ok;
     }
 }
