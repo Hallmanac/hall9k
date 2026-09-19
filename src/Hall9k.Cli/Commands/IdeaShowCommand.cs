@@ -1,8 +1,11 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Text;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Tasks;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Marten;
@@ -71,8 +74,51 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
         IdeaAggregate live = await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No idea {ideaId}.");
         await WriteFanOutAsync(session, idea, live, cancellationToken);
+        await WriteSpikesAsync(session, live, cancellationToken);
         AnnounceOutcome(idea, live);
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The idea's own spikes, with their verdicts (task: a spike is a run, not a walk) — read off
+    /// each fanned-out task's own live projection, joined the identical way
+    /// <see cref="WriteFanOutAsync"/> joins the whole fan-out, so this can never disagree with
+    /// <c>h9k task show</c> about what a spike's verdict currently is. Silent when the idea cut no
+    /// spikes at all, since most ideas cut none.
+    /// </summary>
+    private static async Task WriteSpikesAsync(
+        IQuerySession session, IdeaAggregate live, CancellationToken cancellationToken)
+    {
+        List<TaskDetails> spikes = [];
+        foreach (Guid taskId in live.CutTaskIds)
+        {
+            if (await session.LoadAsync<TaskDetails>(taskId, cancellationToken) is { SpikeKind: var kind } details
+                && kind != SpikeKind.Unknown)
+            {
+                spikes.Add(details);
+            }
+        }
+
+        if (spikes.Count == 0)
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine("\n[bold]Spikes[/]");
+        foreach (TaskDetails spike in spikes.OrderBy(spike => spike.AddedAt))
+        {
+            string shortId = TaskListCommand.ShortId(spike.Id);
+            string verdictMarkup = spike.SpikeVerdict.Value switch
+            {
+                "Met" => "[green]met[/]",
+                "NotMet" => "[red]not-met[/]",
+                "BudgetExhausted" => "[yellow]budget-exhausted[/]",
+                _ => "[dim]not concluded yet[/]",
+            };
+            AnsiConsole.MarkupLine(
+                $"  • {shortId} [dim]({spike.SpikeKind.Value.EscapeMarkup()})[/] "
+                + $"{ExternalText.OneLineMarkup(spike.Objective)} — {verdictMarkup}");
+        }
     }
 
     /// <summary>

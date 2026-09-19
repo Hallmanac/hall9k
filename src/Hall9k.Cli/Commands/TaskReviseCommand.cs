@@ -160,6 +160,44 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             + "left Draft (alongside --queue-first), as long as nothing else is revised in the same call")]
         public bool ClearInteractiveMode { get; init; }
 
+        [CommandOption("--kind <KIND>")]
+        [Description(
+            "Change a spike's own kind — research, experiment, or prototype (task: a spike is a run, "
+            + "not a walk). Settable while the spike is Draft or Published, unlike every other field "
+            + "here; refused on any task that is not a spike")]
+        public string? Kind { get; init; }
+
+        [CommandOption("--exit-criterion <SENTENCE>")]
+        [Description(
+            "Change a spike's own exit criterion: one checkable sentence its review cycle judges the "
+            + "findings document and the branch against. Settable while the spike is Draft or "
+            + "Published; refused on any task that is not a spike")]
+        public string? ExitCriterion { get; init; }
+
+        [CommandOption("--max-turns <N>")]
+        [Description(
+            "Change a spike's own turn budget (PLAN.md §4 item 4). Settable while the spike is Draft "
+            + "or Published; refused on any task that is not a spike. Pass alongside --max-tokens "
+            + "and --max-wall-clock to set the whole budget at once — this replaces it")]
+        public int? MaxTurns { get; init; }
+
+        [CommandOption("--max-tokens <N>")]
+        [Description(
+            "Change a spike's own token budget. Settable while the spike is Draft or Published; "
+            + "refused on any task that is not a spike")]
+        public long? MaxTokens { get; init; }
+
+        [CommandOption("--max-wall-clock <DURATION>")]
+        [Description(
+            "Change a spike's own wall-clock budget, as a duration the .NET TimeSpan parser accepts "
+            + "(e.g. 00:30:00). Settable while the spike is Draft or Published; refused on any task "
+            + "that is not a spike")]
+        public string? MaxWallClock { get; init; }
+
+        [CommandOption("--clear-budget")]
+        [Description("Clear a spike's own budget entirely — no turn, token, or wall-clock limit")]
+        public bool ClearBudget { get; init; }
+
         [CommandOption("--close-linked-issue <on-closeout|never|when-all-tasks-close|default>")]
         [Description(
             "Override whether true closeout closes THIS task's linked GitHub issue, and when (task: a "
@@ -220,6 +258,15 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         {
             throw new DomainValidationException(
                 "--accept-reduced-review has nothing to acknowledge without --review-stage-composition.");
+        }
+
+        bool budgetOptionPassed = settings.MaxTurns is not null || settings.MaxTokens is not null
+            || settings.MaxWallClock.IsNotBlank();
+        if (settings.ClearBudget && budgetOptionPassed)
+        {
+            throw new DomainValidationException(
+                "--clear-budget and a --max-turns/--max-tokens/--max-wall-clock value say opposite "
+                + "things; pass one.");
         }
 
         string? objective = settings.Objective;
@@ -372,7 +419,15 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             stackedOnPullRequestNumber,
             settings.CloseLinkedIssue is { } closeLinkedIssue
                 ? Optional<string?>.Of(closeLinkedIssue)
-                : Optional<string?>.None);
+                : Optional<string?>.None,
+            settings.Kind.IsBlank() ? Optional<SpikeKind>.None : Optional<SpikeKind>.Of(SpikeKind.Parse(settings.Kind)),
+            settings.ExitCriterion.IsBlank() ? Optional<string>.None : Optional<string>.Of(settings.ExitCriterion!),
+            settings.ClearBudget
+                ? Optional<TaskConstraints?>.Of(null)
+                : budgetOptionPassed
+                    ? Optional<TaskConstraints?>.Of(
+                        TaskAddCommand.BuildConstraints(settings.MaxTurns, settings.MaxTokens, settings.MaxWallClock))
+                    : Optional<TaskConstraints?>.None);
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
@@ -389,6 +444,21 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             && !revised.Objective.HasValue && !revised.AcceptanceCriteria.HasValue
             && !revised.AgentContext.HasValue && !revised.BlockedBy.HasValue && !revised.Type.HasValue
             && !revised.Model.HasValue && !revised.EpicId.HasValue;
+        // A spike's kind, exit criterion, and budget are the third carve-out TaskDecider.Revise
+        // lets through past Draft (task: a spike is a run, not a walk) — settable while the spike
+        // is Published too, so this earns the identical own-confirmation treatment as the two
+        // marker fields above rather than the ordinary "Draft X revised" wording.
+        bool spikeFieldsOnly = (revised.SpikeKind.HasValue || revised.ExitCriterion.HasValue || revised.Constraints.HasValue)
+            && !revised.Objective.HasValue && !revised.AcceptanceCriteria.HasValue
+            && !revised.AgentContext.HasValue && !revised.BlockedBy.HasValue && !revised.Type.HasValue
+            && !revised.Model.HasValue && !revised.EpicId.HasValue && !revised.QueuePriority.HasValue
+            && !revised.ClearInteractiveMode;
+        if (spikeFieldsOnly && task.State != TaskState.Draft)
+        {
+            AnsiConsole.MarkupLine($"[blue]Spike {shortId} revised[/]: {string.Join(", ", Changed(revised))}.");
+            return ExitCodes.Ok;
+        }
+
         if (markerFieldsOnly && task.State != TaskState.Draft)
         {
             if (revised.QueuePriority.HasValue)
@@ -643,6 +713,23 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             yield return revised.CloseLinkedIssue.Value is { } closeLinkedIssue
                 ? $"close linked issue {closeLinkedIssue.CliSpelling.EscapeMarkup()}"
                 : "close linked issue override cleared";
+        }
+
+        if (revised.SpikeKind.HasValue)
+        {
+            yield return $"kind {revised.SpikeKind.Value?.Value}";
+        }
+
+        if (revised.ExitCriterion.HasValue)
+        {
+            yield return "exit criterion";
+        }
+
+        if (revised.Constraints.HasValue)
+        {
+            yield return revised.Constraints.Value is { } budget
+                ? $"budget (max turns {budget.MaxTurns?.ToString() ?? "none"}, max tokens {budget.MaxTokens?.ToString() ?? "none"}, max wall clock {budget.MaxWallClock?.ToString() ?? "none"})"
+                : "budget cleared";
         }
     }
 
