@@ -2499,6 +2499,75 @@ public sealed class TaskDeciderTests
         noted.Note.Should().Contain($"Truncated at {TaskDecider.MaxHandoffNoteLength} characters");
     }
 
+    // ── TakeOver (idea 202383dc, item 4) ────────────────────────────────────────────────────────
+
+    [Fact]
+    public void TakeOver_records_the_previous_holder_the_new_one_the_reason_and_the_time()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid newHolderNodeId = DomainId.New();
+        Guid newHolderOwnerId = DomainId.New();
+
+        TaskHolderTakenOver takenOver = TaskDecider.TakeOver(
+            task, newHolderNodeId, newHolderOwnerId, "new-owner-fingerprint",
+            "Node has been offline for six hours.", newHolderOwnerId, Now);
+
+        takenOver.Id.Should().Be(task.Id);
+        takenOver.PreviousHolderNodeId.Should().Be(NodeA);
+        takenOver.NewHolderNodeId.Should().Be(newHolderNodeId);
+        takenOver.NewHolderOwnerId.Should().Be(newHolderOwnerId);
+        takenOver.NewHolderOwnerRootFingerprint.Should().Be("new-owner-fingerprint");
+        takenOver.Reason.Should().Be("Node has been offline for six hours.");
+        takenOver.TakenByOwnerId.Should().Be(newHolderOwnerId);
+        takenOver.TakenAt.Should().Be(Now);
+    }
+
+    [Fact]
+    public void TakeOver_refuses_a_reason_that_is_blank()
+    {
+        TaskAggregate task = ClaimedTask();
+
+        Action act = () => TaskDecider.TakeOver(task, DomainId.New(), DomainId.New(), null, "   ", Owner, Now);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*reason*");
+    }
+
+    [Fact]
+    public void TakeOver_refuses_a_task_with_no_current_holder()
+    {
+        TaskAggregate task = QueuedTask();
+
+        Action act = () => TaskDecider.TakeOver(task, DomainId.New(), DomainId.New(), null, "Absent.", Owner, Now);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*no current holder*");
+    }
+
+    [Fact]
+    public void Apply_TakeOver_moves_the_holder_reassigns_the_owner_and_lands_the_task_back_on_queued()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid newHolderNodeId = DomainId.New();
+        Guid newHolderOwnerId = DomainId.New();
+        TaskHolderTakenOver takenOver = TaskDecider.TakeOver(
+            task, newHolderNodeId, newHolderOwnerId, "new-owner-fingerprint", "Absent for six hours.", newHolderOwnerId, Now);
+
+        task.Apply(takenOver);
+
+        task.HolderNodeId.Should().Be(newHolderNodeId, "the forced write jumps straight to the new node, ahead of any claim on its side");
+        task.HolderOwnerRootFingerprint.Should().Be("new-owner-fingerprint");
+        task.HolderSince.Should().Be(Now);
+        task.AssignedOwnerId.Should().Be(newHolderOwnerId, "the taker's own node claims only its own owner's work (Decisions Log #34)");
+        task.State.Should().Be(TaskState.Queued, "cleared back to Queued so the taker's ordinary dispatch sweep can claim it");
+        task.ClaimedByNodeId.Should().BeNull();
+        task.CurrentRunId.Should().BeNull();
+        task.InteractiveModeEnabled.Should().BeFalse("an explicit override is the human's own act of returning the task to the machine (R6)");
+        task.TakenOverFromNodeId.Should().Be(NodeA);
+        task.TakenOverReason.Should().Be("Absent for six hours.");
+        task.TakenOverByOwnerId.Should().Be(newHolderOwnerId);
+        task.TakenOverAt.Should().Be(Now);
+        task.ResumedAfterHolderChange.Should().BeTrue("a takeover is always a cross-node handoff");
+    }
+
     /// <summary>
     /// The owner these helpers assign to. Assignment is the dispatch trigger and the claim
     /// guard reads it (Decisions Log #34), so a task only reaches Queued through a named owner.

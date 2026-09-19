@@ -326,6 +326,14 @@ public sealed class TaskDetails
     public Guid? HandoffNoteAuthorNodeId { get; set; }
     /// <summary>See <see cref="TaskAggregate.HandoffNoteAt"/>'s own doc.</summary>
     public DateTimeOffset? HandoffNoteAt { get; set; }
+    /// <summary>See <see cref="TaskAggregate.TakenOverFromNodeId"/>'s own doc — mirrored here for <c>h9k task show</c> and <c>h9k status</c> alike.</summary>
+    public Guid? TakenOverFromNodeId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.TakenOverReason"/>'s own doc.</summary>
+    public string? TakenOverReason { get; set; }
+    /// <summary>See <see cref="TaskAggregate.TakenOverByOwnerId"/>'s own doc.</summary>
+    public Guid? TakenOverByOwnerId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.TakenOverAt"/>'s own doc.</summary>
+    public DateTimeOffset? TakenOverAt { get; set; }
     /// <summary>
     /// The branch this node most recently force-with-lease pushed for this task — the durable
     /// record <c>ForceWithLeasePusher</c> checks before refusing a push whose reflog was wiped by
@@ -854,6 +862,28 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.HandoffNoteAuthorOwnerRootFingerprint = @event.Data.AuthorOwnerRootFingerprint;
         view.HandoffNoteAuthorNodeId = @event.Data.AuthorNodeId;
         view.HandoffNoteAt = @event.Data.NotedAt;
+    }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskHolderTakenOver)"/> — see <see cref="TaskDetails.TakenOverFromNodeId"/>'s own doc.</summary>
+    public void Apply(IEvent<TaskHolderTakenOver> @event, TaskDetails view)
+    {
+        view.TakenOverFromNodeId = @event.Data.PreviousHolderNodeId;
+        view.TakenOverReason = @event.Data.Reason;
+        view.TakenOverByOwnerId = @event.Data.TakenByOwnerId;
+        view.TakenOverAt = @event.Data.TakenAt;
+
+        view.ClaimedByNodeId = null;
+        view.CurrentRunId = null;
+        EndAnyOpenReviewLap(view);
+        view.ResumesFromHandback = false;
+        view.DependencyOverrideAcknowledged = false;
+        view.DependencyOverrideCarriedForward = false;
+
+        view.AssignedOwnerId = @event.Data.NewHolderOwnerId;
+        view.AssignedAt = @event.Data.TakenAt;
+
+        view.InteractiveModeEnabled = false;
+        view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
     // ResumesFromHandback survives a requeue's own state reset by default, but WorkPromptBuilder

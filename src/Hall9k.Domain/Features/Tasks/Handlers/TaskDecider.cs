@@ -1322,6 +1322,34 @@ public static class TaskDecider
     }
 
     /// <summary>
+    /// h9k task take --force: an owner-role member overrides an absent holder (idea 202383dc,
+    /// item 4). Absence is never checked here — that is the operator's own judgment, not something
+    /// this decider detects — so the only guard is that there is a live claim to take at all:
+    /// a task in every other state has no holder for this to override, and <see cref="Claim"/> (or
+    /// <c>h9k task assign</c>) is the door for it instead.
+    /// </summary>
+    public static TaskHolderTakenOver TakeOver(
+        TaskAggregate task, Guid newHolderNodeId, Guid newHolderOwnerId, string? newHolderOwnerRootFingerprint,
+        string reason, Guid takenByOwnerId, DateTimeOffset takenAt)
+    {
+        if (task.State != TaskState.Claimed && task.State != TaskState.NeedsHuman)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — it has no current holder for a forced take to "
+                + "override.");
+        }
+
+        if (reason.IsBlank())
+        {
+            throw new DomainValidationException("A forced take needs --reason: why the previous holder is being overridden.");
+        }
+
+        return new TaskHolderTakenOver(
+            task.Id, task.HolderNodeId, newHolderNodeId, newHolderOwnerId, newHolderOwnerRootFingerprint,
+            reason.Trim(), takenByOwnerId, takenAt);
+    }
+
+    /// <summary>
     /// h9k task work's claim: the operator's mirror of <see cref="Claim"/>, same
     /// <see cref="TaskClaimed"/> event and lease-generation fencing — but NodeId is the sentinel
     /// <see cref="Guid.Empty"/> rather than a real node's id, which is what
