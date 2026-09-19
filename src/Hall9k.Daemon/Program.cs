@@ -207,6 +207,7 @@ builder.Services.AddSingleton(services => new ReviewEngine(
     services.GetRequiredService<IPullRequestInspector>(),
     services.GetRequiredService<CloseoutEngine>()));
 builder.Services.AddSingleton<PrReviewEngine>();
+builder.Services.AddSingleton<SpikeEngine>();
 builder.Services.AddSingleton<PullRequestOpener>();
 builder.Services.AddSingleton<BlockerContextAssembler>();
 builder.Services.AddSingleton<PrimarySessionResumer>();
@@ -289,6 +290,7 @@ builder.Services.AddHostedService<AutoPrReviewMonitor>();
 builder.Services.AddHostedService<TokenBudgetRetryMonitor>();
 builder.Services.AddHostedService<LaunchHoldMonitor>();
 builder.Services.AddHostedService<TakeoverWatchLoop>();
+builder.Services.AddHostedService<SpikeBudgetWatchLoop>();
 builder.Services.AddHostedService<ClaimRequestWatchLoop>();
 builder.Services.AddHostedService<CardPublicationLoop>();
 builder.Services.AddHostedService<JiraWriteRetryLoop>();

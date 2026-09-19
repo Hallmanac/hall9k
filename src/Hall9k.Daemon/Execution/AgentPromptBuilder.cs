@@ -130,6 +130,192 @@ public static class AgentPromptBuilder
             voiceSkill: voiceSkill);
 
     /// <summary>
+    /// A spike's own build session prompt (task: a spike is a run, not a walk) — the kind decides
+    /// whether gates run and what happens to the branch, and the exit criterion is the one thing
+    /// the review cycle that follows ever judges. The session never opens a pull request and is
+    /// never told to: SpikeEngine's own judge session, not this one, is what a review cycle
+    /// means for a spike. The findings document is captured off this session's own final message
+    /// (the SpikeFindingsMarker section below), mirroring how the platform already captures a
+    /// handoff or a PR summary off a session's result rather than trusting a file write to an
+    /// absolute path outside the worktree, which nothing else in this builder ever names either.
+    /// </summary>
+    public static string BuildSpike(
+        TaskDetails task, ProjectDetails project, string branch, string worktreePath,
+        TimeSpan? commandTimeout = null)
+    {
+        SpikeKind kind = task.SpikeKind;
+        TimeSpan effectiveTimeout = commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout;
+        StringBuilder prompt = new();
+        prompt.AppendLine($"# Spike: {task.Objective}");
+        prompt.AppendLine();
+        prompt.AppendLine(kind.Value switch
+        {
+            "Research" => "This is a RESEARCH spike: read and measure, write no code. There is no "
+                + "build or test gate, and your branch is kept locally as the record — nobody ever "
+                + "merges it.",
+            "Experiment" => "This is an EXPERIMENT spike: run and measure, and expect the code to be "
+                + "discarded. There is no build or test gate, and your branch is deleted once your "
+                + "findings are copied out — nobody ever merges it.",
+            _ => "This is a PROTOTYPE spike: build enough to demonstrate the exit criterion below. "
+                + "The project's own build and test gates run against your branch, and your branch "
+                + "is pushed to origin afterward as evidence for a later task or another node to "
+                + "seed from — nobody ever merges it, and there is no pull request.",
+        });
+        prompt.AppendLine();
+        prompt.AppendLine($"Exit criterion — the one thing a later review session judges your findings and your "
+            + $"branch against, and nothing else: {task.ExitCriterion}");
+        prompt.AppendLine();
+        if (task.Constraints is { } budget && (budget.MaxTurns is not null || budget.MaxTokens is not null
+            || budget.MaxWallClock is not null))
+        {
+            prompt.AppendLine(
+                "This run has a stated budget: "
+                + $"{(budget.MaxTurns is { } turns ? $"{turns} turns" : "no turn limit")}, "
+                + $"{(budget.MaxTokens is { } tokens ? $"{tokens} tokens" : "no token limit")}, "
+                + $"{(budget.MaxWallClock is { } wallClock ? $"{wallClock} wall clock" : "no wall-clock limit")}. "
+                + "If you are cut off before finishing, whatever findings you have already written stand — "
+                + "the platform records a budget-exhausted verdict rather than treating that as a failure.");
+            prompt.AppendLine();
+        }
+
+        if (task.AgentContext.IsNotBlank())
+        {
+            prompt.AppendLine(task.AgentContext);
+            prompt.AppendLine();
+        }
+
+        prompt.AppendLine(
+            "Never open a pull request, draft or otherwise, and never push this branch yourself — "
+            + "the platform handles the branch's own fate once you are done, per the kind above.");
+        prompt.AppendLine();
+        AppendSharedRepositoryHistorySafetyRule(prompt);
+        AppendNoHostLoadForFlakeReproductionRule(prompt, sessionRunsGates: kind.RunsGates);
+        AppendExternalInteractionLoggingRule(prompt, task.Id);
+        AppendSessionEndsAtFinalMessageRule(prompt, effectiveTimeout);
+        prompt.AppendLine();
+        prompt.AppendLine($"# {SpikeFindingsMarker}");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "End your final message with your findings document, in exactly this shape — three "
+            + "headed sections, nothing else after the third:");
+        prompt.AppendLine();
+        prompt.AppendLine("## What was run");
+        prompt.AppendLine("## What was observed");
+        prompt.AppendLine("## Verdict");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "The verdict section states your own best-reading answer against the exit criterion above "
+            + "and your reason for it — met or not-met — but it is not the recorded answer: a separate "
+            + "review session judges the real verdict independently against this same document and your "
+            + "branch, so write your honest assessment rather than the answer you think is wanted.");
+        return prompt.ToString();
+    }
+
+    /// <summary>The heading <see cref="BuildSpike"/>'s own findings-document instructions live under, so its own result-capture step (SpikeEngine) can find the same text a human reading the prompt would.</summary>
+    public const string SpikeFindingsMarker = "Findings document";
+
+    /// <summary>The line SpikeEngine's own verdict parser looks for, exactly as prescribed in <see cref="BuildSpikeReview"/>'s own prompt.</summary>
+    public const string SpikeVerdictMarker = "SPIKE VERDICT:";
+
+    /// <summary>The reason line right after <see cref="SpikeVerdictMarker"/>.</summary>
+    public const string SpikeReasonMarker = "REASON:";
+
+    /// <summary>
+    /// A spike's own judge session (task: a spike is a run, not a walk) — SpikeEngine's one review
+    /// cycle, dispatched on the review model, outside the spike's own budget (ruling 3). Judges
+    /// the findings document and the branch's own diff against the exit criterion alone; nothing
+    /// about production quality, style, or scope is in bounds. Read-only: never told to change
+    /// anything, and never given commit-style or gate instructions, because nobody merges this
+    /// branch either way.
+    /// </summary>
+    public static string BuildSpikeReview(
+        TaskDetails task, ProjectDetails project, string branch, string baseBranch, string findingsText,
+        bool isFixLap, TimeSpan? commandTimeout = null)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine($"# Judge a spike: {task.Objective}");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            $"You are judging a {task.SpikeKind.Value.ToLowerInvariant()} spike against its own exit "
+            + "criterion — the one and only question here. Production-quality findings, code style, "
+            + "and scope beyond the exit criterion are all out of bounds: a spike is not full-rigor "
+            + "work, and grading it as though it were is not this session's job.");
+        prompt.AppendLine();
+        prompt.AppendLine($"Exit criterion: {task.ExitCriterion}");
+        prompt.AppendLine();
+        prompt.AppendLine(isFixLap
+            ? "This is the spike's one fix lap having just run once, in response to an earlier " +
+              "not-met verdict — this is the FINAL review. Whatever you decide now is recorded, " +
+              "met or not-met, with no further chance to fix anything."
+            : "This is the spike's first and, if needed, only review pass. A not-met verdict here " +
+              "earns exactly one fix lap before a final review — never more than one.");
+        prompt.AppendLine();
+        prompt.AppendLine($"The build session's own findings document:");
+        prompt.AppendLine();
+        prompt.AppendLine("---");
+        prompt.AppendLine(findingsText);
+        prompt.AppendLine("---");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            $"Read the branch's own diff against {baseBranch} (`git diff {baseBranch}...{branch}`, or "
+            + $"`git log {baseBranch}..{branch}` for a research spike that may hold no diff at all) as "
+            + "the other half of the evidence — the findings document's own claims are not "
+            + "self-certifying.");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "Never change anything in this worktree — no commits, no edits, no gates. This session "
+            + "reads and judges only.");
+        prompt.AppendLine();
+        AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
+        prompt.AppendLine();
+        prompt.AppendLine(
+            $"End your final message with exactly two lines: `{SpikeVerdictMarker} met` or "
+            + $"`{SpikeVerdictMarker} not-met`, then `{SpikeReasonMarker} <one sentence>` stating why, "
+            + "specifically against the exit criterion above.");
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// A spike's own one fix lap (task: a spike is a run, not a walk), dispatched only once, and
+    /// only after the first review pass came back not-met. Never told about a budget: ruling 3
+    /// scopes TaskConstraints to the build session that already ran, not this bounded follow-up.
+    /// </summary>
+    public static string BuildSpikeFix(
+        TaskDetails task, ProjectDetails project, string branch, string reviewerReason,
+        TimeSpan? commandTimeout = null)
+    {
+        StringBuilder prompt = new();
+        prompt.AppendLine($"# Spike fix lap: {task.Objective}");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "The reviewer judged this spike's exit criterion not yet met. This is the spike's one "
+            + "and only fix lap — make one honest attempt to address the reviewer's reason below, "
+            + "then rewrite the findings document to reflect what actually changed.");
+        prompt.AppendLine();
+        prompt.AppendLine($"Exit criterion: {task.ExitCriterion}");
+        prompt.AppendLine();
+        prompt.AppendLine($"Reviewer's reason: {reviewerReason}");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "Never open a pull request, draft or otherwise, and never push this branch yourself.");
+        prompt.AppendLine();
+        AppendSharedRepositoryHistorySafetyRule(prompt);
+        AppendNoHostLoadForFlakeReproductionRule(prompt, sessionRunsGates: task.SpikeKind.RunsGates);
+        AppendSessionEndsAtFinalMessageRule(prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout);
+        prompt.AppendLine();
+        prompt.AppendLine($"# {SpikeFindingsMarker}");
+        prompt.AppendLine();
+        prompt.AppendLine(
+            "End your final message with the findings document again, rewritten in full — the same "
+            + "three headed sections as before, nothing else after the third:");
+        prompt.AppendLine();
+        prompt.AppendLine("## What was run");
+        prompt.AppendLine("## What was observed");
+        prompt.AppendLine("## Verdict");
+        return prompt.ToString();
+    }
+
+    /// <summary>
     /// The line a follow-up ends with when a review thread is a disagreement it cannot
     /// honestly judge (Decisions Log #62). The same RESOLUTION vocabulary the pre-PR fix
     /// session already answers in (log #23), because it is the same question — "is this
