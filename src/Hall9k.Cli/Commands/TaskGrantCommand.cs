@@ -5,6 +5,7 @@ using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -76,6 +77,23 @@ public sealed class TaskGrantCommand : Hall9kAsyncCommand<TaskGrantCommand.Setti
             ?? throw new DomainNotFoundException($"No project {task.ProjectId}.");
         (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
             await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
+
+        // The automatic take-policy-auto path refuses a grant while a run is live for this task on
+        // this node (ClaimRequestEngine.ReceiveRequestAsync's own FindLiveRunAsync check) rather
+        // than release the ledger holder out from under it — this human-driven door has to make the
+        // identical check itself, since GrantAsync carries no such guard of its own: releasing the
+        // holder here would land the task Queued while this node's own agent process is still
+        // working the branch, and the requester's next dispatch sweep would launch a second run
+        // against it (conformance review, cycle 5, high).
+        RunListItem? liveRun = await ClaimRequestEngine.FindLiveRunAsync(session, taskId, context.NodeId, cancellationToken);
+        if (liveRun is not null)
+        {
+            throw new DomainConflictException(
+                $"Task {taskId} has a run live on this node, started at {liveRun.DispatchedAt:u} — granting now "
+                + "would release the ledger holder while that run is still working the branch, and the "
+                + "requester's own next dispatch sweep would launch a second run against it. Stop it first with "
+                + $"h9k run kill {taskId}, then retry h9k task grant.");
+        }
 
         ClaimRequestOutcome outcome = await ClaimRequestEngine.GrantAsync(
             store, session, project, taskId, requesterNodeId, requesterOwnerId,
