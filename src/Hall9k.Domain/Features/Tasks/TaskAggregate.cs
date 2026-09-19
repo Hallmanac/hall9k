@@ -517,8 +517,9 @@ public sealed class TaskAggregate
     /// <see cref="AssignedOwnerId"/> stays exactly what the event self-declared even when this
     /// field is set. The daemon's own dispatch claim gate is where the two are actually compared,
     /// with the one piece of local knowledge only it has: this node's own owner root fingerprint.
-    /// Null for every event written before this field existed, and for every ordinary assignment,
-    /// which carries no such record at all today.
+    /// Null for every event written before this field existed, and for every ordinary assignment:
+    /// <see cref="TaskAssigned"/> does carry its own <see cref="TaskAssigned.AssignedOwnerRootFingerprint"/>,
+    /// but it is not mirrored here, because a local human act needs no cross-node verification.
     /// </summary>
     public string? AssignedOwnerFingerprint { get; private set; }
 

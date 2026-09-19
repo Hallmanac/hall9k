@@ -1541,25 +1541,22 @@ public sealed class DispatchEngine(
     /// <summary>
     /// Whether a task belongs to this node's own owner (idea 20723ef8, closing the residual gap
     /// independent pre-PR review, cycle 6 (adversarial lens, medium) left open on
-    /// <c>ClaimRequestWatchLoop.cs:144</c>): a cooperative grant can only ever carry the
-    /// requester's self-declared <paramref name="assignedOwnerId"/> Guid, since Owner events never
-    /// replicate and no node can verify a Guid it does not itself own — but the same grant also
-    /// carries <paramref name="assignedOwnerFingerprint"/>, the requester's own owner root
-    /// fingerprint as <c>ClaimRequestWatchLoop.IsRequesterOwnerVerified</c> already verified it
-    /// against the ledger's own trust chain before the grant was ever appended. When that
-    /// fingerprint is present, it alone decides — the self-declared Guid is not even consulted —
-    /// so a vouched node that sends its own true fingerprint alongside a different real owner's
-    /// Guid can neither steal a claim on that owner's own node (whose fingerprint will not match)
-    /// nor block the true grantee's own (whose fingerprint will, regardless of what Guid the grant
-    /// named). Absent — every event written before this field existed, and every ordinary
-    /// <see cref="TaskAssigned"/> assignment, which carries no such record at all today — falls
-    /// back to the plain Guid comparison this gate always made.
+    /// <c>ClaimRequestWatchLoop.cs:144</c>). See <see cref="TaskDecider.IsGrantedToThisOwner"/> for
+    /// the full rule this forwards to.
     /// </summary>
+    /// <remarks>
+    /// A thin forward onto <see cref="TaskDecider.IsGrantedToThisOwner"/> — the decider applies the
+    /// identical predicate immediately behind this gate (<see cref="TaskDecider.Claim"/>), and a
+    /// second, independently-maintained copy here is exactly how the two drifted apart in the first
+    /// place (adversarial and conformance review, this branch's fix cycle: the gate admitted a
+    /// fingerprint-granted claim the decider still refused, stranding the true grantee behind a
+    /// ledger holder write neither side rolled back). Kept as its own named member, rather than
+    /// inlined at the one call site, because the queue pre-filter's own doc comment
+    /// (<c>ReadQueueAsync</c>, above) and this branch's own tests both refer to it by this name.
+    /// </remarks>
     internal static bool IsGrantedToThisOwner(
         Guid? assignedOwnerId, string? assignedOwnerFingerprint, Guid thisOwnerId, string? thisOwnerRootFingerprint) =>
-        assignedOwnerFingerprint is null
-            ? assignedOwnerId == thisOwnerId
-            : thisOwnerRootFingerprint is not null && thisOwnerRootFingerprint == assignedOwnerFingerprint;
+        TaskDecider.IsGrantedToThisOwner(assignedOwnerId, assignedOwnerFingerprint, thisOwnerId, thisOwnerRootFingerprint);
 
     /// <summary>
     /// The claim's own conditional write of the ledger holder (idea 202383dc, A3b): when the
