@@ -178,7 +178,7 @@ public sealed class ProjectSetCommandTests
 
     /// <summary>
     /// The pure half of <c>--verify-gate-filter</c> (task: host-coupled tests run in their own
-    /// gate once per task, never in parallel with another run's copy — PLACEHOLDER-609bd344):
+    /// gate once per task, never in parallel with another run's copy — #225):
     /// composing the updated gate list without touching the project stream or spawning anything.
     /// </summary>
     [Fact]

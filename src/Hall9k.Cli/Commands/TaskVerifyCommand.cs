@@ -204,7 +204,7 @@ public sealed class TaskVerifyCommand : Hall9kAsyncCommand<TaskVerifyCommand.Set
 
             // At most one host-coupled gate runs on this node at a time (task: host-coupled tests
             // run in their own gate once per task, never in parallel with another run's copy —
-            // PLACEHOLDER-609bd344), the identical guarantee VerificationRunner's own daemon-side
+            // #225), the identical guarantee VerificationRunner's own daemon-side
             // gate already gives — an operator's own h9k task verify shares the same node and the
             // same lock file, so it waits its turn too rather than running a second copy of the
             // Docker/git/process-table tests this whole feature exists to keep apart.

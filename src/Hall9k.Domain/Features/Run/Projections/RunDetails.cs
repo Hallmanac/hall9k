@@ -100,7 +100,7 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// <summary>
     /// When this run started waiting on the node-wide host-coupled-gate permit, or null when it
     /// is not waiting (task: at most one host-coupled gate runs on a node at a time —
-    /// PLACEHOLDER-609bd344). Set by <see cref="Events.RunHostCoupledGateWaitStarted"/>, cleared
+    /// #225). Set by <see cref="Events.RunHostCoupledGateWaitStarted"/>, cleared
     /// by <see cref="Events.RunHostCoupledGateWaitEnded"/> — the identical start/clear shape
     /// <see cref="ActiveGate"/> already carries for a gate actually running, so
     /// <c>TaskPhaseComposer</c> can show the wait as this run's own phase rather than as silence.

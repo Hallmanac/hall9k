@@ -7,7 +7,7 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// The CLI's own mirror of <c>VerificationRunner</c>'s host-coupled-gate command composition and
 /// node-wide permit (task: host-coupled tests run in their own gate once per task, never in
-/// parallel with another run's copy — PLACEHOLDER-609bd344). Hall9k.Cli cannot reference
+/// parallel with another run's copy — #225). Hall9k.Cli cannot reference
 /// Hall9k.Daemon (AGENTS.md's own reference graph — Cli references only Domain and Connectors), but
 /// that is not, on its own, why this is duplicated rather than shared (independent pre-PR review,
 /// cycle 3, both lenses, low: an earlier version of this comment claimed it was, which does not

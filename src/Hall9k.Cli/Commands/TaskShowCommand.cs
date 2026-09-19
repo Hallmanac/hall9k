@@ -1622,7 +1622,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// A host-coupled gate this pass deliberately never ran (<see cref="GateDuration.HostCoupledSkipped"/>)
     /// reads "skipped (host-coupled)" rather than a zero duration, so an intermediate review-cycle
     /// pass says which gate it left out on purpose instead of that gate reading like an
-    /// instantaneous pass (PLACEHOLDER-609bd344).
+    /// instantaneous pass (#225).
     /// </summary>
     private static string FormatGateDurations(List<GateDuration>? gateDurations) =>
         gateDurations is not { Count: > 0 } durations

@@ -312,7 +312,7 @@ internal static class TaskPhaseComposer
 
     /// <summary>
     /// The wait for the node-wide host-coupled-gate permit, when this run is in it (task: at most
-    /// one host-coupled gate runs on a node at a time — PLACEHOLDER-609bd344) — checked in every
+    /// one host-coupled gate runs on a node at a time — #225) — checked in every
     /// phase a gate can run under, since a run waiting on the permit has not spawned a process yet
     /// and so has no <c>ActiveGate</c> recorded at all. Never counted as a failure: another run's
     /// own host-coupled gate finishing is what ends it.
