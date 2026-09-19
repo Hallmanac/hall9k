@@ -88,8 +88,17 @@ public sealed class TaskGrantCommand : Hall9kAsyncCommand<TaskGrantCommand.Setti
             AnsiConsole.MarkupLine($"[yellow]Warning:[/] {trackerFailure.EscapeMarkup()}");
         }
 
-        AnsiConsole.MarkupLine(
-            "[dim]The requester's own node claims it through the ordinary lock on its next dispatch sweep.[/]");
+        // TaskAggregate.Apply(TaskHolderReleased) lands a grant on Queued only when no unmet
+        // dependency remains, Blocked otherwise — and the dispatch sweep's own queue query reads
+        // State == Queued (DispatchEngine.cs:950), so a grant on a task still carrying one leaves
+        // nothing for that sweep to claim yet (class sweep, independent pre-PR review, cycle 3,
+        // adversarial lens: the same "promises a claim the dispatch sweep will not make" shape the
+        // no-holder path's own message was fixed for). UnmetDependencies itself is untouched by the
+        // grant, so the pre-grant aggregate already answers this.
+        AnsiConsole.MarkupLine(task.UnmetDependencies.Count == 0
+            ? "[dim]The requester's own node claims it through the ordinary lock on its next dispatch sweep.[/]"
+            : "[yellow]The requester's own node cannot claim it yet[/] — it still carries an unmet dependency, "
+                + "so it lands Blocked rather than Queued until that clears.");
         return ExitCodes.Ok;
     }
 }
