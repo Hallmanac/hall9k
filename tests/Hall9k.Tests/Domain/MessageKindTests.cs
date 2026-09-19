@@ -32,4 +32,23 @@ public sealed class MessageKindTests
         kind.Value.Should().Be("bookmark-announcement");
         kind.IsRecognized.Should().BeFalse();
     }
+
+    [Theory]
+    [InlineData("claim-request")]
+    [InlineData("claim-granted")]
+    [InlineData("claim-refused")]
+    public void Parse_RecognizesTheCooperativeTakeKinds(string raw)
+    {
+        MessageKind kind = MessageKind.Parse(raw);
+
+        kind.Value.Should().Be(raw);
+        kind.IsRecognized.Should().BeTrue();
+    }
+
+    [Fact]
+    public void MechanicalKindValues_names_exactly_the_cooperative_take_kinds()
+    {
+        MessageKind.MechanicalKindValues.Should().BeEquivalentTo(
+            [MessageKind.ClaimRequest.Value, MessageKind.ClaimGranted.Value, MessageKind.ClaimRefused.Value]);
+    }
 }

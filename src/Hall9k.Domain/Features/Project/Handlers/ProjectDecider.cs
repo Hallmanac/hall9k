@@ -77,6 +77,8 @@ public static class ProjectDecider
         Optional<int?> maxParallelTasks = default,
         Optional<ProjectPriority> priority = default,
         Optional<ClaimGate> claimGate = default,
+        Optional<TakePolicy> takePolicy = default,
+        Optional<int?> takeTimeoutMinutes = default,
         Optional<IReadOnlyList<LaunchText>> launchTexts = default,
         Optional<AgentModel> orchestratorModel = default,
         Optional<CloseLinkedIssueRule> closeLinkedIssue = default,
@@ -286,6 +288,29 @@ public static class ProjectDecider
                 + "tracker shows that item assigned to this install's own tracker identity).");
         }
 
+        // The identical closed-set discipline as ClaimGate just above, for the other setting idea
+        // 202383dc, item 5 introduces: who answers a cooperative claim request.
+        if (takePolicy.HasValue
+            && takePolicy.Value is { } chosenTakePolicy
+            && chosenTakePolicy != Project.TakePolicy.Auto
+            && chosenTakePolicy != Project.TakePolicy.Ask)
+        {
+            throw new DomainValidationException(
+                $"The take policy must be {Project.TakePolicy.Auto} or {Project.TakePolicy.Ask} (who "
+                + "answers a member's cooperative claim request — the holder's own node on receipt, or "
+                + "the holder's own human through h9k task grant/refuse).");
+        }
+
+        // Present-with-null clears the override back to the platform default, the same idiom
+        // MaxParallelTasks uses; a negative or zero value has nothing sensible to wait for.
+        if (takeTimeoutMinutes is { HasValue: true, Value: { } timeoutMinutes } && timeoutMinutes <= 0)
+        {
+            throw new DomainValidationException(
+                $"TakeTimeoutMinutes must be greater than 0, got {timeoutMinutes}. It is how long a "
+                + "cooperative take request waits for an answer before h9k task take names --force as "
+                + "the way on; 'default' clears the override back to the platform default (30 minutes).");
+        }
+
         // Each entry must name a CLI and carry actual text — an empty launch line is not a
         // clearing idiom here (unlike ContextLinks, there is no "the whole list of settings this
         // project needs" to be empty of; a launch-text entry that carries nothing is a mistake,
@@ -383,6 +408,8 @@ public static class ProjectDecider
             MaxParallelTasks: maxParallelTasks,
             Priority: priority,
             ClaimGate: claimGate,
+            TakePolicy: takePolicy,
+            TakeTimeoutMinutes: takeTimeoutMinutes,
             LaunchTexts: launchTexts,
             OrchestratorModel: orchestratorModel,
             CloseLinkedIssue: closeLinkedIssue,

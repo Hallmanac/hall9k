@@ -334,6 +334,26 @@ public sealed class TaskDetails
     public Guid? TakenOverByOwnerId { get; set; }
     /// <summary>See <see cref="TaskAggregate.TakenOverAt"/>'s own doc.</summary>
     public DateTimeOffset? TakenOverAt { get; set; }
+    /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByNodeId"/>'s own doc — mirrored for <c>h9k task show</c> and <c>h9k status</c> (idea 202383dc, item 5).</summary>
+    public Guid? PendingTakeRequestedByNodeId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByOwnerId"/>'s own doc.</summary>
+    public Guid? PendingTakeRequestedByOwnerId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByOwnerFingerprint"/>'s own doc.</summary>
+    public string? PendingTakeRequestedByOwnerFingerprint { get; set; }
+    /// <summary>See <see cref="TaskAggregate.PendingTakeReason"/>'s own doc.</summary>
+    public string? PendingTakeReason { get; set; }
+    /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedAt"/>'s own doc — h9k task show/status measure the take-timeout from this.</summary>
+    public DateTimeOffset? PendingTakeRequestedAt { get; set; }
+    /// <summary>See <see cref="TaskAggregate.LastGrantedToOwnerId"/>'s own doc.</summary>
+    public Guid? LastGrantedToOwnerId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.LastGrantedAt"/>'s own doc.</summary>
+    public DateTimeOffset? LastGrantedAt { get; set; }
+    /// <summary>See <see cref="TaskAggregate.LastTakeRefusedRequesterOwnerId"/>'s own doc.</summary>
+    public Guid? LastTakeRefusedRequesterOwnerId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.LastTakeRefusedReason"/>'s own doc.</summary>
+    public string? LastTakeRefusedReason { get; set; }
+    /// <summary>See <see cref="TaskAggregate.LastTakeRefusedAt"/>'s own doc.</summary>
+    public DateTimeOffset? LastTakeRefusedAt { get; set; }
     /// <summary>
     /// The branch this node most recently force-with-lease pushed for this task — the durable
     /// record <c>ForceWithLeasePusher</c> checks before refusing a push whose reflog was wiped by
@@ -884,6 +904,65 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
 
         view.InteractiveModeEnabled = false;
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+    }
+
+    /// <summary>
+    /// A cooperative grant (idea 202383dc, item 5) is a release naming a destination — mirrors
+    /// <see cref="Apply(IEvent{TaskHolderTakenOver}, TaskDetails)"/>'s own reassign-and-requeue
+    /// shape. An ordinary release (true completion, h9k task abandon, a lease-gone sweep) carries
+    /// neither field and this is a no-op, exactly as before this feature existed — TaskDetails
+    /// never reacted to TaskHolderReleased at all until this event gained a destination to react to.
+    /// </summary>
+    public void Apply(IEvent<TaskHolderReleased> @event, TaskDetails view)
+    {
+        if (@event.Data.GrantedToNodeId is not null)
+        {
+            view.LastGrantedToOwnerId = @event.Data.GrantedToOwnerId;
+            view.LastGrantedAt = @event.Data.ReleasedAt;
+
+            view.ClaimedByNodeId = null;
+            view.CurrentRunId = null;
+            EndAnyOpenReviewLap(view);
+            view.ResumesFromHandback = false;
+            view.DependencyOverrideAcknowledged = false;
+            view.DependencyOverrideCarriedForward = false;
+
+            view.AssignedOwnerId = @event.Data.GrantedToOwnerId;
+            view.AssignedAt = @event.Data.ReleasedAt;
+
+            view.InteractiveModeEnabled = false;
+            view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        }
+
+        view.PendingTakeRequestedByNodeId = null;
+        view.PendingTakeRequestedByOwnerId = null;
+        view.PendingTakeRequestedByOwnerFingerprint = null;
+        view.PendingTakeReason = null;
+        view.PendingTakeRequestedAt = null;
+    }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskTakeRequested)"/> — see <see cref="TaskDetails.PendingTakeRequestedByNodeId"/>'s own doc.</summary>
+    public void Apply(IEvent<TaskTakeRequested> @event, TaskDetails view)
+    {
+        view.PendingTakeRequestedByNodeId = @event.Data.RequesterNodeId;
+        view.PendingTakeRequestedByOwnerId = @event.Data.RequesterOwnerId;
+        view.PendingTakeRequestedByOwnerFingerprint = @event.Data.RequesterOwnerFingerprint;
+        view.PendingTakeReason = @event.Data.Reason;
+        view.PendingTakeRequestedAt = @event.Data.RequestedAt;
+    }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskTakeRefused)"/> — clears the pending ask the same way a grant does.</summary>
+    public void Apply(IEvent<TaskTakeRefused> @event, TaskDetails view)
+    {
+        view.LastTakeRefusedRequesterOwnerId = @event.Data.RequesterOwnerId;
+        view.LastTakeRefusedReason = @event.Data.Reason;
+        view.LastTakeRefusedAt = @event.Data.RefusedAt;
+
+        view.PendingTakeRequestedByNodeId = null;
+        view.PendingTakeRequestedByOwnerId = null;
+        view.PendingTakeRequestedByOwnerFingerprint = null;
+        view.PendingTakeReason = null;
+        view.PendingTakeRequestedAt = null;
     }
 
     // ResumesFromHandback survives a requeue's own state reset by default, but WorkPromptBuilder

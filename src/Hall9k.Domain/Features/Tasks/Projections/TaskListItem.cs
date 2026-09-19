@@ -221,6 +221,14 @@ public sealed class TaskListItem
     public string? TakenOverReason { get; set; }
     /// <summary>See <see cref="TaskAggregate.TakenOverAt"/>'s own doc.</summary>
     public DateTimeOffset? TakenOverAt { get; set; }
+    /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByNodeId"/>'s own doc — mirrored so h9k status can surface a parked ask (idea 202383dc, item 5).</summary>
+    public Guid? PendingTakeRequestedByNodeId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedByOwnerId"/>'s own doc.</summary>
+    public Guid? PendingTakeRequestedByOwnerId { get; set; }
+    /// <summary>See <see cref="TaskAggregate.PendingTakeReason"/>'s own doc.</summary>
+    public string? PendingTakeReason { get; set; }
+    /// <summary>See <see cref="TaskAggregate.PendingTakeRequestedAt"/>'s own doc — h9k status measures the take-timeout from this.</summary>
+    public DateTimeOffset? PendingTakeRequestedAt { get; set; }
     /// <summary>
     /// Why this Blocked task needs a human, whichever of the two holds produced it — the twin of
     /// <see cref="TaskDetails.BlockingHoldReason"/>, so the board and the task surface read the
@@ -617,6 +625,50 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // (adversarial pre-PR review, cycle 1: this line previously cleared the marker here while
         // the aggregate kept it set, silently discarding a human's own queue-first instruction).
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+    }
+
+    /// <summary>
+    /// A cooperative grant (idea 202383dc, item 5) is a release naming a destination — mirrors
+    /// <see cref="Apply(IEvent{TaskHolderTakenOver}, TaskListItem)"/>'s own reassign-and-requeue
+    /// shape so this row (the daemon's own queue query reads State == Queued and AssignedOwnerId,
+    /// this class's own doc) is what actually lets the requester's node claim it through the
+    /// ordinary dispatch sweep. An ordinary release (true completion, h9k task abandon, a
+    /// lease-gone sweep) carries neither field and this is a no-op, exactly as it was before this
+    /// feature existed.
+    /// </summary>
+    public void Apply(IEvent<TaskHolderReleased> @event, TaskListItem view)
+    {
+        if (@event.Data.GrantedToNodeId is not null)
+        {
+            view.ClaimedByNodeId = null;
+            view.CurrentRunId = null;
+            view.AssignedOwnerId = @event.Data.GrantedToOwnerId;
+            view.AssignedAt = @event.Data.ReleasedAt;
+            view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+        }
+
+        view.PendingTakeRequestedByNodeId = null;
+        view.PendingTakeRequestedByOwnerId = null;
+        view.PendingTakeReason = null;
+        view.PendingTakeRequestedAt = null;
+    }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskTakeRequested)"/> — see <see cref="PendingTakeRequestedByNodeId"/>'s own doc.</summary>
+    public void Apply(IEvent<TaskTakeRequested> @event, TaskListItem view)
+    {
+        view.PendingTakeRequestedByNodeId = @event.Data.RequesterNodeId;
+        view.PendingTakeRequestedByOwnerId = @event.Data.RequesterOwnerId;
+        view.PendingTakeReason = @event.Data.Reason;
+        view.PendingTakeRequestedAt = @event.Data.RequestedAt;
+    }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskTakeRefused)"/> — clears the pending ask the same way a grant does.</summary>
+    public void Apply(IEvent<TaskTakeRefused> @event, TaskListItem view)
+    {
+        view.PendingTakeRequestedByNodeId = null;
+        view.PendingTakeRequestedByOwnerId = null;
+        view.PendingTakeReason = null;
+        view.PendingTakeRequestedAt = null;
     }
 
     public void Apply(IEvent<QuestionAsked> @event, TaskListItem view) => view.State = TaskState.NeedsHuman;

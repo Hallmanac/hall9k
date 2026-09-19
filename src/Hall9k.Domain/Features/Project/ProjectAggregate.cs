@@ -115,6 +115,12 @@ public sealed class ProjectAggregate
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
     /// </summary>
     public ClaimGate ClaimGate { get; private set; } = ClaimGate.Off;
+
+    /// <summary>Who answers a cooperative claim request (idea 202383dc, item 5) — see <see cref="Events.ProjectSettingsChanged.TakePolicy"/>'s own doc.</summary>
+    public TakePolicy TakePolicy { get; private set; } = TakePolicy.Auto;
+
+    /// <summary>Override of how long a cooperative take request waits for an answer, in minutes; null defers to the platform default (30). See <see cref="Events.ProjectSettingsChanged.TakeTimeoutMinutes"/>'s own doc.</summary>
+    public int? TakeTimeoutMinutes { get; private set; }
     /// <summary>
     /// Whether true closeout closes this project's tasks' linked GitHub issues, and when (task: a
     /// task's linked GitHub issue is closed at true closeout under a configurable rule);
@@ -319,6 +325,16 @@ public sealed class ProjectAggregate
             ClaimGate = @event.ClaimGate.Value ?? ClaimGate.Off;
         }
 
+        if (@event.TakePolicy.HasValue)
+        {
+            TakePolicy = @event.TakePolicy.Value ?? TakePolicy.Auto;
+        }
+
+        if (@event.TakeTimeoutMinutes.HasValue)
+        {
+            TakeTimeoutMinutes = @event.TakeTimeoutMinutes.Value;
+        }
+
         if (@event.LaunchTexts.HasValue)
         {
             _launchTexts.Clear();
@@ -415,6 +431,16 @@ public sealed class ProjectAggregate
         if (@event.ClaimGate.HasValue)
         {
             ClaimGate = @event.ClaimGate.Value ?? ClaimGate.Off;
+        }
+
+        if (@event.TakePolicy.HasValue)
+        {
+            TakePolicy = @event.TakePolicy.Value ?? TakePolicy.Auto;
+        }
+
+        if (@event.TakeTimeoutMinutes.HasValue)
+        {
+            TakeTimeoutMinutes = @event.TakeTimeoutMinutes.Value;
         }
 
         if (@event.CloseLinkedIssue.HasValue)
