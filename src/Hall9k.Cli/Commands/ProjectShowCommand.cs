@@ -251,6 +251,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Review stage composition", ReviewStageCompositionRow(project));
         table.AddRow("Auto pr-review", AutoPrReviewRow(project, autoPrReview));
         table.AddRow("Claim gate", ClaimGateRow(project, claimGateRecorded));
+        table.AddRow("Take policy", TakePolicyRow(project));
+        table.AddRow("Take timeout", TakeTimeoutRow(project));
         table.AddRow("Close linked issue", CloseLinkedIssueRow(
             project, history.WasRecorded(change => change.CloseLinkedIssue)));
         table.AddRow("Never-close labels", project.NeverCloseLabels.Count == 0
@@ -370,6 +372,27 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + "holds; the gate itself is read-only, has no override flag, and a tracker that cannot be "
               + "read holds the claim[/]";
     }
+
+    /// <summary>
+    /// Who answers a cooperative claim request (idea 202383dc, item 5) — the setting <c>h9k task
+    /// take</c>'s own waiting message and <c>CooperativeTakeAttention</c>'s overdue line both quote
+    /// implicitly, with no other CLI surface to check it against before this row (independent
+    /// pre-PR review, cycle 5, adversarial lens, medium).
+    /// </summary>
+    internal static string TakePolicyRow(ProjectDetails project) =>
+        project.TakePolicy == TakePolicy.Ask
+            ? "ask [dim]— every cooperative take request parks for this node's own human; answer with "
+              + "h9k task grant / h9k task refuse --reason[/]"
+            : $"[dim]auto (platform default) — the holder's own node grants a cooperative take request on "
+              + $"receipt when no run is live for the task, refuses otherwise; park it for a human instead: "
+              + $"h9k project set {project.Name.EscapeMarkup()} --take-policy ask[/]";
+
+    /// <summary>See <see cref="TakePolicyRow"/>'s own doc — the number of minutes that setting's own overdue wording actually means.</summary>
+    internal static string TakeTimeoutRow(ProjectDetails project) =>
+        project.TakeTimeoutMinutes is { } minutes
+            ? $"{minutes} minute(s)"
+            : $"[dim]{TaskTakeCommand.DefaultTakeTimeoutMinutes} minute(s) (platform default) — override: "
+              + $"h9k project set {project.Name.EscapeMarkup()} --take-timeout <minutes>[/]";
 
     /// <summary>
     /// The model an orchestrator window for this project actually resolves to right now
