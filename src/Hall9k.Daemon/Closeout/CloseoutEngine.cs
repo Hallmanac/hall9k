@@ -1434,9 +1434,11 @@ public sealed class CloseoutEngine(
         // elsewhere this sweep; the two leaked-placeholder incidents this guard exists for
         // (PLACEHOLDER-609bd344, PLACEHOLDER-5e0cbfeb) both reached this exact merge call with their
         // own tail entry still unnumbered, on branches that were never stacked at all. Read straight
-        // off the retained worktree, the same as every other check in this method; a worktree this
-        // sweep cannot read is not this
-        // run's fault and is left to whatever already covers that (independent of this guard).
+        // off the retained worktree — the only check in this method that touches the filesystem
+        // rather than snapshot, run, task, or _options; a worktree this sweep cannot read (gone, or
+        // never checked out) is not this run's own fault, so the guard is skipped rather than
+        // parking over it, the same best-effort stance every other worktree read on this platform
+        // already takes.
         if (run.WorktreePath.IsNotBlank() && Directory.Exists(run.WorktreePath))
         {
             string taskShortId = DomainId.Short(task.Id);
