@@ -2238,6 +2238,190 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
+    /// Task: the Decisions Log renumbering runs before the mandatory final pass even when the
+    /// pre-final-pass rebase is skipped. A failed fetch used to read as "closeout's own
+    /// mechanical rebase still covers a stale push" and return without ever touching the
+    /// placeholder — true for the rebase itself, never true for a tail entry nothing else on the
+    /// mechanical paths ever assigns a number to (origin incident: task 609bd344, PR #479, two
+    /// separate fetch failures an hour apart with no renumbering line either time). The worktree's
+    /// own already-fetched <c>origin/main</c> — set up by the clone this seed already performs,
+    /// untouched by breaking the NEXT fetch — is exactly what this branch's own merge base already
+    /// equals, so the renumbering can run against it without ever needing the broken fetch to
+    /// succeed.
+    /// </summary>
+    [Fact]
+    public async Task Pre_final_pass_rebase_still_renumbers_the_placeholder_when_fetching_origin_fails()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token, ownOrigin: false);
+
+        string taskShortId = DomainId.Short(taskId);
+        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
+        [
+            "# Fixture Plan",
+            "",
+            "## 16. v0 Decisions Log",
+            "",
+            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
+            "",
+            "---",
+            "",
+            "## 17. Reference Materials",
+            "",
+        ]));
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+
+        // Breaks only the NEXT `git fetch origin main` — the worktree's own `origin/main`
+        // remote-tracking ref, already populated by this seed's own clone, is untouched, so the
+        // renumbering step can still read it locally exactly as production falls back to whatever
+        // this repository already knows.
+        Git(worktreePath, "remote set-url origin /nonexistent/hall9k-test-origin-does-not-exist");
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
+        plan.Should().Contain("1. **A test decision.**",
+            "a failed fetch must not leave the tail placeholder unrenumbered — nothing else on the "
+            + "mechanical paths ever assigns it a real number");
+        plan.Should().NotContain($"#PLACEHOLDER-{taskShortId}");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().Contain(
+            e => e.WasNoOp && e.DecisionsLogRenumbered,
+            "the renumbering commit landed despite the broken fetch, and must still raise the mandatory gate");
+    }
+
+    /// <summary>
+    /// The sibling skip to the fetch failure above: the worktree has uncommitted changes when the
+    /// pre-final-pass check runs (origin incident: task 609bd344's second leaked placeholder, the
+    /// same run, five seconds before its pull request opened). The dirty file here is deliberately
+    /// untracked rather than staged: the renumbering step's own commit only ever <c>git add</c>s
+    /// PLAN.md and whatever citation files it rewrites, so an untracked file sitting alongside it
+    /// is never swept into that commit — this test asserts exactly that.
+    /// </summary>
+    [Fact]
+    public async Task Pre_final_pass_rebase_still_renumbers_the_placeholder_when_the_worktree_is_dirty()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token, ownOrigin: false);
+
+        string taskShortId = DomainId.Short(taskId);
+        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
+        [
+            "# Fixture Plan",
+            "",
+            "## 16. v0 Decisions Log",
+            "",
+            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
+            "",
+            "---",
+            "",
+            "## 17. Reference Materials",
+            "",
+        ]));
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+
+        File.WriteAllText(
+            Path.Combine(worktreePath, "scratch.txt"), "not part of this run's own recorded work\n");
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue();
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
+        plan.Should().Contain("1. **A test decision.**",
+            "a dirty worktree must not leave the tail placeholder unrenumbered either");
+        plan.Should().NotContain($"#PLACEHOLDER-{taskShortId}");
+        File.Exists(Path.Combine(worktreePath, "scratch.txt")).Should().BeTrue(
+            "the dirty file this test planted is untouched, never committed by the renumbering step");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().Contain(
+            e => e.WasNoOp && e.DecisionsLogRenumbered,
+            "the renumbering commit landed despite the dirty worktree, and must still raise the mandatory gate");
+    }
+
+    /// <summary>
+    /// The risky sibling shape the untracked-only test above deliberately does not cover
+    /// (independent pre-PR review, cycle 1, both lenses): the pre-flight's own dirty-worktree
+    /// refusal can just as easily be reached with content already staged in the index — a build
+    /// session killed after its own <c>git add</c> but before its own commit — and
+    /// <c>DecisionsLogRenumberer.RenumberIfNeededAsync</c>'s closing commit has no pathspec, so it
+    /// would commit that staged content alongside the renumbering under a <c>chore:</c> message
+    /// that describes none of it. The renumbering step must refuse instead, leaving both the
+    /// placeholder and the staged file exactly as this test left them for a later pass to pick up.
+    /// </summary>
+    [Fact]
+    public async Task Pre_final_pass_rebase_leaves_the_placeholder_when_the_worktree_has_staged_content()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token, ownOrigin: false);
+
+        string taskShortId = DomainId.Short(taskId);
+        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
+        [
+            "# Fixture Plan",
+            "",
+            "## 16. v0 Decisions Log",
+            "",
+            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
+            "",
+            "---",
+            "",
+            "## 17. Reference Materials",
+            "",
+        ]));
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+
+        File.WriteAllText(
+            Path.Combine(worktreePath, "staged.txt"), "staged before this session's own commit ever landed\n");
+        Git(worktreePath, "add -- staged.txt");
+
+        ScriptedExecutor executor = new(
+            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
+            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
+
+        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
+
+        mergeReady.Should().BeTrue("the dirty worktree is left for a later pass, not treated as a run failure");
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
+        plan.Should().Contain($"PLACEHOLDER-{taskShortId}",
+            "staged content the renumbering commit would sweep in must leave the placeholder unrenumbered");
+
+        string status = GitOutput(worktreePath, "status --porcelain -- staged.txt");
+        status.Should().StartWith("A ",
+            "the staged file must still be staged, uncommitted, exactly as this test left it");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().NotContain(
+            e => e.DecisionsLogRenumbered,
+            "the renumbering step must not have run at all against a worktree with staged content");
+    }
+
+    /// <summary>
     /// Task: a run rebases its branch onto the current base branch (independent pre-PR review,
     /// cycle 1, both lenses). A follow-up run reuses whatever pull request the task already has
     /// open, and that pull request's base can have been retargeted away from the project's own
