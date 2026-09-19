@@ -231,6 +231,23 @@ public static class CliCommandTree
                     + "vouches it in with no further prompt.")
                 .WithExample("project", "invite", "hall9k")
                 .WithExample("project", "invite", "hall9k", "--role", "owner");
+            project.AddCommand<ProjectPullCommand>("pull")
+                .WithDescription(
+                    "Ask this project's other members for history this node's own catch-up will never "
+                    + "ask for by itself (idea 202383dc, M2b). Three node states, and only two are "
+                    + "automatic: a brand-new node bootstraps the whole project the first time its sweep "
+                    + "finds no local history at all, and any node gap-fills when a peer's outbox stalls "
+                    + "across a numeric hole. A node that is neither — joined a while ago, holding the "
+                    + "retention window and work of its own — never asks for anything older again, and "
+                    + "this is its lever. --since takes a global sequence read on the ANSWERING node, or "
+                    + "the word all. A peer serves an explicit pull from below its own replication "
+                    + "switch-on point, which the two automatic shapes are still held above; answers apply "
+                    + "idempotently over streams already held, and a private task or idea is never served "
+                    + "however far back the pull reaches. Queues one project-wide events-request and "
+                    + "returns: no git, no network here, and the daemon's next message sweep sends it. "
+                    + "h9k status shows it while it stands.")
+                .WithExample("project", "pull", "hall9k", "--since", "all")
+                .WithExample("project", "pull", "hall9k", "--since", "28000");
             project.AddCommand<ProjectMembersCommand>("members")
                 .WithDescription(
                     "List this project's members as the ledger's own chain read currently sees them (idea "
@@ -1047,6 +1064,23 @@ public static class CliCommandTree
                     + "investigation — h9k status names the task, this says what happened to it. Takes "
                     + "the full id or an unambiguous fragment.")
                 .WithExample("task", "show", "28b19893");
+            task.AddCommand<TaskPullCommand>("pull")
+                .WithDescription(
+                    "Ask this project's other members for one task's whole event stream, by id, when this "
+                    + "node does not hold it (idea 202383dc, M2b). The same project-wide events-request "
+                    + "h9k task add --from-issue already queues when the ledger names a task that has not "
+                    + "replicated here, without needing a linked issue to hang the ask on: pass the task's "
+                    + "full id, which a fragment cannot substitute for since there is nothing local to "
+                    + "match against. A peer serves an explicit stream request from below its own "
+                    + "replication switch-on point, which an ordinary flush and a gap-fill are still held "
+                    + "above, so a task published before that peer ever switched replication on is "
+                    + "reachable this way and no other; a private task is still never served. Refused when "
+                    + "this node has no owner root yet, naming h9k project join. Queues and returns: no "
+                    + "git, no network here, and the daemon's next message sweep sends it. A broadcast "
+                    + "never times out, so a second run reports the one already outstanding rather than "
+                    + "queueing a second. h9k status shows it while it stands.")
+                .WithExample("task", "pull", "01a0afc1-fc97-73b5-836e-39b8ec35ceca")
+                .WithExample("task", "pull", "01a0afc1-fc97-73b5-836e-39b8ec35ceca", "--project", "hall9k");
             task.AddCommand<TaskPushToJiraCommand>("push-to-jira")
                 .WithDescription(
                     "Publish this task as a Jira card, by dispatching an agent run that composes it. The "

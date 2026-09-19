@@ -1,7 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Ledger;
-using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Bootstrap;
@@ -935,6 +934,8 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
     /// ranked peer, since this runs from a CLI command with no live trust chain or transport of its
     /// own to rank candidates from (never touches git or a network on its own) — every project
     /// member's own daemon sweep answers if it can, and double answers are harmless by dedupe.
+    /// The refusal says which of the three things actually happened, including the one where no
+    /// request was queued at all (task a56cf16e).
     /// Never fabricates the task from the record itself (that section's own doc comment carries the
     /// fuller argument for why).
     /// </summary>
@@ -963,26 +964,34 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
                 + $"rather than its external-reference field. See it with h9k task show {shortId}.");
         }
 
-        string arriving = "nothing is created here now.";
-        if (ownerRootFingerprint.IsNotBlank())
+        // A stream this node holds only the TAIL of has no TaskListItem to find above (that
+        // projection is created by TaskAdded alone), so it reaches here reading as absent — and
+        // asking for it would only earn a record EventReplicationInbox refuses on arrival, since
+        // an older event cannot be put in front of the newer ones already here (independent pre-PR
+        // review, cycle 4, adversarial lens, medium: the same shape h9k task pull refuses up
+        // front).
+        if (await EventStreamCatchUp.ClassifyLocalHoldAsync(session, located.TaskId, cancellationToken)
+            == EventStreamCatchUp.LocalStreamHold.Partial)
         {
-            bool broadcastQueued = await new EventCatchUpCoordinator().RequestStreamBroadcastAsync(
-                session, project.Id, located.TaskId, nodeId, ownerRootFingerprint, DateTimeOffset.UtcNow, cancellationToken);
-            // A broadcast request never times out and never exhausts on its own (only a targeted
-            // gap-fill/bootstrap cascade does), so RequestStreamBroadcastAsync's own alreadyOutstanding
-            // guard returning false here means one is already on its way from an earlier run of this
-            // same command, not that this run's ask was suppressed — telling the human otherwise would
-            // have them keep re-running a command that never queues anything new for that outcome
-            // (independent pre-PR review, cycle 1, adversarial lens, low).
-            arriving = broadcastQueued
-                ? "an events-request for that stream is on its way to this project's other members now."
-                : "an events-request for that stream is already on its way to this project's other members.";
+            throw new DomainValidationException(
+                $"{reference} is already published elsewhere as task {shortId}. "
+                + EventStreamCatchUp.PartiallyHeldRefusal(
+                    shortId, "This item cannot be adopted here while that is true."));
         }
 
+        // Three outcomes, three sentences, all of them composed in one place
+        // (EventStreamCatchUp): a broadcast request never times out and never exhausts on its own
+        // (only a targeted gap-fill/bootstrap cascade does), so "already outstanding" means one is
+        // already on its way from an earlier run of this same command rather than that this run's
+        // ask was suppressed (independent pre-PR review, cycle 1, adversarial lens, low) — and a
+        // node with no owner root queued nothing at all and is told to run h9k project join rather
+        // than to wait for a stream nothing is fetching (task a56cf16e).
+        EventStreamCatchUp.RequestDisposition disposition = await EventStreamCatchUp.RequestStreamAsync(
+            session, project.Id, located.TaskId, nodeId, ownerRootFingerprint, DateTimeOffset.UtcNow, cancellationToken);
+
         throw new DomainValidationException(
-            $"{reference} is already published elsewhere as task {shortId}, but that task's own "
-            + $"event stream has not reached this node yet — {arriving} It will appear on this "
-            + "node's own board once catch-up brings that stream in; re-run this command afterward.");
+            EventStreamCatchUp.RecordedElsewhereRefusal(
+                reference.ToString(), shortId, project.Name, disposition, project.IsEligibleForMessaging()));
     }
 
     /// <summary>
