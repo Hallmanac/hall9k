@@ -244,8 +244,8 @@ internal static class PublishedFacts
             : "an unrecorded previous holder";
         string since = TaskStatusComposer.RelativeAge(now - takenOverAt);
         return task.TakenOverReason.IsNotBlank()
-            ? $"taken over from {from} {since} ago — {task.TakenOverReason}"
-            : $"taken over from {from} {since} ago";
+            ? $"taken over from {from} since {since} — {task.TakenOverReason}"
+            : $"taken over from {from} since {since}";
     }
 
     /// <summary>
