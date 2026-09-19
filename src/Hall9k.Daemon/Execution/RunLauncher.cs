@@ -603,10 +603,19 @@ public sealed class RunLauncher(
                 // cycle 1, adversarial lens: `git merge-base origin/<parent> HEAD` collapses below it
                 // the moment the parent is force-pushed, and the recompose's mixed reset would then
                 // rewrite the parent's commits as the child's own history).
-                prompt = AgentPromptBuilder.Build(
-                    task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
-                    baseBranch: runBaseBranch, baseCommit: baseCommit,
-                    commandTimeout: options.Value.VerifyGateTimeout, voiceSkill: voiceSkill);
+                // A spike's own build prompt (task: a spike is a run, not a walk) — its kind and
+                // exit criterion drive the whole prompt, and it never joins the ordinary
+                // blocker-context/voice-skill/resume machinery above: a spike is never a
+                // follow-up and never resumes previous work (RunDispatched always cuts it a
+                // fresh branch — see the worktree checkout above).
+                prompt = task.Type == TaskType.Spike
+                    ? AgentPromptBuilder.BuildSpike(
+                        task, project, worktree.Branch, worktree.Path,
+                        commandTimeout: options.Value.VerifyGateTimeout)
+                    : AgentPromptBuilder.Build(
+                        task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
+                        baseBranch: runBaseBranch, baseCommit: baseCommit,
+                        commandTimeout: options.Value.VerifyGateTimeout, voiceSkill: voiceSkill);
             }
 
             // isPrReview and the followUp branches above both compose through AgentPromptBuilder's
@@ -667,7 +676,12 @@ public sealed class RunLauncher(
                     // name on its own): a follow-up is exactly the session that works an open
                     // pull request's threads, and a CI-fix lap wandering into a person's thread
                     // is as much the thing being prevented as a thread lap doing it on purpose.
-                    GuardsReviewThreadReplies: followUp is not null)
+                    GuardsReviewThreadReplies: followUp is not null,
+                    // TaskConstraints' first consumer (task: a spike is a run, not a walk):
+                    // passed straight through to the agent launch as its own hard turn limit —
+                    // null (no declared budget) leaves this session exactly as unbounded as
+                    // every other task's own build session already is.
+                    MaxTurns: task.Constraints?.MaxTurns)
                 {
                     SessionName = sessionName,
                 },

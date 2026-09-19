@@ -577,11 +577,14 @@ public sealed partial class VerificationRunner(
             : null;
 
         // Research tasks are exempt from the no-commit check — their deliverable is the
-        // transcript, not commits (the one TaskType whose legitimate output is empty);
-        // every other type ships its work as commits. The uncommitted-files check right
-        // below is not exempt: a research task that left modified or untracked files behind
-        // still stranded work, whatever its deliverable is.
-        if (task.Type != TaskType.Research)
+        // transcript, not commits — and every spike kind is exempt too, whatever its own kind
+        // (task: a spike is a run, not a walk — even a prototype spike, which does commit code
+        // and does run the ordinary gates, is exempt from THIS check specifically, by the type's
+        // own ruling, not because its deliverable is empty). Every other type ships its work as
+        // commits. The uncommitted-files check right below is not exempt for any type: a task
+        // that left modified or untracked files behind still stranded work, whatever its
+        // deliverable is.
+        if (task.Type != TaskType.Research && task.Type != TaskType.Spike)
         {
             // This run's own recorded base, not the project's: a stacked child's branch sits on
             // top of its parent's, so counting against the project's base would count the PARENT's

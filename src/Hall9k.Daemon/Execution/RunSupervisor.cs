@@ -42,6 +42,7 @@ public sealed class RunSupervisor(
     VerificationRunner verification,
     ReviewEngine review,
     PrReviewEngine prReview,
+    SpikeEngine spike,
     PullRequestOpener pullRequests,
     PrimarySessionResumer primarySessionResumer,
     LaunchHoldEngine launchHold,
@@ -1172,6 +1173,31 @@ public sealed class RunSupervisor(
                 }
 
                 await prReview.ReviewAsync(runId, taskId, cancellationToken);
+            }
+
+            return null;
+        }
+
+        // A spike's own build session (task: a spike is a run, not a walk): gates run only for a
+        // prototype (it must actually build and run); research and experiment run no gates at
+        // all. Either way, SpikeEngine takes over from here — never ReviewEngine, never
+        // PullRequestOpener — for its own fixed one-cycle-one-fix-lap review against the exit
+        // criterion alone. An error result is already fully handled by the generic
+        // RunFailed/TaskFailed above, exactly as the pr-review branch's own comment says.
+        if (await LoadSpikeTaskAsync(taskId, cancellationToken) is { } spikeTask)
+        {
+            if (!result.IsError)
+            {
+                await spike.RecordFindingsAsync(runDirectory, result.Summary ?? string.Empty, cancellationToken);
+
+                bool gatesOk = !spikeTask.SpikeKind.RunsGates
+                    || await verification.VerifyAsync(
+                        runId, taskId, scopeSinceSha: null, InitialVerificationScopeReason, RunSessionLeg.Build,
+                        cancellationToken);
+                if (gatesOk)
+                {
+                    await spike.ReviewAsync(runId, taskId, cancellationToken);
+                }
             }
 
             return null;
@@ -2373,6 +2399,28 @@ public sealed class RunSupervisor(
                     return;
                 }
 
+                // A spike resumed after a daemon restart (task: a spike is a run, not a walk):
+                // gates run first only when this run is still Verifying and its own kind runs
+                // them at all; SpikeEngine.ReviewAsync always runs its whole review cycle again
+                // from its first pass regardless of how far a prior process got, which wastes a
+                // session or two on a restart mid-cycle but never double-completes the task —
+                // FinalizeAsync's own generation fence and Claimed-state check see to that. Never
+                // ReviewEngine, never PullRequestOpener, for the identical reason the pr-review
+                // branch above never reaches them either.
+                if (await LoadSpikeTaskAsync(run.TaskId, cancellationToken) is { } spikeTask)
+                {
+                    bool spikeGatesOk = run.State != RunState.Verifying || !spikeTask.SpikeKind.RunsGates
+                        || await verification.VerifyAsync(
+                            run.Id, run.TaskId, scopeSinceSha: null, InitialVerificationScopeReason,
+                            RunSessionLeg.Build, cancellationToken);
+                    if (spikeGatesOk)
+                    {
+                        await spike.ReviewAsync(run.Id, run.TaskId, cancellationToken);
+                    }
+
+                    return;
+                }
+
                 bool mergeReady = run.State == RunState.Verifying
                     ? await verification.VerifyAsync(run.Id, run.TaskId, scopeSinceSha: null, InitialVerificationScopeReason, RunSessionLeg.Build, cancellationToken)
                         && await review.ReviewAsync(run.Id, run.TaskId, cancellationToken)
@@ -2565,6 +2613,14 @@ public sealed class RunSupervisor(
         await using IQuerySession query = store.QuerySession();
         TaskDetails? task = await query.LoadAsync<TaskDetails>(taskId, cancellationToken);
         return task?.Type == TaskType.PrReview;
+    }
+
+    /// <summary>The task's own details when it is a spike (task: a spike is a run, not a walk), the one type SpikeEngine drives instead of the pre-PR pipeline; null for every other type.</summary>
+    private async Task<TaskDetails?> LoadSpikeTaskAsync(Guid taskId, CancellationToken cancellationToken)
+    {
+        await using IQuerySession query = store.QuerySession();
+        TaskDetails? task = await query.LoadAsync<TaskDetails>(taskId, cancellationToken);
+        return task?.Type == TaskType.Spike ? task : null;
     }
 
     /// <summary>
