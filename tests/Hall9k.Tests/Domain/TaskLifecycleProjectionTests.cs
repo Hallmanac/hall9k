@@ -661,6 +661,82 @@ public sealed class TaskLifecycleProjectionTests
         detail.UntrackedAttestedByOwnerId.Should().BeNull();
     }
 
+    /// <summary>
+    /// Idea f72138e1: a task assigned on one node is claimable by every node of the same owner,
+    /// because the assigning node's own local <c>AssignedOwnerId</c> means nothing on a peer node
+    /// that never registered it (Owner events are OwnerScoped and never replicate) — only the
+    /// fingerprint <c>TaskAssigned</c> carries alongside it travels with the same meaning
+    /// everywhere. Both read models mirror it exactly as <see cref="TaskAggregate"/> does, since the
+    /// daemon's own queue read (<see cref="TaskListItem.AssignedOwnerFingerprint"/>'s own doc) and
+    /// the display surfaces both depend on it.
+    /// </summary>
+    [Fact]
+    public void An_assignment_carrying_its_own_root_fingerprint_mirrors_it_onto_the_aggregate_and_both_read_models()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid macLocalOwnerId = DomainId.New();
+        TaskListItemProjection list = new();
+        TaskDetailsProjection details = new();
+
+        TaskAdded added = Drafted(id, ownerId);
+        TaskAggregate aggregate = new();
+        aggregate.Apply(added);
+        TaskListItem row = list.Create(new FakeEvent<TaskAdded>(added));
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(added));
+
+        TaskPublished published = new(id, Now, ownerId);
+        aggregate.Apply(published);
+        list.Apply(new FakeEvent<TaskPublished>(published), row);
+        details.Apply(new FakeEvent<TaskPublished>(published), detail);
+
+        TaskAssigned assigned = new(id, macLocalOwnerId, [], Now, ownerId, "owner-x-root-fingerprint");
+        aggregate.Apply(assigned);
+        list.Apply(new FakeEvent<TaskAssigned>(assigned), row);
+        details.Apply(new FakeEvent<TaskAssigned>(assigned), detail);
+
+        aggregate.AssignedOwnerFingerprint.Should().Be("owner-x-root-fingerprint");
+        row.AssignedOwnerFingerprint.Should().Be(
+            "owner-x-root-fingerprint", "the daemon's queue read filters on this, not the local Guid");
+        detail.AssignedOwnerFingerprint.Should().Be("owner-x-root-fingerprint");
+    }
+
+    /// <summary>
+    /// The migration promise for the same field: a <c>TaskAssigned</c> written before idea f72138e1
+    /// carries no fingerprint at all, and replay must not invent one — the claim gate's own fallback
+    /// to comparing local owner Guids only works because this stays genuinely null rather than some
+    /// guessed-at value (AGENTS.md, never guess at unobserved facts).
+    /// </summary>
+    [Fact]
+    public void An_assignment_written_before_the_fingerprint_field_existed_replays_with_no_fingerprint_anywhere()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        TaskListItemProjection list = new();
+        TaskDetailsProjection details = new();
+
+        TaskAdded added = Drafted(id, ownerId);
+        TaskAggregate aggregate = new();
+        aggregate.Apply(added);
+        TaskListItem row = list.Create(new FakeEvent<TaskAdded>(added));
+        TaskDetails detail = details.Create(new FakeEvent<TaskAdded>(added));
+
+        TaskPublished published = new(id, Now, ownerId);
+        aggregate.Apply(published);
+        list.Apply(new FakeEvent<TaskPublished>(published), row);
+        details.Apply(new FakeEvent<TaskPublished>(published), detail);
+
+        // The historical shape: no sixth positional argument at all.
+        TaskAssigned assigned = new(id, ownerId, [], Now, ownerId);
+        aggregate.Apply(assigned);
+        list.Apply(new FakeEvent<TaskAssigned>(assigned), row);
+        details.Apply(new FakeEvent<TaskAssigned>(assigned), detail);
+
+        aggregate.AssignedOwnerFingerprint.Should().BeNull("this event predates the field");
+        row.AssignedOwnerFingerprint.Should().BeNull();
+        detail.AssignedOwnerFingerprint.Should().BeNull();
+    }
+
     private static TaskAdded Drafted(Guid id, Guid ownerId, params Guid[] blockedBy) => new(
         id, DomainId.New(), "Develop me", ["it is done"], TaskType.Feature,
         null, null, null, Now, ownerId, null, blockedBy, StartsAsDraft: true);

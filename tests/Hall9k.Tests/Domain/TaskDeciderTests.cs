@@ -817,6 +817,71 @@ public sealed class TaskDeciderTests
         act.Should().Throw<DomainConflictException>();
     }
 
+    /// <summary>
+    /// Idea f72138e1: a task assigned on one node is claimable by every node of the same owner.
+    /// <c>h9k task assign</c> on the Mac stamps the Mac's own local <c>OwnerDetails</c> Guid, which
+    /// means nothing on Windows — Owner events are OwnerScoped and never replicate — so only the
+    /// fingerprint <see cref="TaskAssigned.AssignedOwnerRootFingerprint"/> carries alongside it can
+    /// name the same owner on both. Origin incident: 693ffe5d assigned on the Mac at 14:24 EDT
+    /// replicated to Windows naming the Mac's own owner id, and Windows's dispatcher never claimed
+    /// it despite a free slot for ten minutes.
+    /// </summary>
+    [Fact]
+    public void Claim_of_an_ordinary_assignment_succeeds_for_a_different_node_of_the_same_owner_by_fingerprint()
+    {
+        TaskAggregate task = PublishedTask();
+        Guid macLocalOwnerId = DomainId.New();
+        task.Apply(TaskDecider.Assign(
+            task, macLocalOwnerId, [], Now, Owner, assignedOwnerRootFingerprint: "owner-x-root-fingerprint"));
+
+        Guid windowsLocalOwnerId = DomainId.New();
+        TaskClaimed claimed = TaskDecider.Claim(
+            task, DomainId.New(), windowsLocalOwnerId, DomainId.New(), Now,
+            ownerRootFingerprint: "owner-x-root-fingerprint");
+
+        claimed.OwnerId.Should().Be(
+            windowsLocalOwnerId, "the fingerprint decides once the assignment carries one, not the assigning node's own local Guid");
+    }
+
+    /// <summary>
+    /// The other half of the same scenario: a genuinely different owner's node — its own local id
+    /// coincidentally never matches anyway, but its own root fingerprint never will either — is
+    /// refused exactly as it always was.
+    /// </summary>
+    [Fact]
+    public void Claim_of_an_ordinary_assignment_refuses_a_different_owners_node_despite_no_shared_guid_either()
+    {
+        TaskAggregate task = PublishedTask();
+        Guid macLocalOwnerId = DomainId.New();
+        task.Apply(TaskDecider.Assign(
+            task, macLocalOwnerId, [], Now, Owner, assignedOwnerRootFingerprint: "owner-x-root-fingerprint"));
+
+        Action act = () => TaskDecider.Claim(
+            task, DomainId.New(), DomainId.New(), DomainId.New(), Now,
+            ownerRootFingerprint: "owner-y-root-fingerprint");
+
+        act.Should().Throw<DomainConflictException>();
+    }
+
+    /// <summary>
+    /// The migration promise: an assignment written before idea f72138e1 carries no fingerprint at
+    /// all, and the claim gate falls back to comparing local owner Guids exactly as it always did —
+    /// claimable by the same local id the assignment named, refused for any other.
+    /// </summary>
+    [Fact]
+    public void Claim_of_an_old_shape_assignment_with_no_fingerprint_still_works_by_the_local_owner_id_alone()
+    {
+        TaskAggregate task = QueuedTask();
+
+        TaskClaimed claimed = TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now);
+        claimed.OwnerId.Should().Be(Owner);
+
+        TaskAggregate refused = QueuedTask();
+        Action act = () => TaskDecider.Claim(refused, DomainId.New(), DomainId.New(), DomainId.New(), Now);
+        act.Should().Throw<DomainConflictException>(
+            "an old-shape assignment has no fingerprint to fall back on, so only the exact local Guid it named may claim it");
+    }
+
     [Fact]
     public void Requeue_after_claim_returns_to_queued_and_a_reclaim_bumps_generation_again()
     {

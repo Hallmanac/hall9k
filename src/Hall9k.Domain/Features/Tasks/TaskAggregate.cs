@@ -522,19 +522,23 @@ public sealed class TaskAggregate
     public Guid? AssignedOwnerId { get; private set; }
 
     /// <summary>
-    /// <see cref="AssignedOwnerId"/>'s own cross-node root fingerprint (idea 20723ef8), set only by
-    /// a cooperative grant (<see cref="Apply(Events.TaskHolderReleased)"/>) and cleared by every
-    /// other door onto <see cref="AssignedOwnerId"/> — an ordinary assignment, an unassign, a
-    /// forced takeover — so a stale fingerprint from an earlier grant never survives to
-    /// misdescribe a later, unrelated assignment. Never itself the security decision: this
-    /// aggregate has no way to look up whether <see cref="AssignedOwnerId"/> is an owner any given
-    /// reading node actually knows locally (Owner events are OwnerScoped and never replicate), so
-    /// <see cref="AssignedOwnerId"/> stays exactly what the event self-declared even when this
-    /// field is set. The daemon's own dispatch claim gate is where the two are actually compared,
-    /// with the one piece of local knowledge only it has: this node's own owner root fingerprint.
-    /// Null for every event written before this field existed, and for every ordinary assignment:
-    /// <see cref="TaskAssigned"/> does carry its own <see cref="TaskAssigned.AssignedOwnerRootFingerprint"/>,
-    /// but it is not mirrored here, because a local human act needs no cross-node verification.
+    /// <see cref="AssignedOwnerId"/>'s own cross-node root fingerprint, set by a cooperative grant
+    /// (<see cref="Apply(Events.TaskHolderReleased)"/>) and, since idea f72138e1, by an ordinary
+    /// assignment too (<see cref="Apply(Events.TaskAssigned)"/>, mirroring
+    /// <see cref="TaskAssigned.AssignedOwnerRootFingerprint"/>) — both are the assigning node's own
+    /// statement of who it means, and a task assigned on one node of an owner must be claimable by
+    /// every other node of that same owner (idea f72138e1: <c>h9k task assign</c> on one node left
+    /// the free slot on a second node of the same owner silently unclaimed for ten minutes). Cleared
+    /// by every other door onto <see cref="AssignedOwnerId"/> — an unassign, a forced takeover — so
+    /// a stale fingerprint from an earlier assignment never survives to misdescribe a later,
+    /// unrelated one. Never itself the security decision: this aggregate has no way to look up
+    /// whether <see cref="AssignedOwnerId"/> is an owner any given reading node actually knows
+    /// locally (Owner events are OwnerScoped and never replicate), so <see cref="AssignedOwnerId"/>
+    /// stays exactly what the event self-declared even when this field is set. The daemon's own
+    /// dispatch claim gate is where the two are actually compared, with the one piece of local
+    /// knowledge only it has: this node's own owner root fingerprint. Null for every event written
+    /// before this field existed, in which case the claim gate falls back to comparing
+    /// <see cref="AssignedOwnerId"/> against the claiming node's own local owner id.
     /// </summary>
     public string? AssignedOwnerFingerprint { get; private set; }
 
@@ -1130,10 +1134,11 @@ public sealed class TaskAggregate
     public void Apply(TaskAssigned @event)
     {
         AssignedOwnerId = @event.AssignedOwnerId;
-        // A fresh, ordinary assignment supersedes whatever a prior cooperative grant recorded
-        // here — carrying it forward would let a stale fingerprint from an unrelated earlier
-        // grant misdescribe this one (idea 20723ef8).
-        AssignedOwnerFingerprint = null;
+        // A fresh assignment supersedes whatever a prior cooperative grant recorded here — carrying
+        // it forward would let a stale fingerprint from an unrelated earlier grant misdescribe this
+        // one — but it is not simply cleared: this assignment's own fingerprint (idea f72138e1)
+        // takes its place, null only when the event itself predates the field.
+        AssignedOwnerFingerprint = @event.AssignedOwnerRootFingerprint;
         _unmetDependencies.Clear();
         _unmetDependencies.AddRange(@event.UnmetDependencies);
         _deadDependencies.Clear();
