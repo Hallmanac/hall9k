@@ -637,7 +637,7 @@ public sealed class GitWorktreeManagerTests : IDisposable
 
     /// <summary>
     /// The branch-on-neither-side failure is its own exception type, not a plain
-    /// <see cref="WorktreeException"/> (#PLACEHOLDER-5c46cd1d): it is the one failure here that means
+    /// <see cref="WorktreeException"/> (#234): it is the one failure here that means
     /// "there is nothing left to resume", and both dispatch doors fall back to a fresh cut on
     /// exactly that type while still failing loudly on every other worktree failure. The branch is
     /// carried on the exception apart from the message so a caller can name it without parsing prose.

@@ -263,7 +263,7 @@ run's branch through the existing foreign-resume path (piece C's residual, above
 claim mechanism of its own — but only if that run actually pushed the branch. A branch the
 superseded run never pushed exists neither locally nor on origin here, and the launcher cuts a
 fresh worktree from the base branch instead of failing, recording `RunStartedCleanAfterBranchGone`
-so `h9k task show` says the resumed work is not in this worktree (#PLACEHOLDER-5c46cd1d). That
+so `h9k task show` says the resumed work is not in this worktree (#234). That
 needs origin actually read: if the launch-time fetch fails, the branch is not declared gone and
 the run fails loudly instead, since unfetched refs are no evidence of absence. Every other
 worktree failure on a foreign resume still fails the run loudly by name, unchanged.

@@ -265,7 +265,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// The forced-takeover shape end to end (#PLACEHOLDER-5c46cd1d): another node's run built a
+    /// The forced-takeover shape end to end (#234): another node's run built a
     /// branch and never pushed it, <c>h9k task take --force</c> moved the task here, and the
     /// resulting claim resumes that branch through <c>TaskClaimed.ResumesBranch</c>
     /// (<c>TaskAggregate.RetryBranchResumesForeignNode</c>). The branch is on neither side, so the
@@ -326,7 +326,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
-    /// The half of Decisions Log #224 that survives #PLACEHOLDER-5c46cd1d: a foreign-node resume
+    /// The half of Decisions Log #224 that survives #234: a foreign-node resume
     /// still fails the run loudly, by name, when the worktree layer could not do the job at all —
     /// a <c>worktree add</c> that failed, an unreadable repository — because starting clean there
     /// really would discard work that is still sitting on the branch. Only the branch-is-gone

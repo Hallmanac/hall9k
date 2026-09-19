@@ -23,7 +23,7 @@ namespace Hall9k.Cli.Commands;
 /// <para>
 /// "When it survives" is load-bearing after a forced takeover: a branch the superseded run never
 /// pushed exists only on that run's own machine, so the retry starts clean and that work does not
-/// come with it (#PLACEHOLDER-5c46cd1d). This command says what the stream actually records when it
+/// come with it (#234). This command says what the stream actually records when it
 /// can see that shape, rather than leaving the human with only the hopeful reading — hedged on
 /// what it cannot check from here, which is origin itself and which node claims the retry.
 /// </para>
@@ -173,7 +173,7 @@ public sealed class TaskRetryCommand : Hall9kAsyncCommand<TaskRetryCommand.Setti
             && task.LastPushedBranch != branch)
         {
             // The forced-takeover shape, said plainly rather than folded into the hopeful "resumes
-            // if it survives" below (#PLACEHOLDER-5c46cd1d). Two facts already observed, not a
+            // if it survives" below (#234). Two facts already observed, not a
             // guess — RunDetails.NodeId and TaskAggregate.LastPushedBranch — say the failed run
             // belongs to another node and that nothing on this task's stream records that branch
             // ever being pushed. Neither settles where the branch actually is, so the message says

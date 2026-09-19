@@ -464,7 +464,7 @@ public sealed class RunLauncher(
                 OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
             // Appended right behind the dispatch, in the same commit, so the run record can never
             // exist saying "resumed" while the fact that it did not is still in flight
-            // (#PLACEHOLDER-5c46cd1d). Null for every run that resumed what it meant to and every
+            // (#234). Null for every run that resumed what it meant to and every
             // run that never meant to resume anything.
             if (startedClean is not null)
             {
@@ -1468,7 +1468,7 @@ public sealed class RunLauncher(
     /// work — possibly uncommitted in the retained worktree — before starting over.
     /// <para>
     /// A branch gone from both sides starts clean whoever's it was, this node's own earlier
-    /// attempt or another node's (#PLACEHOLDER-5c46cd1d, narrowing Decisions Log #224). What #224
+    /// attempt or another node's (#234, narrowing Decisions Log #224). What #224
     /// actually protects is a foreign node's WORK, and a branch that reached neither origin nor
     /// this repository never brought any here to abandon — the failure it was written against
     /// (2026-09-19, task a56cf16e, runs 01a0baf1 and 01a0baf3, after a forced take from a Mac run
