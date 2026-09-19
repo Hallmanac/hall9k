@@ -413,6 +413,61 @@ public sealed class TrackerAssignmentTake
     }
 
     /// <summary>
+    /// This install's own tracker identity for a gated reference (idea 202383dc, item 5, "a member
+    /// can ask a holder for a task") — exactly the identity <see cref="TakeAsync"/> would resolve
+    /// and write on this install's own take, read here without writing anything. A requester's own
+    /// node calls this before sending a cooperative claim-request envelope, carrying the result
+    /// along so the granting node — which has no connection of its own to this identity, since
+    /// every teammate's tracker credentials are local to their own install (<see cref="ClaimGate"/>'s
+    /// own doc) — can write it into the item's assignee field on grant via <see cref="GrantToAsync"/>.
+    /// Null when the project is not gated, the task carries no gated item, or this install's own
+    /// identity could not be read.
+    /// </summary>
+    public async Task<string?> ResolveOwnIdentityAsync(
+        IDocumentStore store, ClaimGate gate, ExternalReference? reference, string workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        TrackerClaimDecision decision = await claimGate.CheckAsync(store, gate, reference, workingDirectory, cancellationToken);
+        return decision.Identity;
+    }
+
+    /// <summary>
+    /// The grant half of the cooperative take (idea 202383dc, item 5): reads the linked item
+    /// fresh, writes <paramref name="granteeIdentity"/> — the requester's own tracker identity,
+    /// carried on the claim-request envelope by <see cref="ResolveOwnIdentityAsync"/> — into its
+    /// assignee field if and only if the item has none, reads it back, and reports which happened.
+    /// Unlike <see cref="TakeAsync"/>, this never resolves an identity of its own: the whole point
+    /// of a grant is putting somebody ELSE's identity on the item, which this install's own
+    /// <see cref="TrackerClaimGate"/> reading has no way to produce.
+    /// </summary>
+    public async Task<TrackerTake> GrantToAsync(
+        IDocumentStore store,
+        ClaimGate gate,
+        ExternalReference? reference,
+        string workingDirectory,
+        string granteeIdentity,
+        CancellationToken cancellationToken)
+    {
+        TrackerClaimDecision decision = await claimGate.CheckAsync(store, gate, reference, workingDirectory, cancellationToken);
+        if (decision.Verdict != TrackerClaimVerdict.Unassigned)
+        {
+            return TrackerTake.From(decision);
+        }
+
+        if (reference is not { } item)
+        {
+            return TrackerTake.WriteRefused(
+                decision,
+                "the tracker answered that nobody holds the item, but this install could not tell which "
+                + "item was asked about, so it wrote nothing rather than guess.");
+        }
+
+        return item.Provider == WorkItemProvider.Jira
+            ? await TakeJiraAsync(store, item, granteeIdentity, decision, cancellationToken)
+            : await TakeGitHubAsync(item, granteeIdentity, decision, workingDirectory, cancellationToken);
+    }
+
+    /// <summary>
     /// Jira: an ordinary update carrying one field, through the same
     /// <see cref="JiraWriteExecutor"/> every other Jira write on this platform reaches Jira
     /// through, so the transport, the API version, and the classification of a failure into a
