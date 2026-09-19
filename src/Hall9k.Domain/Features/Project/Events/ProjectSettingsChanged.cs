@@ -158,16 +158,18 @@ public sealed record ProjectSettingsChanged(
     /// Who answers a cooperative claim request for a task in this project (idea 202383dc, item 5,
     /// "a member can ask a holder for a task"). <see cref="Project.TakePolicy.Auto"/> is both the
     /// default and the platform's original behaviour byte-for-byte before this setting existed —
-    /// the same <see cref="ClaimGate"/> idiom. Trailing and optional so every stream written
-    /// before this feature existed replays unchanged.
+    /// the same <see cref="ClaimGate"/> idiom. Optional, and defaulted for the same reason every
+    /// other setting here is (System.Text.Json binds by name, not by position), so every stream
+    /// written before this feature existed still replays unchanged.
     /// </summary>
     Optional<TakePolicy> TakePolicy = default,
     /// <summary>
     /// How long a cooperative take request waits for an answer before <c>h9k task take</c>'s own
     /// display names <c>--force</c> as the way on (idea 202383dc, item 5). Present-with-null
     /// clears an override back to the platform default (30 minutes) — the same clearing idiom
-    /// <see cref="MaxParallelTasks"/> uses. Trailing and optional so every stream written before
-    /// this feature existed replays unchanged.
+    /// <see cref="MaxParallelTasks"/> uses. Optional, and defaulted for the same reason every other
+    /// setting here is (System.Text.Json binds by name, not by position), so every stream written
+    /// before this feature existed still replays unchanged.
     /// </summary>
     Optional<int?> TakeTimeoutMinutes = default,
     /// <summary>
