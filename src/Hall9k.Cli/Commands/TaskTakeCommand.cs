@@ -627,10 +627,11 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                 else
                 {
                     // The dispatch sweep's own queue query reads State == Queued as well as
-                    // AssignedOwnerId (DispatchEngine.cs:950-951) — a no-holder task assigned to this
-                    // node's own owner is not automatically headed for a claim unless it is also
-                    // Queued (independent pre-PR review, cycle 3, conformance lens: this branch
-                    // previously promised the sweep would pick it up regardless of state).
+                    // AssignedOwnerId (DispatchEngine.cs's own ReadQueueAsync) — a no-holder task
+                    // assigned to this node's own owner is not automatically headed for a claim
+                    // unless it is also Queued (independent pre-PR review, cycle 3, conformance
+                    // lens: this branch previously promised the sweep would pick it up regardless
+                    // of state).
                     AnsiConsole.MarkupLine(
                         $"[yellow]Task {taskId} has no current holder[/] and is assigned to this node's own "
                         + $"owner, but it is {task.State.Value}, not Queued — the dispatch sweep only claims a "
@@ -686,7 +687,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                 {
                     // Claimed, NeedsHuman, AwaitingAuthor and Failed all reach here with no ledger holder:
                     // an interactive claim (h9k task work/start) records TaskClaimed with the Guid.Empty
-                    // sentinel, which TaskAggregate.Apply skips the holder write for (TaskAggregate.cs:1366)
+                    // sentinel, which TaskAggregate.Apply(TaskClaimed) skips the holder write for
                     // — so the task can be under active human work, or waiting on that human's own next
                     // decision, without ever naming a ledger holder to ask (independent pre-PR review, cycle
                     // 5, conformance lens: the terminal wording above wrongly told a reader that a live claim

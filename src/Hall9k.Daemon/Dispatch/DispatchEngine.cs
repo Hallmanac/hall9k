@@ -701,7 +701,14 @@ public sealed class DispatchEngine(
         // belt-and-suspenders second look — the same discipline this method already gives a task's
         // own state (re-validated in TryClaimAsync right before the claim commits).
         IReadOnlySet<Guid> archivedProjects = await ReadArchivedProjectIdsAsync(session, cancellationToken);
-        IReadOnlyList<QueuedCandidate> queued = await ReadQueueAsync(session, archivedProjects, cancellationToken);
+        // Resolved once here too (idea 20723ef8), not only inside TryClaimAsync's own gate: this
+        // is the queue's own pre-filter, and a cooperative grant a vouched node forged to a
+        // different real owner's Guid would otherwise hide the true grantee's own task from this
+        // very read, since AssignedOwnerId alone would never match this node's own owner id.
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, node.OwnerId, cancellationToken);
+        IReadOnlyList<QueuedCandidate> queued = await ReadQueueAsync(
+            session, archivedProjects, ownerRootFingerprint, cancellationToken);
 
         // Measured after the queue is read rather than before it, because a project cap can only
         // be measured against the projects that actually have a candidate this sweep — a paused
@@ -913,7 +920,8 @@ public sealed class DispatchEngine(
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<QueuedCandidate>> ReadQueueAsync(
-        IQuerySession session, IReadOnlySet<Guid> archivedProjects, CancellationToken cancellationToken)
+        IQuerySession session, IReadOnlySet<Guid> archivedProjects, string? ownerRootFingerprint,
+        CancellationToken cancellationToken)
     {
         Guid ownerId = node.OwnerId;
 
@@ -946,9 +954,18 @@ public sealed class DispatchEngine(
         // is read rather than just the claimable head, so that every task either ceiling defers
         // can be named in the log exactly once, which makes this the one read here whose size
         // grows with the backlog rather than with the ceiling.
+        // Mirrors IsGrantedToThisOwner's own per-row branch exactly (idea 20723ef8), so this
+        // pre-filter and the claim gate that gets the final word never disagree about which rows
+        // are candidates: a row with no fingerprint of its own (every ordinary assignment, and
+        // every event older than this field) still decides on the plain Guid alone; a row a
+        // cooperative grant recorded one on decides on the fingerprint alone — never both, since
+        // a matching Guid with a mismatched fingerprint is exactly the forged-grant shape this
+        // whole feature exists to keep out of this node's own queue, not merely out of its claim.
         IReadOnlyList<QueuedRow> rows = await session.Query<TaskListItem>()
             .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
-            .Where(t => t.AssignedOwnerId == ownerId)
+            .Where(t =>
+                (t.AssignedOwnerFingerprint == null && t.AssignedOwnerId == ownerId) ||
+                (t.AssignedOwnerFingerprint != null && t.AssignedOwnerFingerprint == ownerRootFingerprint))
             .OrderByDescending(t => t.QueuePriorityMarked)
             .ThenBy(t => t.AssignedAt)
             .ThenBy(t => t.AddedAt)
@@ -1383,7 +1400,18 @@ public sealed class DispatchEngine(
 
         StreamState? state = await session.Events.FetchStreamStateAsync(taskId, cancellationToken);
         TaskAggregate? task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken);
-        if (state is null || task is null || task.State != TaskState.Queued || task.AssignedOwnerId != node.OwnerId)
+        if (state is null || task is null || task.State != TaskState.Queued)
+        {
+            return null;
+        }
+
+        // Resolved once, ahead of the gate, and reused below for TaskClaimed's own stamp
+        // (idea 20723ef8): the one piece of local knowledge no other node has is this node's own
+        // owner root fingerprint, which is what actually decides a cooperative grant's forged Guid
+        // rather than the bare Guid the gate always compared before.
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, node.OwnerId, cancellationToken);
+        if (!IsGrantedToThisOwner(task.AssignedOwnerId, task.AssignedOwnerFingerprint, node.OwnerId, ownerRootFingerprint))
         {
             return null;
         }
@@ -1443,8 +1471,6 @@ public sealed class DispatchEngine(
         }
 
         Guid runId = DomainId.New();
-        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
-            session, node.OwnerId, cancellationToken);
         DateTimeOffset claimedAt = DateTimeOffset.UtcNow;
 
         // The ledger record's holder is the truth about who has a task (idea 202383dc, A3b): a
@@ -1511,6 +1537,29 @@ public sealed class DispatchEngine(
         await MirrorTrackerAssigneeBestEffortAsync(task, project, cancellationToken);
         return new ClaimedWork(taskId, runId, claimed.LeaseGeneration);
     }
+
+    /// <summary>
+    /// Whether a task belongs to this node's own owner (idea 20723ef8, closing the residual gap
+    /// independent pre-PR review, cycle 6 (adversarial lens, medium) left open on
+    /// <c>ClaimRequestWatchLoop.cs:144</c>): a cooperative grant can only ever carry the
+    /// requester's self-declared <paramref name="assignedOwnerId"/> Guid, since Owner events never
+    /// replicate and no node can verify a Guid it does not itself own — but the same grant also
+    /// carries <paramref name="assignedOwnerFingerprint"/>, the requester's own owner root
+    /// fingerprint as <c>ClaimRequestWatchLoop.IsRequesterOwnerVerified</c> already verified it
+    /// against the ledger's own trust chain before the grant was ever appended. When that
+    /// fingerprint is present, it alone decides — the self-declared Guid is not even consulted —
+    /// so a vouched node that sends its own true fingerprint alongside a different real owner's
+    /// Guid can neither steal a claim on that owner's own node (whose fingerprint will not match)
+    /// nor block the true grantee's own (whose fingerprint will, regardless of what Guid the grant
+    /// named). Absent — every event written before this field existed, and every ordinary
+    /// <see cref="TaskAssigned"/> assignment, which carries no such record at all today — falls
+    /// back to the plain Guid comparison this gate always made.
+    /// </summary>
+    internal static bool IsGrantedToThisOwner(
+        Guid? assignedOwnerId, string? assignedOwnerFingerprint, Guid thisOwnerId, string? thisOwnerRootFingerprint) =>
+        assignedOwnerFingerprint is null
+            ? assignedOwnerId == thisOwnerId
+            : thisOwnerRootFingerprint is not null && thisOwnerRootFingerprint == assignedOwnerFingerprint;
 
     /// <summary>
     /// The claim's own conditional write of the ledger holder (idea 202383dc, A3b): when the
