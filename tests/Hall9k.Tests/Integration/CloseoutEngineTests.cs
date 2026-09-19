@@ -638,6 +638,62 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     }
 
     /// <summary>
+    /// Task: closeout never merges a pull request whose PLAN.md section 16 tail still carries this
+    /// task's own placeholder. Every gate GitHub reports reads clean here — the exact shape the
+    /// sibling test above merges on its own — but PLAN.md's own tail entry never got its real
+    /// number (origin incident: PLACEHOLDER-609bd344 and PLACEHOLDER-5e0cbfeb, two placeholders
+    /// that reached main unnumbered because the pre-final-pass rebase skipped on a fetch failure
+    /// and a dirty worktree). By the
+    /// time a pre-approved sweep reaches its own merge call, every stacked shape that would still
+    /// owe a replay lap to renumber it has already had its chance this same sweep (the stacked
+    /// check ahead of the conflict read, and this method's own stacked check above it) — the two
+    /// leaked placeholders this guard exists for both reached this exact merge call on branches
+    /// that were never stacked at all — so this parks instead of merging an unnumbered entry onto
+    /// the project's base.
+    /// </summary>
+    [Fact]
+    public async Task A_pre_approved_task_never_merges_while_its_own_plan_tail_still_carries_its_placeholder()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        (DocumentStore store, NodeContext node, GitWorktreeManager worktrees, _, string repoPath) =
+            await SetUpAsync(cts.Token);
+        await DrainPriorSweepStateAsync(store, node, cts.Token);
+
+        (Guid taskId, Guid runId, Worktree worktree) = await SeedAwaitingReviewAsync(
+            store, node, worktrees, repoPath, cts.Token, preApproval: PreApprovalMode.On);
+
+        string taskShortId = DomainId.Short(taskId);
+        File.WriteAllText(Path.Combine(worktree.Path, "PLAN.md"), string.Join('\n',
+        [
+            "# Fixture Plan",
+            "",
+            "## 16. v0 Decisions Log",
+            "",
+            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
+            "",
+            "---",
+            "",
+            "## 17. Reference Materials",
+            "",
+        ]));
+        Git(worktree.Path, "add -A");
+        Git(worktree.Path, "-c user.name=Test -c user.email=t@t commit -qm \"decisions log entry\"");
+
+        FakeInspector inspector = new() { Snapshot = FakeInspector.Quiet() with { HeadCommit = "cafe123" } };
+        CloseoutEngine engine = NewEngine(store, node, inspector, worktrees);
+        CloseoutSweepResult sweep = await engine.PollOnceAsync(cts.Token);
+
+        sweep.Should().Be(new CloseoutSweepResult(RunsInspected: 1, MergesObserved: 0),
+            "every GitHub gate is clean, but PLAN.md's own tail still carries this task's own placeholder");
+        inspector.MergeAttempts.Should().Be(0, "the placeholder guard runs before the merge call itself");
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Should().Be(RunState.CloseoutParked);
+        run.ParkedReason.Should().Contain($"PLACEHOLDER-{taskShortId}").And.Contain("Decisions Log");
+    }
+
+    /// <summary>
     /// GitHub not having reported a single check run yet (an empty statusCheckRollup, indistinguishable
     /// from a repository with no CI configured at all) is a visible wait within the settle window —
     /// not "CI green", so the daemon neither merges nor parks (independent pre-PR review, cycle 1,

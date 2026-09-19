@@ -4,6 +4,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
+using Hall9k.Daemon.Review;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Node;
@@ -18,6 +19,7 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
@@ -1422,6 +1424,37 @@ public sealed class CloseoutEngine(
                 + "Merge it by hand, or grant another attempt with h9k pr resolve.";
             await ParkAsync(session, run, parkReason, now, cancellationToken);
             return InspectionOutcome.Inspected;
+        }
+
+        // The last gate before the merge call itself (task: closeout never merges a pull request
+        // whose PLAN.md tail still carries this task's own placeholder). Every stacked shape that
+        // would still owe a replay lap to renumber it has already had its chance this same sweep —
+        // the stacked check ahead of the conflict read in InspectAndActAsync, and this method's own
+        // stacked check above — so reaching this line already means no such lap is coming from
+        // elsewhere this sweep; the two leaked-placeholder incidents this guard exists for
+        // (PLACEHOLDER-609bd344, PLACEHOLDER-5e0cbfeb) both reached this exact merge call with their
+        // own tail entry still unnumbered, on branches that were never stacked at all. Read straight
+        // off the retained worktree, the same as every other check in this method; a worktree this
+        // sweep cannot read is not this
+        // run's fault and is left to whatever already covers that (independent of this guard).
+        if (run.WorktreePath.IsNotBlank() && Directory.Exists(run.WorktreePath))
+        {
+            string taskShortId = DomainId.Short(task.Id);
+            bool stillPlaceholder = await DecisionsLogRenumberer.TailEntryIsThisTasksUnresolvedPlaceholderAsync(
+                run.WorktreePath, taskShortId, cancellationToken);
+            if (stillPlaceholder)
+            {
+                string placeholderParkReason =
+                    $"Pre-approved, but PLAN.md's own Decisions Log (section 16) still carries this task's own "
+                    + $"placeholder PLACEHOLDER-{taskShortId} at its tail rather than a real number — merging "
+                    + $"now would land an unnumbered entry on {project.BaseBranch}. Run h9k pr resolve so a "
+                    + "follow-up run rebases the branch and the mechanical pre-final-pass step assigns it a "
+                    + "real number, then this sweep merges it; rebasing onto "
+                    + $"{project.BaseBranch} by hand does not run that step, so a hand rebase still needs the "
+                    + "placeholder replaced with a real number by hand before this sweep will merge it.";
+                await ParkAsync(session, run, placeholderParkReason, now, cancellationToken);
+                return InspectionOutcome.Inspected;
+            }
         }
 
         try

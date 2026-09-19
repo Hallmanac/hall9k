@@ -270,6 +270,37 @@ public static class DecisionsLogRenumberer
         static DecisionsLogRenumberResult NoAction() => new(DecisionsLogRenumberOutcome.NoActionNeeded, null, null, 0);
     }
 
+    /// <summary>
+    /// Whether PLAN.md's own Decisions Log tail, as it sits on disk in <paramref name="worktreePath"/>
+    /// right now, is still <paramref name="taskShortId"/>'s own unresolved placeholder — the
+    /// read-only half of the placeholder-numbering convention (Decisions Log #162), used by
+    /// closeout's own pre-merge guard (task: closeout never merges a pull request whose PLAN.md
+    /// tail still carries this task's own placeholder) rather than <see cref="RenumberIfNeededAsync"/>
+    /// itself, which also writes and commits. No git call, no fetch, no lock: a plain file read
+    /// against whatever the worktree already holds, exactly like <see cref="RenumberIfNeededAsync"/>'s
+    /// own first read before it ever touches git.
+    /// </summary>
+    public static async Task<bool> TailEntryIsThisTasksUnresolvedPlaceholderAsync(
+        string worktreePath, string taskShortId, CancellationToken cancellationToken)
+    {
+        string planPath = Path.Combine(worktreePath, PlanMarkdownFileName);
+        if (!File.Exists(planPath))
+        {
+            return false;
+        }
+
+        string planText = await File.ReadAllTextAsync(planPath, cancellationToken);
+        (string[] lines, _, _) = SplitPreservingLineEnding(planText);
+        (int sectionStart, int sectionEnd) = FindSection(lines);
+        if (sectionStart < 0 || sectionEnd < 0)
+        {
+            return false;
+        }
+
+        TailScan scan = ScanTail(lines, sectionStart, sectionEnd);
+        return scan.TailLine >= 0 && scan.TailIsPlaceholder && scan.TailToken == taskShortId;
+    }
+
     private readonly record struct TailScan(
         int TailLine,
         string TailToken,
