@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.Exceptions;
 
 namespace Hall9k.Domain.Features.Idea;
@@ -112,6 +113,20 @@ public static class IdeaDecider
 
         return new IdeaTaskCut(idea.Id, taskId, objective.Trim(), cutAt, cutByOwnerId);
     }
+
+    /// <summary>
+    /// The idea-side half of a spike's <see cref="Tasks.Events.SpikeConcluded"/> (task: a spike is
+    /// a run, not a walk): recordable whatever the idea's own state — a spike cut before the idea
+    /// concluded or was archived can still reach its verdict after, and the provenance trail is
+    /// honest either way. <paramref name="taskId"/> is trusted rather than re-checked against
+    /// <see cref="IdeaAggregate.CutTaskIds"/> here: the caller (the daemon's spike finalize step)
+    /// already knows this task's own <c>SourceIdeaId</c> names this idea, which is the fact that
+    /// matters — a stream rewritten to drop an old cut from the list should not un-happen a
+    /// verdict that already landed.
+    /// </summary>
+    public static IdeaSpikeConcluded RecordSpikeConcluded(
+        IdeaAggregate idea, Guid taskId, SpikeVerdict verdict, string reason, DateTimeOffset concludedAt) =>
+        new(idea.Id, taskId, verdict, reason, concludedAt);
 
     /// <summary>
     /// Discovery happened and something came of it: tasks were cut, or an outcome was acted on

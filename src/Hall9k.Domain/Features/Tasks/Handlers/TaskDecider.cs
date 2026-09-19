@@ -39,7 +39,9 @@ public static class TaskDecider
         int? stackedOnPullRequestNumber = null,
         PreApprovalMode? preApproval = null,
         TaskOrigin? origin = null,
-        ExternalReference? secondaryExternalReference = null)
+        ExternalReference? secondaryExternalReference = null,
+        SpikeKind? spikeKind = null,
+        string? exitCriterion = null)
     {
         if (projectId == Guid.Empty)
         {
@@ -102,7 +104,9 @@ public static class TaskDecider
             Origin: origin,
             PreApproval: preApprovalGranted,
             StackedOnPullRequestNumber: stackedOn.PullRequestNumber,
-            SecondaryExternalReference: secondaryExternalReference);
+            SecondaryExternalReference: secondaryExternalReference,
+            SpikeKind: spikeKind,
+            ExitCriterion: exitCriterion.IsNotBlank() ? exitCriterion!.Trim() : null);
     }
 
     /// <summary>
@@ -253,18 +257,27 @@ public static class TaskDecider
     /// cref="Revise"/> supplies for an already-persisted task (independent pre-PR review, cycle 1,
     /// conformance lens).
     /// </para>
+    /// <para>
+    /// Extended to a spike (task: a spike is a run, not a walk): its own one-review-cycle-one-fix-
+    /// lap pipeline is fixed by the type too, for the identical reason — SpikeEngine never calls
+    /// <c>ReviewCapResolver</c> at all, so there is no pipeline shape left for an override to
+    /// actually change.
+    /// </para>
     /// </summary>
     public static void RefuseCompositionOnPrReview(TaskType type, string? normalizedComposition)
     {
-        if (normalizedComposition is null || type != TaskType.PrReview)
+        if (normalizedComposition is null || (type != TaskType.PrReview && type != TaskType.Spike))
         {
             return;
         }
 
-        throw new DomainValidationException(
-            "This task is a pr-review task — its pipeline is fixed (the primary session already is the "
-            + "adversarial lens, and the conformance lens always dispatches after it), so "
-            + "--review-stage-composition has no pipeline shape left here to change. Leave it unset.");
+        throw new DomainValidationException(type == TaskType.Spike
+            ? "This task is a spike — its review pipeline is fixed (exactly one review cycle and at "
+              + "most one fix lap, judged against the exit criterion alone), so "
+              + "--review-stage-composition has no pipeline shape left here to change. Leave it unset."
+            : "This task is a pr-review task — its pipeline is fixed (the primary session already is the "
+              + "adversarial lens, and the conformance lens always dispatches after it), so "
+              + "--review-stage-composition has no pipeline shape left here to change. Leave it unset.");
     }
 
     /// <summary>
@@ -346,6 +359,28 @@ public static class TaskDecider
                 "A task requires at least one checkable acceptance criterion before it can be published. " +
                 "If you can't write acceptance criteria, the task isn't ready (PLAN.md §4). " +
                 $"Add them with: h9k task revise {task.Id} --criteria <criterion> (repeat the option for more)");
+        }
+
+        // A spike's own readiness contract (task: a spike is a run, not a walk): the kind decides
+        // its gates and its branch's fate, and the exit criterion is the one thing its review cycle
+        // ever judges against — publishing without either would dispatch a run with nothing to
+        // measure itself against.
+        if (task.Type == TaskType.Spike)
+        {
+            if (task.SpikeKind == SpikeKind.Unknown)
+            {
+                throw new DomainValidationException(
+                    "A spike requires a kind — research, experiment, or prototype — before it can be "
+                    + $"published. Set one with: h9k task revise {task.Id} --kind <research|experiment|prototype>");
+            }
+
+            if (task.ExitCriterion.IsBlank())
+            {
+                throw new DomainValidationException(
+                    "A spike requires an exit criterion — one checkable sentence its review cycle judges "
+                    + $"the findings and the branch against — before it can be published. Set one with: "
+                    + $"h9k task revise {task.Id} --exit-criterion <one checkable sentence>");
+            }
         }
 
         if (graph.Missing(task.BlockedBy) is { Count: > 0 } missing)
@@ -658,7 +693,10 @@ public static class TaskDecider
         bool clearInteractiveMode = false,
         Optional<Guid?> stackedOnTaskId = default,
         Optional<int?> stackedOnPullRequestNumber = default,
-        Optional<string?> closeLinkedIssue = default)
+        Optional<string?> closeLinkedIssue = default,
+        Optional<SpikeKind> spikeKind = default,
+        Optional<string> exitCriterion = default,
+        Optional<TaskConstraints?> constraints = default)
     {
         // Both markers are scheduling/mode facts, not part of the readiness contract, so they
         // are the two exceptions Revise's own Draft-only gate carves out (task 45136b29 for
@@ -672,9 +710,22 @@ public static class TaskDecider
             && !objective.HasValue && !acceptanceCriteria.HasValue && !agentContext.HasValue
             && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
             && !reviewStageComposition.HasValue && !stackedOnTaskId.HasValue
-            && !stackedOnPullRequestNumber.HasValue && !closeLinkedIssue.HasValue;
+            && !stackedOnPullRequestNumber.HasValue && !closeLinkedIssue.HasValue
+            && !spikeKind.HasValue && !exitCriterion.HasValue && !constraints.HasValue;
 
-        if (task.State != TaskState.Draft && !onlyMarkerFieldsChanging)
+        // A spike's own kind, exit criterion, and budget are settable on a Published spike too
+        // (task: a spike is a run, not a walk) — a third carve-out beside the two marker fields
+        // above, and just as narrow: only when nothing else in the same call would need the full
+        // Draft-only ceremony.
+        bool onlySpikeFieldsChanging = (spikeKind.HasValue || exitCriterion.HasValue || constraints.HasValue)
+            && !objective.HasValue && !acceptanceCriteria.HasValue && !agentContext.HasValue
+            && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
+            && !queuePriority.HasValue && !reviewStageComposition.HasValue && !clearInteractiveMode
+            && !stackedOnTaskId.HasValue && !stackedOnPullRequestNumber.HasValue && !closeLinkedIssue.HasValue;
+        bool spikePublishedRevisionAllowed = onlySpikeFieldsChanging
+            && task.Type == TaskType.Spike && task.State == TaskState.Published;
+
+        if (task.State != TaskState.Draft && !onlyMarkerFieldsChanging && !spikePublishedRevisionAllowed)
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is {task.State.Value} — only a draft can be revised. " + task.State switch
@@ -717,6 +768,27 @@ public static class TaskDecider
             throw new DomainValidationException(
                 "A revision cannot blank the objective — it is what the task is about. " +
                 "Pass a new one, or walk away with h9k task abandon.");
+        }
+
+        if (spikeKind.HasValue && spikeKind.Value == SpikeKind.Unknown)
+        {
+            throw new DomainValidationException(
+                "A spike's kind cannot be revised to nothing — pass research, experiment, or prototype.");
+        }
+
+        if (exitCriterion.HasValue && exitCriterion.Value.IsBlank())
+        {
+            throw new DomainValidationException(
+                "A spike's exit criterion cannot be blanked — it is what its review cycle judges the "
+                + "findings and the branch against. Pass a new one, or walk away with h9k task abandon.");
+        }
+
+        if ((spikeKind.HasValue || exitCriterion.HasValue || constraints.HasValue)
+            && task.Type != TaskType.Spike && (type.HasValue ? type.Value != TaskType.Spike : true))
+        {
+            throw new DomainValidationException(
+                $"Task {task.Id} is not a spike, so it has no kind, exit criterion, or budget of its "
+                + "own to revise.");
         }
 
         Optional<IReadOnlyList<string>> criteria = acceptanceCriteria.HasValue
@@ -793,14 +865,15 @@ public static class TaskDecider
             && !dependencies.HasValue && !type.HasValue && !chosenModel.HasValue && !epicId.HasValue
             && !queuePriority.HasValue && !normalizedComposition.HasValue && !clearInteractiveMode
             && !stackedOn.TaskId.HasValue && !stackedOn.PullRequestNumber.HasValue
-            && !closeLinkedIssueForEvent.HasValue)
+            && !closeLinkedIssueForEvent.HasValue && !spikeKind.HasValue && !exitCriterion.HasValue
+            && !constraints.HasValue)
         {
             throw new DomainValidationException(
                 "A revision needs something to revise. Pass --objective, --criteria, --context, " +
                 "--type, --model, --blocked-by, --clear-dependencies, --epic, --clear-epic, " +
                 "--stacked-on, --stacked-on-pull-request, --clear-stacked-on, --queue-first, " +
-                "--clear-queue-first, --review-stage-composition, --clear-interactive-mode, or " +
-                "--close-linked-issue.");
+                "--clear-queue-first, --review-stage-composition, --clear-interactive-mode, " +
+                "--close-linked-issue, --kind, --exit-criterion, or a budget option.");
         }
 
         Optional<Run.ReviewStageComposition?> compositionForEvent = normalizedComposition.HasValue
@@ -808,6 +881,11 @@ public static class TaskDecider
                 ? Run.ReviewStageComposition.FromInput(normalizedWord)
                 : null)
             : Optional<Run.ReviewStageComposition?>.None;
+
+        // exitCriterion.Value is guaranteed non-blank here: the check above already threw otherwise.
+        Optional<string> normalizedExitCriterion = exitCriterion.HasValue
+            ? Optional<string>.Of(exitCriterion.Value!.Trim())
+            : Optional<string>.None;
 
         return new TaskRevised(
             task.Id, objective, criteria, agentContext, dependencies, type, chosenModel,
@@ -817,7 +895,10 @@ public static class TaskDecider
             clearInteractiveMode,
             stackedOn.TaskId,
             stackedOn.PullRequestNumber,
-            closeLinkedIssueForEvent);
+            closeLinkedIssueForEvent,
+            spikeKind,
+            normalizedExitCriterion,
+            constraints);
     }
 
     /// <summary>What a revision records about the stacked edge, in both its forms.</summary>
@@ -1752,6 +1833,41 @@ public static class TaskDecider
         }
 
         return new TaskCompleted(task.Id, runId, pullRequestUrl, completedAt);
+    }
+
+    /// <summary>
+    /// The event that carries a spike's own verdict (task: a spike is a run, not a walk). Always
+    /// appended alongside <see cref="Complete"/> with <c>pullRequestUrl: null</c> in the same
+    /// batch — this event never moves <see cref="TaskState"/> itself, exactly as
+    /// <see cref="TaskAggregate.Apply(Events.SpikeConcluded)"/>'s own doc says, so the caller
+    /// (SpikeEngine) is the one place both events are composed together.
+    /// </summary>
+    public static SpikeConcluded ConcludeSpike(
+        TaskAggregate task, Guid runId, SpikeVerdict verdict, string reason, string findingsPath,
+        DateTimeOffset concludedAt)
+    {
+        if (task.Type != TaskType.Spike)
+        {
+            throw new DomainConflictException($"Task {task.Id} is not a spike, so it has no verdict to conclude.");
+        }
+
+        if (task.State != TaskState.Claimed)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is {task.State.Value} — only a claimed spike concludes.");
+        }
+
+        if (verdict == SpikeVerdict.Unknown)
+        {
+            throw new DomainValidationException("A spike's verdict must be met, not-met, or budget-exhausted.");
+        }
+
+        if (reason.IsBlank())
+        {
+            throw new DomainValidationException("A spike's verdict needs a reason.");
+        }
+
+        return new SpikeConcluded(task.Id, runId, verdict, reason.Trim(), findingsPath, concludedAt);
     }
 
     /// <summary>

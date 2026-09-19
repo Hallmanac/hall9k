@@ -54,6 +54,9 @@ public static class EventScopeRegistry
         [typeof(PullRequestReviewVerdictDelivered)] = EventScope.ProjectScoped,
         [typeof(QuestionAsked)] = EventScope.ProjectScoped,
         [typeof(RemoteStackedParentObserved)] = EventScope.ProjectScoped,
+        // A spike's own verdict (task: a spike is a run, not a walk) — a team-visible fact about
+        // the task's own outcome, the same tier every other task-stream event here travels at.
+        [typeof(SpikeConcluded)] = EventScope.ProjectScoped,
         [typeof(StackedCheckpointRebased)] = EventScope.ProjectScoped,
         [typeof(TaskAbandoned)] = EventScope.ProjectScoped,
         [typeof(TaskAdded)] = EventScope.ProjectScoped,
@@ -325,6 +328,9 @@ public static class EventScopeRegistry
         [typeof(IdeaPromoted)] = EventScope.ProjectScoped,
         [typeof(IdeaRevised)] = EventScope.ProjectScoped,
         [typeof(IdeaTaskCut)] = EventScope.ProjectScoped,
+        // The idea-side half of a spike's own verdict (task: a spike is a run, not a walk) —
+        // provenance of a team-visible fact, the same tier IdeaTaskCut already travels at.
+        [typeof(IdeaSpikeConcluded)] = EventScope.ProjectScoped,
     };
 
     /// <summary>The classified event types, for a completeness test to enumerate against.</summary>

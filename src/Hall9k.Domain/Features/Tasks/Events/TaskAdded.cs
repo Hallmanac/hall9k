@@ -109,7 +109,19 @@ public sealed record TaskAdded(
     /// <see cref="ExternalReference"/> alone. Null on every task with at most one reference, which
     /// is every stream written before this field existed and every ordinary adoption today.
     /// </summary>
-    ExternalReference? SecondaryExternalReference = null)
+    ExternalReference? SecondaryExternalReference = null,
+    /// <summary>
+    /// A spike's own kind (task: a spike is a run, not a walk) — null on every non-spike task,
+    /// and on every stream written before spikes existed. Required by <c>TaskDecider.Publish</c>
+    /// for a spike, but not here: creation is identity, not readiness (Decisions Log #34).
+    /// </summary>
+    SpikeKind? SpikeKind = null,
+    /// <summary>
+    /// A spike's own exit criterion, one checkable sentence the review cycle judges the findings
+    /// and the branch against — null on every non-spike task. Required by
+    /// <c>TaskDecider.Publish</c> for a spike, not here, for the identical reason.
+    /// </summary>
+    string? ExitCriterion = null)
 {
     /// <summary>
     /// What this event granted, whichever build wrote it — the same one home for the

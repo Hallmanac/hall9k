@@ -448,4 +448,17 @@ public static class RunPaths
 
     /// <summary>The condensed blocker context a synthesis session produced for this run (log #36).</summary>
     public static string BlockerContextFile(string runDirectory) => Path.Combine(runDirectory, "blocker-context.md");
+
+    /// <summary>
+    /// A spike's own findings document (task: a spike is a run, not a walk): a fixed path in the
+    /// run directory the build prompt tells the session to write, with three sections — what was
+    /// run, what was observed, and the verdict with its reason. Read back by SpikeEngine's own
+    /// review cycle and, when the spike was cut from an idea, copied by closeout to the idea's
+    /// workspace at <c>spikes/&lt;task-id&gt;/findings.md</c>.
+    /// </summary>
+    public static string SpikeFindingsFile(string runDirectory) => Path.Combine(runDirectory, "findings.md");
+
+    /// <summary>One pass of a spike's own review cycle — the judge session's own verdict text against the exit criterion, before any fix lap.</summary>
+    public static string SpikeReviewFile(string runDirectory, int pass) =>
+        Path.Combine(runDirectory, $"spike-review-{pass}.md");
 }
