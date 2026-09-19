@@ -51,6 +51,15 @@ public sealed record EventReplicationReadResult(bool SenderIgnored, int EventsAp
 /// team-facing events — the sender's own id there is a foreign coordinate, never this receiver's
 /// (<see cref="ProjectStreamReplicationRules"/>).
 /// </para>
+/// <para>
+/// A stream's events only ever arrive in order, and this class now enforces that rather than
+/// assuming it: an event is appended, never inserted, so a record belonging BEHIND one the local
+/// stream already holds from the same origin is refused with a warning instead
+/// (<see cref="OriginHighWaterAsync"/>). The shape that reaches that check is a stream this node
+/// holds only the post-switch-on TAIL of, whose pre-switch-on head an explicit pull then serves
+/// (task a56cf16e, Decisions Log #235) — applying that head would replay the stream backwards and
+/// leave the aggregate reading as it did at its creation.
+/// </para>
 /// </summary>
 public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<EventReplicationInbox>? logger = null)
 {
@@ -137,6 +146,27 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // single current candidate to match a sender against below (independent pre-PR review,
         // cycle 1, both lenses, medium).
         HashSet<Guid> streamIdsAnsweredThisRead = [];
+        // Every catch-up request this read saw an answer to, by request id: only
+        // EventCatchUpResponder.AnswerAsync ever addresses an events envelope to THIS NODE ALONE
+        // (MessageAudience.Node(requesterNodeId)) — an ordinary outbox flush is always
+        // MessageAudience.Project — and it stamps the answered request's own id into that
+        // envelope's about field. The whole-project history pull below closes on its own id
+        // appearing here: that shape names no stream to match and its answer may apply nothing at
+        // all (independent pre-PR review, cycle 1, both lenses, medium), and matching on the id
+        // rather than on "some node-addressed answer went by" is what keeps a SIBLING request's
+        // answer — a task pull's, say, arriving in the same read — from closing the pull before any
+        // peer has answered it (independent pre-PR review, cycle 4, conformance lens, low).
+        HashSet<Guid> catchUpRequestIdsAnsweredThisRead = [];
+        // The same signal from a peer on a build that predates the stamped id above (task
+        // a56cf16e): such a peer decodes a project pull's request as a bootstrap — the
+        // SinceGlobalSequence field it does not know about defaults to null — and answers it with
+        // an events envelope carrying no about at all. Closing on that is still better than
+        // standing forever, and it is the only case left that a sibling answer can close early.
+        bool unattributedCatchUpAnswerThisRead = false;
+        // Per stream, the highest origin sequence this node already holds from each origin node —
+        // read once per stream per read, before anything is appended to it, and kept current as
+        // records land. See ApplyAsync's own doc for the invariant it enforces.
+        Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream = [];
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
             highestSeqConsidered = raw.Seq;
@@ -200,12 +230,25 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 continue;
             }
 
+            if (batch.Count > 0 && envelope.To == MessageAudience.Node(myNodeId))
+            {
+                if (Guid.TryParse(envelope.About, out Guid answeredRequestId))
+                {
+                    catchUpRequestIdsAnsweredThisRead.Add(answeredRequestId);
+                }
+                else
+                {
+                    unattributedCatchUpAnswerThisRead = true;
+                }
+            }
+
             foreach (EventReplicationCodec.ReplicatedEventRecord record in batch)
             {
                 streamIdsAnsweredThisRead.Add(record.StreamId);
                 if (await ApplyAsync(
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
-                    originEventIdsAppliedThisRead, originProgressThisRead, now, cancellationToken))
+                    originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream, now,
+                    cancellationToken))
                 {
                     applied++;
                 }
@@ -284,6 +327,24 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                     request.AnsweredAt = now;
                     session.Store(request);
                 }
+                else if (request is { Candidates.Count: 0, ForStreamId: null, SinceGlobalSequence: not null }
+                    && (catchUpRequestIdsAnsweredThisRead.Contains(request.Id) || unattributedCatchUpAnswerThisRead))
+                {
+                    // h9k project pull's own broadcast (task a56cf16e) names no single stream to
+                    // match, so the arm above can never close it, and what actually APPLIED cannot
+                    // close it either: a pull answered in full with events this node already holds
+                    // dedupes every record by origin event id and applies nothing, which is the
+                    // ordinary outcome of the "am I missing anything?" pull. Waiting on applied > 0
+                    // left such a pull outstanding forever — reported by h9k status for good, and
+                    // refusing every later pull at the same or a shallower bound through
+                    // EventCatchUpCoordinator.RequestProjectHistoryBroadcastAsync's own guard
+                    // (independent pre-PR review, cycle 1, both lenses, medium). A peer's answer
+                    // ARRIVING is the honest signal, and an answer stamped with THIS request's own
+                    // id is narrow enough to read neither an unrelated live flush nor a sibling
+                    // catch-up answer as this pull's (cycle 4, conformance lens, low).
+                    request.AnsweredAt = now;
+                    session.Store(request);
+                }
             }
         }
 
@@ -295,11 +356,14 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// idempotency a re-delivered batch relies on — or already applied earlier in this identical
     /// read, uncommitted (<paramref name="originEventIdsAppliedThisRead"/>): the stored-row check
     /// alone only ever sees committed rows, so a second copy of the same origin event later in the
-    /// same read would otherwise find nothing yet and apply a duplicate.</summary>
+    /// same read would otherwise find nothing yet and apply a duplicate. Also false, with a
+    /// warning, when appending this record would put it BEHIND an event the local stream already
+    /// holds from the same origin — see <paramref name="originHighWaterByStream"/>.</summary>
     private async Task<bool> ApplyAsync(
         IDocumentSession session, EventReplicationCodec.ReplicatedEventRecord record, Guid senderNodeId, Guid projectId,
         string? originProjectKey, HashSet<Guid> streamsStartedThisRead, HashSet<Guid> originEventIdsAppliedThisRead,
-        Dictionary<Guid, long> originProgressThisRead, DateTimeOffset now, CancellationToken cancellationToken)
+        Dictionary<Guid, long> originProgressThisRead, Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
+        DateTimeOffset now, CancellationToken cancellationToken)
     {
         if (!originEventIdsAppliedThisRead.Add(record.OriginEventId))
         {
@@ -395,10 +459,40 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
 
         bool streamExists = streamsStartedThisRead.Contains(effectiveStreamId)
             || await session.Events.FetchStreamStateAsync(effectiveStreamId, cancellationToken) is not null;
+
+        // An event is only ever APPENDED to a local stream — Marten has no way to put one before
+        // what is already there — so a record that belongs earlier than an event this stream
+        // already holds from the same origin cannot be applied at all: doing it anyway replays the
+        // stream out of order, and TaskAggregate.Apply(TaskAdded) running last resets State and
+        // clears the acceptance criteria, so a published or finished task reads as newly queued
+        // (independent pre-PR review, cycle 4, adversarial lens, high). The shape that reaches
+        // here is a node holding only a stream's post-switch-on TAIL — the ordinary flush ships
+        // nothing older — which then pulls that stream's pre-switch-on head under the new
+        // explicit-ask rule (task a56cf16e, Decisions Log #235). Refusing is the honest outcome:
+        // the head stays where a peer holds it, the tail keeps reading correctly, and h9k task
+        // pull says so up front rather than letting a human queue a pull that would corrupt the
+        // stream. Compared per ORIGIN node, since two origins' own sequences say nothing about
+        // each other's order.
+        Dictionary<Guid, long> originHighWater =
+            await OriginHighWaterAsync(session, effectiveStreamId, streamExists, originHighWaterByStream, cancellationToken);
+        if (originHighWater.TryGetValue(record.OriginNodeId, out long highestHeld) && record.OriginSequence < highestHeld)
+        {
+            logger?.LogWarning(
+                "Replicated event {OriginEventId} (origin {OriginNodeId} sequence {OriginSequence}) belongs before "
+                + "origin sequence {HighestHeld}, which stream {StreamId} already holds — refused rather than "
+                + "appended out of order",
+                record.OriginEventId, record.OriginNodeId, record.OriginSequence, highestHeld, effectiveStreamId);
+            return false;
+        }
+
         StreamAction action = streamExists
             ? session.Events.Append(effectiveStreamId, data)
             : session.Events.StartStream(effectiveStreamId, data);
         streamsStartedThisRead.Add(effectiveStreamId);
+        if (record.OriginSequence > highestHeld)
+        {
+            originHighWater[record.OriginNodeId] = record.OriginSequence;
+        }
 
         IEvent appended = action.Events[^1];
         appended.SetHeader(ReplicationEventHeaders.OriginNodeId, record.OriginNodeId.ToString());
@@ -461,6 +555,58 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// The highest origin sequence <paramref name="streamId"/> already holds from each origin node,
+    /// read from the applied copies' own <see cref="ReplicationEventHeaders.OriginNodeId"/>/
+    /// <see cref="ReplicationEventHeaders.OriginSequence"/> headers. Read from the store once per
+    /// stream per read, BEFORE anything is appended to that stream in this read — a
+    /// <c>LightweightSession</c>'s own <c>FetchStreamAsync</c> only ever sees committed rows, the
+    /// identical uncommitted-visibility gap <c>streamsStartedThisRead</c> exists to close — then
+    /// kept current in <paramref name="originHighWaterByStream"/> as records land. Empty, with no
+    /// query at all, for a stream this node does not hold yet, which is the whole of a bootstrap
+    /// answer and most of a pull's: the per-stream query is paid only for streams already here.
+    /// <para>
+    /// An event this node produced NATIVELY carries no origin headers and is deliberately not
+    /// counted: its origin is this node, and <c>EventCatchUpResponder</c> never hands a node its
+    /// own history back, so no incoming record can ever be ordered against one.
+    /// </para>
+    /// </summary>
+    private static async Task<Dictionary<Guid, long>> OriginHighWaterAsync(
+        IQuerySession session, Guid streamId, bool streamExists,
+        Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream, CancellationToken cancellationToken)
+    {
+        if (originHighWaterByStream.TryGetValue(streamId, out Dictionary<Guid, long>? known))
+        {
+            return known;
+        }
+
+        Dictionary<Guid, long> highWater = [];
+        originHighWaterByStream[streamId] = highWater;
+        if (!streamExists)
+        {
+            return highWater;
+        }
+
+        IReadOnlyList<IEvent> held = await session.Events.FetchStreamAsync(streamId, token: cancellationToken);
+        foreach (IEvent candidate in held)
+        {
+            if (candidate.GetHeader(ReplicationEventHeaders.OriginNodeId) is not string originNodeIdText
+                || !Guid.TryParse(originNodeIdText, out Guid originNodeId)
+                || candidate.GetHeader(ReplicationEventHeaders.OriginSequence) is not string originSequenceText
+                || !long.TryParse(originSequenceText, NumberStyles.Integer, CultureInfo.InvariantCulture, out long originSequence))
+            {
+                continue;
+            }
+
+            if (!highWater.TryGetValue(originNodeId, out long current) || originSequence > current)
+            {
+                highWater[originNodeId] = originSequence;
+            }
+        }
+
+        return highWater;
     }
 
     /// <summary>Rewrites the top-level <c>projectId</c> property (case-insensitive, matching

@@ -144,8 +144,13 @@ public sealed class EventCatchUpCoordinator
         IDocumentSession session, Guid projectId, Guid myNodeId, string myOwnerFingerprint,
         IReadOnlyList<Guid> candidates, TimeSpan reMintCooldown, DateTimeOffset now, CancellationToken cancellationToken)
     {
+        // SinceGlobalSequence null is part of what makes this the bootstrap shape rather than
+        // h9k project pull's own (self-review, task a56cf16e): both carry a null origin node and a
+        // null stream, so without this clause an outstanding — or merely recent — project pull
+        // would read as an outstanding bootstrap and suppress the one a brand-new node depends on.
         EventCatchUpRequest? mostRecent = await session.Query<EventCatchUpRequest>()
-            .Where(request => request.ProjectId == projectId && request.ForOriginNodeId == null && request.ForStreamId == null)
+            .Where(request => request.ProjectId == projectId && request.ForOriginNodeId == null
+                && request.ForStreamId == null && request.SinceGlobalSequence == null)
             .OrderByDescending(request => request.SentAt)
             .FirstOrDefaultAsync(cancellationToken);
         bool blockedByRecentAttempt = mostRecent is not null
@@ -196,14 +201,74 @@ public sealed class EventCatchUpCoordinator
             Candidates = [],
             SentAt = now,
         };
+        await BroadcastAsync(session, myNodeId, myOwnerFingerprint, request, now, cancellationToken);
+        return true;
+    }
+
+    /// <summary>
+    /// Starts a broadcast request for a whole project's history at or above
+    /// <paramref name="sinceGlobalSequence"/> on whichever peer answers (0 for <c>--since all</c>) —
+    /// <c>h9k project pull</c>, the lever for an ESTABLISHED node, which is precisely the node the
+    /// automatic bootstrap can never help: <c>MessageSweepEngine.HasAnyLocalHistoryAsync</c> gates
+    /// that bootstrap to a node with no applied history at all, so a node that joined, caught up on
+    /// the retention window, and has produced work of its own since never asks for anything older
+    /// again. Broadcast rather than a ranked cascade for the identical reason
+    /// <see cref="RequestStreamBroadcastAsync"/> is: this runs from a CLI command with no live trust
+    /// chain or transport of its own (task a56cf16e).
+    /// <para>
+    /// Skipped when an outstanding project-history request already reaches at least as far back as
+    /// this one would — a repeat of the same pull reports the one already in flight rather than
+    /// queueing a second identical ask, while a genuinely deeper pull (a lower bound) is a
+    /// different question and gets asked. A bootstrap request is never matched here: it carries a
+    /// null <see cref="EventCatchUpRequest.SinceGlobalSequence"/>, and the two are deliberately
+    /// distinct shapes.
+    /// </para>
+    /// </summary>
+    public async Task<bool> RequestProjectHistoryBroadcastAsync(
+        IDocumentSession session, Guid projectId, long sinceGlobalSequence, Guid myNodeId, string myOwnerFingerprint,
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        bool alreadyOutstanding = await session.Query<EventCatchUpRequest>()
+            .Where(request => request.ProjectId == projectId && request.SinceGlobalSequence != null
+                && request.SinceGlobalSequence <= sinceGlobalSequence
+                && request.AnsweredAt == null && !request.Exhausted)
+            .AnyAsync(cancellationToken);
+        if (alreadyOutstanding)
+        {
+            return false;
+        }
+
+        EventCatchUpRequest request = new()
+        {
+            Id = DomainId.New(),
+            ProjectId = projectId,
+            SinceGlobalSequence = sinceGlobalSequence,
+            Candidates = [],
+            SentAt = now,
+        };
+        await BroadcastAsync(session, myNodeId, myOwnerFingerprint, request, now, cancellationToken);
+        return true;
+    }
+
+    /// <summary>Persists <paramref name="request"/> and queues its one project-wide
+    /// <see cref="MessageKind.EventsRequest"/> envelope — the half both broadcast shapes share.
+    /// The envelope's own <c>about</c> field carries the requested stream id when there is one and
+    /// nothing otherwise: it is documented as a task or idea id a reader can act on, so a
+    /// project-history pull's sequence bound does not belong in it — that bound rides the request
+    /// body, where it is actually read.</summary>
+    private static async Task BroadcastAsync(
+        IDocumentSession session, Guid myNodeId, string myOwnerFingerprint, EventCatchUpRequest request,
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
         session.Store(request);
         await MessageOutbox.QueueAsync(
-            session, myNodeId, projectId, myOwnerFingerprint, MessageAudience.Project, about: forStreamId.ToString(),
+            session, myNodeId, request.ProjectId, myOwnerFingerprint, MessageAudience.Project,
+            about: request.ForStreamId?.ToString(),
             MessageKind.EventsRequest,
             EventReplicationCodec.EncodeRequest(new EventReplicationCodec.EventsRequestRecord(
-                request.Id, ForOriginNodeId: null, SinceOriginSequence: 0, forStreamId)),
+                request.Id, ForOriginNodeId: null, SinceOriginSequence: 0, request.ForStreamId,
+                request.SinceGlobalSequence)),
             now, cancellationToken);
-        return true;
     }
 
     /// <summary>
@@ -281,7 +346,8 @@ public sealed class EventCatchUpCoordinator
             session, myNodeId, request.ProjectId, myOwnerFingerprint, MessageAudience.Node(candidate), about: null,
             MessageKind.EventsRequest,
             EventReplicationCodec.EncodeRequest(new EventReplicationCodec.EventsRequestRecord(
-                request.Id, request.ForOriginNodeId, request.SinceOriginSequence, request.ForStreamId)),
+                request.Id, request.ForOriginNodeId, request.SinceOriginSequence, request.ForStreamId,
+                request.SinceGlobalSequence)),
             now, cancellationToken);
     }
 }

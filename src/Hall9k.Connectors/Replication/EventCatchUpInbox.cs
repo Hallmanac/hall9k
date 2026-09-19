@@ -126,6 +126,29 @@ public sealed class EventCatchUpInbox(
                         session, myNodeId, myOwnerFingerprint, outstanding, now, cancellationToken);
                     declined++;
                 }
+                else if (outstanding is { AnsweredAt: null, Exhausted: false, Candidates.Count: 0 })
+                {
+                    // A BROADCAST request — a whole-project history pull (h9k project pull), a
+                    // stream request (h9k task pull, or the ledger-record adoption path) — has no
+                    // current candidate to match this sender against, so the arm above can never
+                    // see its decline, and it has no cascade to advance and no timeout behind it
+                    // either. A peer holding nothing that matches answers exactly once, with this
+                    // decline, and nothing else ever arrives from it — so closing the ask on it is
+                    // what keeps it from standing forever, reported by h9k status for good and
+                    // refusing every later ask for the same thing through the coordinator's own
+                    // already-outstanding guards (independent pre-PR review, cycle 1, both lenses,
+                    // medium, for the project pull; cycle 4, adversarial lens, medium, for the
+                    // stream request — one mistyped character of a task id queued a broadcast no
+                    // member could ever answer and no command could ever clear). The reason is
+                    // recorded, and closing early costs nothing a human cannot redo: another
+                    // member's own answer still applies when it lands, since an events batch is
+                    // applied on arrival and never gated on a request document, and a re-run of
+                    // the command simply asks again.
+                    outstanding.DeclinedReason = unavailable.Reason;
+                    outstanding.AnsweredAt = now;
+                    session.Store(outstanding);
+                    declined++;
+                }
             }
         }
 

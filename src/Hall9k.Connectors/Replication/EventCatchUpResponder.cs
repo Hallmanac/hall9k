@@ -21,6 +21,17 @@ namespace Hall9k.Connectors.Replication;
 /// own dedupe only ever recognises an event it received by replication, never one it produced
 /// natively, so an echo of its own history would apply as an un-deduped second copy.
 /// <para>
+/// A third exclusion, this node's own replication switch-on point, applies to a gap-fill and a
+/// bootstrap but NOT to a request a human explicitly made
+/// (<see cref="EventReplicationCodec.EventsRequestRecord.IsExplicitAsk"/>: one named stream, or a
+/// named global sequence bound). Task a56cf16e, Decisions Log #PLACEHOLDER-a56cf16e: history is
+/// inert until somebody asks for it, and an explicit ask is the opt-in — the switch-on point
+/// otherwise made every task published on a
+/// node before that node switched replication on permanently unservable to its peers, with the
+/// asking side told only "nothing held here matches this request". The two private exclusions above
+/// hold regardless of how explicit the ask was.
+/// </para>
+/// <para>
 /// Queues one or more <see cref="MessageKind.Events"/> envelopes back to the requester, batched and
 /// paginated the identical way <see cref="EventReplicationOutbox"/> caps an ordinary flush
 /// (<see cref="EventReplicationOutbox.MaxEventsPerEnvelope"/>/<see cref="EventReplicationOutbox.MaxBytesPerEnvelope"/>) —
@@ -51,21 +62,44 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
         {
             query = query.Where(e => e.StreamId == queryStreamId);
         }
+        else if (request.SinceGlobalSequence is { } sinceGlobalSequence)
+        {
+            query = query.Where(e => e.Sequence >= sinceGlobalSequence);
+        }
 
-        IReadOnlyList<IEvent> candidates = await query.ToListAsync(cancellationToken);
+        // Ascending by this node's own global sequence, the identical ordering
+        // EventReplicationOutbox.QueuePendingAsync's own scan already applies. An unordered scan is
+        // whatever order Postgres hands back, and the receiving EventReplicationInbox appends a
+        // batch's records to a local stream in exactly the order it reads them — so this order IS
+        // the order the requester's own stream ends up in, and the receiver's new
+        // out-of-order refusal (that class's own OriginHighWaterAsync) would otherwise trip on a
+        // shuffled answer's own head events (independent pre-PR review, cycle 4, adversarial lens,
+        // high).
+        IReadOnlyList<IEvent> candidates = await query.OrderBy(e => e.Sequence).ToListAsync(cancellationToken);
 
-        // This node's own pre-replication history never travels, in a catch-up answer any more than
-        // an ordinary outbox flush (EventReplicationOutbox.QueuePendingAsync's own identical
-        // Math.Max(position, switchOnSequence) exclusion) — independent pre-PR review, cycle 1,
-        // conformance lens, high: an unfiltered scan here would hand a brand-new node this node's
-        // entire pre-switch-on back catalogue, which idea 202383dc's migration ruling keeps out of
-        // scope for now.
-        long switchOnSequence = await EventReplicationOutbox.EnsureSwitchedOnAsync(session, myNodeId, now, cancellationToken);
+        // This node's own pre-replication history never travels UNASKED, in a catch-up answer any
+        // more than an ordinary outbox flush (EventReplicationOutbox.QueuePendingAsync's own
+        // identical Math.Max(position, switchOnSequence) exclusion) — independent pre-PR review,
+        // cycle 1, conformance lens, high: an unfiltered scan here would hand a brand-new node this
+        // node's entire pre-switch-on back catalogue, which idea 202383dc's migration ruling keeps
+        // out of scope for now.
+        //
+        // An explicit ask (EventsRequestRecord.IsExplicitAsk: one named stream, or a named global
+        // sequence bound) is the opt-in that lifts it, and only for that one request — task
+        // a56cf16e's own origin incident, 2026-09-19: the Mac's ReplicationSwitchedOn landed at
+        // global sequence 30084 while the task the Windows node was asking for sat at 28273-30020,
+        // so every explicit stream request for it answered "nothing held here matches this request"
+        // and no re-run could ever have changed that. History stays inert until somebody actually
+        // asks for it; a human asking IS somebody. Never lifted for the two shapes a daemon sweep
+        // mints on its own, an ordinary flush and a gap-fill, which is where the inertness matters.
+        long? switchOnSequence = request.IsExplicitAsk
+            ? null
+            : await EventReplicationOutbox.EnsureSwitchedOnAsync(session, myNodeId, now, cancellationToken);
 
         List<EventReplicationCodec.ReplicatedEventRecord> matches = [];
         foreach (IEvent candidate in candidates)
         {
-            if (candidate.Sequence <= switchOnSequence)
+            if (switchOnSequence is { } excludedAtOrBelow && candidate.Sequence <= excludedAtOrBelow)
             {
                 continue;
             }
@@ -163,7 +197,9 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
             if (batch.Count >= EventReplicationOutbox.MaxEventsPerEnvelope
                 || (batch.Count > 0 && batchBytes + recordJson.Length > EventReplicationOutbox.MaxBytesPerEnvelope))
             {
-                await QueueBatchAsync(session, myNodeId, projectId, myOwnerFingerprint, requesterNodeId, batch, now, cancellationToken);
+                await QueueBatchAsync(
+                    session, myNodeId, projectId, myOwnerFingerprint, requesterNodeId, request.RequestId, batch, now,
+                    cancellationToken);
                 envelopesQueued++;
                 batch = [];
                 batchBytes = 0;
@@ -175,18 +211,34 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
 
         if (batch.Count > 0)
         {
-            await QueueBatchAsync(session, myNodeId, projectId, myOwnerFingerprint, requesterNodeId, batch, now, cancellationToken);
+            await QueueBatchAsync(
+                session, myNodeId, projectId, myOwnerFingerprint, requesterNodeId, request.RequestId, batch, now,
+                cancellationToken);
             envelopesQueued++;
         }
 
         return envelopesQueued;
     }
 
+    /// <summary>
+    /// One answering envelope, addressed to the requester alone and stamped with the id of the
+    /// request it answers. That id is what lets the requester's own <c>EventReplicationInbox</c>
+    /// tell THIS request's answer apart from a sibling catch-up answer arriving in the same read: a
+    /// whole-project history pull names no stream to match and its answer may apply nothing at all,
+    /// so "some node-addressed answer went by" was the only signal it had, and any other
+    /// outstanding request's answer closed it early (independent pre-PR review, cycle 4,
+    /// conformance lens, low). Carried in the envelope's own <c>about</c> field rather than in the
+    /// batch body, which is a bare JSON array on the wire and cannot gain a field without breaking
+    /// every build already decoding it; an events envelope is never stored as an ordinary
+    /// <c>MessageDetails</c> on the receiving side, so nothing else here reads <c>about</c>.
+    /// </summary>
     private static Task QueueBatchAsync(
         IDocumentSession session, Guid myNodeId, Guid projectId, string myOwnerFingerprint, Guid requesterNodeId,
-        List<EventReplicationCodec.ReplicatedEventRecord> batch, DateTimeOffset now, CancellationToken cancellationToken) =>
+        Guid requestId, List<EventReplicationCodec.ReplicatedEventRecord> batch, DateTimeOffset now,
+        CancellationToken cancellationToken) =>
         MessageOutbox.QueueAsync(
-            session, myNodeId, projectId, myOwnerFingerprint, MessageAudience.Node(requesterNodeId), about: null,
+            session, myNodeId, projectId, myOwnerFingerprint, MessageAudience.Node(requesterNodeId),
+            about: requestId.ToString(),
             MessageKind.Events, EventReplicationCodec.EncodeBatch(batch), now, cancellationToken);
 
     /// <summary>

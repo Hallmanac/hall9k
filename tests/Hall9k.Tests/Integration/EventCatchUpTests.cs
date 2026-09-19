@@ -509,7 +509,12 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         Guid projectId = DomainId.New();
 
         EventCatchUpResponder responder = new(new ReplicationProjectResolver());
-        InMemoryMessageTransport transport = new(new FakeLedger());
+        FakeLedger ledger = new();
+        // Without node A's own node file, InMemoryMessageTransport reports its outbox unvouched and
+        // hands back no envelopes at all, so the assertion loop at the end of this test would run
+        // over an empty list and check nothing (task a56cf16e, self-review).
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
         MessageOutbox messageOutbox = new(transport);
         (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
 
@@ -567,6 +572,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 record => record.StreamId == publicTaskId,
                 "the private task's own stream must never ride a catch-up answer");
         }
+
+        read.Envelopes.Should().NotBeEmpty("an assertion loop over nothing proves nothing");
     }
 
     /// <summary>
@@ -586,7 +593,12 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         Guid projectId = DomainId.New();
 
         EventCatchUpResponder responder = new(new ReplicationProjectResolver());
-        InMemoryMessageTransport transport = new(new FakeLedger());
+        FakeLedger ledger = new();
+        // Without node A's own node file, InMemoryMessageTransport reports its outbox unvouched and
+        // hands back no envelopes at all, so the assertion loop at the end of this test would run
+        // over an empty list and check nothing (task a56cf16e, self-review).
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
         MessageOutbox messageOutbox = new(transport);
         (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
 
@@ -652,6 +664,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 record => record.StreamId == otherTaskId,
                 "the requester's own originated task must never be handed back to it");
         }
+
+        read.Envelopes.Should().NotBeEmpty("an assertion loop over nothing proves nothing");
     }
 
     /// <summary>
@@ -949,6 +963,874 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             request.AnsweredAt.Should().NotBeNull(
                 "the broadcast's own requested stream actually arrived, so it must close rather than stay outstanding forever");
             request.IsOutstanding.Should().BeFalse();
+        }
+    }
+
+    /// <summary>
+    /// Task a56cf16e's own criterion, and its origin incident: the Mac's own
+    /// <c>ReplicationSwitchedOn</c> landed at global sequence 30084 while the task the Windows node
+    /// kept asking for sat at 28273 to 30020, so every explicit request for that stream was
+    /// answered "nothing held here matches this request" and no re-run could ever have changed it.
+    /// An explicit ask — one named stream — now lifts the switch-on exclusion, while the two shapes
+    /// a daemon sweep mints on its own, a gap-fill and a bootstrap, still do not. A private task is
+    /// refused however explicit the ask, which is the one exclusion that never bends.
+    /// </summary>
+    [Fact]
+    public async Task An_explicit_stream_request_is_answered_from_below_the_switch_on_point_but_a_bootstrap_is_not()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid requesterNodeId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        FakeLedger ledger = new();
+        // Without node A's own node file, InMemoryMessageTransport reports its outbox unvouched and
+        // hands back no envelopes at all — an assertion loop over the wire would then pass
+        // vacuously, checking nothing.
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Both tasks exist BEFORE this node ever switches replication on, which is exactly the
+        // shape that was unservable: every one of their events sits at or below the switch-on
+        // sequence recorded below.
+        Guid preSwitchOnTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now, cts.Token);
+        Guid preSwitchOnPrivateTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            TaskAggregate privateTask =
+                (await session.Events.AggregateStreamAsync<TaskAggregate>(preSwitchOnPrivateTaskId, token: cts.Token))!;
+            session.Events.Append(
+                preSwitchOnPrivateTaskId, TaskDecider.SetPrivate(privateTask, isPrivate: true, Now.AddSeconds(2), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        long switchOnSequence;
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            switchOnSequence = await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeA, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IQuerySession session = _postgres.Store.QuerySession())
+        {
+            IReadOnlyList<IEvent> taskEvents = await session.Events.QueryAllRawEvents()
+                .Where(e => e.StreamId == preSwitchOnTaskId).ToListAsync(cts.Token);
+            taskEvents.Should().NotBeEmpty();
+            taskEvents.Should().OnlyContain(
+                e => e.Sequence <= switchOnSequence, "this test is only meaningful if the task really is pre-switch-on");
+        }
+
+        // A gap-fill (ForOriginNodeId set) and a bootstrap (everything null) are both minted by a
+        // daemon sweep with nobody asking, so both still stop at the switch-on point and decline.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            int gapFillEnvelopes = await responder.AnswerAsync(
+                session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                new EventReplicationCodec.EventsRequestRecord(DomainId.New(), nodeA, SinceOriginSequence: 0, ForStreamId: null),
+                Now.AddSeconds(4), cts.Token);
+            gapFillEnvelopes.Should().Be(0, "a gap-fill keeps the switch-on exclusion");
+
+            int bootstrapEnvelopes = await responder.AnswerAsync(
+                session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
+                Now.AddSeconds(5), cts.Token);
+            bootstrapEnvelopes.Should().Be(0, "a brand-new node's own bootstrap keeps it too");
+
+            // The one named stream, explicitly asked for — served in full, switch-on point and all.
+            int explicitEnvelopes = await responder.AnswerAsync(
+                session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                new EventReplicationCodec.EventsRequestRecord(
+                    DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, preSwitchOnTaskId),
+                Now.AddSeconds(6), cts.Token);
+            explicitEnvelopes.Should().Be(1, "an explicit stream request lifts the switch-on exclusion");
+
+            int privateEnvelopes = await responder.AnswerAsync(
+                session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                new EventReplicationCodec.EventsRequestRecord(
+                    DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, preSwitchOnPrivateTaskId),
+                Now.AddSeconds(7), cts.Token);
+            privateEnvelopes.Should().Be(0, "a private task is never served, however explicit the ask");
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(8), cts.Token);
+        }
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        List<EventReplicationCodec.ReplicatedEventRecord> served = [];
+        int declines = 0;
+        foreach (TransportEnvelope raw in read.Envelopes)
+        {
+            MessageEnvelopeV1 envelope = MessageEnvelopeCodec.Decode(raw.Content).Envelope!;
+            if (envelope.Kind == MessageKind.EventsUnavailable)
+            {
+                declines++;
+                continue;
+            }
+
+            envelope.Kind.Should().Be(MessageKind.Events);
+            served.AddRange(EventReplicationCodec.DecodeBatch(envelope.Body)!);
+        }
+
+        declines.Should().Be(3, "the gap-fill, the bootstrap, and the private stream all say so rather than going silent");
+        served.Should().NotBeEmpty();
+        served.Should().OnlyContain(
+            record => record.StreamId == preSwitchOnTaskId,
+            "only the one explicitly requested, non-private stream travels");
+    }
+
+    /// <summary>
+    /// Task a56cf16e: <c>h9k project pull --since</c>'s own request shape, answered under the same
+    /// explicit-ask rule and applied over streams the asking node already holds. The idempotency
+    /// here is the point — a pull is a blunt instrument a human reaches for when something is
+    /// missing, and it has to be safe to reach for twice.
+    /// <para>
+    /// What closes such a pull is the other half (independent pre-PR review, cycle 1, both lenses,
+    /// medium): a peer's own answer arriving, never what that answer happened to apply. A pull
+    /// answered entirely with events this node already holds applies nothing — the ordinary outcome
+    /// of the "am I missing anything?" pull — and one closed on applied content instead would stand
+    /// outstanding forever, reported by <c>h9k status</c> and refusing every later pull at the same
+    /// or a shallower bound. An unrelated live flush from any member is not that answer, and does
+    /// not close it.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public async Task A_project_pull_is_answered_from_below_the_switch_on_point_and_closes_on_the_answer_not_a_live_flush()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        await SeedNodeFileAsync(ledger, nodeB, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpInbox catchUpInbox = new(transport, responder);
+        EventCatchUpCoordinator coordinator = new();
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+        (LedgerCommitter committerB, LedgerSigningKey signingKeyB) = Signing("node-b");
+
+        await using DocumentStore storeB = OpenStore("event_catchup_project_pull_node_b");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Both tasks predate node A's own switch-on point, so nothing but an explicit ask can ever
+        // get them off node A.
+        Guid alreadyHeldTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now, cts.Token);
+        Guid neverSeenTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeA, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeB, new NodeRegistered(nodeB, ownerId, "node-b", "Windows", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeB, Now, cts.Token);
+        }
+
+        // Node B pulls the one stream first, the h9k task pull shape, so it genuinely already holds
+        // it by the time the project pull answers with it a second time.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            (await coordinator.RequestStreamBroadcastAsync(
+                session, projectId, alreadyHeldTaskId, nodeB, "owner-b-fingerprint", Now.AddSeconds(3), cts.Token))
+                .Should().BeTrue();
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeB, projectId, "shared-project-key", adoptUnassigned: false, committerB,
+                signingKeyB, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeB, projectId, nodeA, "owner-a-fingerprint", Now.AddSeconds(4),
+                trustChain: null, cts.Token);
+            catchUpRead.RequestsAnswered.Should().Be(1);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(5), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(6),
+                trustChain: null, cts.Token);
+            read.EventsApplied.Should().BeGreaterThan(0, "the explicit stream request brings the pre-switch-on stream in");
+        }
+
+        int heldEventsBeforeThePull;
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            heldEventsBeforeThePull = (await session.Events.QueryAllRawEvents()
+                .Where(e => e.StreamId == alreadyHeldTaskId).ToListAsync(cts.Token)).Count;
+            heldEventsBeforeThePull.Should().BeGreaterThan(0);
+        }
+
+        // h9k project pull --since all: everything node A holds for this project, including the
+        // stream node B just applied.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            (await coordinator.RequestProjectHistoryBroadcastAsync(
+                session, projectId, sinceGlobalSequence: 0, nodeB, "owner-b-fingerprint", Now.AddSeconds(7), cts.Token))
+                .Should().BeTrue();
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeB, projectId, "shared-project-key", adoptUnassigned: false, committerB,
+                signingKeyB, Now.AddSeconds(7), cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeB, projectId, nodeA, "owner-a-fingerprint", Now.AddSeconds(8),
+                trustChain: null, cts.Token);
+            catchUpRead.RequestsAnswered.Should().Be(1);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(9), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(10),
+                trustChain: null, cts.Token);
+            read.EventsApplied.Should().BeGreaterThan(0, "the never-seen stream arrives on the pull");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            int heldEventsAfterThePull = (await session.Events.QueryAllRawEvents()
+                .Where(e => e.StreamId == alreadyHeldTaskId).ToListAsync(cts.Token)).Count;
+            heldEventsAfterThePull.Should().Be(
+                heldEventsBeforeThePull,
+                "a pull that re-serves a stream this node already holds dedupes by origin event id rather than doubling it");
+
+            (await session.Events.QueryAllRawEvents().Where(e => e.StreamId == neverSeenTaskId).ToListAsync(cts.Token))
+                .Should().NotBeEmpty("the stream the pull existed to fetch actually landed");
+
+            EventCatchUpRequest pull = (await session.Query<EventCatchUpRequest>()
+                .Where(r => r.ProjectId == projectId && r.SinceGlobalSequence != null)
+                .FirstOrDefaultAsync(cts.Token))!;
+            pull.AnsweredAt.Should().NotBeNull(
+                "a project pull closes once an answer applies, or h9k status would report it outstanding forever");
+        }
+
+        // A second identical pull finds the answered one closed and asks again — the block is only
+        // ever on an OUTSTANDING request reaching at least as far back.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            (await coordinator.RequestProjectHistoryBroadcastAsync(
+                session, projectId, sinceGlobalSequence: 0, nodeB, "owner-b-fingerprint", Now.AddSeconds(11), cts.Token))
+                .Should().BeTrue();
+            (await coordinator.RequestProjectHistoryBroadcastAsync(
+                session, projectId, sinceGlobalSequence: 0, nodeB, "owner-b-fingerprint", Now.AddSeconds(12), cts.Token))
+                .Should().BeFalse("the one just queued is still outstanding");
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeB, projectId, "shared-project-key", adoptUnassigned: false, committerB,
+                signingKeyB, Now.AddSeconds(13), cts.Token);
+        }
+
+        // Node A's ordinary live flush of a brand-new task reaches node B before any answer to that
+        // second pull does. It applies, and the pull must still be standing afterward: a flush
+        // addressed to the whole project is not an answer to anything this node asked for.
+        Guid taskAddedAfterThePull = await SeedQueuedTaskAsync(
+            _postgres.Store, projectId, ownerId, Now.AddSeconds(14), cts.Token);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(14), cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(14), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult liveRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(15),
+                trustChain: null, cts.Token);
+            liveRead.EventsApplied.Should().BeGreaterThan(0, "an ordinary flush of a brand-new task still applies");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Events.QueryAllRawEvents().Where(e => e.StreamId == taskAddedAfterThePull)
+                .ToListAsync(cts.Token))
+                .Should().NotBeEmpty("the live flush is what brought this one in, not the pull");
+
+            EventCatchUpRequest? stillStanding = await session.Query<EventCatchUpRequest>()
+                .Where(r => r.ProjectId == projectId && r.SinceGlobalSequence != null && r.AnsweredAt == null)
+                .FirstOrDefaultAsync(cts.Token);
+            stillStanding.Should().NotBeNull(
+                "closing on whatever happened to apply would stop h9k status reporting a pull genuinely still in flight");
+        }
+
+        // Node A finally answers the second pull, with everything it holds — every event of which
+        // node B has already applied. Nothing applies, and the pull must close anyway.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeB, projectId, nodeA, "owner-a-fingerprint", Now.AddSeconds(16),
+                trustChain: null, cts.Token);
+            catchUpRead.RequestsAnswered.Should().Be(1);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(17), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult redundantRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(18),
+                trustChain: null, cts.Token);
+            redundantRead.EventsApplied.Should().Be(0, "node B already holds every event node A's answer carries");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.Query<EventCatchUpRequest>()
+                .Where(r => r.ProjectId == projectId && r.SinceGlobalSequence != null && r.AnsweredAt == null)
+                .ToListAsync(cts.Token))
+                .Should().BeEmpty(
+                    "an answer that applied nothing is still an answer; a pull that never closes reports itself "
+                    + "outstanding forever and refuses every later pull at the same bound");
+        }
+    }
+
+    /// <summary>
+    /// The other way a whole-project pull ends (independent pre-PR review, cycle 1, both lenses,
+    /// medium): a peer holding nothing at or above the bound declines, and a broadcast has no
+    /// current candidate for that decline to match, no next candidate to advance to, and no
+    /// timeout behind it. The decline has to close the ask itself, recording why — otherwise the
+    /// pull stands forever and
+    /// <see cref="EventCatchUpCoordinator.RequestProjectHistoryBroadcastAsync"/> refuses every
+    /// later pull at the same or a shallower bound for good.
+    /// </summary>
+    [Fact]
+    public async Task A_project_pull_closes_on_a_declining_peer_since_a_broadcast_has_no_next_candidate()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeB = DomainId.New();
+        Guid nodeC = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeB, cts.Token);
+        await SeedNodeFileAsync(ledger, nodeC, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpInbox catchUpInbox = new(transport, responder);
+        EventCatchUpCoordinator coordinator = new();
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerB, LedgerSigningKey signingKeyB) = Signing("node-b");
+        (LedgerCommitter committerC, LedgerSigningKey signingKeyC) = Signing("node-c");
+
+        // One store for both node identities, the same shape
+        // A_decline_actually_asks_the_next_candidate_rather_than_only_advancing_the_index uses:
+        // what is under test is node B's own bookkeeping, and node C holds nothing for this project
+        // either way.
+        await using DocumentStore storeC = OpenStore("event_catchup_pull_decline_node_c");
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeC, new NodeRegistered(nodeC, DomainId.New(), "node-c", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            (await coordinator.RequestProjectHistoryBroadcastAsync(
+                session, projectId, sinceGlobalSequence: 0, nodeB, "owner-b-fingerprint", Now, cts.Token))
+                .Should().BeTrue();
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeB, projectId, "shared-project-key", adoptUnassigned: false, committerB,
+                signingKeyB, Now, cts.Token);
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeB, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(1),
+                trustChain: null, cts.Token);
+            catchUpRead.RequestsAnswered.Should().Be(1, "node C did process the pull, answering with events-unavailable");
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeC, projectId, "shared-project-key", adoptUnassigned: false, committerC,
+                signingKeyC, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            EventCatchUpInboxReadResult declineRead = await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: null, cts.Token);
+            declineRead.DeclinesObserved.Should().Be(1);
+        }
+
+        await using (IQuerySession session = storeC.QuerySession())
+        {
+            EventCatchUpRequest pull = (await session.Query<EventCatchUpRequest>()
+                .Where(r => r.ProjectId == projectId && r.SinceGlobalSequence != null).FirstOrDefaultAsync(cts.Token))!;
+            pull.IsOutstanding.Should().BeFalse("the only peer said it holds nothing, and nothing else is coming");
+            pull.DeclinedReason.Should().NotBeNullOrWhiteSpace("why it ended is recorded rather than guessed at later");
+            pull.Exhausted.Should().BeFalse("a broadcast has no candidate cascade to exhaust");
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            (await coordinator.RequestProjectHistoryBroadcastAsync(
+                session, projectId, sinceGlobalSequence: 0, nodeB, "owner-b-fingerprint", Now.AddSeconds(4), cts.Token))
+                .Should().BeTrue("a closed pull blocks nothing, so the human can ask again once a peer has the history");
+        }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 4, adversarial lens, medium: the same reasoning holds for
+    /// the OTHER broadcast shape. One mistyped character of a task id parses as a GUID, finds no
+    /// local stream, and queues a broadcast every member declines — and with the decline-close
+    /// restricted to the whole-project shape, that request stood outstanding forever, reported by
+    /// <c>h9k status</c> for good, with a corrected re-run for the same wrong id told one was
+    /// already on its way and no command able to clear it.
+    /// </summary>
+    [Fact]
+    public async Task A_stream_broadcast_no_member_holds_closes_on_the_decline_rather_than_standing_forever()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeB = DomainId.New();
+        Guid nodeC = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid streamNobodyHolds = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeB, cts.Token);
+        await SeedNodeFileAsync(ledger, nodeC, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpInbox catchUpInbox = new(transport, responder);
+        EventCatchUpCoordinator coordinator = new();
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerB, LedgerSigningKey signingKeyB) = Signing("node-b");
+        (LedgerCommitter committerC, LedgerSigningKey signingKeyC) = Signing("node-c");
+
+        // One store for both node identities, the same shape the project-pull decline test above
+        // uses: what is under test is node B's own bookkeeping, and node C holds nothing either way.
+        await using DocumentStore storeC = OpenStore("event_catchup_stream_decline_node_c");
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeC, new NodeRegistered(nodeC, DomainId.New(), "node-c", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            (await coordinator.RequestStreamBroadcastAsync(
+                session, projectId, streamNobodyHolds, nodeB, "owner-b-fingerprint", Now, cts.Token))
+                .Should().BeTrue();
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeB, projectId, "shared-project-key", adoptUnassigned: false, committerB,
+                signingKeyB, Now, cts.Token);
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            (await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeB, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(1),
+                trustChain: null, cts.Token)).RequestsAnswered.Should().Be(1);
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeC, projectId, "shared-project-key", adoptUnassigned: false, committerC,
+                signingKeyC, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            (await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: null, cts.Token)).DeclinesObserved.Should().Be(1);
+        }
+
+        await using (IQuerySession session = storeC.QuerySession())
+        {
+            EventCatchUpRequest request = (await session.Query<EventCatchUpRequest>()
+                .Where(r => r.ProjectId == projectId && r.ForStreamId == streamNobodyHolds)
+                .FirstOrDefaultAsync(cts.Token))!;
+            request.IsOutstanding.Should().BeFalse("the only peer said it holds nothing, and nothing else is coming");
+            request.DeclinedReason.Should().NotBeNullOrWhiteSpace();
+            request.Exhausted.Should().BeFalse("a broadcast has no candidate cascade to exhaust");
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            (await coordinator.RequestStreamBroadcastAsync(
+                session, projectId, streamNobodyHolds, nodeB, "owner-b-fingerprint", Now.AddSeconds(4), cts.Token))
+                .Should().BeTrue("a closed request blocks nothing, so the human can ask again");
+        }
+    }
+
+    /// <summary>
+    /// Self-review finding, task a56cf16e: a project pull and a brand-new node's bootstrap both
+    /// carry a null origin node and a null stream, so <see cref="EventCatchUpCoordinator.RequestBootstrapAsync"/>'s
+    /// own "is one already outstanding" query matched the pull as well until it was taught to
+    /// require a null <see cref="EventCatchUpRequest.SinceGlobalSequence"/> too. The two shapes are
+    /// distinct asks and neither suppresses the other.
+    /// </summary>
+    [Fact]
+    public async Task An_outstanding_project_pull_never_suppresses_a_brand_new_nodes_own_bootstrap()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid myNodeId = DomainId.New();
+        Guid peerNodeId = DomainId.New();
+        Guid projectId = DomainId.New();
+        EventCatchUpCoordinator coordinator = new();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+
+        (await coordinator.RequestProjectHistoryBroadcastAsync(
+            session, projectId, sinceGlobalSequence: 500, myNodeId, "owner-fingerprint", Now, cts.Token))
+            .Should().BeTrue();
+
+        (await coordinator.RequestBootstrapAsync(
+            session, projectId, myNodeId, "owner-fingerprint", [peerNodeId], TimeSpan.FromMinutes(5),
+            Now.AddSeconds(1), cts.Token))
+            .Should().BeTrue("a pull outstanding for the same project is a different ask, not this bootstrap's own");
+
+        // And the converse: the bootstrap now outstanding does not block a pull either, since a
+        // pull only ever matches a request that carries its own sequence bound.
+        (await coordinator.RequestProjectHistoryBroadcastAsync(
+            session, projectId, sinceGlobalSequence: 0, myNodeId, "owner-fingerprint", Now.AddSeconds(2), cts.Token))
+            .Should().BeTrue("asking for everything reaches further back than the outstanding bound, so it is a new ask");
+
+        // What a pull IS blocked by is another pull already reaching at least as far back.
+        (await coordinator.RequestProjectHistoryBroadcastAsync(
+            session, projectId, sinceGlobalSequence: 900, myNodeId, "owner-fingerprint", Now.AddSeconds(3), cts.Token))
+            .Should().BeFalse("one already outstanding covers everything this shallower one would ask for");
+
+        IReadOnlyList<EventCatchUpRequest> all = await session.Query<EventCatchUpRequest>()
+            .Where(request => request.ProjectId == projectId).ToListAsync(cts.Token);
+        all.Should().HaveCount(3);
+        all.Count(request => request.SinceGlobalSequence is null).Should().Be(1, "exactly one of them is the bootstrap");
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 4, conformance lens, low: a whole-project pull names no
+    /// stream to match and its answer may apply nothing, so "some node-addressed answer went by"
+    /// closed it — including an answer to a SIBLING request this node had outstanding at the same
+    /// time. <c>h9k status</c> then stopped showing the pull a sweep or more early, and the peer's
+    /// real decline for it was ignored on arrival, so no reason was ever recorded.
+    /// <see cref="EventCatchUpResponder"/> stamps the answered request's own id into the envelope,
+    /// and the pull closes on that id alone.
+    /// </summary>
+    [Fact]
+    public async Task A_sibling_stream_requests_answer_does_not_close_a_project_pull_no_peer_has_answered()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        await SeedNodeFileAsync(ledger, nodeB, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpInbox catchUpInbox = new(transport, responder);
+        EventCatchUpCoordinator coordinator = new();
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+        (LedgerCommitter committerB, LedgerSigningKey signingKeyB) = Signing("node-b");
+
+        await using DocumentStore storeB = OpenStore("event_catchup_sibling_answer_node_b");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now, cts.Token);
+
+        // Node B asks for the one stream, and node A answers it — all before node B's own project
+        // pull has reached node A at all.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            (await coordinator.RequestStreamBroadcastAsync(
+                session, projectId, taskId, nodeB, "owner-b-fingerprint", Now.AddSeconds(1), cts.Token))
+                .Should().BeTrue();
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeB, projectId, "shared-project-key", adoptUnassigned: false, committerB,
+                signingKeyB, Now.AddSeconds(1), cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            (await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeB, projectId, nodeA, "owner-a-fingerprint", Now.AddSeconds(2),
+                trustChain: null, cts.Token)).RequestsAnswered.Should().Be(1);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            (await coordinator.RequestProjectHistoryBroadcastAsync(
+                session, projectId, sinceGlobalSequence: 0, nodeB, "owner-b-fingerprint", Now.AddSeconds(4), cts.Token))
+                .Should().BeTrue();
+        }
+
+        // Node B reads the stream request's answer with its own pull still unanswered by anyone.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            (await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(5),
+                trustChain: null, cts.Token)).EventsApplied.Should().BeGreaterThan(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            EventCatchUpRequest streamRequest = (await session.Query<EventCatchUpRequest>()
+                .Where(request => request.ProjectId == projectId && request.ForStreamId != null)
+                .FirstOrDefaultAsync(cts.Token))!;
+            streamRequest.AnsweredAt.Should().NotBeNull("this is the request node A actually answered");
+
+            EventCatchUpRequest pull = (await session.Query<EventCatchUpRequest>()
+                .Where(request => request.ProjectId == projectId && request.SinceGlobalSequence != null)
+                .FirstOrDefaultAsync(cts.Token))!;
+            pull.IsOutstanding.Should().BeTrue(
+                "no peer has answered the pull, and h9k status must keep saying so until one does");
+        }
+    }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 4, adversarial lens, high: a pull serves the pre-switch-on
+    /// HEAD of a stream whose post-switch-on tail the asking node already applied live, and a
+    /// replicated event is appended rather than inserted — so the head would land behind the tail
+    /// and the stream would replay backwards, with <c>TaskAggregate.Apply(TaskAdded)</c> running
+    /// last resetting the state and clearing the acceptance criteria. Every task open on a node at
+    /// its own switch-on moment is in exactly this shape on its peers, so the refusal has to hold
+    /// without also refusing the streams a pull genuinely fetches.
+    /// </summary>
+    [Fact]
+    public async Task A_pulled_head_is_refused_rather_than_appended_behind_a_tail_the_asking_node_already_holds()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        await SeedNodeFileAsync(ledger, nodeB, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpInbox catchUpInbox = new(transport, responder);
+        EventCatchUpCoordinator coordinator = new();
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+        (LedgerCommitter committerB, LedgerSigningKey signingKeyB) = Signing("node-b");
+
+        await using DocumentStore storeB = OpenStore("event_catchup_partial_stream_node_b");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Both tasks were created before node A ever switched replication on. One of them is then
+        // touched AFTER the switch-on point, which is the only half an ordinary flush ships.
+        Guid touchedAfterSwitchOnTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now, cts.Token);
+        Guid untouchedTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeA, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.Append(
+                touchedAfterSwitchOnTaskId,
+                new TaskUnassigned(touchedAfterSwitchOnTaskId, "handed back", Now.AddSeconds(3), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeB, new NodeRegistered(nodeB, ownerId, "node-b", "Windows", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The ordinary live flush: the one post-switch-on event, and nothing under it.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(4), cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(4), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult liveRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(5),
+                trustChain: null, cts.Token);
+            liveRead.EventsApplied.Should().Be(1, "only the post-switch-on event ever rides an ordinary flush");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            IReadOnlyList<IEvent> tail =
+                await session.Events.FetchStreamAsync(touchedAfterSwitchOnTaskId, token: cts.Token);
+            tail.Should().ContainSingle("node B holds the tail of this stream and nothing under it");
+            tail.Single().EventType.Should().Be(typeof(TaskUnassigned));
+        }
+
+        // h9k project pull --since all: node A serves this stream's pre-switch-on head too, now
+        // that an explicit ask lifts the exclusion.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            (await coordinator.RequestProjectHistoryBroadcastAsync(
+                session, projectId, sinceGlobalSequence: 0, nodeB, "owner-b-fingerprint", Now.AddSeconds(6), cts.Token))
+                .Should().BeTrue();
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeB, projectId, "shared-project-key", adoptUnassigned: false, committerB,
+                signingKeyB, Now.AddSeconds(6), cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventCatchUpInboxReadResult catchUpRead = await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeB, projectId, nodeA, "owner-a-fingerprint", Now.AddSeconds(7),
+                trustChain: null, cts.Token);
+            catchUpRead.RequestsAnswered.Should().Be(1);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(8), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult pullRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9),
+                trustChain: null, cts.Token);
+            pullRead.EventsApplied.Should().Be(
+                3, "the stream node B holds nothing of arrives in full; the partial one's head is refused");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            IReadOnlyList<IEvent> partial =
+                await session.Events.FetchStreamAsync(touchedAfterSwitchOnTaskId, token: cts.Token);
+            partial.Should().ContainSingle(
+                "the pull's older events belong in front of the one already here, and appending them there "
+                + "would replay the stream backwards");
+            partial.Should().NotContain(
+                candidate => candidate.EventType == typeof(TaskAdded),
+                "TaskAdded applied last resets State and clears the acceptance criteria");
+
+            IReadOnlyList<IEvent> whole = await session.Events.FetchStreamAsync(untouchedTaskId, token: cts.Token);
+            whole.Should().HaveCount(3, "a stream this node holds nothing of is exactly what a pull does fetch");
+            whole[0].EventType.Should().Be(typeof(TaskAdded), "and it arrives in order");
+
+            TaskAggregate fetched =
+                (await session.Events.AggregateStreamAsync<TaskAggregate>(untouchedTaskId, token: cts.Token))!;
+            fetched.Objective.Should().Be("Ship the thing");
         }
     }
 
