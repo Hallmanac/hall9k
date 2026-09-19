@@ -197,19 +197,42 @@ public sealed class ClaimRequestEngineTests : IClassFixture<PostgresFixture>, IA
         (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
             await TaskRecordPublication.ResolveIdentityAsync(session, context, CancellationToken.None);
 
+        // The realistic starting shape (independent pre-PR review, cycle 1, both lenses): a gated
+        // project's holder could only have claimed the ledger because the tracker already showed
+        // the item assigned to THIS install's own identity — never unassigned. The scripted gh
+        // below plays exactly that: "who am I" answers granter-login, the fresh read before the
+        // grant shows granter-login already on the item, --remove-assignee takes it off,
+        // --add-assignee puts teammate-login on, and the final read-back confirms teammate-login
+        // alone.
         List<IReadOnlyList<string>> ghCalls = [];
+        bool removed = false;
         bool assigned = false;
         ProcessRunner gh = (_, arguments, _, _) =>
         {
             ghCalls.Add(arguments);
-            if (arguments.Contains("edit"))
+            if (arguments.Contains("user"))
+            {
+                return Task.FromResult(new ProcessResult(0, "granter-login", string.Empty));
+            }
+
+            if (arguments.Contains("--remove-assignee"))
+            {
+                removed = true;
+                return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+            }
+
+            if (arguments.Contains("--add-assignee"))
             {
                 assigned = true;
                 return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
             }
 
-            return Task.FromResult(new ProcessResult(
-                0, assigned ? "{\"assignees\":[{\"login\":\"teammate-login\"}]}" : "{\"assignees\":[]}", string.Empty));
+            string body = assigned
+                ? "{\"assignees\":[{\"login\":\"teammate-login\"}]}"
+                : removed
+                    ? "{\"assignees\":[]}"
+                    : "{\"assignees\":[{\"login\":\"granter-login\"}]}";
+            return Task.FromResult(new ProcessResult(0, body, string.Empty));
         };
         TrackerAssignmentTake take = new(gh, requester: null);
 
@@ -225,7 +248,8 @@ public sealed class ClaimRequestEngineTests : IClassFixture<PostgresFixture>, IA
 
         outcome.Verdict.Should().Be(ClaimRequestVerdict.Granted);
         outcome.TrackerFailureReason.Should().BeNull("the tracker move landed and confirmed, so nothing here failed");
-        ghCalls.Should().Contain(call => call.Contains("edit") && call.Contains("--add-assignee"));
+        ghCalls.Should().Contain(call => call.Contains("--remove-assignee") && call.Contains("granter-login"));
+        ghCalls.Should().Contain(call => call.Contains("--add-assignee") && call.Contains("teammate-login"));
     }
 
     [Fact]

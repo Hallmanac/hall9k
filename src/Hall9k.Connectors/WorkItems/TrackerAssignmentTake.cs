@@ -435,10 +435,22 @@ public sealed class TrackerAssignmentTake
     /// The grant half of the cooperative take (idea 202383dc, item 5): reads the linked item
     /// fresh, writes <paramref name="granteeIdentity"/> — the requester's own tracker identity,
     /// carried on the claim-request envelope by <see cref="ResolveOwnIdentityAsync"/> — into its
-    /// assignee field if and only if the item has none, reads it back, and reports which happened.
-    /// Unlike <see cref="TakeAsync"/>, this never resolves an identity of its own: the whole point
-    /// of a grant is putting somebody ELSE's identity on the item, which this install's own
-    /// <see cref="TrackerClaimGate"/> reading has no way to produce.
+    /// assignee field, reads it back, and reports which happened. Unlike <see cref="TakeAsync"/>,
+    /// this never resolves an identity of its own: the whole point of a grant is putting somebody
+    /// ELSE's identity on the item, which this install's own <see cref="TrackerClaimGate"/> reading
+    /// has no way to produce.
+    /// <para>
+    /// Moves the item from either of two starting points: unassigned (a gate turned on after the
+    /// ledger claim already landed), or assigned to THIS install's own identity — the only shape a
+    /// gated project's holder can actually be granting from, since a claim gate only ever let this
+    /// install claim the ledger while the tracker showed the item assigned to it (independent
+    /// pre-PR review, cycle 1, both lenses: the earlier version only moved an unassigned item, so
+    /// the one state a gated grant is actually reached from — <c>Assigned</c> — read as
+    /// <c>AlreadyMine</c>, which passes without writing anything, leaving the item on the granting
+    /// install and the requester's own node reading <c>HeldByOther</c> forever). Every other
+    /// verdict — held by somebody who is not this install, or unreadable — has nothing here to
+    /// move and is reported as the refusal it already is.
+    /// </para>
     /// </summary>
     public async Task<TrackerTake> GrantToAsync(
         IDocumentStore store,
@@ -449,7 +461,7 @@ public sealed class TrackerAssignmentTake
         CancellationToken cancellationToken)
     {
         TrackerClaimDecision decision = await claimGate.CheckAsync(store, gate, reference, workingDirectory, cancellationToken);
-        if (decision.Verdict != TrackerClaimVerdict.Unassigned)
+        if (decision.Verdict != TrackerClaimVerdict.Unassigned && decision.Verdict != TrackerClaimVerdict.Assigned)
         {
             return TrackerTake.From(decision);
         }
@@ -464,7 +476,45 @@ public sealed class TrackerAssignmentTake
 
         return item.Provider == WorkItemProvider.Jira
             ? await TakeJiraAsync(store, item, granteeIdentity, decision, cancellationToken)
-            : await TakeGitHubAsync(item, granteeIdentity, decision, workingDirectory, cancellationToken);
+            : await GrantGitHubAsync(item, granteeIdentity, decision, workingDirectory, cancellationToken);
+    }
+
+    /// <summary>
+    /// GitHub's half of <see cref="GrantToAsync"/>: unlike Jira's single-valued assignee field,
+    /// which <see cref="TakeJiraAsync"/>'s own <c>PUT</c> simply overwrites, <c>--add-assignee</c>
+    /// only ever adds — so an item the fresh read shows assigned to this install's own identity has
+    /// that identity removed first, or the read-back below would show both installs on the item and
+    /// refuse the grant as <see cref="TrackerTakeVerdict.Contested"/> the same way two genuinely
+    /// simultaneous takers would. Nothing to remove when the read showed the item unassigned.
+    /// </summary>
+    private async Task<TrackerTake> GrantGitHubAsync(
+        ExternalReference item,
+        string granteeIdentity,
+        TrackerClaimDecision decision,
+        string workingDirectory,
+        CancellationToken cancellationToken)
+    {
+        GitHubWorkItemProvider issues = new(processRunner);
+
+        if (decision.Verdict == TrackerClaimVerdict.Assigned && decision.Identity is { } ownIdentity)
+        {
+            TrackerAssignmentWrite removal = await issues.RemoveAssigneeAsync(
+                item, ownIdentity, workingDirectory, cancellationToken);
+            if (removal.Error is { } removalError)
+            {
+                return TrackerTake.WriteRefused(decision, removalError);
+            }
+        }
+
+        TrackerAssignmentWrite write = await issues.AddAssigneeAsync(
+            item, granteeIdentity, workingDirectory, cancellationToken);
+        if (write.Error is { } error)
+        {
+            return TrackerTake.WriteRefused(decision, error);
+        }
+
+        TrackerAssigneeRead read = await issues.ReadAssigneesAsync(item, workingDirectory, cancellationToken);
+        return Confirm(decision, read, granteeIdentity, DateTimeOffset.UtcNow);
     }
 
     /// <summary>
