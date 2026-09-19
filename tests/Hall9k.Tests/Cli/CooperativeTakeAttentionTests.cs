@@ -30,23 +30,48 @@ public sealed class CooperativeTakeAttentionTests
     }
 
     [Fact]
-    public void ComposeStatusLine_names_force_once_overdue()
+    public void ComposeStatusLine_names_force_once_overdue_for_the_requester()
     {
         string line = CooperativeTakeAttention.ComposeStatusLine(
-            "28b19893", "Add rate limiting", "node abcd1234", "Picking this back up.", overdue: true,
-            timeoutMinutes: 30);
+            "28b19893", "Add rate limiting", "node abcd1234", "Picking this back up.", isHolder: false,
+            overdue: true, timeoutMinutes: 30);
 
         line.Should().Contain("--force");
         line.Should().Contain("no answer");
         line.Should().Contain("28b19893");
+        line.Should().NotContain("h9k task grant");
     }
 
     [Fact]
-    public void ComposeStatusLine_names_grant_and_refuse_levers_before_the_timeout()
+    public void ComposeStatusLine_never_offers_force_to_the_requester_before_the_timeout()
     {
         string line = CooperativeTakeAttention.ComposeStatusLine(
-            "28b19893", "Add rate limiting", "node abcd1234", "Picking this back up.", overdue: false,
-            timeoutMinutes: 30);
+            "28b19893", "Add rate limiting", "node abcd1234", "Picking this back up.", isHolder: false,
+            overdue: false, timeoutMinutes: 30);
+
+        line.Should().NotContain("--force");
+        line.Should().NotContain("h9k task grant");
+        line.Should().NotContain("h9k task refuse");
+    }
+
+    [Fact]
+    public void ComposeStatusLine_names_grant_and_refuse_levers_for_the_holder()
+    {
+        string line = CooperativeTakeAttention.ComposeStatusLine(
+            "28b19893", "Add rate limiting", "node abcd1234", "Picking this back up.", isHolder: true,
+            overdue: false, timeoutMinutes: 30);
+
+        line.Should().NotContain("--force");
+        line.Should().Contain("h9k task grant 28b19893");
+        line.Should().Contain("h9k task refuse 28b19893");
+    }
+
+    [Fact]
+    public void ComposeStatusLine_never_offers_force_to_the_holder_once_overdue()
+    {
+        string line = CooperativeTakeAttention.ComposeStatusLine(
+            "28b19893", "Add rate limiting", "node abcd1234", "Picking this back up.", isHolder: true,
+            overdue: true, timeoutMinutes: 30);
 
         line.Should().NotContain("--force");
         line.Should().Contain("h9k task grant 28b19893");
