@@ -103,6 +103,98 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
             + "an absent key a sound marker for the pre-split shape — and the backfill self-terminating");
     }
 
+    /// <summary>
+    /// Idea f72138e1's own origin incident, reproduced: the pre-fix projection discarded
+    /// <see cref="TaskAssigned.AssignedOwnerRootFingerprint"/> to an explicit null rather than
+    /// mirroring it, and no <c>jsonb_exists</c> marker can tell that document apart from a
+    /// genuine "no fingerprint recorded" one, since both carry the key with the same null value
+    /// (independent pre-PR review, cycle 1, conformance and adversarial lenses). Only
+    /// <see cref="TaskLifecycleProjectionBackfill"/> reading the stream's own event, rather than
+    /// the document, can tell them apart.
+    /// </summary>
+    [Fact]
+    public async Task A_document_whose_fingerprint_was_discarded_by_the_pre_fix_projection_is_repaired()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        // This test leaves its own task Queued and assigned to the shared owner
+        // NodeBootstrapSeed.NewNodeAsync's own idempotent find-or-create reuses for every ordinary
+        // call in this class — the same reason A_stale_unmarked_document_does_not_outrank_a_marked_one
+        // resets first, so no other test in the class inherits this one's leftover claimable task.
+        await store.Advanced.ResetAllData(cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        const string fingerprint = "owner-x-root-fingerprint";
+
+        Guid taskId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            TaskAdded added = Add(taskId, "Assigned with a fingerprint the old projection discarded");
+            TaskAggregate task = new();
+            task.Apply(added);
+            TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, node.OwnerId);
+            task.Apply(published);
+            TaskAssigned assigned = TaskDecider.Assign(
+                task, node.OwnerId, [], Now, node.OwnerId, assignedOwnerRootFingerprint: fingerprint);
+
+            seed.Events.StartStream<TaskAggregate>(taskId, added, published, assigned);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await SetKeyNullAsync(taskId, "assignedOwnerFingerprint", cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem stale = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            stale.AssignedOwnerFingerprint.Should().BeNull(
+                "the pre-fix projection discarded the event's own fingerprint");
+        }
+
+        IReadOnlyList<Guid> rebuilt = await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token);
+        rebuilt.Should().Equal(taskId);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem row = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            row.AssignedOwnerFingerprint.Should().Be(
+                fingerprint, "the daemon's queue read filters on this, not the local Guid");
+
+            TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            details.AssignedOwnerFingerprint.Should().Be(fingerprint);
+        }
+
+        // Left Queued and assigned to the shared owner on purpose (nothing here claims it) —
+        // reset again so the next test in the class does not inherit it as a claimable leftover.
+        await store.Advanced.ResetAllData(cts.Token);
+    }
+
+    /// <summary>
+    /// The negative case beside the repair above: an assignment that genuinely never carried a
+    /// fingerprint (this owner has none recorded) must not be mistaken for one the repair still
+    /// owes, or the sweep would churn it forever instead of finding nothing on the next run.
+    /// </summary>
+    [Fact]
+    public async Task A_task_assigned_with_no_fingerprint_is_not_mistaken_for_one_the_repair_still_owes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        // See the identical reset in A_document_whose_fingerprint_was_discarded_by_the_pre_fix_projection_is_repaired:
+        // this test also leaves its own task Queued and assigned to the shared owner.
+        await store.Advanced.ResetAllData(cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        await SeedQueuedAsync(store, node, "An ordinary assignment with no fingerprint recorded", cts.Token);
+
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().BeEmpty(
+            "a null fingerprint here is already the true current answer, not one the old projection "
+            + "discarded, so the repair must not churn it on every run");
+
+        // Left Queued and assigned to the shared owner on purpose (nothing here claims it) —
+        // reset again so the next test in the class does not inherit it as a claimable leftover.
+        await store.Advanced.ResetAllData(cts.Token);
+    }
+
     [Fact]
     public async Task A_dependent_projected_before_the_recovery_keeps_the_hold_its_stream_still_records()
     {
@@ -575,6 +667,24 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
         {
             await using NpgsqlCommand command = new(
                 $"update {table} set data = data - '{key}' where id = @id", connection);
+            command.Parameters.AddWithValue("id", taskId);
+            (await command.ExecuteNonQueryAsync(cancellationToken)).Should().Be(1);
+        }
+    }
+
+    /// <summary>
+    /// The pre-fix projection's own shape for a field it discarded rather than never wrote: the
+    /// key present, but set back to an explicit null, indistinguishable from a genuine "no
+    /// fingerprint" reading by any <c>jsonb_exists</c> marker.
+    /// </summary>
+    private async Task SetKeyNullAsync(Guid taskId, string key, CancellationToken cancellationToken)
+    {
+        await using NpgsqlConnection connection = new(postgres.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        foreach (string table in new[] { "mt_doc_tasklistitem", "mt_doc_taskdetails" })
+        {
+            await using NpgsqlCommand command = new(
+                $"update {table} set data = jsonb_set(data, '{{{key}}}', 'null'::jsonb) where id = @id", connection);
             command.Parameters.AddWithValue("id", taskId);
             (await command.ExecuteNonQueryAsync(cancellationToken)).Should().Be(1);
         }
