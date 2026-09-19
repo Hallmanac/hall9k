@@ -258,9 +258,16 @@ taker's own node, reassigns `AssignedOwnerId` to the taker's own owner (Decision
 guard reads it), and lands the task back on Queued (or Blocked, if a dependency is still open) —
 the same give-the-claim-back shape `TaskRequeued` gives an ordinary release, folded into one event
 here because neither `TaskRequeued` nor `TaskAssigned`'s own guards accept a task still mid-claim.
-The overrider's own node claims it on its next ordinary dispatch sweep and resumes whatever branch
-the previous run left behind through the existing foreign-resume path (piece C's residual, above)
-— no bespoke claim mechanism of its own. The previous holder's own node has no push-based reactor
+The overrider's own node claims it on its next ordinary dispatch sweep and resumes the previous
+run's branch through the existing foreign-resume path (piece C's residual, above) — no bespoke
+claim mechanism of its own — but only if that run actually pushed the branch. A branch the
+superseded run never pushed exists neither locally nor on origin here, and the launcher cuts a
+fresh worktree from the base branch instead of failing, recording `RunStartedCleanAfterBranchGone`
+so `h9k task show` says the resumed work is not in this worktree (#PLACEHOLDER-5c46cd1d). That
+needs origin actually read: if the launch-time fetch fails, the branch is not declared gone and
+the run fails loudly instead, since unfetched refs are no evidence of absence. Every other
+worktree failure on a foreign resume still fails the run loudly by name, unchanged.
+The previous holder's own node has no push-based reactor
 to any of this (`EventReplicationInbox.ApplyAsync` is a bare replay, idea 202383dc M2a); instead
 `RunSupervisor.StopRunsSupersededByTakeoverAsync`, on its own ordinary poll cadence
 (`TakeoverWatchLoop`), notices its own live run's task is held elsewhere, terminates the process
