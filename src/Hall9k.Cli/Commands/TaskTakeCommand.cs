@@ -645,15 +645,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                 string assignedOwnerLabel = assignedOwner?.Name
                     ?? task.AssignedOwnerId?.ToString()
                     ?? "no owner";
-                if (task.State.IsAssigned)
-                {
-                    AnsiConsole.MarkupLine(
-                        $"[yellow]Task {taskId} has no current holder[/], but it is assigned to "
-                        + $"{assignedOwnerLabel.EscapeMarkup()}, not this node's own owner — this node's dispatch "
-                        + "sweep will never claim it, and there is no cooperative lever here for a task nobody "
-                        + $"holds yet. Move it first: h9k task unassign {taskId} && h9k task assign {taskId} <owner>.");
-                }
-                else
+                if (task.AssignedOwnerId is null)
                 {
                     // TaskDecider.Unassign refuses anything that is not Queued or Blocked
                     // (TaskDecider.cs:1091) — a Published, unassigned task needs no unassign step
@@ -663,6 +655,29 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                         $"[yellow]Task {taskId} has no current holder[/] and is already unassigned — this node's "
                         + "dispatch sweep will never claim it, and there is no cooperative lever here for a task "
                         + $"nobody holds yet. Assign it first: h9k task assign {taskId} <owner>.");
+                }
+                else if (task.State.IsAssigned)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Task {taskId} has no current holder[/], but it is assigned to "
+                        + $"{assignedOwnerLabel.EscapeMarkup()}, not this node's own owner — this node's dispatch "
+                        + "sweep will never claim it, and there is no cooperative lever here for a task nobody "
+                        + $"holds yet. Move it first: h9k task unassign {taskId} && h9k task assign {taskId} <owner>.");
+                }
+                else
+                {
+                    // task.State.IsAssigned (Queued||Blocked) is not the same fact as "AssignedOwnerId is
+                    // null": a closeout path (Abandon, Fail, the terminal Done) appends its own ordinary
+                    // TaskHolderReleased alongside the closeout event, clearing HolderNodeId but leaving
+                    // AssignedOwnerId and the terminal State untouched (independent pre-PR review, cycle 4,
+                    // adversarial lens) — so a task can reach here with a non-null AssignedOwnerId while its
+                    // State is neither Queued/Blocked nor unassigned. Neither remedy applies: TaskDecider.Assign
+                    // and TaskDecider.Unassign both refuse anything but Published/Queued/Blocked
+                    // (TaskDecider.cs:1044, 1091) — its story has already ended.
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Task {taskId} has no current holder[/] — it is {task.State.Value}, and its "
+                        + $"story has already ended. It is still recorded as assigned to "
+                        + $"{assignedOwnerLabel.EscapeMarkup()}, but nothing here can move or reclaim it.");
                 }
             }
 
