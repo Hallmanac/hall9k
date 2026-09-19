@@ -1442,8 +1442,30 @@ public sealed class CloseoutEngine(
         if (run.WorktreePath.IsNotBlank() && Directory.Exists(run.WorktreePath))
         {
             string taskShortId = DomainId.Short(task.Id);
-            bool stillPlaceholder = await DecisionsLogRenumberer.TailEntryIsThisTasksUnresolvedPlaceholderAsync(
-                run.WorktreePath, taskShortId, cancellationToken);
+            bool stillPlaceholder;
+            try
+            {
+                stillPlaceholder = await DecisionsLogRenumberer.TailEntryIsThisTasksUnresolvedPlaceholderAsync(
+                    run.WorktreePath, taskShortId, cancellationToken);
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+            {
+                // Directory.Exists above only rules out the worktree being gone outright — a
+                // removal racing this very check (TOCTOU), or PLAN.md itself being unreadable
+                // (permissions, a filesystem error), still reaches File.ReadAllTextAsync inside
+                // TailEntryIsThisTasksUnresolvedPlaceholderAsync uncaught. Caught here instead so a
+                // worktree this sweep genuinely cannot read is skipped exactly as the comment above
+                // promises, rather than surfacing as a generic per-run poll failure that never
+                // mentions the Decisions Log guard at all (independent pre-PR review, cycle 1,
+                // adversarial lens).
+                logger.LogWarning(
+                    exception,
+                    "Run {RunId}: could not read PLAN.md to check the Decisions Log guard before the "
+                    + "pre-approved merge — skipping the guard rather than parking over an unreadable worktree",
+                    run.Id);
+                stillPlaceholder = false;
+            }
+
             if (stillPlaceholder)
             {
                 string placeholderParkReason =
