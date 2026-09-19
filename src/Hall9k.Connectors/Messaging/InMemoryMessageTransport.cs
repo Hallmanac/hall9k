@@ -32,6 +32,13 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
     /// tip comparison does, without ever touching git.</summary>
     private readonly Dictionary<(string RepositoryPath, Guid NodeId), int> versions = [];
 
+    /// <summary>Stands in for <see cref="GitLedgerMessageTransport"/>'s own <c>low-water-mark</c>
+    /// blob: the lowest seq the most recent <see cref="SquashAsync"/> call for a given outbox still
+    /// retained. Absent entirely for an outbox never squashed, read back as 0 the same way a real
+    /// tip with no such blob at all does — meaning nothing has ever been pruned, so
+    /// <see cref="ReadSinceAsync"/>'s own gap-stop rule applies unmodified from seq 0.</summary>
+    private readonly Dictionary<(string RepositoryPath, Guid NodeId), long> lowWaterMarks = [];
+
     public Task SendAsync(
         string repositoryPath,
         Guid fromNodeId,
@@ -105,6 +112,7 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
         string repositoryPath,
         Guid fromNodeId,
         IReadOnlyList<TransportEnvelope> survivors,
+        long lowWaterMark,
         LedgerCommitter committer,
         LedgerSigningKey signingKey,
         CancellationToken cancellationToken)
@@ -119,6 +127,7 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
         }
 
         outboxes[key] = replacement;
+        lowWaterMarks[key] = lowWaterMark;
         BumpVersion(key);
         return Task.CompletedTask;
     }
@@ -169,13 +178,23 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
             }
         }
 
-        if (!outboxes.TryGetValue((repositoryPath, senderNodeId), out SortedList<long, string>? envelopes))
+        (string RepositoryPath, Guid NodeId) key = (repositoryPath, senderNodeId);
+
+        // A reader whose own cursor sits below whatever this outbox's last squash left as its
+        // low-water mark is reading into a range that squash deliberately pruned, never a forged or
+        // corrupted gap — resume right at the mark instead of letting the gap-stop rule below stall
+        // on it (idea 202383dc, the M1b/gap-stop interaction found 2026-09-14). Mirrors
+        // GitLedgerMessageTransport's own resolution of the identical rule.
+        long lowWaterMark = lowWaterMarks.GetValueOrDefault(key, 0);
+        long effectiveSinceSeq = sinceSeq < lowWaterMark ? lowWaterMark - 1 : sinceSeq;
+
+        if (!outboxes.TryGetValue(key, out SortedList<long, string>? envelopes))
         {
-            return TransportReadResult.Ok([], sinceSeq);
+            return TransportReadResult.Ok([], effectiveSinceSeq);
         }
 
         List<TransportEnvelope> candidates = [.. envelopes
-            .Where(pair => pair.Key > sinceSeq)
+            .Where(pair => pair.Key > effectiveSinceSeq)
             .OrderBy(pair => pair.Key)
             .Select(pair => new TransportEnvelope(pair.Key, pair.Value))];
 
@@ -185,8 +204,10 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
         // failed send with no resend yet, most often, since this fake never fabricates forgery or
         // corruption — is never trusted as "inspected". The cursor stops short of it and
         // stalledAtSeq tells the caller there is unreached content rather than genuinely nothing new.
+        // A gap below the low-water mark never reaches this loop at all: effectiveSinceSeq above
+        // already skips past it.
         List<TransportEnvelope> result = [];
-        long highestSeqInspected = sinceSeq;
+        long highestSeqInspected = effectiveSinceSeq;
         long? stalledAtSeq = null;
         foreach (TransportEnvelope candidate in candidates)
         {

@@ -157,7 +157,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         // merely "nothing sent yet".
         TransportReadResult beforeLoss = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
         await transport.SquashAsync(
-            RepositoryPath, nodeA, [beforeLoss.Envelopes[0]], committerA, signingKeyA, cts.Token);
+            RepositoryPath, nodeA, [beforeLoss.Envelopes[0]], lowWaterMark: beforeLoss.Envelopes[0].Seq, committerA,
+            signingKeyA, cts.Token);
 
         Guid task3Id = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(7), cts.Token);
         await using (IDocumentSession session = _postgres.Store.LightweightSession())

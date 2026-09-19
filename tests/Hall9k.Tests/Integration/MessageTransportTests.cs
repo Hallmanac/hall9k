@@ -822,13 +822,10 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
 
         squash.EnvelopesKept.Should().Be(1, "only the envelope sent within the last 48 hours is still within the retention window");
 
-        // sinceSeq: 1, not 0 — this same reader already inspected seq 1 in the sweep above, so this
-        // mirrors a reader resuming from its own prior cursor rather than one starting cold. A reader
-        // starting fresh at 0 after the squash already happened would read the now-missing seq 1 as
-        // an unexplained gap and stall there (ReadSinceAsync's own gap-stop rule cannot yet tell a
-        // deliberately squashed seq apart from a genuinely failed one) — a real interaction gap
-        // between squash and gap-stop, tracked separately rather than papered over here.
-        TransportReadResult afterSquash = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 1, cts.Token);
+        // A reader starting cold (sinceSeq 0) reads the now-missing seq 1 as the squash's own
+        // low-water mark left it: a deliberate prune, not an unexplained gap, so the read resumes at
+        // the mark (seq 2) and continues forward rather than stalling at seq 1.
+        TransportReadResult afterSquash = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
         afterSquash.Envelopes.Should().ContainSingle(envelope => envelope.Seq == 2, "the old envelope (seq 1) was squashed away");
 
         // The reader's own cursor is untouched by the squash — it survives at seq 2 — and a fresh
@@ -841,6 +838,81 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         MessageInboxSweepResult afterSweep = await inbox.ReadFromAsync(
             finalSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, squashNow.AddSeconds(1), cancellationToken: cts.Token);
         afterSweep.EnvelopesConsidered.Should().Be(0, "the cursor already covers both original envelopes, squashed or not");
+    }
+
+    [Fact]
+    public async Task A_genuine_gap_above_the_low_water_mark_still_stalls_a_cold_reader()
+    {
+        // Distinguishes the two kinds of hole ReadSinceAsync can meet below vs. above a squash's own
+        // low-water mark: below it, a cold reader resumes at the mark (the test above); above it, a
+        // hole is exactly what the gap-stop rule exists to catch — this proves the low-water-mark fix
+        // never widens that rule into swallowing a genuine gap along with the deliberate prune.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox outbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        DateTimeOffset oldSentAt = Now;
+        DateTimeOffset youngSentAt = Now.AddHours(40);
+
+        await using (IDocumentSession sendOldSession = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                sendOldSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "old",
+                oldSentAt, cts.Token);
+            await outbox.FlushAsync(sendOldSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, oldSentAt, cts.Token);
+        }
+
+        await using (IDocumentSession sendYoungSession = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                sendYoungSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "young",
+                youngSentAt, cts.Token);
+            await outbox.FlushAsync(sendYoungSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, youngSentAt, cts.Token);
+        }
+
+        // Retention drops "old" (seq 1) and keeps "young" (seq 2) — the low-water mark this squash
+        // leaves behind is 2.
+        DateTimeOffset squashNow = oldSentAt.AddHours(48).AddMinutes(1);
+        await using (IDocumentSession squashSession = _postgres.Store.LightweightSession())
+        {
+            await outbox.SquashAsync(
+                squashSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", TimeSpan.FromHours(48), committerA, signingKeyA,
+                squashNow, cts.Token);
+        }
+
+        DateTimeOffset furtherSentAt = squashNow.AddHours(1);
+        await using (IDocumentSession sendFurtherSession = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                sendFurtherSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "third",
+                furtherSentAt, cts.Token);
+            await MessageOutbox.QueueAsync(
+                sendFurtherSession, nodeA, ProjectId, "owner-a-fingerprint", MessageAudience.Node(nodeB), null, MessageKind.Note, "fourth",
+                furtherSentAt, cts.Token);
+            await outbox.FlushAsync(sendFurtherSession, RepositoryPath, nodeA, ProjectId, "shared-project-key", adoptUnassigned: false, committerA, signingKeyA, furtherSentAt, cts.Token);
+        }
+
+        // Simulates a lost push of seq 3, the identical trick EventCatchUpTests uses: a direct
+        // transport-level squash that keeps seq 2 and seq 4 but silently drops seq 3, leaving the
+        // low-water mark at 2 (nothing new aged out of retention) with a genuine hole at seq 3 —
+        // never a fact any real MessageOutbox.SquashAsync call would ever produce on its own.
+        TransportReadResult beforeLoss = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        TransportEnvelope[] survivingSeq2And4 =
+            [.. beforeLoss.Envelopes.Where(envelope => envelope.Seq is 2 or 4)];
+        await transport.SquashAsync(
+            RepositoryPath, nodeA, survivingSeq2And4, lowWaterMark: 2, committerA, signingKeyA, cts.Token);
+
+        TransportReadResult afterLoss = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+
+        afterLoss.Envelopes.Should().ContainSingle(
+            envelope => envelope.Seq == 2, "the cold reader still resumes at the low-water mark, skipping the pruned seq 1");
+        afterLoss.StalledAtSeq.Should().Be(4, "seq 3 is a genuine gap above the mark, so the read stalls before seq 4 rather than skipping it");
     }
 
     [Fact]
@@ -1323,8 +1395,8 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
             throw new NotSupportedException("This fake only stands in for a read.");
 
         public Task SquashAsync(
-            string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> survivors, LedgerCommitter committer,
-            LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
+            string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> survivors, long lowWaterMark,
+            LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
             throw new NotSupportedException("This fake only stands in for a read.");
     }
 
@@ -1347,8 +1419,8 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
             throw new NotSupportedException("This fake only stands in for a failing flush.");
 
         public Task SquashAsync(
-            string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> survivors, LedgerCommitter committer,
-            LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
+            string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> survivors, long lowWaterMark,
+            LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
             throw new NotSupportedException("This fake only stands in for a failing flush.");
 
         public Task<TransportReadResult> ReadSinceAsync(

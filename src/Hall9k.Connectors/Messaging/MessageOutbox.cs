@@ -261,10 +261,17 @@ public sealed class MessageOutbox(IMessageTransport transport)
             return new MessageSquashResult(survivors.Count);
         }
 
+        // The lowest seq this squash still retains — or, when nothing survives, one past the
+        // highest seq it dropped — so a reader starting cold (or resuming below this) can tell the
+        // resulting gap apart from a forged or corrupted one (idea 202383dc, the M1b/gap-stop
+        // interaction found 2026-09-14). sent is ordered ascending by seq, and survivors preserves
+        // that order, so survivors[0] and sent[^1] are the min and max respectively.
+        long lowWaterMark = survivors.Count > 0 ? survivors[0].Seq : sent[^1].Seq + 1;
+
         List<TransportEnvelope> batch = [.. survivors.Select(
             message => new TransportEnvelope(
                 message.Seq, MessageEnvelopeCodec.Encode(ToEnvelope(message) with { ProjectKey = projectKey })))];
-        await transport.SquashAsync(repositoryPath, fromNodeId, batch, committer, signingKey, cancellationToken);
+        await transport.SquashAsync(repositoryPath, fromNodeId, batch, lowWaterMark, committer, signingKey, cancellationToken);
         _lastSquashedSurvivorSeqs[key] = survivorSeqs;
         return new MessageSquashResult(survivors.Count);
     }

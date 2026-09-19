@@ -879,8 +879,8 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         }
 
         public Task SquashAsync(
-            string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> survivors,
+            string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> survivors, long lowWaterMark,
             LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
-            inner.SquashAsync(repositoryPath, fromNodeId, survivors, committer, signingKey, cancellationToken);
+            inner.SquashAsync(repositoryPath, fromNodeId, survivors, lowWaterMark, committer, signingKey, cancellationToken);
     }
 }
