@@ -570,14 +570,58 @@ public sealed class WorkPromptBuilderTests
         prompt.Should().Contain("`pr-summary` skill");
     }
 
+    /// <summary>
+    /// The leave-out bullet, as the 2026-09-19 ruling rewrote it. The platform now adds one line
+    /// and nothing else, so what the bullet warns off is no longer a list of the platform's own
+    /// additions but the four things a session writes out of habit: the diff restated, the gate
+    /// results, the handoff it is already writing in the same message, and the acceptance
+    /// criteria.
+    /// </summary>
     [Fact]
-    public void The_pull_request_summary_step_says_what_the_platform_adds_around_it()
+    public void The_pull_request_summary_step_names_what_the_body_leaves_out()
     {
-        string prompt = Build(isInteractive: false, isDeliberateHeadlessStart: false);
+        string prompt = Flatten(Build(isInteractive: false, isDeliberateHeadlessStart: false));
 
-        prompt.Should().Contain("The work-item link, the acceptance criteria, and the run")
-            .And.Contain("No em dashes (U+2014)")
+        prompt.Should()
+            .Contain("The work-item link, which the platform writes above your prose and is the only thing it adds.")
+            .And.Contain("A restatement of what the diff contains")
+            .And.Contain("Build and test attestations")
+            .And.Contain($"Anything you are already writing under `{HandoffParser.Marker}`")
+            .And.Contain("Any restatement of this task's acceptance criteria");
+        prompt.Should().Contain("No em dashes (U+2014)")
             .And.Contain("Do not run `gh pr create` or `gh pr edit`");
+    }
+
+    /// <summary>
+    /// The sizing rule (2026-09-19, origin: bioage-calculator pull request #4, a 3,837-byte body
+    /// for a 56-line file). Without it the step asked for a shape and never for a size, and every
+    /// element of that shape got filled in whether the change had one or not.
+    /// </summary>
+    [Fact]
+    public void The_pull_request_summary_step_sizes_the_body_to_the_diff()
+    {
+        string prompt = Flatten(Build(isInteractive: false, isDeliberateHeadlessStart: false));
+
+        prompt.Should().Contain("The body is proportionate to the diff, not to the effort behind it.")
+            .And.Contain("A one-file change, or a documentation-only one, gets one or two sentences of "
+                + "orientation plus only the judgment calls and the reviewer actions that actually exist")
+            .And.Contain("Nothing here is a section you fill in because it exists.");
+    }
+
+    /// <summary>
+    /// The title's key form is the repository's, read off its own commit subjects, rather than the
+    /// <c>KEY: title</c> shape <c>PullRequestBody.WithExternalKey</c> has to pick when it repairs
+    /// a title that carries no key at all. A repository whose subjects write the key with no colon
+    /// gets a title that matches them (bioage-calculator's do).
+    /// </summary>
+    [Fact]
+    public void The_pull_request_summary_step_takes_the_keys_form_from_the_repositorys_commit_subjects()
+    {
+        string prompt = Flatten(Build(isInteractive: false, isDeliberateHeadlessStart: false));
+
+        prompt.Should().Contain("write the key on the front in the same form this repository's own "
+            + "commit subjects carry one")
+            .And.Contain("with a colon after the key when they use one, and without when they do not");
     }
 
     /// <summary>
@@ -648,6 +692,13 @@ public sealed class WorkPromptBuilderTests
 
         prompt.Should().Contain(PrSummaryParser.Marker);
     }
+
+    /// <summary>
+    /// One line with single spaces, so an assertion about a sentence does not also assert where
+    /// the template happened to wrap it.
+    /// </summary>
+    private static string Flatten(string prompt) =>
+        string.Join(' ', prompt.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
 
     private static TaskDetails SomeTask() => new()
     {

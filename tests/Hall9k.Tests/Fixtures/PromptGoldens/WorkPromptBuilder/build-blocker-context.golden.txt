@@ -193,16 +193,47 @@ What exists now: the middleware pipeline registers a rate limiter by default.
      made. This step writes no file, makes no commit and changes nothing in the
      worktree, so it cannot disturb the tree identity step 3 just verified.
      - **Whose voice.** Follow the target repository's own PR-description rule when it
-       ships one — `.claude/commands/git/pr-description.md`, or a PR-description or
+       ships one: `.claude/commands/git/pr-description.md`, or a PR-description or
        `pr-summary` skill under this worktree's own `.claude/skills/`. That rule wins for
-       the prose. Only when the repository ships none, follow the `pr-summary` skill
+       the structure, the shape and the title convention; the owner's own voice below
+       wins for the prose when you find one, and the rule's own plain colleague voice
+       when you do not. Only when the repository ships none, follow the
+       `pr-summary` skill
        Hall9k installs into this project's own skills directory.
+       - **The owner has named no voice skill, so look for one by name.** Check for a
+         skill called `my-voice`, first in the owner's own user skills directory
+         (`~/.claude/skills/my-voice`, which this session can already see) and then in
+         this worktree's own `.claude/skills/my-voice`. When one is there, load it with
+         its `contexts/code-review.md` context, or whichever context it carries for a
+         pull request description, before you write a word of this, and write the way
+         they write: plain language, high-level concepts, complete sentences, the way
+         they would explain this change to a colleague. The repository's own
+         PR-description rule and this project's writing conventions still decide the
+         structure; the voice skill decides only the prose. When neither tier has one,
+         say so in one line of your final summary and write the body in the plain
+         colleague voice the rule itself describes.
+     - **How long it runs.** The body is proportionate to the diff, not to the effort
+       behind it. A one-file change, or a documentation-only one, gets one or two
+       sentences of orientation plus only the judgment calls and the reviewer actions
+       that actually exist, which is often neither: three or four lines in total. A
+       change spread across many files earns the grouped bullets and the paragraphs
+       the rule describes. Nothing here is a section you fill in because it exists.
+     - **The title.** One line saying what the change does rather than what you did to
+       the code. When this task carries an external key, write the key on the front in
+       the same form this repository's own commit subjects carry one, which a glance
+       at `git log` on the base branch answers: with a colon after the key when they
+       use one, and without when they do not. The platform adds a key only to a title
+       that carries none at all, so writing it yourself is what keeps the whole line
+       in your own wording.
      - **Where it goes.** Into your final message, under a line reading exactly
        `PR SUMMARY:`, placed before the `HANDOFF:` line: first line
        `Title: <one line>`, then a blank line, then the body.
-     - **What to leave out.** The work-item link, the acceptance criteria, and the run
-       footer. The platform puts all three around your text, so a copy of any of them
-       in your own body is a second one a reviewer reads as a mistake.
+     - **What to leave out.** The work-item link, which the platform writes above your
+       prose and is the only thing it adds. A restatement of what the diff contains,
+       which a reviewer is already looking at. Build and test attestations, which
+       belong in the run record and in CI. Anything you are already writing under
+       `HANDOFF:`, which is for the next session rather than for a reviewer.
+       Any restatement of this task's acceptance criteria, which live on the card.
      - **How it reads.** This project's writing conventions govern every word of the title and the body, which reviewers read on GitHub under the owner's login:
        > No em dashes (U+2014); use commas, semicolons, colons, periods, or parentheses instead. Full sentences over telegraphic fragments. No AI attribution anywhere in it: no "Generated with Claude", no Co-Authored-By trailer.
      - Do not run `gh pr create` or `gh pr edit`: the platform opens the pull request,
