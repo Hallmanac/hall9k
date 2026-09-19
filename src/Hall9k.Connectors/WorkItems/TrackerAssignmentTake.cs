@@ -260,16 +260,28 @@ public sealed record TrackerTake(
 /// as itself (AGENTS.md: enums only for unpersisted in-process outcomes); what actually persists
 /// on a failure is the pending row <c>DispatchEngine</c> stores for the next lease sweep to retry.
 /// </summary>
-public sealed record TrackerRelease(bool Succeeded, string? FailureReason)
+/// <param name="Succeeded">Whether the item now reads the way a release wants it to, which is the only thing a retry decision rests on.</param>
+/// <param name="FailureReason">Why it does not, in the tracker's own words. Null on every succeeding outcome.</param>
+/// <param name="Wrote">
+/// Whether this release actually took an assignment off the item, as opposed to finding nothing of
+/// this install's there to take off — the release-side twin of <see cref="TrackerTake.Wrote"/>.
+/// The retry mirrors do not read it (both outcomes are equally "nothing left owing"), but a caller
+/// that just wrote an assignment itself and is now giving it back needs to know which of the two
+/// happened before it tells a human the item was cleared: saying so about a
+/// <see cref="NothingToDo"/> would assert an unobserved fact (AGENTS.md), and the item reading
+/// differently than this install left it is exactly what that human should be sent to look at
+/// (conformance pre-PR review, cycle 3).
+/// </param>
+public sealed record TrackerRelease(bool Succeeded, string? FailureReason, bool Wrote)
 {
     /// <summary>Nothing to clear: the gate is off, the task carries no gated reference, the item
     /// already shows nobody or somebody else — every one of those already reads the way a release
     /// wants it to, so nothing was written and nothing failed.</summary>
-    public static readonly TrackerRelease NothingToDo = new(true, null);
+    public static readonly TrackerRelease NothingToDo = new(true, null, Wrote: false);
 
-    public static TrackerRelease Cleared() => new(true, null);
+    public static TrackerRelease Cleared() => new(true, null, Wrote: true);
 
-    public static TrackerRelease Failed(string reason) => new(false, reason);
+    public static TrackerRelease Failed(string reason) => new(false, reason, Wrote: false);
 }
 
 /// <summary>
