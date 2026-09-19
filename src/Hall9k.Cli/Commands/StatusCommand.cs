@@ -187,6 +187,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         }
 
         await WriteAutoPrReviewAsync(session, rows, now, cancellationToken);
+        await WriteCooperativeTakeAsync(session, now, cancellationToken);
 
         int listed = 0;
         listed += Section(rows, AttentionBucket.NeedsYou, "needs-you", "[red bold]Needs you[/]", now);
@@ -340,8 +341,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     {
         try
         {
+            // MessageKind.MechanicalKindValues' own three kinds (idea 202383dc, item 5) are a
+            // daemon reactor's own payload, never something a human is meant to read or handle —
+            // ClaimRequestWatchLoop marks them handled itself the moment it acts, but excluding
+            // them here too keeps this count honest even in the brief window before it does.
+            IReadOnlyList<string> mechanicalKinds = MessageKind.MechanicalKindValues;
             int unread = await session.Query<MessageDetails>()
-                .Where(message => message.ReceivedAt != null && message.HandledAt == null)
+                .Where(message => message.ReceivedAt != null && message.HandledAt == null
+                    && !mechanicalKinds.Contains(message.Kind))
                 .CountAsync(cancellationToken);
             // ProjectId == Guid.Empty excludes a mark left on the pre-M2, unscoped inbox stream: M2's
             // per-project stream ids mean nothing ever writes to that old stream again, so a mark
@@ -646,6 +653,41 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         foreach (ReviewRequestRow request in pane.InReadingOrder)
         {
             AnsiConsole.MarkupLine(request.Markup);
+        }
+    }
+
+    /// <summary>
+    /// Every outstanding cooperative take request this node knows about (idea 202383dc, item 5,
+    /// "a member can ask a holder for a task") — a task parked for this node's own human to
+    /// grant/refuse (<c>take-policy ask</c>), and a task this node itself asked for that has not
+    /// been answered. A standalone section rather than a fold into <c>AttentionComposer</c>'s own
+    /// six-armed NeedsYou classification (that composer's own doc: every arm is read off a
+    /// carefully ordered precedence a new arm risks disturbing) — a task carrying a pending
+    /// request otherwise appears in whichever bucket its own lifecycle state already puts it in.
+    /// </summary>
+    private static async Task WriteCooperativeTakeAsync(
+        IQuerySession session, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<TaskListItem> pending = await session.Query<TaskListItem>()
+            .Where(task => task.PendingTakeRequestedByNodeId != null)
+            .ToListAsync(cancellationToken);
+
+        if (pending.Count == 0)
+        {
+            return;
+        }
+
+        foreach (TaskListItem task in pending)
+        {
+            ProjectDetails? project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken);
+            int timeoutMinutes = project?.TakeTimeoutMinutes ?? TaskTakeCommand.DefaultTakeTimeoutMinutes;
+            bool overdue = task.PendingTakeRequestedAt is { } requestedAt
+                && CooperativeTakeAttention.IsOverdue(requestedAt, timeoutMinutes, now);
+            string id = TaskListCommand.ShortId(task.Id);
+            string requester = $"node {DomainId.Short(task.PendingTakeRequestedByNodeId!.Value)}";
+            AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeStatusLine(
+                id, task.Objective.EscapeMarkup(), requester, task.PendingTakeReason.EscapeMarkup(), overdue,
+                timeoutMinutes));
         }
     }
 
