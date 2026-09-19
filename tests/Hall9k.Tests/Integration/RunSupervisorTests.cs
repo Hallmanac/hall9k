@@ -2938,6 +2938,64 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             usage = new { input_tokens = 10, output_tokens = 10 },
         });
 
+    /// <summary>
+    /// Item 4's own edge case, Brian's 2026-09-13 ruling: "a live run on the previous holder's
+    /// node stops on receipt of the override." <see cref="TaskHolderTakenOver"/> is appended
+    /// directly to this task's own stream (idea 202383dc's replication never runs a decider —
+    /// <c>EventReplicationInbox.ApplyAsync</c> is a bare replay — so appending it here is exactly
+    /// what this node's own database looks like the instant the real event has replicated in), and
+    /// <see cref="RunSupervisor.StopRunsSupersededByTakeoverAsync"/> is what this node's next sweep
+    /// runs against it: it terminates the process tree, ends the run <see cref="RunKilled"/> with
+    /// <see cref="KillReason.Superseded"/> — never <see cref="RunFailed"/> — and never touches the
+    /// task stream, since the takeover event already moved the task on.
+    /// </summary>
+    [Fact]
+    public async Task A_live_run_on_the_previous_holders_node_stops_and_is_recorded_superseded_by_takeover()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid taskId, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        const int fakePid = 424242;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunProcessStarted(runId, fakePid, Now));
+
+            Guid newHolderNodeId = DomainId.New();
+            Guid newHolderOwnerId = DomainId.New();
+            var fence = await session.Events.FetchStreamStateAsync(taskId, cts.Token);
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, version: fence!.Version, token: cts.Token))!;
+            session.Events.Append(
+                taskId, expectedVersion: fence.Version + 1,
+                TaskDecider.TakeOver(
+                    task, newHolderNodeId, newHolderOwnerId, "new-owner-fingerprint",
+                    "Offline for six hours.", newHolderOwnerId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        RunDetails beforeSweep = (await store.QuerySession().LoadAsync<RunDetails>(runId, cts.Token))!;
+        beforeSweep.ActiveSessions.Should().ContainSingle(s => s.ProcessId == fakePid, "the run carries a live agent session before the sweep runs");
+
+        FakeProcessManager processManager = new();
+        processManager.MarkAlive(fakePid);
+        RunSupervisor supervisor = NewSupervisor(store, node, processManager);
+
+        await supervisor.StopRunsSupersededByTakeoverAsync(cts.Token);
+
+        processManager.TreeTerminations.Should().Contain(t => t.ProcessId == fakePid, "the live agent process is actually terminated");
+
+        RunDetails afterSweep = (await store.QuerySession().LoadAsync<RunDetails>(runId, cts.Token))!;
+        afterSweep.State.Should().Be(RunState.Killed, "not RunFailed — a takeover is not a failure");
+        afterSweep.FailureReason.Should().Be(KillReason.Superseded.Value);
+
+        (await store.QuerySession().Query<TaskLease>().Where(l => l.Id == taskId).ToListAsync(cts.Token))
+            .Should().BeEmpty("the previous holder's own stale lease is cleared alongside the run it belonged to");
+
+        TaskAggregate finalTask = (await store.QuerySession().Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+        finalTask.State.Should().Be(
+            TaskState.Queued, "the task itself already moved on through TaskHolderTakenOver — this sweep never touches the task stream");
+    }
+
 
     /// <param name="humanReviewThreads">
     /// The human-authored threads closeout observed when it dispatched this follow-up (task: a
