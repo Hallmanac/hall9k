@@ -2442,9 +2442,10 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// Whose nodes may claim this task. Unassigned is a fact, not a gap: nothing dispatches
     /// until a human assigns it (Decisions Log #34).
     /// <para>
-    /// A cooperative grant's own <see cref="TaskDetails.AssignedOwnerFingerprint"/> (idea
-    /// 20723ef8) is what actually decides whose task this is once one is recorded: the
-    /// self-declared <see cref="TaskDetails.AssignedOwnerId"/> Guid is a vouched node's own claim,
+    /// A recorded <see cref="TaskDetails.AssignedOwnerFingerprint"/> — a cooperative grant's own
+    /// (idea 20723ef8), or an ordinary cross-node assignment's (idea f72138e1) — is what actually
+    /// decides whose task this is once one is recorded: the self-declared
+    /// <see cref="TaskDetails.AssignedOwnerId"/> Guid is the assigning node's own local claim,
     /// never verifiable against a different real owner's id, since Owner events never replicate.
     /// So a fingerprint match against the Guid's own local record wins outright; a mismatch (or no
     /// local record for that Guid at all) falls back to a reverse lookup by the fingerprint
@@ -2453,12 +2454,13 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// </para>
     /// <para>
     /// The two ways that reverse lookup can still come up empty read differently (adversarial
-    /// review, this branch's fix cycle): a third-party node reading a perfectly ordinary grant to
-    /// someone else has no local record for the declared Guid at all — Owner events never
-    /// replicate, so this is the expected shape for every grant to a node this reader has never
-    /// itself joined a project with — and is worth no more than a plain "no local record" line. A
-    /// Guid that DOES resolve locally, to an owner whose own root fingerprint disagrees with the
-    /// one this grant recorded, is the shape this feature actually exists to catch, and says so.
+    /// review, idea 20723ef8's own fix cycle): a third-party node reading a perfectly ordinary
+    /// assignment or grant to someone else has no local record for the declared Guid at all —
+    /// Owner events never replicate, so this is the expected shape for every assignment to a node
+    /// this reader has never itself joined a project with — and is worth no more than a plain "no
+    /// local record" line. A Guid that DOES resolve locally, to an owner whose own root fingerprint
+    /// disagrees with the one this event recorded, is the shape this feature actually exists to
+    /// catch, and says so.
     /// </para>
     /// </summary>
     private static async Task<string> AssigneeMarkupAsync(
@@ -2492,7 +2494,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         return owner is null
             ? $"[dim]known by fingerprint {fingerprint} only — this node has no local record of the declared owner id[/]"
             : $"[dim]known by fingerprint {fingerprint} only — the declared owner id resolves locally to "
-                + $"{owner.Name.EscapeMarkup()}, whose own root fingerprint does not match this grant's[/]";
+                + $"{owner.Name.EscapeMarkup()}, whose own root fingerprint does not match this assignment's[/]";
     }
 
     /// <summary>This node's own outstanding ask for <paramref name="taskId"/>, if it has one and no

@@ -970,13 +970,15 @@ public sealed class DispatchEngine(
         // is read rather than just the claimable head, so that every task either ceiling defers
         // can be named in the log exactly once, which makes this the one read here whose size
         // grows with the backlog rather than with the ceiling.
-        // Mirrors IsGrantedToThisOwner's own per-row branch exactly (idea 20723ef8), so this
-        // pre-filter and the claim gate that gets the final word never disagree about which rows
-        // are candidates: a row with no fingerprint of its own (every ordinary assignment, and
-        // every event older than this field) still decides on the plain Guid alone; a row a
-        // cooperative grant recorded one on decides on the fingerprint alone — never both, since
-        // a matching Guid with a mismatched fingerprint is exactly the forged-grant shape this
-        // whole feature exists to keep out of this node's own queue, not merely out of its claim.
+        // Mirrors IsGrantedToThisOwner's own per-row branch exactly (idea 20723ef8, widened to
+        // every ordinary assignment by idea f72138e1), so this pre-filter and the claim gate that
+        // gets the final word never disagree about which rows are candidates: a row with no
+        // fingerprint of its own (only an event older than this field now) still decides on the
+        // plain Guid alone; a row that does — a cooperative grant, or an ordinary TaskAssigned
+        // assignment, both mirror it the same way — decides on the fingerprint alone — never both,
+        // since a matching Guid with a mismatched fingerprint is exactly the forged-grant shape
+        // this whole feature exists to keep out of this node's own queue, not merely out of its
+        // claim.
         IReadOnlyList<QueuedRow> rows = await session.Query<TaskListItem>()
             .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
             .Where(t =>

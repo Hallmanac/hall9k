@@ -1353,18 +1353,19 @@ public static class TaskDecider
     }
 
     /// <summary>
-    /// Whether a task belongs to this owner (idea 20723ef8): the single predicate both the
-    /// daemon's own dispatch gate (<c>DispatchEngine.IsGrantedToThisOwner</c>, which pre-filters the
-    /// queue and guards the ledger holder write ahead of this decider) and <see cref="Claim"/> apply,
-    /// so neither can admit a claim the other refuses. When the task carries a cooperative grant's
-    /// verified <paramref name="assignedOwnerFingerprint"/>, it alone decides — the self-declared
-    /// <paramref name="assignedOwnerId"/> Guid is not even consulted — so a vouched node that sends
-    /// its own true fingerprint alongside a different real owner's Guid can neither steal a claim on
-    /// that owner's own node (whose fingerprint will not match) nor block the true grantee's own
-    /// (whose fingerprint will, regardless of what Guid the grant named). Absent — every event
-    /// written before this field existed, and every ordinary <see cref="TaskAssigned"/> assignment,
-    /// whose fingerprint is not mirrored onto the aggregate because a local human act needs no
-    /// cross-node verification — falls back to the plain Guid comparison this guard always made.
+    /// Whether a task belongs to this owner (idea 20723ef8, widened to every ordinary assignment by
+    /// idea f72138e1): the single predicate both the daemon's own dispatch gate
+    /// (<c>DispatchEngine.IsGrantedToThisOwner</c>, which pre-filters the queue and guards the
+    /// ledger holder write ahead of this decider) and <see cref="Claim"/> apply, so neither can
+    /// admit a claim the other refuses. When the task carries a recorded
+    /// <paramref name="assignedOwnerFingerprint"/> — a cooperative grant's own, or an ordinary
+    /// <see cref="TaskAssigned"/> assignment's, both mirrored onto the aggregate the same way — it
+    /// alone decides — the self-declared <paramref name="assignedOwnerId"/> Guid is not even
+    /// consulted — so a vouched node that sends its own true fingerprint alongside a different real
+    /// owner's Guid can neither steal a claim on that owner's own node (whose fingerprint will not
+    /// match) nor block the true grantee's own (whose fingerprint will, regardless of what Guid the
+    /// event named). Absent only for an event written before this field existed, in which case
+    /// this falls back to the plain Guid comparison this guard always made.
     /// </summary>
     public static bool IsGrantedToThisOwner(
         Guid? assignedOwnerId, string? assignedOwnerFingerprint, Guid thisOwnerId, string? thisOwnerRootFingerprint) =>
