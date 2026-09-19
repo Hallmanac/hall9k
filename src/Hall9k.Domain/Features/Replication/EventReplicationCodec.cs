@@ -65,17 +65,46 @@ public static class EventReplicationCodec
     /// <summary>
     /// One catch-up ask (idea 202383dc, M2b, task 9408d525) — the body of a
     /// <see cref="Hall9k.Domain.Features.Message.MessageKind.EventsRequest"/> envelope. Exactly one
-    /// of three shapes: <see cref="ForStreamId"/> set asks for one specific stream's own events,
+    /// of four shapes: <see cref="ForStreamId"/> set asks for one specific stream's own events,
     /// whoever originated them (the ledger-record adoption path — task add's own missing-stream
-    /// case); <see cref="ForOriginNodeId"/> set (with <see cref="ForStreamId"/> null) asks for
-    /// everything a peer holds from that one origin node past <see cref="SinceOriginSequence"/> — a
+    /// case — and <c>h9k task pull</c>); <see cref="ForOriginNodeId"/> set (with
+    /// <see cref="ForStreamId"/> null) asks for everything a peer holds from that one origin node
+    /// past <see cref="SinceOriginSequence"/> — a
     /// coarse, safe lower bound, since the origin's own global sequence is not contiguous across
     /// projects and node/owner-scoped events, so "greater than" is always a superset of what is
     /// genuinely missing, never a subset, and any overlap a peer re-sends is harmless (dedupe by
-    /// origin event id); both null asks for everything the peer holds for the project at all — a
-    /// brand-new node's own bootstrap.
+    /// origin event id); <see cref="SinceGlobalSequence"/> set (with both of the others null) asks
+    /// for every project-scoped event the peer holds at or above that bound on the ANSWERING node's
+    /// own global sequence (<c>h9k project pull --since</c>); all three null asks for everything the
+    /// peer holds for the project at all — a brand-new node's own bootstrap.
+    /// <para>
+    /// The two shapes a human explicitly asked for — <see cref="ForStreamId"/> and
+    /// <see cref="SinceGlobalSequence"/> — are the ones an answering node serves from below its own
+    /// replication switch-on point; the two a daemon sweep mints on its own (gap-fill and bootstrap)
+    /// keep that exclusion, since history stays inert until somebody actually asks for it.
+    /// <see cref="EventsRequestRecord.IsExplicitAsk"/> is the rule itself.
+    /// </para>
+    /// <para>
+    /// <see cref="SinceGlobalSequence"/> is trailing and defaulted so an envelope from a sender on
+    /// an older build still decodes as one of the original three shapes.
+    /// </para>
     /// </summary>
-    public sealed record EventsRequestRecord(Guid RequestId, Guid? ForOriginNodeId, long SinceOriginSequence, Guid? ForStreamId);
+    public sealed record EventsRequestRecord(
+        Guid RequestId,
+        Guid? ForOriginNodeId,
+        long SinceOriginSequence,
+        Guid? ForStreamId,
+        long? SinceGlobalSequence = null)
+    {
+        /// <summary>
+        /// Whether a human explicitly asked for this, which is the opt-in that lifts an answering
+        /// node's own replication switch-on exclusion (task a56cf16e; the origin incident is in
+        /// this type's own doc above): one named stream, or a named lower bound on the answering
+        /// node's own global sequence. A gap-fill and a brand-new node's bootstrap are both minted
+        /// by a daemon sweep with nobody asking, so neither one lifts it.
+        /// </summary>
+        public bool IsExplicitAsk => ForStreamId is not null || SinceGlobalSequence is not null;
+    }
 
     public static string EncodeRequest(EventsRequestRecord request) => JsonSerializer.Serialize(request, Options);
 
