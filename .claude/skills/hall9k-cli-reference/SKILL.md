@@ -238,6 +238,38 @@ unread-message count reads it. The next holder's first run that resumes a foreig
 (`TaskDetails.RetryBranchResumesForeignNode`, above) opens with the note ahead of the work prompt's
 own agent context (`WorkPromptBuilder.Build`).
 
+**An owner-role member can take a task from an absent holder** (idea 202383dc, item 4) —
+`h9k task take <id> --force --reason "<why>"`: owner-role required (the identical gate `h9k
+project member remove`/`h9k project invite` already apply, checked against the task's own
+project chain). Absence is never detected — presence detection is dead, never parked — so the
+command prints the evidence it has (the current holder, since when, and the last time anything
+was heard from that node's own outbox — the latest received `MessageDetails` row from it, the
+one durable proxy this platform has) and proceeds on the operator's own judgment. A gated
+project's own tracker take (`TrackerClaimCheck.TakeOrRefuseAsync`) runs first; its refusal stops
+the override outright, before the ledger holder is ever touched, with the tracker's own sentence.
+The ledger write itself (`TaskLedgerHolder.TryOverrideAsync`) is a conditional write through A1
+against whatever holder this command's own first read found: two overriders racing the same task
+never both land — the second one's own compare-and-swap conflicts, re-reads, and reports back
+whoever actually won, rather than either one racing to overwrite the other. `TaskHolderTakenOver`
+(one task-stream event, travels) then jumps the ledger and task-stream holder straight to the
+taker's own node, reassigns `AssignedOwnerId` to the taker's own owner (Decisions Log #34's claim
+guard reads it), and lands the task back on Queued (or Blocked, if a dependency is still open) —
+the same give-the-claim-back shape `TaskRequeued` gives an ordinary release, folded into one event
+here because neither `TaskRequeued` nor `TaskAssigned`'s own guards accept a task still mid-claim.
+The overrider's own node claims it on its next ordinary dispatch sweep and resumes whatever branch
+the previous run left behind through the existing foreign-resume path (piece C's residual, above)
+— no bespoke claim mechanism of its own. The previous holder's own node has no push-based reactor
+to any of this (`EventReplicationInbox.ApplyAsync` is a bare replay, idea 202383dc M2a); instead
+`RunSupervisor.StopRunsSupersededByTakeoverAsync`, on its own ordinary poll cadence
+(`TakeoverWatchLoop`), notices its own live run's task is held elsewhere, terminates the process
+tree, and records `RunKilled` with `KillReason.Superseded` — never `RunFailed` — with the
+transcript kept and no pull request action following from that node. `h9k task show` and `h9k
+status` both name the takeover: who, from whom, why, when
+(`TaskAggregate.TakenOverFromNodeId`/`TakenOverReason`/`TakenOverByOwnerId`/`TakenOverAt`). The
+cooperative take (`h9k task take <id>` with no `--force`, idea 202383dc, item 5 — a claim-request
+envelope to the holder's own node) is a separate, not-yet-built door; this command refuses without
+`--force` rather than silently doing nothing.
+
 `PullRequestOpener.OpenAsync` looks up an already-open pull request for the run's own branch
 before ever calling `gh pr create`, on every delivery (not only a resumed one — a first delivery
 whose own `PullRequestOpened` event never committed reaches the identical shape), and adopts it —
@@ -729,6 +761,7 @@ h9k task release <id> --keep-interactive   # same release, but the task's intera
 h9k task handoff <id> --text "<note>"   # leave a note for whoever holds this task next (idea 202383dc, item 3); refused on any node that is not the current ledger holder, naming who is
 h9k task handoff <id> --file <path>     # same, read from a file instead of typing it
 h9k task handoff <id> --text "<note>" --to <owner>   # nudge one owner's every node instead of the whole project (their root fingerprint — h9k owner show prints it)
+h9k task take <id> --force --reason "<why>"   # owner-role only: force an absent holder's task away from it (idea 202383dc, item 4); a gated project's own tracker take runs first, and the previous holder's own live run stops on its next sweep, recorded superseded by takeover
 ```
 
 A deliberate human kick-off dispatches a Published, Queued, or already-Blocked task on the spot, headless, instead
