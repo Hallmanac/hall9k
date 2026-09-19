@@ -15,11 +15,15 @@ using Microsoft.Extensions.Logging;
 namespace Hall9k.Connectors.Replication;
 
 /// <summary>One sweep's own outcome reading one sender's <c>events</c>-kind envelopes for one
-/// project. <see cref="StalledAtSeq"/> is <see cref="TransportReadResult.StalledAtSeq"/> passed
-/// straight through — a numeric gap in this sender's own outbox this call could not even inspect
-/// (idea 202383dc, M2b, task 9408d525: "a node that finds a gap in a sender's sequence... asks a
-/// peer"), the trigger <c>Hall9k.Connectors.Replication.EventCatchUpCoordinator.RequestGapFillAsync</c>
-/// is built for.</summary>
+/// project. <see cref="StalledAtSeq"/> is <see cref="TransportReadResult.StalledAtSeq"/>, or, absent
+/// that, <see cref="TransportReadResult.PrunedBelowSeq"/> — a numeric gap in this sender's own
+/// outbox this call could not even inspect (idea 202383dc, M2b, task 9408d525: "a node that finds a
+/// gap in a sender's sequence... asks a peer"), OR a range a squash's own low-water mark skipped
+/// this call past without ever inspecting it either (independent pre-PR review, cycle 1, both
+/// lenses, medium: a peer may still hold that range even though the sender's own outbox no longer
+/// does, and folding it in here is what lets the mark's own cursor-advance-past-a-gap never quietly
+/// drop the one recovery path this platform has for it). Either way, the trigger
+/// <c>Hall9k.Connectors.Replication.EventCatchUpCoordinator.RequestGapFillAsync</c> is built for.</summary>
 public sealed record EventReplicationReadResult(bool SenderIgnored, int EventsApplied, long? StalledAtSeq = null);
 
 /// <summary>
@@ -284,7 +288,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         }
 
         await session.SaveChangesAsync(cancellationToken);
-        return new EventReplicationReadResult(SenderIgnored: senderIgnored, applied, read.StalledAtSeq);
+        return new EventReplicationReadResult(SenderIgnored: senderIgnored, applied, read.StalledAtSeq ?? read.PrunedBelowSeq);
     }
 
     /// <summary>Returns false, applying nothing, when this origin event id is already stored — the

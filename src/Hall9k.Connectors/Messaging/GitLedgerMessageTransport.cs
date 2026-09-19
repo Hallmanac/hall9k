@@ -300,8 +300,15 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
         // corrupted gap — resume right at the mark instead of letting the gap-stop rule below stall
         // on it (idea 202383dc, the M1b/gap-stop interaction found 2026-09-14). A cursor already at
         // or past the mark is unaffected: whatever gap it might still hit above the mark is real.
-        long lowWaterMark = await ReadLowWaterMarkAsync(repositoryPath, tip, cancellationToken);
-        long effectiveSinceSeq = sinceSeq < lowWaterMark ? lowWaterMark - 1 : sinceSeq;
+        long lowWaterMark = await ReadLowWaterMarkAsync(repositoryPath, tip, publicKeyLine, cancellationToken);
+        bool markSkipsContent = sinceSeq < lowWaterMark;
+        long effectiveSinceSeq = markSkipsContent ? lowWaterMark - 1 : sinceSeq;
+        // The range the mark just skipped was never actually inspected — a peer may still hold it,
+        // so this is reported alongside (never instead of) the cursor advance below, letting
+        // EventReplicationInbox fold it into the identical gap-fill trigger a genuine in-band gap
+        // already uses, rather than this squash's own prune silently losing content a peer could
+        // still supply (independent pre-PR review, cycle 1, both lenses, medium).
+        long? prunedBelowSeq = markSkipsContent ? sinceSeq + 1 : null;
 
         string? treeListing = await RunGitCaptureAsync(
             repositoryPath, ["ls-tree", "-r", "--name-only", tip, "--", "messages/"], cancellationToken);
@@ -314,7 +321,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
 
         if (candidateSeqs.Count == 0)
         {
-            return TransportReadResult.Ok([], effectiveSinceSeq);
+            return TransportReadResult.Ok([], effectiveSinceSeq, prunedBelowSeq: prunedBelowSeq);
         }
 
         // Every candidate path above the cursor is verified against the commit that actually
@@ -385,7 +392,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
             highestSeqInspected = seq;
         }
 
-        return TransportReadResult.Ok(envelopes, highestSeqInspected, rejectedSeqs, stalledAtSeq);
+        return TransportReadResult.Ok(envelopes, highestSeqInspected, rejectedSeqs, stalledAtSeq, prunedBelowSeq);
     }
 
     private static string OutboxRef(Guid nodeId) => $"refs/hall9k/messages/{nodeId}";
@@ -557,11 +564,41 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
     }
 
     /// <summary>Zero when <paramref name="tip"/> carries no <see cref="LowWaterMarkPath"/> blob at
-    /// all — every outbox that has never been squashed — meaning no seq has ever been pruned, so
-    /// <see cref="ReadSinceAsync"/>'s own gap-stop rule applies unmodified from seq 0.</summary>
-    private async Task<long> ReadLowWaterMarkAsync(string repositoryPath, string tip, CancellationToken cancellationToken)
+    /// all — every outbox that has never been squashed, meaning no seq has ever been pruned — but
+    /// also zero when the blob exists and the git commands used to read it back fail for any other
+    /// reason (a corrupt object, an interrupted process): either way <see cref="ReadSinceAsync"/>'s
+    /// own gap-stop rule applies unmodified from seq 0, the conservative direction, since nothing
+    /// here can tell "never squashed" apart from "a tool failed answering" (independent pre-PR
+    /// review, cycle 1, conformance lens, low).
+    /// <para>
+    /// Also zero when the blob exists but the commit that actually introduced
+    /// <see cref="LowWaterMarkPath"/> does not verify against <paramref name="publicKeyLine"/> — the
+    /// identical check <see cref="ReadSinceAsync"/>'s own envelope loop applies to every candidate
+    /// path, extended to this one: unlike every envelope path, this blob sits outside the tip's own
+    /// per-commit history that <c>ls-tree ... -- messages/</c> scopes to, so without this check
+    /// anyone with push access to origin could insert a single unsigned commit setting this blob to
+    /// an arbitrarily large value and silently, permanently suppress every reader's cursor for this
+    /// sender — the one piece of outbox content the per-envelope verification loop never reached
+    /// (independent pre-PR review, cycle 1, both lenses, high).
+    /// </para>
+    /// </summary>
+    private async Task<long> ReadLowWaterMarkAsync(
+        string repositoryPath, string tip, string publicKeyLine, CancellationToken cancellationToken)
     {
         string? content = await RunGitCaptureAsync(repositoryPath, ["show", $"{tip}:{LowWaterMarkPath}"], cancellationToken);
+        if (content.IsBlank())
+        {
+            return 0;
+        }
+
+        string? introducingCommit = (await RunGitCaptureAsync(
+            repositoryPath, ["log", "--format=%H", "-n", "1", tip, "--", LowWaterMarkPath], cancellationToken))?.Trim();
+        if (introducingCommit.IsBlank()
+            || !await IsSignedByRegisteredKeyAsync(repositoryPath, introducingCommit, publicKeyLine, cancellationToken))
+        {
+            return 0;
+        }
+
         return ParseLowWaterMark(content);
     }
 
@@ -591,9 +628,10 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
     /// private <c>GIT_INDEX_FILE</c> this call owns start to finish — the identical isolation
     /// <c>GitLedger.BuildTreeAsync</c> uses for a single path, here looped over N. Seeding from
     /// <paramref name="seedFromTip"/> (<c>git read-tree</c>) is what makes <see cref="FlushAsync"/>
-    /// an ordinary append: every path outside <c>messages/</c> — there is none today, but nothing
-    /// here assumes that — and every envelope not in this batch survives into the new tree
-    /// unchanged. <see cref="SquashAsync"/> passes <see langword="null"/> for both
+    /// an ordinary append: every path outside <c>messages/</c> — <see cref="LowWaterMarkPath"/> is
+    /// the one that exists today, and nothing here assumes there could never be another — and every
+    /// envelope not in this batch survives into the new tree unchanged. <see cref="SquashAsync"/>
+    /// passes <see langword="null"/> for both
     /// <paramref name="seedFromTip"/> and <paramref name="parentTip"/>, building a tree from
     /// nothing but <paramref name="envelopes"/> and a commit with no parent at all.
     /// <paramref name="lowWaterMark"/>, when given, also writes <see cref="LowWaterMarkPath"/> into

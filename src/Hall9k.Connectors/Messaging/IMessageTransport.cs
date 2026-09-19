@@ -21,13 +21,24 @@ public sealed record TransportEnvelope(long Seq, string Content);
 /// verdict on an envelope that was actually looked at, and stopping is the only safe choice: the
 /// transport cannot tell a forged or corrupted ref apart from this same sender's own earlier failed
 /// send that has not been resent yet (seq allocation is this node's own highest-plus-one, but a
-/// failed push leaves that seq's slot empty on the ref until something explicitly resends it).
+/// failed push leaves that seq's slot empty on the ref until something explicitly resends it). The
+/// one exception is a range a squash's own verified low-water mark deliberately pruned
+/// (<see cref="PrunedBelowSeq"/>): that range genuinely was never inspected either, yet
+/// <see cref="HighestSeqInspected"/> still advances across it — resuming at the mark rather than
+/// stalling forever on content the sender itself no longer holds is the whole point of the mark
+/// (idea 202383dc, the M1b/gap-stop interaction found 2026-09-14; independent pre-PR review, cycle
+/// 1, both lenses).
 /// <see cref="RejectedSeqs"/> names exactly which candidates were the former — rejected, not merely
 /// uninspected — so the reader can log the sender-verification failure rather than the rejection
 /// passing through silently. <see cref="StalledAtSeq"/> names the first seq this call could not
 /// even inspect, so the caller can log the stall too rather than reading an empty
 /// <see cref="Envelopes"/> as "the sender genuinely has nothing new" when it may instead mean
-/// "there is more, but this call could not safely reach it yet".
+/// "there is more, but this call could not safely reach it yet". <see cref="PrunedBelowSeq"/> names
+/// the first seq a squash's own low-water mark skipped this call past: unlike
+/// <see cref="StalledAtSeq"/>, the cursor does advance past it, but a peer may still hold the
+/// content it names, so a caller wanting a gap-fill request for it (<c>EventReplicationInbox</c>'s
+/// own use) can fold this in alongside <see cref="StalledAtSeq"/> rather than treating the mark's
+/// prune as if nothing had ever been missed at all.
 /// </summary>
 public sealed record TransportReadResult(
     bool SenderVouched,
@@ -35,7 +46,8 @@ public sealed record TransportReadResult(
     long HighestSeqInspected,
     IReadOnlyList<long> RejectedSeqs,
     long? StalledAtSeq = null,
-    string? NotVouchedReason = null)
+    string? NotVouchedReason = null,
+    long? PrunedBelowSeq = null)
 {
     /// <summary>The stale, M1a-era default reason: no node file at all vouches for the sender's
     /// own outbox. <see cref="NotVouched"/> is used instead whenever a more specific reason is
@@ -50,8 +62,8 @@ public sealed record TransportReadResult(
 
     public static TransportReadResult Ok(
         IReadOnlyList<TransportEnvelope> envelopes, long highestSeqInspected, IReadOnlyList<long>? rejectedSeqs = null,
-        long? stalledAtSeq = null) =>
-        new(true, envelopes, highestSeqInspected, rejectedSeqs ?? [], stalledAtSeq);
+        long? stalledAtSeq = null, long? prunedBelowSeq = null) =>
+        new(true, envelopes, highestSeqInspected, rejectedSeqs ?? [], stalledAtSeq, PrunedBelowSeq: prunedBelowSeq);
 }
 
 /// <summary>One outbox ref the messages prefix currently holds, and its current tip — what one

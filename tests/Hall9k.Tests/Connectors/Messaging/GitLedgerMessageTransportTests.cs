@@ -73,6 +73,22 @@ public sealed class GitLedgerMessageTransportTests
         seq.Should().BeNull(because);
     }
 
+    [Theory]
+    [InlineData("0", 0L)]
+    [InlineData("5", 5L)]
+    [InlineData("9999999999999999999999999999", 0L)]
+    [InlineData("-5", 0L)]
+    [InlineData(" 12 ", 12L)]
+    [InlineData("abc", 0L)]
+    [InlineData("", 0L)]
+    [InlineData(null, 0L)]
+    public void ParseLowWaterMark_RoundTripsAValidMarkAndRefusesAnythingElseAsZero(string? content, long expectedMark)
+    {
+        long mark = GitLedgerMessageTransport.ParseLowWaterMark(content);
+
+        mark.Should().Be(expectedMark);
+    }
+
     [Fact]
     public void HasSshSignatureHeader_TrueForAnSshSignedCommit()
     {
