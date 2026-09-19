@@ -135,6 +135,20 @@ public sealed class DispatchEngine(
     private readonly HashSet<Guid> _deferredByProjectCap = [];
 
     /// <summary>
+    /// Tasks already reported as silently excluded from the queue read by a fingerprint mismatch
+    /// (idea 20723ef8, conformance and adversarial review, this branch's fix cycle): a row whose
+    /// self-declared <c>AssignedOwnerId</c> names this node's own owner but whose recorded
+    /// <c>AssignedOwnerFingerprint</c> does not match this node's own root fingerprint is excluded
+    /// from <see cref="ReadQueueAsync"/>'s own result with no other trace at all — <c>h9k task
+    /// show</c> is the only surface that otherwise explains it, and a task assigned to this owner
+    /// that this node will never claim is indistinguishable from an idle queue without this line.
+    /// Same one-line-per-episode discipline as <see cref="_deferredClaims"/>: rebuilt
+    /// every sweep from the rows actually excluded, so a mismatch that clears (an owner-root rewrite
+    /// resolved, a fresh grant recorded) goes quiet, and one that returns is announced again.
+    /// </summary>
+    private readonly HashSet<Guid> _reportedFingerprintMismatches = [];
+
+    /// <summary>
     /// Whether the last measurement found this node over its ceiling, so the overshoot is stated
     /// once per episode rather than every five seconds for as long as a review cycle runs.
     /// Cleared the moment the node is back under, which is what makes the next one a fresh line.
@@ -709,6 +723,8 @@ public sealed class DispatchEngine(
             session, node.OwnerId, cancellationToken);
         IReadOnlyList<QueuedCandidate> queued = await ReadQueueAsync(
             session, archivedProjects, ownerRootFingerprint, cancellationToken);
+        ReportFingerprintMismatches(await ReadFingerprintMismatchedTaskIdsAsync(
+            session, ownerRootFingerprint, cancellationToken));
 
         // Measured after the queue is read rather than before it, because a project cap can only
         // be measured against the projects that actually have a candidate this sweep — a paused
@@ -991,6 +1007,38 @@ public sealed class DispatchEngine(
                 // document) as false, same as QueuePriorityMarked below — the backfill's own
                 // marker is what closes that window rather than this read.
                 TaskRankResolution.Resolve(row.FollowUpBranch, row.PullRequestUrl, row.RetryPending ?? false)))];
+    }
+
+    /// <summary>
+    /// The rows <see cref="ReadQueueAsync"/>'s own fingerprint branch excludes from the queue read
+    /// with no other trace at all: this node's own owner is self-declared (<c>AssignedOwnerId</c>
+    /// matches), but the row's own recorded <c>AssignedOwnerFingerprint</c> does not match this
+    /// node's own root fingerprint — the forged-grant shape this feature exists to keep out of the
+    /// queue, and also the ordinary shape a rewritten owner root leaves behind on every task
+    /// granted under the previous one (conformance and adversarial review, this branch's fix
+    /// cycle). A row with no fingerprint at all is never a mismatch — the plain Guid match already
+    /// admitted it — and is not read here. Split into two branches, never a bare <c>!=</c> against
+    /// <paramref name="ownerRootFingerprint"/>, because SQL's own null comparison is three-valued:
+    /// a parameter bound to an actual null makes every <c>&lt;&gt;</c> row unknown rather than true,
+    /// which would silently read back zero rows instead of every fingerprinted one.
+    /// </summary>
+    private async Task<IReadOnlyList<Guid>> ReadFingerprintMismatchedTaskIdsAsync(
+        IQuerySession session, string? ownerRootFingerprint, CancellationToken cancellationToken)
+    {
+        Guid ownerId = node.OwnerId;
+        return ownerRootFingerprint is null
+            ? await session.Query<TaskListItem>()
+                .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
+                .Where(t => t.AssignedOwnerId == ownerId && t.AssignedOwnerFingerprint != null)
+                .Select(t => t.Id)
+                .ToListAsync(cancellationToken)
+            : await session.Query<TaskListItem>()
+                .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
+                .Where(t => t.AssignedOwnerId == ownerId
+                    && t.AssignedOwnerFingerprint != null
+                    && t.AssignedOwnerFingerprint != ownerRootFingerprint)
+                .Select(t => t.Id)
+                .ToListAsync(cancellationToken);
     }
 
     /// <summary>
@@ -1355,6 +1403,31 @@ public sealed class DispatchEngine(
 
         _deferredClaims.Clear();
         _deferredClaims.UnionWith(deferred);
+    }
+
+    /// <summary>
+    /// One line per mismatch, not one per sweep — the same episode discipline
+    /// <see cref="ReportDeferrals"/> gives the concurrency ceiling. Unlike a deferral, this is not
+    /// "waiting for a slot": the task stays Queued indefinitely, with nothing that ever raises it
+    /// the way a deferral's own ceiling does, until whatever produced the mismatch is resolved by a
+    /// human — a fresh grant, or the owner root rewrite (<c>h9k project join --owner</c>) that
+    /// caused it in the first place. The log line names the row and the mismatch itself so
+    /// <c>h9k task show</c> is not the only way to find out.
+    /// </summary>
+    private void ReportFingerprintMismatches(IReadOnlyCollection<Guid> mismatched)
+    {
+        foreach (Guid taskId in mismatched.Where(taskId => !_reportedFingerprintMismatches.Contains(taskId)))
+        {
+            logger.LogWarning(
+                "Task {TaskId} stays queued: it is assigned to this node's own owner by id, but its recorded "
+                + "owner fingerprint does not match this node's own root fingerprint — never claimed here until "
+                + "that is resolved (a fresh grant, or reconciling an owner root rewrite). See 'h9k task show "
+                + "{TaskId}' for detail",
+                taskId, taskId);
+        }
+
+        _reportedFingerprintMismatches.Clear();
+        _reportedFingerprintMismatches.UnionWith(mismatched);
     }
 
     /// <summary>
