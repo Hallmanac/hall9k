@@ -390,4 +390,85 @@ public static class TaskLedgerHolder
                 + $"{exception.GetType().Name}: {RelayedText.OneLine(exception.Message)}");
         }
     }
+
+    /// <summary>
+    /// Restore: the same conditional write as <see cref="TryReleaseAsync"/>, except it writes
+    /// <paramref name="previousHolder"/> back rather than clearing to null — the rollback a forced
+    /// override (<see cref="TryOverrideAsync"/>) needs when the caller's own domain-stream append
+    /// loses a race after the ledger write already landed (adversarial pre-PR review, cycle 2):
+    /// releasing to null there would leave the record briefly holder-less and freely claimable by
+    /// any node's ordinary dispatch sweep, reopening the exact double-claim hazard
+    /// <c>DispatchEngine.ReleaseLedgerHolderBestEffortAsync</c>'s own comment exists to close.
+    /// <paramref name="previousHolder"/> may itself be <see langword="null"/> — the override had
+    /// nothing to overwrite — in which case this behaves exactly like <see cref="TryReleaseAsync"/>.
+    /// Only ever rewrites a record that still names <paramref name="expectedNodeId"/>; one already
+    /// moved on, missing, or held by someone else, is <see cref="HolderReleaseVerdict.NotHeld"/>
+    /// rather than an error, the identical shape <see cref="TryReleaseAsync"/> already gives that case.
+    /// </summary>
+    public static async Task<HolderReleaseResult> TryRestoreAsync(
+        ILedger ledger,
+        string repositoryPath,
+        Guid taskId,
+        Guid expectedNodeId,
+        TaskRecordHolder? previousHolder,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
+        CancellationToken cancellationToken)
+    {
+        string refName = LedgerRefRegistry.Records.RefspecSource;
+        string path = LedgerRefRegistry.RecordPath(taskId);
+
+        try
+        {
+            for (int attempt = 1; attempt <= MaxConflictRetries; attempt++)
+            {
+                LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
+                // FetchFailed ahead of Exists, the identical reason TryReleaseAsync's own loop
+                // checks it first: a read this loop could not confirm must never be read as
+                // NotHeld, which would let the caller believe the restore already landed (or had
+                // nothing to do) and stop retrying while the ledger still names the taker alone.
+                if (current.FetchFailed)
+                {
+                    return HolderReleaseResult.Failed(
+                        $"the ledger record at {path} could not be confirmed — the fetch failed, so this "
+                        + "restore cannot tell whether the holder still names this node.");
+                }
+
+                if (!current.Exists)
+                {
+                    return HolderReleaseResult.NotHeld;
+                }
+
+                TaskRecord? existing = TaskRecord.TryParse(current.Content);
+                if (existing?.Holder is not { } holder || holder.NodeId != expectedNodeId)
+                {
+                    return HolderReleaseResult.NotHeld;
+                }
+
+                TaskRecord updated = existing with { Holder = previousHolder };
+                string content = updated.ToYaml();
+                LedgerWriteOutcome outcome = await ledger.WriteAsync(
+                    new LedgerWriteRequest(
+                        repositoryPath, refName, path, content, current.BlobId,
+                        $"Restore task {taskId}", committer, signingKey),
+                    cancellationToken);
+                if (outcome.Verdict == LedgerWriteVerdict.Written)
+                {
+                    return HolderReleaseResult.Released;
+                }
+
+                // Conflict: re-read and re-decide, same as the release loop above.
+            }
+
+            return HolderReleaseResult.Failed(
+                $"the ledger record at {path} kept moving under this restore for {MaxConflictRetries} "
+                + "attempt(s) without ever settling.");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return HolderReleaseResult.Failed(
+                "restoring the previous holder on the task's ledger record failed rather than "
+                + $"answering — {exception.GetType().Name}: {RelayedText.OneLine(exception.Message)}");
+        }
+    }
 }

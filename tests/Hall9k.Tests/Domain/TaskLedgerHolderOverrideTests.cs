@@ -118,6 +118,54 @@ public sealed class TaskLedgerHolderOverrideTests
         result.Verdict.Should().Be(HolderOverrideVerdict.NoRecord);
     }
 
+    /// <summary>
+    /// The rollback <c>h9k task take --force</c> needs when its own final domain-stream append
+    /// loses a race after an override already landed (adversarial pre-PR review, cycle 2):
+    /// restoring the previous holder, not releasing to no holder at all, since a null holder is
+    /// freely claimable by any node's ordinary dispatch sweep — the exact double-claim hazard
+    /// <c>TaskLedgerHolder.TryReleaseAsync</c>'s own callers already guard against.
+    /// </summary>
+    [Fact]
+    public async Task Restoring_after_a_lost_race_writes_the_previous_holder_back_rather_than_clearing_it()
+    {
+        Guid taskId = DomainId.New();
+        Guid previousHolderNodeId = DomainId.New();
+        FakeLedger ledger = new();
+        TaskRecordHolder previousHolder = new("owner-a", previousHolderNodeId, "OLD-NODE", Now.AddHours(-6));
+        await SeedRecordAsync(ledger, taskId, previousHolder);
+
+        Guid overridingNodeId = DomainId.New();
+        TaskRecordHolder candidate = new("owner-b", overridingNodeId, "NEW-NODE", Now);
+        HolderOverrideResult overrideResult = await TaskLedgerHolder.TryOverrideAsync(
+            ledger, RepositoryPath, taskId, candidate, Committer, SigningKey, CancellationToken.None);
+        overrideResult.Verdict.Should().Be(HolderOverrideVerdict.Overridden);
+
+        HolderReleaseResult restoreResult = await TaskLedgerHolder.TryRestoreAsync(
+            ledger, RepositoryPath, taskId, overridingNodeId, overrideResult.PreviousHolder, Committer, SigningKey,
+            CancellationToken.None);
+
+        restoreResult.Verdict.Should().Be(HolderReleaseVerdict.Released);
+        LedgerFile record = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), CancellationToken.None);
+        TaskRecord.TryParse(record.Content)!.Holder.Should().Be(
+            previousHolder, "the rollback restores who held it before this override, not an empty holder anyone could claim");
+    }
+
+    [Fact]
+    public async Task Restoring_a_record_no_longer_naming_the_overrider_is_not_held()
+    {
+        Guid taskId = DomainId.New();
+        FakeLedger ledger = new();
+        Guid someoneElseNodeId = DomainId.New();
+        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("owner-c", someoneElseNodeId, "OTHER-NODE", Now));
+
+        HolderReleaseResult restoreResult = await TaskLedgerHolder.TryRestoreAsync(
+            ledger, RepositoryPath, taskId, DomainId.New(), previousHolder: null, Committer, SigningKey, CancellationToken.None);
+
+        restoreResult.Verdict.Should().Be(
+            HolderReleaseVerdict.NotHeld, "the record no longer names the overrider — nothing here for this rollback to undo");
+    }
+
     private static async Task SeedRecordAsync(FakeLedger ledger, Guid taskId, TaskRecordHolder? holder)
     {
         TaskRecord record = new(
