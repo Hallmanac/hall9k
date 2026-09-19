@@ -67,6 +67,42 @@ public sealed record HolderReleaseResult(HolderReleaseVerdict Verdict, string? F
     public static HolderReleaseResult Failed(string reason) => new(HolderReleaseVerdict.Failed, reason);
 }
 
+/// <summary>What a forced override's holder write concluded (idea 202383dc, item 4).</summary>
+public enum HolderOverrideVerdict
+{
+    /// <summary>The write landed: the record's <see cref="TaskRecord.Holder"/> now names the candidate.</summary>
+    Overridden,
+
+    /// <summary>
+    /// Another override already won this race before this one's own write could land — the ledger
+    /// already names a holder this override never asked for and never wrote itself
+    /// (<see cref="HolderOverrideResult.CurrentHolder"/>). Two overriders can never both win: the
+    /// first one whose push actually lands is the one the second one's own re-read reports back.
+    /// </summary>
+    AlreadyOverridden,
+
+    /// <summary>This task has no ledger record to override — not yet published, or not yet replicated to this node.</summary>
+    NoRecord,
+
+    /// <summary>The write could not complete — a fetch, a push, a signing, or a read failure, or the record kept moving out from under every retry.</summary>
+    Failed,
+}
+
+/// <summary>One override's whole answer.</summary>
+public sealed record HolderOverrideResult(
+    HolderOverrideVerdict Verdict, TaskRecordHolder? PreviousHolder, TaskRecordHolder? CurrentHolder, string? FailureReason)
+{
+    public static HolderOverrideResult Overridden(TaskRecordHolder? previousHolder, TaskRecordHolder newHolder) =>
+        new(HolderOverrideVerdict.Overridden, previousHolder, newHolder, null);
+
+    public static HolderOverrideResult AlreadyOverridden(TaskRecordHolder? currentHolder) =>
+        new(HolderOverrideVerdict.AlreadyOverridden, null, currentHolder, null);
+
+    public static readonly HolderOverrideResult NoRecord = new(HolderOverrideVerdict.NoRecord, null, null, null);
+
+    public static HolderOverrideResult Failed(string reason) => new(HolderOverrideVerdict.Failed, null, null, reason);
+}
+
 /// <summary>
 /// The claim: a conditional write of a task's ledger record holder (idea 202383dc, A3b — "the
 /// ledger record's holder is the truth about who has a task"). Rewrites only
@@ -174,6 +210,109 @@ public static class TaskLedgerHolder
         {
             return HolderClaimResult.Failed(
                 "writing the holder to the task's ledger record failed rather than answering — "
+                + $"{exception.GetType().Name}: {RelayedText.OneLine(exception.Message)}");
+        }
+    }
+
+    /// <summary>
+    /// The forced override (idea 202383dc, item 4: "an owner-role member can take a task from an
+    /// absent holder") — a conditional write through A1 exactly like <see cref="TryClaimAsync"/>'s
+    /// own, except it never stands down for a holder that names someone else: this is the whole
+    /// point of <c>--force</c>. Instead, exclusivity comes from what this call itself observed:
+    /// <paramref name="candidate"/> always overwrites whatever holder this loop's own FIRST read
+    /// found, and only that one — a re-read (a write-verdict conflict on some earlier attempt)
+    /// that comes back naming a THIRD holder, neither the one this call started against nor its own
+    /// candidate, means a second overrider's write already landed in the gap, and this one backs
+    /// down rather than overwriting a winner that already exists. That is "two overriders cannot
+    /// both win, and the loser sees the new holder" (the acceptance criterion's own words): whichever
+    /// override's push actually lands first is the one every later re-read reports back.
+    /// </summary>
+    public static async Task<HolderOverrideResult> TryOverrideAsync(
+        ILedger ledger,
+        string repositoryPath,
+        Guid taskId,
+        TaskRecordHolder candidate,
+        LedgerCommitter committer,
+        LedgerSigningKey signingKey,
+        CancellationToken cancellationToken)
+    {
+        string refName = LedgerRefRegistry.Records.RefspecSource;
+        string path = LedgerRefRegistry.RecordPath(taskId);
+        Guid? holderAtEntry = null;
+
+        try
+        {
+            for (int attempt = 1; attempt <= MaxConflictRetries; attempt++)
+            {
+                LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
+                if (current.FetchFailed)
+                {
+                    return HolderOverrideResult.Failed(
+                        $"the ledger record at {path} could not be confirmed — the fetch failed, so this "
+                        + "override cannot tell whether the holder has already moved.");
+                }
+
+                if (!current.Exists)
+                {
+                    return HolderOverrideResult.NoRecord;
+                }
+
+                TaskRecord? existing = TaskRecord.TryParse(current.Content);
+                if (existing is null)
+                {
+                    return HolderOverrideResult.Failed(
+                        $"the ledger record at {path} could not be read back as a task record — its "
+                        + "content changed shape underneath this override.");
+                }
+
+                Guid? currentHolderNodeId = existing.Holder?.NodeId;
+                if (attempt == 1)
+                {
+                    holderAtEntry = currentHolderNodeId;
+                }
+                // Only a REAL third-party holder counts as "someone else already won" — a record
+                // that moved for some other reason (a concurrent release, say, or an unrelated
+                // field) and now shows no holder at all is not a competing override to back down
+                // from; the write below still lands against the fresh blob this re-read just took.
+                else if (currentHolderNodeId is { } thirdPartyHolderNodeId
+                    && thirdPartyHolderNodeId != holderAtEntry && thirdPartyHolderNodeId != candidate.NodeId)
+                {
+                    return HolderOverrideResult.AlreadyOverridden(existing.Holder);
+                }
+
+                if (currentHolderNodeId == candidate.NodeId)
+                {
+                    // Idempotent: an earlier attempt's own write already landed (or this task's
+                    // holder already named the taker for some other reason) — a retry of this
+                    // exact override reports success rather than writing an identical value twice.
+                    return HolderOverrideResult.Overridden(existing.Holder, candidate);
+                }
+
+                TaskRecordHolder? previousHolder = existing.Holder;
+                TaskRecord updated = existing with { Holder = candidate };
+                string content = updated.ToYaml();
+                LedgerWriteOutcome outcome = await ledger.WriteAsync(
+                    new LedgerWriteRequest(
+                        repositoryPath, refName, path, content, current.BlobId,
+                        $"Take over task {taskId}", committer, signingKey),
+                    cancellationToken);
+                if (outcome.Verdict == LedgerWriteVerdict.Written)
+                {
+                    return HolderOverrideResult.Overridden(previousHolder, candidate);
+                }
+
+                // Conflict: something moved the record since this attempt's own read — re-read and
+                // re-decide on the next loop iteration, exactly like TryClaimAsync's own loop.
+            }
+
+            return HolderOverrideResult.Failed(
+                $"the ledger record at {path} kept moving under this override for {MaxConflictRetries} "
+                + "attempt(s) without ever settling — holding rather than retrying forever this sweep.");
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return HolderOverrideResult.Failed(
+                "writing the override to the task's ledger record failed rather than answering — "
                 + $"{exception.GetType().Name}: {RelayedText.OneLine(exception.Message)}");
         }
     }
