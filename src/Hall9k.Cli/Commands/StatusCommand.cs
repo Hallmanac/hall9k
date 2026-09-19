@@ -411,9 +411,10 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// <summary>
     /// Every outstanding catch-up request this node currently has open (idea 202383dc, M2b, task
     /// 9408d525: "h9k status shows outstanding gaps and requests") — a gap-fill for one origin
-    /// node's own missing history, a brand-new node's own "everything" bootstrap, or a ledger-record
-    /// adoption's broadcast for one specific stream. Silent when there is nothing outstanding, the
-    /// same "a quiet pane says nothing" posture the rest of this command follows.
+    /// node's own missing history, a brand-new node's own "everything" bootstrap, a broadcast for
+    /// one specific stream (a ledger-record adoption, or <c>h9k task pull</c>), or a whole-project
+    /// history pull (<c>h9k project pull --since</c>, task a56cf16e). Silent when there is nothing
+    /// outstanding, the same "a quiet pane says nothing" posture the rest of this command follows.
     /// </summary>
     private static async Task WriteEventCatchUpRequestsAsync(IQuerySession session, CancellationToken cancellationToken)
     {
@@ -433,6 +434,9 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 {
                     { ForStreamId: { } streamId } => $"stream {DomainId.Short(streamId)}",
                     { ForOriginNodeId: { } originNodeId } => $"a gap from {DomainId.Short(originNodeId)} (since {request.SinceOriginSequence})",
+                    { SinceGlobalSequence: 0 } => "this project's whole history (h9k project pull --since all)",
+                    { SinceGlobalSequence: { } sinceGlobalSequence } =>
+                        $"this project's history from global sequence {sinceGlobalSequence} (h9k project pull --since)",
                     _ => "a brand-new node's own bootstrap",
                 };
                 string candidate = request.CurrentCandidateNodeId is { } current
