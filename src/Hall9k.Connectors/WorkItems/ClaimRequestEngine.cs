@@ -192,9 +192,6 @@ public static class ClaimRequestEngine
                 + $"{release.FailureReason} Nothing was recorded; the request stays pending.");
         }
 
-        string? trackerFailureReason = await GrantTrackerAssigneeBestEffortAsync(
-            store, project, task, requesterTrackerIdentity, take, cancellationToken);
-
         TaskHolderReleased granted = TaskDecider.GrantTake(task, requesterNodeId, requesterOwnerId, now);
         session.Events.Append(taskId, expectedVersion: fence.Version + 1, granted);
         try
@@ -218,6 +215,17 @@ public static class ClaimRequestEngine
                         + "be rolled back onto this node — check h9k task show for who the ledger actually "
                         + "names now, since this node's own stream never recorded releasing it.");
         }
+
+        // Run only after the grant's own domain event is durably appended (independent pre-PR
+        // review, cycle 5, adversarial lens, medium): moving the tracker assignee is a one-way,
+        // best-effort side effect with no rollback of its own, unlike the ledger release above —
+        // running it before the append risked handing the tracker to the requester permanently
+        // while the rollback above undid everything else, leaving a task the ledger and the domain
+        // stream both agree H still holds, but whose tracker card already shows R as assignee. There
+        // is nothing about this move that needs to precede the append; it reads exactly the same
+        // task and project either way.
+        string? trackerFailureReason = await GrantTrackerAssigneeBestEffortAsync(
+            store, project, task, requesterTrackerIdentity, take, cancellationToken);
 
         await MessageOutbox.QueueAsync(
             session, myNodeId, project.Id, myOwnerFingerprint, MessageAudience.Node(requesterNodeId),
