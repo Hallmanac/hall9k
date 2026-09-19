@@ -102,9 +102,10 @@ The limiter never resets.
   with both positions on record.
 - If your fixes change what a reviewer of the whole pull request needs to know, end
   your final message with a refreshed `PR SUMMARY:` block before the resolution
-  line below (`Title: <one line>`, a blank line, then the body, leaving out the
-  work-item link, the acceptance criteria and the run footer); otherwise write none and
-  the build session's own summary stands.
+  line below (`Title: <one line>`, a blank line, then the body, sized to the
+  diff, and leaving out the work-item link the platform writes above it, the acceptance
+  criteria, and any build or test attestation); otherwise write none and the build
+  session's own summary stands.
   - **How that block reads, if you write one.** It becomes the pull request body a reviewer reads under the owner's login, so this project's writing conventions govern every word of it:
     > No em dashes (U+2014); use commas, semicolons, colons, periods, or parentheses instead. Full sentences over telegraphic fragments. No AI attribution anywhere in it: no "Generated with Claude", no Co-Authored-By trailer.
 - **Self-check phase.** Once every finding above is fixed or disputed, and before
