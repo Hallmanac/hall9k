@@ -132,6 +132,25 @@ public sealed class ClaimRequestWatchLoop(
             return;
         }
 
+        // The envelope body's own RequesterNodeId/RequesterOwnerId are the requester's own
+        // self-declared claim, never verified by anything below this point — message.FromNodeId is
+        // the one field MessageInbox itself already authenticated (against the outbox owner and the
+        // envelope's own FromNode) before this message was ever stored. A mismatch means the body
+        // names somebody other than whoever actually sent it — a forged or corrupted request — and
+        // ReceiveRequestAsync must never be handed it: it would append TaskTakeRequested naming the
+        // forged asker and, under take-policy auto, could hand the task to an owner id no node here
+        // enumerates (independent pre-PR review, cycle 5, adversarial lens, medium; AGENTS.md's own
+        // "never guess at unobserved facts" rule).
+        if (message.FromNodeId != request.RequesterNodeId)
+        {
+            logger.LogWarning(
+                "Claim request {MessageId} claims requester node {ClaimedRequesterNodeId}, but it was actually "
+                + "sent by node {ActualSenderNodeId} — marked handled without acting",
+                message.Id, request.RequesterNodeId, message.FromNodeId);
+            await MarkHandledAsync(message, now, cancellationToken);
+            return;
+        }
+
         await using IDocumentSession session = store.LightweightSession();
         ProjectDetails? project = await session.LoadAsync<ProjectDetails>(message.ProjectId, cancellationToken);
         if (project is null)
