@@ -1246,7 +1246,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
     /// <summary>
     /// The run meant to resume a branch and found it on neither side, so it started over from the
-    /// base branch (<c>RunStartedCleanAfterBranchGone</c>, #PLACEHOLDER-5c46cd1d). Said out loud
+    /// base branch (<c>RunStartedCleanAfterBranchGone</c>, #234). Said out loud
     /// because everything else on this screen — the task's own retry, the previous run's recorded
     /// branch — reads as though the work carried forward, and it did not. Normally there is
     /// nothing here and this prints nothing.
@@ -1833,7 +1833,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// reconstructed record) prints nothing for that run rather than a bare "-" line.
     /// <para>
     /// A run from ANOTHER node prints no path at all — only its branch and the machine it was last
-    /// seen on (#PLACEHOLDER-5c46cd1d). The path a foreign run recorded is a directory on somebody
+    /// seen on (#234). The path a foreign run recorded is a directory on somebody
     /// else's disk; printing it in a column headed "Worktree" on this machine invites a reader to
     /// cd into a path that does not exist here, and after a forced takeover it is exactly the
     /// reader who most needs to know the work is elsewhere. Which node a run belongs to is read the

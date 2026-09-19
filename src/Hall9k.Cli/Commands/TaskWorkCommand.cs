@@ -909,7 +909,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                 OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
             // Appended right behind the dispatch, in the same commit, so this claim's record can
             // never exist saying "resumed" while the fact that it did not is still in flight
-            // (#PLACEHOLDER-5c46cd1d). Null for every claim that resumed what it meant to and every
+            // (#234). Null for every claim that resumed what it meant to and every
             // claim that never meant to resume anything.
             if (startedClean is not null)
             {
@@ -1345,7 +1345,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             // another node (idea 202383dc, piece C's residual, criterion 1) keeps the loud-by-name
             // failure RunLauncher.CheckoutFreshOrRetryAsync gives it — for everything except a
             // branch that is simply on neither side, which brought no foreign work here to abandon
-            // (#PLACEHOLDER-5c46cd1d, and that method's own doc for the incident). Mirrored here for
+            // (#234, and that method's own doc for the incident). Mirrored here for
             // the reason this method's own summary states: an interactive claim shares this
             // branch's fate with the daemon's own claim, and the flag survives on a Queued task
             // even after a headless claim that set it requeues without ever launching, so a human

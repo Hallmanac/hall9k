@@ -185,7 +185,7 @@ public static class EventScopeRegistry
         // Travels, unlike the local-repair mechanics around it: "the branch your run built is
         // gone and this run started over without it" is a fact about the work itself, and the
         // node most likely to care is the one whose own run left the branch behind
-        // (#PLACEHOLDER-5c46cd1d).
+        // (#234).
         [typeof(RunStartedCleanAfterBranchGone)] = EventScope.ProjectScoped,
         [typeof(RunSuperseded)] = EventScope.ProjectScoped,
         [typeof(RunUnattendedExitFlagged)] = EventScope.NodeScoped,

@@ -571,7 +571,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                 OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
             // Appended right behind the dispatch, in the same commit, so this claim's record can
             // never exist saying "resumed" while the fact that it did not is still in flight
-            // (#PLACEHOLDER-5c46cd1d). Null for every claim that resumed what it meant to and every
+            // (#234). Null for every claim that resumed what it meant to and every
             // claim that never meant to resume anything.
             if (startedClean is not null)
             {
