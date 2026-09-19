@@ -186,11 +186,16 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
         // on it (idea 202383dc, the M1b/gap-stop interaction found 2026-09-14). Mirrors
         // GitLedgerMessageTransport's own resolution of the identical rule.
         long lowWaterMark = lowWaterMarks.GetValueOrDefault(key, 0);
-        long effectiveSinceSeq = sinceSeq < lowWaterMark ? lowWaterMark - 1 : sinceSeq;
+        bool markSkipsContent = sinceSeq < lowWaterMark;
+        long effectiveSinceSeq = markSkipsContent ? lowWaterMark - 1 : sinceSeq;
+        // Mirrors GitLedgerMessageTransport's own report of the range its mark just skipped: never
+        // actually inspected, so a caller wanting to ask a peer for it (EventReplicationInbox's own
+        // gap-fill trigger) still can, even though the cursor itself advances past it below.
+        long? prunedBelowSeq = markSkipsContent ? sinceSeq + 1 : null;
 
         if (!outboxes.TryGetValue(key, out SortedList<long, string>? envelopes))
         {
-            return TransportReadResult.Ok([], effectiveSinceSeq);
+            return TransportReadResult.Ok([], effectiveSinceSeq, prunedBelowSeq: prunedBelowSeq);
         }
 
         List<TransportEnvelope> candidates = [.. envelopes
@@ -221,6 +226,6 @@ public sealed class InMemoryMessageTransport(ILedger ledger, ILedgerChainReader?
             highestSeqInspected = candidate.Seq;
         }
 
-        return TransportReadResult.Ok(result, highestSeqInspected, stalledAtSeq: stalledAtSeq);
+        return TransportReadResult.Ok(result, highestSeqInspected, stalledAtSeq: stalledAtSeq, prunedBelowSeq: prunedBelowSeq);
     }
 }

@@ -161,6 +161,20 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 senderNodeId, stalledAtSeq);
         }
 
+        if (read.PrunedBelowSeq is { } prunedBelowSeq)
+        {
+            // Unlike the stall logged above, the cursor does NOT stay behind this: a squash's own
+            // verified low-water mark already moved it past this range, since the sender itself no
+            // longer holds the content — the log exists only so an operator reading it never
+            // mistakes silence for "nothing was ever missed" (EventReplicationInbox's own read of
+            // the identical outbox is what actually asks a peer for it, via StalledAtSeq).
+            logger?.LogWarning(
+                "Sender {SenderNodeId}'s outbox pruned everything below seq {PrunedBelowSeq} in an earlier "
+                + "squash — this read resumed at the low-water mark instead of stalling, but that pruned "
+                + "range was never inspected by this node",
+                senderNodeId, prunedBelowSeq);
+        }
+
         int stored = 0;
         // Starts at the persisted cursor, never at readFrom: the cursor only ever advances to a
         // seq this sweep actually saw the transport return, and only when this sweep was not an

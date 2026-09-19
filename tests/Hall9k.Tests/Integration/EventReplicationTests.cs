@@ -1681,6 +1681,94 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         }
     }
 
+    [Fact]
+    public async Task A_squashs_low_water_mark_still_reports_the_pruned_range_so_a_cold_reader_can_ask_a_peer()
+    {
+        // Independent pre-PR review, cycle 1, both lenses, medium: a squash's own low-water mark
+        // lets a cold reader resume past pruned content instead of stalling forever on it (the
+        // fix this branch adds), but that pruned range was never actually inspected either — a
+        // peer might still hold it. This proves EventReplicationInbox still surfaces it via
+        // StalledAtSeq (TransportReadResult.PrunedBelowSeq, folded in), the identical signal
+        // MessageSweepEngine.ProbeAndReadAsync already reads to trigger a gap-fill request for a
+        // genuine in-band gap — the pruned range must trigger it too, or the recovery path this
+        // platform has for exactly this case is silently skipped.
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            // Registers the node AND establishes the switch-on point (EnsureSwitchedOnAsync's own
+            // "first call wins" rule) before the old task even exists — the identical ordering
+            // Two_stores_exchange_a_tasks_events_and_reach_the_same_projection uses, so both tasks
+            // added below actually land past it and are eligible to queue at all.
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        DateTimeOffset oldSentAt = Now.AddSeconds(2);
+        Guid oldTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", oldSentAt, cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, oldSentAt, cts.Token);
+        }
+
+        DateTimeOffset youngSentAt = oldSentAt.AddHours(40);
+        Guid youngTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, youngSentAt.AddSeconds(-1), cts.Token);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", youngSentAt, cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, youngSentAt, cts.Token);
+        }
+
+        // 48-hour retention measured from just past the old envelope's own SentAt: the old task's
+        // events envelope (seq 1) falls outside the window and is pruned; the young one (seq 2)
+        // stays — leaving a verified low-water mark of 2.
+        DateTimeOffset squashNow = oldSentAt.AddHours(48).AddMinutes(1);
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.SquashAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", TimeSpan.FromHours(48), committer,
+                signingKey, squashNow, cts.Token);
+        }
+
+        // Node B reads cold (its own cursor has never seen this sender at all).
+        EventReplicationReadResult read;
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", squashNow.AddSeconds(1),
+                trustChain: null, cts.Token);
+        }
+
+        read.EventsApplied.Should().BeGreaterThan(0, "the young task's own events envelope (seq 2) survived the squash");
+        read.StalledAtSeq.Should().Be(1, "the pruned range below the low-water mark is reported so a gap-fill request can still ask a peer for it");
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<TaskDetails>(youngTaskId, cts.Token)).Should().NotBeNull();
+            (await session.LoadAsync<TaskDetails>(oldTaskId, cts.Token)).Should().BeNull(
+                "the old task's own events were pruned away and never reached node B directly");
+        }
+    }
+
     private static async Task<Guid> SeedQueuedTaskAsync(
         IDocumentStore store, Guid projectId, Guid ownerId, DateTimeOffset now, CancellationToken cancellationToken)
     {
