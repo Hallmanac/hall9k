@@ -271,9 +271,12 @@ status` both name the takeover: who, from whom, why, when
 
 **A member can ask a holder for a task through messages** (idea 202383dc, item 5, "the cooperative
 take") — `h9k task take <id>` with no `--force` (`--reason` is required either way): a task with
-no ledger holder claims directly through the ordinary lock (nothing to negotiate — the daemon's own
-dispatch sweep picks it up, same as the forced-take's own final message defers to that sweep), a
-task this node already holds says so, and a task another node holds gets a
+no ledger holder claims directly through the ordinary lock when it is Queued and assigned to this
+node's own owner (nothing to negotiate — the daemon's own dispatch sweep picks it up, same as the
+forced-take's own final message defers to that sweep, since that sweep's own query reads state and
+owner together), or, when it is not, names the reassignment needed first rather than promising a
+claim the sweep will never make; a task this node already holds says so; and a task another node
+holds gets a
 `MessageKind.ClaimRequest` envelope queued for it (`ClaimEnvelopeCodec.ClaimRequestRecord`, carrying
 the requester's node, owner, reason, and — for a gated project — this install's own tracker
 identity, resolved locally via `TrackerAssignmentTake.ResolveOwnIdentityAsync` since the granting
@@ -281,8 +284,12 @@ node has no other way to learn it: every teammate's tracker credentials are loca
 install). Queues only, the `h9k message send` convention — the daemon's own message sweep is what
 actually sends it. The project's own `take-policy` setting (`h9k project set --take-policy
 <auto|ask>`, default `auto`) decides how the holder's node answers, through
-`ClaimRequestWatchLoop` polling its own received-but-unhandled `ClaimRequest` messages on the
-ordinary sweep cadence and handing each to `ClaimRequestEngine.ReceiveRequestAsync`: it always
+`ClaimRequestWatchLoop` polling its own received-but-unhandled messages of all three
+`MessageKind.MechanicalKindValues` kinds on the ordinary sweep cadence: a `ClaimRequest` is handed
+to `ClaimRequestEngine.ReceiveRequestAsync`, while a `ClaimGranted`/`ClaimRefused` reply is only
+decoded far enough to log a malformed body and marked handled, since the requester's own answer
+already arrives through the replicated `TaskHolderReleased`/`TaskTakeRefused` event `h9k task
+show`/`h9k status` actually read. For a request, it always
 appends `TaskTakeRequested` first (so `h9k task show`/`h9k status` can always say who asked, even
 while parked), then under `auto` checks for a live run on this node for the task
 (`ClaimRequestEngine.FindLiveRunAsync`, the same four live `RunState`s
