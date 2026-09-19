@@ -3,11 +3,12 @@ using Microsoft.Extensions.Options;
 namespace Hall9k.Daemon.Review;
 
 /// <summary>
-/// Polls <see cref="SpikeEngine.EndRunsOverWallClockBudgetAsync"/> on the ordinary sweep cadence
-/// (task: TaskConstraints gains its first consumer), the identical shape
+/// Polls <see cref="SpikeEngine.EndRunsOverWallClockBudgetAsync"/> and
+/// <see cref="SpikeEngine.EndRunsOverTokenBudgetAsync"/> on the ordinary sweep cadence (task:
+/// TaskConstraints gains its first consumer), the identical shape
 /// <c>Hall9k.Daemon.Execution.TakeoverWatchLoop</c> already uses for its own continuous,
-/// doorbell-free live-run supervision: a spike's stated wall-clock budget has nothing to do with
-/// claiming new work, so its own hosted service rather than a step folded into the dispatch loop.
+/// doorbell-free live-run supervision: a spike's stated budget has nothing to do with claiming new
+/// work, so its own hosted service rather than a step folded into the dispatch loop.
 /// </summary>
 public sealed class SpikeBudgetWatchLoop(
     SpikeEngine spike,
@@ -31,6 +32,7 @@ public sealed class SpikeBudgetWatchLoop(
             try
             {
                 await spike.EndRunsOverWallClockBudgetAsync(stoppingToken);
+                await spike.EndRunsOverTokenBudgetAsync(stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {

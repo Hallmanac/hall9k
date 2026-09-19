@@ -11,6 +11,7 @@ using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
@@ -270,6 +271,139 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     // -------------------------------------------------------------------------------------
+    // d2. A wall-clock or live-token kill's own RunKilled already stands by the time
+    // EndOverBudgetAsync's own FinalizeAsync runs — it must never append a second terminal
+    // event (RunCompleted) over it.
+    // -------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task A_budget_kill_s_own_terminal_run_event_is_never_overwritten_by_the_finalize_it_leads_to()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        string root = Path.Combine(Path.GetTempPath(), $"hall9k-spike-budget-kill-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        try
+        {
+            (_, string repoPath) = await CreateOriginAndCloneAsync(root, cts.Token);
+
+            SeededSpike seed = await SeedClaimedSpikeAsync(
+                store, repoPath, SpikeKind.Research, "The findings answer the stated question.",
+                gates: [], sourceIdeaId: null, cts.Token);
+
+            // Mirrors what EndRunsOverWallClockBudgetAsync/EndRunsOverTokenBudgetAsync's own
+            // KillOverBudgetRunAsync already did to this run's stream before either ever calls
+            // EndOverBudgetAsync: a terminal RunKilled stands ahead of the finalize below.
+            await using (IDocumentSession killSession = store.LightweightSession())
+            {
+                killSession.Events.Append(
+                    seed.RunId, new RunKilled(seed.RunId, KillReason.BudgetExceeded, KilledByOwnerId: null, Now));
+                await killSession.SaveChangesAsync(cts.Token);
+            }
+
+            ScriptedSpikeExecutor executor = new(new Dictionary<string, string>());
+            FakeProcessManager processManager = new();
+            GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+            SpikeEngine spike = NewSpikeEngine(store, executor, processManager, worktrees, seed.Node);
+
+            await spike.RecordFindingsAsync(seed.RunDirectory, "Findings so far: partial results only.", cts.Token);
+            await spike.EndOverBudgetAsync(
+                seed.RunId, seed.TaskId, "the build session's own wall-clock budget was crossed", cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run = (await query.LoadAsync<RunDetails>(seed.RunId, cts.Token))!;
+            run.State.Should().Be(RunState.Killed, "the kill's own terminal record must stand, not flip to Completed");
+            run.FailureReason.Should().Be(
+                KillReason.BudgetExceeded, "a second terminal event over a killed run must never erase why it was killed");
+
+            TaskDetails task = (await query.LoadAsync<TaskDetails>(seed.TaskId, cts.Token))!;
+            task.State.Should().Be(TaskState.Done, "the task-level verdict still lands even though the run stream stays Killed");
+            task.SpikeVerdict.Should().Be(SpikeVerdict.BudgetExhausted);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+            TemporaryTree.TryDelete(root);
+        }
+    }
+
+    // -------------------------------------------------------------------------------------
+    // d3. Live token-budget watch: a build session still running is killed and finalized the
+    // moment its own transcript's summed spend crosses its stated token budget — the proactive
+    // half EndOverBudgetAsync's own reactive check (above) exists to back up, not replace.
+    // -------------------------------------------------------------------------------------
+
+    [Fact]
+    public async Task EndRunsOverTokenBudgetAsync_kills_a_live_session_whose_transcript_already_crossed_its_own_token_budget()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        string root = Path.Combine(Path.GetTempPath(), $"hall9k-spike-token-watch-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        try
+        {
+            (_, string repoPath) = await CreateOriginAndCloneAsync(root, cts.Token);
+
+            SeededSpike seed = await SeedClaimedSpikeAsync(
+                store, repoPath, SpikeKind.Research, "The findings answer the stated question.",
+                gates: [], sourceIdeaId: null, cts.Token,
+                constraints: new TaskConstraints(MaxTurns: null, MaxTokens: 100, MaxWallClock: null));
+
+            int processId = 70_123;
+            DateTimeOffset startedAt = Now;
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                session.Events.Append(seed.RunId, new RunProcessStarted(seed.RunId, processId, startedAt));
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            // The build session's own still-growing transcript: two intermediate turns whose
+            // summed usage crosses the stated 100-token budget — never a terminal "result" line,
+            // since the session this watch exists to catch is still running.
+            string streamFile = RunPaths.StreamFile(seed.RunDirectory);
+            await File.WriteAllTextAsync(
+                streamFile,
+                """{"type":"assistant","message":{"usage":{"input_tokens":60,"output_tokens":10}}}"""
+                + "\n"
+                + """{"type":"assistant","message":{"usage":{"input_tokens":40,"output_tokens":5}}}"""
+                + "\n",
+                cts.Token);
+
+            FakeProcessManager processManager = new();
+            // The process this run's own ActiveSession names is otherwise a made-up pid the fake
+            // never spawned: TerminateTree's own contract reads an untracked pid as "already
+            // gone" and returns without recording anything, the same as the real implementation
+            // would for a pid that no longer exists — marking it alive here is what makes this a
+            // live session for the fake to actually find and kill.
+            processManager.MarkAlive(70_123);
+            GitWorktreeManager worktrees = new(NullLogger<GitWorktreeManager>.Instance);
+            ScriptedSpikeExecutor executor = new(new Dictionary<string, string>());
+            SpikeEngine spike = NewSpikeEngine(store, executor, processManager, worktrees, seed.Node);
+
+            await spike.EndRunsOverTokenBudgetAsync(cts.Token);
+
+            processManager.TreeTerminations.Should().ContainSingle(t => t.ProcessId == processId,
+                "the live session over its own token budget must be terminated, not left to run unbounded");
+
+            await using IQuerySession query = store.QuerySession();
+            RunDetails run = (await query.LoadAsync<RunDetails>(seed.RunId, cts.Token))!;
+            run.State.Should().Be(RunState.Killed);
+            run.FailureReason.Should().Be(KillReason.BudgetExceeded);
+
+            TaskDetails task = (await query.LoadAsync<TaskDetails>(seed.TaskId, cts.Token))!;
+            task.State.Should().Be(TaskState.Done, "a budget-ended spike closes out normally");
+            task.SpikeVerdict.Should().Be(SpikeVerdict.BudgetExhausted);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+            TemporaryTree.TryDelete(root);
+        }
+    }
+
+    // -------------------------------------------------------------------------------------
     // e. Not-met after the one fix lap: exactly one fix session, second review's verdict final.
     // -------------------------------------------------------------------------------------
 
@@ -433,7 +567,8 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
     /// </summary>
     private static async Task<SeededSpike> SeedClaimedSpikeAsync(
         DocumentStore store, string repoPath, SpikeKind kind, string exitCriterion,
-        IReadOnlyList<VerifyCommand> gates, Guid? sourceIdeaId, CancellationToken cancellationToken)
+        IReadOnlyList<VerifyCommand> gates, Guid? sourceIdeaId, CancellationToken cancellationToken,
+        TaskConstraints? constraints = null)
     {
         NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(store, cancellationToken);
         Guid projectId = DomainId.New();
@@ -466,7 +601,7 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         (TaskAggregate task, object[] lifecycle) = TaskSeed.Start(
             TaskDecider.Add(
                 taskId, projectId, "Spike whether the approach holds", ["the exit criterion is judged"],
-                TaskType.Spike, agentContext: null, constraints: null, externalReference: null,
+                TaskType.Spike, agentContext: null, constraints: constraints, externalReference: null,
                 addedAt: Now, addedByOwnerId: node.OwnerId, spikeKind: kind, exitCriterion: exitCriterion,
                 sourceIdeaId: sourceIdeaId),
             node.OwnerId, Now);

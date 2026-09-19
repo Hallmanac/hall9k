@@ -138,4 +138,51 @@ public sealed class StreamJsonParserTests
     [InlineData("")]
     public void A_line_with_no_nonzero_usage_is_not_evidence(string line) =>
         StreamJsonParser.LineReportsNonzeroUsage(line).Should().BeFalse();
+
+    [Fact]
+    public void A_turn_budget_cutoff_is_read_off_the_terminal_result_s_own_subtype()
+    {
+        const string maxTurnsResult =
+            """{"is_error":true,"usage":{"input_tokens":14,"output_tokens":7439},"subtype":"error_max_turns","type":"result"}""";
+
+        StreamJsonParser.TryParseResult(maxTurnsResult, out AgentResult result).Should().BeTrue();
+
+        result.Subtype.Should().Be(StreamJsonParser.MaxTurnsResultSubtype);
+    }
+
+    [Fact]
+    public void A_result_with_no_subtype_field_records_null_rather_than_a_guess()
+    {
+        const string subtypeless = """{"type":"result","is_error":false,"usage":{"input_tokens":10,"output_tokens":5}}""";
+
+        StreamJsonParser.TryParseResult(subtypeless, out AgentResult result).Should().BeTrue();
+
+        result.Subtype.Should().BeNull();
+    }
+
+    [Fact]
+    public void The_terminal_result_line_s_own_cumulative_usage_contributes_nothing_to_a_live_token_spend_sum()
+    {
+        // The whole reason ReadLineTokenSpend excludes it: total_cost_usd (and this usage
+        // object beside it) is cumulative for the WHOLE session by the time the result line is
+        // printed, not this one turn's own spend — folding it into a sum across every line would
+        // double-count every turn that led up to it.
+        StreamJsonParser.ReadLineTokenSpend(CachedSessionResult).Should().Be(0);
+    }
+
+    [Fact]
+    public void An_intermediate_turn_s_own_usage_counts_toward_a_live_token_spend_sum()
+    {
+        const string assistantTurn =
+            """{"type":"assistant","message":{"usage":{"input_tokens":50,"cache_read_input_tokens":200,"output_tokens":10}}}""";
+
+        StreamJsonParser.ReadLineTokenSpend(assistantTurn).Should().Be(260);
+    }
+
+    [Theory]
+    [InlineData("""{"type":"assistant"}""")]
+    [InlineData("not json at all")]
+    [InlineData("")]
+    public void A_line_with_no_usage_contributes_nothing_to_a_live_token_spend_sum(string line) =>
+        StreamJsonParser.ReadLineTokenSpend(line).Should().Be(0);
 }
