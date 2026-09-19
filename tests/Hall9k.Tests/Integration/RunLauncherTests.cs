@@ -842,19 +842,22 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
                 + "settlement when LastReviewVerdict says MergeReady (independent pre-PR review, cycle 1, "
                 + "conformance lens)");
             resumedRun.ReviewStageComposition.Should().Be(ReviewStageComposition.AdversarialOnly,
-                "the pull request and h9k task show must report the composition the branch's settled review "
-                + "actually ran under, not that this particular resumed run skipped review");
+                "h9k task show must report the composition the branch's settled review actually ran "
+                + "under, not that this particular resumed run skipped review");
             resumedRun.ReviewResidualsUnfixed.Should().Be(1);
             resumedRun.ReviewUnfixedFindings.Should().ContainSingle(finding => finding.Location == "src/Bar.cs:34");
             resumedRun.ReviewResidualsRideAlong.Should().Be(1);
             resumedRun.ReviewRideAlongFindings.Should().ContainSingle(finding => finding.Location == "src/Foo.cs:12");
 
+            // The carried review outcome reaches the run record and h9k task show, which is what
+            // the assertions above check. It deliberately reaches the pull request no longer:
+            // Brian's 2026-09-19 ruling took the residual notes and the composition line off the
+            // body for good, so a resumed open publishing them again would be the regression.
             string body = await File.ReadAllTextAsync(
                 Path.Combine(RunPaths.GlobalDirectory(failedRunId), "pr-body.md"), cts.Token);
-            body.Should().Contain("AdversarialOnly",
-                "the reduced composition the branch's review actually ran under, not a false `None`");
-            body.Should().Contain("Left unfixed").And.Contain("src/Bar.cs:34");
-            body.Should().Contain("Review ride-alongs").And.Contain("src/Foo.cs:12");
+            body.Should().NotContain("AdversarialOnly").And.NotContain("Left unfixed")
+                .And.NotContain("Review ride-alongs").And.NotContain("src/Bar.cs:34")
+                .And.NotContain("src/Foo.cs:12");
         }
         finally
         {

@@ -20,13 +20,18 @@ public sealed class PullRequestBodyTests
     /// <summary>The resolved URL as the opener hands it over, from the connection-aware seam.</summary>
     private static readonly Uri GitHubIssue = new("https://github.com/Hallmanac/hall9k/issues/42");
 
+    /// <summary>
+    /// The link text is the key a reviewer would say out loud, not the URL: a GitHub issue's bare
+    /// number with the <c>#</c> back on the front, since <c>ExternalReference.Key</c> drops the
+    /// repository that minted it.
+    /// </summary>
     [Fact]
-    public void A_task_with_a_work_item_mentions_it_as_a_link()
+    public void A_task_with_a_work_item_mentions_it_as_a_link_titled_with_its_key()
     {
         string body = PullRequestBody.Build(
             Run(), Task("github:Hallmanac/hall9k#42"), agentSummary: null, GitHubIssue);
 
-        body.Should().Contain("Work item: https://github.com/Hallmanac/hall9k/issues/42");
+        body.Should().Contain("Work item: [#42](https://github.com/Hallmanac/hall9k/issues/42)");
     }
 
     /// <summary>
@@ -41,7 +46,7 @@ public sealed class PullRequestBodyTests
             Run(), Task("jira:PROJ-123"), agentSummary: null,
             new Uri("https://hall9k.atlassian.net/browse/PROJ-123"));
 
-        body.Should().Contain("Work item: https://hall9k.atlassian.net/browse/PROJ-123")
+        body.Should().Contain("Work item: [PROJ-123](https://hall9k.atlassian.net/browse/PROJ-123)")
             .And.NotContain("Adopted from");
     }
 
@@ -226,145 +231,96 @@ public sealed class PullRequestBodyTests
     }
 
     /// <summary>
-    /// The spend-governor task (task: a mandatory FinalFullPass records merge-ready when every
-    /// finding it attaches is below High): today, before this task, the pull request body carries
-    /// no review information at all, so this is the one place a human already reading this code
-    /// learns a below-High finding was carried rather than fixed.
+    /// The review residuals used to be named on the pull request itself, each with its severity
+    /// and location and a `h9k task show` pointer under them (Decisions Log #119). They are not
+    /// any more (Brian's ruling, 2026-09-19): the run record is their durable home, `h9k task
+    /// show` still reports them from the run's own stream, and the pull request is the prose a
+    /// reviewer reads. This test is the old behaviour's inverse rather than its deletion, so the
+    /// next person to wonder where the ride-along line went finds the answer here.
     /// </summary>
     [Fact]
-    public void A_run_with_ride_along_residuals_names_the_count_and_a_durable_pointer()
+    public void A_run_with_review_residuals_says_nothing_about_them_on_the_pull_request()
     {
         RunDetails run = Run();
-        run.ReviewResidualsRideAlong = 2;
         run.ReviewCycle = 4;
-
-        string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
-
-        body.Should().Contain("2 findings").And.Contain($"h9k task show {run.TaskId}");
-    }
-
-    /// <summary>
-    /// Independent pre-PR review, cycle 2, conformance finding: the count-only line above used to
-    /// be the whole story, with `h9k task show` naming only the identical count back — so a reader
-    /// could learn a ride-along existed but never what it actually was. A run whose
-    /// <see cref="RunDetails.ReviewRideAlongFindings"/> carries the detail now gets it inline.
-    /// </summary>
-    [Fact]
-    public void A_run_with_named_ride_along_findings_lists_each_ones_severity_and_location()
-    {
-        RunDetails run = Run();
         run.ReviewResidualsRideAlong = 2;
-        run.ReviewCycle = 4;
         run.ReviewRideAlongFindings =
         [
             new ReviewRideAlongFinding(ReviewSeverity.Medium, "Auth.cs:9"),
             new ReviewRideAlongFinding(ReviewSeverity.Low, "Program.cs:3"),
         ];
-
-        string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
-
-        body.Should().Contain("medium").And.Contain("``` Auth.cs:9 ```")
-            .And.Contain("low").And.Contain("``` Program.cs:3 ```")
-            .And.Contain($"h9k task show {run.TaskId}");
-    }
-
-    /// <summary>
-    /// Independent pre-PR review, cycle 5, adversarial finding: the location has already been
-    /// through <c>RelayedText.WithoutClosingKeywords</c> by the time it is wrapped, and
-    /// that defusal works by inserting a backtick pair — so a single hard-coded backtick wrapper
-    /// re-pairs with the inserted one and leaves the reference it had just neutralised bare and
-    /// autolinked. The fence has to be one the text cannot close.
-    /// </summary>
-    [Fact]
-    public void A_ride_along_location_carrying_a_closing_keyword_stays_inside_its_code_span()
-    {
-        RunDetails run = Run();
-        run.ReviewResidualsRideAlong = 1;
-        run.ReviewCycle = 4;
-        run.ReviewRideAlongFindings = [new ReviewRideAlongFinding(ReviewSeverity.Low, "src/Foo.cs:12 closes #500")];
-
-        string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
-
-        body.Should().Contain("``` src/Foo.cs:12 closes `#500` ```",
-            "the wrapper must be a backtick run longer than any the defused location carries");
-        body.Should().NotContain("`src/Foo.cs:12 closes `#500``",
-            "a single-backtick wrapper would close against the defusal's own inserted pair");
-    }
-
-    [Fact]
-    public void A_run_with_no_ride_along_residuals_says_nothing_about_review()
-    {
-        string body = PullRequestBody.Build(Run(), Task(externalReference: null), agentSummary: null, sourceUrl: null);
-
-        body.Should().NotContain("ride-along").And.NotContain("Review ride-alongs");
-    }
-
-    /// <summary>
-    /// The opposite fact from a ride-along (adversarial review, the routed finding that opened
-    /// this task): a Fix-dispositioned finding the loop never handed to a fix session
-    /// at all, most often a human resolving a capped park with `h9k review resolve --merge-ready`.
-    /// Before this test's own fix, nothing about it ever reached the pull request body — it was
-    /// silently dropped by <c>ReviewEngine.SettleAsync</c>'s forced-residual loop.
-    /// </summary>
-    [Fact]
-    public void A_run_with_unfixed_residuals_names_the_count_and_a_durable_pointer()
-    {
-        RunDetails run = Run();
         run.ReviewResidualsUnfixed = 1;
-        run.ReviewCycle = 4;
-
-        string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
-
-        body.Should().Contain("Left unfixed").And.Contain("1 finding").And.Contain($"h9k task show {run.TaskId}");
-    }
-
-    /// <summary>
-    /// Named rather than merely counted, the same reason a ride-along is (independent pre-PR
-    /// review, cycle 2, conformance finding).
-    /// </summary>
-    [Fact]
-    public void A_run_with_named_unfixed_findings_lists_each_ones_severity_and_location()
-    {
-        RunDetails run = Run();
-        run.ReviewResidualsUnfixed = 1;
-        run.ReviewCycle = 4;
         run.ReviewUnfixedFindings = [new ReviewUnfixedFinding(ReviewSeverity.High, "Api.cs:7")];
 
         string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
 
-        body.Should().Contain("high").And.Contain("``` Api.cs:7 ```").And.Contain($"h9k task show {run.TaskId}");
-    }
-
-    [Fact]
-    public void A_run_with_no_unfixed_residuals_says_nothing_about_it()
-    {
-        string body = PullRequestBody.Build(Run(), Task(externalReference: null), agentSummary: null, sourceUrl: null);
-
-        body.Should().NotContain("Left unfixed").And.NotContain("unfixed");
+        body.Should().NotContain("ride-along").And.NotContain("Review ride-alongs")
+            .And.NotContain("Left unfixed").And.NotContain("Auth.cs:9").And.NotContain("Api.cs:7")
+            .And.NotContain("h9k task show");
     }
 
     /// <summary>
-    /// Independent pre-PR review, cycle 1, conformance finding: a run settled under a reduced
-    /// composition used to read exactly like a clean full-pipeline settle, with nothing on the
-    /// page where the merge decision actually happens saying no reviewer read the diff.
+    /// The same ruling, applied to the one line that said no reviewer had read the diff. It goes
+    /// for the same reason the residuals do: the composition is recorded on the run and reported
+    /// by `h9k task show`'s Stages column, and a pull request body is not the platform's status
+    /// page.
     /// </summary>
     [Fact]
-    public void A_run_settled_under_a_reduced_composition_names_it()
+    public void A_run_settled_under_a_reduced_composition_says_nothing_about_it_either()
     {
         RunDetails run = Run();
         run.ReviewStageComposition = ReviewStageComposition.None;
 
         string body = PullRequestBody.Build(run, Task(externalReference: null), agentSummary: null, sourceUrl: null);
 
-        body.Should().Contain("Review stage composition").And.Contain("None");
+        body.Should().NotContain("Review stage composition");
     }
 
+    /// <summary>
+    /// The whole composition when a session composed its own body: the linked work-item line, a
+    /// blank line, and the prose. This fixture carries everything the body used to append as well
+    /// (an external reference, two unfixed findings, and a run with a real token count), so a
+    /// regression that brought any of them back would have to survive a byte-for-byte comparison
+    /// rather than a `NotContain` that only names what it happens to remember.
+    /// </summary>
     [Fact]
-    public void A_run_settled_under_the_full_pipeline_says_nothing_about_the_composition()
+    public void An_authored_body_is_the_linked_work_item_line_and_the_prose_and_nothing_else()
     {
-        string body = PullRequestBody.Build(Run(), Task(externalReference: null), agentSummary: null, sourceUrl: null);
+        RunDetails run = Run();
+        run.ReviewResidualsUnfixed = 2;
+        run.ReviewUnfixedFindings =
+        [
+            new ReviewUnfixedFinding(ReviewSeverity.High, "Api.cs:7"),
+            new ReviewUnfixedFinding(ReviewSeverity.Medium, "Auth.cs:9"),
+        ];
+        const string prose = "This adds an `AGENTS.md` at the root of the repo.\n\n"
+            + "One thing I deliberately left alone: the advisories need their own card.";
 
-        body.Should().NotContain("Review stage composition");
+        string body = PullRequestBody.Build(
+            run, Task("jira:ARX-5817"), "Full suite green (4739 passed).",
+            new Uri("https://agelessrx.atlassian.net/browse/ARX-5817"),
+            Summary("ARX-5817 Add AGENTS.md at the repository root", prose));
+
+        body.Should().Be(
+            $"Work item: [ARX-5817](https://agelessrx.atlassian.net/browse/ARX-5817){Environment.NewLine}"
+            + Environment.NewLine + prose + Environment.NewLine);
+    }
+
+    /// <summary>
+    /// The same composition with nothing to link: the platform's one addition is conditional, so a
+    /// task carrying no external reference opens a pull request that is purely the session's own
+    /// prose.
+    /// </summary>
+    [Fact]
+    public void An_authored_body_with_no_work_item_is_the_prose_alone()
+    {
+        const string prose = "Every host now resolves references through the shared provider.";
+
+        string body = PullRequestBody.Build(
+            Run(), Task(externalReference: null), "Full suite green (4739 passed).", sourceUrl: null,
+            Summary("A title", prose));
+
+        body.Should().Be(prose + Environment.NewLine);
     }
 
     /// <summary>
@@ -502,8 +458,14 @@ public sealed class PullRequestBodyTests
         title.Should().Be("Fix login, resolves `#500`[2J");
     }
 
+    /// <summary>
+    /// The work-item line leads and the prose follows it, with nothing between them and nothing
+    /// after. The acceptance criteria in particular are gone: they were a collapsed
+    /// <c>&lt;details&gt;</c> block under the prose until the 2026-09-19 ruling moved them back to
+    /// the card they already live on.
+    /// </summary>
     [Fact]
-    public void The_authored_body_sits_between_the_work_item_line_and_the_platforms_own_parts()
+    public void The_authored_body_sits_under_the_work_item_line_with_nothing_after_it()
     {
         RunDetails run = Run();
         run.ReviewResidualsRideAlong = 1;
@@ -513,13 +475,11 @@ public sealed class PullRequestBodyTests
             Summary("A title", "Every host now resolves references through the shared provider."));
 
         body.IndexOf("Work item:", StringComparison.Ordinal).Should().Be(0);
-        body.IndexOf("Every host now resolves", StringComparison.Ordinal)
-            .Should().BeLessThan(body.IndexOf("<details><summary>Acceptance criteria</summary>", StringComparison.Ordinal));
-        body.IndexOf("<details><summary>Acceptance criteria</summary>", StringComparison.Ordinal)
-            .Should().BeLessThan(body.IndexOf("Review ride-alongs", StringComparison.Ordinal));
-        body.IndexOf("Review ride-alongs", StringComparison.Ordinal)
-            .Should().BeLessThan(body.IndexOf("Hall9k run", StringComparison.Ordinal));
-        body.Should().Contain("- [ ] The importer refuses a closed issue").And.Contain("</details>");
+        body.Should().EndWith("Every host now resolves references through the shared provider."
+            + Environment.NewLine);
+        body.Should().NotContain("<details>").And.NotContain("Acceptance criteria")
+            .And.NotContain("The importer refuses a closed issue")
+            .And.NotContain("Review ride-alongs").And.NotContain("Hall9k run");
     }
 
     [Fact]
@@ -633,14 +593,19 @@ public sealed class PullRequestBodyTests
     }
 
     /// <summary>
-    /// The fallback is not merely "close to" today's body; a run with no artifact must open a pull
-    /// request byte for byte the way it always did, so nothing about this change can regress a
-    /// session that never composed one.
+    /// The fallback skeleton for a run whose session composed no pull request of its own: the
+    /// objective, the criteria it was contracted against, the work-item line, and the run
+    /// narration. It keeps all four and loses exactly what the authored path lost, which is the
+    /// residual notes and the footer (Brian's ruling, 2026-09-19). The criteria stay here because
+    /// they ARE this skeleton rather than an addition around somebody's prose: with no prose to
+    /// read, they are the only statement of what the branch was meant to do.
     /// </summary>
     [Fact]
-    public void Without_an_artifact_the_body_is_byte_for_byte_the_one_the_daemon_has_always_written()
+    public void Without_an_artifact_the_body_is_the_skeleton_and_none_of_the_old_additions()
     {
         RunDetails run = Run();
+        run.ReviewResidualsUnfixed = 1;
+        run.ReviewStageComposition = ReviewStageComposition.None;
 
         string body = PullRequestBody.Build(
             run, Task("github:Hallmanac/hall9k#42"), "What I did.", GitHubIssue, prSummary: null);
@@ -651,13 +616,10 @@ public sealed class PullRequestBodyTests
             "## Acceptance criteria",
             "- [ ] The importer refuses a closed issue",
             string.Empty,
-            "Work item: https://github.com/Hallmanac/hall9k/issues/42",
+            "Work item: [#42](https://github.com/Hallmanac/hall9k/issues/42)",
             string.Empty,
             "## Agent summary",
             "What I did.",
-            string.Empty,
-            "---",
-            $"Hall9k run `{run.Id}` · 100 tokens",
             string.Empty));
     }
 
