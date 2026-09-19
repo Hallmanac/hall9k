@@ -1,0 +1,21 @@
+hall9k-task-record: 1
+task-id: 01a0b9e8-dacc-7613-a7a9-43b020723ef8
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#488
+objective: A cooperative-take grant records who the task was granted to as a fingerprint verified against the ledger's trust chain, so a vouched node cannot forge another owner's identity by sending an unverifiable owner id
+criteria:
+  - TaskHolderReleased (and the TaskTakeRequested event that precedes it) carry the requester's owner root fingerprint as verified by ClaimRequestWatchLoop against the ledger trust chain, beside the self-declared owner Guid; the aggregate's AssignedOwnerId is set from a self-declared Guid only when that Guid resolves to an owner this node knows with that same fingerprint, otherwise the assignment is recorded by fingerprint and h9k task show says the owner is known by fingerprint only
+  - DispatchEngine's claim gate compares fingerprints, not Guids, when deciding whether a task granted by a cooperative take belongs to this node's owner, so a forged Guid can neither steal a claim on the receiving node nor block the true grantee
+  - |-
+    Unit tests cover: a vouched node sending its true fingerprint with another owner's Guid is recorded by fingerprint and never becomes AssignedOwnerId; the true grantee's node claims; an unknown fingerprint is refused as before; existing events without the new field replay unchanged (the field is optional and old streams still aggregate)
+  - dotnet build and dotnet test pass; the decision log carries one entry under this task's placeholder; no test creates branches or touches GitHub
+dependencies: [01a09c2c-faaa-7174-9df5-936e777f0e18]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/20723ef8-a-cooperative-take-grant-recor
+published: 2026-09-19 13:50:38Z
+context: |-
+  Replacement for fcc57228, which was assigned before it could be stacked and was claimed from main, where the cooperative take's code does not exist (window error, 2026-09-19 09:5x EDT). Stacked on 777f0e18 (the cooperative take, idea 202383dc item 5): it dispatches at that task's Delivered and builds on its branch, which is where ClaimRequestWatchLoop's fingerprint check, ClaimRequestEngine, TaskTakeRequested and the cooperative TaskHolderReleased live. Cut on Brian's ruling accepting the cycle-6 dispute on 777f0e18 and his priority call (a security fix). Evidence: tasks/777f0e18-*/runs/01a0b800-97e3-72c1-9d03-a885d150f03f/review-6-findings.md (adversarial, medium, ClaimRequestWatchLoop.cs:144) and review-6-fix-position.md. What 777f0e18 already does after its cycle-6 fix: ClaimRequestWatchLoop.ReactAsync resolves the sending node's self-announced device-key fingerprint from its ledger node.yaml (NodeSelfAnnouncedKeyResolver) and checks the claimed RequesterOwnerFingerprint with TrustedOwner.ContainsForNode before ClaimRequestEngine.ReceiveRequestAsync; a mismatch is logged and marked handled. What remains: RequesterOwnerId (a Guid) is self-declared and unverifiable on any other node, because Owner events (OwnerRegistered, OwnerRootClaimed, OwnerSettingsChanged, NodeVouched, NodeRevoked) are OwnerScoped in EventScopeRegistry and never replicate; under take-policy auto, TaskAggregate.Apply(TaskHolderReleased) sets AssignedOwnerId = GrantedToOwnerId (TaskAggregate.cs about line 1417), the field DispatchEngine's claim gate (DispatchEngine.cs about line 951) compares against a node's own owner id. Residual exploit: a vouched node sends its own true fingerprint with another real owner's Guid observed from replicated task history. Boundaries: keep the fingerprint check where it is; do not make owner events replicate; the smallest schema change is an optional fingerprint on the two events plus a fingerprint comparison at the claim gate. Lineage: a follow-on to a review finding on a feature, not a fix of a fix.
