@@ -273,6 +273,73 @@ public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyn
     }
 
     [Fact]
+    public async Task A_lost_override_race_leaves_the_tracker_assignment_the_winner_is_claiming_on()
+    {
+        // The high-severity defect this test guards against (adversarial + conformance pre-PR
+        // review, cycle 3): the tracker take only ever writes onto an item the gate read as
+        // UNASSIGNED, so on a gated project a competing holder can only have passed its own claim
+        // gate on that very assignment. Clearing it back off after losing the ledger race leaves
+        // the winner holding a task its own dispatch sweep reads as Unassigned — which holds —
+        // and never claims.
+        ExternalReference reference = new(WorkItemProvider.GitHub, "acme/web#7");
+        (ProjectDetails project, Guid taskId, Guid previousHolderNodeId) =
+            await SeedClaimedTaskAsync(ClaimGate.TrackerAssignee, reference);
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("holder-fingerprint", previousHolderNodeId, "OLD-NODE", Now.AddHours(-6)));
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (string myFingerprint, string myPublicKeyLine) = await EstablishOwnRootAsync(session, CancellationToken.None);
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [myFingerprint] = new(myFingerprint, myPublicKeyLine, []) },
+            [new ProjectMember(myFingerprint, MembershipRole.Owner, Now)]));
+
+        // Another owner-role member's own override, landing on the record between this one's read
+        // and its write: the interloper's write moves the blob, so this override's own write
+        // conflicts on its own terms and its re-read finds the third-party winner.
+        Guid winnerNodeId = DomainId.New();
+        LedgerLosingTheFirstOverride racedLedger = new(
+            ledger,
+            () => OverwriteHolderAsync(ledger, taskId, new TaskRecordHolder("winner-fingerprint", winnerNodeId, "WINNER-NODE", Now)));
+
+        bool written = false;
+        bool unassigned = false;
+        ProcessRunner gh = (_, arguments, _, _) =>
+        {
+            if (arguments.Contains("edit"))
+            {
+                unassigned |= arguments.Contains("--remove-assignee");
+                written = true;
+                return Task.FromResult(new ProcessResult(0, string.Empty, string.Empty));
+            }
+
+            return Task.FromResult(arguments switch
+            {
+                ["api", "user", ..] => new ProcessResult(0, "this-install-login\n", string.Empty),
+                _ => new ProcessResult(
+                    0,
+                    written ? "{\"assignees\":[{\"login\":\"this-install-login\"}]}" : "{\"assignees\":[]}",
+                    string.Empty),
+            });
+        };
+        TrackerAssignmentTake take = new(gh, requester: null);
+
+        TaskTakeCommand.Settings settings = new() { Id = taskId.ToString(), Force = true, Reason = "Offline for six hours." };
+        Func<Task> act = () => TaskTakeCommand.RunAsync(
+            _postgres.Store, session, settings, racedLedger, chainReader, take, new NodeKeyStore(), CancellationToken.None);
+
+        await act.Should().ThrowAsync<DomainConflictException>().WithMessage("*deliberately been left there*");
+
+        unassigned.Should().BeFalse(
+            "the winner's own claim gate passes on the assignment this take wrote, so clearing it back "
+            + "off would leave it holding a task nothing can dispatch");
+
+        LedgerFile record = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId), CancellationToken.None);
+        TaskRecord.TryParse(record.Content)!.Holder!.NodeId.Should().Be(
+            winnerNodeId, "the override that landed first is the one every later re-read reports back");
+    }
+
+    [Fact]
     public async Task An_owner_role_member_forces_the_takeover_writes_the_new_holder_and_appends_the_event()
     {
         (ProjectDetails project, Guid taskId, Guid previousHolderNodeId) = await SeedClaimedTaskAsync(ClaimGate.Off, externalReference: null);
@@ -370,6 +437,66 @@ public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyn
         await session.SaveChangesAsync(cancellationToken);
 
         return (key.Fingerprint, key.PublicKeyLine);
+    }
+
+    /// <summary>
+    /// Another node's own holder write landing on a record this test already seeded — read,
+    /// replace the holder, write against the blob just read, exactly the conditional write every
+    /// real caller makes. Distinct from <see cref="SeedRecordAsync"/>, whose null expected blob id
+    /// only ever lands on a path that does not exist yet.
+    /// </summary>
+    private static async Task OverwriteHolderAsync(FakeLedger ledger, Guid taskId, TaskRecordHolder holder)
+    {
+        LedgerFile current = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId),
+            CancellationToken.None);
+        TaskRecord record = TaskRecord.TryParse(current.Content)! with { Holder = holder };
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                RepositoryPath, LedgerRefRegistry.Records.RefspecSource, LedgerRefRegistry.RecordPath(taskId),
+                record.ToYaml(), current.BlobId, $"Take over task {taskId}",
+                new LedgerCommitter("Test", "test@hall9k.local"), new LedgerSigningKey("/does/not/matter/key")),
+            CancellationToken.None);
+    }
+
+    /// <summary>
+    /// A <see cref="FakeLedger"/> whose first takeover write loses its race: <paramref name="interloper"/>
+    /// runs first — another override landing on the same record — and moves the blob, so the write
+    /// that follows conflicts on the fake's own ordinary compare-and-swap rather than on anything
+    /// scripted here, and <c>TaskLedgerHolder.TryOverrideAsync</c>'s own re-read finds the winner.
+    /// The one shape no seeding can arrange, because it has to happen between that method's own
+    /// read and its own write.
+    /// </summary>
+    private sealed class LedgerLosingTheFirstOverride(FakeLedger inner, Func<Task> interloper) : ILedger
+    {
+        private bool _raced;
+
+        public Task<LedgerFile> ReadAsync(string repositoryPath, string refName, string path, CancellationToken cancellationToken) =>
+            inner.ReadAsync(repositoryPath, refName, path, cancellationToken);
+
+        public async Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken)
+        {
+            if (!_raced && request.CommitMessage.StartsWith("Take over task", StringComparison.Ordinal))
+            {
+                _raced = true;
+                await interloper();
+            }
+
+            return await inner.WriteAsync(request, cancellationToken);
+        }
+
+        public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
+            inner.DeleteAsync(request, cancellationToken);
+
+        public Task<bool> HasAnyAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.HasAnyAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerRef>> ListRefsAsync(string repositoryPath, string refPrefix, CancellationToken cancellationToken) =>
+            inner.ListRefsAsync(repositoryPath, refPrefix, cancellationToken);
+
+        public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(
+            string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
+            inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
     }
 
     private static async Task SeedRecordAsync(FakeLedger ledger, Guid taskId, TaskRecordHolder? holder)
