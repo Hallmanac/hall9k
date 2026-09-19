@@ -67,7 +67,7 @@ each with its own required `--reason`.
 
 ### Tasks: development and dispatch
 
-`h9k task add | revise | set-session-cap | set-review-caps | publish | assign | unassign | draft | list | show | log-interaction`
+`h9k task add | revise | set-session-cap | set-review-caps | publish | assign | unassign | draft | list | show | pull | log-interaction`
 
 `add` creates a Draft. `revise` is Draft-only, with one exception: `--queue-first`/
 `--clear-queue-first` sets or clears a task-level scheduling marker — the next free dispatch slot
@@ -104,6 +104,26 @@ from a record's own fields any more: full event replication means a record found
 always names a task that either already exists here or is arriving, never one to seed a fresh draft
 from. An item with no record anywhere and no local task adopts exactly as described above. See
 [scope.md](scope.md#the-task-record-in-the-ledger).
+
+That fallback also queues an events-request for the missing stream, so the refusal is doing
+something rather than only telling you to come back later — and it says which of three things
+happened: the request went out now, one from an earlier run is still on its way, or nothing was
+queued at all because this node has no owner root fingerprint yet and so has no identity to send
+from, in which case it names `h9k project join` instead of promising the task will turn up.
+
+`h9k task pull <task-id> [--project <PROJECT>]` makes the same ask directly, with no tracker item
+involved. Pass the task's full id: a fragment can only ever match a task this node already holds,
+which is the case where there is nothing to pull. Like the adoption path it queues one project-wide
+events-request and returns, touching no git and no network; the daemon's next message sweep sends
+it, `h9k status` shows it while it stands, and a second run reports the one already outstanding
+rather than queueing another. A peer answers an explicit request like this one from below its own
+replication switch-on point, which an ordinary flush and an automatic gap-fill are still held above
+— so a task published before that peer ever switched replication on is reachable this way and no
+other. A private task is never served, however explicit the ask. A stream this node holds only the
+*tail* of is refused up front instead: a replicated event is appended to the local stream and the
+older half cannot be put in front of the newer half already here, so there is nothing to ask for.
+Which node states catch up automatically and which need a pull is in
+[concepts.md](concepts.md#catching-a-node-up).
 
 `--file task.md` reads a whole task from a markdown file: a minimal `---` frontmatter block
 (project, type, objective, criteria, an optional model, optional blocked-by, optional stacked-on,
@@ -540,7 +560,7 @@ alongside your verdict, and that choice is the only way those words ever reach t
 
 ### Projects, owners, connections
 
-`h9k project add | init | join | assign-key | list | show | set | remove | cancel-purge | reactivate | rename | invite` ·
+`h9k project add | init | join | assign-key | list | show | set | remove | cancel-purge | reactivate | rename | invite | pull` ·
 `h9k owner show | set` · `h9k node invite` · `h9k connection add jira | list`
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
@@ -638,6 +658,23 @@ recorded on the run's own stream, so `h9k task show` always answers which pipeli
 run actually ran under. A value that removes a load-bearing guarantee (Decisions Log #92, or a
 lens's own attention budget) is refused at set time unless acknowledged with
 `--accept-reduced-review`, which prints the consequence being accepted.
+
+`project pull <project> --since <global-sequence|all>` asks this project's other members for
+history this node will never ask for on its own. Three node states, and only the first two are
+automatic: a brand-new node bootstraps the whole project the first time its sweep finds no applied
+history at all, any node gap-fills when a peer's outbox stalls across a numeric hole, and a node
+that is neither — joined a while ago, holding the retention window and work of its own — is
+permanently out of reach of both, which is what this command is for. `--since` is a global sequence
+read on the *answering* node, not this one (from that node's own diagnosis, or from a sequence in a
+log — no `h9k` command prints a node's own global sequence today), or the word `all` for everything
+it holds; it is required, because the two are very different
+asks. A peer serves an explicit pull from below its own replication switch-on point, which the two
+automatic shapes are still held above; answers apply by origin event id, so pulling over streams
+this node already holds changes nothing, and a private task or idea is never served however far
+back the pull reaches. A stream this node holds only the tail of stays as it is, for the reason
+`task pull` names above. Like `task pull` it queues one project-wide events-request and returns,
+touching no git and no network of its own. Background:
+[concepts.md](concepts.md#catching-a-node-up).
 
 ### The project home
 

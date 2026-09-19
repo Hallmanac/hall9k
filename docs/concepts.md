@@ -785,6 +785,57 @@ a login for it, or a reason for the login's absence.
 
 Depth: [TASK-MODEL.md §2.2](../TASK-MODEL.md), Decisions Log #18, #22, #62, #80, #81, #135, #150.
 
+## Catching a node up
+
+Nodes replicate their event streams to each other through the project's own ledger repository. The
+ordinary case is live: a node queues the project-scoped events it appends and its peers apply them
+on their next message sweep. Everything below is about the other case, history a node does not
+have, and the point is that a node's own state decides which of three mechanisms applies to it.
+
+**A brand-new node bootstraps.** The first time a node's sweep finds no applied history at all for
+a project, and knows of at least one peer, it asks a ranked peer for everything: the voucher who
+invited it first, then owner-role members, then any member. This is automatic, it fires once, and
+the gate is strict — it means *nothing at all*, not "less than I expected". A node that has already
+applied a single event, or added a task of its own, has left this state for good.
+
+**Any node gap-fills.** When a peer's outbox has content past a numeric hole this node cannot read
+across — a squash on the sender's side, a lost push — the node asks other members for that sender's
+own missing history, cascading to the next ranked candidate when one declines or goes quiet. Also
+automatic, and it recurs whenever the hole is noticed again.
+
+**An established node pulls, or nothing happens.** A node that is neither brand-new nor looking at
+a hole never asks for anything older on its own, and there is no state it can reach that changes
+that. `h9k task pull <task-id>` asks every member for one stream by id; `h9k project pull <project>
+--since <global-sequence|all>` asks for a whole project's history from a bound. `h9k task add
+--from-issue` queues the first of those two by itself when the project's ledger names a task this
+node does not hold. All three are broadcasts to the whole project rather than ranked cascades,
+because a CLI command has no live trust chain or transport to rank peers from; all three queue an
+envelope and stop, and the daemon's next sweep is what sends it.
+
+**Why an explicit pull reaches further than a sweep does.** Each node records a replication
+switch-on point when it first replicates anything, and nothing it appended before that point
+travels on its own. That keeps a node's pre-replication back catalogue inert rather than flooding a
+project the day it adopts replication — but it also means a task published before its node switched
+on is unreachable by any automatic mechanism, forever. So an explicit ask, and only an explicit ask,
+is served from below the answering node's switch-on point. An ordinary flush, a gap-fill, and a
+bootstrap all still stop there. What never bends, however explicit the ask: a currently-private task
+or idea is never served, and no node is ever handed its own history back. Answers apply by origin
+event id, so a pull over streams a node already holds changes nothing.
+
+**What a pull cannot reach: a stream a node holds only the tail of.** A replicated event is
+appended to the local stream, never inserted in front of what is already there. A task that was
+open on its own node when that node switched replication on is exactly this shape elsewhere: the
+ordinary flush shipped what happened after the switch-on point and nothing before it, so a peer
+holds the tail with no `TaskAdded` under it. Applying the older half now would replay that stream
+backwards and leave the task reading as it did the moment it was created, so the receiving node
+refuses those events instead, and `h9k task pull` says so up front rather than queueing an ask that
+can only be refused on arrival. The full history stays readable on the node that produced it.
+
+`h9k status` shows every outstanding request while it stands, whichever of the three minted it. A
+broadcast closes when a member answers it, or when one says it holds nothing that matches.
+
+Depth: [scope.md](scope.md), Decisions Log #PLACEHOLDER-a56cf16e.
+
 ## Owners, nodes, and connections
 
 **Every node belongs to a human.** Not to an agent, not to a service. Whatever autonomy agents

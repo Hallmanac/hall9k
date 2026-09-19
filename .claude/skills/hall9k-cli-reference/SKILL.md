@@ -30,6 +30,7 @@ h9k project remove <name> --purge [--reason <TEXT>] [--yes]   # archives (if not
 h9k project cancel-purge <name>   # ends a pending purge before it fires, leaving the project archived, never reactivated — the inverse of h9k project remove --purge (Decisions Log #185)
 h9k project reactivate <name>   # undo h9k project remove: the project and its tasks are visible and live again — refused while a purge is pending, cancel it first (Decisions Log #182, #185)
 h9k project rename <name> <NEW-NAME>   # change a project's name only; the id, home directory, repository, and every task/run/idea are untouched (Decisions Log #182)
+h9k project pull <name> --since <global-sequence|all>   # ask this project's other members for history no automatic mechanism will ever fetch: a bound read on the ANSWERING node's own global sequence, or 'all' for everything it holds. For the established node the bootstrap can never help (it gates on no applied history at all) and a gap-fill never reaches; --since is required. Queues one project-wide events-request and returns, touching no git and no network; the daemon's next sweep sends it. Served from below the answering node's replication switch-on point, because an explicit ask is the opt-in that lifts it; a private task or idea is never served however far back the pull reaches (task a56cf16e, Decisions Log #PLACEHOLDER-a56cf16e)
 h9k project set <name> --branch-template "{key}-{slug}"   # the team's branch convention; 'none' restores task/{shortid}-{slug} (Decisions Log #121)
 h9k project set <name> --review-stage-composition <VALUE|default>   # which pre-PR review stages a run gets: full-pipeline (default), adversarial-only, conformance-only, skip-final-pass, none — also settable at node (h9k config set) and task (h9k task add/revise), task > project > node > default, frozen at each run's own dispatch; a value that removes a guarantee needs --accept-reduced-review (Decisions Log #129)
 h9k project set <name> --auto-pr-review off|normal|first|now   # a GitHub reviewer assignment to this install's own login auto-starts a pr-review task. Default NORMAL for every project, new and existing; 'off' is an explicit opt-out. No request older than the project's own cutoff ever starts on its own (no backfill), every request is recorded and shown either way, and the state is printed at daemon start, in h9k status and in h9k project show (Decisions Log #34's amendment, #133, #161)
@@ -49,6 +50,7 @@ h9k owner show [<owner>]     # one owner: identity (root fingerprint once establ
 h9k owner set [<owner>] --rerequest-review on|off|default   # whether closeout asks a pull request's reviewers for another pass once a fix follow-up pushed (Decisions Log #62). A project setting outranks this; the node default (DaemonOptions.DefaultReviewRerequest, off) sits under both
 h9k owner set [<owner>] --voice-skill <NAME> | --clear-voice-skill   # the skill this owner WRITES IN, by name. Every prompt seam where a session composes text a human reads as the owner's (a pull request description, a review-thread reply, a commit message, a posted review finding, a drafted reply to a GitHub mention) then tells that session to load the skill and its matching context first: contexts/code-review.md for prose the session posts, contexts/explainer.md for a draft the owner reads and decides on. The skill is the owner's own — referenced by name, never copied into a project, a prompt template, or the platform — so the name must already be a skill directory in the owner's user skills (~/.claude/skills/<NAME>) or in a project home's skills/; a name in neither is refused naming both paths. Structure authority does not move: the repository's own PR-description rule and the project's --writing-conventions still decide the shape, the voice skill decides only the prose. --clear-voice-skill forgets it, and every seam then renders as it does for an owner who never named one
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived, --epic)
+h9k task pull <task-id> [--project <PROJECT>]   # ask this project's other members for one task's whole event stream by id, with no linked tracker item needed — the deliberate twin of the broadcast h9k task add --from-issue already queues when the ledger names a task this node does not hold. Pass the task's FULL id (a fragment can only ever match a task already here, which is the case with nothing to pull); an id naming some other kind of stream is refused, and so is a task stream this node holds only the tail of, which no ask can repair. Queues one project-wide events-request and returns, touching no git and no network; a second run reports the one still outstanding rather than queueing another, and the task appears on this node's board once an answer lands. Served from below the answering node's replication switch-on point, since an explicit ask lifts it; a private task is never served (task a56cf16e, Decisions Log #PLACEHOLDER-a56cf16e)
 h9k status                   # the attention pane: state, phase, and attention on every row; also this node's own identity, unread message count, and any ignored message sender
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
 h9k epic add --project <name> --title "<name>"    # name a first-class grouping of tasks (Decisions Log #100)
@@ -430,8 +432,8 @@ name never replicates) and since when.
 **Event catch-up** (idea 202383dc, M2b): a numeric gap in a sender's own outbox sequence — a lost
 push, or a squash gone wrong — or a brand-new node with no local history for a project at all,
 starts an `events-request` envelope (kind `events-request`, never shown in `h9k messages`, the same
-reason `events` is not) asking one peer for a gap since a sequence, one specific stream, or
-everything the peer holds. The candidate is ranked — the voucher first, then owner-role members,
+reason `events` is not) asking one peer for a gap since a sequence, one specific stream, a whole
+project's history from a global sequence bound, or everything the peer holds. The candidate is ranked — the voucher first, then owner-role members,
 then any other member, most recently moved outbox first within a rank — and a peer answers from
 whatever it holds, own or already-replicated alike, forwarding it with its true origin (owner root,
 node, event id, sequence) intact rather than overwriting it with the answering peer's own identity;
@@ -445,7 +447,34 @@ catch-up request and which candidate it is currently asking, silent when nothing
 node yet starts a broadcast events-request for that exact stream (addressed to the whole project,
 since the CLI has no live trust chain or transport of its own to rank a candidate from) and says so
 in its own refusal, rather than only telling the human to re-run the command later — it never
-fabricates a task from the record's own fields; the task appears once the stream actually replicates.
+fabricates a task from the record's own fields. That refusal names which of three things actually
+happened, never one blanket promise: the request went out now, one from an earlier run is still on
+its way, or nothing was queued at all because this node has no owner root fingerprint yet and so
+has no identity to send from, in which case it names `h9k project join` instead.
+
+**Pulling history nobody will send on their own** (task a56cf16e, Decisions Log
+#PLACEHOLDER-a56cf16e). Only two of the three node states catch up by themselves: a brand-new node
+bootstraps (the gate is *no applied history at all*, not "less than I expected"), and any node
+gap-fills across a numeric hole. A node that is neither — joined a while ago, holding the retention
+window and work of its own — never asks for anything older again, and no state it can reach changes
+that. `h9k task pull <task-id> [--project <PROJECT>]` asks every member for one stream by id, with
+no tracker item involved (pass the FULL id: a fragment can only ever match a task this node already
+holds); `h9k project pull <project> --since <global-sequence|all>` asks for a whole project's
+history from a bound read on the *answering* node, and `--since` is required because the two are
+very different asks. Both are broadcasts, both queue one envelope and return without touching git
+or a network, both report the same three outcomes the adoption refusal does, and `h9k status` shows
+the request while it stands. A peer serves an **explicit** ask — one named stream, or a named
+sequence bound — from below its own replication switch-on point, which an ordinary flush, a
+gap-fill, and a bootstrap are all still held above: a task published before its node ever switched
+replication on is reachable this way and no other. What never bends however explicit the ask: a
+currently-private task or idea is never served, and no node is handed its own history back. Answers
+apply by origin event id, so pulling over streams a node already holds changes nothing. And what no
+pull reaches: a stream a node holds only the *tail* of, which is how every task that was open when
+its own node switched replication on looks elsewhere. A replicated event is appended to the local
+stream, never inserted, so the older half would replay behind the newer half and reset the
+aggregate to its creation state; the receiving node refuses those records, and `h9k task pull` (and
+the `--from-issue` adoption refusal) says so up front rather than queueing an ask that can only be
+refused on arrival.
 
 **Trust files and the chain reader** (idea 202383dc, T1): vouches, revocations, and project
 membership are files in the same hidden ledger, and every read of every ledger and messages ref
