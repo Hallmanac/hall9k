@@ -1058,8 +1058,8 @@ public sealed class MessageProjectScopingTests : IClassFixture<PostgresFixture>,
             inner.ProbeAsync(repositoryPath, cancellationToken);
 
         public Task SquashAsync(
-            string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> survivors, LedgerCommitter committer,
-            LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
-            inner.SquashAsync(repositoryPath, fromNodeId, survivors, committer, signingKey, cancellationToken);
+            string repositoryPath, Guid fromNodeId, IReadOnlyList<TransportEnvelope> survivors, long lowWaterMark,
+            LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken) =>
+            inner.SquashAsync(repositoryPath, fromNodeId, survivors, lowWaterMark, committer, signingKey, cancellationToken);
     }
 }

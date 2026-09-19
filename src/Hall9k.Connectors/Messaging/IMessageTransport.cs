@@ -107,7 +107,12 @@ public interface IMessageTransport
 
     /// <summary>Every envelope <paramref name="senderNodeId"/>'s outbox holds past
     /// <paramref name="sinceSeq"/>, oldest first — or <see cref="TransportReadResult.SenderNotVouched"/>
-    /// when that sender's node file does not vouch for the outbox read. <paramref name="trustChain"/>,
+    /// when that sender's node file does not vouch for the outbox read. When a squash has ever run
+    /// against this outbox and <paramref name="sinceSeq"/> sits below the low-water mark it left
+    /// behind (<see cref="SquashAsync"/>'s own <c>lowWaterMark</c>), the gap below the mark is read
+    /// as that squash's own prune, never a forged or corrupted ref: the read resumes at the mark and
+    /// continues forward from there, rather than the gap-stop rule below stalling on it. A gap ABOVE
+    /// the mark is unaffected and still stalls the read exactly as before. <paramref name="trustChain"/>,
     /// when given, is used instead of computing a fresh one: a sweep reading several senders in the
     /// same tick would otherwise repeat the full chain walk (an <c>ls-remote</c>, a fetch per owner
     /// ref plus the members ref, and a signature check per candidate key) once per sender, even
@@ -134,14 +139,22 @@ public interface IMessageTransport
     /// <paramref name="survivors"/> — a fresh single commit, not a fast-forward of the existing
     /// history — dropping every envelope not named (idea 202383dc, M1b's squash). Only ever this
     /// node's own ref, since a rewrite is only safe against a ref this node is the sole writer of;
-    /// nothing here ever touches another node's outbox. A reader's own cursor is untouched by this:
-    /// it tracks seq, never a commit, so a squash a reader has not seen yet is transparent to it —
-    /// it simply finds fewer old files than before, if it ever asks for them at all.
+    /// nothing here ever touches another node's outbox.
+    /// <para>
+    /// <paramref name="lowWaterMark"/> is written alongside the survivors — the lowest seq this
+    /// squash still retains, or one past the highest seq it dropped when nothing survives — so any
+    /// node reading this outbox afterward can tell a deliberate prune from a forged or corrupted gap
+    /// (idea 202383dc, the M1b/gap-stop interaction found 2026-09-14). A reader's own cursor is
+    /// otherwise untouched by this: it tracks seq, never a commit, so a squash a reader has not seen
+    /// yet is transparent to it — it simply finds fewer old files than before, if it ever asks for
+    /// them at all.
+    /// </para>
     /// </summary>
     Task SquashAsync(
         string repositoryPath,
         Guid fromNodeId,
         IReadOnlyList<TransportEnvelope> survivors,
+        long lowWaterMark,
         LedgerCommitter committer,
         LedgerSigningKey signingKey,
         CancellationToken cancellationToken);

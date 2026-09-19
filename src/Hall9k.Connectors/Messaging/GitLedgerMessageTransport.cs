@@ -116,7 +116,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
             string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
             string commitId = await BuildEnvelopeCommitAsync(
                 repositoryPath, envelopes, seedFromTip: tip, parentTip: tip, "Flush messages", committer, signingKey,
-                cancellationToken);
+                lowWaterMark: null, cancellationToken);
 
             (int pushExit, _, string pushError) = await RunGitRawAsync(
                 repositoryPath, ["push", "origin", $"{commitId}:{refName}"], environment: null, standardInput: null,
@@ -197,6 +197,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
         string repositoryPath,
         Guid fromNodeId,
         IReadOnlyList<TransportEnvelope> survivors,
+        long lowWaterMark,
         LedgerCommitter committer,
         LedgerSigningKey signingKey,
         CancellationToken cancellationToken)
@@ -217,7 +218,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
         string? fetchedTip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
         string commitId = await BuildEnvelopeCommitAsync(
             repositoryPath, survivors, seedFromTip: null, parentTip: null, "Squash outbox", committer, signingKey,
-            cancellationToken);
+            lowWaterMark, cancellationToken);
 
         (int pushExit, _, string pushError) = await RunGitRawAsync(
             repositoryPath,
@@ -294,18 +295,26 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
             return TransportReadResult.Ok([], sinceSeq);
         }
 
+        // A reader whose own cursor sits below whatever this outbox's own last squash left as its
+        // low-water mark is reading into a range that squash deliberately pruned, never a forged or
+        // corrupted gap — resume right at the mark instead of letting the gap-stop rule below stall
+        // on it (idea 202383dc, the M1b/gap-stop interaction found 2026-09-14). A cursor already at
+        // or past the mark is unaffected: whatever gap it might still hit above the mark is real.
+        long lowWaterMark = await ReadLowWaterMarkAsync(repositoryPath, tip, cancellationToken);
+        long effectiveSinceSeq = sinceSeq < lowWaterMark ? lowWaterMark - 1 : sinceSeq;
+
         string? treeListing = await RunGitCaptureAsync(
             repositoryPath, ["ls-tree", "-r", "--name-only", tip, "--", "messages/"], cancellationToken);
         List<long> candidateSeqs = [.. (treeListing ?? string.Empty)
             .Split('\n', StringSplitOptions.RemoveEmptyEntries)
             .Select(ParseSeqFromPath)
-            .Where(seq => seq is not null && seq > sinceSeq)
+            .Where(seq => seq is not null && seq > effectiveSinceSeq)
             .Select(seq => seq.GetValueOrDefault())
             .OrderBy(seq => seq)];
 
         if (candidateSeqs.Count == 0)
         {
-            return TransportReadResult.Ok([], sinceSeq);
+            return TransportReadResult.Ok([], effectiveSinceSeq);
         }
 
         // Every candidate path above the cursor is verified against the commit that actually
@@ -317,7 +326,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
         Dictionary<string, bool> verifiedCommits = [];
         List<TransportEnvelope> envelopes = [];
         List<long> rejectedSeqs = [];
-        long highestSeqInspected = sinceSeq;
+        long highestSeqInspected = effectiveSinceSeq;
         long? stalledAtSeq = null;
         foreach (long seq in candidateSeqs)
         {
@@ -383,6 +392,12 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
 
     private const string MessagesDirectory = "messages/";
     private const string EnvelopeExtension = ".json";
+
+    /// <summary>Lives outside <see cref="MessagesDirectory"/> on purpose: the low-water mark a
+    /// squash leaves behind is outbox metadata, never a candidate envelope, and <c>ls-tree ... --
+    /// messages/</c> in <see cref="ReadSinceAsync"/> is already scoped to that prefix, so this path
+    /// never turns up in a candidate listing at all.</summary>
+    private const string LowWaterMarkPath = "low-water-mark";
 
     private static string PathFor(long seq) => $"{MessagesDirectory}{seq.ToString(CultureInfo.InvariantCulture)}{EnvelopeExtension}";
 
@@ -541,6 +556,25 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
         return tip.IsBlank() ? null : tip;
     }
 
+    /// <summary>Zero when <paramref name="tip"/> carries no <see cref="LowWaterMarkPath"/> blob at
+    /// all — every outbox that has never been squashed — meaning no seq has ever been pruned, so
+    /// <see cref="ReadSinceAsync"/>'s own gap-stop rule applies unmodified from seq 0.</summary>
+    private async Task<long> ReadLowWaterMarkAsync(string repositoryPath, string tip, CancellationToken cancellationToken)
+    {
+        string? content = await RunGitCaptureAsync(repositoryPath, ["show", $"{tip}:{LowWaterMarkPath}"], cancellationToken);
+        return ParseLowWaterMark(content);
+    }
+
+    /// <summary>Pure parse of the low-water-mark blob's own content — a lone base-10 integer, no
+    /// sign, no surrounding text — back into the mark <see cref="BuildEnvelopeCommitAsync"/> wrote.
+    /// Internal, not private, so a test can exercise the round trip without a real repository, the
+    /// same reason <see cref="ParseSeqFromPath"/> is internal.</summary>
+    internal static long ParseLowWaterMark(string? content) =>
+        content is not null
+            && long.TryParse(content.Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out long mark)
+            ? mark
+            : 0;
+
     private static async Task SetLocalRefAsync(
         string repositoryPath, string refName, string newCommit, CancellationToken cancellationToken)
     {
@@ -562,6 +596,11 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
     /// unchanged. <see cref="SquashAsync"/> passes <see langword="null"/> for both
     /// <paramref name="seedFromTip"/> and <paramref name="parentTip"/>, building a tree from
     /// nothing but <paramref name="envelopes"/> and a commit with no parent at all.
+    /// <paramref name="lowWaterMark"/>, when given, also writes <see cref="LowWaterMarkPath"/> into
+    /// this same tree — <see cref="SquashAsync"/>'s own call, the only one that ever changes what
+    /// the mark should be. <see cref="FlushAsync"/> passes <see langword="null"/>: seeding from the
+    /// current tip already carries forward whatever mark the last squash left there unchanged, since
+    /// this method never touches a path it was not asked to.
     /// </summary>
     private static async Task<string> BuildEnvelopeCommitAsync(
         string repositoryPath,
@@ -571,6 +610,7 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
         string commitMessage,
         LedgerCommitter committer,
         LedgerSigningKey signingKey,
+        long? lowWaterMark,
         CancellationToken cancellationToken)
     {
         string tempIndex = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"h9k-message-index-{Guid.NewGuid():N}");
@@ -590,22 +630,15 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
 
             foreach (TransportEnvelope envelope in envelopes)
             {
-                (int hashExit, string blobOutput, string hashError) = await RunGitRawAsync(
-                    repositoryPath, ["hash-object", "-w", "--stdin"], environment: null, envelope.Content, cancellationToken);
-                if (hashExit != 0)
-                {
-                    throw new InvalidOperationException($"git hash-object failed in {repositoryPath}: {hashError.Trim()}");
-                }
+                await WriteBlobToIndexAsync(
+                    repositoryPath, indexEnvironment, PathFor(envelope.Seq), envelope.Content, cancellationToken);
+            }
 
-                string blobId = blobOutput.Trim();
-                string path = PathFor(envelope.Seq);
-                (int addExit, _, string addError) = await RunGitRawAsync(
-                    repositoryPath, ["update-index", "--add", "--cacheinfo", $"100644,{blobId},{path}"],
-                    indexEnvironment, standardInput: null, cancellationToken);
-                if (addExit != 0)
-                {
-                    throw new InvalidOperationException($"git update-index failed in {repositoryPath}: {addError.Trim()}");
-                }
+            if (lowWaterMark is { } mark)
+            {
+                await WriteBlobToIndexAsync(
+                    repositoryPath, indexEnvironment, LowWaterMarkPath, mark.ToString(CultureInfo.InvariantCulture),
+                    cancellationToken);
             }
 
             (int writeExit, string treeOutput, string writeError) = await RunGitRawAsync(
@@ -654,6 +687,31 @@ public sealed class GitLedgerMessageTransport(ILedger ledger, ILedgerChainReader
             {
                 // Best-effort cleanup of a temp file; nothing downstream reads it again.
             }
+        }
+    }
+
+    /// <summary>Hashes <paramref name="content"/> as a loose blob and stages it into
+    /// <paramref name="indexEnvironment"/>'s own temporary index at <paramref name="path"/> —
+    /// <see cref="BuildEnvelopeCommitAsync"/>'s own per-envelope write, factored out because it
+    /// writes the identical shape a second time for <see cref="LowWaterMarkPath"/>.</summary>
+    private static async Task WriteBlobToIndexAsync(
+        string repositoryPath, IReadOnlyDictionary<string, string> indexEnvironment, string path, string content,
+        CancellationToken cancellationToken)
+    {
+        (int hashExit, string blobOutput, string hashError) = await RunGitRawAsync(
+            repositoryPath, ["hash-object", "-w", "--stdin"], environment: null, content, cancellationToken);
+        if (hashExit != 0)
+        {
+            throw new InvalidOperationException($"git hash-object failed in {repositoryPath}: {hashError.Trim()}");
+        }
+
+        string blobId = blobOutput.Trim();
+        (int addExit, _, string addError) = await RunGitRawAsync(
+            repositoryPath, ["update-index", "--add", "--cacheinfo", $"100644,{blobId},{path}"],
+            indexEnvironment, standardInput: null, cancellationToken);
+        if (addExit != 0)
+        {
+            throw new InvalidOperationException($"git update-index failed in {repositoryPath}: {addError.Trim()}");
         }
     }
 
