@@ -506,6 +506,22 @@ public sealed class TaskAggregate
     /// </summary>
     public Guid? AssignedOwnerId { get; private set; }
 
+    /// <summary>
+    /// <see cref="AssignedOwnerId"/>'s own cross-node root fingerprint (idea 20723ef8), set only by
+    /// a cooperative grant (<see cref="Apply(Events.TaskHolderReleased)"/>) and cleared by every
+    /// other door onto <see cref="AssignedOwnerId"/> — an ordinary assignment, an unassign, a
+    /// forced takeover — so a stale fingerprint from an earlier grant never survives to
+    /// misdescribe a later, unrelated assignment. Never itself the security decision: this
+    /// aggregate has no way to look up whether <see cref="AssignedOwnerId"/> is an owner any given
+    /// reading node actually knows locally (Owner events are OwnerScoped and never replicate), so
+    /// <see cref="AssignedOwnerId"/> stays exactly what the event self-declared even when this
+    /// field is set. The daemon's own dispatch claim gate is where the two are actually compared,
+    /// with the one piece of local knowledge only it has: this node's own owner root fingerprint.
+    /// Null for every event written before this field existed, and for every ordinary assignment,
+    /// which carries no such record at all today.
+    /// </summary>
+    public string? AssignedOwnerFingerprint { get; private set; }
+
     private readonly List<string> _acceptanceCriteria = [];
     public IReadOnlyList<string> AcceptanceCriteria => _acceptanceCriteria;
 
@@ -1081,6 +1097,10 @@ public sealed class TaskAggregate
     public void Apply(TaskAssigned @event)
     {
         AssignedOwnerId = @event.AssignedOwnerId;
+        // A fresh, ordinary assignment supersedes whatever a prior cooperative grant recorded
+        // here — carrying it forward would let a stale fingerprint from an unrelated earlier
+        // grant misdescribe this one (idea 20723ef8).
+        AssignedOwnerFingerprint = null;
         _unmetDependencies.Clear();
         _unmetDependencies.AddRange(@event.UnmetDependencies);
         _deadDependencies.Clear();
@@ -1110,6 +1130,7 @@ public sealed class TaskAggregate
     public void Apply(TaskUnassigned @event)
     {
         AssignedOwnerId = null;
+        AssignedOwnerFingerprint = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();
         _deadDependencyReasons.Clear();
@@ -1418,6 +1439,7 @@ public sealed class TaskAggregate
             LastGrantedAt = @event.ReleasedAt;
 
             AssignedOwnerId = @event.GrantedToOwnerId;
+            AssignedOwnerFingerprint = @event.GrantedToOwnerFingerprint;
             ClaimedByNodeId = null;
             CurrentRunId = null;
             PendingQuestionId = null;
@@ -1515,6 +1537,10 @@ public sealed class TaskAggregate
         // only its own owner's work") would otherwise strand this task, since the overrider's own
         // node never enumerates work assigned to somebody else's owner id.
         AssignedOwnerId = @event.NewHolderOwnerId;
+        // A forced takeover is an owner-role member's own local act, not a cross-node grant this
+        // aggregate has any reason to distrust — it carries no fingerprint of its own, and clears
+        // whatever a prior cooperative grant recorded here (idea 20723ef8).
+        AssignedOwnerFingerprint = null;
 
         ClaimedByNodeId = null;
         CurrentRunId = null;
@@ -1584,6 +1610,7 @@ public sealed class TaskAggregate
         EndAnyOpenReviewLap();
 
         AssignedOwnerId = null;
+        AssignedOwnerFingerprint = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();
         _deadDependencyReasons.Clear();

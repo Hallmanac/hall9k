@@ -8,6 +8,16 @@ namespace Hall9k.Domain.Features.Tasks.Events;
 /// either outcome so <c>h9k task show</c> and <c>h9k status</c> can always say who asked and why,
 /// even while the request is still parked with nothing decided yet.
 /// </summary>
+/// <param name="RequesterOwnerFingerprint">
+/// The requester's own owner root fingerprint (idea 20723ef8) — by the time this event is ever
+/// appended, <c>ClaimRequestWatchLoop.IsRequesterOwnerVerified</c> has already checked this exact
+/// value against the ledger's own trust chain for the sending node, since
+/// <c>ClaimRequestEngine.ReceiveRequestAsync</c> (the only caller that ever builds this event) is
+/// only ever reached after that check passes. <see cref="RequesterOwnerId"/> carries no such
+/// guarantee: it is the self-declared Guid a vouched node cannot be stopped from forging to a
+/// different real owner's id, since Owner events never replicate and no node can verify a Guid it
+/// does not itself own.
+/// </param>
 /// <param name="RequesterTrackerIdentity">
 /// The requester's own tracker identity (a Jira accountId or a GitHub login), carried on the
 /// originating claim-request envelope so it survives from the moment this event lands through to

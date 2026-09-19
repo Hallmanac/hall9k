@@ -1331,6 +1331,16 @@ public static class TaskDecider
     /// for, which is what lets the requester's own node (or a sibling under the same owner) pick
     /// this back up through its ordinary dispatch sweep. Same holder guard <see cref="TakeOver"/>
     /// carries: only a task with a live claim has a holder for a grant to release.
+    /// <see cref="TaskAggregate.PendingTakeRequestedByOwnerFingerprint"/> — never a fresh
+    /// parameter — is what the produced event's own <see cref="TaskHolderReleased.GrantedToOwnerFingerprint"/>
+    /// carries forward (idea 20723ef8): both the auto path (<c>ClaimRequestEngine.ReceiveRequestAsync</c>,
+    /// same session, same just-appended <see cref="TaskTakeRequested"/>) and the human path
+    /// (<c>h9k task grant</c>, which only ever answers the pending request already parked on
+    /// <paramref name="task"/>) call this with a <paramref name="requesterNodeId"/>/<paramref name="requesterOwnerId"/>
+    /// pair that already equals it, so there is nothing here worth threading as a separate
+    /// argument — and that pending fingerprint is always the one <c>ClaimRequestWatchLoop</c>
+    /// already verified against the ledger's own trust chain before it was ever parked, since
+    /// nothing else ever appends <see cref="TaskTakeRequested"/>.
     /// </summary>
     public static TaskHolderReleased GrantTake(
         TaskAggregate task, Guid requesterNodeId, Guid requesterOwnerId, DateTimeOffset grantedAt)
@@ -1342,7 +1352,8 @@ public static class TaskDecider
                 + "to release.");
         }
 
-        return new TaskHolderReleased(task.Id, grantedAt, requesterNodeId, requesterOwnerId);
+        return new TaskHolderReleased(
+            task.Id, grantedAt, requesterNodeId, requesterOwnerId, task.PendingTakeRequestedByOwnerFingerprint);
     }
 
     /// <summary>

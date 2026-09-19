@@ -2675,6 +2675,23 @@ public sealed class TaskDeciderTests
         granted.ReleasedAt.Should().Be(Now);
         granted.GrantedToNodeId.Should().Be(requesterNodeId);
         granted.GrantedToOwnerId.Should().Be(requesterOwnerId);
+        granted.GrantedToOwnerFingerprint.Should().BeNull("nothing was ever asked for on this aggregate, so there is no verified fingerprint to carry");
+    }
+
+    [Fact]
+    public void GrantTake_carries_the_pending_requests_own_verified_fingerprint()
+    {
+        // idea 20723ef8: ClaimRequestWatchLoop.IsRequesterOwnerVerified already checked this exact
+        // fingerprint against the ledger's own trust chain before TaskTakeRequested was ever
+        // appended — GrantTake carries it forward rather than taking a fresh, re-trustable value.
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        task.Apply(TaskDecider.RequestTake(task, requesterNodeId, requesterOwnerId, "requester-fingerprint", "Why", Now));
+
+        TaskHolderReleased granted = TaskDecider.GrantTake(task, requesterNodeId, requesterOwnerId, Now);
+
+        granted.GrantedToOwnerFingerprint.Should().Be("requester-fingerprint");
     }
 
     [Fact]
@@ -2704,6 +2721,68 @@ public sealed class TaskDeciderTests
         task.CurrentRunId.Should().BeNull();
         task.LastGrantedToOwnerId.Should().Be(requesterOwnerId);
         task.LastGrantedAt.Should().Be(Now);
+    }
+
+    [Fact]
+    public void Apply_GrantTake_records_the_verified_fingerprint_separately_from_the_self_declared_guid()
+    {
+        // The adversarial scenario itself (idea 20723ef8, closing independent pre-PR review, cycle
+        // 6, adversarial lens, medium): a vouched requester's own true, now-verified fingerprint
+        // arrives alongside a self-declared Guid naming a different real owner entirely. This
+        // aggregate has no way to verify a foreign owner's Guid on its own — Owner events never
+        // replicate, so no node can check a Guid it does not itself own — so AssignedOwnerId still
+        // reflects exactly what the event self-declared, the same as every other door onto it
+        // (TaskAssigned, TaskHolderTakenOver). What actually decides whose task this is downstream
+        // is AssignedOwnerFingerprint: DispatchEngine.IsGrantedToThisOwner compares it against each
+        // reading node's own owner fingerprint, never the bare Guid.
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid forgedOwnerId = DomainId.New();
+        task.Apply(TaskDecider.RequestTake(task, requesterNodeId, forgedOwnerId, "attacker-true-fingerprint", "Why", Now));
+
+        task.Apply(TaskDecider.GrantTake(task, requesterNodeId, forgedOwnerId, Now));
+
+        task.AssignedOwnerId.Should().Be(forgedOwnerId, "the aggregate itself cannot verify a foreign owner's Guid");
+        task.AssignedOwnerFingerprint.Should().Be(
+            "attacker-true-fingerprint", "this is the fact DispatchEngine's own claim gate actually trusts");
+    }
+
+    [Fact]
+    public void Apply_TaskHolderReleased_without_a_fingerprint_field_replays_exactly_as_before()
+    {
+        // What an event written before GrantedToOwnerFingerprint existed deserializes as: the
+        // trailing optional parameter simply defaults to null, and every other field replays
+        // unchanged.
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        TaskHolderReleased granted = new(task.Id, Now, requesterNodeId, requesterOwnerId);
+
+        task.Apply(granted);
+
+        task.AssignedOwnerId.Should().Be(requesterOwnerId);
+        task.AssignedOwnerFingerprint.Should().BeNull();
+        task.State.Should().Be(TaskState.Queued);
+    }
+
+    [Fact]
+    public void A_cooperative_grants_fingerprint_does_not_survive_a_later_ordinary_reassignment()
+    {
+        // Blast-radius check (idea 20723ef8): once AssignedOwnerFingerprint exists at all, every
+        // other door onto AssignedOwnerId must clear it too, or a stale fingerprint from an earlier
+        // grant could misdescribe a later, unrelated assignment DispatchEngine's own claim gate has
+        // no reason to distrust.
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        task.Apply(TaskDecider.RequestTake(task, requesterNodeId, requesterOwnerId, "requester-fingerprint", "Why", Now));
+        task.Apply(TaskDecider.GrantTake(task, requesterNodeId, requesterOwnerId, Now));
+        task.AssignedOwnerFingerprint.Should().NotBeNull("sanity: the grant above must have recorded one");
+
+        task.Apply(TaskDecider.Unassign(task, "reassigning", leaseHeld: false, Now, Owner));
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));
+
+        task.AssignedOwnerFingerprint.Should().BeNull("an ordinary reassignment carries no fingerprint of its own and must not keep the previous grant's");
     }
 
     [Fact]
