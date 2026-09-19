@@ -625,6 +625,15 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         // (adversarial pre-PR review, cycle 1: this line previously cleared the marker here while
         // the aggregate kept it set, silently discarding a human's own queue-first instruction).
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+
+        // Mirrors the same clear TaskAggregate.Apply(Events.TaskHolderTakenOver) now performs
+        // (adversarial pre-PR review, cycle 3): a forced takeover answers any outstanding
+        // cooperative-take request, so this row must not keep offering a grant lever against a
+        // request the taker itself just satisfied.
+        view.PendingTakeRequestedByNodeId = null;
+        view.PendingTakeRequestedByOwnerId = null;
+        view.PendingTakeReason = null;
+        view.PendingTakeRequestedAt = null;
     }
 
     /// <summary>
