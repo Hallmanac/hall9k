@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;
 using Marten.Events;
@@ -64,12 +65,19 @@ public static class TaskLifecycleProjectionBackfill
     /// </para>
     /// <para>
     /// <see cref="TaskListItem.AssignedOwnerFingerprint"/> and
-    /// <see cref="TaskDetails.AssignedOwnerFingerprint"/> (idea 20723ef8) deliberately have no
-    /// marker here either, for the identical <see cref="TaskListItem.EpicId"/> reason: nullable,
-    /// meaning "no cooperative grant recorded one", which is exactly the truthful reading of an
-    /// absent key on a document written before this field existed or last written by an ordinary
-    /// assignment. Nothing downstream reads a missing key as anything other than "fall back to the
-    /// plain Guid comparison this gate always made" — the correct answer either way.
+    /// <see cref="TaskDetails.AssignedOwnerFingerprint"/> genuinely have no <c>jsonb_exists</c>
+    /// marker here, unlike every field above: the key is present, as an explicit null, on every
+    /// document this backfill would otherwise need to catch, so <c>jsonb_exists</c> cannot tell
+    /// "no fingerprint was ever recorded" from "a fingerprint was discarded by the projection that
+    /// used to run" — both read as the same present-but-null key. A missing key is still the
+    /// truthful "no fingerprint" reading for a document written before the field existed at all, or
+    /// last written by a grant-clearing door that legitimately has none to carry forward.
+    /// <see cref="StaleFingerprintStreamsAsync"/> is the marker instead, for exactly the one shape
+    /// this class of check cannot reach: idea f72138e1's own origin incident, a document whose
+    /// stream's own <see cref="TaskAssigned"/> event does carry
+    /// <see cref="TaskAssigned.AssignedOwnerRootFingerprint"/> but whose document was last written
+    /// by the projection version that discarded it. It reads the raw event, not the document, which
+    /// is the only way to tell the two apart.
     /// </para>
     /// </summary>
     private const string StaleDocument =
@@ -153,9 +161,14 @@ public static class TaskLifecycleProjectionBackfill
 
     /// <summary>
     /// Rebuilds every task stream still carrying an out-of-date document and returns the ids it
-    /// actually rebuilt. Idempotent and self-terminating: a rebuilt document has every key, so
-    /// the next call finds nothing. Both task projections are single-stream on the task's own
-    /// id, so one pass over the union of the two stale sets repairs both.
+    /// actually rebuilt. Idempotent, and self-terminating for every <c>jsonb_exists</c> marker in
+    /// <see cref="StaleStreamsAsync"/>: a rebuilt document has every key, so the next call finds
+    /// nothing. <see cref="StaleFingerprintStreamsAsync"/> is looser — it can, rarely, re-select a
+    /// document that a later cooperative grant has already correctly nulled back out, since it
+    /// reasons from the stream's own <see cref="TaskAssigned"/> history rather than a key on the
+    /// document — but a repeat rebuild there only redoes idempotent work, never leaves a genuinely
+    /// stale document behind. Both task projections are single-stream on the task's own id, so one
+    /// pass over the union of the stale sets repairs both.
     /// </summary>
     public static async Task<IReadOnlyList<Guid>> RunAsync(
         IDocumentStore store, CancellationToken cancellationToken)
@@ -236,7 +249,65 @@ public static class TaskLifecycleProjectionBackfill
             .Where(task => task.MatchesSql(StaleDetailsOnlyDocument))
             .Select(task => task.Id)
             .ToListAsync(cancellationToken);
+        IReadOnlyList<Guid> fingerprints = await StaleFingerprintStreamsAsync(session, cancellationToken);
 
-        return [.. rows.Concat(details).Distinct()];
+        return [.. rows.Concat(details).Concat(fingerprints).Distinct()];
+    }
+
+    /// <summary>
+    /// Idea f72138e1's own repair path: a document whose stream's own latest <see cref="TaskAssigned"/>
+    /// event carries a non-null <see cref="TaskAssigned.AssignedOwnerRootFingerprint"/>, but whose
+    /// document still reads null for it — the exact shape the pre-fix
+    /// <c>TaskListItemProjection.Apply(IEvent&lt;TaskAssigned&gt;)</c> /
+    /// <c>TaskDetailsProjection.Apply(IEvent&lt;TaskAssigned&gt;)</c> left behind by discarding the
+    /// event's own field. No <c>jsonb_exists</c> marker can find this: the key is present on these
+    /// documents, as an explicit null, exactly as it is on a document that has never carried a
+    /// fingerprint for a genuine reason (an event older than the field, or a task never reassigned
+    /// since a grant-clearing door last touched it) — the two are indistinguishable from the
+    /// document alone. Reading the raw event is the only way to tell them apart, so this reasons
+    /// from <see cref="TaskAssigned"/>'s own history per stream rather than from a document key:
+    /// grouped by task id, the latest assignment by <see cref="TaskAssigned.AssignedAt"/> is the
+    /// one whose fingerprint (or lack of one) the current document should carry, since a later
+    /// assignment always supersedes an earlier one's fingerprint exactly as
+    /// <see cref="TaskAggregate.Apply(Events.TaskAssigned)"/> does. Restricted to a document still
+    /// carrying an <see cref="TaskListItem.AssignedOwnerId"/> so a task unassigned since its last
+    /// fingerprinted assignment — whose null fingerprint is already the true current answer — is
+    /// never mistaken for one this repair still owes.
+    /// </summary>
+    private static async Task<Guid[]> StaleFingerprintStreamsAsync(
+        IQuerySession session, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<TaskAssigned> assignments = await session.Events
+            .QueryRawEventDataOnly<TaskAssigned>()
+            .ToListAsync(cancellationToken);
+        if (assignments.Count == 0)
+        {
+            return [];
+        }
+
+        Guid[] currentlyFingerprinted = [.. assignments
+            .GroupBy(assigned => assigned.Id)
+            .Where(stream => stream
+                .OrderByDescending(assigned => assigned.AssignedAt)
+                .First()
+                .AssignedOwnerRootFingerprint is not null)
+            .Select(stream => stream.Key)];
+        if (currentlyFingerprinted.Length == 0)
+        {
+            return [];
+        }
+
+        IReadOnlyList<Guid> staleRows = await session.Query<TaskListItem>()
+            .Where(task => task.AssignedOwnerId != null && task.AssignedOwnerFingerprint == null)
+            .Where(task => currentlyFingerprinted.Contains(task.Id))
+            .Select(task => task.Id)
+            .ToListAsync(cancellationToken);
+        IReadOnlyList<Guid> staleDetails = await session.Query<TaskDetails>()
+            .Where(task => task.AssignedOwnerId != null && task.AssignedOwnerFingerprint == null)
+            .Where(task => currentlyFingerprinted.Contains(task.Id))
+            .Select(task => task.Id)
+            .ToListAsync(cancellationToken);
+
+        return [.. staleRows.Concat(staleDetails).Distinct()];
     }
 }
