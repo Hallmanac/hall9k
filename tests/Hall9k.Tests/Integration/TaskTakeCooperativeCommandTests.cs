@@ -9,6 +9,8 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -122,6 +124,41 @@ public sealed class TaskTakeCooperativeCommandTests : IClassFixture<PostgresFixt
         TaskAggregate afterGrant = (await grantSession.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: CancellationToken.None))!;
         afterGrant.HolderNodeId.Should().BeNull("a grant releases this node's own ledger holder");
         afterGrant.LastGrantedAt.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task Grant_refuses_when_a_run_is_live_for_this_task_on_this_node()
+    {
+        // The high-severity defect this test guards against (independent pre-PR review, cycle 5,
+        // conformance lens): h9k task grant used to release the ledger holder unconditionally,
+        // even while this node's own agent process was still working the task — landing it
+        // Queued for the requester's next dispatch sweep to claim and launch a second run against
+        // the same branch. ReceiveRequestAsync's own auto path already guards against exactly this
+        // (ClaimRequestEngineTests.Auto_refuses_when_a_run_is_live); this is the identical guard on
+        // the human-driven door.
+        (ProjectDetails project, Guid taskId, BootstrapContext context) = await SeedHeldTaskWithPendingRequestAsync();
+        FakeLedger ledger = new();
+        await SeedRecordAsync(ledger, taskId, new TaskRecordHolder("my-fingerprint", context.NodeId, "MY-NODE", Now.AddHours(-2)));
+
+        await using IDocumentSession runSession = _postgres.Store.LightweightSession();
+        runSession.Store(new RunListItem
+        {
+            Id = DomainId.New(), TaskId = taskId, NodeId = context.NodeId, State = RunState.Running, DispatchedAt = Now.AddMinutes(-10),
+        });
+        await runSession.SaveChangesAsync(CancellationToken.None);
+
+        int writesBeforeAttempt = ledger.Writes.Count;
+        await using IDocumentSession grantSession = _postgres.Store.LightweightSession();
+        TaskGrantCommand.Settings grantSettings = new() { Id = taskId.ToString() };
+        Func<Task> grantAct = () => TaskGrantCommand.RunAsync(
+            _postgres.Store, grantSession, grantSettings, ledger, take: null, new NodeKeyStore(), CancellationToken.None);
+
+        await grantAct.Should().ThrowAsync<DomainConflictException>().WithMessage("*live*");
+
+        TaskAggregate afterAttempt = (await grantSession.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: CancellationToken.None))!;
+        afterAttempt.HolderNodeId.Should().Be(
+            context.NodeId, "the grant must refuse before releasing the ledger holder while a run is still live");
+        ledger.Writes.Should().HaveCount(writesBeforeAttempt, "the live-run check must run before any ledger write, not just before the grant's own append");
     }
 
     [Fact]
