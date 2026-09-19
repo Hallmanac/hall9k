@@ -62,6 +62,15 @@ public static class TaskLifecycleProjectionBackfill
     /// before epics existed. There is no dead-blocker-shaped failure mode to repair — a missing
     /// key and an explicit null read identically on every path that consumes this field.
     /// </para>
+    /// <para>
+    /// <see cref="TaskListItem.AssignedOwnerFingerprint"/> and
+    /// <see cref="TaskDetails.AssignedOwnerFingerprint"/> (idea 20723ef8) deliberately have no
+    /// marker here either, for the identical <see cref="TaskListItem.EpicId"/> reason: nullable,
+    /// meaning "no cooperative grant recorded one", which is exactly the truthful reading of an
+    /// absent key on a document written before this field existed or last written by an ordinary
+    /// assignment. Nothing downstream reads a missing key as anything other than "fall back to the
+    /// plain Guid comparison this gate always made" — the correct answer either way.
+    /// </para>
     /// </summary>
     private const string StaleDocument =
         "(not jsonb_exists(d.data, 'assignedOwnerId')"               // pre-lifecycle-split (log #34)
