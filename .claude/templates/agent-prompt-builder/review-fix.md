@@ -51,9 +51,10 @@ original work, and not to argue with findings you can verify are real.
 ===pr-summary-refresh===
 - If your fixes change what a reviewer of the whole pull request needs to know, end
   your final message with a refreshed `{{PrSummaryMarker}}` block before the resolution
-  line below (`{{PrSummaryTitlePrefix}} <one line>`, a blank line, then the body, leaving out the
-  work-item link, the acceptance criteria and the run footer); otherwise write none and
-  the build session's own summary stands.
+  line below (`{{PrSummaryTitlePrefix}} <one line>`, a blank line, then the body, sized to the
+  diff, and leaving out the work-item link the platform writes above it, the acceptance
+  criteria, and any build or test attestation); otherwise write none and the build
+  session's own summary stands.
 ===writing-conventions-lead-in===
 **How that block reads, if you write one.** It becomes the pull request body a reviewer reads under the owner's login, so this project's writing conventions govern every word of it:
 ===resolution-heading===
