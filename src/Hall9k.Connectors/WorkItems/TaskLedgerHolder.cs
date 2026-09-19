@@ -383,7 +383,12 @@ public static class TaskLedgerHolder
     {
         string refName = LedgerRefRegistry.Records.RefspecSource;
         string path = LedgerRefRegistry.RecordPath(taskId);
-        string action = previousHolder is null ? "release" : "restore";
+        // Derived from commitVerb — the caller's own stated intent — rather than from
+        // previousHolder's null-ness (conformance + adversarial pre-PR review, cycle 6): a
+        // restore whose previous holder happens to be null is still, to its own caller, a
+        // restore, not a release, and the operator-facing text and the git commit subject
+        // (built from commitVerb below) must agree on which one this call is.
+        string action = commitVerb == "Release" ? "release" : "restore";
 
         try
         {
@@ -437,7 +442,7 @@ public static class TaskLedgerHolder
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
-            string verbing = previousHolder is null ? "clearing the holder on" : "restoring the previous holder on";
+            string verbing = commitVerb == "Release" ? "clearing the holder on" : "restoring the previous holder on";
             return HolderReleaseResult.Failed(
                 $"{verbing} the task's ledger record failed rather than answering — "
                 + $"{exception.GetType().Name}: {RelayedText.OneLine(exception.Message)}");
