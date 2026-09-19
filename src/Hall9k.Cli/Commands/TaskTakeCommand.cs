@@ -618,9 +618,24 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             // reassigns it).
             if (task.AssignedOwnerId == context.OwnerId)
             {
-                AnsiConsole.MarkupLine(
-                    $"[green]Task {taskId} has no current holder[/] — nothing to ask. It claims through "
-                    + "the ordinary lock on this node's next dispatch sweep.");
+                if (task.State == TaskState.Queued)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[green]Task {taskId} has no current holder[/] — nothing to ask. It claims through "
+                        + "the ordinary lock on this node's next dispatch sweep.");
+                }
+                else
+                {
+                    // The dispatch sweep's own queue query reads State == Queued as well as
+                    // AssignedOwnerId (DispatchEngine.cs:950-951) — a no-holder task assigned to this
+                    // node's own owner is not automatically headed for a claim unless it is also
+                    // Queued (independent pre-PR review, cycle 3, conformance lens: this branch
+                    // previously promised the sweep would pick it up regardless of state).
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Task {taskId} has no current holder[/] and is assigned to this node's own "
+                        + $"owner, but it is {task.State.Value}, not Queued — the dispatch sweep only claims a "
+                        + "Queued task, so there is nothing for it to pick up yet.");
+                }
             }
             else
             {
@@ -630,11 +645,25 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                 string assignedOwnerLabel = assignedOwner?.Name
                     ?? task.AssignedOwnerId?.ToString()
                     ?? "no owner";
-                AnsiConsole.MarkupLine(
-                    $"[yellow]Task {taskId} has no current holder[/], but it is assigned to "
-                    + $"{assignedOwnerLabel.EscapeMarkup()}, not this node's own owner — this node's dispatch "
-                    + "sweep will never claim it, and there is no cooperative lever here for a task nobody "
-                    + $"holds yet. Move it first: h9k task unassign {taskId} && h9k task assign {taskId} <owner>.");
+                if (task.State.IsAssigned)
+                {
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Task {taskId} has no current holder[/], but it is assigned to "
+                        + $"{assignedOwnerLabel.EscapeMarkup()}, not this node's own owner — this node's dispatch "
+                        + "sweep will never claim it, and there is no cooperative lever here for a task nobody "
+                        + $"holds yet. Move it first: h9k task unassign {taskId} && h9k task assign {taskId} <owner>.");
+                }
+                else
+                {
+                    // TaskDecider.Unassign refuses anything that is not Queued or Blocked
+                    // (TaskDecider.cs:1091) — a Published, unassigned task needs no unassign step
+                    // first (independent pre-PR review, cycle 3, conformance lens: the unassign step
+                    // this branch used to suggest fails on the very state that reaches it).
+                    AnsiConsole.MarkupLine(
+                        $"[yellow]Task {taskId} has no current holder[/] and is already unassigned — this node's "
+                        + "dispatch sweep will never claim it, and there is no cooperative lever here for a task "
+                        + $"nobody holds yet. Assign it first: h9k task assign {taskId} <owner>.");
+                }
             }
 
             return ExitCodes.Ok;
