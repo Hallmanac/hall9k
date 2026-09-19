@@ -162,6 +162,19 @@ public static class ClaimRequestEngine
                 + "holder this node itself currently is.");
         }
 
+        // TaskDecider.GrantTake's own state guard runs before anything external is written
+        // (independent pre-PR review, cycle 1, both lenses — the same "state/reason guard runs
+        // before anything external is written" discipline TaskTakeCommand's own --force path
+        // already follows): a task whose ledger holder this node still names but whose own state
+        // has moved past Claimed/NeedsHuman (Done awaiting closeout, AwaitingAuthor on a pr-review
+        // follow-through, Failed) has no holder for GrantTake to release, and finding that out only
+        // after the ledger release already landed would leave the ledger holder-less with nothing
+        // ever recorded on the task's own stream to show for it — the exact double-claim hazard
+        // the previousHolder/rollback machinery below exists to prevent, not reintroduce. This
+        // call's own event is discarded and rebuilt below once "now" and the requester are the
+        // same either way, so nothing here is thrown away that the later call could not redo.
+        _ = TaskDecider.GrantTake(task, requesterNodeId, requesterOwnerId, now);
+
         // Read ahead of the release so a lost append race below (this task's own stream moved
         // concurrently between the release and the commit) has something to restore: the same
         // window TaskTakeCommand's own --force path guards against elaborately, for the identical
@@ -318,11 +331,12 @@ public static class ClaimRequestEngine
                 + $"install could not move the {tracker} assignee — assign it to the requester by hand.";
         }
 
+        string granteeIdentity = requesterTrackerIdentity;
         try
         {
             TrackerAssignmentTake tracking = take ?? new TrackerAssignmentTake(new ProjectScopedGitHubRunner(store).Runner);
             TrackerTake result = await tracking.GrantToAsync(
-                store, project.ClaimGate, task.ExternalReference, project.RepositoryPath, requesterTrackerIdentity!,
+                store, project.ClaimGate, task.ExternalReference, project.RepositoryPath, granteeIdentity,
                 cancellationToken);
             return result.Passes
                 ? null
