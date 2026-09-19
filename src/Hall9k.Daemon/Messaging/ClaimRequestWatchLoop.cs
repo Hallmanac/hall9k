@@ -150,10 +150,10 @@ public sealed class ClaimRequestWatchLoop(
                 store, session, project, request.TaskId, request, ledger, identity.Committer, identity.SigningKey,
                 take, nodeId, identity.OwnerRootFingerprint, now, cancellationToken);
         }
-        catch (DomainConflictException exception)
+        catch (DomainException exception)
         {
-            // A business-rule refusal marks the message handled rather than leaving it to retry
-            // forever (independent pre-PR review, cycle 1, both lenses): the stale/misdirected
+            // A permanent refusal marks the message handled rather than leaving it to retry
+            // forever (independent pre-PR review, cycle 1 and 3, both lenses): the stale/misdirected
             // guard at the top of ReceiveRequestAsync and the state guard TaskDecider.GrantTake now
             // runs before any external write (ClaimRequestEngine.GrantAsync) are both refusals no
             // later sweep will ever decide differently, and re-processing them on every poll would
@@ -164,9 +164,15 @@ public sealed class ClaimRequestWatchLoop(
             // and h9k task show either way, and the holder's own human still has every ordinary
             // door onto it (h9k task grant/refuse, or the requester's own --force once it times
             // out) — marking this message handled only stops THIS automatic retry loop, not those.
-            // An actual transient failure below ReceiveRequestAsync (a database hiccup) is never a
-            // DomainConflictException, so it still falls through to SweepOnceAsync's own catch and
-            // retries next tick, unmarked.
+            // Caught as the DomainException base, not only DomainConflictException (adversarial
+            // pre-PR review, cycle 3): a version-skewed or hand-crafted envelope reaches
+            // FetchFenceAsync's DomainNotFoundException (an unknown task id) or
+            // TaskDecider.RequestTake's DomainValidationException (a blank reason) just as
+            // permanently as any DomainConflictException, and the narrower catch left both jammed,
+            // retrying and re-warning on every poll forever — the exact failure this commit set out
+            // to end. An actual transient failure below ReceiveRequestAsync (a database hiccup) is
+            // never a DomainException at all, so it still falls through to SweepOnceAsync's own
+            // catch and retries next tick, unmarked.
             logger.LogWarning(
                 exception, "Claim request {MessageId} refused; marked handled — retrying would not change "
                 + "the outcome", message.Id);
