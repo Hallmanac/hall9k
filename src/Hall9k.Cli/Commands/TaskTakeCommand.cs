@@ -128,9 +128,12 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         // Gated projects run the existing tracker take first (idea 202383dc, item 4, criterion 2):
         // its own refusal — DomainBusinessRuleException, Program.cs's own exit 70 mapping — stops
         // the override outright, before the ledger holder is ever touched, with the tracker's own
-        // sentence as the reason.
-        await TrackerClaimCheck.TakeOrRefuseAsync(
-            store, taskId, project, task.ExternalReference?.ToString(), take, cancellationToken);
+        // sentence as the reason. The taker instance is kept, not just its result: if the ledger
+        // override below fails after this write already landed on the tracker, undoing it needs
+        // the same taker (adversarial pre-PR review, cycle 1).
+        TrackerAssignmentTake tracker = take ?? new TrackerAssignmentTake(new ProjectScopedGitHubRunner(store).Runner);
+        TrackerTake trackerTake = await TrackerClaimCheck.TakeOrRefuseAsync(
+            store, taskId, project, task.ExternalReference?.ToString(), tracker, cancellationToken);
 
         TaskRecordHolder candidate = new(ownerFingerprint, context.NodeId, myNode?.MachineName ?? Environment.MachineName, now);
 
@@ -142,13 +145,19 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
                 string winner = result.CurrentHolder is { } currentHolder
                     ? $"node {DomainId.Short(currentHolder.NodeId)} ({currentHolder.OwnerFingerprint}), since {currentHolder.Since:u}"
                     : "another node";
+                string alreadyOverriddenTrackerNote = await UndoTrackerTakeBestEffortAsync(
+                    store, tracker, project, task.ExternalReference, trackerTake, cancellationToken);
                 throw new DomainConflictException(
                     $"Task {taskId}: another override already landed while this one was deciding — the "
-                    + $"ledger now names {winner}. Two overriders cannot both win; this one lost the race.");
+                    + $"ledger now names {winner}. Two overriders cannot both win; this one lost the race."
+                    + alreadyOverriddenTrackerNote);
             case HolderOverrideVerdict.Failed:
+                string failedTrackerNote = await UndoTrackerTakeBestEffortAsync(
+                    store, tracker, project, task.ExternalReference, trackerTake, cancellationToken);
                 throw new DomainConflictException(
                     $"Task {taskId}: the ledger holder could not be overridden — {result.FailureReason} "
-                    + "Nothing was recorded; re-run h9k task take --force once that settles.");
+                    + "Nothing was recorded on the ledger; re-run h9k task take --force once that settles."
+                    + failedTrackerNote);
             case HolderOverrideVerdict.NoRecord:
             case HolderOverrideVerdict.Overridden:
             default:
@@ -223,11 +232,19 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             // pre-PR review, cycle 2): a null holder is freely claimable by any node's ordinary
             // dispatch sweep (TaskLedgerHolder.TryClaimAsync treats a null Holder as unowned),
             // which would let some other node claim and start running this task concurrently with
-            // whatever the domain aggregate — still naming the ORIGINAL holder, since this append
-            // never landed — believes about it. That is the exact double-claim hazard this rollback
-            // exists to prevent, not reintroduce.
+            // whatever the domain aggregate believes about it — PROVIDED the aggregate still
+            // legitimately names a holder. It does not always: the event that won this race is not
+            // necessarily unrelated to the holder at all — it can itself be a lease-expiry
+            // TaskRequeued/TaskHolderReleased pair from the previous holder's own node, which
+            // leaves the aggregate naming no holder at all. Restoring result.PreviousHolder there
+            // would leave the ledger naming a node the domain no longer recognises, which nothing
+            // can ever clear again — the exact hazard the cycle-6 fix closed for the re-validation
+            // path above (freshTask.HolderNodeId is null there). So the target is resolved fresh,
+            // the same way, rather than assumed (conformance pre-PR review, cycle 8).
+            TaskRecordHolder? rollbackTarget = await ResolveRollbackTargetAsync(
+                store, taskId, result.PreviousHolder, cancellationToken);
             bool rolledBack = await RestoreLedgerOverrideBestEffortAsync(
-                ledger, project.RepositoryPath, taskId, context.NodeId, result.PreviousHolder, committer,
+                ledger, project.RepositoryPath, taskId, context.NodeId, rollbackTarget, committer,
                 signingKey, cancellationToken);
             // The message names what actually happened (conformance pre-PR review, cycle 4) rather
             // than always claiming the rollback landed: on the rollback-failed path,
@@ -250,11 +267,15 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             // Any other SaveChangesAsync failure — a transient Npgsql error, a timeout —
             // (adversarial pre-PR review, cycle 4) leaves the identical split the race above
             // leaves: the ledger already names this node while this node's own stream never
-            // recorded taking it. Rolled back here the same way, then the original failure is
-            // left to propagate rather than wrapped in a conflict message that would not describe
-            // what actually went wrong.
+            // recorded taking it. Rolled back here the same way, including the same fresh-target
+            // resolution (conformance pre-PR review, cycle 8) — a transient failure here is no
+            // narrower a window for the previous holder's own lease expiry to have landed than the
+            // conflict caught above — then the original failure is left to propagate rather than
+            // wrapped in a conflict message that would not describe what actually went wrong.
+            TaskRecordHolder? rollbackTarget = await ResolveRollbackTargetAsync(
+                store, taskId, result.PreviousHolder, cancellationToken);
             await RestoreLedgerOverrideBestEffortAsync(
-                ledger, project.RepositoryPath, taskId, context.NodeId, result.PreviousHolder, committer,
+                ledger, project.RepositoryPath, taskId, context.NodeId, rollbackTarget, committer,
                 signingKey, cancellationToken);
             throw;
         }
@@ -277,6 +298,75 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             + "previous run left it.[/]");
 
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// Best-effort undo of the tracker assignment <see cref="TrackerClaimCheck.TakeOrRefuseAsync"/>
+    /// already wrote, for the two ledger-override outcomes that stop this command after that
+    /// write has already landed (adversarial pre-PR review, cycle 1): on a gated project, a
+    /// Failed or AlreadyOverridden verdict leaves the tracker naming this install for an item the
+    /// ledger holder never actually changed to match — the losing node's own dispatch sweep then
+    /// reads the winner as still gated by somebody else's tracker assignment and never claims,
+    /// with nothing else here to clear it. Only <see cref="TrackerTake.Wrote"/> actually put
+    /// anything there: <c>AlreadyMine</c>/<c>NotGated</c> wrote nothing and have nothing to undo.
+    /// Returns the sentence to append to the thrown conflict message — empty when there was
+    /// nothing to undo — rather than throwing itself, since a failure here must not hide the
+    /// ledger conflict that is the actual reason this command is failing.
+    /// </summary>
+    private static async Task<string> UndoTrackerTakeBestEffortAsync(
+        IDocumentStore store, TrackerAssignmentTake tracker, ProjectDetails project,
+        ExternalReference? externalReference, TrackerTake trackerTake, CancellationToken cancellationToken)
+    {
+        if (!trackerTake.Wrote)
+        {
+            return string.Empty;
+        }
+
+        try
+        {
+            TrackerRelease release = await tracker.ReleaseAsync(
+                store, project.ClaimGate, externalReference, project.RepositoryPath, cancellationToken);
+            return release.Succeeded
+                ? $" {trackerTake.Decision.Tracker} showed {trackerTake.Decision.Item} assigned to this "
+                    + "install from that take — it has been cleared back off the item."
+                : $" {trackerTake.Decision.Tracker} still shows {trackerTake.Decision.Item} assigned to "
+                    + $"this install from that take, and clearing it back off failed — {release.FailureReason} "
+                    + "An owner-role member will need to unassign it by hand.";
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return $" {trackerTake.Decision.Tracker} still shows {trackerTake.Decision.Item} assigned to "
+                + $"this install from that take, and clearing it back off failed — {exception.Message} An "
+                + "owner-role member will need to unassign it by hand.";
+        }
+    }
+
+    /// <summary>
+    /// What either SaveChangesAsync failure catch above should roll the ledger back to: restoring
+    /// <paramref name="previousHolder"/> is only right when the aggregate this append lost its
+    /// race against still legitimately names a holder — a fresh read the same shape as the
+    /// re-validation path's own <c>freshTask.HolderNodeId is null</c> check, rather than assumed
+    /// from the fact that this command's own append never landed (conformance pre-PR review,
+    /// cycle 8: the append can lose its race to an event that itself clears the holder, e.g. the
+    /// previous holder's own lease-expiry requeue, which this command never sees directly).
+    /// Best effort about the read itself: a fresh aggregate fetch that fails answers with
+    /// <paramref name="previousHolder"/> unchanged — the same restore this rollback always made
+    /// before this check existed — rather than blocking the rollback on a second read succeeding.
+    /// </summary>
+    private static async Task<TaskRecordHolder?> ResolveRollbackTargetAsync(
+        IDocumentStore store, Guid taskId, TaskRecordHolder? previousHolder, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            TaskAggregate? raceTask = await session.Events.AggregateStreamAsync<TaskAggregate>(
+                taskId, token: cancellationToken);
+            return raceTask?.HolderNodeId is null ? null : previousHolder;
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            return previousHolder;
+        }
     }
 
     /// <summary>
