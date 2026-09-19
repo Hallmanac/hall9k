@@ -904,6 +904,16 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
 
         view.InteractiveModeEnabled = false;
         view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
+
+        // Mirrors the same clear TaskAggregate.Apply(Events.TaskHolderTakenOver) now performs
+        // (adversarial pre-PR review, cycle 3): a forced takeover answers any outstanding
+        // cooperative-take request, so this view must not keep offering a grant lever against a
+        // request the taker itself just satisfied.
+        view.PendingTakeRequestedByNodeId = null;
+        view.PendingTakeRequestedByOwnerId = null;
+        view.PendingTakeRequestedByOwnerFingerprint = null;
+        view.PendingTakeReason = null;
+        view.PendingTakeRequestedAt = null;
     }
 
     /// <summary>

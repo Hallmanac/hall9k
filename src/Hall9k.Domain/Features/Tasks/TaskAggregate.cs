@@ -1528,6 +1528,18 @@ public sealed class TaskAggregate
         // waiting for them.
         InteractiveModeEnabled = false;
 
+        // A forced takeover answers any outstanding cooperative-take request the same way a grant
+        // or a refusal does: the taker is now the holder, so a request against the previous holder
+        // no longer describes anything outstanding, and leaving it set would let the requester's
+        // own node offer itself the grant lever against its own now-satisfied ask (adversarial
+        // pre-PR review, cycle 3).
+        PendingTakeRequestedByNodeId = null;
+        PendingTakeRequestedByOwnerId = null;
+        PendingTakeRequestedByOwnerFingerprint = null;
+        PendingTakeReason = null;
+        PendingTakeRequestedAt = null;
+        PendingTakeRequesterTrackerIdentity = null;
+
         State = _unmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
     }
 
