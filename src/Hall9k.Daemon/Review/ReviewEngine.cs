@@ -2876,6 +2876,56 @@ public sealed class ReviewEngine(
         if (await RebasePreflightAsync(context, baseBranch, "the mandatory final pass", cancellationToken)
             is { } refused)
         {
+            // The preflight's own skip is unstacked-only (RebaseOntoStackedParentAsync's own call
+            // to this same preflight, above, never reaches here — it returns from its own branch
+            // first), so attempting the placeholder renumbering here never touches a stacked
+            // child's own placeholder (Decisions Log #162's scope limit stands). Locked the same as
+            // every other fetch/merge-base read and renumbering commit on this path (the comment
+            // above the repository-lock block below gives the reason), acquired and released here
+            // rather than reused from below because this preflight refusal returns before that
+            // block is ever entered.
+            await using (IAsyncDisposable preflightRenumberLock =
+                await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
+            {
+                // Every other skip site reaches TryRenumberDecisionsLogPlaceholderOnSkipAsync only
+                // after this same run already attempted a fetch of origin/<baseBranch> (even one
+                // that failed) — this preflight refusal is the one skip that returns before that
+                // fetch is ever attempted at all, so the shared method's own read of the locally
+                // known origin/<baseBranch> could still be looking at a ref this run never
+                // refreshed. Fetched here, under the lock this block already holds, so the
+                // no-op comparison inside the shared method is judged against the freshest base
+                // this run can see rather than risking the parallel-assignment collision Decisions
+                // Log #162 exists to prevent (independent pre-PR review, cycle 1, conformance
+                // lens). A failed fetch is left for a later pass, the same stance every other skip
+                // site already takes on its own failed fetch.
+                ProcessResult? preflightFetch = null;
+                try
+                {
+                    preflightFetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    logger.LogWarning(
+                        exception,
+                        "Run {RunId}: could not fetch origin/{Base} before attempting the Decisions Log renumbering on the mandatory final pass's own pre-flight skip — left for a later pass",
+                        context.RunId, baseBranch);
+                }
+
+                if (preflightFetch is { ExitCode: 0 })
+                {
+                    await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                        context, run, git, worktreePath, baseBranch,
+                        "the mandatory final pass's own pre-flight check skipped this branch's rebase",
+                        cancellationToken);
+                }
+                else if (preflightFetch is not null)
+                {
+                    logger.LogWarning(
+                        "Run {RunId}: could not fetch origin/{Base} before attempting the Decisions Log renumbering on the mandatory final pass's own pre-flight skip ({Error}) — left for a later pass",
+                        context.RunId, baseBranch, FirstLine(preflightFetch.StandardError));
+                }
+            }
+
             return refused;
         }
 
@@ -2929,6 +2979,9 @@ public sealed class ReviewEngine(
                     logger.LogWarning(
                         "Run {RunId}: could not fetch origin/{Base} before the mandatory final pass ({Error}) — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
                         context.RunId, baseBranch, FirstLine(fetch.StandardError));
+                    await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                        context, run, git, worktreePath, baseBranch,
+                        $"could not fetch origin/{baseBranch} before the mandatory final pass", cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -2940,6 +2993,9 @@ public sealed class ReviewEngine(
                     logger.LogWarning(
                         "Run {RunId}: could not read origin/{Base} or its merge-base before the mandatory final pass — proceeding unrebased",
                         context.RunId, baseBranch);
+                    await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                        context, run, git, worktreePath, baseBranch,
+                        $"could not read origin/{baseBranch} or its merge-base before the mandatory final pass", cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -3050,6 +3106,10 @@ public sealed class ReviewEngine(
                     exception,
                     "Run {RunId}: a git call before the mandatory final pass exited 0 but its output pipe stuck past the drain grace, and the worktree does not confirm a rebase landed — proceeding unrebased",
                     context.RunId);
+                await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                    context, run, git, worktreePath, baseBranch,
+                    "a git call before the mandatory final pass exited 0 but its output pipe stuck past the drain grace",
+                    cancellationToken);
                 return RebaseGateOutcome.Proceed;
             }
             catch (TimeoutException exception)
@@ -3059,6 +3119,10 @@ public sealed class ReviewEngine(
                     exception,
                     "Run {RunId}: a git call exceeded its deadline checking origin/{Base} before the mandatory final pass — proceeding unrebased",
                     context.RunId, baseBranch);
+                await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+                    context, run, git, worktreePath, baseBranch,
+                    $"a git call exceeded its deadline checking origin/{baseBranch} before the mandatory final pass",
+                    cancellationToken);
                 return RebaseGateOutcome.Proceed;
             }
         }
@@ -3197,6 +3261,226 @@ public sealed class ReviewEngine(
             await RestoreRenumberWorktreeBestEffortAsync(git, worktreePath, preRenumberHead, cancellationToken);
             return new DecisionsLogRenumberResult(DecisionsLogRenumberOutcome.NoActionNeeded, null, null, 0);
         }
+    }
+
+    /// <summary>
+    /// The other half of the placeholder-numbering convention's own coverage (task: the Decisions
+    /// Log renumbering runs before the mandatory final pass even when the pre-final-pass rebase is
+    /// skipped): every skip <see cref="EnsureRebasedBeforeFinalPassAsync"/> and
+    /// <see cref="RebasePreflightAsync"/> can take — a failed fetch, an unreadable origin, a git
+    /// deadline, a stuck output pipe never confirmed landed, a missing worktree, a dirty one, the
+    /// wrong branch checked out, or a retargeted pull request base — already reads as "closeout's
+    /// own mechanical rebase still covers a stale push" in its own log line, which is true for the
+    /// REBASE itself but never true for a placeholder still sitting at PLAN.md's own tail: nothing
+    /// else in this platform's mechanical paths ever assigns one a number except this exact step
+    /// (Decisions Log #162), and origin two placeholders — PLACEHOLDER-609bd344 and
+    /// PLACEHOLDER-5e0cbfeb, still unnumbered on <c>origin/main</c> at the time of writing — reached
+    /// main unnumbered on exactly these skip paths before this method existed, hand-numbered
+    /// afterwards in a recovery commit. A dirty worktree the preflight's own refusal can still leave
+    /// behind — the one skip site every OTHER site reaches only after the preflight already proved
+    /// the worktree clean — is renumbered anyway when the only thing dirty is a bare untracked file,
+    /// which <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/> never stages or commits; the
+    /// two shapes it genuinely would sweep in — content already staged in the index, since its own
+    /// closing commit has no pathspec, and an uncommitted edit to PLAN.md itself, since it
+    /// unconditionally stages that one file — are checked below and left for a later pass instead,
+    /// the same stance every other refusal this method cannot act on already takes (independent
+    /// pre-PR review, cycle 1, both lenses).
+    /// <para>
+    /// Deliberately narrower than a real rebase: it only ever commits when this branch's own
+    /// locally known <c>origin/&lt;baseBranch&gt;</c> — read fresh here, but never fetched, since
+    /// the caller's own fetch is what just failed or was never attempted — already equals this
+    /// branch's own merge base against it. That is the identical "no rebase owed" shape
+    /// <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own no-op branch already renumbers against,
+    /// so <c>wasNoOp: true</c> stays honest by the same test that branch already uses. Origin having
+    /// moved further than this branch's own locally known ref confirms is left alone rather than
+    /// renumbered against a base this branch was never actually rebased onto — recording
+    /// <c>wasNoOp: true</c> in that shape would misrepresent the one fact every reader of
+    /// <see cref="RunRebasedOntoBase.WasNoOp"/> trusts it to carry, and recording <c>wasNoOp: false</c>
+    /// would just as wrongly claim a real rebase landed here (<see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/>'s
+    /// own doc). That branch is exactly what closeout's own placeholder guard before merge exists to
+    /// catch instead (task: closeout never merges a pull request whose PLAN.md tail still carries
+    /// this task's own placeholder).
+    /// </para>
+    /// <para>
+    /// Only ever called from an UNSTACKED call site: <see cref="RebaseOntoStackedParentAsync"/>'s
+    /// own call into <see cref="RebasePreflightAsync"/> never reaches this method, so a stacked
+    /// child's own placeholder stays exactly as unrenumbered on a skip as it already was before this
+    /// method existed (Decisions Log #162's own documented scope limit stands).
+    /// </para>
+    /// </summary>
+    private async Task TryRenumberDecisionsLogPlaceholderOnSkipAsync(
+        ReviewContext context, RunAggregate run, ProcessRunner git, string worktreePath, string baseBranch,
+        string skipDetail, CancellationToken cancellationToken)
+    {
+        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
+        {
+            logger.LogInformation(
+                "Run {RunId}: {SkipDetail} — its own worktree is unavailable, so the Decisions Log renumbering "
+                + "this task's own tail placeholder may still need could not be attempted here",
+                context.RunId, skipDetail);
+            return;
+        }
+
+        // One of the skips this method exists to cover is the preflight's own "the worktree is not
+        // checked out on its own branch" refusal — reachable whenever a human, or another process
+        // on this shared node, left the worktree pointed somewhere else. Every read below trusts
+        // HEAD to mean this run's own branch (`git merge-base HEAD ...`, then a commit straight onto
+        // whatever HEAD names), so without this check a wrong-branch skip would compute a merge base
+        // against the WRONG branch's tip and, on the rare unlucky match, commit the renumbering onto
+        // it — never this run's branch to touch (independent self-review, blast-radius sweep: the
+        // preflight's own branch check ahead of the dirty check is exactly the guard this method's
+        // own reads never re-ran).
+        ProcessResult branchCheck;
+        try
+        {
+            branchCheck = await git("git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: {SkipDetail} — could not confirm the worktree is still on this run's own branch, "
+                + "so the Decisions Log renumbering could not be attempted here",
+                context.RunId, skipDetail);
+            return;
+        }
+
+        if (branchCheck.ExitCode != 0 || branchCheck.StandardOutput.Trim() != context.Run.Branch)
+        {
+            logger.LogInformation(
+                "Run {RunId}: {SkipDetail} — the worktree is not checked out on this run's own branch, so the "
+                + "Decisions Log renumbering could not be attempted here",
+                context.RunId, skipDetail);
+            return;
+        }
+
+        ProcessResult originTipResult;
+        ProcessResult mergeBaseResult;
+        try
+        {
+            originTipResult = await git("git", ["rev-parse", $"origin/{baseBranch}"], worktreePath, cancellationToken);
+            mergeBaseResult = await git(
+                "git", ["merge-base", "HEAD", $"origin/{baseBranch}"], worktreePath, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: {SkipDetail} — could not read this branch's own locally known base either, so "
+                + "the Decisions Log renumbering could not be attempted here",
+                context.RunId, skipDetail);
+            return;
+        }
+
+        if (originTipResult.ExitCode != 0 || mergeBaseResult.ExitCode != 0)
+        {
+            logger.LogInformation(
+                "Run {RunId}: {SkipDetail} — this repository holds no locally known origin/{Base} to renumber "
+                + "against, so the Decisions Log renumbering could not be attempted here",
+                context.RunId, skipDetail, baseBranch);
+            return;
+        }
+
+        string originTip = originTipResult.StandardOutput.Trim();
+        string mergeBase = mergeBaseResult.StandardOutput.Trim();
+        if (mergeBase != originTip)
+        {
+            logger.LogInformation(
+                "Run {RunId}: {SkipDetail} — this branch is not current with its own locally known base "
+                + "(origin/{Base} has moved past this branch's merge base), so the Decisions Log renumbering "
+                + "was left for a later pass rather than committed on top of a base this branch was never "
+                + "actually rebased onto",
+                context.RunId, skipDetail, baseBranch);
+            return;
+        }
+
+        // One of the refusals this method exists to cover is the preflight's own dirty-worktree
+        // refusal, which every OTHER skip site reaches only after the preflight already proved the
+        // worktree clean — this is the one branch-check-passing skip that can still have staged or
+        // modified content sitting in the index. DecisionsLogRenumberer.RenumberIfNeededAsync's own
+        // closing commit (DecisionsLogRenumberer.cs) has no pathspec, so it commits the whole
+        // index, not just the paths it staged — sweeping any already-staged content into a `chore:`
+        // commit that describes none of it — and it unconditionally `git add`s PLAN.md itself, so
+        // an unstaged edit already sitting in PLAN.md is force-staged and swept in the same way. A
+        // renumbering failure's own recovery runs `git reset --hard`, which would just as readily
+        // discard either. An untracked file elsewhere in the worktree is neither risk — nothing
+        // this step touches ever stages one — so only these two shapes refuse the renumbering here;
+        // a bare untracked file is left alone, the same as it already is once the commit lands
+        // (independent pre-PR review, cycle 1, both lenses; the risky shapes are what the finding's
+        // own scenario named, not the untracked-only shape the pre-existing test already covers).
+        ProcessResult statusCheck;
+        try
+        {
+            statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(
+                exception,
+                "Run {RunId}: {SkipDetail} — could not confirm the worktree is clean, so the Decisions Log "
+                + "renumbering could not be attempted here",
+                context.RunId, skipDetail);
+            return;
+        }
+
+        if (statusCheck.ExitCode != 0)
+        {
+            logger.LogInformation(
+                "Run {RunId}: {SkipDetail} — could not confirm the worktree is clean, so the Decisions Log "
+                + "renumbering could not be attempted here",
+                context.RunId, skipDetail);
+            return;
+        }
+
+        foreach (string statusLine in statusCheck.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (statusLine.Length < 4)
+            {
+                continue;
+            }
+
+            char indexStatus = statusLine[0];
+            string statusPath = statusLine[3..].Trim();
+            int renameArrow = statusPath.IndexOf(" -> ", StringComparison.Ordinal);
+            if (renameArrow >= 0)
+            {
+                statusPath = statusPath[(renameArrow + 4)..];
+            }
+
+            bool alreadyStaged = indexStatus != ' ' && indexStatus != '?';
+            bool touchesPlanMarkdown = statusPath.Trim('"') == "PLAN.md";
+            if (alreadyStaged || touchesPlanMarkdown)
+            {
+                logger.LogInformation(
+                    "Run {RunId}: {SkipDetail} — the worktree already has staged content or an uncommitted "
+                    + "edit to PLAN.md that the renumbering commit would sweep in, so the Decisions Log "
+                    + "renumbering was left for a later pass rather than committed alongside it",
+                    context.RunId, skipDetail);
+                return;
+            }
+        }
+
+        string transitionForkPointSha = run.LastPreFinalPassRebaseRecovered
+            && run.LastPreFinalPassRebaseFromCommit is { } recoveredForkPoint
+                ? recoveredForkPoint
+                : mergeBase;
+
+        DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
+            context, git, worktreePath, transitionForkPointSha, originTip, cancellationToken);
+        if (renumberResult.Outcome != DecisionsLogRenumberOutcome.Renumbered)
+        {
+            return;
+        }
+
+        await RecordRebaseOutcomeAsync(
+            context.RunId, mergeBase, originTip, wasNoOp: true, recoveredByAgentSession: false,
+            $"{skipDetail} — origin/{baseBranch} has not moved since this branch's own merge base, but the "
+            + "Decisions Log's tail entry still needed the mechanical pre-final-pass step's own renumbering "
+            + "commit, run here despite the skip.",
+            checkpointSpend: null, decisionsLogRenumbered: true, forkPointAdvanced: false, cancellationToken);
+        logger.LogInformation(
+            "Run {RunId}: {SkipDetail} — renumbered the Decisions Log's tail placeholder anyway",
+            context.RunId, skipDetail);
     }
 
     /// <summary>
