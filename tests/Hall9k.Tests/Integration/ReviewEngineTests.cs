@@ -2239,18 +2239,16 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
     /// <summary>
     /// Task: the Decisions Log renumbering runs before the mandatory final pass even when the
-    /// pre-final-pass rebase is skipped. A failed fetch used to read as "closeout's own
-    /// mechanical rebase still covers a stale push" and return without ever touching the
-    /// placeholder — true for the rebase itself, never true for a tail entry nothing else on the
-    /// mechanical paths ever assigns a number to (origin incident: task 609bd344, PR #479, two
-    /// separate fetch failures an hour apart with no renumbering line either time). The worktree's
-    /// own already-fetched <c>origin/main</c> — set up by the clone this seed already performs,
-    /// untouched by breaking the NEXT fetch — is exactly what this branch's own merge base already
-    /// equals, so the renumbering can run against it without ever needing the broken fetch to
-    /// succeed.
+    /// pre-final-pass rebase is skipped, but never against a base it cannot confirm is current. A
+    /// failed fetch means this worktree's own locally known <c>origin/main</c> could be stale by an
+    /// unbounded amount, and renumbering against it risks assigning a number some other branch
+    /// already claimed on the base's real, current tip (independent pre-PR review, cycle 1,
+    /// adversarial lens) — so the renumbering step retries the fetch once for itself, under the
+    /// same repository lock, and leaves the placeholder for a later pass when that retry also
+    /// fails, exactly as this test's permanently broken origin remote forces it to.
     /// </summary>
     [Fact]
-    public async Task Pre_final_pass_rebase_still_renumbers_the_placeholder_when_fetching_origin_fails()
+    public async Task Pre_final_pass_rebase_leaves_the_placeholder_when_fetching_origin_fails()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
@@ -2274,10 +2272,9 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         Git(worktreePath, "add -A");
         Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
 
-        // Breaks only the NEXT `git fetch origin main` — the worktree's own `origin/main`
-        // remote-tracking ref, already populated by this seed's own clone, is untouched, so the
-        // renumbering step can still read it locally exactly as production falls back to whatever
-        // this repository already knows.
+        // Breaks every subsequent `git fetch origin main`, including the renumbering step's own
+        // retry — the worktree's own locally known `origin/main`, already populated by this seed's
+        // own clone, must never be trusted once this run can no longer confirm it is current.
         Git(worktreePath, "remote set-url origin /nonexistent/hall9k-test-origin-does-not-exist");
 
         ScriptedExecutor executor = new(
@@ -2286,19 +2283,18 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
-        mergeReady.Should().BeTrue();
+        mergeReady.Should().BeTrue("a failed fetch is left for a later pass, not treated as a run failure");
 
         string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
-        plan.Should().Contain("1. **A test decision.**",
-            "a failed fetch must not leave the tail placeholder unrenumbered — nothing else on the "
-            + "mechanical paths ever assigns it a real number");
-        plan.Should().NotContain($"#PLACEHOLDER-{taskShortId}");
+        plan.Should().Contain($"PLACEHOLDER-{taskShortId}",
+            "a fetch failure must leave the tail placeholder unrenumbered rather than risk a duplicate "
+            + "number against a base this run could no longer confirm was current");
 
         await using IQuerySession query = store.QuerySession();
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<RunRebasedOntoBase>().Should().Contain(
-            e => e.WasNoOp && e.DecisionsLogRenumbered,
-            "the renumbering commit landed despite the broken fetch, and must still raise the mandatory gate");
+        events.OfType<RunRebasedOntoBase>().Should().NotContain(
+            e => e.DecisionsLogRenumbered,
+            "the renumbering step must not run against a base it could not confirm was current");
     }
 
     /// <summary>
