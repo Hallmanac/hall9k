@@ -289,6 +289,7 @@ builder.Services.AddHostedService<AutoPrReviewMonitor>();
 builder.Services.AddHostedService<TokenBudgetRetryMonitor>();
 builder.Services.AddHostedService<LaunchHoldMonitor>();
 builder.Services.AddHostedService<TakeoverWatchLoop>();
+builder.Services.AddHostedService<ClaimRequestWatchLoop>();
 builder.Services.AddHostedService<CardPublicationLoop>();
 builder.Services.AddHostedService<JiraWriteRetryLoop>();
 builder.Services.AddHostedService<ProjectHomeRenderLoop>();
