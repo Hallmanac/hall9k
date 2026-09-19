@@ -2333,6 +2333,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
     /// itself, the same comparison the daemon's own dispatch claim gate makes — this node's own
     /// owner, if the fingerprint actually names it, or else honestly "known by fingerprint only".
     /// </para>
+    /// <para>
+    /// The two ways that reverse lookup can still come up empty read differently (adversarial
+    /// review, this branch's fix cycle): a third-party node reading a perfectly ordinary grant to
+    /// someone else has no local record for the declared Guid at all — Owner events never
+    /// replicate, so this is the expected shape for every grant to a node this reader has never
+    /// itself joined a project with — and is worth no more than a plain "no local record" line. A
+    /// Guid that DOES resolve locally, to an owner whose own root fingerprint disagrees with the
+    /// one this grant recorded, is the shape this feature actually exists to catch, and says so.
+    /// </para>
     /// </summary>
     private static async Task<string> AssigneeMarkupAsync(
         IQuerySession session, TaskDetails details, CancellationToken cancellationToken)
@@ -2357,9 +2366,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             .Where(candidate => candidate.RootFingerprint == fingerprint)
             .FirstOrDefaultAsync(cancellationToken);
 
-        return trueOwner is not null
-            ? trueOwner.Name.EscapeMarkup()
-            : $"[dim]known by fingerprint {fingerprint} only — no local owner record matches the declared id[/]";
+        if (trueOwner is not null)
+        {
+            return trueOwner.Name.EscapeMarkup();
+        }
+
+        return owner is null
+            ? $"[dim]known by fingerprint {fingerprint} only — this node has no local record of the declared owner id[/]"
+            : $"[dim]known by fingerprint {fingerprint} only — the declared owner id resolves locally to "
+                + $"{owner.Name.EscapeMarkup()}, whose own root fingerprint does not match this grant's[/]";
     }
 
     /// <summary>This node's own outstanding ask for <paramref name="taskId"/>, if it has one and no
