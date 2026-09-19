@@ -539,6 +539,22 @@ public sealed class TaskAggregate
     /// knowledge only it has: this node's own owner root fingerprint. Null for every event written
     /// before this field existed, in which case the claim gate falls back to comparing
     /// <see cref="AssignedOwnerId"/> against the claiming node's own local owner id.
+    /// <para>
+    /// Mirroring the fingerprint on every ordinary assignment, not only a grant, widens a known,
+    /// accepted blast radius (independent pre-PR review, idea f72138e1's own fix cycle, conformance
+    /// and adversarial lenses): a node that rewrites its own owner root — <c>h9k project join</c>
+    /// onto a real owner after standalone bring-up self-created one, the platform's own onboarding
+    /// path — strands every task it queued for itself under the old root, since the claim gate
+    /// compares the fingerprint alone once one is recorded and the recorded value is now stale. This
+    /// is deliberate, not an oversight: the fingerprint deciding unconditionally once present is
+    /// exactly what keeps a forged Guid from bypassing it (idea 20723ef8, Decisions Log #231) —
+    /// falling back to <see cref="AssignedOwnerId"/> whenever it matches this node's own would
+    /// reopen that hole, since a hostile peer can already observe another owner's real
+    /// <see cref="AssignedOwnerId"/> off a replicated <see cref="TaskAssigned"/> event and replay it
+    /// with a fingerprint of its own choosing. The remedy is the same one a mismatched cooperative
+    /// grant already had: unassign and reassign under the new root. This only ever bites once per
+    /// node, at the standalone-to-joined transition, not in steady-state use.
+    /// </para>
     /// </summary>
     public string? AssignedOwnerFingerprint { get; private set; }
 
