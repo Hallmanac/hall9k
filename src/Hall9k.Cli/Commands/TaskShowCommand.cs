@@ -517,6 +517,36 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             }
         }
 
+        if (details.PendingTakeRequestedAt is { } pendingAt)
+        {
+            // idea 202383dc, item 5: a cooperative take request nothing has answered yet — either
+            // parked for this node's own human (take-policy ask) or simply still queued for a
+            // sweep to send/answer it. Neutral wording since h9k task show is read from either
+            // side: the holder deciding whether to grant/refuse, or the requester checking whether
+            // it is time to --force.
+            int takeTimeoutMinutes = project?.TakeTimeoutMinutes ?? TaskTakeCommand.DefaultTakeTimeoutMinutes;
+            bool overdue = CooperativeTakeAttention.IsOverdue(pendingAt, takeTimeoutMinutes, DateTimeOffset.UtcNow);
+            AnsiConsole.MarkupLine("\n[bold]Take requested[/] [dim](idea 202383dc, item 5 — a cooperative h9k task take)[/]");
+            AnsiConsole.MarkupLine(
+                $"  [yellow]By node {DomainId.Short(details.PendingTakeRequestedByNodeId!.Value)}, "
+                + $"at {pendingAt.ToLocalTime():g}[/]");
+            AnsiConsole.MarkupLine($"  [dim]Reason: {details.PendingTakeReason.EscapeMarkup()}[/]");
+            AnsiConsole.MarkupLine(CooperativeTakeAttention.ComposeTaskShowLine(details.Id.ToString(), overdue, takeTimeoutMinutes));
+        }
+        else if (details.LastGrantedAt is { } grantedAt)
+        {
+            AnsiConsole.MarkupLine(
+                $"\n[dim]Take granted (idea 202383dc, item 5) to owner "
+                + $"{(details.LastGrantedToOwnerId is { } grantedOwnerId ? DomainId.Short(grantedOwnerId) : "an unrecorded owner")} "
+                + $"at {grantedAt.ToLocalTime():g}.[/]");
+        }
+        else if (details.LastTakeRefusedAt is { } refusedAt)
+        {
+            AnsiConsole.MarkupLine(
+                $"\n[dim]Take refused (idea 202383dc, item 5) at {refusedAt.ToLocalTime():g} — "
+                + $"{details.LastTakeRefusedReason.EscapeMarkup()}[/]");
+        }
+
         if (details.AgentContext.IsNotBlank())
         {
             // Agent context is the one field on a task that can arrive from outside the machine:
