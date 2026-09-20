@@ -206,6 +206,18 @@ public sealed class DaemonOptions
     public TimeSpan PromptAddendaSweepPollInterval { get; set; } = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// How often <c>OrchestratorPresenceSweepEngine</c> checks this node's own registered
+    /// orchestrator windows against the process table and records the ones that are gone (idea
+    /// 89471598, piece 1). A plain fixed interval, and a short one: nothing here reaches the
+    /// network or the disk — it is a process-table lookup per registered window, of which a node
+    /// has at most one per project — and the interval is how long <c>h9k status</c> on another
+    /// terminal, or the courier deciding whether to spawn, can be told a closed window is still
+    /// up. Both CLI surfaces probe the process themselves so their own answer is immediate; this
+    /// is what makes it durable on the stream.
+    /// </summary>
+    public TimeSpan OrchestratorPresenceSweepPollInterval { get; set; } = TimeSpan.FromSeconds(15);
+
+    /// <summary>
     /// The absolute lifetime ceiling of automatic closeout actions (reopen dispatches, plus
     /// errored-review re-requests) one task's pull request may spend, whatever obstruction
     /// each one answered — the true runaway backstop (log #11 spirit, backlog 45), separate
