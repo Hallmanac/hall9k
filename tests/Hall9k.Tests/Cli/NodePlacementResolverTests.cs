@@ -33,7 +33,7 @@ public sealed class NodePlacementResolverTests
 
         Action act = () => NodePlacementResolver.Resolve(unknownNodeId.ToString(), [VouchedNodeId, SelfNodeId]);
 
-        act.Should().Throw<DomainValidationException>().WithMessage("*not vouched*");
+        act.Should().Throw<DomainValidationException>().WithMessage("*is not in this owner's fleet*");
     }
 
     [Fact]

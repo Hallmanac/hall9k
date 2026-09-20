@@ -602,12 +602,7 @@ public sealed class MessageSweepEngine(
             return null;
         }
 
-        foreach (Guid candidate in inviter.FleetNodeIds())
-        {
-            return candidate;
-        }
-
-        return null;
+        return inviter.FleetNodeIds().Select(id => (Guid?)id).FirstOrDefault();
     }
 
     /// <summary>

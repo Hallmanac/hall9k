@@ -5,9 +5,10 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// Resolves <c>h9k task assign --node</c>'s own argument against a candidate fleet
 /// (idea 202383dc: an owner can place a task on one of their own nodes), built by
-/// <c>TaskAssignCommand.ResolveNodeIdAsync</c> from the project's own ledger — every node it
-/// currently vouches for the task's own owner, plus this install's own node id when (and only
-/// when) that owner is this install's own. Kept pure and I/O-free, mirroring
+/// <c>TaskAssignCommand.ResolveNodeIdAsync</c> from the project's own ledger — the task's own
+/// owner's own fleet (<see cref="Hall9k.Connectors.Trust.TrustedOwner.FleetNodeIds"/>: its own root
+/// node, no self-vouch required, plus every node it currently vouches), plus this install's own
+/// node id when (and only when) that owner is this install's own. Kept pure and I/O-free, mirroring
 /// <see cref="TaskIdResolver"/>'s own shape, so the refusal for an unknown node is a plain unit
 /// test against a fixed candidate list rather than one that needs a ledger.
 /// </summary>
@@ -21,7 +22,7 @@ internal static class NodePlacementResolver
             return fleet.Contains(id)
                 ? id
                 : throw new DomainValidationException(
-                    $"Node {id} is not vouched into this owner's fleet for this project — h9k node vouch {id} "
+                    $"Node {id} is not in this owner's fleet for this project — h9k node vouch {id} "
                     + "first, or omit --node to leave the task unplaced.");
         }
 
@@ -41,7 +42,7 @@ internal static class NodePlacementResolver
         {
             [Guid single] => single,
             [] => throw new DomainNotFoundException(
-                $"No node vouched into this owner's fleet for this project matches '{idOrFragment}' — "
+                $"No node in this owner's fleet for this project matches '{idOrFragment}' — "
                 + "h9k node vouch <id> first, or check h9k status for the id."),
             _ => throw new DomainConflictException(
                 $"'{idOrFragment}' is ambiguous ({matches.Length} matches) — use more characters."),
