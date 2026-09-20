@@ -51,10 +51,12 @@ internal sealed record PurgeOneResult(
 /// from <c>mt_streams.id</c> — deleting the child rows first is safe regardless.
 /// </para>
 /// <para>
-/// Scope is the project's own stream and every task, run, idea, epic, and orchestrator-presence
-/// stream it owns, with their projection documents — <c>ProjectDetails</c>,
+/// Scope is the project's own stream and every task, run, idea, epic, orchestrator-presence, and
+/// courier-run stream it owns, with their projection documents — <c>ProjectDetails</c>,
 /// <c>TaskDetails</c>/<c>TaskListItem</c>, <c>RunDetails</c>/<c>RunListItem</c>,
-/// <c>IdeaDetails</c>, <c>EpicDetails</c>, and <c>OrchestratorPresenceDetails</c>. The
+/// <c>IdeaDetails</c>, <c>EpicDetails</c>, <c>OrchestratorPresenceDetails</c>, and
+/// <c>CourierRunDetails</c> (idea 89471598, piece 3 — a run with no task or run of its own, so
+/// neither of those two ids ever names it). The
 /// acceptance criteria for this purge name only tasks, runs, and ideas, but an epic is owned by a
 /// project the same way those three are — <c>EpicAdded.ProjectId</c> is a required field, and
 /// <c>h9k epic add</c> refuses without one — so leaving an epic behind is not a scope decision,
@@ -248,23 +250,36 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
             .Select(presence => presence.Id)
             .ToListAsync(cancellationToken))];
 
+        // A courier run (idea 89471598, piece 3) is a stream of its own too, keyed by a freshly
+        // minted run id that appears in none of the lists above — it rides no task's and no run's
+        // stream, the same "a run with no task" shape CourierRunDispatched's own doc names. Left
+        // behind, it is the identical orphan shape as every sibling on this list: mt_events and
+        // mt_streams still carrying CourierRunDispatched/CourierRunCompleted/CourierTokensRecorded
+        // for a project id that no longer resolves, and mt_doc_courierrundetails still naming it
+        // (independent pre-PR review, conformance and adversarial lenses).
+        Guid[] courierRunIds = [.. (await session.Query<CourierRunDetails>()
+            .Where(run => run.ProjectId == project.Id)
+            .Select(run => run.Id)
+            .ToListAsync(cancellationToken))];
+
         Guid[] everyStreamId =
-            [project.Id, .. taskIds, .. runIds, .. ideaIds, .. epicIds, .. orchestratorPresenceIds];
+            [project.Id, .. taskIds, .. runIds, .. ideaIds, .. epicIds, .. orchestratorPresenceIds, .. courierRunIds];
 
         // The spend governor's own undercount (independent pre-PR review, cycle 1, adversarial
-        // lens, medium): PeriodSpend.ReadAsync sums TokensRecorded (on a run's own stream) and
-        // PublicationTokensRecorded (on a task's own stream) live, across the whole install, with
-        // no regard for whether the stream that recorded them still exists — so deleting them
-        // below would silently hand the purged project's own in-period spend back to the node's
-        // budget. Excluding just these two event types from the events delete does not save them:
-        // mt_events.stream_id cascades from mt_streams.id (confirmed against a real database), so
-        // deleting the stream row two statements down would erase them anyway regardless of any
-        // type filter on the events delete itself. Carrying the total forward onto a plain
-        // PurgedSpendRecord document — never a projection of an event stream, so untouched by
-        // either delete — is the only way to keep both: every stream, event, and projection row
-        // for this project gone, and its own already-spent tokens still counted against the
-        // node's budget for the rest of the period they were recorded in.
-        Guid[] spendBearingStreamIds = [.. runIds, .. taskIds];
+        // lens, medium): PeriodSpend.ReadAsync sums TokensRecorded (on a run's own stream),
+        // PublicationTokensRecorded (on a task's own stream), and CourierTokensRecorded (on a
+        // courier run's own stream) live, across the whole install, with no regard for whether the
+        // stream that recorded them still exists — so deleting them below would silently hand the
+        // purged project's own in-period spend back to the node's budget. Excluding just these
+        // event types from the events delete does not save them: mt_events.stream_id cascades from
+        // mt_streams.id (confirmed against a real database), so deleting the stream row two
+        // statements down would erase them anyway regardless of any type filter on the events
+        // delete itself. Carrying the total forward onto a plain PurgedSpendRecord document — never
+        // a projection of an event stream, so untouched by either delete — is the only way to keep
+        // both: every stream, event, and projection row for this project gone, and its own
+        // already-spent tokens still counted against the node's budget for the rest of the period
+        // they were recorded in.
+        Guid[] spendBearingStreamIds = [.. runIds, .. taskIds, .. courierRunIds];
         if (spendBearingStreamIds.Length > 0)
         {
             IReadOnlyList<IEvent> spendCandidates = await session.Events.QueryAllRawEvents()
@@ -277,6 +292,8 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
                     TokensRecorded e => (e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens,
                         e.Model ?? AgentModel.Unknown, e.RecordedAt),
                     PublicationTokensRecorded e => (e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens,
+                        e.Model ?? AgentModel.Unknown, e.RecordedAt),
+                    CourierTokensRecorded e => (e.InputTokens + e.CacheReadInputTokens + e.CacheCreationInputTokens,
                         e.Model ?? AgentModel.Unknown, e.RecordedAt),
                     _ => null,
                 };
@@ -358,6 +375,15 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         {
             session.QueueSqlCommand(
                 "delete from mt_doc_orchestratorpresencedetails where id = ANY(?)", orchestratorPresenceIds);
+        }
+
+        // The identical guard again: mt_doc_courierrundetails is created lazily, on the first
+        // courier this install ever spawns, so a raw DELETE naming it outright would fail on a
+        // node where no project has ever had a live orchestrator window to deliver to.
+        if (courierRunIds.Length > 0)
+        {
+            session.QueueSqlCommand(
+                "delete from mt_doc_courierrundetails where id = ANY(?)", courierRunIds);
         }
 
         await session.SaveChangesAsync(cancellationToken);

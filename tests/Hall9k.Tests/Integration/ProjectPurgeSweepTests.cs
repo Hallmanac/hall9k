@@ -61,6 +61,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         await SeedCourierDocumentsAsync(store, purgedProjectId, cts.Token);
         Guid nodeId = DomainId.New();
         Guid purgedPresenceId = await SeedOrchestratorPresenceAsync(store, nodeId, purgedProjectId, cts.Token);
+        Guid purgedCourierRunId = await SeedCourierRunAsync(store, purgedProjectId, nodeId, cts.Token);
         await SchedulePastDuePurgeAsync(store, purgedProjectId, ownerId, cts.Token);
 
         // A sibling project, untouched by this sweep — the control that proves the purge is
@@ -74,6 +75,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         await SeedPromptAddendaSyncPositionAsync(store, survivingProjectId, cts.Token);
         await SeedCourierDocumentsAsync(store, survivingProjectId, cts.Token);
         Guid survivingPresenceId = await SeedOrchestratorPresenceAsync(store, nodeId, survivingProjectId, cts.Token);
+        Guid survivingCourierRunId = await SeedCourierRunAsync(store, survivingProjectId, nodeId, cts.Token);
 
         ProjectPurgeEngine engine = new(store, NullLogger<ProjectPurgeEngine>.Instance);
         ProjectPurgeSweepResult result = await engine.SweepOnceAsync(cts.Token);
@@ -115,9 +117,14 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
                 "an orchestrator presence stream is keyed by (node, project) rather than by the "
                 + "project id, so a purge has to find it by query or leave the daemon sweeping a "
                 + "window for a project that no longer exists");
+            (await query.LoadAsync<CourierRunDetails>(purgedCourierRunId, cts.Token)).Should().BeNull(
+                "a courier run is a stream of its own, keyed by a freshly minted run id that names "
+                + "no task and no run, so a purge has to find it by query the same way it finds "
+                + "orchestrator presence or leave its stream, events, and projection row behind");
 
             Guid[] purgedStreamIds =
-                [purgedProjectId, .. purgedTaskIds, purgedRunId, purgedIdeaId, purgedEpicId, purgedPresenceId];
+                [purgedProjectId, .. purgedTaskIds, purgedRunId, purgedIdeaId, purgedEpicId, purgedPresenceId,
+                 purgedCourierRunId];
             long eventRows = (await query.QueryAsync<long>(
                 "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, purgedStreamIds)).Single();
             eventRows.Should().Be(0, "no event for the purged project or anything it owned should remain");
@@ -136,9 +143,10 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<IdeaDetails>(survivingIdeaId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<EpicDetails>(survivingEpicId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<OrchestratorPresenceDetails>(survivingPresenceId, cts.Token)).Should().NotBeNull();
+            (await query.LoadAsync<CourierRunDetails>(survivingCourierRunId, cts.Token)).Should().NotBeNull();
             Guid[] survivingStreamIds =
                 [survivingProjectId, survivingTaskIds[0], survivingRunId, survivingIdeaId, survivingEpicId,
-                 survivingPresenceId];
+                 survivingPresenceId, survivingCourierRunId];
             long survivingEventRows = (await query.QueryAsync<long>(
                 "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, survivingStreamIds)).Single();
             survivingEventRows.Should().BeGreaterThan(0, "the sibling project's own history is untouched");
@@ -277,6 +285,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid projectId = await SeedProjectAsync(store, "spendy", ownerId, cts.Token);
         Guid[] taskIds = await SeedTasksAsync(store, projectId, ownerId, count: 1, cts.Token);
         Guid runId = await SeedRunAsync(store, taskIds[0], ownerId, cts.Token);
+        Guid courierRunId = await SeedCourierRunAsync(store, projectId, DomainId.New(), cts.Token);
 
         DateTimeOffset periodStart = Now.AddDays(-1);
         await using (IDocumentSession session = store.LightweightSession())
@@ -297,13 +306,15 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         (await query.LoadAsync<ProjectDetails>(projectId, cts.Token)).Should().BeNull("the project itself is gone");
 
         long remainingEventRows = (await query.QueryAsync<long>(
-            "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, new Guid[] { runId, taskIds[0] })).Single();
+            "select count(*) from mt_events where stream_id = ANY(?)", cts.Token,
+            new Guid[] { runId, taskIds[0], courierRunId })).Single();
         remainingEventRows.Should().Be(0, "every event on the purged project's own streams, spend events included, is gone");
 
         PeriodSpend spend = await PeriodSpend.ReadAsync(query, periodStart, cts.Token);
         spend.TotalInputTokens.Should().Be(
-            6_000_000 + 500,
-            "the purged project's own in-period spend must still be counted against the node's budget "
+            6_000_000 + 500 + 400,
+            "the purged project's own in-period spend — the courier's own included, since it rides "
+            + "neither a run's nor a task's stream — must still be counted against the node's budget "
             + "even though the events that recorded it are gone");
     }
 
@@ -452,6 +463,25 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             nodeId, projectId, "orchestrator", 48213, "claude-code", Now, Now));
         await session.SaveChangesAsync(cancellationToken);
         return streamId;
+    }
+
+    /// <summary>
+    /// A completed feed-courier run (idea 89471598, piece 3) — a stream of its own, keyed by a
+    /// freshly minted run id that names no task and no run (<c>CourierRunDispatched</c>'s own
+    /// doc), plus the token usage it recorded, so a purge has to find both the stream and the
+    /// spend it carries by query or leave a <c>CourierRunDetails</c> row and an in-period spend
+    /// undercount behind for a project id that no longer resolves. Returns its stream id.
+    /// </summary>
+    private static async Task<Guid> SeedCourierRunAsync(
+        IDocumentStore store, Guid projectId, Guid nodeId, CancellationToken cancellationToken)
+    {
+        Guid runId = DomainId.New();
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream(runId, new CourierRunDispatched(runId, projectId, nodeId, AgentModel.CourierDefault, Now));
+        session.Events.Append(runId, new CourierRunCompleted(runId, true, "delivered", Now));
+        session.Events.Append(runId, new CourierTokensRecorded(DomainId.New(), 400, 80, null, Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return runId;
     }
 
     private static async Task<Guid[]> SeedTasksAsync(
