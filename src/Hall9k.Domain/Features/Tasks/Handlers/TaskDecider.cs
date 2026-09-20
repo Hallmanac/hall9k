@@ -1590,7 +1590,7 @@ public static class TaskDecider
                 $"Task {task.Id} is {task.State.Value}, not Queued — it cannot be claimed.");
         }
 
-        if (task.AssignedOwnerId != ownerId)
+        if (!IsGrantedToThisOwner(task.AssignedOwnerId, task.AssignedOwnerFingerprint, ownerId, ownerRootFingerprint))
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is assigned to {(task.AssignedOwnerId is { } assignee ? assignee.ToString() : "nobody")}, " +
@@ -1666,7 +1666,7 @@ public static class TaskDecider
                 $"Task {task.Id} is {task.State.Value}, not Queued — it cannot be claimed.");
         }
 
-        if (task.AssignedOwnerId != ownerId)
+        if (!IsGrantedToThisOwner(task.AssignedOwnerId, task.AssignedOwnerFingerprint, ownerId, ownerRootFingerprint))
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is assigned to {(task.AssignedOwnerId is { } assignee ? assignee.ToString() : "nobody")}, " +
@@ -2031,7 +2031,7 @@ public static class TaskDecider
                 + "instead.");
         }
 
-        if (task.AssignedOwnerId != ownerId)
+        if (!IsGrantedToThisOwner(task.AssignedOwnerId, task.AssignedOwnerFingerprint, ownerId, ownerRootFingerprint))
         {
             throw new DomainConflictException(
                 $"Task {task.Id} is assigned to "
