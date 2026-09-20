@@ -914,9 +914,12 @@ of that owner claims it, wherever it runs, exactly as if only one node existed. 
 dispatcher claims it, and every other node of the same owner skips it, logging why once a sweep
 rather than silently. Placement is advisory to dispatch alone — it never changes whose work the
 task is, and it never touches the ledger holder a claim writes; it only narrows *which* of the
-owner's own nodes gets to claim it. A node this project's own ledger does not currently vouch into
-that owner's fleet is refused outright (`h9k node vouch` first), and `--node` with nothing named
-clears an existing placement, handing the choice back to whichever node gets there first.
+owner's own nodes gets to claim it. The owner's fleet is the owner's own root node, the one whose
+key established it in this project's ledger, plus every node currently vouched into it — the root
+never needs `h9k node vouch` against itself, since the ledger already names its own node without
+one. A node outside both sets is refused outright (`h9k node vouch` first), and `--node` with
+nothing named clears an existing placement, handing the choice back to whichever node gets there
+first.
 Placement and the takeover levers agree by construction (idea 202383dc, items 4 and 5): a forced
 `h9k task take --force` or a cooperative grant that moves an already-*placed* task rewrites the
 placement to the taker's own node in the same event, so the node that just lost the task stops
