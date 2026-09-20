@@ -12,6 +12,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Microsoft.Extensions.Options;
+using System.Collections.Concurrent;
 
 namespace Hall9k.Daemon.Courier;
 
@@ -36,6 +37,17 @@ public sealed class CourierEngine(
     ILogger<CourierEngine> logger)
 {
     private readonly DaemonOptions _options = options.Value;
+
+    /// <summary>
+    /// Projects whose "no delivery adapter fits" warning has already been logged once, so the
+    /// same unresolved episode does not repeat on every <see cref="DaemonOptions.CourierSweepPollInterval"/>
+    /// tick — the identical one-line-per-episode discipline <c>DispatchEngine._reportedFingerprintMismatches</c>
+    /// already gives its own analogous unresolved condition (independent pre-PR review, cycle 4,
+    /// conformance lens). Removed the moment a fitting adapter is found for the project (a CLI
+    /// fix, an orchestrator re-registered under a supported one), so a recurrence after that is
+    /// announced again rather than staying silent for good.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, byte> _reportedNoAdapter = new();
 
     public async Task<CourierSweepResult> SweepOnceAsync(CancellationToken cancellationToken)
     {
@@ -290,12 +302,18 @@ public sealed class CourierEngine(
         ICourierDeliveryAdapter? adapter = CourierDeliveryAdapterRegistry.ForCli(presence.Cli);
         if (adapter is null)
         {
-            logger.LogWarning(
-                "Project {ProjectName}: no delivery adapter fits the orchestrator's own CLI ('{Cli}') — "
-                + "the feed stays undrained until one does",
-                project.Name, presence.Cli);
+            if (_reportedNoAdapter.TryAdd(project.Id, 0))
+            {
+                logger.LogWarning(
+                    "Project {ProjectName}: no delivery adapter fits the orchestrator's own CLI ('{Cli}') — "
+                    + "the feed stays undrained until one does",
+                    project.Name, presence.Cli);
+            }
+
             return CourierTickOutcome.NoAdapter;
         }
+
+        _reportedNoAdapter.TryRemove(project.Id, out _);
 
         return await SpawnAsync(
             session, project, presence, adapter, deliverableRead, now, today, dayCounter, cancellationToken);
