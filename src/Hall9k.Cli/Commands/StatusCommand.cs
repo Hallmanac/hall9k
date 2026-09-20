@@ -1,6 +1,7 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
+using Hall9k.Domain.Features.Courier;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
@@ -370,6 +371,20 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 ProjectDetails? project = await session.LoadAsync<ProjectDetails>(presence.ProjectId, cancellationToken);
                 string line = OrchestratorPresenceLine.Describe(presence, probe, now);
                 AnsiConsole.MarkupLineInterpolated($"[dim]{project?.Name ?? "unknown project"} {line}[/]");
+
+                CourierRunDetails? inFlight = await session.Query<CourierRunDetails>()
+                    .Where(run => run.ProjectId == presence.ProjectId && run.CompletedAt == null)
+                    .OrderByDescending(run => run.DispatchedAt)
+                    .FirstOrDefaultAsync(cancellationToken);
+                CourierRunDetails? lastDelivered = await session.Query<CourierRunDetails>()
+                    .Where(run => run.ProjectId == presence.ProjectId && run.Delivered)
+                    .OrderByDescending(run => run.CompletedAt)
+                    .FirstOrDefaultAsync(cancellationToken);
+                DateTimeOffset? lastDeliveredAt = lastDelivered?.CompletedAt;
+                if (CourierStatusLine.Describe(inFlight, lastDeliveredAt, now) is { } courierLine)
+                {
+                    AnsiConsole.MarkupLineInterpolated($"[dim]{project?.Name ?? "unknown project"} {courierLine}[/]");
+                }
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
