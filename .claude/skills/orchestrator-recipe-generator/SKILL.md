@@ -83,7 +83,10 @@ facts" applies to what you write here exactly as it does to the platform's own a
 `h9k project show <name>` for: the home directory, whether the code lives in the home directory
 itself or in a `repo/dev` worktree beneath it (check `<home>/repo/dev` for a checkout), the verify
 gates, the base branch, the commit style, the branch template, the linked trackers (a bound Jira
-board, GitHub as the connection's own provider, any context links), and `h9k project list` for the
+board, GitHub as the connection's own provider, any context links), the orchestrator-feed band
+this project reads at (the "Orchestrator feed" row — actionable, transitions, or everything; it
+decides how much start-up step 4's drain hands the window, and the row itself names the command
+that changes it), and `h9k project list` for the
 other projects registered on this same node — they share this node's concurrency ceiling and
 spend budget, which is why the project recipe's node-seam section names them rather than treating
 the node as this project's alone. There is no single "merge style" setting to read; observe it
@@ -473,10 +476,31 @@ and budget.
    only once three failures land in a row (matching the actionable list's own "three gh failures in
    a row"); log every single failure to a drops file the same shape as the routine tally, so an
    isolated blip stays quiet but is still visible on request rather than lost.
-4. Run `h9k daemon status`, then `h9k status`. Ask the daemon directly rather than inferring its
+4. Run `h9k orchestrator feed --project <name> --drain` — what happened while no window was live.
+   This is the platform's own answer to that question and it replaces reading the log tally at
+   start-up: every item is an event already on this node's own log, past this project's own feed
+   cursor, written as one plain line by the feed's own table of event type to wording, grouped by
+   task. `--drain` moves
+   the cursor, so the next window that starts gets what is new rather than this same list again;
+   run it once, here, and not again later in the session. The one exception is the command telling
+   you it filled its own event cap: that says the cursor did not reach the present, so run the same
+   drain again until it stops saying so, which is the only way a window on a busy node or a project
+   nobody has drained before catches all the way up. A pass that fills the cap while printing
+   nothing is normal on a node whose other projects are busy, and the cap line still prints under
+   it; what ends that loop early is a pass reporting the cursor unchanged, which means it cannot
+   advance yet however many more times you run it. Do not reconstruct any of this by
+   tailing `h9kd.log` or by reading `notes/monitor-tally.log`: the tally is the *live* watch's own
+   holding pen for routine lines the waiter saw while this window was up (step 3, and the periodic
+   summary below), never the record of what happened before it started — that file does not exist
+   on a fresh window, and a byte offset initialised past the log's end is deliberately blind to
+   everything older than the moment the waiter armed. When something in the drain needs looking
+   into, `h9k task show <id>` and `h9k logs <id>` are the way in, exactly as they are for a
+   `h9k status` row. `h9k orchestrator feed --project <name> --since <time>` reads the same
+   history without moving the cursor, for a look further back than the last drain left.
+5. Run `h9k daemon status`, then `h9k status`. Ask the daemon directly rather than inferring its
    health from a quiet pane: a stopped daemon queues work silently and the pane says nothing about
    the daemon itself unless it is down.
-5. Report to the operator in plain language (the voice block above): what is in flight, what needs
+6. Report to the operator in plain language (the voice block above): what is in flight, what needs
    them, and what this window will do next. If the journal was not enough to re-orient you and you
    had to ask the operator something the journal should have told you, add one line to the
    journal's re-orientation log so the next rewrite of this recipe can carry that field.
@@ -651,7 +675,11 @@ Same shape as the project recipe above, with these differences:
   request, rules on a park, walks a task's criteria, or drafts work into any project's board — a
   project orchestrator does those, and name where its recipe lives for each project discovery
   found registered on this node.
-- **Start-up sequence step 4** is `h9k daemon status`, `h9k config show`, and `h9k project list`
+- **Start-up sequence step 4**, the feed drain, runs once per project discovery found registered on
+  this node — `h9k orchestrator feed --project <name> --drain` for each, in turn — since the feed's
+  cursor is per project and there is no node-wide one. A node with no projects registered skips it
+  entirely rather than inventing a command with nothing to name.
+- **Start-up sequence step 5** is `h9k daemon status`, `h9k config show`, and `h9k project list`
   instead of `h9k status` (there is no single project's board to check from here).
 - **The periodic summary** groups by project instead of task, reading `h9k project list` and
   `h9k daemon status` alongside the tally rather than `h9k status`, since there is no single

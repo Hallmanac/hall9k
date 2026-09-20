@@ -511,6 +511,16 @@ written once by that skill and left alone by the platform from then on. `recipes
 the exception: it is platform-owned the same way the anchor is, always overwritten on every
 install and update, so the skill never writes it.
 
+A window that starts cold needs to know what happened while none was live, and
+`h9k orchestrator feed --project <name> --drain` is what tells it: everything past that project's
+own feed cursor, oldest first, grouped by task, each as one plain line the feed's own table of
+event type to wording composes for it. It is a cursor over this node's own event log plus an interest filter, never a second store,
+so nothing is buffered and nothing is lost by not reading it; `--drain` moves the cursor and
+`--since <time>` reads history without moving it. How much a project's feed carries is a setting
+(`h9k project set <name> --orchestrator-feed actionable|transitions|everything`), and a message
+from a person shows up at every level. See
+[docs/concepts.md](docs/concepts.md#the-orchestrator-feed) for what each level holds.
+
 `h9k orchestrator node` and `h9k orchestrator project [PROJECT]` print that window's daemon
 liveness, its launch text, its recipe and journal paths, and its last measured turn-one cost.
 Neither one launches anything; you copy the printed line into a fresh terminal yourself. The

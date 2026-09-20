@@ -835,6 +835,45 @@ can only be refused on arrival. The full history stays readable on the node that
 broadcast closes when a member answers it, or when one says it holds nothing that matches.
 
 Depth: [scope.md](scope.md), Decisions Log #236.
+## The orchestrator feed
+
+The three surfaces above answer "where does everything stand right now". The feed answers the
+other question an orchestrator window opens with: **what happened while nobody was watching.**
+
+`h9k orchestrator feed --project <name>` prints it — every event past this project's own cursor
+that the project's interest filter admits, oldest first, grouped by task, each as one plain line
+the feed's own table of event type to wording composes for it. `--drain` advances the cursor after
+printing, so a window's start-up step takes what is new and leaves the next one a clean slate;
+without it the same items come back, which is what makes a plain read safe to repeat. `--since
+<time>` reads history from a point in time (`45m`, `6h`, `3d`, `2w`, or an instant) and never
+touches the cursor, so a second window catching up cannot consume what the first has not read.
+
+**It is not a second store.** An item is an event that is already on this node's own log, past a
+per-project cursor, that a filter admits — so a sweep costs one query, nothing is buffered
+anywhere, and nothing is lost by not reading the feed. There is exactly one truth about what
+happened, and the feed is a way of reading it.
+
+**The filter is one deterministic table from event type to level**, with no model anywhere in it:
+the same event always lands in the same band on every node. Three nested bands, each a superset
+of the one before, set per project with
+`h9k project set <name> --orchestrator-feed actionable|transitions|everything`:
+
+| Level | What it carries |
+|---|---|
+| `actionable` | Only what somebody is owed: parks and disputes, gate and run failures, a merge that stays failed, daemon trouble, and any message from a person or another node's window. |
+| `transitions` *(default)* | Everything `actionable` carries, plus the work's own movement: task state changes (published, working, delivered, done, failed, abandoned), ideas logged or updated, and claims or takeovers involving another node. |
+| `everything` | Everything `transitions` carries, plus the machinery's own movement: a run's phase changes. |
+
+A message from a person is admitted at **every** level, including the narrowest — a colleague or
+another node's window asking something is never filtered out by a reading preference. The
+daemon's own machine traffic (the JSON its claim reactors post to each other) is not a message
+from a person and never appears, the same exclusion `h9k messages` already applies.
+
+An event type the table does not name is not in the feed at all. That is deliberate: the feed is
+what an orchestrator would want to know, not a mirror of the log, so a new event type ships
+silent and adding it is a decision somebody makes.
+
+Depth: [PLAN.md §16](../PLAN.md), Decisions Log #PLACEHOLDER-37b5ec69.
 
 ## Owners, nodes, and connections
 

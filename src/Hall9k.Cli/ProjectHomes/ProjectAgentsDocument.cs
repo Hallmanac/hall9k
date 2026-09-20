@@ -228,6 +228,15 @@ public static class ProjectAgentsDocument
             + "abandoned ones hidden by default (add --include-archived to see those too)");
         document.AppendLine($"- `h9k idea add \"…\" --project {project.Name}`: capture something before it is a task");
         document.AppendLine("- `h9k status`: the attention pane across every project");
+        // Deliberately the plain read, never --drain: this file is read by any interactive
+        // session opened here, and a drain moves the project's one feed cursor — an ad hoc
+        // session draining it takes news a live orchestrator window would then never see. The
+        // drain belongs to that window's own start-up step, which is where its recipe puts it.
+        document.AppendLine($"- `h9k orchestrator feed --project {project.Name}`: what happened while no "
+            + "window was live, grouped by task. The pane above says where things stand now; this says "
+            + "what changed since the last time somebody read it. Reading changes nothing and is safe to "
+            + "repeat; `--drain` moves the project's one cursor, so leave that to an orchestrator "
+            + "window's own start-up and use `--since 6h` to look further back");
         document.AppendLine();
         document.AppendLine(
             "New work enters through `h9k task add`, then `h9k task publish <id> --assign`. Nothing "

@@ -1014,6 +1014,19 @@ recipe restarts or closes it, the daemon records a registered window whose proce
 lost, and `h9k orchestrator status` and the `h9k status` header both name the live one. Liveness
 is by process id, so it holds for any vendor's CLI (Decisions Log #237).
 
+`h9k orchestrator feed --project <name>` is what a fresh window reads at start-up to learn what
+happened while none was live: everything past that project's own cursor that its interest filter
+admits, oldest first, grouped by task, each as one plain line the feed's own table of event type
+to wording composes for it. `--drain` advances the cursor after printing, `--since <time>` reads history
+without moving it, and the two are refused together. The filter is one deterministic table from
+event type to level, with no model in it, and the level is a per-project setting
+(`h9k project set <name> --orchestrator-feed actionable|transitions|everything`, default
+`transitions`); a message from a person is admitted at every level. The feed keeps no store of
+its own — a cursor over this node's own event log plus a filter — so nothing is buffered and
+nothing is lost by not reading it. What does **not** exist yet is anything that reads the feed on
+its own: the courier that wakes a window when items land is designed and unbuilt
+(Decisions Log #PLACEHOLDER-37b5ec69).
+
 ### The help tree
 
 Every command carries a domain-language description and at least one worked example, enforced by
