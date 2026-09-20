@@ -83,12 +83,24 @@ process-wide environment variable has no flow-scoped alternative: the claude pat
 (`MSBUILDDISABLENODEREUSE`), and a couple of narrower ones (`CLAUDE_PID`,
 `CLAUDE_CODE_SESSION_ID`). `Hall9k.Tests.Fakes.EnvironmentVariableScope` is the shared save/restore
 helper for this category; every caller still needs `[Collection("Environment")]` +
-`[Trait("Category", "Environment")]` on its own class, the same "carries both attributes" shape
-`PublishLaneGuardTests` enforces for `PublishesBinary`. A class that needs a genuinely process-wide
-variable with no test-unique alternative (unlike a Jira credential, which can just use its own
-class-unique `HALL9K_TEST_*` name instead of the shared production one) belongs here; a class that
-only touches `HALL9K_HOME`/`HALL9K_CONNECTION_STRING` belongs on `ScopedTestHome`/
-`ScopedConnectionString` above instead, never in this collection.
+`[Trait("Category", "Environment")]` on its own class. `HomeEnvironmentIsolationTests` mechanically
+guards only the `HALL9K_HOME`/`HALL9K_CONNECTION_STRING` shape of this rule, the same "carries both
+attributes" check `PublishLaneGuardTests` enforces for `PublishesBinary` — a class that writes some
+other process-wide variable directly (`HALL9K_CLAUDE_PATH`, a `Hall9k__*` setting,
+`MSBUILDDISABLENODEREUSE`) without both attributes is not caught by any scan, the same
+judgment-call basis `[Collection("RealProcessSpawn")]` membership already rests on below, not a
+mechanically-enforced one. A class that needs a genuinely process-wide variable with no test-unique
+alternative (unlike a Jira credential, which can just use its own class-unique `HALL9K_TEST_*` name
+instead of the shared production one) belongs here; a class that only touches
+`HALL9K_HOME`/`HALL9K_CONNECTION_STRING` belongs on `ScopedTestHome`/`ScopedConnectionString` above
+instead, never in this collection.
+
+**Renamed from `Category=Hall9kHome`.** A project's own `--verify-gate-filter` that still names the
+retired `Category=Hall9kHome` trait (`h9k project set <project> --verify-gate-filter`) has to be
+re-pointed to `Category=Environment` when this merges: the old trait matches nothing once it is
+gone, so the clause naming it silently becomes a no-op — the fast gate's exclusion stops excluding
+anything and a host-coupled gate built from it stops selecting anything at all — rather than an
+error a project owner would notice.
 
 ## `[Collection("RealProcessSpawn")]`
 

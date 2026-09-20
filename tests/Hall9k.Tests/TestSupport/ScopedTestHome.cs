@@ -92,8 +92,12 @@ internal sealed class ScopedTestHome : IDisposable
 /// for that flow — opening a second <see cref="ScopedTestHome"/> there would silently swap
 /// <see cref="PlatformPaths.Home"/> out from under it for the swap's duration too, which is never
 /// what a connection-string-only caller wants. Lives beside <see cref="ScopedTestHome"/> so this
-/// project's two flow-scoped overrides are opened and closed from exactly one file between them,
-/// never touched directly by a test class itself.
+/// project's two flow-scoped overrides are opened and closed from exactly one file between them
+/// for every ordinary caller. One test reaches past this file on purpose:
+/// <c>Hall9k.Tests.Daemon.PlatformConfigFileSourceTests.A_relative_home_directory_does_not_crash_the_insert</c>
+/// clears <see cref="PlatformPaths.HomeOverrideForTests"/> directly for one test's own duration, a
+/// need neither this type nor <see cref="ScopedTestHome"/> has a constructor argument for: it has
+/// to exercise the environment-variable tier the override would otherwise always outrank.
 /// </summary>
 internal sealed class ScopedConnectionString : IDisposable
 {
