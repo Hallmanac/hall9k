@@ -2016,6 +2016,29 @@ public sealed class AgentPromptBuilderTests : IDisposable
     }
 
     /// <summary>
+    /// A host-coupled gate's own bare command must not appear in the review lens's own
+    /// gates-already-ran status list either (task: host-coupled suites run only in the node's
+    /// serialized host gate) — a reviewer reading this list is not told to run anything, but the
+    /// bare command still leaks the exact text a session elsewhere in this same task's prompts is
+    /// deliberately never shown (independent pre-PR review, this cycle).
+    /// </summary>
+    [Theory]
+    [InlineData("Conformance")]
+    [InlineData("Adversarial")]
+    public void A_host_coupled_gates_command_never_appears_in_the_review_gate_status_list(string lens)
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands =
+            [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test", HostCoupledFilter: "Category=RequiresDocker")];
+
+        string prompt = AgentPromptBuilder.BuildReview(SomeTask(), project, "task/1-slug", cycle: 1, lens);
+
+        prompt.Should().Contain("- `dotnet build`");
+        prompt.Should().Contain("`test` runs only in the daemon's own serialized host gate");
+        prompt.Should().NotContain("- `dotnet test`");
+    }
+
+    /// <summary>
     /// Never guess at unobserved facts: a project with no gates configured had none run, so
     /// the prompt says that rather than claiming a passing build nobody performed.
     /// </summary>
