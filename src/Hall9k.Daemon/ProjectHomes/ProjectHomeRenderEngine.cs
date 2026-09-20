@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Idea.Rendering;
+using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
@@ -470,11 +471,14 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
     }
 
     /// <summary>
-    /// Whether this idea's own recorded workspace home is safe to touch a directory for on THIS
-    /// host: absent (no home was ever recorded) or rooted in this host's own path shape. False for
-    /// a value replicated from a node on a different operating system (idea 202383dc: a Windows
-    /// path applied on macOS, or the reverse) — a node-local fact about a different machine, never
-    /// a directory this one can create or read. <see cref="RenderIdea"/> skips such an idea
+    /// Whether this idea's own recorded workspace home is absent (no home was ever recorded) or
+    /// rooted in this host's own operating-system-family path shape — NOT a guarantee that the
+    /// home is actually this host's own directory (<see cref="ProjectHome.IsNativeForm"/>'s own
+    /// doc: shape alone cannot tell two same-family hosts apart, so a POSIX home replicated from
+    /// another macOS or Linux node still reads true here). False for a value replicated from a
+    /// node on a different operating system FAMILY (idea 202383dc: a Windows path applied on
+    /// macOS or Linux, or the reverse) — a node-local fact about a different machine, never a
+    /// directory this one can create or read. <see cref="RenderIdea"/> skips such an idea
     /// entirely rather than let anything downstream mistake that value for a path on this disk.
     /// </summary>
     public static bool CanRenderIdea(IdeaDetails idea) =>

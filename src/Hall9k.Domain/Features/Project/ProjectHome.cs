@@ -49,11 +49,20 @@ public sealed record ProjectHome
     public bool HasValue => Value.IsNotBlank();
 
     /// <summary>
-    /// True when a recorded home is rooted in THIS host's own path shape — false for one replicated
-    /// from a node on a different operating system, and false for <see cref="None"/>, which names no
+    /// True when a recorded home's own path SHAPE matches this host's own operating system family —
+    /// false for one replicated from a node on a different operating system FAMILY (a Windows path
+    /// read on macOS or Linux, or the reverse), and false for <see cref="None"/>, which names no
     /// shape at all. A caller that would read or create a directory from <see cref="Value"/> checks
     /// this first: a foreign-form value is a node-local fact about a different machine, never a path
     /// this one can resolve (see this type's own doc comment).
+    /// <para>
+    /// Shape alone cannot tell two hosts of the SAME family apart: a POSIX-rooted home replicated
+    /// from another macOS or Linux node reads as native here too, even though it names a directory
+    /// on that other machine, not this one (independent pre-PR review, cycle 1, adversarial lens,
+    /// low). Nothing today acts on a same-family foreign path without a best-effort catch around
+    /// the filesystem call it makes, but a future caller relying on this property alone to mean
+    /// "safe to touch a directory for on this host" would be wrong for that pair.
+    /// </para>
     /// </summary>
     public bool IsNativeForm => HasValue && (OperatingSystem.IsWindows() ? IsWindowsRooted(Value) : IsPosixRooted(Value));
 
