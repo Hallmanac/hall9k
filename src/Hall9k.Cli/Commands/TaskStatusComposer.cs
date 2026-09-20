@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Marten;
 
@@ -323,6 +324,18 @@ internal static class TaskStatusComposer
             context.MachineName);
         AttentionBucket group = Group(task, run, state, attention, stalled);
 
+        // idea 202383dc: an owner can place a task on one of their own nodes — advisory to
+        // dispatch only, so it rides beside the assignee's own name rather than replacing it.
+        string assigneeDisplay = task.AssignedOwnerId is { } assigneeOwnerId
+            ? AssigneeDisplay(assigneeOwnerId, task.AssignedOwnerFingerprint, context)
+            : string.Empty;
+        if (task.PlacedOnNodeId is { } placedOnNodeId)
+        {
+            assigneeDisplay = assigneeDisplay.IsBlank()
+                ? $"placed: {DomainId.Short(placedOnNodeId)}"
+                : $"{assigneeDisplay} (placed: {DomainId.Short(placedOnNodeId)})";
+        }
+
         return new TaskStatusRow(
             task.Id,
             task.ProjectId,
@@ -341,7 +354,7 @@ internal static class TaskStatusComposer
             stalled,
             Priority(group, state),
             task.AddedAt,
-            task.AssignedOwnerId is { } assignee ? AssigneeDisplay(assignee, task.AssignedOwnerFingerprint, context) : string.Empty,
+            assigneeDisplay,
             task.UnmetDependencies,
             // Whichever hold this row carries, so a stacked child whose parent pull request closed
             // unmerged reads the same as one whose local blocker died (TaskListItem.BlockingHoldReason).

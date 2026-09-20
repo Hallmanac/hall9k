@@ -103,6 +103,16 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
 
         header.AddRow("Id", $"[dim]{details.Id}[/]");
         header.AddRow("Assigned to", await AssigneeMarkupAsync(session, details, cancellationToken));
+        if (details.PlacedOnNodeId is { } placedOnNodeId)
+        {
+            // idea 202383dc: an owner can place a task on one of their own nodes — advisory to
+            // dispatch only, narrower than "Assigned to" above, never a second ownership fact.
+            header.AddRow(
+                "Placed on node",
+                $"[dim]{DomainId.Short(placedOnNodeId)}[/] (only that node's own dispatcher claims it; "
+                + $"h9k task assign {TaskListCommand.ShortId(details.Id)} --node clears it)");
+        }
+
         if (details.InteractiveModeEnabled)
         {
             // Task: interactive mode becomes a recorded property of the task. Named plainly here

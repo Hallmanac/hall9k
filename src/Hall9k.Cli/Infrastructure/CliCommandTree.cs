@@ -1013,7 +1013,9 @@ public static class CliCommandTree
                     + "react to the assignment.")
                 .WithExample("task", "assign", "28b19893")
                 .WithExample("task", "assign", "28b19893", "brian")
-                .WithExample("task", "assign", "28b19893", "brian", "--take");
+                .WithExample("task", "assign", "28b19893", "brian", "--take")
+                .WithExample("task", "assign", "28b19893", "brian", "--node", "a1b2c3d4")
+                .WithExample("task", "assign", "28b19893", "--node");
             task.AddCommand<TaskSetSessionCapCommand>("set-session-cap")
                 .WithDescription(
                     "Override how many agent sessions this task's own run may hold simultaneously (Decisions Log "
