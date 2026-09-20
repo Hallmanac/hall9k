@@ -231,11 +231,52 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 state = batches[audience];
             }
 
-            // The lowest sequence in this open batch — OpenBatchFloor's own read of how far a
-            // snapshot taken while some OTHER audience flushes may safely advance.
-            state.FirstSequence ??= sequence;
+            // The lowest sequence in this open batch, not merely the first one added — OpenBatchFloor's
+            // own read of how far a snapshot taken while some OTHER audience flushes may safely
+            // advance. A plain ??= would leave this pinned at whatever record first opened the batch
+            // even after the resend pass adds an earlier, lower sequence to an already-open batch,
+            // understating how far back the batch's own content actually reaches and letting the
+            // floor sit above records the batch still holds uncommitted (independent pre-PR review,
+            // cycle 7, adversarial lens, medium).
+            state.FirstSequence = state.FirstSequence is { } existingFirst ? Math.Min(existingFirst, sequence) : sequence;
             state.Records.Add(record);
             state.Bytes += recordJson.Length;
+        }
+
+        // Resolves once per stream per call, whether the mark came from a PRIOR, interrupted call
+        // (loaded into pendingFullResend below, before the forward scan ever starts) or from a
+        // trigger this call's own forward scan just found. Called INLINE at the point of discovery —
+        // never deferred to after the whole scan — so a stream's resent history always finishes
+        // being added to a batch before the forward scan can add anything later, newer, or unrelated
+        // to that same audience: run too late, a mid-scan overflow flush can carry the trigger event
+        // out in one envelope while the resend it depends on ships in a later one, and the receiver's
+        // out-of-order guard then refuses the whole out-of-order tail for good (independent pre-PR
+        // review, cycle 7, adversarial lens, high).
+        HashSet<Guid> resentStreamsThisCall = [];
+
+        async Task ResendIfNeededAsync(Guid streamId)
+        {
+            // Marked before the resend itself runs, and — deliberately — never removed here once it
+            // finishes: see the final StorePositionSnapshot call, at the very end of this method,
+            // for why only that one call is allowed to stop reporting a resent stream as pending.
+            pendingFullResend.Add(streamId);
+            if (!resentStreamsThisCall.Add(streamId))
+            {
+                return;
+            }
+
+            await ResendStreamHistoryAsync(
+                session, nodeId, projectId, fromOwnerFingerprint, streamId, switchOnSequence, sinceSequence,
+                highestQueuedSequenceAtScanStart, pendingPrivateAtScanStart, AddAsync, cancellationToken);
+        }
+
+        // A stream a PRIOR, interrupted call already marked for resend and never got to (loaded into
+        // pendingFullResend above) has no "trigger" in THIS call's own candidates — sinceSequence has
+        // already moved past whatever originally marked it — so nothing in the forward scan below
+        // would ever revisit it. Caught up here, before that scan runs.
+        foreach (Guid streamId in pendingFullResend.ToList())
+        {
+            await ResendIfNeededAsync(streamId);
         }
 
         foreach (IEvent candidate in candidates)
@@ -352,7 +393,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 // lens, high).
                 if (IsScopeChangingEventType(candidate.EventType))
                 {
-                    pendingFullResend.Add(candidate.StreamId);
+                    await ResendIfNeededAsync(candidate.StreamId);
                 }
 
                 lastIncludedSequence = candidate.Sequence;
@@ -363,12 +404,6 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             // pendingPrivate member (the fast skip above is the only thing that could have let it
             // through) — never treated as "already sent" the way the high-water mark alone would
             // read it. It is owed, whichever sweep first held it back.
-            EventReplicationCodec.ReplicatedEventRecord record = ToRecord(candidate, nodeId, fromOwnerFingerprint, projectId);
-            string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
-            await AddAsync(
-                AudienceFor(resolved.Scope, record.OriginOwnerRootFingerprint, fromOwnerFingerprint),
-                record, recordJson, candidate.Sequence);
-
             if (IsScopeChangingEventType(candidate.EventType))
             {
                 // idea 8c5993c5: this stream just moved to a scope at least this wide — everything
@@ -376,12 +411,21 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 // the fast-skip gap between sinceSequence and highestQueuedSequence (a gap that
                 // opens whenever some OTHER stream's held-back private event has kept sinceSequence
                 // from advancing as far as this project's own high-water mark already has), never
-                // reached whatever audience it is newly eligible for, and the resend pass below is
-                // the one chance to catch both regions up (independent pre-PR review, cycle 1,
-                // adversarial lens, medium: bounding the resend to sinceSequence alone left the gap
-                // neither resent nor re-queued, since the ordinary forward scan fast-skips it too).
-                pendingFullResend.Add(candidate.StreamId);
+                // reached whatever audience it is newly eligible for. Resent HERE, before this
+                // trigger's own record is ever added to a batch below — see ResendIfNeededAsync's own
+                // doc for why the ordering matters (independent pre-PR review, cycle 1, adversarial
+                // lens, medium: bounding the resend to sinceSequence alone left the gap neither
+                // resent nor re-queued, since the ordinary forward scan fast-skips it too; cycle 7,
+                // adversarial lens, high: resending after the trigger's own AddAsync call let a
+                // mid-scan overflow flush split the two across envelopes out of order).
+                await ResendIfNeededAsync(candidate.StreamId);
             }
+
+            EventReplicationCodec.ReplicatedEventRecord record = ToRecord(candidate, nodeId, fromOwnerFingerprint, projectId);
+            string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
+            await AddAsync(
+                AudienceFor(resolved.Scope, record.OriginOwnerRootFingerprint, fromOwnerFingerprint),
+                record, recordJson, candidate.Sequence);
 
             lastIncludedSequence = candidate.Sequence;
             // Math.Max, not a plain assignment: a pendingPrivate member being caught up here can
@@ -394,25 +438,22 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             pendingPrivate.Remove(candidate.Sequence);
         }
 
-        // Batches stay open across the resend pass below, rather than flushing here first: a
-        // scope-changing candidate's own envelope and the history the resend pass sends to the
-        // identical new audience belong in one envelope together whenever they both fit, not two.
-        foreach (Guid streamId in pendingFullResend.ToList())
-        {
-            await ResendStreamHistoryAsync(
-                session, nodeId, projectId, fromOwnerFingerprint, streamId, switchOnSequence, sinceSequence,
-                highestQueuedSequenceAtScanStart, pendingPrivateAtScanStart, AddAsync, cancellationToken);
-            // Handled either way: fully resent at whatever scope it currently reads, or found
-            // private again by the time this ran (nothing to send right now) — a future
-            // scope-widening event re-adds it if that ever changes.
-            pendingFullResend.Remove(streamId);
-        }
-
         foreach (MessageAudience audience in batches.Keys.ToList())
         {
             await FlushAsync(audience);
         }
 
+        // Only now — every audience's own batch durably flushed, including whatever the resend pass
+        // above added to it — is it safe to stop reporting a resent stream as pending. Every earlier
+        // snapshot this call took (a mid-scan overflow flush inside AddAsync, or one audience's own
+        // flush in the loop just above) persisted the FULL pendingFullResend set, resolved streams
+        // included, on purpose: dropping a stream's marker the moment its own resend merely finished
+        // adding records to a batch let an EARLIER audience's commit durably clear that marker while
+        // the resent records themselves still sat, uncommitted, in a LATER audience's still-open
+        // batch — a crash or a thrown exception between the two commits then lost that stream's
+        // resend for good, with nothing left to re-trigger it on the next sweep (independent pre-PR
+        // review, cycle 7, conformance lens, medium).
+        pendingFullResend.Clear();
         StorePositionSnapshot();
         await session.SaveChangesAsync(cancellationToken);
 
