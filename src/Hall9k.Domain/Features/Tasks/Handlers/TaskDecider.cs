@@ -1120,7 +1120,8 @@ public static class TaskDecider
         IReadOnlyList<TaskDependency> dependencies,
         DateTimeOffset assignedAt,
         Guid assignedByOwnerId,
-        string? assignedOwnerRootFingerprint = null)
+        string? assignedOwnerRootFingerprint = null,
+        Optional<Guid?> placedOnNodeId = default)
     {
         if (task.State != TaskState.Published)
         {
@@ -1157,7 +1158,31 @@ public static class TaskDecider
                 .Select(dependency => dependency.Id)],
             assignedAt,
             assignedByOwnerId,
-            assignedOwnerRootFingerprint);
+            assignedOwnerRootFingerprint,
+            placedOnNodeId);
+    }
+
+    /// <summary>
+    /// Changes an already-assigned task's advisory node placement in place (idea 202383dc: an
+    /// owner can place a task on one of their own nodes), without touching the owner, the
+    /// dependency snapshot, or the state — <see cref="Assign"/> itself is Published-only and
+    /// refuses to run again on a task already Queued or Blocked, so this is the door
+    /// <c>h9k task assign &lt;id&gt; --node</c> uses once the task is past its first assignment.
+    /// State-agnostic on purpose, the same way <see cref="TaskAggregate.MaxComplianceReviewCycles"/>'s
+    /// own override is: placement is advisory routing, never a lifecycle gate, so there is nothing
+    /// here for a live run to race. Refused only when nothing is assigned at all — there is no
+    /// owner's fleet to place this task within.
+    /// </summary>
+    public static TaskPlacementChanged SetPlacement(
+        TaskAggregate task, Guid? placedOnNodeId, DateTimeOffset changedAt, Guid changedByOwnerId)
+    {
+        if (task.AssignedOwnerId is null)
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is not assigned to anyone — assign it first: h9k task assign {task.Id}.");
+        }
+
+        return new TaskPlacementChanged(task.Id, placedOnNodeId, changedAt, changedByOwnerId);
     }
 
     /// <summary>
@@ -1347,6 +1372,13 @@ public static class TaskDecider
                 $"not to this node's owner ({ownerId}) — a node claims only its own owner's work.");
         }
 
+        if (!IsPlacedOnThisNode(task.PlacedOnNodeId, nodeId))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is placed on node {task.PlacedOnNodeId} — only that node's own dispatcher "
+                + $"claims it. h9k task assign {task.Id} --node clears the placement, or names a different node.");
+        }
+
         return new TaskClaimed(
             task.Id, nodeId, ownerId, task.LeaseGeneration + 1, runId, claimedAt,
             OwnerRootFingerprint: ownerRootFingerprint, ResumesBranch: resumesBranch);
@@ -1372,6 +1404,20 @@ public static class TaskDecider
         assignedOwnerFingerprint is null
             ? assignedOwnerId == thisOwnerId
             : thisOwnerRootFingerprint is not null && thisOwnerRootFingerprint == assignedOwnerFingerprint;
+
+    /// <summary>
+    /// Whether a task's advisory node placement (<see cref="TaskAggregate.PlacedOnNodeId"/>, idea
+    /// 202383dc: an owner can place a task on one of their own nodes) admits a claim from
+    /// <paramref name="thisNodeId"/> — the single predicate both the daemon's own dispatch gate
+    /// (<c>DispatchEngine.IsPlacedOnThisNode</c>, which pre-filters the queue) and <see cref="Claim"/>
+    /// apply, mirroring how <see cref="IsGrantedToThisOwner"/> is shared between the two. Null
+    /// (no placement recorded) admits every node of the granted owner, exactly as dispatch behaved
+    /// before this feature existed; a placement admits only the node it names. Never a security
+    /// decision — <see cref="IsGrantedToThisOwner"/> already decided whose work this is — this only
+    /// narrows which of that owner's own nodes claims it.
+    /// </summary>
+    public static bool IsPlacedOnThisNode(Guid? placedOnNodeId, Guid thisNodeId) =>
+        placedOnNodeId is null || placedOnNodeId == thisNodeId;
 
     public static TaskRequeued Requeue(
         TaskAggregate task, RequeueReason reason, DateTimeOffset requeuedAt, bool clearInteractiveMode = false)

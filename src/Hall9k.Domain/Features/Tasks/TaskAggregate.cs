@@ -558,6 +558,25 @@ public sealed class TaskAggregate
     /// </summary>
     public string? AssignedOwnerFingerprint { get; private set; }
 
+    /// <summary>
+    /// Advisory dispatch placement narrower than <see cref="AssignedOwnerId"/> (idea 202383dc: an
+    /// owner can place a task on one of their own nodes rather than leaving it to whichever of
+    /// their nodes' dispatchers gets there first). Null means unplaced — every node of the granted
+    /// owner may claim it, exactly as dispatch behaved before this feature existed. Set by
+    /// <see cref="Apply(TaskAssigned)"/> from <see cref="TaskAssigned.PlacedOnNodeId"/>; rewritten
+    /// to the taker's own node by <see cref="Apply(Events.TaskHolderTakenOver)"/> and a cooperative
+    /// grant's own <see cref="Apply(TaskHolderReleased)"/>, so a takeover or a grant that moves the
+    /// task to another node retires the old placement without a second command; cleared by
+    /// <see cref="Apply(TaskUnassigned)"/> and <see cref="Apply(TaskInteractiveClaimUnassigned)"/>,
+    /// the same two doors that clear <see cref="AssignedOwnerFingerprint"/>. Never itself the
+    /// security decision: <see cref="AssignedOwnerFingerprint"/> (or, absent one,
+    /// <see cref="AssignedOwnerId"/>) already decided whose work this is — this only narrows which
+    /// of that owner's own nodes claims it, so an interactive claim (<c>h9k task work</c>,
+    /// <c>h9k task start</c>) and a forced takeover are never gated on it, only the daemon's own
+    /// headless dispatch claim is (<see cref="Handlers.TaskDecider.Claim"/>).
+    /// </summary>
+    public Guid? PlacedOnNodeId { get; private set; }
+
     private readonly List<string> _acceptanceCriteria = [];
     public IReadOnlyList<string> AcceptanceCriteria => _acceptanceCriteria;
 
@@ -1155,6 +1174,14 @@ public sealed class TaskAggregate
         // one — but it is not simply cleared: this assignment's own fingerprint (idea f72138e1)
         // takes its place, null only when the event itself predates the field.
         AssignedOwnerFingerprint = @event.AssignedOwnerRootFingerprint;
+        // Absent (Optional.None) leaves whatever placement this task already carried alone — the
+        // ordinary case, an owner or a --take reassignment that never mentioned --node; present
+        // with null clears it, present with a value pins it (idea 202383dc).
+        if (@event.PlacedOnNodeId.HasValue)
+        {
+            PlacedOnNodeId = @event.PlacedOnNodeId.Value;
+        }
+
         _unmetDependencies.Clear();
         _unmetDependencies.AddRange(@event.UnmetDependencies);
         _deadDependencies.Clear();
@@ -1178,6 +1205,13 @@ public sealed class TaskAggregate
             : TaskState.Blocked;
     }
 
+    /// <summary>
+    /// Changes placement in place — nothing else about the task moves (Handlers.TaskDecider.SetPlacement's
+    /// own doc): unlike <see cref="Apply(TaskAssigned)"/>'s <c>Optional</c> field, a plain nullable
+    /// is unconditional here, since this event's whole reason to exist is changing the placement.
+    /// </summary>
+    public void Apply(TaskPlacementChanged @event) => PlacedOnNodeId = @event.PlacedOnNodeId;
+
     // Unassigning returns the task to the state it was assigned from, dependency bookkeeping
     // and all: the unmet set is only meaningful for an assigned task, and the next assignment
     // recomputes it against the dependencies as they stand then.
@@ -1185,6 +1219,7 @@ public sealed class TaskAggregate
     {
         AssignedOwnerId = null;
         AssignedOwnerFingerprint = null;
+        PlacedOnNodeId = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();
         _deadDependencyReasons.Clear();
@@ -1494,6 +1529,11 @@ public sealed class TaskAggregate
 
             AssignedOwnerId = @event.GrantedToOwnerId;
             AssignedOwnerFingerprint = @event.GrantedToOwnerFingerprint;
+            // The grant moves the task to the requester's own node, so that node's own placement
+            // (if any named a third node entirely) is retired the same way a takeover retires one
+            // below — the old placement would otherwise strand the very requester this grant just
+            // released the task for.
+            PlacedOnNodeId = @event.GrantedToNodeId;
             ClaimedByNodeId = null;
             CurrentRunId = null;
             PendingQuestionId = null;
@@ -1595,6 +1635,10 @@ public sealed class TaskAggregate
         // aggregate has any reason to distrust — it carries no fingerprint of its own, and clears
         // whatever a prior cooperative grant recorded here (idea 20723ef8).
         AssignedOwnerFingerprint = null;
+        // The takeover itself names the new node, so any placement naming a different node (or
+        // none at all) is retired the same way — the old node stands down without a second
+        // command, since the taker's own dispatch sweep now reads a placement naming itself.
+        PlacedOnNodeId = @event.NewHolderNodeId;
 
         ClaimedByNodeId = null;
         CurrentRunId = null;
@@ -1665,6 +1709,7 @@ public sealed class TaskAggregate
 
         AssignedOwnerId = null;
         AssignedOwnerFingerprint = null;
+        PlacedOnNodeId = null;
         _unmetDependencies.Clear();
         _deadDependencies.Clear();
         _deadDependencyReasons.Clear();

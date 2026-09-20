@@ -77,6 +77,7 @@ public static class EventScopeRegistry
         [typeof(TaskTakeRefused)] = EventScope.ProjectScoped,
         [typeof(TaskInteractiveClaimUnassigned)] = EventScope.ProjectScoped,
         [typeof(TaskMechanicalResolutionAttempted)] = EventScope.ProjectScoped,
+        [typeof(TaskPlacementChanged)] = EventScope.ProjectScoped,
         [typeof(TaskPreApprovedSet)] = EventScope.ProjectScoped,
         [typeof(TaskPublished)] = EventScope.ProjectScoped,
         [typeof(TaskReopened)] = EventScope.ProjectScoped,

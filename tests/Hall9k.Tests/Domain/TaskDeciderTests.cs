@@ -843,6 +843,166 @@ public sealed class TaskDeciderTests
             windowsLocalOwnerId, "the fingerprint decides once the assignment carries one, not the assigning node's own local Guid");
     }
 
+    /// <summary>
+    /// The other half of the same scenario: a genuinely different owner's node — its own local id
+    /// coincidentally never matches anyway, but its own root fingerprint never will either — is
+    /// refused exactly as it always was.
+    /// </summary>
+    [Fact]
+    public void Claim_of_an_ordinary_assignment_refuses_a_different_owners_node_despite_no_shared_guid_either()
+    {
+        TaskAggregate task = PublishedTask();
+        Guid macLocalOwnerId = DomainId.New();
+        task.Apply(TaskDecider.Assign(
+            task, macLocalOwnerId, [], Now, Owner, assignedOwnerRootFingerprint: "owner-x-root-fingerprint"));
+
+        Action act = () => TaskDecider.Claim(
+            task, DomainId.New(), DomainId.New(), DomainId.New(), Now,
+            ownerRootFingerprint: "owner-y-root-fingerprint");
+
+        act.Should().Throw<DomainConflictException>();
+    }
+
+    // ── Node placement (idea 202383dc: an owner can place a task on one of their own nodes) ─────
+
+    [Fact]
+    public void Assign_with_no_node_named_leaves_the_task_unplaced()
+    {
+        TaskAggregate task = PublishedTask();
+
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner));
+
+        task.PlacedOnNodeId.Should().BeNull("an unplaced task behaves exactly as it did before this feature existed");
+    }
+
+    [Fact]
+    public void Assign_with_a_node_named_pins_the_placement()
+    {
+        TaskAggregate task = PublishedTask();
+        Guid placedNodeId = DomainId.New();
+
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner, placedOnNodeId: Optional<Guid?>.Of(placedNodeId)));
+
+        task.PlacedOnNodeId.Should().Be(placedNodeId);
+    }
+
+    [Fact]
+    public void Unassign_clears_an_existing_placement()
+    {
+        TaskAggregate task = PublishedTask();
+        Guid placedNodeId = DomainId.New();
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner, placedOnNodeId: Optional<Guid?>.Of(placedNodeId)));
+
+        task.Apply(TaskDecider.Unassign(task, "reassigning", leaseHeld: false, Now, Owner));
+
+        task.PlacedOnNodeId.Should().BeNull("an unassign clears placement the same way it clears the fingerprint");
+    }
+
+    [Fact]
+    public void SetPlacement_pins_a_node_on_an_already_queued_task()
+    {
+        TaskAggregate task = QueuedTask();
+        Guid placedNodeId = DomainId.New();
+
+        task.Apply(TaskDecider.SetPlacement(task, placedNodeId, Now, Owner));
+
+        task.PlacedOnNodeId.Should().Be(
+            placedNodeId, "TaskDecider.Assign itself cannot run again on a task already Queued — SetPlacement is the door h9k task assign --node uses instead");
+    }
+
+    [Fact]
+    public void SetPlacement_with_null_clears_an_existing_placement_on_an_already_assigned_task()
+    {
+        TaskAggregate task = PublishedTask();
+        Guid placedNodeId = DomainId.New();
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner, placedOnNodeId: Optional<Guid?>.Of(placedNodeId)));
+
+        task.Apply(TaskDecider.SetPlacement(task, null, Now, Owner));
+
+        task.PlacedOnNodeId.Should().BeNull("present with null is the CLI's own --node-with-nothing-named clear");
+    }
+
+    [Fact]
+    public void SetPlacement_refuses_a_task_nobody_is_assigned_to()
+    {
+        TaskAggregate task = PublishedTask();
+
+        Action act = () => TaskDecider.SetPlacement(task, DomainId.New(), Now, Owner);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*not assigned*");
+    }
+
+    [Fact]
+    public void Claim_refuses_a_node_other_than_the_one_the_task_is_placed_on()
+    {
+        TaskAggregate task = PublishedTask();
+        Guid placedNodeId = DomainId.New();
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner, placedOnNodeId: Optional<Guid?>.Of(placedNodeId)));
+
+        Action act = () => TaskDecider.Claim(task, DomainId.New(), Owner, DomainId.New(), Now);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*placed on node*");
+    }
+
+    [Fact]
+    public void Claim_succeeds_on_the_node_the_task_is_placed_on()
+    {
+        TaskAggregate task = PublishedTask();
+        Guid placedNodeId = DomainId.New();
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner, placedOnNodeId: Optional<Guid?>.Of(placedNodeId)));
+
+        TaskClaimed claimed = TaskDecider.Claim(task, placedNodeId, Owner, DomainId.New(), Now);
+
+        claimed.NodeId.Should().Be(placedNodeId);
+    }
+
+    [Fact]
+    public void A_forced_takeover_rewrites_the_placement_to_the_new_holders_own_node()
+    {
+        // The placed node itself is what went dark and is being taken over from — the origin
+        // incident's own resolution shape: a task placed and claimed on one node, forced away to
+        // another once the placed node stopped answering.
+        TaskAggregate task = PublishedTask();
+        Guid staleNodeId = DomainId.New();
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner, placedOnNodeId: Optional<Guid?>.Of(staleNodeId)));
+        task.Apply(TaskDecider.Claim(task, staleNodeId, Owner, DomainId.New(), Now));
+        Guid newHolderNodeId = DomainId.New();
+        Guid newHolderOwnerId = DomainId.New();
+
+        task.Apply(TaskDecider.TakeOver(
+            task, newHolderNodeId, newHolderOwnerId, "new-owner-fingerprint", "Absent for six hours.", newHolderOwnerId, Now));
+
+        task.PlacedOnNodeId.Should().Be(
+            newHolderNodeId, "the takeover itself names the new node, so the old node stands down without a second h9k task assign --node");
+    }
+
+    [Fact]
+    public void A_cooperative_grant_rewrites_the_placement_to_the_requesters_own_node()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        task.Apply(TaskDecider.RequestTake(task, requesterNodeId, requesterOwnerId, "requester-fingerprint", "Why", Now));
+
+        task.Apply(TaskDecider.GrantTake(task, requesterNodeId, requesterOwnerId, Now));
+
+        task.PlacedOnNodeId.Should().Be(
+            requesterNodeId, "a cooperative grant moves the task to the requester's own node, retiring whatever placement it carried before");
+    }
+
+    [Fact]
+    public void An_ordinary_release_with_no_grantee_never_touches_the_placement()
+    {
+        TaskAggregate task = PublishedTask();
+        Guid placedNodeId = DomainId.New();
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner, placedOnNodeId: Optional<Guid?>.Of(placedNodeId)));
+        task.Apply(TaskDecider.Claim(task, placedNodeId, Owner, DomainId.New(), Now));
+
+        task.Apply(TaskDecider.ReleaseHolder(task, Now));
+
+        task.PlacedOnNodeId.Should().Be(placedNodeId, "an ordinary release carries no destination and must not touch placement, the same as it must not reassign or requeue");
+    }
+
     [Fact]
     public void Requeue_after_claim_returns_to_queued_and_a_reclaim_bumps_generation_again()
     {
