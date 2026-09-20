@@ -836,10 +836,25 @@ public static class CliCommandTree
                     + "with its reason, nothing deleted, and the workspace stays put — an idea that keeps "
                     + "coming back is a signal.")
                 .WithExample("idea", "archive", "28b19893", "--reason", "\"Superseded by the attachments design\"");
+            idea.AddCommand<IdeaScopeCommand>("scope")
+                .WithDescription(
+                    "Idea 8c5993c5: set this idea's own replication scope. private never leaves this "
+                    + "node; fleet (the default at capture) reaches every node this same owner runs; "
+                    + "team reaches every project member's own fleet, and is one-way once set.")
+                .WithExample("idea", "scope", "28b19893", "private")
+                .WithExample("idea", "scope", "28b19893", "fleet")
+                .WithExample("idea", "scope", "28b19893", "team");
+            idea.AddCommand<IdeaShareCommand>("share")
+                .WithDescription(
+                    "Idea 8c5993c5: share this idea with the team on your own word — sugar for "
+                    + "h9k idea scope <id> team, and the one door onto team scope besides cutting a "
+                    + "task from it. Works on any captured idea; a discovery walk can call this at "
+                    + "its own end.")
+                .WithExample("idea", "share", "28b19893");
             idea.AddCommand<IdeaSetPrivateCommand>("set-private")
                 .WithDescription(
-                    "Idea 202383dc, M2a: keeps this idea's own events off every outbox until cleared, so a "
-                    + "draft you are not ready for a teammate to see never replicates to their node.")
+                    "Idea 8c5993c5: the pre-8c5993c5 alias, kept — sugar over h9k idea scope: on sets "
+                    + "private (this node only), off sets fleet (every node this same owner runs).")
                 .WithExample("idea", "set-private", "28b19893", "on")
                 .WithExample("idea", "set-private", "28b19893", "off");
         });
@@ -1054,10 +1069,26 @@ public static class CliCommandTree
                 .WithExample("task", "set-pre-approved", "28b19893", "on")
                 .WithExample("task", "set-pre-approved", "28b19893", "after-human-review")
                 .WithExample("task", "set-pre-approved", "28b19893", "off");
+            task.AddCommand<TaskScopeCommand>("scope")
+                .WithDescription(
+                    "Idea 8c5993c5: set this task's own replication scope. private never leaves this "
+                    + "node; fleet (the default on a fresh draft) reaches every node this same owner "
+                    + "runs; team reaches every project member's own fleet, one-way once set (h9k task "
+                    + "publish sets it too, unconditionally).")
+                .WithExample("task", "scope", "28b19893", "private")
+                .WithExample("task", "scope", "28b19893", "fleet")
+                .WithExample("task", "scope", "28b19893", "team");
+            task.AddCommand<TaskShareCommand>("share")
+                .WithDescription(
+                    "Idea 8c5993c5: share this task with the team on your own word — sugar for "
+                    + "h9k task scope <id> team. Works on a draft as well as a published task: the "
+                    + "door that lets a draft reach the team before it is ready to publish (idea "
+                    + "18464daa's own use — sharing a draft for publish approval).")
+                .WithExample("task", "share", "28b19893");
             task.AddCommand<TaskSetPrivateCommand>("set-private")
                 .WithDescription(
-                    "Idea 202383dc, M2a: keeps this task's own events off every outbox until cleared, so a "
-                    + "draft you are not ready for a teammate to see never replicates to their node.")
+                    "Idea 8c5993c5: the pre-8c5993c5 alias, kept — sugar over h9k task scope: on sets "
+                    + "private (this node only), off sets fleet (every node this same owner runs).")
                 .WithExample("task", "set-private", "28b19893", "on")
                 .WithExample("task", "set-private", "28b19893", "off");
             task.AddCommand<TaskUnassignCommand>("unassign")
