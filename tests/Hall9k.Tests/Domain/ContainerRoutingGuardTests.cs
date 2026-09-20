@@ -1,3 +1,4 @@
+using System.Reflection;
 using FluentAssertions;
 using Xunit;
 
@@ -127,5 +128,55 @@ public sealed class ContainerRoutingGuardTests
             "scan must be able to detect one there — matching nothing means the marker list no " +
             "longer names the API the fixture actually uses, or comment/string stripping is " +
             "eating real code, and this guard is protecting nothing while reporting success");
+    }
+
+    /// <summary>
+    /// The other half of the bound this guard's sibling fact protects: not only must
+    /// <see cref="Hall9k.Tests.Integration.PostgresFixture"/> be the only place a container gets
+    /// built, it must actually acquire its permit from
+    /// <see cref="Hall9k.Tests.Integration.CrossProcessContainerGate"/> before starting that
+    /// container, and the cap it acquires against must still be four (Decisions Log #108,
+    /// #132, PLACEHOLDER-98484f36) — the number every wall-clock estimate for the flow-scoped
+    /// seam assumes. Both are read straight from <c>PostgresFixture.cs</c> rather than proven by
+    /// actually starting containers: this class needs no Docker, the same reasoning
+    /// <see cref="Every_postgres_container_in_the_test_tree_is_built_by_the_bounded_fixture"/>
+    /// already rests on.
+    /// </summary>
+    [Fact]
+    public void PostgresFixture_acquires_a_gate_permit_before_starting_its_container_and_the_cap_is_still_four()
+    {
+        FieldInfo? maxConcurrentContainers = typeof(Hall9k.Tests.Integration.PostgresFixture).GetField(
+            "MaxConcurrentContainers", BindingFlags.NonPublic | BindingFlags.Static);
+
+        maxConcurrentContainers.Should().NotBeNull(
+            "PostgresFixture.MaxConcurrentContainers has apparently been renamed or removed — this " +
+            "reflection lookup needs to follow it so the cap below is still checked against the " +
+            "real field, not a stale copy");
+        maxConcurrentContainers!.GetRawConstantValue().Should().Be(
+            4, "the container-gate cap this whole seam's wall-clock estimate assumes (Decisions Log " +
+            "#108) must still be four, machine-wide across every concurrent dotnet test invocation");
+
+        string repositoryRoot = Path.GetDirectoryName(TestSourceTree.SourceDirectory())
+            ?? throw new InvalidOperationException("the resolved src directory has no parent directory");
+        string fixturePath = Path.Combine(repositoryRoot, "tests", "Hall9k.Tests", "Integration", "PostgresFixture.cs");
+        (string code, _, bool balanced) = TestSourceTree.StripCommentsAndStrings(File.ReadAllText(fixturePath));
+
+        balanced.Should().BeTrue(
+            "StripCommentsAndStrings desynced on PostgresFixture.cs, so the ordering check below " +
+            "cannot be trusted");
+
+        int acquireIndex = code.IndexOf("CrossProcessContainerGate.AcquireAsync(", StringComparison.Ordinal);
+        int startIndex = code.IndexOf("_container.StartAsync(", StringComparison.Ordinal);
+
+        acquireIndex.Should().BeGreaterThan(
+            -1, "PostgresFixture no longer calls CrossProcessContainerGate.AcquireAsync at all — the " +
+            "gate this whole bound depends on has apparently been removed or renamed");
+        startIndex.Should().BeGreaterThan(
+            -1, "PostgresFixture no longer calls _container.StartAsync — Testcontainers' own start " +
+            "API has apparently changed shape, and this check needs to follow it");
+        acquireIndex.Should().BeLessThan(
+            startIndex, "the gate permit must be acquired before the container starts, not after — " +
+            "starting first and acquiring afterward would let more than the cap's own containers run " +
+            "concurrently for the window between them");
     }
 }
