@@ -96,7 +96,8 @@ public static class TaskLifecycleProjectionBackfill
         + " or not jsonb_exists(d.data, 'deadDependencyReasons')"    // pre-blocker-recovery (log #61)
         + " or not jsonb_exists(d.data, 'assignedAt')"               // pre-concurrency-ceiling (log #64)
         + " or not jsonb_exists(d.data, 'failureReason')"            // pre-status-redesign (log #66)
-        + " or not jsonb_exists(d.data, 'preApproval'))";           // pre-three-valued pre-approval
+        + " or not jsonb_exists(d.data, 'preApproval')"              // pre-three-valued pre-approval
+        + " or not jsonb_exists(d.data, 'scope'))";                 // pre-replication-scope (idea 8c5993c5)
 
     /// <summary>
     /// <see cref="StaleDocument"/>'s markers, plus the fields <see cref="TaskDetails"/> alone

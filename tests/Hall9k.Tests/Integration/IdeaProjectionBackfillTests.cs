@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Npgsql;
 using Xunit;
@@ -105,6 +106,54 @@ public sealed class IdeaProjectionBackfillTests(PostgresFixture postgres) : ICla
             repaired.State.Should().Be(IdeaState.Concluded);
             repaired.CutTaskIds.Should().Equal([taskId], "the stream always named the task this idea became");
             repaired.ConcludedAt.Should().Be(Now.AddDays(1));
+        }
+    }
+
+    /// <summary>
+    /// <see cref="IdeaDetails.Scope"/> (idea 8c5993c5) defaults to <see cref="ReplicationScope.Team"/>
+    /// on a document with no <c>scope</c> key at all, which is exactly wrong for an idea that was
+    /// marked private under the pre-8c5993c5 flag: without this marker, the stale document reads
+    /// team-scoped, and <see cref="EventReplicationOutbox"/> — which reads scope off this projection,
+    /// never the aggregate — would queue that private idea's whole held-back history to the project
+    /// the moment the daemon upgrades (independent pre-PR review, cycle 1, both lenses, high).
+    /// </summary>
+    [Fact]
+    public async Task A_private_idea_projected_before_the_scope_marker_landed_is_restored_after_the_backfill_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        Guid ownerId = DomainId.New();
+        Guid ideaId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            IdeaCaptured captured = IdeaDecider.Capture(
+                ideaId, ownerId, "Kept close for now", projectId: null, Now, ProjectHome.None);
+            IdeaAggregate idea = new();
+            idea.Apply(captured);
+            IdeaScopeSet madePrivate = IdeaDecider.SetPrivate(idea, isPrivate: true, Now.AddMinutes(1), ownerId);
+            seed.Events.StartStream<IdeaAggregate>(ideaId, [captured, madePrivate]);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await StripKeysAsync(ideaId, ["scope"], cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            IdeaDetails stale = (await query.LoadAsync<IdeaDetails>(ideaId, cts.Token))!;
+            stale.Scope.Should().Be(
+                ReplicationScope.Team, "the pre-marker document never wrote this key, and the member initializer falls back to team");
+            stale.IsPrivate.Should().BeFalse("a computed read off the wrongly-defaulted scope reads the same way");
+        }
+
+        IReadOnlyList<Guid> rebuilt = await IdeaDetailsProjectionBackfill.RunAsync(store, cts.Token);
+        rebuilt.Should().Contain(ideaId);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            IdeaDetails repaired = (await query.LoadAsync<IdeaDetails>(ideaId, cts.Token))!;
+            repaired.Scope.Should().Be(ReplicationScope.Private, "the stream always recorded the privacy set; the rebuild restores it");
+            repaired.IsPrivate.Should().BeTrue();
         }
     }
 
