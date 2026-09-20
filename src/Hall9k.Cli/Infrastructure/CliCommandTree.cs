@@ -735,6 +735,21 @@ public static class CliCommandTree
                     + "header carries the same line. With no --project, every registered project is reported.")
                 .WithExample("orchestrator", "status", "--project", "hall9k")
                 .WithExample("orchestrator", "status");
+            orchestrator.AddCommand<OrchestratorFeedCommand>("feed")
+                .WithDescription(
+                    "What happened on this project while no window was live (idea 89471598): every "
+                    + "event past this project's own feed cursor that its --orchestrator-feed band "
+                    + "admits, oldest first, grouped by task and written as one plain line each, from "
+                    + "the feed's own table of event type to wording. Not a second store — a cursor "
+                    + "over this node's own event log and an interest filter, so nothing is buffered "
+                    + "and nothing is lost by not reading it. "
+                    + "A plain read shows the same items again next time; --drain is "
+                    + "the explicit 'I have read these' that moves the cursor; --since reads history "
+                    + "and never moves it. Set the band with h9k project set <name> "
+                    + "--orchestrator-feed actionable|transitions|everything.")
+                .WithExample("orchestrator", "feed", "--project", "hall9k")
+                .WithExample("orchestrator", "feed", "--project", "hall9k", "--drain")
+                .WithExample("orchestrator", "feed", "--project", "hall9k", "--since", "6h");
             orchestrator.AddBranch("launch-text", launchText =>
             {
                 launchText.SetDescription(

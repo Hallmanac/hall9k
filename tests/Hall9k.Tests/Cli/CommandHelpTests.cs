@@ -29,6 +29,7 @@ public sealed class CommandHelpTests
         { typeof(IdeaPromoteCommand.Settings), nameof(IdeaPromoteCommand.Settings.Project) },
         { typeof(EpicAddCommand.Settings), nameof(EpicAddCommand.Settings.Project) },
         { typeof(EpicListCommand.Settings), nameof(EpicListCommand.Settings.Project) },
+        { typeof(OrchestratorFeedCommand.Settings), nameof(OrchestratorFeedCommand.Settings.Project) },
     };
 
     [Fact]
