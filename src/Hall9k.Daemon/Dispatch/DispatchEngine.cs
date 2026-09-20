@@ -725,6 +725,8 @@ public sealed class DispatchEngine(
             session, archivedProjects, ownerRootFingerprint, cancellationToken);
         ReportFingerprintMismatches(await ReadFingerprintMismatchedTaskIdsAsync(
             session, ownerRootFingerprint, cancellationToken));
+        ReportNodePlacementSkips(await ReadNodePlacementMismatchedTaskIdsAsync(
+            session, ownerRootFingerprint, node.NodeId, cancellationToken));
 
         // Measured after the queue is read rather than before it, because a project cap can only
         // be measured against the projects that actually have a candidate this sweep — a paused
@@ -940,6 +942,7 @@ public sealed class DispatchEngine(
         CancellationToken cancellationToken)
     {
         Guid ownerId = node.OwnerId;
+        Guid thisNodeId = node.NodeId;
 
         // Marker first (task 45136b29, idea fcaded0b's R7 ruling): a task a human recorded as
         // queue-first (h9k task revise --queue-first, or h9k task handback --first) takes the
@@ -984,6 +987,11 @@ public sealed class DispatchEngine(
             .Where(t =>
                 (t.AssignedOwnerFingerprint == null && t.AssignedOwnerId == ownerId) ||
                 (t.AssignedOwnerFingerprint != null && t.AssignedOwnerFingerprint == ownerRootFingerprint))
+            // Mirrors IsPlacedOnThisNode exactly (idea 202383dc: an owner can place a task on one
+            // of their own nodes), the same never-disagree discipline the fingerprint branch above
+            // already gives the owner match: an unplaced row (no other node named) is a candidate
+            // for every node of the granted owner, a placed row only for the node it names.
+            .Where(t => t.PlacedOnNodeId == null || t.PlacedOnNodeId == thisNodeId)
             .OrderByDescending(t => t.QueuePriorityMarked)
             .ThenBy(t => t.AssignedAt)
             .ThenBy(t => t.AddedAt)
@@ -1041,6 +1049,28 @@ public sealed class DispatchEngine(
                     && t.AssignedOwnerFingerprint != ownerRootFingerprint)
                 .Select(t => t.Id)
                 .ToListAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// The rows <see cref="ReadQueueAsync"/>'s own placement branch excludes from the queue read
+    /// (idea 202383dc: an owner can place a task on one of their own nodes) — this node's own
+    /// owner's work, but placed on a different node of that same owner's fleet. Unlike a
+    /// fingerprint mismatch, this is ordinary, expected steady state — a placement is advisory
+    /// routing, not a security refusal — so it is reported at debug level, once per sweep, rather
+    /// than the fingerprint mismatch's own once-per-episode warning.
+    /// </summary>
+    private async Task<IReadOnlyList<Guid>> ReadNodePlacementMismatchedTaskIdsAsync(
+        IQuerySession session, string? ownerRootFingerprint, Guid thisNodeId, CancellationToken cancellationToken)
+    {
+        Guid ownerId = node.OwnerId;
+        return await session.Query<TaskListItem>()
+            .Where(t => t.MatchesSql("d.data ->> 'state' = ?", TaskState.Queued.Value))
+            .Where(t =>
+                (t.AssignedOwnerFingerprint == null && t.AssignedOwnerId == ownerId) ||
+                (t.AssignedOwnerFingerprint != null && t.AssignedOwnerFingerprint == ownerRootFingerprint))
+            .Where(t => t.PlacedOnNodeId != null && t.PlacedOnNodeId != thisNodeId)
+            .Select(t => t.Id)
+            .ToListAsync(cancellationToken);
     }
 
     /// <summary>
@@ -1433,6 +1463,24 @@ public sealed class DispatchEngine(
     }
 
     /// <summary>
+    /// One debug line per placed-elsewhere task, every sweep this node's own queue read still
+    /// finds one (idea 202383dc: an owner can place a task on one of their own nodes) — unlike
+    /// <see cref="ReportFingerprintMismatches"/>'s once-per-episode warning, this is expected,
+    /// ordinary routing rather than a fact that needs a human's attention, so it carries no
+    /// deduplicating set of its own and is logged at debug on every sweep it still applies to.
+    /// </summary>
+    private void ReportNodePlacementSkips(IReadOnlyCollection<Guid> placedElsewhere)
+    {
+        foreach (Guid taskId in placedElsewhere)
+        {
+            logger.LogDebug(
+                "Task {TaskId} stays queued on this node: it is placed on a different node of this owner's "
+                + "own fleet (h9k task assign {TaskId} --node) — that node's own dispatch sweep claims it",
+                taskId, taskId);
+        }
+    }
+
+    /// <summary>
     /// The project cap's own deferral log (Decisions Log #140), on the same one-line-per-episode
     /// discipline <see cref="ReportDeferrals"/> gives the node ceiling and for the same reason —
     /// but as its own line, with its own set, because the two are different limits with different
@@ -1487,6 +1535,16 @@ public sealed class DispatchEngine(
         string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
             session, node.OwnerId, cancellationToken);
         if (!IsGrantedToThisOwner(task.AssignedOwnerId, task.AssignedOwnerFingerprint, node.OwnerId, ownerRootFingerprint))
+        {
+            return null;
+        }
+
+        // Belt and suspenders, the same discipline as the owner gate immediately above: ReadQueueAsync's
+        // own pre-filter already excludes a task placed on another node, so reaching this refusal
+        // here is only ever a race against a placement that changed between the queue read and
+        // this claim — silent, like every other belt-and-suspenders re-check in this method, since
+        // ReportNodePlacementSkips (below) is what actually informs an operator.
+        if (!IsPlacedOnThisNode(task.PlacedOnNodeId, node.NodeId))
         {
             return null;
         }
@@ -1632,6 +1690,17 @@ public sealed class DispatchEngine(
     internal static bool IsGrantedToThisOwner(
         Guid? assignedOwnerId, string? assignedOwnerFingerprint, Guid thisOwnerId, string? thisOwnerRootFingerprint) =>
         TaskDecider.IsGrantedToThisOwner(assignedOwnerId, assignedOwnerFingerprint, thisOwnerId, thisOwnerRootFingerprint);
+
+    /// <summary>
+    /// Whether a task's advisory node placement (idea 202383dc: an owner can place a task on one
+    /// of their own nodes) admits a claim from this node. A thin forward onto
+    /// <see cref="TaskDecider.IsPlacedOnThisNode"/>, the identical predicate <see cref="TaskDecider.Claim"/>
+    /// applies immediately behind this gate — kept as its own named member for the same reason
+    /// <see cref="IsGrantedToThisOwner"/> is: the queue pre-filter's own doc comment
+    /// (<c>ReadQueueAsync</c>, above) and this feature's own tests refer to it by this name.
+    /// </summary>
+    internal static bool IsPlacedOnThisNode(Guid? placedOnNodeId, Guid thisNodeId) =>
+        TaskDecider.IsPlacedOnThisNode(placedOnNodeId, thisNodeId);
 
     /// <summary>
     /// The claim's own conditional write of the ledger holder (idea 202383dc, A3b): when the
