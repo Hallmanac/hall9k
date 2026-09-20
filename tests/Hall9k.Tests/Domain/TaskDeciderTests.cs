@@ -2775,6 +2775,26 @@ public sealed class TaskDeciderTests
         onceMadePrivate.Scope.Should().Be(ReplicationScope.Private);
     }
 
+    [Fact]
+    public void A_scope_widen_applied_before_its_own_add_is_never_narrowed_back_down()
+    {
+        // independent pre-PR review, idea 19489eff, cycle 11, conformance, high: a replicated
+        // stream can apply TaskAdded after TaskScopeSet for the same task when the two arrive at
+        // a node through different relays. TaskAdded's own InitialScope must never undo a widen
+        // that was already applied — it only ever supplies the starting point.
+        Guid taskId = DomainId.New();
+        TaskAggregate task = new();
+        task.Apply(new TaskScopeSet(taskId, ReplicationScope.Team, Now, Owner));
+
+        task.Apply(new TaskAdded(
+            taskId, DomainId.New(), "out-of-order task", ["it ships"], TaskType.Feature,
+            AgentContext: null, Constraints: null, ExternalReference: null, AddedAt: Now.AddSeconds(1),
+            AddedByOwnerId: Owner, StartsAsDraft: true, InitialScope: ReplicationScope.Fleet));
+
+        task.Scope.Should().Be(
+            ReplicationScope.Team, "the earlier-applied widen must survive a later-processed add that only ever knew about Fleet");
+    }
+
     private static TaskAggregate FailedTask()
     {
         TaskAggregate task = ClaimedTask();

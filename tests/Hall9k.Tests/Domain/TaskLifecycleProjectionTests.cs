@@ -98,6 +98,38 @@ public sealed class TaskLifecycleProjectionTests
             .SecondaryExternalReference.Should().BeNull();
     }
 
+    /// <summary>
+    /// Marten's inline projection always starts a document once it sees any event for a stream,
+    /// even one with no matching <c>Create</c> — so a replicated node can apply
+    /// <see cref="TaskScopeSet"/> before it ever sees this task's own <see cref="TaskAdded"/>,
+    /// leaving the document already at <see cref="ReplicationScope.Team"/> by the time
+    /// <see cref="TaskAdded"/> is processed via <c>Apply</c> rather than <c>Create</c> (independent
+    /// pre-PR review, idea 19489eff, cycle 11, conformance, high). Both projections must repopulate
+    /// every other field <see cref="TaskAdded"/> is authoritative for while still raising, never
+    /// resetting, the scope already recorded.
+    /// </summary>
+    [Fact]
+    public void A_scope_widen_applied_before_its_own_add_is_never_narrowed_back_down()
+    {
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        TaskAdded added = new(
+            id, DomainId.New(), "Out-of-order add", ["it ships"], TaskType.Feature,
+            null, null, null, Now.AddSeconds(1), ownerId, StartsAsDraft: true, InitialScope: ReplicationScope.Fleet);
+
+        TaskListItem list = new();
+        new TaskListItemProjection().Apply(new FakeEvent<TaskScopeSet>(new TaskScopeSet(id, ReplicationScope.Team, Now, ownerId)), list);
+        new TaskListItemProjection().Apply(new FakeEvent<TaskAdded>(added), list);
+        list.Scope.Should().Be(ReplicationScope.Team, "the earlier-applied widen must survive a later-processed add");
+        list.Objective.Should().Be("Out-of-order add", "the add is still authoritative for every field but scope");
+
+        TaskDetails details = new();
+        new TaskDetailsProjection().Apply(new FakeEvent<TaskScopeSet>(new TaskScopeSet(id, ReplicationScope.Team, Now, ownerId)), details);
+        new TaskDetailsProjection().Apply(new FakeEvent<TaskAdded>(added), details);
+        details.Scope.Should().Be(ReplicationScope.Team, "the earlier-applied widen must survive a later-processed add");
+        details.Objective.Should().Be("Out-of-order add", "the add is still authoritative for every field but scope");
+    }
+
     [Fact]
     public void The_list_row_walks_draft_published_blocked_and_queued()
     {

@@ -272,6 +272,16 @@ public sealed class TaskDetails
     }
 
     /// <summary>
+    /// Raises <see cref="Scope"/> to <paramref name="proposed"/> unless it already sits at or
+    /// above that rank — the one-way merge <see cref="ReplicationScope.IsAtLeast"/> encodes,
+    /// used where a value already recorded on this document must never be narrowed back down by
+    /// a later-processed event that happens to carry an older fact (independent pre-PR review,
+    /// idea 19489eff, cycle 11, conformance, high).
+    /// </summary>
+    internal void RaiseScope(ReplicationScope proposed) =>
+        _scope = _scope is null || proposed.IsAtLeast(_scope) ? proposed : _scope;
+
+    /// <summary>
     /// The pre-8c5993c5 stored flag (see <see cref="TaskAggregate.IsPrivate"/>). No current write
     /// ever sets this — every projection handler sets <see cref="Scope"/> directly — but the setter
     /// stays public so a document written before <see cref="Scope"/> existed still deserializes its
@@ -561,6 +571,48 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         Origin = @event.Data.Origin,
         Scope = @event.Data.InitialScope ?? ReplicationScope.Team,
     };
+
+    /// <summary>
+    /// Only reached when a document for this stream already exists by the time the add event is
+    /// processed — never true in normal causal order, since <see cref="Create"/> above always
+    /// claims this event first. It happens when a scope-widening event for this same task is
+    /// received and applied before the true origin's own history catches up (idea 8c5993c5,
+    /// independent pre-PR review, cycle 11, conformance, high): the out-of-order event still
+    /// materializes a document (Marten always starts one, even with no matching Create), and this
+    /// event then finds it already there. Repopulates every field the add is authoritative for
+    /// exactly as <see cref="Create"/> would, and raises rather than sets <see cref="TaskDetails.Scope"/>
+    /// so the earlier-processed widen is never narrowed back down.
+    /// </summary>
+    public void Apply(IEvent<TaskAdded> @event, TaskDetails view)
+    {
+        view.Id = @event.Data.Id;
+        view.ProjectId = @event.Data.ProjectId;
+        view.Objective = @event.Data.Objective;
+        view.AcceptanceCriteria = [.. @event.Data.AcceptanceCriteria];
+        view.Type = @event.Data.Type;
+        view.State = @event.Data.StartsAsDraft ? TaskState.Draft : TaskState.Queued;
+        view.AssignedOwnerId = @event.Data.StartsAsDraft ? null : @event.Data.AddedByOwnerId;
+        view.AssignedAt = @event.Data.StartsAsDraft ? null : @event.Data.AddedAt;
+        view.BlockedBy = [.. @event.Data.BlockedBy ?? []];
+        view.StackedOnTaskId = @event.Data.StackedOnTaskId;
+        view.StackedOnPullRequestNumber = @event.Data.StackedOnPullRequestNumber;
+        view.AgentContext = @event.Data.AgentContext;
+        view.Constraints = @event.Data.Constraints;
+        view.SpikeKind = @event.Data.SpikeKind ?? SpikeKind.Unknown;
+        view.ExitCriterion = @event.Data.ExitCriterion;
+        view.ExternalReference = @event.Data.ExternalReference?.ToString();
+        view.SecondaryExternalReference = @event.Data.SecondaryExternalReference?.ToString();
+        view.Model = @event.Data.Model ?? AgentModel.Unknown;
+        view.AddedAt = @event.Data.AddedAt;
+        view.AddedByOwnerId = @event.Data.AddedByOwnerId;
+        view.SourceIdeaId = @event.Data.SourceIdeaId;
+        view.EpicId = @event.Data.EpicId;
+        view.ReviewStageComposition = @event.Data.ReviewStageComposition;
+        view.PreApproval = @event.Data.EffectivePreApproval;
+        view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
+        view.Origin = @event.Data.Origin;
+        view.RaiseScope(@event.Data.InitialScope ?? ReplicationScope.Team);
+    }
 
     public void Apply(IEvent<TaskPublished> @event, TaskDetails view)
     {
