@@ -112,8 +112,9 @@ Add rate limiting to auth endpoints
   another session — starts while it is still writing to it. A command run with no
   explicit `timeout` only gets `BASH_DEFAULT_TIMEOUT_MS`, 30 minutes
   today — request an explicit `timeout` up to the actual foreground ceiling,
-  `BASH_MAX_TIMEOUT_MS`, 60 minutes today, sized so this
-  project's full verification suite fits inside one foreground run.
+  `BASH_MAX_TIMEOUT_MS`, 60 minutes today, sized so every gate
+  this session itself runs fits inside one foreground run — a project's own host-coupled
+  gate, if it has one, is never among them; the gate list above says so wherever it applies.
   Never generate host load to reproduce or prove a flaky or timing-dependent test: no
   parallel copies of a suite or test, no stress or spin loops, no deliberate memory
   pressure, no CPU pinning — nothing whose purpose is to make a flake appear or to prove
