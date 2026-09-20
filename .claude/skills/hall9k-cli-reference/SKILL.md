@@ -438,9 +438,16 @@ ever runs on a node it records that node's own current global event sequence as 
 point on the Node stream (idea 202383dc: migrating Brian's own two existing nodes keeps each one's
 history exactly as it is — no wipe, no re-adoption); nothing at or before that point ever travels,
 and the flush position past it is durable in the node's own store, so a restart never re-sends or
-skips. A task or idea can be kept off every outbox regardless of its own event classification with
-`h9k task set-private`/`h9k idea set-private` (on/off) — a draft you are not ready for a teammate
-to see. Only a chain-verified sender's events are ever applied (the identical rule messages
+skips. A task or idea carries a replication scope (idea 8c5993c5): `Private` never leaves this node,
+`Fleet` (the default for a fresh idea capture or draft task) reaches every node the same owner
+runs, and `Team` reaches every project member's own fleet — the scope publishing a task always
+moves it to unconditionally. Set any of the three directly with `h9k task scope`/`h9k idea scope`,
+or reach team on the owner's own word with `h9k task share`/`h9k idea share` (sugar for scope
+team, an idempotent no-op once already there — `h9k task share`'s own door lets a draft reach a
+teammate before it is ready to publish, idea 18464daa). `h9k task set-private`/`h9k idea set-private`
+(on/off) is the pre-8c5993c5 alias, still a two-valued question: on is sugar for scope private, off
+is sugar for scope fleet — never straight to team on its own. Team is one-way: once a task or idea
+reaches team scope, no command narrows it back to fleet or private. Only a chain-verified sender's events are ever applied (the identical rule messages
 already enforce); an unverified sender's batch is ignored and named in `h9k status`. The engine
 fence keys on origin: dispatch, closeout, review, and verification act only on a run or task this
 node produced or holds, so a replicated claim by another node's owner is never claimed, dispatched,
@@ -577,7 +584,9 @@ h9k task add --from-idea <id> --objective "<…>"   # cut a draft task from it; 
 h9k idea promote <id> [--project <name>]          # sugar: cuts one task (note's first sentence) and concludes
 h9k idea conclude <id> --reason "<what came of it>"  # terminal: discovery produced something
 h9k idea archive <id> --reason "<why>"            # terminal: discovery produced nothing; never deleted
-h9k idea set-private <id> on|off                  # idea 202383dc, M2a: keep this idea's own events off every outbox until cleared, so a teammate never sees a draft you set aside
+h9k idea set-private <id> on|off                  # idea 8c5993c5: pre-8c5993c5 alias — on is sugar for scope private, off is sugar for scope fleet, never straight to team on its own
+h9k idea scope <id> private|fleet|team            # idea 8c5993c5: set this idea's own replication scope directly; refused only if already at that scope, or already team and asked narrower (team is one-way)
+h9k idea share <id>                               # idea 8c5993c5: sugar for scope team; idempotent no-op once already team
 ```
 
 Every idea owns a discovery workspace, where research notes, gathered files, and prototypes
@@ -616,7 +625,9 @@ h9k task publish <id> --pre-approved after-human-review   # the same automatic m
 h9k task assign <id> [<owner>] [--take] [--node [NODE]]   # the dispatch trigger — Queued, or Blocked on dependencies; --take also takes the linked card/issue for this install when nobody holds it, in a project whose claim gate is on (Decisions Log #143); --node <id-or-fragment> places the task on one of the owner's own vouched nodes so only that node's dispatcher claims it and every other node of the same owner stands down without a forced take, and a bare --node with nothing named clears an existing placement (idea 202383dc: an owner can place a task on one of their own nodes)
 h9k task set-session-cap <id> <cap>               # override how many agent sessions this task's run may hold at once; settable any time, even mid-run (Decisions Log #111)
 h9k task set-pre-approved <id> on|off|after-human-review   # set standing pre-approval after publish, without the unassign/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged, Draft excepted (pre-approval is part of the readiness contract set at publish). after-human-review waits for a requested human reviewer to approve the head; flipping it to on is the emergency path and merges on the next sweep. No reviewer is ever named here — reviewers are added in GitHub (Decisions Log #135, #149)
-h9k task set-private <id> on|off                  # idea 202383dc, M2a: keep this task's own events off every outbox until cleared, so a teammate never sees a draft you set aside
+h9k task set-private <id> on|off                  # idea 8c5993c5: pre-8c5993c5 alias — on is sugar for scope private, off is sugar for scope fleet, never straight to team on its own; publishing already sets team unconditionally
+h9k task scope <id> private|fleet|team            # idea 8c5993c5: set this task's own replication scope directly; refused only if already at that scope, or already team and asked narrower (team is one-way)
+h9k task share <id>                               # idea 8c5993c5: sugar for scope team, without publishing — the door for sharing a draft before it is ready to publish (idea 18464daa); idempotent no-op once already team
 h9k task unassign <id>                            # back to Published (refused while leased)
 h9k task draft <id>                               # Published back to Draft, so it can be revised
 ```
