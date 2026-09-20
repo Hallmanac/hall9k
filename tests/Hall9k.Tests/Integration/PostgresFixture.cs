@@ -69,14 +69,15 @@ public sealed class PostgresFixture : IAsyncLifetime
     // The permit is held for a class's entire run, not just its container startup (see
     // InitializeAsync/DisposeAsync below). Every Postgres-backed class declares
     // IClassFixture<PostgresFixture> for itself, and xUnit builds one instance per test class, so
-    // the permit is acquired and released at every class boundary: 25 acquisitions per run (see
-    // the count paragraph on the type), not one per collection.
+    // the permit is acquired and released at every class boundary: one acquisition per
+    // Postgres-backed class per run (see the count paragraph on the type for why no number is
+    // pinned here), not one per collection.
     //
     // There is deliberately no timeout on the wait itself. A fixed deadline was tried and removed:
     // it was sized against this one process's own tier duration (PLAN.md §16 #108's measured
     // 7m29s-8m4s), which stopped being the right number the moment the gate went cross-process —
     // N overlapping dotnet test invocations queue behind each other's permits too, not just this
-    // process's own 25 acquisitions, so the same deadline that was generous for one process starts
+    // process's own per-class acquisitions, so the same deadline that was generous for one process starts
     // firing under two or three and misreports genuine contention as "the gate or the Docker daemon
     // is genuinely stuck". GitWorktreeManager.AcquireCrossProcessLockAsync already settled this for
     // the same shape of wait: "there is no safe value to time this out to". What that wait uses
@@ -195,9 +196,9 @@ public sealed class PostgresFixture : IAsyncLifetime
     /// above make the store compile. Setting <c>Auto</c> on this store would therefore fall
     /// straight through to dynamic generation and change nothing measurable, unless the test
     /// project also turned on source-code writing and started generating sources into itself: a
-    /// build-order coupling this repository does not have, in exchange for 25 bootstraps a run
-    /// (see the count paragraph on the type) that sharing the store already brought down from
-    /// roughly 560.
+    /// build-order coupling this repository does not have, in exchange for one bootstrap per
+    /// Postgres-backed class per run (see the count paragraph on the type for why no number is
+    /// pinned here) that sharing the store already brought down from roughly 560.
     /// </para>
     /// </summary>
     public DocumentStore Store => _store.Value;

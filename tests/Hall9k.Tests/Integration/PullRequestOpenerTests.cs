@@ -30,8 +30,6 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
     private readonly ScopedTestHome _scopedHome = new();
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hall9k-pr-{Guid.NewGuid():N}");
 
-    private string _home => _scopedHome.Home;
-
     [Fact]
     public async Task Local_origin_flow_pushes_branch_completes_task_and_removes_worktree()
     {

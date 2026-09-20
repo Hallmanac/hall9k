@@ -36,8 +36,8 @@ using Xunit;
 namespace Hall9k.Tests.Integration;
 
 // HALL9K_CLAUDE_PATH has no flow-scoped alternative (Decisions Log PLACEHOLDER-98484f36), so
-// this class still writes it directly and joins the one serial collection left for that.
-// HALL9K_HOME is redirected through ScopedTestHome like everywhere else.
+// this class still writes it directly and joins the one collection left for a process-wide
+// environment variable. HALL9K_HOME is redirected through ScopedTestHome like everywhere else.
 [Collection("Environment")]
 [Trait("Category", "Environment")]
 [Trait("Category", "RequiresDocker")]
@@ -61,8 +61,6 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
         """{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1200,"cache_read_input_tokens":840000,"cache_creation_input_tokens":21000,"output_tokens":300},"total_cost_usd":0.0123}""";
 
     private readonly ScopedTestHome _scopedHome = new();
-
-    private string _home => _scopedHome.Home;
 
     // NewSupervisor always hands ReviewEngine (and PrReviewEngine) a real ClaudeExecutor,
     // regardless of whatever executor a test passes in for the primary/verification path — see

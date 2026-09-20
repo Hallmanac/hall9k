@@ -19,7 +19,7 @@ namespace Hall9k.Tests.Cli;
 // This class still clears HALL9K_CONNECTION_STRING directly, needing the environment-variable
 // tier itself suppressed rather than redirected to a specific value — which
 // ScopedConnectionString cannot stand in for (Decisions Log PLACEHOLDER-98484f36) — so it stays
-// in the one serial collection left for a literal environment-variable write.
+// in the one collection left for a process-wide environment variable.
 // HALL9K_HOME is redirected through ScopedTestHome like everywhere else.
 [Collection("Environment")]
 [Trait("Category", "Environment")]

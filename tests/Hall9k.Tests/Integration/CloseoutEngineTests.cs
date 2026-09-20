@@ -58,8 +58,6 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
     private readonly ScopedTestHome _scopedHome = new();
 
-    private string _home => _scopedHome.Home;
-
     // SeedJiraConnectionAsync records this as the registered connection's credential reference,
     // which is exactly what TellJiraAsync's own JiraAccount now resolves through CredentialVault
     // before it can build the executor a merge comment writes through — unlike the twg-process
