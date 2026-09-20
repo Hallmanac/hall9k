@@ -39,6 +39,37 @@ public sealed class LaunchAnchorDocumentTests
     }
 
     [Fact]
+    public void The_first_step_registers_the_window_with_the_platform()
+    {
+        string rendered = LaunchAnchorDocument.Render();
+
+        rendered.Should().Contain("h9k orchestrator register",
+            "the platform learns an orchestrator is up here because the anchor says so first, not because anyone typed it");
+        rendered.Should().Contain("--project").And.Contain("--session").And.Contain("--pid").And.Contain("--cli");
+        rendered.Should().Contain("$CLAUDE_PID", "the process id is the one identity every vendor's CLI has");
+
+        // Ordering, not mere presence: registration is step one, ahead of the .new comparison and
+        // the hand-off to recipes/orchestrator.md, so a window that stops to ask the operator
+        // about an adopted recipe file has already been recorded as live.
+        int register = rendered.IndexOf("h9k orchestrator register", StringComparison.Ordinal);
+        int newFileHandling = rendered.IndexOf(".new", StringComparison.Ordinal);
+        int handoff = rendered.IndexOf("Read `recipes/orchestrator.md`", StringComparison.Ordinal);
+        register.Should().BeGreaterThan(0);
+        register.Should().BeLessThan(newFileHandling).And.BeLessThan(handoff);
+    }
+
+    [Fact]
+    public void The_register_step_refuses_to_let_the_window_decide_a_replacement_on_its_own()
+    {
+        string rendered = LaunchAnchorDocument.Render();
+
+        rendered.Should().Contain("--replace",
+            "a refused registration has one lever, and the anchor has to name it");
+        rendered.Should().Contain("let them decide",
+            "which window wins is the operator's call, never the new window's");
+    }
+
+    [Fact]
     public void Writing_always_overwrites_whatever_was_there()
     {
         string path = Path.Combine(Path.GetTempPath(), $"launch-anchor-{Guid.NewGuid():N}.md");
