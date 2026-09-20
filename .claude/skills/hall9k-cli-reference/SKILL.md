@@ -113,6 +113,24 @@ workspace. The hall9k project's own move into its default home landed as that cu
 (backlog 52): the project home at `~/.hall9k/projects/hall9k` is canonical, and this repository is
 worked from its `repo/dev` worktree.
 
+**The platform knows whether an orchestrator window is live for a project on this node**
+(Decisions Log #PLACEHOLDER-579dcd44, idea 89471598). A window declares itself at launch with
+`h9k orchestrator register --project <name> --session <session-name> --pid <pid> [--cli claude-code]
+[--replace]`, which the launch anchor calls as its own first start-up step, and drops the claim
+with `h9k orchestrator deregister --project <name> --pid <pid>`, which the recipe's restart and
+close steps call; a window drops its own claim and only its own, so a registration another window
+holds is reported and left standing. Presence is declared rather than discovered because no registry can answer it: Claude
+Code's own session registry cannot tell the orchestrator window from the discovery, refinement,
+and planning sessions running in the same project home, and another vendor's CLI may keep none at
+all, so liveness is checked against the process id alone. Registering the same session again is a
+no-op; a second live orchestrator for the same project on this node is refused naming the live
+one, and `--replace` takes it over, recording it as shut down first. The daemon's own presence
+sweep records a registered window whose process is gone as lost, with the time it noticed.
+`h9k orchestrator status [--project <name>]` and the `h9k status` header both print the same
+line: the live window's session name, CLI, process id and age, or "none live" with the last
+shutdown or loss time. The feed courier that is to act on it, spawning only while a window is up,
+is designed and not built (idea 89471598, piece 3).
+
 **The same bare repo also carries a hidden ledger** (Decisions Log #189, idea
 202383dc), a set of
 git refs under `refs/hall9k/` that GitHub never shows and branch protection never sees (both match

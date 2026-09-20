@@ -1004,6 +1004,11 @@ window) is a per-agent-CLI setting on the project or the node, shown and replace
 probe and stamps the observed turn-one token cost onto that same record. `h9k orchestrator node`
 and `h9k orchestrator project [PROJECT]` print a window's daemon liveness, launch text, recipe and
 journal paths, and last-measured cost; neither one launches a session (Decisions Log #147).
+Whether a window is actually up is a separate, recorded fact: a window registers itself
+(`h9k orchestrator register`) as the launch anchor's first start-up step and deregisters when the
+recipe restarts or closes it, the daemon records a registered window whose process is gone as
+lost, and `h9k orchestrator status` and the `h9k status` header both name the live one. Liveness
+is by process id, so it holds for any vendor's CLI (Decisions Log #PLACEHOLDER-579dcd44).
 
 ### The help tree
 
