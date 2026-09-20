@@ -79,6 +79,17 @@ public static class TaskLifecycleProjectionBackfill
     /// by the projection version that discarded it. It reads the raw event, not the document, which
     /// is the only way to tell the two apart.
     /// </para>
+    /// <para>
+    /// <see cref="TaskListItem.PlacedOnNodeId"/> and <see cref="TaskDetails.PlacedOnNodeId"/> (idea
+    /// 202383dc: an owner can place a task on one of their own nodes) belong to the
+    /// <see cref="TaskListItem.EpicId"/> class, not the fingerprint class above: they are nullable
+    /// and mean "unplaced", which is exactly the truthful reading of an absent key on a document
+    /// written before placement existed, an explicit null left by an unassign or an interactive
+    /// claim unassign, and a task that was never placed at all. There is no dead-blocker-shaped
+    /// failure mode to repair — a missing key, an explicit null, and "never placed" all read
+    /// identically on every path that consumes this field, which
+    /// <c>DispatchEngineNodePlacementGateTests</c>' unplaced-admits-everyone case already proves.
+    /// </para>
     /// </summary>
     private const string StaleDocument =
         "(not jsonb_exists(d.data, 'assignedOwnerId')"               // pre-lifecycle-split (log #34)
