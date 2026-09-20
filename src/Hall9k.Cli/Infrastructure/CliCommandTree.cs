@@ -679,10 +679,11 @@ public static class CliCommandTree
         config.AddBranch("orchestrator", orchestrator =>
         {
             orchestrator.SetDescription(
-                "A lean node or project orchestrator window: what it is running, its launch text, and where "
-                + "its recipe and journal are (task: an operator starts a lean node or project orchestrator "
-                + "window). Every command here prints; none of them launch a session — an operator copies the "
-                + "printed line and pastes it into a fresh terminal themselves.");
+                "A lean node or project orchestrator window: what it is running, its launch text, where "
+                + "its recipe and journal are, and whether one is live on this node right now (task: an "
+                + "operator starts a lean node or project orchestrator window; idea 89471598, piece 1). "
+                + "None of these commands launch a session — an operator copies the printed line and pastes "
+                + "it into a fresh terminal themselves, and the window registers itself once it is up.");
             orchestrator.AddCommand<OrchestratorNodeCommand>("node")
                 .WithDescription(
                     "The node orchestrator's own view: h9k daemon status's liveness, the node's launch text "
@@ -698,6 +699,38 @@ public static class CliCommandTree
                     + "prints per project rather than prompting. Never launches.")
                 .WithExample("orchestrator", "project")
                 .WithExample("orchestrator", "project", "hall9k");
+            orchestrator.AddCommand<OrchestratorRegisterCommand>("register")
+                .WithDescription(
+                    "Declare this window the live orchestrator for a project on this node, recording its "
+                    + "session name, process id, agent CLI, and the time (idea 89471598, piece 1). The launch "
+                    + "anchor calls this as its first start-up step, so the record exists without anyone typing "
+                    + "it. Presence has to be declared rather than discovered: Claude Code's own session "
+                    + "registry cannot tell this window from the discovery, refinement, and planning sessions "
+                    + "that also run in the same project home, and another vendor's CLI may keep no registry at "
+                    + "all — a process id is the one identity they all share. The same session registering "
+                    + "again is a no-op; a second live orchestrator for the same project on this node is "
+                    + "refused naming the live one, unless --replace records that one as shut down first.")
+                .WithExample("orchestrator", "register", "--project", "hall9k", "--session", "hall9k-orchestrator",
+                    "--pid", "48213", "--cli", "claude-code")
+                .WithExample("orchestrator", "register", "--project", "hall9k", "--session", "hall9k-orchestrator",
+                    "--pid", "48213", "--cli", "claude-code", "--replace");
+            orchestrator.AddCommand<OrchestratorDeregisterCommand>("deregister")
+                .WithDescription(
+                    "Record that this project's orchestrator window on this node has gone, deliberately — "
+                    + "what the recipe's own restart and close steps call, so a normal exit reads as a "
+                    + "shutdown rather than waiting to be found gone by the daemon's presence sweep. "
+                    + "Idempotent: a project with nothing registered here says so and exits zero. --pid is "
+                    + "the leaving window's own process id, so it drops its own claim and only its own — a "
+                    + "registration another window holds is left standing and reported, never ended here.")
+                .WithExample("orchestrator", "deregister", "--project", "hall9k", "--pid", "48213");
+            orchestrator.AddCommand<OrchestratorStatusCommand>("status")
+                .WithDescription(
+                    "Whether an orchestrator window is live for a project on this machine: its session name, "
+                    + "CLI, process id, and how long it has been up — or 'none live' with the last shutdown or "
+                    + "loss time. Liveness is by process id, so it answers for any vendor's CLI. The h9k status "
+                    + "header carries the same line. With no --project, every registered project is reported.")
+                .WithExample("orchestrator", "status", "--project", "hall9k")
+                .WithExample("orchestrator", "status");
             orchestrator.AddBranch("launch-text", launchText =>
             {
                 launchText.SetDescription(
