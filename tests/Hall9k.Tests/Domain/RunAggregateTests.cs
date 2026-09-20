@@ -3,15 +3,18 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
 
 // A_stream_with_no_recorded_run_directory_falls_back_to_the_global_location compares
 // RunAggregate's own RunPaths.GlobalDirectory fallback (resolved once, at Apply) against a
-// second, independent RunPaths.GlobalDirectory call — both read the process-wide HALL9K_HOME
-// variable PlatformPaths.Home resolves, so this races any test that redirects it the same way
-// RunPathsTests does; see the note there for the origin incident.
+// second, independent RunPaths.GlobalDirectory call — both read PlatformPaths.Home, so this one
+// test opens its own ScopedTestHome to keep its two reads consistent with each other regardless
+// of what any other test's own literal HALL9K_HOME write is doing concurrently (see RunPathsTests
+// for the same shape and the origin incident); nothing else in this class reads a home-derived
+// path at all.
 public sealed class RunAggregateTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
@@ -2215,6 +2218,7 @@ public sealed class RunAggregateTests
     [Fact]
     public void A_stream_with_no_recorded_run_directory_falls_back_to_the_global_location()
     {
+        using ScopedTestHome scope = new();
         RunAggregate run = new();
         Guid id = DomainId.New();
 

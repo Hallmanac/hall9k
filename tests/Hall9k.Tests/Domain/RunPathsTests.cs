@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -14,19 +15,27 @@ namespace Hall9k.Tests.Domain;
 /// <see cref="Hall9k.Domain.Features.Run.Projections.RunDetails"/> for the fallback a stream
 /// written before this existed replays through.
 /// </summary>
-// GlobalDirectory resolves through PlatformPaths.Home — only ever reads it, never writes it, and
-// a read can never observe a different test's own redirected home now that HALL9K_HOME goes
+// GlobalDirectory resolves through PlatformPaths.Home — only ever reads it, never writes it, so
+// a lone read can never observe a different test's own redirected home now that HALL9K_HOME goes
 // through the flow-scoped ScopedTestHome seam rather than a process-wide write (Decisions Log
 // PLACEHOLDER-98484f36; origin of the seam itself: this test intermittently observed an
 // h9k-update-* scratch home under the old process-wide mechanism, gate strikes on 34a618a6
-// 2026-08-29 and cea5ae6e 2026-08-30). So this class needs no serializing collection at all. The
-// nested ResolveCurrentDirectoryTests and AnticipateDirectoryAfterSweepTests classes below take an
-// explicit home directory rather than reading PlatformPaths.Home in the first place.
+// 2026-08-29 and cea5ae6e 2026-08-30). The two tests below each compare TWO independent
+// PlatformPaths.Home-derived reads against each other, though, and a literal process-wide
+// HALL9K_HOME write (PlatformPathsTests, PlatformConfigFileSourceTests, both
+// [Collection("Environment")]) still races an unprotected class outside that collection — so each
+// wraps its own pair of reads in its own ScopedTestHome, which outranks the environment variable
+// regardless of what any other test's concurrent write is doing (independent pre-PR review,
+// cycle 1, both lenses). So this class still needs no serializing collection, only its own scope
+// where it genuinely reads twice. The nested ResolveCurrentDirectoryTests and
+// AnticipateDirectoryAfterSweepTests classes below take an explicit home directory rather than
+// reading PlatformPaths.Home in the first place, so neither needs one either.
 public sealed class RunPathsTests
 {
     [Fact]
     public void With_no_home_a_new_run_falls_back_to_the_platform_global_location()
     {
+        using ScopedTestHome scope = new();
         Guid runId = DomainId.New();
 
         RunPaths.ResolveDirectory(ProjectHome.None, "abc12345-some-task", runId)
@@ -49,6 +58,7 @@ public sealed class RunPathsTests
     [Fact]
     public void The_global_directory_is_keyed_by_the_run_id_alone()
     {
+        using ScopedTestHome scope = new();
         Guid runId = DomainId.New();
 
         RunPaths.GlobalDirectory(runId).Should().Be(Path.Combine(RunPaths.Root, "runs", runId.ToString()));
