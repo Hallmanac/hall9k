@@ -472,7 +472,11 @@ daemon poll sweep) rather than waiting on it unconditionally: the recorded failu
 gate also fails on clean base when the comparison answers within that budget — in practice, a
 cached verdict from an earlier run against the identical base commit — and reports the bare
 failure otherwise, so a real regression in the run's own branch is never held from a human behind
-however long a freshly run comparison takes.
+however long a freshly run comparison takes. A failed host-coupled gate never gets this
+comparison at all: the comparison would spawn the identical gate command a second time, outside
+the node's own serialized host-coupled slot, so the recorded failure reason says plainly that the
+comparison was skipped because it would run a second host-coupled suite outside the node's
+serialized host gate, rather than paying for an answer nobody could trust anyway.
 
 Gates are deterministic and cheap to trust, which is why they come first. Everything after them
 is judgment.

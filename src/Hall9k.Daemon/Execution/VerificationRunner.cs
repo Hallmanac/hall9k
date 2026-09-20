@@ -1982,6 +1982,31 @@ public sealed partial class VerificationRunner(
     }
 
     /// <summary>
+    /// The text appended to a host-coupled gate's own failure reason in place of a clean-base
+    /// comparison (task: host-coupled suites run only in the node's serialized host gate). A
+    /// comparison spawns the identical gate command a second time, outside the node's one
+    /// serialized host-coupled slot (<see cref="AcquireHostCoupledGatePermitAsync"/>) — the exact
+    /// shape of the origin incident this task answers, where the daemon's own comparison held four
+    /// permits for a dead gate's whole five-minute life while twelve other classes queued behind
+    /// it. Skipping it here is a correctness fix, not a diagnostic loss: a second unserialized run
+    /// of the same host-coupled suite answers nothing a caller could trust anyway.
+    /// </summary>
+    internal const string HostCoupledComparisonSkippedNote =
+        "The clean-base comparison was skipped: running it here would spawn a second host-coupled "
+        + "suite outside the node's serialized host gate.";
+
+    /// <summary>
+    /// Whether <paramref name="gate"/>'s own clean-base comparison must be skipped because the
+    /// gate is host-coupled — pulled out of <see cref="BuildReportedGateFailureReasonAsync"/> as a
+    /// pure, synchronous check so a test can prove this decision (and the ordinary gate's own
+    /// unchanged path) without spawning anything, the identical reasoning
+    /// <see cref="ScopedRunExecutedNoTests"/> and <see cref="ComposeGateCommand"/> already apply
+    /// to this class's other pure decisions.
+    /// </summary>
+    internal static string? DescribeHostCoupledComparisonSkip(VerifyCommand gate) =>
+        gate.IsHostCoupled ? HostCoupledComparisonSkippedNote : null;
+
+    /// <summary>
     /// A gate's own failure reason, annotated with whether it also fails against a clean checkout
     /// of the project's own base branch — shared by <see cref="RecordGateFailureAsync"/> and
     /// <see cref="RecordGateFailureWithoutFailingRunAsync"/> so the annotation itself can never
@@ -1991,6 +2016,16 @@ public sealed partial class VerificationRunner(
         Guid runId, Guid nodeId, ProjectDetails? project, VerifyCommand gate, string reason,
         bool isInfrastructureFailure, CancellationToken cancellationToken)
     {
+        // A host-coupled gate's own failure never races a second copy of itself outside the
+        // node's one serialized host-coupled slot — checked ahead of every other skip below,
+        // and before anything here ever spawns a process, so this path never depends on
+        // project/checkout state the way the ordinary comparison does (task: host-coupled
+        // suites run only in the node's serialized host gate).
+        if (DescribeHostCoupledComparisonSkip(gate) is { } skipNote)
+        {
+            return $"{reason} {skipNote}";
+        }
+
         if (project is null || isInfrastructureFailure)
         {
             return reason;
