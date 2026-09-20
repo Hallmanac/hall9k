@@ -403,7 +403,8 @@ public sealed class MessageSweepEngine(
     private async Task<bool> HasAnyLocalHistoryAsync(Guid projectId, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
-        return await session.Query<ReplicatedEventRecord>().Where(record => record.ProjectId == projectId).AnyAsync(cancellationToken)
+        return await session.Query<ReplicatedEventRecord>()
+                .Where(record => record.ProjectId == projectId && record.Applied).AnyAsync(cancellationToken)
             || await session.Query<TaskListItem>().Where(task => task.ProjectId == projectId).AnyAsync(cancellationToken)
             || await session.Query<IdeaDetails>().Where(idea => idea.ProjectId == projectId).AnyAsync(cancellationToken);
     }

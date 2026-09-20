@@ -187,7 +187,12 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // and here there is no true genesis event still to come that would ever repopulate it, since
         // the one that failed is now permanently skipped. A later record in the SAME read for a
         // stream that never actually started is refused the identical way, rather than left to
-        // auto-vivify a document nothing will ever repair.
+        // auto-vivify a document nothing will ever repair. This set is this read's own uncommitted
+        // cache of that fact — ApplyAsync also checks the PERSISTED form
+        // (a stored ReplicatedEventRecord with Applied false for this stream id) before ever
+        // starting a stream, so a follow-up arriving in a LATER read, after the failed genesis's
+        // own record already committed, is refused the identical way (independent pre-PR review,
+        // cycle 1, both lenses, medium: this set alone lapses the moment one read ends).
         HashSet<Guid> streamsThatFailedToStartThisRead = [];
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
@@ -487,26 +492,40 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         bool streamExists = streamsStartedThisRead.Contains(effectiveStreamId)
             || await session.Events.FetchStreamStateAsync(effectiveStreamId, cancellationToken) is not null;
 
-        // A record for a stream this read already tried, and failed, to START (streamsThatFailedToStartThisRead's
-        // own doc) is refused the same way rather than left to StartStream a fresh, headless document:
-        // the record that would have been this stream's true genesis is now permanently skipped, so
-        // nothing is ever coming to repair it.
-        if (!streamExists && streamsThatFailedToStartThisRead.Contains(effectiveStreamId))
+        // A record for a stream this read already tried, and failed, to START
+        // (streamsThatFailedToStartThisRead's own doc), or one a PAST read already tried and
+        // failed to start — the identical fact, resolved before this read began and found here as
+        // a persisted ReplicatedEventRecord for this stream with Applied false — is refused the
+        // same way rather than left to StartStream a fresh, headless document: the record that
+        // would have been this stream's true genesis is now permanently skipped, so nothing is
+        // ever coming to repair it. The persisted check only ever runs while streamExists is
+        // false, so it can never mistake a stream that genuinely holds applied history for one
+        // whose genesis failed (independent pre-PR review, cycle 1, both lenses, medium).
+        if (!streamExists)
         {
-            logger?.LogWarning(
-                "Replicated event {OriginEventId} (origin {OriginNodeId} sequence {OriginSequence}) targets "
-                + "stream {StreamId}, whose own genesis record already failed to apply earlier in this same "
-                + "read — skipped rather than starting a headless document nothing will ever repair",
-                record.OriginEventId, record.OriginNodeId, record.OriginSequence, effectiveStreamId);
-            session.Store(new ReplicatedEventRecord
+            bool genesisPermanentlyFailed = streamsThatFailedToStartThisRead.Contains(effectiveStreamId)
+                || await session.Query<ReplicatedEventRecord>()
+                    .Where(existing => existing.StreamId == effectiveStreamId && !existing.Applied)
+                    .AnyAsync(cancellationToken);
+            if (genesisPermanentlyFailed)
             {
-                Id = record.OriginEventId,
-                StreamId = effectiveStreamId,
-                ProjectId = projectId,
-                AppliedAt = now,
-            });
-            await session.SaveChangesAsync(cancellationToken);
-            return false;
+                streamsThatFailedToStartThisRead.Add(effectiveStreamId);
+                logger?.LogWarning(
+                    "Replicated event {OriginEventId} (origin {OriginNodeId} sequence {OriginSequence}) targets "
+                    + "stream {StreamId}, whose own genesis record already failed to apply — skipped rather "
+                    + "than starting a headless document nothing will ever repair",
+                    record.OriginEventId, record.OriginNodeId, record.OriginSequence, effectiveStreamId);
+                session.Store(new ReplicatedEventRecord
+                {
+                    Id = record.OriginEventId,
+                    StreamId = effectiveStreamId,
+                    ProjectId = projectId,
+                    AppliedAt = now,
+                    Applied = false,
+                });
+                await session.SaveChangesAsync(cancellationToken);
+                return false;
+            }
         }
 
         // An event is only ever APPENDED to a local stream — Marten has no way to put one before
@@ -634,9 +653,10 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             if (!streamExists)
             {
                 // This record would have started the stream — nothing else this node holds for it
-                // yet. Remembered so a later record THIS SAME READ that targets the identical,
-                // still-nonexistent stream is refused rather than auto-vivifying a headless
-                // document (streamsThatFailedToStartThisRead's own doc).
+                // yet. Remembered in-memory too, not only in the ReplicatedEventRecord stored
+                // below, so a later record THIS SAME READ that targets the identical,
+                // still-nonexistent stream is refused without paying for the persisted query above
+                // a second time (streamsThatFailedToStartThisRead's own doc).
                 streamsThatFailedToStartThisRead.Add(effectiveStreamId);
             }
 
@@ -646,6 +666,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 StreamId = effectiveStreamId,
                 ProjectId = projectId,
                 AppliedAt = now,
+                Applied = false,
             });
             await session.SaveChangesAsync(cancellationToken);
             return false;
