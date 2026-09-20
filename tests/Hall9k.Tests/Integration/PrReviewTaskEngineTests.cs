@@ -1516,7 +1516,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
             OrdinaryErrorExecutor ordinaryError = new();
             PrReviewEngine engine = NewPrReviewEngine(store, ordinaryError, ordinaryError.Processes, new NoOpWorktreeManager());
-            await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+            await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
 
             await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -1574,7 +1574,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         KillingErrorExecutor killingError = new(store);
         PrReviewEngine engine = NewPrReviewEngine(store, killingError, killingError.Processes, new NoOpWorktreeManager());
-        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
 
         await engine.ReviewAsync(runId, taskId, cts.Token);
         await killingError.Background;
@@ -1665,7 +1665,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         {
             ZeroWorkExecutor zeroWork = new();
             PrReviewEngine heldEngine = NewPrReviewEngine(store, zeroWork, zeroWork.Processes, new NoOpWorktreeManager());
-            await heldEngine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+            await heldEngine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
 
             await heldEngine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -1727,7 +1727,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         ScriptedExecutor executor = new("Looked the pull request over; nothing further to add.");
         PrReviewEngine engine = NewPrReviewEngine(store, executor, executor.Processes, new NoOpWorktreeManager());
-        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
 
         await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -1762,7 +1762,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         ScriptedExecutor executor = new(
             "Reviewed the pull request against its own title and description; it matches.\n\nVERDICT: merge-ready");
         PrReviewEngine engine = NewPrReviewEngine(store, executor, executor.Processes, new NoOpWorktreeManager());
-        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
 
         await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -1802,7 +1802,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         ScriptedExecutor executor = new(
             "Reviewed the pull request against its own title and description; it matches.\n\nVERDICT: merge-ready");
         PrReviewEngine engine = NewPrReviewEngine(store, executor, executor.Processes, new NoOpWorktreeManager());
-        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
 
         Directory.CreateDirectory(RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug));
 
@@ -1850,7 +1850,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         }
 
         PrReviewEngine engine = NewPrReviewEngine(store, new RefusingExecutor("A reclaimed run must retire before dispatching anything."), new FakeProcessManager(), new NoOpWorktreeManager());
-        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
 
         await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -1886,7 +1886,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         }
 
         PrReviewEngine engine = NewPrReviewEngine(store, new RefusingExecutor("An abandoned task must retire before dispatching anything."), new FakeProcessManager(), new NoOpWorktreeManager());
-        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
 
         await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -1921,7 +1921,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         }
 
         PrReviewEngine engine = NewPrReviewEngine(store, new RefusingExecutor("A killed run must never be spawned into."), new FakeProcessManager(), new NoOpWorktreeManager());
-        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
 
         await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -1958,7 +1958,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
 
         CapturingExecutor executor = new(PrReviewNow);
         PrReviewEngine engine = NewPrReviewEngine(store, executor, new FakeProcessManager(), new NoOpWorktreeManager());
-        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
 
         await engine.ReviewAsync(runId, taskId, cts.Token);
 
@@ -1991,7 +1991,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         }
 
         PrReviewEngine engine = NewPrReviewEngine(store, new RefusingExecutor("A reclaimed run must retire before dispatching anything."), new FakeProcessManager(), new NoOpWorktreeManager());
-        await engine.RecordAdversarialResultAsync(runDirectory, "Adversarial: nothing found.", cts.Token);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Adversarial: nothing found.", cts.Token);
         Directory.CreateDirectory(runDirectory);
         await File.WriteAllTextAsync(
             RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug),
@@ -2033,7 +2033,7 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
         }
 
         PrReviewEngine engine = NewPrReviewEngine(store, new RefusingExecutor("An abandoned task's park never dispatches."), new FakeProcessManager(), new NoOpWorktreeManager());
-        await engine.RecordAdversarialResultAsync(runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
+        await engine.RecordPrimarySessionResultAsync(runId, runDirectory, "Nothing found.\n\nVERDICT: merge-ready", cts.Token);
         Directory.CreateDirectory(runDirectory);
         await File.WriteAllTextAsync(
             RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug),

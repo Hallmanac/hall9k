@@ -1215,7 +1215,7 @@ public sealed class RunSupervisor(
                 }
                 else
                 {
-                    await prReview.RecordAdversarialResultAsync(runDirectory, result.Summary ?? string.Empty, cancellationToken);
+                    await prReview.RecordPrimarySessionResultAsync(runId, runDirectory, result.Summary ?? string.Empty, cancellationToken);
                 }
 
                 await prReview.ReviewAsync(runId, taskId, cancellationToken);

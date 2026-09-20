@@ -18,7 +18,7 @@ namespace Hall9k.Tests.Daemon;
 /// <summary>
 /// Two of <see cref="PrReviewEngine"/>'s own primitives, tested without a store because
 /// neither one touches it: <see cref="PrReviewEngine.SessionStillLive"/> reads only the run
-/// aggregate and the OS process seam, and <see cref="PrReviewEngine.EnsureAdversarialResultRecordedAsync"/>
+/// aggregate and the OS process seam, and <see cref="PrReviewEngine.EnsurePrimarySessionResultRecordedAsync"/>
 /// only reads and writes files under a run directory. Coverage follow-up to the cycle-1
 /// conformance finding at <c>PrReviewEngine.cs:50</c> — before this, neither had any test at all.
 /// </summary>
@@ -133,7 +133,7 @@ public sealed class PrReviewEngineUnitTests : IDisposable
         // No main stream.jsonl at all — if this tried to re-derive, it would find nothing to
         // read and could only get this wrong by overwriting the real content with nothing.
         PrReviewEngine engine = NewEngine(new FakeProcessManager());
-        await engine.EnsureAdversarialResultRecordedAsync(_runDirectory, CancellationToken.None);
+        await engine.EnsurePrimarySessionResultRecordedAsync(_runDirectory, ReviewLens.Adversarial.Slug, CancellationToken.None);
 
         (await File.ReadAllTextAsync(findingsFile)).Should().Be("already recorded");
     }
@@ -161,7 +161,7 @@ public sealed class PrReviewEngineUnitTests : IDisposable
         await File.WriteAllTextAsync(RunPaths.StreamFile(_runDirectory), line + "\n");
 
         PrReviewEngine engine = NewEngine(new FakeProcessManager());
-        await engine.EnsureAdversarialResultRecordedAsync(_runDirectory, CancellationToken.None);
+        await engine.EnsurePrimarySessionResultRecordedAsync(_runDirectory, ReviewLens.Adversarial.Slug, CancellationToken.None);
 
         string findingsFile = RunPaths.ReviewLensFindingsFile(_runDirectory, 1, ReviewLens.Adversarial.Slug);
         File.Exists(findingsFile).Should().BeTrue("the primary session's own terminal result was on disk to recover from");
@@ -172,7 +172,7 @@ public sealed class PrReviewEngineUnitTests : IDisposable
     public async Task Ensuring_the_adversarial_result_stays_absent_when_neither_file_exists()
     {
         PrReviewEngine engine = NewEngine(new FakeProcessManager());
-        await engine.EnsureAdversarialResultRecordedAsync(_runDirectory, CancellationToken.None);
+        await engine.EnsurePrimarySessionResultRecordedAsync(_runDirectory, ReviewLens.Adversarial.Slug, CancellationToken.None);
 
         File.Exists(RunPaths.ReviewLensFindingsFile(_runDirectory, 1, ReviewLens.Adversarial.Slug)).Should().BeFalse(
             "there was nothing anywhere to recover — DriveAsync's own dispatch has not happened yet in this scenario");

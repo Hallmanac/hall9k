@@ -351,10 +351,16 @@ public sealed class RunAggregate
     public IReadOnlyList<string> RequestedReviewerLogins => _requestedReviewerLogins;
 
     /// <summary>
-    /// The pr-review task type's own, deliberately separate track record (PrReviewEngine):
-    /// the adversarial lens is this run's ordinary primary session and needs none of these,
-    /// so only the conformance lens — dispatched second, once the adversarial findings are on
-    /// disk — is tracked here. Never read by ReviewEngine's own cycle/track state machine.
+    /// The pr-review task type's own, deliberately separate track record (PrReviewEngine): the
+    /// plan's FIRST session is this run's ordinary primary session and needs none of these, so
+    /// only a follow-on session — dispatched afterward, once the primary's findings are on disk —
+    /// is tracked here, and only ever one at a time (they run one after another over the single
+    /// shared worktree). Never read by ReviewEngine's own cycle/track state machine.
+    /// <para>
+    /// Before review personas (idea b9b09779, piece 1) there was exactly one follow-on session,
+    /// the engineer's conformance lens, which is where these properties' names come from;
+    /// <see cref="PrReviewConformanceSlug"/> is what says which one they currently describe.
+    /// </para>
     /// </summary>
     public Guid? PrReviewConformanceSessionId { get; private set; }
     public int? PrReviewConformanceProcessId { get; private set; }
@@ -390,6 +396,51 @@ public sealed class RunAggregate
     /// conformance session dispatches.
     /// </summary>
     public bool PrReviewConformanceLaunchHeld { get; private set; }
+
+    /// <summary>
+    /// Which of the plan's sessions the four properties above currently describe
+    /// (<c>ReviewPersonaSession.Slug</c>). Defaults to the engineer's conformance lens, which is
+    /// what a stream written before review personas existed recorded — what shipped, not a guess.
+    /// </summary>
+    public string PrReviewConformanceSlug { get; private set; } = ReviewLens.Conformance.Slug;
+
+    /// <summary>
+    /// Every follow-on session this run is finished with, completed or failed — what tells
+    /// <c>PrReviewEngine</c> which of the plan's sessions it still owes. A failed one is settled
+    /// too: it is recorded and named in the report, never retried in place and never redispatched,
+    /// which is what keeps one persona's bad session from looping the run.
+    /// </summary>
+    public IReadOnlyCollection<string> PrReviewSettledSessionSlugs => _prReviewSettledSessionSlugs;
+
+    private readonly HashSet<string> _prReviewSettledSessionSlugs = new(StringComparer.Ordinal);
+
+    /// <summary>The personas this run's assignee is reviewed through (<see cref="PrReviewPersonasSelected"/>). Empty until the run records its selection.</summary>
+    public IReadOnlyList<ReviewPersona> PrReviewPersonasRequested { get; private set; } = [];
+
+    /// <summary>Those of <see cref="PrReviewPersonasRequested"/> the registry had a prompt for.</summary>
+    public IReadOnlyList<ReviewPersona> PrReviewPersonasRan { get; private set; } = [];
+
+    /// <summary>Those it had no prompt for — named everywhere, never dropped.</summary>
+    public IReadOnlyList<ReviewPersona> PrReviewPersonasSkipped { get; private set; } = [];
+
+    /// <summary>See <see cref="PrReviewPersonasSelected.FellBackToEngineer"/>.</summary>
+    public bool PrReviewPersonasFellBackToEngineer { get; private set; }
+
+    /// <summary>The personas whose every session has landed its findings (<see cref="PrReviewPersonaReported"/>), in the order they landed.</summary>
+    public IReadOnlyList<ReviewPersona> PrReviewPersonasReported => _prReviewPersonasReported;
+
+    private readonly List<ReviewPersona> _prReviewPersonasReported = [];
+
+    /// <summary>
+    /// Every persona session that died, keyed by its slug, with what was observed
+    /// (<see cref="PrReviewPersonaSessionFailed"/>). Read by the report so a persona that produced
+    /// nothing is named rather than quietly missing.
+    /// </summary>
+    public IReadOnlyDictionary<string, ReviewPersonaSessionFailure> PrReviewPersonaSessionFailures =>
+        _prReviewPersonaSessionFailures;
+
+    private readonly Dictionary<string, ReviewPersonaSessionFailure> _prReviewPersonaSessionFailures =
+        new(StringComparer.Ordinal);
 
     /// <summary>The owner's h9k review resolve --merge-ready verdict on a pr-review park: walk done, close the task.</summary>
     public bool PrReviewDelivered { get; private set; }
@@ -1320,10 +1371,54 @@ public sealed class RunAggregate
         PrReviewConformanceBudgetExhausted = false;
         PrReviewConformanceLaunchHeld = false;
         PrReviewConformanceModel = @event.Model;
+        PrReviewConformanceSlug = SlugOf(@event.Slug);
         State = RunState.UnderReview;
     }
 
-    public void Apply(PrReviewConformanceCompleted @event) => PrReviewConformanceCompleted = true;
+    public void Apply(PrReviewConformanceCompleted @event)
+    {
+        PrReviewConformanceCompleted = true;
+        _prReviewSettledSessionSlugs.Add(SlugOf(@event.Slug));
+    }
+
+    // Normalized on the way in, the same way the Owner stream's own declaration is: a persona a
+    // later build recorded and this one cannot read is dropped rather than carried as a blank,
+    // and the three lists always read in the fixed order every persona-ordered surface prints.
+    public void Apply(PrReviewPersonasSelected @event)
+    {
+        PrReviewPersonasRequested = ReviewPersona.Declared(@event.Requested);
+        PrReviewPersonasRan = ReviewPersona.Declared(@event.Ran);
+        PrReviewPersonasSkipped = ReviewPersona.Declared(@event.Skipped);
+        PrReviewPersonasFellBackToEngineer = @event.FellBackToEngineer;
+    }
+
+    public void Apply(PrReviewPersonaReported @event)
+    {
+        if (!_prReviewPersonasReported.Contains(@event.Persona))
+        {
+            _prReviewPersonasReported.Add(@event.Persona);
+        }
+    }
+
+    /// <summary>
+    /// A persona session that died is settled, never redispatched: the report names it and the run
+    /// moves on, which is what keeps one persona's failure from costing the others their findings
+    /// or looping the run over a session that is not coming back.
+    /// </summary>
+    public void Apply(PrReviewPersonaSessionFailed @event)
+    {
+        string slug = SlugOf(@event.Slug);
+        _prReviewPersonaSessionFailures[slug] = new ReviewPersonaSessionFailure(
+            @event.Persona, @event.Reason, @event.FailedAt);
+        _prReviewSettledSessionSlugs.Add(slug);
+    }
+
+    /// <summary>
+    /// A blank slug on any of the three follow-on-session events reads as the engineer's
+    /// conformance lens: that is the only follow-on session a pr-review run had before review
+    /// personas existed, so it is what those streams actually recorded.
+    /// </summary>
+    private static string SlugOf(string? slug) => slug.IsBlank() ? ReviewLens.Conformance.Slug : slug!;
 
     public void Apply(PrReviewDelivered @event)
     {

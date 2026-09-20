@@ -1,3 +1,4 @@
+using System.Text;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
@@ -61,17 +62,32 @@ public sealed class PrReviewEngine(
     private readonly DaemonOptions _options = options.Value;
 
     /// <summary>
-    /// Writes the primary session's own result — the adversarial lens — to disk under the
-    /// same naming convention <see cref="RunPaths.ReviewLensFindingsFile"/> already uses,
-    /// before <see cref="ReviewAsync"/> is ever entered. Idempotent: a resumed call finds the
-    /// file already there and this is a no-op, which is what lets <see cref="ReviewAsync"/>
-    /// assume it unconditionally rather than re-deriving it from the (by then long exited)
-    /// primary session's process.
+    /// Writes the primary session's own result to disk under the same naming convention
+    /// <see cref="RunPaths.ReviewLensFindingsFile"/> already uses, before
+    /// <see cref="ReviewAsync"/> is ever entered. Idempotent: a resumed call finds the file
+    /// already there and this is a no-op, which is what lets <see cref="ReviewAsync"/> assume it
+    /// unconditionally rather than re-deriving it from the (by then long exited) primary
+    /// session's process.
+    /// <para>
+    /// Which session the primary one IS comes from the persona plan this run recorded at dispatch
+    /// (idea b9b09779, piece 1) — the engineer's adversarial lens for an assignee who declared no
+    /// persona, which is every run written before personas existed. The run is loaded here rather
+    /// than passed in because the caller (<c>RunSupervisor</c>) knows only that a pr-review run's
+    /// primary session finished, not which persona owned it.
+    /// </para>
     /// </summary>
-    public async Task RecordAdversarialResultAsync(
-        string runDirectory, string summary, CancellationToken cancellationToken)
+    public async Task RecordPrimarySessionResultAsync(
+        Guid runId, string runDirectory, string summary, CancellationToken cancellationToken)
     {
-        string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug);
+        await using IQuerySession query = store.QuerySession();
+        RunAggregate? run = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
+        await WritePrimarySessionResultAsync(runDirectory, PrimarySlugOf(run), summary, cancellationToken);
+    }
+
+    private static async Task WritePrimarySessionResultAsync(
+        string runDirectory, string slug, string summary, CancellationToken cancellationToken)
+    {
+        string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, slug);
         if (!File.Exists(path))
         {
             Directory.CreateDirectory(runDirectory);
@@ -80,18 +96,29 @@ public sealed class PrReviewEngine(
     }
 
     /// <summary>
-    /// The recovery half of <see cref="RecordAdversarialResultAsync"/>: called unconditionally
+    /// The plan this run recorded at dispatch, or the engineer's plan for a run whose stream
+    /// predates review personas — see <c>ReviewPersonaRegistry.Recorded</c>.
+    /// </summary>
+    private static ReviewPersonaPlan PlanOf(RunAggregate? run) => ReviewPersonaRegistry.Recorded(
+        run?.PrReviewPersonasRequested, run?.PrReviewPersonasRan, run?.PrReviewPersonasSkipped,
+        run?.PrReviewPersonasFellBackToEngineer ?? false);
+
+    private static string PrimarySlugOf(RunAggregate? run) => PlanOf(run).Sessions[0].Slug;
+
+    /// <summary>
+    /// The recovery half of <see cref="RecordPrimarySessionResultAsync"/>: called unconditionally
     /// at the top of <see cref="DriveAsync"/> so a daemon restart landing between the primary
     /// session's <c>AgentSessionCompleted</c> commit and RunSupervisor's own (immediate but not
-    /// atomic with it) call to <see cref="RecordAdversarialResultAsync"/> still gets the file
+    /// atomic with it) call to <see cref="RecordPrimarySessionResultAsync"/> still gets the file
     /// written before anything downstream reads it. Re-derives the primary session's own result
     /// from its stream file the same way <see cref="RunResultFile.AlreadyWrittenAsync"/> detects
     /// it, rather than assuming; a no-op once the file already exists.
     /// <para>Internal for the re-entrancy unit tests (test: pr-review type guards, coverage follow-up) — pure file I/O, no store needed.</para>
     /// </summary>
-    internal async Task EnsureAdversarialResultRecordedAsync(string runDirectory, CancellationToken cancellationToken)
+    internal async Task EnsurePrimarySessionResultRecordedAsync(
+        string runDirectory, string slug, CancellationToken cancellationToken)
     {
-        string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug);
+        string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, slug);
         if (File.Exists(path))
         {
             return;
@@ -118,15 +145,15 @@ public sealed class PrReviewEngine(
 
         if (summary is not null)
         {
-            await RecordAdversarialResultAsync(runDirectory, summary, cancellationToken);
+            await WritePrimarySessionResultAsync(runDirectory, slug, summary, cancellationToken);
         }
     }
 
     /// <summary>
     /// Drives a pr-review run to its park (first entry) or its finalization (re-entry after
     /// h9k review resolve). Re-entrant from any point a daemon restart could have caught: the
-    /// adversarial lens's findings are already on disk by the time this is ever called (see
-    /// <see cref="RecordAdversarialResultAsync"/>), and every step after that checks what the
+    /// primary session's findings are already on disk by the time this is ever called (see
+    /// <see cref="RecordPrimarySessionResultAsync"/>), and every step after that checks what the
     /// run stream already recorded before dispatching anything.
     /// </summary>
     public async Task ReviewAsync(Guid runId, Guid taskId, CancellationToken cancellationToken)
@@ -214,60 +241,165 @@ public sealed class PrReviewEngine(
 
         string runDirectory = RunPaths.ResolveCurrentDirectory(run.RunDirectory);
 
-        // RecordAdversarialResultAsync's own doc comment claims this is already on disk by the
+        // What this run set out to review, as it recorded at dispatch — never re-derived from the
+        // registry, which may have gained a persona since (idea b9b09779, piece 1). A run whose
+        // stream predates personas plans as the engineer's review, which is exactly what it ran.
+        ReviewPersonaPlan plan = PlanOf(aggregate);
+        ReviewPersonaSession primary = plan.Sessions[0];
+
+        // RecordPrimarySessionResultAsync's own doc comment claims this is already on disk by the
         // time ReviewAsync is ever entered — true of the live-monitor path (RunSupervisor calls
         // it immediately after AgentSessionCompleted commits), but a daemon restart landing in
         // the gap between that commit and the file write reaches here instead through the
         // Verifying-adoption sweep, with nothing written yet. Idempotent the same way the direct
         // call is, so this is a no-op once the file is actually there.
-        await EnsureAdversarialResultRecordedAsync(runDirectory, cancellationToken);
+        await EnsurePrimarySessionResultRecordedAsync(runDirectory, primary.Slug, cancellationToken);
 
         // Every other review pass gets this check (ReviewEngine.RecordReviewPassAsync); this
         // engine deliberately never enters that method (own class doc), so nothing else screens
-        // the adversarial lens's raw session summary before it becomes half the findings report.
+        // the primary session's raw summary before it becomes part of the findings report.
         // Read here rather than at write time so a daemon restart re-derives the same verdict
         // from the same file, with nothing extra to persist (cycle-1 conformance finding,
         // PrReviewEngine.cs:374).
-        string adversarialPath = RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug);
-        if (File.Exists(adversarialPath))
+        string primaryPath = RunPaths.ReviewLensFindingsFile(runDirectory, 1, primary.Slug);
+        if (File.Exists(primaryPath))
         {
-            string adversarialSummary = await File.ReadAllTextAsync(adversarialPath, cancellationToken);
+            string primarySummary = await File.ReadAllTextAsync(primaryPath, cancellationToken);
             if (await RejectUnusableVerdictAsync(
-                runId, taskId, run.LeaseGeneration, "adversarial", adversarialSummary, sawTaskContext: false, task,
+                runId, taskId, run.LeaseGeneration, primary.Slug, primarySummary, primary.SeesTaskContext, task,
                 cancellationToken))
             {
                 return;
             }
         }
 
-        if (aggregate.PrReviewConformanceSessionId is null
-            || aggregate.PrReviewConformanceBudgetExhausted
-            || aggregate.PrReviewConformanceLaunchHeld
-            || !SessionStillLive(aggregate, runDirectory))
+        // The plan's remaining sessions, one after another over the single shared worktree —
+        // never concurrently, which is the invariant BuildPrReviewLens's own mechanics section
+        // already promises each reviewer (no second pass sharing this checkout's obj/ and bin/).
+        foreach (ReviewPersonaSession session in plan.Sessions.Skip(1))
         {
-            if (!await DispatchConformanceAsync(runId, taskId, runDirectory, run, task, project, cancellationToken))
+            if (aggregate.PrReviewSettledSessionSlugs.Contains(session.Slug))
             {
-                return;
+                continue;
             }
 
-            aggregate = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
-            if (aggregate is null)
+            bool live = aggregate.PrReviewConformanceSlug == session.Slug
+                && aggregate.PrReviewConformanceSessionId is not null
+                && !aggregate.PrReviewConformanceBudgetExhausted
+                && !aggregate.PrReviewConformanceLaunchHeld
+                && SessionStillLive(aggregate, runDirectory);
+            if (!live)
             {
-                return;
+                if (!await DispatchFollowOnSessionAsync(
+                    runId, taskId, runDirectory, run, task, project, session, cancellationToken))
+                {
+                    return;
+                }
+
+                aggregate = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
+                if (aggregate is null)
+                {
+                    return;
+                }
+            }
+
+            if (!aggregate.PrReviewConformanceCompleted)
+            {
+                if (!await AwaitFollowOnSessionAsync(
+                    runId, taskId, runDirectory, aggregate, LaunchHoldNodeOf(run), task, session,
+                    cancellationToken))
+                {
+                    return;
+                }
+
+                aggregate = await query.Events.AggregateStreamAsync<RunAggregate>(runId, token: cancellationToken);
+                if (aggregate is null)
+                {
+                    return;
+                }
             }
         }
 
-        if (!aggregate.PrReviewConformanceCompleted)
-        {
-            if (!await AwaitConformanceAsync(
-                runId, taskId, runDirectory, aggregate, LaunchHoldNodeOf(run), task, cancellationToken))
-            {
-                return;
-            }
-        }
-
-        await ComposeReportAndParkAsync(runId, taskId, runDirectory, run.LeaseGeneration, task, cancellationToken);
+        await ComposeReportAndParkAsync(
+            runId, taskId, runDirectory, run.LeaseGeneration, task, plan, aggregate.PrReviewPersonaSessionFailures,
+            PersonasReported(plan, aggregate), cancellationToken);
     }
+
+    /// <summary>
+    /// The findings report's body: one section per persona this pull request was reviewed
+    /// through, in <see cref="ReviewPersona.All"/>'s fixed order (idea b9b09779, piece 1), with
+    /// each persona's own sessions under it. A persona that did not produce findings still gets
+    /// its section and says why — no prompt registered yet, or a session that died — because a
+    /// report that silently omits a review the assignee declared reads as complete when it is
+    /// not.
+    /// <para>Internal for the report-shape unit tests — pure file I/O over a run directory, no store needed.</para>
+    /// </summary>
+    internal static async Task<string> ComposePersonaSectionsAsync(
+        string runDirectory, ReviewPersonaPlan plan,
+        IReadOnlyDictionary<string, ReviewPersonaSessionFailure> sessionFailures,
+        CancellationToken cancellationToken)
+    {
+        StringBuilder body = new();
+        if (plan.FellBackToEngineer)
+        {
+            body.Append(
+                "\nNone of the personas this pull request's assignee declared has a review prompt "
+                + "registered yet, so the engineer's review ran in their place rather than leaving the "
+                + "pull request unreviewed. Every declared persona is named below.\n");
+        }
+
+        // Ran and Skipped both, merged back into the one fixed order, so a reader sees the whole
+        // declaration in one list rather than the reviews in one place and the gaps in another.
+        IReadOnlyList<ReviewPersona> sections =
+            [.. ReviewPersona.All.Where(persona => plan.Ran.Contains(persona) || plan.Skipped.Contains(persona))];
+        foreach (ReviewPersona persona in sections)
+        {
+            ReviewPersonaEntry entry = ReviewPersonaRegistry.For(persona);
+            body.Append($"\n## {persona.ReportHeading}\n\n{entry.Criteria}\n");
+
+            if (!plan.Ran.Contains(persona))
+            {
+                body.Append(
+                    $"\nSkipped: no review prompt is registered for the {persona.Value} persona yet, so "
+                    + "nothing read this pull request through it. Named here rather than left out, so "
+                    + "this report is not read as a review that happened.\n");
+                continue;
+            }
+
+            foreach (ReviewPersonaSession session in entry.Sessions)
+            {
+                body.Append($"\n### {session.Heading}\n");
+                if (sessionFailures.TryGetValue(session.Slug, out ReviewPersonaSessionFailure? failure))
+                {
+                    body.Append($"\nNot delivered: {failure.Reason}\n");
+                    continue;
+                }
+
+                string text = await ReadIfExistsAsync(
+                    RunPaths.ReviewLensFindingsFile(runDirectory, 1, session.Slug), cancellationToken);
+                body.Append(
+                    $"\nRun-skill drift: {ReviewResultParser.ParseRunSkillDrift(text).Describe()}.\n\n{text}\n");
+            }
+        }
+
+        return body.ToString();
+    }
+
+    /// <summary>
+    /// The personas whose every session landed its findings, so <c>h9k task show</c> can say
+    /// which reports are in rather than only that the run is under review. A persona with a
+    /// failed session is deliberately not among them: it is named through
+    /// <see cref="PrReviewPersonaSessionFailed"/> instead, which is the honest record of a review
+    /// that produced nothing. Already-reported personas are filtered out so a resumed run does
+    /// not append a second event for one.
+    /// </summary>
+    private static IReadOnlyList<ReviewPersona> PersonasReported(ReviewPersonaPlan plan, RunAggregate aggregate) =>
+    [
+        .. plan.Ran.Where(persona =>
+            !aggregate.PrReviewPersonasReported.Contains(persona)
+            && ReviewPersonaRegistry.For(persona).Sessions.All(session =>
+                !aggregate.PrReviewPersonaSessionFailures.ContainsKey(session.Slug))),
+    ];
 
     /// <summary>
     /// A dispatched-but-not-yet-completed conformance session is only genuinely resumable
@@ -280,10 +412,10 @@ public sealed class PrReviewEngine(
     /// file (cycle-1 adversarial finding): <c>claude -p --output-format stream-json</c> writes
     /// its <c>{"type":"system","subtype":"init",…}</c> line within a second of spawning, so a
     /// process killed before it ever produces a result still leaves a non-empty stream file.
-    /// Treating that as live sent this straight to <see cref="AwaitConformanceAsync"/>, which
+    /// Treating that as live sent this straight to <see cref="AwaitFollowOnSessionAsync"/>, which
     /// waits out <c>SessionResultWaiter</c>'s grace period on an already-dead process and fails
     /// the run — exactly the case this method exists to redispatch instead. Parsed the same way
-    /// <see cref="EnsureAdversarialResultRecordedAsync"/> parses the primary session's own stream.
+    /// <see cref="EnsurePrimarySessionResultRecordedAsync"/> parses the primary session's own stream.
     /// </para>
     /// <para>Internal for the liveness-discrimination unit tests (test: pr-review type guards, coverage follow-up).</para>
     /// </summary>
@@ -324,9 +456,15 @@ public sealed class PrReviewEngine(
         return false;
     }
 
-    private async Task<bool> DispatchConformanceAsync(
+    /// <summary>
+    /// Spawns one of the plan's follow-on sessions — every session after the primary, whichever
+    /// persona owns it (idea b9b09779, piece 1). Before review personas there was exactly one,
+    /// the engineer's conformance lens, which is where the event this records still takes its
+    /// name from.
+    /// </summary>
+    private async Task<bool> DispatchFollowOnSessionAsync(
         Guid runId, Guid taskId, string runDirectory, RunDetails run, TaskDetails task, ProjectDetails project,
-        CancellationToken cancellationToken)
+        ReviewPersonaSession personaSession, CancellationToken cancellationToken)
     {
         await using (IDocumentSession fenceSession = store.LightweightSession())
         {
@@ -345,8 +483,8 @@ public sealed class PrReviewEngine(
                         runId, new RunSuperseded(runId, currentTask?.LeaseGeneration ?? run.LeaseGeneration, DateTimeOffset.UtcNow));
                     await fenceSession.SaveChangesAsync(cancellationToken);
                     logger.LogInformation(
-                        "Run {RunId}: retired as superseded — the pr-review conformance dispatch found it was no longer task {TaskId}'s current generation",
-                        runId, taskId);
+                        "Run {RunId}: retired as superseded — the pr-review {Slug} dispatch found it was no longer task {TaskId}'s current generation",
+                        runId, personaSession.Slug, taskId);
                 }
 
                 return false;
@@ -354,21 +492,21 @@ public sealed class PrReviewEngine(
         }
 
         // The base RunLauncher already resolved and recorded at dispatch (RunDispatched.PrReviewBaseRefName),
-        // not a second live `gh pr view` here: the two lenses must diff against the identical
+        // not a second live `gh pr view` here: every session must diff against the identical
         // base, and a re-read minutes later can silently disagree with the first — the pull
-        // request's base moved, or the read itself failed transiently — leaving the conformance
-        // lens filing findings against a different range than the adversarial lens actually read
+        // request's base moved, or the read itself failed transiently — leaving this session
+        // filing findings against a different range than the primary one actually read
         // (cycle-3 conformance finding).
         string baseBranch = run.PrReviewBaseRefName.IsNotBlank() ? run.PrReviewBaseRefName : project.BaseBranch;
 
         Guid sessionId = DomainId.New();
-        string prompt = AgentPromptBuilder.BuildPrReviewLens(
-            task, project, run.Branch, ReviewLens.Conformance, baseBranch, commandTimeout: _options.VerifyGateTimeout);
+        string prompt = personaSession.BuildPrompt(new ReviewPersonaPromptRequest(
+            task, project, run.Branch, baseBranch, _options.VerifyGateTimeout));
         AgentModel model = _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
-        // pr-review has no cycle loop — one adversarial pass (the run's own primary session)
-        // and one conformance pass — so this reads as cycle 1 always, never RunDetails.ReviewCycle,
-        // which pr-review never sets.
-        string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.ReviewConformance(1));
+        // pr-review has no cycle loop — one pass per persona session — so every session name the
+        // registry hands back reads as cycle 1 always, never RunDetails.ReviewCycle, which
+        // pr-review never sets.
+        string sessionName = SessionRoleName.For(DomainId.Short(taskId), personaSession.RoleName);
 
         // Reloaded here, immediately before the actual spawn, mirroring RunLauncher's own
         // pre-spawn guard and ReviewEngine.EnsureCurrentGenerationAsync (task: a run can be
@@ -383,8 +521,8 @@ public sealed class PrReviewEngine(
             if (current is { State.IsTerminal: true })
             {
                 logger.LogInformation(
-                    "Run {RunId}: already {State} by the time the conformance dispatch's own pre-spawn fence was checked - not spawning",
-                    runId, current.State.Value);
+                    "Run {RunId}: already {State} by the time the {Slug} dispatch's own pre-spawn fence was checked - not spawning",
+                    runId, current.State.Value, personaSession.Slug);
                 return false;
             }
         }
@@ -399,24 +537,37 @@ public sealed class PrReviewEngine(
 
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new PrReviewConformanceDispatched(
-            runId, sessionId, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model, sessionName));
+            runId, sessionId, agent.ProcessId, agent.StartedAt, DateTimeOffset.UtcNow, model, sessionName,
+            personaSession.Slug));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
-            "Run {RunId}: pr-review conformance lens dispatched (session {SessionId}, pid {ProcessId}, model {Model})",
-            runId, sessionId, agent.ProcessId, model.Value);
+            "Run {RunId}: pr-review {Persona} {Slug} session dispatched (session {SessionId}, pid {ProcessId}, model {Model})",
+            runId, personaSession.Persona.Value, personaSession.Slug, sessionId, agent.ProcessId, model.Value);
         return true;
     }
 
-    private async Task<bool> AwaitConformanceAsync(
+    /// <summary>
+    /// Waits out one follow-on session and records what it produced. Returns true when the loop
+    /// in <see cref="DriveAsync"/> may go on to the next session — which includes a session that
+    /// died, for every persona but the engineer's: that failure is recorded and named in the
+    /// report rather than costing the other personas their findings
+    /// (<see cref="ReviewPersonaEntry.FailureFailsTheRun"/>, idea b9b09779, piece 1). Returns
+    /// false when the run itself is done for now: failed, parked on budget, or held on a launch
+    /// failure, all three of which are the whole run's state rather than one persona's.
+    /// </summary>
+    private async Task<bool> AwaitFollowOnSessionAsync(
         Guid runId, Guid taskId, string runDirectory, RunAggregate run, Guid launchHoldNodeId, TaskDetails task,
-        CancellationToken cancellationToken)
+        ReviewPersonaSession personaSession, CancellationToken cancellationToken)
     {
+        bool fatal = ReviewPersonaRegistry.For(personaSession.Persona).FailureFailsTheRun;
         if (run.PrReviewConformanceSessionId is not { } sessionId
             || run.PrReviewConformanceProcessId is not { } processId
             || run.PrReviewConformanceProcessStartedAt is not { } processStartedAt)
         {
-            await FailAsync(runId, taskId, "Run stream records an in-flight pr-review conformance session without its identity.", cancellationToken);
-            return false;
+            return await AbandonSessionAsync(
+                runId, taskId, personaSession, fatal,
+                $"Run stream records an in-flight pr-review {personaSession.Slug} session without its identity.",
+                cancellationToken);
         }
 
         string streamFile = RunPaths.SessionStreamFile(runDirectory, ConformanceArtifactName(sessionId));
@@ -429,35 +580,39 @@ public sealed class PrReviewEngine(
         if (wait.EndedAfterResultGrace)
         {
             logger.LogWarning(
-                "Run {RunId}: the pr-review conformance session was ended after its result because it did not exit",
-                runId);
+                "Run {RunId}: the pr-review {Slug} session was ended after its result because it did not exit",
+                runId, personaSession.Slug);
         }
 
         if (wait.Lingering.Count > 0)
         {
             logger.LogWarning(
-                "Run {RunId}: the pr-review conformance session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
-                runId, wait.Lingering.Count, string.Join(", ", wait.Lingering));
+                "Run {RunId}: the pr-review {Slug} session left {Count} process(es) still running after its terminal result arrived — terminated pid(s) {Pids}",
+                runId, personaSession.Slug, wait.Lingering.Count, string.Join(", ", wait.Lingering));
         }
 
+        // Budget exhaustion and a node-wide launch hold are both the whole RUN's state, not one
+        // persona's: the session is redispatchable and the daemon will come back to it, so
+        // neither is recorded as a persona failure however non-fatal that persona's own failures
+        // are. Recording one here would settle a slug the retry is about to dispatch again.
         if (result is { IsError: true, Summary: { } summary } && BudgetExhaustionParser.IsBudgetExhausted(summary))
         {
             await using IDocumentSession budgetSession = store.LightweightSession();
             budgetSession.Events.Append(runId, new RunBudgetExhausted(runId, summary, DateTimeOffset.UtcNow));
             await budgetSession.SaveChangesAsync(cancellationToken);
             logger.LogWarning(
-                "Run {RunId}: pr-review conformance session exhausted its token budget — parked; the daemon retries hourly. {Message}",
-                runId, summary);
+                "Run {RunId}: pr-review {Slug} session exhausted its token budget — parked; the daemon retries hourly. {Message}",
+                runId, personaSession.Slug, summary);
             return false;
         }
 
         if (result is { IsError: true } errorResult
             && LaunchFailureClassifier.IsLaunchFailure(errorResult, _options.LaunchFailureMaxDuration))
         {
-            // The node never actually launched a working conformance session — not this run's
-            // own fault (task: a session that exits at once with no work done is treated as the
-            // node failing to launch sessions). Mirrors ReviewEngine.HoldForLaunchFailureAsync's
-            // identical branch for its own four legs; the conformance lens was the one
+            // The node never actually launched a working session — not this run's own fault
+            // (task: a session that exits at once with no work done is treated as the node
+            // failing to launch sessions). Mirrors ReviewEngine.HoldForLaunchFailureAsync's
+            // identical branch for its own four legs; the pr-review follow-on session was the one
             // completion site this task's own launch-hold check never reached (independent
             // pre-PR review, cycle 3, conformance lens).
             string observedMessage = errorResult.Summary ?? "(no message)";
@@ -471,19 +626,22 @@ public sealed class PrReviewEngine(
             return false;
         }
 
-        // Unlike ReviewEngine's own review-pass, fix, and rebase-recovery legs, the conformance
-        // lens has no in-place retry to protect (independent pre-PR review, cycle 1, conformance
-        // lens, criterion 5, "the ordinary failure path stays unchanged") — every ordinary error
-        // here already fails outright below, hold or no hold, so joining a standing hold on this
-        // session's own genuine error would give this leg a resume it never had and was never
-        // meant to get, rather than mirroring ReviewEngine's bounded, retry-preserving join.
+        // Unlike ReviewEngine's own review-pass, fix, and rebase-recovery legs, a pr-review
+        // follow-on session has no in-place retry to protect (independent pre-PR review, cycle 1,
+        // conformance lens, criterion 5, "the ordinary failure path stays unchanged") — every
+        // ordinary error here already ends the session outright below, hold or no hold, so
+        // joining a standing hold on this session's own genuine error would give this leg a
+        // resume it never had and was never meant to get, rather than mirroring ReviewEngine's
+        // bounded, retry-preserving join.
 
         if (result is null || result.IsError)
         {
-            await FailAsync(runId, taskId, result is null
-                ? "The pr-review conformance session died without a result."
-                : "The pr-review conformance session reported an error result.", cancellationToken);
-            return false;
+            return await AbandonSessionAsync(
+                runId, taskId, personaSession, fatal,
+                result is null
+                    ? $"The pr-review {personaSession.Slug} session died without a result."
+                    : $"The pr-review {personaSession.Slug} session reported an error result.",
+                cancellationToken);
         }
 
         // Recorded before the verdict is screened, not alongside PrReviewConformanceCompleted
@@ -498,12 +656,25 @@ public sealed class PrReviewEngine(
             await tokensSession.SaveChangesAsync(cancellationToken);
         }
 
-        string conformanceSummary = result.Summary ?? string.Empty;
-        if (await RejectUnusableVerdictAsync(
-            runId, taskId, run.LeaseGeneration, "conformance", conformanceSummary, sawTaskContext: true, task,
-            cancellationToken))
+        string sessionSummary = result.Summary ?? string.Empty;
+        if (fatal)
         {
-            return false;
+            if (await RejectUnusableVerdictAsync(
+                runId, taskId, run.LeaseGeneration, personaSession.Slug, sessionSummary,
+                personaSession.SeesTaskContext, task, cancellationToken))
+            {
+                return false;
+            }
+        }
+        else if (!HasUsableVerdict(sessionSummary, personaSession.SeesTaskContext, task))
+        {
+            // Same screen the engineer's own sessions get, different consequence: an additional
+            // persona's unreadable verdict is that persona's report gone, not the whole review's.
+            return await AbandonSessionAsync(
+                runId, taskId, personaSession, fatal: false,
+                $"The pr-review {personaSession.Slug} session ended without a usable verdict — no "
+                + "VERDICT line, or a needs-fixes verdict naming no finding.",
+                cancellationToken);
         }
 
         // Written before PrReviewConformanceCompleted commits, not after (cycle-1 adversarial
@@ -512,21 +683,51 @@ public sealed class PrReviewEngine(
         // to skip both dispatch and await on the next pass, so the report would silently read
         // "(no findings recorded)" while the real findings sat unread in the session's own stream
         // file. ReviewEngine orders these the same way (ReviewEngine.cs:883) for the same reason.
-        string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug);
+        string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, personaSession.Slug);
         Directory.CreateDirectory(runDirectory);
-        await File.WriteAllTextAsync(path, conformanceSummary, cancellationToken);
+        await File.WriteAllTextAsync(path, sessionSummary, cancellationToken);
 
         await using IDocumentSession session = store.LightweightSession();
-        session.Events.Append(runId, new PrReviewConformanceCompleted(runId, sessionId, DateTimeOffset.UtcNow));
+        session.Events.Append(runId, new PrReviewConformanceCompleted(
+            runId, sessionId, DateTimeOffset.UtcNow, personaSession.Slug));
         await session.SaveChangesAsync(cancellationToken);
         return true;
     }
 
     /// <summary>
+    /// Ends one follow-on session that produced nothing usable. For the engineer's own sessions
+    /// this fails the run, exactly as a pr-review run has always failed on them; for an
+    /// additional persona it records <see cref="PrReviewPersonaSessionFailed"/> and lets
+    /// <see cref="DriveAsync"/>'s loop carry on to the next persona, so one bad session never
+    /// costs the others their findings (idea b9b09779, piece 1). Returns whether the loop may
+    /// continue.
+    /// </summary>
+    private async Task<bool> AbandonSessionAsync(
+        Guid runId, Guid taskId, ReviewPersonaSession personaSession, bool fatal, string reason,
+        CancellationToken cancellationToken)
+    {
+        if (fatal)
+        {
+            await FailAsync(runId, taskId, reason, cancellationToken);
+            return false;
+        }
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new PrReviewPersonaSessionFailed(
+            runId, personaSession.Persona, personaSession.Slug, reason, DateTimeOffset.UtcNow));
+        await session.SaveChangesAsync(cancellationToken);
+        logger.LogWarning(
+            "Run {RunId}: the pr-review {Persona} review's {Slug} session produced nothing — named in the "
+            + "findings report and skipped rather than failing the whole review. {Reason}",
+            runId, personaSession.Persona.Value, personaSession.Slug, reason);
+        return true;
+    }
+
+    /// <summary>
     /// Writes a mention follow-up's own primary (and only) session result to disk — the sibling of
-    /// <see cref="RecordAdversarialResultAsync"/>, kept as its own method rather than a shared one
+    /// <see cref="RecordPrimarySessionResultAsync"/>, kept as its own method rather than a shared one
     /// with an extra path parameter so a caller can never hand the wrong file to the wrong reader:
-    /// an ordinary review's adversarial file and a follow-up's addendum draft mean different things
+    /// an ordinary review's primary-session file and a follow-up's addendum draft mean different things
     /// to different readers, and a shared method risks one bug silently mixing the two up.
     /// </summary>
     public async Task RecordMentionFollowUpResultAsync(
@@ -540,7 +741,7 @@ public sealed class PrReviewEngine(
         }
     }
 
-    /// <summary>The recovery half of <see cref="RecordMentionFollowUpResultAsync"/>, mirroring <see cref="EnsureAdversarialResultRecordedAsync"/>'s identical daemon-restart gap.</summary>
+    /// <summary>The recovery half of <see cref="RecordMentionFollowUpResultAsync"/>, mirroring <see cref="EnsurePrimarySessionResultRecordedAsync"/>'s identical daemon-restart gap.</summary>
     private async Task EnsureMentionFollowUpResultRecordedAsync(string runDirectory, CancellationToken cancellationToken)
     {
         string path = MentionFollowUpResultFile(runDirectory);
@@ -601,7 +802,7 @@ public sealed class PrReviewEngine(
         {
             // The session has not completed yet, or a daemon restart landed before its result was
             // ever recorded — the next adoption sweep or completion notification re-enters here and
-            // re-derives it, exactly as the ordinary review's own EnsureAdversarialResultRecordedAsync
+            // re-derives it, exactly as the ordinary review's own EnsurePrimarySessionResultRecordedAsync
             // gap is handled.
             return;
         }
@@ -699,22 +900,17 @@ public sealed class PrReviewEngine(
 
     private async Task ComposeReportAndParkAsync(
         Guid runId, Guid taskId, string runDirectory, int leaseGeneration, TaskDetails task,
-        CancellationToken cancellationToken)
+        ReviewPersonaPlan plan, IReadOnlyDictionary<string, ReviewPersonaSessionFailure> sessionFailures,
+        IReadOnlyList<ReviewPersona> personasReported, CancellationToken cancellationToken)
     {
-        string adversarial = await ReadIfExistsAsync(
-            RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Adversarial.Slug), cancellationToken);
-        string conformance = await ReadIfExistsAsync(
-            RunPaths.ReviewLensFindingsFile(runDirectory, 1, ReviewLens.Conformance.Slug), cancellationToken);
-
         string report =
             "# Pull request review findings\n\n"
             + "Nothing here was posted to the pull request or the remote — no comments, no review, no "
             + "reactions. Walk the report and direct each finding by hand: dismiss it, comment yourself, "
             + "or have the session post on your behalf. Resolve with h9k review resolve --merge-ready "
             + "when you are done; it opens or merges nothing of its own, and parks the task waiting on "
-            + "the pull request until it merges or closes.\n\n"
-            + "## Adversarial (full depth)\n\n" + adversarial + "\n\n"
-            + "## Conformance (weighted — thin basis reads as context notes, not blockers)\n\n" + conformance;
+            + "the pull request until it merges or closes.\n"
+            + await ComposePersonaSectionsAsync(runDirectory, plan, sessionFailures, cancellationToken);
 
         // A mint whose own trigger was a mention (idea 2f079bcd, decision 2 and 3): the primary
         // session was also asked to write this file, and its content already opens with the
@@ -738,7 +934,7 @@ public sealed class PrReviewEngine(
 
         await using IDocumentSession session = store.LightweightSession();
 
-        // Reloaded here, immediately before the fence check below (mirrors DispatchConformanceAsync's
+        // Reloaded here, immediately before the fence check below (mirrors DispatchFollowOnSessionAsync's
         // and FailAsync's own guard, task: a run can be killed without killing its task): h9k run
         // kill can end this run's conformance session right after it wrote its own terminal result
         // line but before SessionResultWaiter's own dead-process read notices — the identity fence
@@ -755,7 +951,7 @@ public sealed class PrReviewEngine(
             return;
         }
 
-        // Mirrors DispatchConformanceAsync's and FinalizeAsync's own fence-rejection (Copilot
+        // Mirrors DispatchFollowOnSessionAsync's and FinalizeAsync's own fence-rejection (Copilot
         // review, PR #30's RunSuperseded fix): without it, a run reclaimed while the
         // conformance lens was still running would append ReviewParked here unfenced after a
         // fresh generation already claimed the task, stranding this run non-terminal in
@@ -808,6 +1004,15 @@ public sealed class PrReviewEngine(
               + $"{mentionAuthorLogin ?? "someone"} tagged you"
               + (FirstLine(mentionBody) is { Length: > 0 } firstLine ? $" — \"{firstLine}\". " : ". ")
             : string.Empty;
+        // Which personas' reports are in, appended inside this same fenced commit as the park
+        // rather than ahead of it (idea b9b09779, piece 1): a run the terminal check or the fence
+        // above turned away must not be left carrying reported-persona events for a park that
+        // never happened.
+        foreach (ReviewPersona persona in personasReported)
+        {
+            session.Events.Append(runId, new PrReviewPersonaReported(runId, persona, DateTimeOffset.UtcNow));
+        }
+
         session.Events.Append(runId, new ReviewParked(
             runId,
             $"{mentionPrefix}Pull request review complete. Findings: {reportPath}. Walk them, direct each one, "
@@ -1107,9 +1312,11 @@ public sealed class PrReviewEngine(
     /// `h9k task retry` — a real, already-documented lever — is what the owner gets instead of a
     /// findings report built from a promise never kept (cycle-1 conformance finding,
     /// PrReviewEngine.cs:374). <paramref name="sawTaskContext"/> mirrors
-    /// <c>ReviewEngine.RecordReviewPassAsync</c>'s own <c>sawTaskContext</c>: true for the
-    /// conformance lens, which is the only one <see cref="AgentPromptBuilder.BuildPrReviewLens"/>
-    /// ever hands the task's objective, acceptance criteria, or agent context; false for the
+    /// <c>ReviewEngine.RecordReviewPassAsync</c>'s own <c>sawTaskContext</c>, and every caller
+    /// reads it off the session's own <see cref="ReviewPersonaSession.SeesTaskContext"/> rather
+    /// than inferring it from where that session sits in the plan: true for the engineer's
+    /// conformance lens, the only one <see cref="AgentPromptBuilder.BuildPrReviewLens"/> ever
+    /// hands the task's objective, acceptance criteria, or agent context, and false for its
     /// adversarial lens, which never sees any of them.
     /// </summary>
     private static bool HasUsableVerdict(string summary, bool sawTaskContext, TaskDetails task)
@@ -1131,7 +1338,7 @@ public sealed class PrReviewEngine(
     /// <summary>
     /// <see cref="HasUsableVerdict"/>'s write half: true (caller must stop) when the summary
     /// failed the check, false (caller proceeds) when it passed. Fenced the same way every other
-    /// terminal write in this class already is (<see cref="DispatchConformanceAsync"/>,
+    /// terminal write in this class already is (<see cref="DispatchFollowOnSessionAsync"/>,
     /// <see cref="ComposeReportAndParkAsync"/>, <see cref="FinalizeAsync"/>): a reclaim landing
     /// between the summary arriving and this check must retire the stale run as
     /// <see cref="RunSuperseded"/>, never mark it <see cref="RunFailed"/> unconditionally the way

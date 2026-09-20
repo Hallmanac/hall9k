@@ -657,6 +657,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             await WriteCoordinatesAsync(session, runs, runDetailsById, cancellationToken);
             RunDetails? newestRun = runDetailsById.GetValueOrDefault(runs[^1].Id);
             WriteStartedCleanAfterBranchGone(newestRun);
+            WriteReviewPersonas(newestRun);
             WriteReviewScopeSeed(newestRun);
             WriteReviewOutcome(newestRun);
             WriteReviewEndedByMerge(newestRun);
@@ -1045,6 +1046,69 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             $"\n[bold]Review scope[/]  seeded to changes since [dim]{sinceSha.EscapeMarkup()}[/], but the "
             + "[dim]seed no longer resolved against the worktree when the opening cycle dispatched — it read "
             + "the full branch instead[/]");
+    }
+
+    /// <summary>
+    /// Which review personas this pull request was read through and where each one got to (idea
+    /// b9b09779, piece 1). Read off what the run recorded at dispatch and as it went, never
+    /// re-derived from the persona registry: a persona registered since must not change what an
+    /// already-finished run is said to have done.
+    /// <para>
+    /// Silent for every run that recorded no selection — a run of any other task type, and every
+    /// pr-review run written before personas existed, which ran the engineer's review and had no
+    /// second possibility to report.
+    /// </para>
+    /// </summary>
+    private static void WriteReviewPersonas(RunDetails? run)
+    {
+        if (run is null || run.PrReviewPersonasRequested.Count == 0)
+        {
+            return;
+        }
+
+        List<string> parts = [];
+        foreach (ReviewPersona persona in ReviewPersona.All)
+        {
+            bool ran = run.PrReviewPersonasRan.Contains(persona);
+            bool skipped = run.PrReviewPersonasSkipped.Contains(persona);
+            if (!ran && !skipped)
+            {
+                continue;
+            }
+
+            // A persona whose session died is named as failed rather than dropped or quietly
+            // counted among the reports that are in. A persona with neither a report nor a
+            // recorded failure is only "running" while the run still is: the engineer's own
+            // session dying is fatal to the whole run, which fails it without recording a
+            // persona failure (that event is for the non-fatal personas), so reading the
+            // absence as "running" left a terminal run claiming a live session indefinitely
+            // (independent pre-PR review, cycle 1).
+            string? failure = run.PrReviewPersonaSessionFailures.Values
+                .Where(entry => entry.Persona == persona)
+                .Select(entry => entry.Reason)
+                .FirstOrDefault();
+            string state = skipped ? "[yellow]skipped — no review prompt registered yet[/]"
+                : failure is not null ? $"[red]failed[/] [dim]— {ExternalText.OneLineMarkup(failure)}[/]"
+                : run.PrReviewPersonasReported.Contains(persona) ? "[green]report in[/]"
+                : run.State.IsTerminal ? "[red]no report[/] [dim]— the run ended first[/]"
+                : "[blue]running[/]";
+            parts.Add($"{persona.Value.EscapeMarkup()} {state}");
+        }
+
+        if (parts.Count == 0)
+        {
+            // Nothing this build recognizes, which a stream written by a later one could hold.
+            // An empty row would claim a selection nobody could read, so say nothing instead.
+            return;
+        }
+
+        AnsiConsole.MarkupLine($"\n[bold]Review personas[/]  {string.Join(" · ", parts)}");
+        if (run.PrReviewPersonasFellBackToEngineer)
+        {
+            AnsiConsole.MarkupLine(
+                "[dim]  None of the declared personas has a review prompt registered yet, so the "
+                + "engineer's review ran in their place rather than leaving the pull request unreviewed.[/]");
+        }
     }
 
     /// <summary>

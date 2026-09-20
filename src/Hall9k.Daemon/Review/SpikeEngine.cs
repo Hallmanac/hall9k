@@ -222,8 +222,8 @@ public sealed class SpikeEngine(
     /// the fixed path <see cref="RunPaths.SpikeFindingsFile"/> — the session is asked to end its
     /// final message with exactly this text (<see cref="AgentPromptBuilder.SpikeFindingsMarker"/>),
     /// so its whole summary IS the findings document, mirroring
-    /// <see cref="PrReviewEngine.RecordAdversarialResultAsync"/>'s identical capture for its own
-    /// adversarial lens. Idempotent: a resumed call finds the file already there and does nothing.
+    /// <see cref="PrReviewEngine.RecordPrimarySessionResultAsync"/>'s identical capture for its own
+    /// primary session. Idempotent: a resumed call finds the file already there and does nothing.
     /// </summary>
     public async Task RecordFindingsAsync(string runDirectory, string summary, CancellationToken cancellationToken)
     {

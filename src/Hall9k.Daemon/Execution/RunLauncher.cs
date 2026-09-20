@@ -4,6 +4,7 @@ using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.ProjectHomes;
+using Hall9k.Daemon.Review;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Owner;
@@ -298,13 +299,26 @@ public sealed class RunLauncher(
                 ? RunPaths.ResolveDirectoryUnderTaskDirectory(existingTaskDirectory, runId)
                 : RunPaths.ResolveDirectory(project.HomeDirectory, TaskDocumentRenderer.DirectoryName(task), runId);
 
+            // Which personas this pull request is reviewed through (idea b9b09779, piece 1),
+            // resolved before the session name and the prompt below, which both come out of it.
+            // The personas are the ASSIGNEE's, not this node's owner's: a review is a job handed
+            // to a member, and the lens it is read through belongs to whoever it was handed to.
+            // An unassigned pr-review task falls back to the owner this run is dispatched under,
+            // which on a single-owner install is the same person. An owner record that cannot be
+            // read at all plans exactly as an owner who declared nothing does.
+            ReviewPersonaPlan? personaPlan = isPrReview
+                ? ReviewPersonaRegistry.Plan(
+                    (await session.LoadAsync<OwnerDetails>(task.AssignedOwnerId ?? ownerId, cancellationToken))
+                        ?.ReviewPersonas)
+                : null;
+
             // The primary session's own name (task: every dispatched agent session launches
             // under a human-readable id-and-role name) — decided here, once, from the same
             // three-way split the prompt selection below re-derives for its own purpose, because
             // AgentRole.Build alone cannot tell a rebase follow-up, a failing-checks follow-up,
             // and an ordinary dispatch apart on later reads (RunDetails.SessionName's own doc).
             string sessionRole = isPrReview
-                ? SessionRoleName.ReviewAdversarial(1)
+                ? personaPlan!.Sessions[0].RoleName
                 : followUp is not null
                     ? task.FollowUpKind == FollowUpKind.FailingChecks
                         ? SessionRoleName.Checks
@@ -462,6 +476,18 @@ public sealed class RunLauncher(
                 // and BaseCommit are just above (StackedBaseResolver.ResumedBase's own doc) — null
                 // for a fresh cut, which is every ordinary run.
                 OpenedAgainstBaseBranch: resumedBase?.OpenedAgainstBaseBranch));
+            // Appended in the dispatch's own commit so the run's record of what it set out to
+            // review can never be missing from a run that is already dispatched (idea b9b09779,
+            // piece 1). Read back by PrReviewEngine, by the findings report, and by h9k task show,
+            // none of which re-derive it from the registry: a persona registered between this
+            // dispatch and that read must not change what this run is said to have done.
+            if (personaPlan is not null)
+            {
+                session.Events.Append(runId, new PrReviewPersonasSelected(
+                    runId, personaPlan.Requested, personaPlan.Ran, personaPlan.Skipped,
+                    personaPlan.FellBackToEngineer, DateTimeOffset.UtcNow));
+            }
+
             // Appended right behind the dispatch, in the same commit, so the run record can never
             // exist saying "resumed" while the fact that it did not is still in flight
             // (#234). Null for every run that resumed what it meant to and every
@@ -488,13 +514,14 @@ public sealed class RunLauncher(
             string prompt;
             if (isPrReview)
             {
-                // The adversarial lens, dispatched as this run's ordinary primary session —
-                // PrReviewEngine takes over from here once it completes, dispatching the
-                // conformance lens second and never a build/fix session of any kind.
+                // The persona plan's first session, dispatched as this run's ordinary primary
+                // session — PrReviewEngine takes over from here once it completes, dispatching
+                // every remaining session the plan names and never a build/fix session of any
+                // kind. For an assignee who declared no persona that first session is the
+                // engineer's adversarial lens, exactly as it has always been.
                 string baseBranch = prReviewFacts!.BaseRefName.IsNotBlank() ? prReviewFacts.BaseRefName : project.BaseBranch;
-                prompt = AgentPromptBuilder.BuildPrReviewLens(
-                    task, project, worktree.Branch, ReviewLens.Adversarial, baseBranch,
-                    commandTimeout: options.Value.VerifyGateTimeout);
+                prompt = personaPlan!.Sessions[0].BuildPrompt(new ReviewPersonaPromptRequest(
+                    task, project, worktree.Branch, baseBranch, options.Value.VerifyGateTimeout));
 
                 // This mint itself came from a GitHub mention (idea 2f079bcd, decision 2 and 3):
                 // the primary session's own ordinary verdict is not enough here, so it is also
