@@ -110,13 +110,20 @@ public sealed class TaskAggregate
     public PreApprovalMode PreApproval { get; private set; } = PreApprovalMode.Off;
 
     /// <summary>
-    /// Stops this task's own stream from riding an outbox at all (idea 202383dc, M2a): a private
-    /// task's events are never included in an outbound events envelope while this is true, whatever
-    /// their own <c>EventScope</c> classification says, so a draft a teammate should not see yet
-    /// never travels until <see cref="Events.TaskPrivacySet"/> clears it. False by default — every
-    /// task ever written before this flag existed replays as not private.
+    /// How far this task's own events travel (idea 8c5993c5): <see cref="ReplicationScope.Private"/>
+    /// never leaves this node, <see cref="ReplicationScope.Fleet"/> reaches every node this same
+    /// owner runs, <see cref="ReplicationScope.Team"/> reaches every project member's own fleet.
+    /// Defaults to <see cref="ReplicationScope.Team"/> — every task added before this field existed
+    /// replays at the scope it already had under the old private/not-private flag, since a
+    /// not-private task was already fully team-visible. <see cref="Apply(Events.TaskAdded)"/> reads a
+    /// fresh add's own <see cref="Events.TaskAdded.InitialScope"/> instead, which every add from here
+    /// on names <see cref="ReplicationScope.Fleet"/>, and <see cref="Apply(Events.TaskPublished)"/>
+    /// always moves a task to <see cref="ReplicationScope.Team"/> unconditionally.
     /// </summary>
-    public bool IsPrivate { get; private set; }
+    public ReplicationScope Scope { get; private set; } = ReplicationScope.Team;
+
+    /// <summary>The pre-8c5993c5 two-valued read of <see cref="Scope"/>, kept for callers that only ever asked "private or not".</summary>
+    public bool IsPrivate => Scope == ReplicationScope.Private;
 
     /// <summary>
     /// Which install published the work this task mirrors, or null when it is local work — see
@@ -994,6 +1001,7 @@ public sealed class TaskAggregate
         StackedOnPullRequestNumber = @event.StackedOnPullRequestNumber;
         SpikeKind = @event.SpikeKind ?? Hall9k.Domain.Features.Tasks.SpikeKind.Unknown;
         ExitCriterion = @event.ExitCriterion;
+        Scope = @event.InitialScope ?? ReplicationScope.Team;
 
         if (@event.StartsAsDraft)
         {
@@ -1017,11 +1025,25 @@ public sealed class TaskAggregate
         {
             CloseLinkedIssue = @event.CloseLinkedIssue.Value;
         }
+
+        // idea 8c5993c5: publishing always sets team, unconditionally — a published task is the
+        // one door a task reaches team scope through with no separate share command, the task-side
+        // parallel to h9k idea share.
+        Scope = ReplicationScope.Team;
     }
 
     public void Apply(TaskPreApprovedSet @event) => PreApproval = @event.EffectivePreApproval;
 
-    public void Apply(TaskPrivacySet @event) => IsPrivate = @event.IsPrivate;
+    /// <summary>
+    /// Historical replay only — every write from idea 8c5993c5 on appends
+    /// <see cref="Events.TaskScopeSet"/> instead. A cleared flag reads as
+    /// <see cref="ReplicationScope.Team"/>, never <see cref="ReplicationScope.Fleet"/>: before fleet
+    /// scope existed, "not private" already meant fully team-visible, and an existing task keeps
+    /// that effective scope rather than being quietly narrowed by a field it never asked for.
+    /// </summary>
+    public void Apply(TaskPrivacySet @event) => Scope = @event.IsPrivate ? ReplicationScope.Private : ReplicationScope.Team;
+
+    public void Apply(TaskScopeSet @event) => Scope = @event.Scope;
 
     public void Apply(TaskMechanicalResolutionAttempted @event) => MechanicalResolutionAttempts++;
 

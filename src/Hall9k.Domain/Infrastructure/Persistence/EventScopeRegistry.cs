@@ -87,6 +87,8 @@ public static class EventScopeRegistry
         [typeof(TaskReturnedToDraft)] = EventScope.ProjectScoped,
         [typeof(TaskReviewCapsOverridden)] = EventScope.ProjectScoped,
         [typeof(TaskPrivacySet)] = EventScope.ProjectScoped,
+        // idea 8c5993c5: supersedes TaskPrivacySet for every write going forward — see its own doc.
+        [typeof(TaskScopeSet)] = EventScope.ProjectScoped,
         [typeof(TaskRevised)] = EventScope.ProjectScoped,
         [typeof(TaskSessionCapOverridden)] = EventScope.ProjectScoped,
         [typeof(TaskUnassigned)] = EventScope.ProjectScoped,
@@ -344,6 +346,8 @@ public static class EventScopeRegistry
         [typeof(IdeaConcluded)] = EventScope.ProjectScoped,
         [typeof(IdeaDiscarded)] = EventScope.ProjectScoped,
         [typeof(IdeaPrivacySet)] = EventScope.ProjectScoped,
+        // idea 8c5993c5: supersedes IdeaPrivacySet for every write going forward — see its own doc.
+        [typeof(IdeaScopeSet)] = EventScope.ProjectScoped,
         [typeof(IdeaPromoted)] = EventScope.ProjectScoped,
         [typeof(IdeaRevised)] = EventScope.ProjectScoped,
         [typeof(IdeaTaskCut)] = EventScope.ProjectScoped,

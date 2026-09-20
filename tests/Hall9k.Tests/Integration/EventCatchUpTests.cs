@@ -1004,13 +1004,19 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         // shape that was unservable: every one of their events sits at or below the switch-on
         // sequence recorded below.
         Guid preSwitchOnTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now, cts.Token);
-        Guid preSwitchOnPrivateTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+        // Built as a still-draft task rather than through SeedQueuedTaskAsync: publishing now sets
+        // team scope unconditionally, and team is one-way, so a published task could never be made
+        // private afterward the way this test needs it to be.
+        Guid preSwitchOnPrivateTaskId = DomainId.New();
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
-            TaskAggregate privateTask =
-                (await session.Events.AggregateStreamAsync<TaskAggregate>(preSwitchOnPrivateTaskId, token: cts.Token))!;
-            session.Events.Append(
-                preSwitchOnPrivateTaskId, TaskDecider.SetPrivate(privateTask, isPrivate: true, Now.AddSeconds(2), ownerId));
+            TaskAdded privateAdded = TaskDecider.Add(
+                preSwitchOnPrivateTaskId, projectId, "Keep this quiet", ["stays quiet"], TaskType.Feature, null, null,
+                null, Now.AddSeconds(1), ownerId);
+            TaskAggregate privateTask = new();
+            privateTask.Apply(privateAdded);
+            TaskScopeSet madePrivate = TaskDecider.SetPrivate(privateTask, isPrivate: true, Now.AddSeconds(2), ownerId);
+            session.Events.StartStream<TaskAggregate>(preSwitchOnPrivateTaskId, privateAdded, madePrivate);
             await session.SaveChangesAsync(cts.Token);
         }
 

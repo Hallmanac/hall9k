@@ -1,6 +1,7 @@
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Idea;
 
@@ -39,7 +40,8 @@ public static class IdeaDecider
                 + "Nothing else is required — a project is optional, and everything else is discovery's job.");
         }
 
-        return new IdeaCaptured(id, ownerId, text.Trim(), Vet(projectId), capturedAt, workspaceHome.Value);
+        return new IdeaCaptured(
+            id, ownerId, text.Trim(), Vet(projectId), capturedAt, workspaceHome.Value, InitialScope: ReplicationScope.Fleet);
     }
 
     /// <summary>
@@ -199,9 +201,46 @@ public static class IdeaDecider
         };
     }
 
-    /// <summary>idea 202383dc, M2a: gates outbound replication of this idea's own stream, not its
-    /// lifecycle — settable in any state, so an about-to-be-archived idea can still be marked
-    /// private on its way out.</summary>
-    public static IdeaPrivacySet SetPrivate(IdeaAggregate idea, bool isPrivate, DateTimeOffset setAt, Guid setByOwnerId) =>
-        new(idea.Id, isPrivate, setAt, setByOwnerId);
+    /// <summary>
+    /// idea 8c5993c5: sets this idea's own replication scope — gates outbound replication, not its
+    /// lifecycle, so an about-to-be-archived idea can still be scoped on its way out. Refused when
+    /// the idea is already at <paramref name="scope"/> (nothing to change) or already
+    /// <see cref="ReplicationScope.Team"/> and <paramref name="scope"/> asks for anything narrower:
+    /// team is one-way, because other project members may already hold a copy once an idea reaches
+    /// it, and there is no message that un-sends what they already have.
+    /// </summary>
+    public static IdeaScopeSet SetScope(IdeaAggregate idea, ReplicationScope scope, DateTimeOffset setAt, Guid setByOwnerId)
+    {
+        if (idea.Scope == scope)
+        {
+            throw new DomainConflictException($"Idea {idea.Id} is already at {scope.Value} scope — nothing to change.");
+        }
+
+        if (idea.Scope.IsAtLeast(ReplicationScope.Team))
+        {
+            throw new DomainConflictException(
+                $"Idea {idea.Id} is already shared with the team — team scope is one-way, since other members "
+                + "may already hold a copy and there is no message that un-sends what they already have.");
+        }
+
+        return new IdeaScopeSet(idea.Id, scope, setAt, setByOwnerId);
+    }
+
+    /// <summary>
+    /// idea 8c5993c5: <c>h9k idea share</c> — sugar for <see cref="SetScope"/> at
+    /// <see cref="ReplicationScope.Team"/>. Unlike a task, which reaches team automatically on
+    /// publish, an idea has no such automatic door: it reaches the team only on this explicit word.
+    /// Works on a captured idea in any state, exactly as <see cref="SetScope"/> does.
+    /// </summary>
+    public static IdeaScopeSet Share(IdeaAggregate idea, DateTimeOffset setAt, Guid setByOwnerId) =>
+        SetScope(idea, ReplicationScope.Team, setAt, setByOwnerId);
+
+    /// <summary>
+    /// idea 8c5993c5: the pre-8c5993c5 <c>h9k idea set-private</c> alias, kept as sugar over
+    /// <see cref="SetScope"/> — <paramref name="isPrivate"/> true means
+    /// <see cref="ReplicationScope.Private"/>, false means <see cref="ReplicationScope.Fleet"/> (the
+    /// ordinary "not private" resting scope for an idea that has not been explicitly shared).
+    /// </summary>
+    public static IdeaScopeSet SetPrivate(IdeaAggregate idea, bool isPrivate, DateTimeOffset setAt, Guid setByOwnerId) =>
+        SetScope(idea, isPrivate ? ReplicationScope.Private : ReplicationScope.Fleet, setAt, setByOwnerId);
 }

@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Idea;
 
@@ -37,8 +38,20 @@ public sealed class IdeaAggregate
     public DateTimeOffset CapturedAt { get; private set; }
     /// <summary>The home the discovery workspace was captured under, or <see cref="ProjectHome.None"/> — see <see cref="IdeaCaptured"/>.</summary>
     public ProjectHome WorkspaceHome { get; private set; } = ProjectHome.None;
-    /// <summary>Stops this idea's own stream from riding an outbox at all (idea 202383dc, M2a) — see <see cref="Hall9k.Domain.Features.Tasks.TaskAggregate.IsPrivate"/>'s identical doc.</summary>
-    public bool IsPrivate { get; private set; }
+    /// <summary>
+    /// How far this idea's own events travel (idea 8c5993c5): <see cref="ReplicationScope.Private"/>
+    /// never leaves this node, <see cref="ReplicationScope.Fleet"/> reaches every node this same
+    /// owner runs, <see cref="ReplicationScope.Team"/> reaches every project member's own fleet.
+    /// Defaults to <see cref="ReplicationScope.Team"/> — every idea captured before this field
+    /// existed replays at the scope it already had under the old private/not-private flag, since a
+    /// not-private idea was already fully team-visible. <see cref="Apply(IdeaCaptured)"/> reads a
+    /// fresh capture's own <see cref="IdeaCaptured.InitialScope"/> instead, which every capture from
+    /// here on names <see cref="ReplicationScope.Fleet"/>.
+    /// </summary>
+    public ReplicationScope Scope { get; private set; } = ReplicationScope.Team;
+
+    /// <summary>The pre-8c5993c5 two-valued read of <see cref="Scope"/>, kept for callers that only ever asked "private or not".</summary>
+    public bool IsPrivate => Scope == ReplicationScope.Private;
 
     public void Apply(IdeaCaptured @event)
     {
@@ -49,6 +62,7 @@ public sealed class IdeaAggregate
         CapturedAt = @event.CapturedAt;
         WorkspaceHome = ProjectHome.Parse(@event.WorkspaceHomeDirectory);
         State = IdeaState.Captured;
+        Scope = @event.InitialScope ?? ReplicationScope.Team;
     }
 
     public void Apply(IdeaRevised @event)
@@ -99,5 +113,14 @@ public sealed class IdeaAggregate
         State = IdeaState.Archived;
     }
 
-    public void Apply(IdeaPrivacySet @event) => IsPrivate = @event.IsPrivate;
+    /// <summary>
+    /// Historical replay only — every write from idea 8c5993c5 on appends <see cref="IdeaScopeSet"/>
+    /// instead. A cleared flag reads as <see cref="ReplicationScope.Team"/>, never
+    /// <see cref="ReplicationScope.Fleet"/>: before fleet scope existed, "not private" already meant
+    /// fully team-visible, and an existing idea keeps that effective scope rather than being quietly
+    /// narrowed by a field it never asked for.
+    /// </summary>
+    public void Apply(IdeaPrivacySet @event) => Scope = @event.IsPrivate ? ReplicationScope.Private : ReplicationScope.Team;
+
+    public void Apply(IdeaScopeSet @event) => Scope = @event.Scope;
 }

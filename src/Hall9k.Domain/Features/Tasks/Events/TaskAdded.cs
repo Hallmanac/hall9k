@@ -121,7 +121,16 @@ public sealed record TaskAdded(
     /// and the branch against — null on every non-spike task. Required by
     /// <c>TaskDecider.Publish</c> for a spike, not here, for the identical reason.
     /// </summary>
-    string? ExitCriterion = null)
+    string? ExitCriterion = null,
+    /// <summary>
+    /// This task's own replication scope from the moment of creation (idea 8c5993c5): every task
+    /// <c>TaskDecider.Add</c> creates from here on names <see cref="ReplicationScope.Fleet"/>, so a
+    /// fresh draft reaches the owner's own other nodes without a separate <see cref="TaskScopeSet"/>
+    /// event. Null on every task added before this field existed —
+    /// <see cref="TaskAggregate.Apply(TaskAdded)"/> reads that as the honest legacy default instead
+    /// of guessing at a fleet-era intent nobody recorded.
+    /// </summary>
+    ReplicationScope? InitialScope = null)
 {
     /// <summary>
     /// What this event granted, whichever build wrote it — the same one home for the
