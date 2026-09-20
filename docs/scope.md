@@ -1025,7 +1025,7 @@ event type to level, with no model in it, and the level is a per-project setting
 its own — a cursor over this node's own event log plus a filter — so nothing is buffered and
 nothing is lost by not reading it. What does **not** exist yet is anything that reads the feed on
 its own: the courier that wakes a window when items land is designed and unbuilt
-(Decisions Log #PLACEHOLDER-37b5ec69).
+(Decisions Log #241).
 
 ### The help tree
 
