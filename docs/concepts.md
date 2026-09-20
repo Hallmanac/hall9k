@@ -868,6 +868,21 @@ Agent-facing commands are observation gates: `write-jira` and `h9k task link-jir
 a pre-existing card) both read the key back through Jira before recording anything, so an agent's
 or an operator's claim is an argument that gets checked, never a fact that gets accepted.
 
+**An assignment names an owner, not a node.** `h9k task assign <id> <owner>` puts the task in the
+queue every one of that owner's nodes reads from (Decisions Log #34) — the first free dispatcher
+of that owner claims it, wherever it runs, exactly as if only one node existed. `--node
+<id-or-fragment>` narrows that to one specific node of the owner's own fleet: only that node's
+dispatcher claims it, and every other node of the same owner skips it, logging why once a sweep
+rather than silently. Placement is advisory to dispatch alone — it never changes whose work the
+task is, and it never touches the ledger holder a claim writes; it only narrows *which* of the
+owner's own nodes gets to claim it. A node this project's own ledger does not currently vouch into
+that owner's fleet is refused outright (`h9k node vouch` first), and `--node` with nothing named
+clears an existing placement, handing the choice back to whichever node gets there first.
+Placement and the takeover levers agree by construction (idea 202383dc, items 4 and 5): a forced
+`h9k task take --force` or a cooperative grant already reassigns a task to the taker's own owner,
+and the same event now also rewrites the placement to the taker's own node, so the node that just
+lost the task stops trying to reclaim it without a second `h9k task assign --node`.
+
 GitHub gets a write path of its own, because an issue's shape (title, body, labels) is uniform
 enough for the platform to author deterministically, with no agent needed. A project's **backlog
 policy** (`h9k project set --backlog none|github-issues|jira`) decides how every published task is
