@@ -130,6 +130,36 @@ public sealed class GitLedgerChainReaderTests : IDisposable
 
         chain.OwnerChains[owner.Fingerprint].RootNodeId.Should().BeNull(
             "the forged node.yaml was never actually signed by the root's own key, only claims to carry it");
+        chain.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "node" && write.Identifier == forgedNodeId.ToString() && write.RootFingerprint == owner.Fingerprint,
+            "the forgery is named rather than silently vanishing with no diagnostic at all "
+            + "(independent pre-PR review, cycle 1, adversarial lens, medium)");
+    }
+
+    [Fact]
+    public async Task A_revoked_root_node_is_dropped_from_its_own_fleet()
+    {
+        // independent pre-PR review, cycle 1, conformance lens, medium: the root's own node has no
+        // owners/<root>/nodes/<id>.yaml vouch entry for h9k node revoke to remove, so without this
+        // fix a revoked root node stayed in FleetNodeIds() forever even though h9k node revoke
+        // reports it removed.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+
+        string readerBeforeRevoke = _repo.CloneNode(hub);
+        (await _chainReader.ComputeAsync(readerBeforeRevoke, CancellationToken.None))
+            .OwnerChains[owner.Fingerprint].FleetNodeIds().Should().Contain(owner.NodeId, "the root's own node resolves before any revocation");
+
+        await RevokeAsync(ownerRepo, owner.Fingerprint, owner.NodeId, owner);
+
+        string readerAfterRevoke = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerAfterRevoke, CancellationToken.None);
+
+        chain.OwnerChains[owner.Fingerprint].RootNodeId.Should().Be(
+            owner.NodeId.ToString(), "the ledger still names it — only FleetNodeIds excludes a revoked entry");
+        chain.OwnerChains[owner.Fingerprint].FleetNodeIds().Should().NotContain(
+            owner.NodeId, "h9k node revoke against the root's own node must actually drop it from the fleet");
     }
 
     [Fact]

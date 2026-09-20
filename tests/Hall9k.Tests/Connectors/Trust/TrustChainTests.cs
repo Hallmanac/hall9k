@@ -84,4 +84,35 @@ public sealed class TrustChainTests
 
         owner.FleetNodeIds().Should().BeEquivalentTo([VouchedNodeId]);
     }
+
+    [Fact]
+    public void FleetNodeIds_DedupesARootNodeThatWasAlsoSelfVouched()
+    {
+        // The pre-fix workaround PLAN.md's own entry for this branch names: an owner ran
+        // h9k node vouch against its own root node id before the root counted as fleet on its own,
+        // leaving that id in both RootNodeId and Nodes (independent pre-PR review, cycle 1,
+        // adversarial lens, low).
+        Guid rootNodeId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        TrustedOwner owner = new(
+            "root-fingerprint", "ssh-ed25519 AAAAroot root",
+            [new TrustedNode(rootNodeId.ToString(), "ssh-ed25519 AAAAroot root", "root-fingerprint", DateTimeOffset.UnixEpoch)],
+            RootNodeId: rootNodeId.ToString());
+
+        owner.FleetNodeIds().Should().Equal([rootNodeId], "the root's own node id must appear once, not twice");
+    }
+
+    [Fact]
+    public void FleetNodeIds_ExcludesTheRootsOwnNodeOnceItIsRevoked()
+    {
+        // independent pre-PR review, cycle 1, conformance lens, medium: the root's own node has no
+        // owners/<root>/nodes/<id>.yaml entry to remove on revocation, so RevokedNodeIds is the
+        // only record a revocation of it ever leaves.
+        Guid rootNodeId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        TrustedOwner owner = new(
+            "root-fingerprint", "ssh-ed25519 AAAAroot root", [],
+            RootNodeId: rootNodeId.ToString(),
+            RevokedNodeIds: new HashSet<string> { rootNodeId.ToString() });
+
+        owner.FleetNodeIds().Should().BeEmpty("h9k node revoke against the root's own node must actually drop it from the fleet");
+    }
 }

@@ -29,9 +29,27 @@ public sealed record TrustedNode(string NodeId, string PublicKeyLine, string Fin
 /// own — a root never vouches itself — so without this, the fleet <see cref="FleetNodeIds"/>
 /// computes would silently exclude the one node an owner is guaranteed to actually have.
 /// </param>
+/// <param name="RevokedNodeIds">
+/// Every node id this root's own chain walk found revoked more recently than it was ever vouched —
+/// including a node id that was never vouched at all, which is exactly the root's own node: it has
+/// no <c>owners/&lt;root&gt;/nodes/&lt;id&gt;.yaml</c> entry for <see cref="Nodes"/> to drop on
+/// revocation, so <c>owners/&lt;root&gt;/revoked/&lt;id&gt;.yaml</c> is the only record a revocation
+/// of it ever leaves. Consulted by <see cref="FleetNodeIds"/> alone, so <see cref="RootNodeId"/>
+/// itself is never cleared here — a later re-vouch (or, for the root's own node, simply this same
+/// node id going unrevoked again in ref order) restores it to the fleet without
+/// <see cref="GitLedgerChainReader"/> needing to re-discover it (independent pre-PR review, cycle 1,
+/// conformance lens, medium: a revoked root node stayed in the fleet forever, disagreeing with
+/// <c>h9k node revoke</c>'s own success message).
+/// </param>
 public sealed record TrustedOwner(
-    string RootFingerprint, string RootPublicKeyLine, IReadOnlyList<TrustedNode> Nodes, string? RootNodeId = null)
+    string RootFingerprint, string RootPublicKeyLine, IReadOnlyList<TrustedNode> Nodes, string? RootNodeId = null,
+    IReadOnlySet<string>? RevokedNodeIds = null)
 {
+    /// <summary>Never null, whatever a caller passed the primary constructor: a pre-existing
+    /// four-argument construction (every call site that predates this field) gets an empty set
+    /// rather than a null every reader would otherwise have to guard against.</summary>
+    public IReadOnlySet<string> RevokedNodeIds { get; init; } = RevokedNodeIds ?? new HashSet<string>();
+
     /// <summary>Whether <paramref name="fingerprint"/> is this root's own key or a currently vouched node's.</summary>
     public bool Contains(string fingerprint) =>
         RootFingerprint == fingerprint || Nodes.Any(node => node.Fingerprint == fingerprint);
@@ -50,23 +68,31 @@ public sealed record TrustedOwner(
         RootFingerprint == fingerprint || Nodes.Any(node => node.Fingerprint == fingerprint && node.NodeId == nodeId);
 
     /// <summary>
-    /// This owner's own fleet, as a set of node ids: <see cref="RootNodeId"/> (the root's own node,
-    /// when the ledger names it) plus every currently vouched node — the one definition every
-    /// enumerator of "which nodes may act for this owner" shares (<c>h9k task assign --node</c>'s
-    /// own placement resolution, <c>h9k project members</c>, replication candidate ranking, the
-    /// voucher-tier lookup), rather than each reading <see cref="Nodes"/> alone and separately
-    /// forgetting the root has no vouch entry of its own.
+    /// This owner's own fleet, as a de-duplicated set of node ids: <see cref="RootNodeId"/> (the
+    /// root's own node, when the ledger names it and <see cref="RevokedNodeIds"/> does not currently
+    /// name it revoked) plus every currently vouched node — the one definition every enumerator of
+    /// "which nodes may act for this owner" shares (<c>h9k task assign --node</c>'s own placement
+    /// resolution, <c>h9k project members</c>, replication candidate ranking, the voucher-tier
+    /// lookup), rather than each reading <see cref="Nodes"/> alone and separately forgetting the
+    /// root has no vouch entry of its own. De-duplicated because an install that already worked
+    /// around the root-fleet gap this method exists to close by running <c>h9k node vouch</c>
+    /// against its own root ends up with that same node id in both <see cref="RootNodeId"/> and
+    /// <see cref="Nodes"/> (independent pre-PR review, cycle 1, adversarial lens, low) — every
+    /// caller gets one id per node either way, rather than each having to de-duplicate for itself.
     /// </summary>
     public IEnumerable<Guid> FleetNodeIds()
     {
-        if (RootNodeId is { } rootNodeId && Guid.TryParse(rootNodeId, out Guid rootId))
+        HashSet<Guid> seen = [];
+
+        if (RootNodeId is { } rootNodeId && !RevokedNodeIds.Contains(rootNodeId)
+            && Guid.TryParse(rootNodeId, out Guid rootId) && seen.Add(rootId))
         {
             yield return rootId;
         }
 
         foreach (TrustedNode node in Nodes)
         {
-            if (Guid.TryParse(node.NodeId, out Guid nodeId))
+            if (Guid.TryParse(node.NodeId, out Guid nodeId) && seen.Add(nodeId))
             {
                 yield return nodeId;
             }

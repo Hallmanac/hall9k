@@ -91,7 +91,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        await AttachRootNodeIdsAsync(repositoryPath, ownerChains, cancellationToken);
+        unverified.AddRange(await AttachRootNodeIdsAsync(repositoryPath, ownerChains, cancellationToken));
 
         (IReadOnlyList<ProjectMember> members, IReadOnlyList<UnverifiedLedgerWrite> memberUnverified,
             string? genesisRootFingerprint, string? projectKey) =
@@ -160,22 +160,51 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// root already in <paramref name="ownerChains"/> is trusted as that root's own node only when
     /// the commit that currently produces that content is signed by that identical root key — the
     /// same self-consistency <c>ComputeOwnerChainAsync</c>'s own root.yaml check already applies,
-    /// since a node cannot forge a signature over a key it does not hold. Skipped entirely when
-    /// nothing self-certified above ever produced an owner chain to attach a node id to.
+    /// since a node cannot forge a signature over a key it does not hold. A candidate that
+    /// fingerprints back to a trusted root but fails that signature check is recorded into the
+    /// returned list rather than silently skipped (independent pre-PR review, cycle 1, adversarial
+    /// lens, medium) — the identical "name the writer" contract this class' own doc states for
+    /// every other verification surface. Skipped entirely when nothing self-certified above ever
+    /// produced an owner chain to attach a node id to.
+    /// <para>
+    /// Every node ref this scan could possibly need is fetched once, by a single wildcard refspec,
+    /// rather than one <c>git fetch</c> per node id: <see cref="DiscoverNodeIdsAsync"/> already
+    /// names exactly which node ids origin currently holds, so a wildcard fetch of that same prefix
+    /// costs one network round trip regardless of fleet size instead of one per node
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium — this scan's per-call cost
+    /// used to scale with the project's total node count, not its root count, and
+    /// <c>Hall9k.Daemon.Messaging.MessageSweepEngine</c> calls <see cref="ComputeAsync"/>
+    /// once per project on every sweep tick). The loop itself also stops the moment every owner
+    /// chain already has a <see cref="TrustedOwner.RootNodeId"/> — typically after the first root or
+    /// two, on a project whose owner count is always far smaller than its node count — rather than
+    /// walking every remaining node ref only to learn nothing more.
+    /// </para>
     /// </summary>
-    private async Task AttachRootNodeIdsAsync(
+    private async Task<IReadOnlyList<UnverifiedLedgerWrite>> AttachRootNodeIdsAsync(
         string repositoryPath, Dictionary<string, TrustedOwner> ownerChains, CancellationToken cancellationToken)
     {
         if (ownerChains.Count == 0)
         {
-            return;
+            return [];
         }
 
         IReadOnlyList<string> nodeIds = await DiscoverNodeIdsAsync(repositoryPath, cancellationToken);
+        if (nodeIds.Count == 0)
+        {
+            return [];
+        }
+
+        await FetchRefsAsync(repositoryPath, NodesRefPrefix, cancellationToken);
+
+        List<UnverifiedLedgerWrite> unverified = [];
         foreach (string nodeId in nodeIds)
         {
+            if (ownerChains.Values.All(owner => owner.RootNodeId is not null))
+            {
+                break;
+            }
+
             string refName = $"{NodesRefPrefix}{nodeId}";
-            await FetchRefAsync(repositoryPath, refName, cancellationToken);
             string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
             if (tip is null)
             {
@@ -200,7 +229,17 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             {
                 ownerChains[fingerprint] = owner with { RootNodeId = nodeId };
             }
+            else
+            {
+                string culpritCommit = commits.Count > 0 ? commits[0] : tip;
+                unverified.Add(new UnverifiedLedgerWrite(
+                    "node", nodeId, fingerprint,
+                    $"commit {culpritCommit} for {path} declares a public key fingerprinting to root {fingerprint} "
+                    + "but is not signed by that root's own key"));
+            }
         }
+
+        return unverified;
     }
 
     /// <summary>
@@ -268,6 +307,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         }
 
         Dictionary<string, TrustedNode> nodes = [];
+        HashSet<string> revokedNodeIds = [];
         List<UnverifiedLedgerWrite> unverified = [];
         string nodesPrefix = $"owners/{root}/nodes/";
         string revokedPrefix = $"owners/{root}/revoked/";
@@ -326,6 +366,10 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 if (isRevoke)
                 {
                     nodes.Remove(nodeId);
+                    // Recorded even for a node id nothing above ever vouched (the root's own node
+                    // id, which has no owners/<root>/nodes/<id>.yaml entry to remove) — that is the
+                    // only record its revocation ever leaves, and FleetNodeIds is the sole reader.
+                    revokedNodeIds.Add(nodeId);
                     continue;
                 }
 
@@ -342,10 +386,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 // node-id last held, so a surviving node vouching again after a bad revocation
                 // restores it here exactly as idea 202383dc's own model describes.
                 nodes[nodeId] = new TrustedNode(nodeId, nodePublicKey, nodeFingerprint, issuedAt);
+                revokedNodeIds.Remove(nodeId);
             }
         }
 
-        return (new TrustedOwner(root, publicKeyLine, [.. nodes.Values]), unverified);
+        return (new TrustedOwner(root, publicKeyLine, [.. nodes.Values], RevokedNodeIds: revokedNodeIds), unverified);
     }
 
     /// <summary>
@@ -611,6 +656,27 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
 
         // Best-effort: if no local copy exists either, this is simply a no-op.
         await runner("git", ["update-ref", "-d", refName], repositoryPath, cancellationToken);
+    }
+
+    /// <summary>Fetches every ref under <paramref name="prefix"/> in one round trip, by a single
+    /// wildcard refspec — the batched counterpart to <see cref="FetchRefAsync"/>'s one-ref-at-a-time
+    /// shape, for a caller (<see cref="AttachRootNodeIdsAsync"/>) that already knows, from its own
+    /// prior <c>ls-remote</c>, every suffix under this prefix it is about to read. A wildcard
+    /// refspec matching zero remote refs is not a failure the way a missing single named ref is
+    /// (git simply fetches nothing), so unlike <see cref="FetchRefAsync"/> there is no
+    /// "couldn't find remote ref" case to special-case here, and no local-ref cleanup: a caller
+    /// that already enumerated the current suffixes from origin never reads a stale local ref for a
+    /// suffix origin no longer lists, because it never asks for it by name.</summary>
+    private async Task FetchRefsAsync(string repositoryPath, string prefix, CancellationToken cancellationToken)
+    {
+        ProcessResult result = await runner("git", ["fetch", "origin", $"+{prefix}*:{prefix}*"], repositoryPath, cancellationToken);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                $"git fetch of {prefix}* from origin in {repositoryPath} failed (exit {result.ExitCode}): "
+                + $"{result.StandardError.Trim()} — refusing to compute trust from a possibly stale or "
+                + "incomplete read.");
+        }
     }
 
     private async Task<string?> ResolveTipAsync(string repositoryPath, string refName, CancellationToken cancellationToken)
