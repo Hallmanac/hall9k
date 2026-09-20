@@ -20,9 +20,9 @@ namespace Hall9k.Connectors.Replication;
 /// stop) rather than resolving and preserving a foreign origin the way this helper does. A fleet
 /// sibling that only ever holds a stream by replication cannot back-fill that stream's earlier
 /// history for the same reason; the gap closes only when the stream's own true origin node next runs
-/// its own forward scan (PLAN.md's Decisions Log, corrected by commit 4de02189d/2cb006c27; independent
-/// pre-PR review, cycle 7, conformance lens, low — this doc previously claimed the opposite, the one
-/// copy of that retired claim left behind).
+/// its own forward scan (PLAN.md's Decisions Log; independent pre-PR review, cycle 7, conformance
+/// lens, low — this doc previously claimed the opposite, the one copy of that retired claim left
+/// behind).
 /// </summary>
 public static class ReplicationEventOriginResolver
 {
