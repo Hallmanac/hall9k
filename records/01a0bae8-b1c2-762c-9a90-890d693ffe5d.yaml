@@ -21,7 +21,3 @@ origin-branch: task/693ffe5d-an-owner-can-place-a-task-on-o
 published: 2026-09-19 18:24:51Z
 context: |-
   Cut 2026-09-19 14:2x EDT by the hall9k project window after the first two-node placement went wrong. Evidence: Brian said 'Publish a56cf16e. Assign it on the Windows node.' Assignment is per owner (h9k task assign --help: 'Only that owner's nodes may claim it'); both nodes are his; the tracker-assignee claim gate cannot separate two installs sharing one GitHub login; ProjectSettingsChanged is NodeScoped so per-project caps bound how many, never which. The Mac assigned a56cf16e at 14:21 while its board read 3 of 3 live, a run delivered in the same seconds, and the Mac's DispatchEngine claimed it at 14:21:55 (run 01a0bae7) instead of Windows; the correction was a forced take from Windows (h9k task take --force, v0.10.0). Related: the persona stack (ec35ceca and children) that Brian wants built on Windows, and the mailbox relay that carries placement today by hand. Lineage: a gap in the distributed-team design (idea 202383dc), not a fix of a fix. Boundaries: placement is advisory to dispatch only; it never changes ownership, the ledger holder, or the claim gate; keep the takeover path as the override.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-09-20 04:46:03Z
