@@ -1,0 +1,21 @@
+hall9k-task-record: 1
+task-id: 01a0c034-7234-7617-9574-570870160be0
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#519
+objective: |-
+  A replicated idea from a node on another operating system applies here instead of stalling the whole inbox: IdeaCaptured's WorkspaceHomeDirectory is a node-local path in the capturing node's own format, and ProjectHome.Parse on the receiving node must accept a path rooted in either format (POSIX root or a Windows drive or UNC root) rather than rejecting the foreign form as not absolute, which today aborts every later event from that sender
+criteria:
+  - ProjectHome.Parse accepts a value rooted in the POSIX form (leading slash) or the Windows form (drive letter with a colon and a separator, or a UNC leading double separator) on every host; a foreign-form path is kept verbatim (trimmed, no GetFullPath normalization, which would mangle it), a native-form path is normalized exactly as today, and a genuinely relative path is still refused with the same message
+  - IdeaAggregate.Apply(IdeaCaptured) and IdeaDetailsProjection.Create no longer throw on a Windows path applied on macOS or a POSIX path applied on Windows; a unit test replays an IdeaCaptured carrying each foreign form through both and asserts the recorded WorkspaceHome round-trips verbatim
+  - |-
+    EventReplicationInbox does not let one event's projection failure abort the sender's whole batch: an ApplyEventException from a replicated record is logged with the event id and the sender, that record is skipped and recorded, and the cursor still advances past the envelope, so a single bad event can never freeze a sender's replication for good; a unit test over the inbox's apply loop covers it
+  - |-
+    The idea's own workspace home stays a node-local fact: nothing on the receiving node reads or creates directories from a foreign-form WorkspaceHome (h9k idea show prints it as recorded, ProjectHomeRenderLoop skips an idea whose home is not rooted in this host's form), covered by a unit test on the render loop's filter
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/70160be0-a-replicated-idea-from-a-node
+published: 2026-09-20 19:08:26Z
