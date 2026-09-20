@@ -7,6 +7,14 @@ namespace Hall9k.Domain.Features.Project;
 
 public sealed class ProjectAggregate
 {
+    /// <summary>
+    /// What an untouched project's <see cref="CourierMaxWaitSeconds"/> reads as (idea 89471598,
+    /// piece 3, Brian's ruling 2026-09-19): sixty seconds, the ceiling the courier's own batching
+    /// wait ramps toward the busier the feed gets. Public so the daemon's own courier sweep, the
+    /// projection, and <c>h9k project set</c>'s own description all read the identical number.
+    /// </summary>
+    public const int DefaultCourierMaxWaitSeconds = 60;
+
     public Guid Id { get; private set; }
     public Guid OwnerId { get; private set; }
     public Guid ConnectionId { get; private set; }
@@ -122,6 +130,13 @@ public sealed class ProjectAggregate
     /// own doc.
     /// </summary>
     public OrchestratorFeedLevel OrchestratorFeed { get; private set; } = OrchestratorFeedLevel.Default;
+
+    /// <summary>
+    /// This project's own ceiling on the feed courier's batching wait, in seconds; null defers to
+    /// the platform default (idea 89471598, piece 3, sixty seconds). See
+    /// <see cref="Events.ProjectSettingsChanged.CourierMaxWaitSeconds"/>'s own doc.
+    /// </summary>
+    public int? CourierMaxWaitSeconds { get; private set; }
 
     /// <summary>Who answers a cooperative claim request (idea 202383dc, item 5) — see <see cref="Events.ProjectSettingsChanged.TakePolicy"/>'s own doc.</summary>
     public TakePolicy TakePolicy { get; private set; } = TakePolicy.Auto;
@@ -338,6 +353,13 @@ public sealed class ProjectAggregate
         if (@event.OrchestratorFeed.HasValue)
         {
             OrchestratorFeed = @event.OrchestratorFeed.Value ?? OrchestratorFeedLevel.Default;
+        }
+
+        // The identical "this operator's own reading preference on this machine" reasoning as
+        // OrchestratorFeed just above: never on ProjectTeamSettingsChanged.
+        if (@event.CourierMaxWaitSeconds.HasValue)
+        {
+            CourierMaxWaitSeconds = @event.CourierMaxWaitSeconds.Value;
         }
 
         if (@event.TakePolicy.HasValue)

@@ -108,6 +108,12 @@ public sealed class ProjectDetails
     /// own doc; Transitions is the default.
     /// </summary>
     public OrchestratorFeedLevel OrchestratorFeed { get; set; } = OrchestratorFeedLevel.Default;
+    /// <summary>
+    /// This project's own ceiling on the feed courier's batching wait, in seconds; null defers to
+    /// the platform default (idea 89471598, piece 3, <see cref="ProjectAggregate.DefaultCourierMaxWaitSeconds"/>).
+    /// See <see cref="Events.ProjectSettingsChanged.CourierMaxWaitSeconds"/>'s own doc.
+    /// </summary>
+    public int? CourierMaxWaitSeconds { get; set; }
     /// <summary>Who answers a cooperative claim request (idea 202383dc, item 5) — see <see cref="Events.ProjectSettingsChanged.TakePolicy"/>'s own doc; Auto is the default.</summary>
     public TakePolicy TakePolicy { get; set; } = TakePolicy.Auto;
     /// <summary>Override of how long a cooperative take request waits for an answer, in minutes; null defers to the platform default (30). See <see cref="Events.ProjectSettingsChanged.TakeTimeoutMinutes"/>'s own doc.</summary>
@@ -321,6 +327,13 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.OrchestratorFeed.HasValue)
         {
             view.OrchestratorFeed = @event.Data.OrchestratorFeed.Value ?? OrchestratorFeedLevel.Default;
+        }
+
+        // The identical "this operator's own reading preference on this machine" reasoning as
+        // OrchestratorFeed just above: never on ProjectTeamSettingsChanged.
+        if (@event.Data.CourierMaxWaitSeconds.HasValue)
+        {
+            view.CourierMaxWaitSeconds = @event.Data.CourierMaxWaitSeconds.Value;
         }
 
         if (@event.Data.TakePolicy.HasValue)

@@ -342,6 +342,16 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "node's own log either way.")]
         public string? OrchestratorFeed { get; init; }
 
+        [CommandOption("--courier-max-wait <SECONDS|default>")]
+        [Description(
+            "This project's own ceiling on the feed courier's batching wait, in seconds (idea "
+            + "89471598, piece 3): the longest the courier ever waits since its last delivery before "
+            + "dispatching again, however busy the feed gets — the quieter the feed, the shorter the "
+            + "actual wait, down to immediate after ten quiet minutes. Default 60. A park, a dispute, "
+            + "daemon trouble, or a message from a person dispatches at once regardless of this "
+            + "ceiling. 'default' clears the override back to the platform default.")]
+        public string? CourierMaxWait { get; init; }
+
         [CommandOption("--take-policy <auto|ask>")]
         [Description(
             "Who answers a member's cooperative claim request for this project's own tasks (idea "
@@ -631,6 +641,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             orchestratorFeed: settings.OrchestratorFeed is { } orchestratorFeed
                 ? Optional<OrchestratorFeedLevel>.Of(OrchestratorFeedLevel.Parse(orchestratorFeed))
                 : Optional<OrchestratorFeedLevel>.None,
+            courierMaxWaitSeconds: ClearableCapOption.Parse(settings.CourierMaxWait, "--courier-max-wait"),
             takePolicy: settings.TakePolicy is { } takePolicy
                 ? Optional<TakePolicy>.Of(TakePolicy.Parse(takePolicy))
                 : Optional<TakePolicy>.None,

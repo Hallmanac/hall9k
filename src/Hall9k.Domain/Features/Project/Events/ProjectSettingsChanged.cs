@@ -236,4 +236,16 @@ public sealed record ProjectSettingsChanged(
     /// Trailing and optional so every stream written before this setting existed replays
     /// byte-for-byte unchanged.
     /// </summary>
-    Optional<OrchestratorFeedLevel> OrchestratorFeed = default);
+    Optional<OrchestratorFeedLevel> OrchestratorFeed = default,
+    /// <summary>
+    /// This project's own ceiling on the feed courier's batching wait (idea 89471598, piece 3,
+    /// Brian's ruling 2026-09-19: sixty seconds by default, configurable per project): the
+    /// longest a courier for this project ever waits since the last one before dispatching again,
+    /// however busy the feed gets — the quieter the feed, the shorter the actual wait, down to
+    /// immediate, but this number is the ceiling that ramp climbs toward.
+    /// Present-with-null clears the override back to the platform default — the same idiom
+    /// <see cref="TakeTimeoutMinutes"/> uses for its own timeout. A team's own reading cadence
+    /// preference, node-scoped like <see cref="OrchestratorFeed"/> beside it, never a team
+    /// decision: an operator's own terminal is what a courier interrupts.
+    /// </summary>
+    Optional<int?> CourierMaxWaitSeconds = default);

@@ -298,6 +298,63 @@ public sealed class ProjectDeciderTests
     }
 
     [Fact]
+    public void ChangeSettings_refuses_a_negative_courier_max_wait()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            courierMaxWaitSeconds: Optional<int?>.Of(-1));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*CourierMaxWaitSeconds must be 0 or more*");
+    }
+
+    [Fact]
+    public void ChangeSettings_accepts_a_courier_max_wait_of_zero_as_the_deliberate_always_immediate_extreme()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            courierMaxWaitSeconds: Optional<int?>.Of(0)));
+
+        project.CourierMaxWaitSeconds.Should().Be(0);
+    }
+
+    [Fact]
+    public void ChangeSettings_lets_a_cleared_courier_max_wait_hand_the_decision_back_to_the_platform_default()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            courierMaxWaitSeconds: Optional<int?>.Of(15)));
+        project.CourierMaxWaitSeconds.Should().Be(15);
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            courierMaxWaitSeconds: Optional<int?>.Of(null)));
+        project.CourierMaxWaitSeconds.Should().BeNull(
+            "'default' clears the override back to the platform default (60 seconds)");
+    }
+
+    [Fact]
     public void ChangeSettings_rejects_a_review_cap_below_one()
     {
         ProjectAggregate project = RegisteredProject();

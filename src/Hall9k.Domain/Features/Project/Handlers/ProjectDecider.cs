@@ -85,7 +85,8 @@ public static class ProjectDecider
         Optional<IReadOnlyList<string>> neverCloseLabels = default,
         Optional<WritingConventions> writingConventions = default,
         Optional<WorkItemProvider> primaryTracker = default,
-        Optional<OrchestratorFeedLevel> orchestratorFeed = default)
+        Optional<OrchestratorFeedLevel> orchestratorFeed = default,
+        Optional<int?> courierMaxWaitSeconds = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -327,6 +328,18 @@ public static class ProjectDecider
                 + "the way on; 'default' clears the override back to the platform default (30 minutes).");
         }
 
+        // Present-with-null clears the override back to the platform default, the same idiom
+        // TakeTimeoutMinutes uses just above. Zero is legal here, unlike that one: a ceiling of
+        // zero seconds is the deliberate "never batch, always immediate" extreme (idea 89471598,
+        // piece 3), not a value with nothing sensible to wait for.
+        if (courierMaxWaitSeconds is { HasValue: true, Value: { } maxWaitSeconds } && maxWaitSeconds < 0)
+        {
+            throw new DomainValidationException(
+                $"CourierMaxWaitSeconds must be 0 or more, got {maxWaitSeconds}. It is the ceiling the feed "
+                + "courier's own batching wait ramps toward the busier the project's feed gets; 'default' "
+                + $"clears the override back to the platform default ({ProjectAggregate.DefaultCourierMaxWaitSeconds} seconds).");
+        }
+
         // Each entry must name a CLI and carry actual text — an empty launch line is not a
         // clearing idiom here (unlike ContextLinks, there is no "the whole list of settings this
         // project needs" to be empty of; a launch-text entry that carries nothing is a mistake,
@@ -432,7 +445,8 @@ public static class ProjectDecider
             NeverCloseLabels: normalizedNeverCloseLabels,
             WritingConventions: writingConventions,
             PrimaryTracker: primaryTracker,
-            OrchestratorFeed: orchestratorFeed);
+            OrchestratorFeed: orchestratorFeed,
+            CourierMaxWaitSeconds: courierMaxWaitSeconds);
     }
 
     /// <summary>
