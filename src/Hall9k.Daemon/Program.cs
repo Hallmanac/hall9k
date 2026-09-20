@@ -11,6 +11,7 @@ using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Invites;
+using Hall9k.Daemon.Orchestrators;
 using Hall9k.Daemon.PromptAddenda;
 using Hall9k.Daemon.JiraWrites;
 using Hall9k.Daemon.Messaging;
@@ -21,6 +22,7 @@ using Hall9k.Daemon.Publication;
 using Hall9k.Daemon.Review;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Domain;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx;
@@ -272,6 +274,8 @@ builder.Services.AddSingleton<EventCatchUpCoordinator>();
 builder.Services.AddSingleton<MessageSweepEngine>();
 builder.Services.AddSingleton<InviteSweepEngine>();
 builder.Services.AddSingleton<PromptAddendaSweepEngine>();
+builder.Services.AddSingleton<IOrchestratorProcessProbe, OrchestratorProcessTableProbe>();
+builder.Services.AddSingleton<OrchestratorPresenceSweepEngine>();
 
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
     .IntegrateWithWolverine();
@@ -299,6 +303,7 @@ builder.Services.AddHostedService<ProjectPurgeSweepLoop>();
 builder.Services.AddHostedService<MessageSweepLoop>();
 builder.Services.AddHostedService<InviteSweepLoop>();
 builder.Services.AddHostedService<PromptAddendaSweepLoop>();
+builder.Services.AddHostedService<OrchestratorPresenceSweepLoop>();
 builder.Services.AddHostedService<LogRotationService>();
 
 // Windows has no SIGTERM h9k daemon stop can send to an arbitrary process (Decisions Log
