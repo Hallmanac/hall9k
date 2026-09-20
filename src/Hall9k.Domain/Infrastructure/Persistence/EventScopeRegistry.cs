@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Courier;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
@@ -281,6 +282,14 @@ public static class EventScopeRegistry
         [typeof(OrchestratorLaunched)] = EventScope.NodeScoped,
         [typeof(OrchestratorShutDown)] = EventScope.NodeScoped,
         [typeof(OrchestratorLost)] = EventScope.NodeScoped,
+
+        // Hall9k.Domain.Features.Courier — idea 89471598, piece 3: a courier only ever delivers
+        // to an orchestrator window on the machine it was spawned on (piece 1's presence is
+        // itself unreplicated for the identical reason), so a courier run is a fact about this
+        // node alone.
+        [typeof(CourierRunDispatched)] = EventScope.NodeScoped,
+        [typeof(CourierRunCompleted)] = EventScope.NodeScoped,
+        [typeof(CourierTokensRecorded)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Message — idea 202383dc, M1a: messages are ephemeral, ruled
         // 2026-09-13 ("read receipts and bookmark announcements are dead ... messages are
