@@ -910,10 +910,16 @@ the fleet of nodes an owner runs and the team of members a project has.
 
 - **Private** — never leaves this node. The old `set-private on` flag, still available as an
   alias.
-- **Fleet** — reaches every node the same owner runs, addressed to that owner's own root identity
-  the same way an invite proof already is, and never to any other project member's node. This is
-  the resting scope for a fresh idea or a fresh draft: an owner can work something alone or within
-  their own fleet before it is ready for the team.
+- **Fleet** — addressed to that owner's own root identity the same way an invite proof already is,
+  so no OTHER project member's node ever applies it: it never appears on another member's board,
+  feed, or status, and it is this scope's own delivery and application guarantee, not a
+  confidentiality one. This is the resting scope for a fresh idea or a fresh draft: an owner can
+  work something alone or within their own fleet before it is ready for the team. On a project
+  whose ledger is a shared git repository, the envelope itself is still a signed, unencrypted blob
+  on that shared repository's own `refs/hall9k/messages/<node>` ref (`GitLedgerMessageTransport`
+  signs, it does not encrypt) — every project member CAN read a fleet item's own text straight off
+  that ref with plain git plumbing, even though no build here ever applies or displays it to them
+  (independent pre-PR review, cycle 3, conformance lens, medium).
 - **Team** — reaches every project member's own fleet. One-way: once a scope reaches team, no
   command can narrow it back down, because another member may already hold a copy and there is no
   message that un-sends what they already have.
