@@ -952,7 +952,7 @@ but its *resolution* is the one deliberate exception — a blank courier bottoms
 `claude-sonnet-5`, cheap by construction, rather than falling all the way through to the platform
 default the way every other role's blank does.
 
-Depth: [PLAN.md §16](../PLAN.md), Decisions Log PLACEHOLDER-504c9c3b.
+Depth: [PLAN.md §16](../PLAN.md), Decisions Log #245.
 
 ## Owners, nodes, and connections
 
