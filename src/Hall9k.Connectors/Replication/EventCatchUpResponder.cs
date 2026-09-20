@@ -1,3 +1,4 @@
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
@@ -42,10 +43,11 @@ namespace Hall9k.Connectors.Replication;
 /// this node holds matches at all (idea 202383dc: "a peer that cannot answer says so").
 /// </para>
 /// </summary>
-public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
+public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, ILedger ledger)
 {
     public async Task<int> AnswerAsync(
         IDocumentSession session,
+        string repositoryPath,
         Guid myNodeId,
         string myOwnerFingerprint,
         Guid projectId,
@@ -59,7 +61,8 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
         // when none was supplied, or when the requester is not vouched into any owner chain this
         // read knows about, in which case a fleet-scoped item's own match below always reads false
         // (nothing to compare) rather than guessing at a fleet membership nobody has proven.
-        string? requesterOwnerRootFingerprint = ResolveRequesterOwnerRootFingerprint(trustChain, requesterNodeId);
+        string? requesterOwnerRootFingerprint = await ResolveRequesterOwnerRootFingerprintAsync(
+            ledger, repositoryPath, trustChain, requesterNodeId, cancellationToken);
         // Bounded to the one requested stream when the request names one (the gap-fill and
         // bootstrap shapes still need the full scan, since neither names a stream up front) —
         // independent pre-PR review, cycle 1, both lenses, low: an unbounded scan of this node's
@@ -264,18 +267,39 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
             MessageKind.Events, EventReplicationCodec.EncodeBatch(batch), now, cancellationToken);
 
     /// <summary>
-    /// idea 8c5993c5: <paramref name="requesterNodeId"/>'s own owner root, read off
-    /// <paramref name="trustChain"/>'s own <see cref="TrustChain.OwnerChains"/> — the requester
-    /// having been vouched into some owner's chain is already a precondition of reaching this
-    /// point (the outbox read that answered THIS request already required
-    /// <c>TransportReadResult.SenderVouched</c> for the sender side of the exchange), so this is a
-    /// lookup, never a trust decision of its own. Null when no chain was supplied, or when no
-    /// chain's own node list names this exact node id — a fleet-scoped item's own match then reads
-    /// false rather than guessing.
+    /// idea 8c5993c5: <paramref name="requesterNodeId"/>'s own owner root, resolved by reading that
+    /// exact node's own self-announced device-key fingerprint (<see cref="NodeSelfAnnouncedKeyResolver"/>
+    /// — the identical read <c>GitLedgerMessageTransport.ReadSinceAsync</c> already performs to
+    /// authenticate the sender's outbox before this request is ever trusted, so this is a second
+    /// lookup against already-trusted content, never a trust decision of its own) and matching it
+    /// against <paramref name="trustChain"/>'s own <see cref="TrustChain.OwnerChains"/> via
+    /// <see cref="TrustedOwner.ContainsForNode"/>. Matching by fingerprint rather than by scanning
+    /// <see cref="TrustedOwner.Nodes"/> for <paramref name="requesterNodeId"/> directly is what
+    /// covers an owner's OWN root device, not merely a node it later vouched: <c>h9k project join
+    /// --owner</c> establishes <c>owners/&lt;fingerprint&gt;/root.yaml</c> from that device's own key
+    /// and never writes a matching <c>owners/&lt;root&gt;/nodes/&lt;id&gt;.yaml</c> entry for
+    /// itself (only <c>h9k node vouch</c> writes those, and only for a target OTHER node) — so a
+    /// device's own root fingerprint has no <see cref="TrustedNode"/> of its own to scan for,
+    /// exactly the gap <see cref="TrustedOwner.ContainsForNode"/>'s own root special case already
+    /// exists to close. The prior <c>Nodes.Any(node => node.NodeId == ...)</c> scan never checked
+    /// that special case at all, so a fleet-scoped item's own catch-up answer silently withheld
+    /// everything from an owner's root node asking its own fleet sibling for it, with no warning and
+    /// no distinct <see cref="MessageKind.EventsUnavailable"/> reason (independent pre-PR review,
+    /// cycle 3, adversarial lens, medium). Null when no chain was supplied, when the requester has no
+    /// well-formed self-announced key on this ledger yet, or when that key traces to no owner chain
+    /// this read knows about — a fleet-scoped item's own match then reads false rather than guessing.
     /// </summary>
-    private static string? ResolveRequesterOwnerRootFingerprint(TrustChain? trustChain, Guid requesterNodeId)
+    private static async Task<string?> ResolveRequesterOwnerRootFingerprintAsync(
+        ILedger ledger, string repositoryPath, TrustChain? trustChain, Guid requesterNodeId, CancellationToken cancellationToken)
     {
         if (trustChain is null)
+        {
+            return null;
+        }
+
+        string? requesterFingerprint = await NodeSelfAnnouncedKeyResolver.ResolveFingerprintAsync(
+            ledger, repositoryPath, requesterNodeId, cancellationToken);
+        if (requesterFingerprint is null)
         {
             return null;
         }
@@ -283,7 +307,7 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
         string requesterNodeIdText = requesterNodeId.ToString();
         foreach (TrustedOwner owner in trustChain.OwnerChains.Values)
         {
-            if (owner.Nodes.Any(node => node.NodeId == requesterNodeIdText))
+            if (owner.ContainsForNode(requesterFingerprint, requesterNodeIdText))
             {
                 return owner.RootFingerprint;
             }

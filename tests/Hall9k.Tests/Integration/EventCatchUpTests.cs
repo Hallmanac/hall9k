@@ -1,4 +1,5 @@
 using FluentAssertions;
+using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
@@ -79,7 +80,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         InMemoryMessageTransport transport = new(ledger);
         EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
         EventReplicationInbox replicationInbox = new(transport);
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         EventCatchUpInbox catchUpInbox = new(transport, responder);
         EventCatchUpCoordinator coordinator = new();
         MessageOutbox messageOutbox = new(transport);
@@ -281,7 +282,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         InMemoryMessageTransport transport = new(ledger);
         EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
         EventReplicationInbox replicationInbox = new(transport);
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         EventCatchUpInbox catchUpInbox = new(transport, responder);
         EventCatchUpCoordinator coordinator = new();
         MessageOutbox messageOutbox = new(transport);
@@ -510,8 +511,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
 
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
         FakeLedger ledger = new();
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         // Without node A's own node file, InMemoryMessageTransport reports its outbox unvouched and
         // hands back no envelopes at all, so the assertion loop at the end of this test would run
         // over an empty list and check nothing (task a56cf16e, self-review).
@@ -559,7 +560,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             int envelopesQueued = await responder.AnswerAsync(
-                session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
                 Now.AddSeconds(3), trustChain: null, cts.Token);
             envelopesQueued.Should().BeGreaterThan(0, "the public task's own events still answer");
@@ -605,9 +606,15 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         Guid requesterSameOwner = DomainId.New();
         Guid requesterDifferentOwner = DomainId.New();
 
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
         FakeLedger ledger = new();
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        // The requester's own owner root is now resolved from its self-announced device-key
+        // fingerprint (independent pre-PR review, cycle 3, adversarial lens, medium), so each
+        // requester needs its own real node file on this ledger, and the trust chain below must name
+        // the exact fingerprint that file's own key resolves to — not an arbitrary placeholder.
+        await SeedNodeFileAsync(ledger, requesterSameOwner, cts.Token);
+        await SeedNodeFileAsync(ledger, requesterDifferentOwner, cts.Token);
         InMemoryMessageTransport transport = new(ledger);
         MessageOutbox messageOutbox = new(transport);
         (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
@@ -634,7 +641,11 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
 
         // The requester's own owner is resolved from the trust chain (idea 8c5993c5) — the SAME
         // owner root vouches for node A and for requesterSameOwner; a genuinely different root
-        // vouches for requesterDifferentOwner.
+        // vouches for requesterDifferentOwner. Each requester's own TrustedNode fingerprint must
+        // match what NodeSelfAnnouncedKeyResolver actually resolves from its own seeded node file
+        // above, since that is now the lookup key (independent pre-PR review, cycle 3, adversarial
+        // lens, medium) — a placeholder fingerprint with no matching node file would resolve to null
+        // and wrongly withhold the fleet task from a genuinely same-owner requester.
         // The root key matches "owner-a-fingerprint" exactly — the same value passed as
         // AnswerAsync's own myOwnerFingerprint below, since that is what a fleet task's own origin
         // owner fingerprint resolves to here (EventOriginStampingListener stamps no real owner
@@ -646,11 +657,11 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                     "owner-a-fingerprint", "ssh-ed25519 AAAAFAKE owner-a-root",
                     [
                         new TrustedNode(nodeA.ToString(), "ssh-ed25519 AAAAFAKE node-a", "node-a-fingerprint", Now),
-                        new TrustedNode(requesterSameOwner.ToString(), "ssh-ed25519 AAAAFAKE same-owner", "same-owner-fingerprint", Now),
+                        new TrustedNode(requesterSameOwner.ToString(), "ssh-ed25519 AAAAFAKE same-owner", SeededFingerprintOf(requesterSameOwner), Now),
                     ]),
                 ["owner-x-root"] = new TrustedOwner(
                     "owner-x-root", "ssh-ed25519 AAAAFAKE owner-x-root",
-                    [new TrustedNode(requesterDifferentOwner.ToString(), "ssh-ed25519 AAAAFAKE different-owner", "different-owner-fingerprint", Now)]),
+                    [new TrustedNode(requesterDifferentOwner.ToString(), "ssh-ed25519 AAAAFAKE different-owner", SeededFingerprintOf(requesterDifferentOwner), Now)]),
             },
             [new ProjectMember("owner-a-fingerprint", MembershipRole.Owner, Now), new ProjectMember("owner-x-root", MembershipRole.Member, Now)]);
 
@@ -660,10 +671,10 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             await responder.AnswerAsync(
-                session, nodeA, "owner-a-fingerprint", projectId, requesterSameOwner, bootstrapRequest, Now.AddSeconds(3),
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterSameOwner, bootstrapRequest, Now.AddSeconds(3),
                 trustChain, cts.Token);
             await responder.AnswerAsync(
-                session, nodeA, "owner-a-fingerprint", projectId, requesterDifferentOwner, bootstrapRequest, Now.AddSeconds(3),
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterDifferentOwner, bootstrapRequest, Now.AddSeconds(3),
                 trustChain, cts.Token);
             await session.SaveChangesAsync(cts.Token);
         }
@@ -691,6 +702,87 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 3, adversarial lens, medium: an owner's own ROOT device —
+    /// the one <c>h9k project join --owner</c> minted <c>owners/&lt;fingerprint&gt;/root.yaml</c>
+    /// from — never gets a matching <c>owners/&lt;root&gt;/nodes/&lt;id&gt;.yaml</c> vouch entry for
+    /// itself (only <c>h9k node vouch</c> writes those, and only for a target OTHER node), so a
+    /// requester lookup that only ever scans <see cref="TrustedOwner.Nodes"/> for the requester's own
+    /// node id can never resolve that device as belonging to its own owner. A fleet-scoped item must
+    /// still answer that root device when it asks a fleet sibling for catch-up.
+    /// </summary>
+    [Fact]
+    public async Task A_fleet_scoped_tasks_own_events_answer_the_owners_own_root_device_with_no_vouched_node_entry()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid requesterRoot = DomainId.New();
+
+        FakeLedger ledger = new();
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        await SeedNodeFileAsync(ledger, requesterRoot, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeA, Now, cts.Token);
+        }
+
+        Guid fleetTaskId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                fleetTaskId, projectId, "Fleet-only draft", ["it ships"], TaskType.Feature, null, null, null,
+                Now.AddSeconds(1), ownerId);
+            session.Events.StartStream<TaskAggregate>(fleetTaskId, added);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // requesterRoot's own fingerprint IS the owner's root fingerprint — no separate
+        // TrustedNode entry names it, the exact shape TrustedOwner.ContainsForNode's own root
+        // special case exists to cover.
+        string rootFingerprint = SeededFingerprintOf(requesterRoot);
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                [rootFingerprint] = new TrustedOwner(rootFingerprint, "ssh-ed25519 AAAAFAKE owner-root", []),
+            },
+            [new ProjectMember(rootFingerprint, MembershipRole.Owner, Now)]);
+
+        EventReplicationCodec.EventsRequestRecord bootstrapRequest =
+            new(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await responder.AnswerAsync(
+                session, RepositoryPath, nodeA, rootFingerprint, projectId, requesterRoot, bootstrapRequest,
+                Now.AddSeconds(3), trustChain, cts.Token);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(4), cts.Token);
+        }
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        List<MessageEnvelopeV1> envelopes = [.. read.Envelopes.Select(raw => MessageEnvelopeCodec.Decode(raw.Content).Envelope!)];
+
+        MessageEnvelopeV1 rootAnswer = envelopes.Single(envelope => envelope.To == MessageAudience.Node(requesterRoot));
+        rootAnswer.Kind.Should().Be(MessageKind.Events, "the owner's own root device is exactly who its own fleet reaches");
+        EventReplicationCodec.DecodeBatch(rootAnswer.Body)!.Select(record => record.StreamId).Should()
+            .Contain(fleetTaskId, "the root device is a member of its own owner's fleet even with no vouched-node entry of its own");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 1, conformance lens, high: a bootstrap answer must never
     /// hand a node its own history back — the requester's own dedupe
     /// (<see cref="EventReplicationInbox.ApplyAsync"/>) only ever recognises an event it received BY
@@ -706,8 +798,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
 
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
         FakeLedger ledger = new();
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         // Without node A's own node file, InMemoryMessageTransport reports its outbox unvouched and
         // hands back no envelopes at all, so the assertion loop at the end of this test would run
         // over an empty list and check nothing (task a56cf16e, self-review).
@@ -753,7 +845,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             int envelopesQueued = await responder.AnswerAsync(
-                session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
                 Now.AddSeconds(2), trustChain: null, cts.Token);
             envelopesQueued.Should().BeGreaterThan(0, "the other task's own events still answer");
@@ -803,7 +895,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await SeedNodeFileAsync(ledger, nodeB, cts.Token);
         await SeedNodeFileAsync(ledger, nodeC, cts.Token);
         InMemoryMessageTransport transport = new(ledger);
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         EventCatchUpInbox catchUpInbox = new(transport, responder);
         EventCatchUpCoordinator coordinator = new();
         MessageOutbox messageOutbox = new(transport);
@@ -978,7 +1070,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         InMemoryMessageTransport transport = new(ledger);
         EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
         EventReplicationInbox replicationInbox = new(transport);
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         EventCatchUpInbox catchUpInbox = new(transport, responder);
         EventCatchUpCoordinator coordinator = new();
         MessageOutbox messageOutbox = new(transport);
@@ -1098,8 +1190,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         Guid ownerId = DomainId.New();
         Guid projectId = DomainId.New();
 
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
         FakeLedger ledger = new();
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         // Without node A's own node file, InMemoryMessageTransport reports its outbox unvouched and
         // hands back no envelopes at all — an assertion loop over the wire would then pass
         // vacuously, checking nothing.
@@ -1154,27 +1246,27 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             int gapFillEnvelopes = await responder.AnswerAsync(
-                session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), nodeA, SinceOriginSequence: 0, ForStreamId: null),
                 Now.AddSeconds(4), trustChain: null, cts.Token);
             gapFillEnvelopes.Should().Be(0, "a gap-fill keeps the switch-on exclusion");
 
             int bootstrapEnvelopes = await responder.AnswerAsync(
-                session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
                 Now.AddSeconds(5), trustChain: null, cts.Token);
             bootstrapEnvelopes.Should().Be(0, "a brand-new node's own bootstrap keeps it too");
 
             // The one named stream, explicitly asked for — served in full, switch-on point and all.
             int explicitEnvelopes = await responder.AnswerAsync(
-                session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(
                     DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, preSwitchOnTaskId),
                 Now.AddSeconds(6), trustChain: null, cts.Token);
             explicitEnvelopes.Should().Be(1, "an explicit stream request lifts the switch-on exclusion");
 
             int privateEnvelopes = await responder.AnswerAsync(
-                session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(
                     DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, preSwitchOnPrivateTaskId),
                 Now.AddSeconds(7), trustChain: null, cts.Token);
@@ -1243,7 +1335,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         InMemoryMessageTransport transport = new(ledger);
         EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
         EventReplicationInbox replicationInbox = new(transport);
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         EventCatchUpInbox catchUpInbox = new(transport, responder);
         EventCatchUpCoordinator coordinator = new();
         MessageOutbox messageOutbox = new(transport);
@@ -1493,7 +1585,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await SeedNodeFileAsync(ledger, nodeB, cts.Token);
         await SeedNodeFileAsync(ledger, nodeC, cts.Token);
         InMemoryMessageTransport transport = new(ledger);
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         EventCatchUpInbox catchUpInbox = new(transport, responder);
         EventCatchUpCoordinator coordinator = new();
         MessageOutbox messageOutbox = new(transport);
@@ -1587,7 +1679,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await SeedNodeFileAsync(ledger, nodeB, cts.Token);
         await SeedNodeFileAsync(ledger, nodeC, cts.Token);
         InMemoryMessageTransport transport = new(ledger);
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         EventCatchUpInbox catchUpInbox = new(transport, responder);
         EventCatchUpCoordinator coordinator = new();
         MessageOutbox messageOutbox = new(transport);
@@ -1724,7 +1816,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await SeedNodeFileAsync(ledger, nodeB, cts.Token);
         InMemoryMessageTransport transport = new(ledger);
         EventReplicationInbox replicationInbox = new(transport);
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         EventCatchUpInbox catchUpInbox = new(transport, responder);
         EventCatchUpCoordinator coordinator = new();
         MessageOutbox messageOutbox = new(transport);
@@ -1825,7 +1917,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         InMemoryMessageTransport transport = new(ledger);
         EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
         EventReplicationInbox replicationInbox = new(transport);
-        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
         EventCatchUpInbox catchUpInbox = new(transport, responder);
         EventCatchUpCoordinator coordinator = new();
         MessageOutbox messageOutbox = new(transport);
@@ -1967,6 +2059,11 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await session.SaveChangesAsync(cancellationToken);
         return taskId;
     }
+
+    /// <summary>The fingerprint <see cref="NodeSelfAnnouncedKeyResolver.ResolveFingerprintAsync"/>
+    /// resolves for a node <see cref="SeedNodeFileAsync"/> seeded — the same public key line, run
+    /// through the identical <c>NodeKeyStore.Fingerprint</c> call that resolver itself makes.</summary>
+    private static string SeededFingerprintOf(Guid nodeId) => NodeKeyStore.Fingerprint($"ssh-ed25519 AAAAFAKE{nodeId:N} test");
 
     private static async Task SeedNodeFileAsync(FakeLedger ledger, Guid nodeId, CancellationToken cancellationToken)
     {
