@@ -168,6 +168,16 @@ public sealed class CourierEngine(
                     + "crash, or an unclean shutdown); marked failed after it stood past its own "
                     + "timeout so future couriers for this project are not blocked.",
                     drainableThroughSequence: 0, result: null, now, cancellationToken);
+
+                // running is the same object lastRun points at, and RecordOutcomeAsync just wrote
+                // this completion to the store — mutated here so the elapsedSinceLastCourier and
+                // lastCourierFailed reads below see it too, rather than the stale CompletedAt:
+                // null this local copy was fetched with before the adoption above. Left stale, the
+                // gate reads a null elapsedSinceLastCourier and spawns a fresh courier in this same
+                // tick with none of the lastCourierFailed backoff a normal failure gets
+                // (independent pre-PR review, adversarial lens).
+                running.CompletedAt = now;
+                running.Delivered = false;
             }
             else
             {
