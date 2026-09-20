@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Daemon;
@@ -31,12 +32,9 @@ namespace Hall9k.Tests.Daemon;
 // identical reason: PromptTemplates falls back to TemplateLibraryPaths.CanonicalDirectory (a
 // HALL9K_HOME-derived path) whenever this checkout's own .claude/templates does not carry a file it
 // asks for, so a stale real install on this machine must never be what these fixtures read.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class AgentPromptBuilderGoldenTests : IDisposable
 {
-    private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-apb-golden-home-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
     private static readonly Guid TaskId = Guid.Parse("01a09285-6a21-7259-a883-c5ebe5482c3e");
     private static readonly Guid RunId = Guid.Parse("01a09285-7b32-7259-a883-c5ebe5482c3e");
@@ -49,15 +47,9 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
     // returns empty for a path that is not there, so no skills section renders either way.
     private const string FixedWorktreePath = "/home/agent/.hall9k/projects/hall9k/repo/wt-golden-fixture";
 
-    public AgentPromptBuilderGoldenTests() => Environment.SetEnvironmentVariable("HALL9K_HOME", _platformHome);
-
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_platformHome))
-        {
-            Directory.Delete(_platformHome, recursive: true);
-        }
+        _scopedHome.Dispose();
     }
 
     [Fact]

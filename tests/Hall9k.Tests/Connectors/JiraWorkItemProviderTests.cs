@@ -17,8 +17,6 @@ namespace Hall9k.Tests.Connectors;
 /// which is what the requester seam exists for — the same reason the GitHub provider's tests run
 /// against recorded gh output.
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class JiraWorkItemProviderTests : IDisposable
 {
     private const string TokenVariable = "HALL9K_TEST_JIRA_TOKEN";

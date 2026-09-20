@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Identity;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors.Identity;
@@ -11,23 +12,11 @@ namespace Hall9k.Tests.Connectors.Identity;
 /// already has) and a throwaway <c>HALL9K_HOME</c>, never this machine's real
 /// <c>~/.hall9k/keys</c>.
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class NodeKeyStoreTests : IDisposable
 {
-    private readonly string _home = Path.Combine(Path.GetTempPath(), $"hall9k-node-key-store-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
-    public NodeKeyStoreTests() => Environment.SetEnvironmentVariable("HALL9K_HOME", _home);
-
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_home))
-        {
-            Directory.Delete(_home, recursive: true);
-        }
-    }
+    public void Dispose() => _scopedHome.Dispose();
 
     [Fact]
     public void Fingerprint_is_the_lowercase_hex_sha256_of_the_decoded_key_blob()

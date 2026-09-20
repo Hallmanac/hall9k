@@ -19,8 +19,6 @@ namespace Hall9k.Tests.Connectors;
 /// was the tracker refusing the credentials or merely failing to answer — the distinction that
 /// decides whether the remedy printed beside it is renewing a token or waiting out an outage.
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class TrackerAssigneeReadTests : IDisposable
 {
     private const string TokenVariable = "HALL9K_TEST_GATE_JIRA_TOKEN";

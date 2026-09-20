@@ -25,8 +25,6 @@ namespace Hall9k.Tests.Daemon;
 /// assembled prompt.
 /// </para>
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class VoiceSkillPromptSeamTests : IDisposable
 {
     private static readonly VoiceSkillName MyVoice = VoiceSkillName.Parse("my-voice");

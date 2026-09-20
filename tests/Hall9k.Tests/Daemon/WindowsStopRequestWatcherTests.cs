@@ -3,6 +3,7 @@ using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -12,33 +13,13 @@ namespace Hall9k.Tests.Daemon;
 /// <summary>
 /// HALL9K_HOME is redirected to a temp directory so the stop-request file this writes
 /// never touches a developer's or CI runner's real home — same discipline as
-/// UpdateCommandTests, and the same collection serializes this against every other
-/// HALL9K_HOME redirect.
+/// UpdateCommandTests.
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class WindowsStopRequestWatcherTests : IDisposable
 {
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-stop-watcher-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
-    public WindowsStopRequestWatcherTests()
-    {
-        Directory.CreateDirectory(home);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-    }
-
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
-        try
-        {
-            Directory.Delete(home, recursive: true);
-        }
-        catch (IOException)
-        {
-        }
-    }
+    public void Dispose() => _scopedHome.Dispose();
 
     [Fact]
     public async Task A_stop_request_naming_a_different_pid_is_ignored_and_cleared()

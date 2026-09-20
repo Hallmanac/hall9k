@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
@@ -24,30 +25,14 @@ namespace Hall9k.Tests.Connectors;
 /// </summary>
 // ReviewLapPromptBuilder.Build reads its prose through PromptTemplates, which falls back to
 // TemplateLibraryPaths.CanonicalDirectory (a HALL9K_HOME-derived path) whenever this checkout's own
-// .claude/templates does not carry a file it asks for — so this class shares the serialized
-// Hall9kHome collection with every other HALL9K_HOME-touching class, and points HALL9K_HOME at an
+// .claude/templates does not carry a file it asks for — so this class points HALL9K_HOME at an
 // empty temp home itself so a fixture never accidentally reads whatever a real install already
 // published to this machine (independent pre-PR review, cycle 1).
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class ReviewLapPromptBuilderTests : IDisposable
 {
-    private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-review-lap-prompt-builder-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
-    public ReviewLapPromptBuilderTests()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _platformHome);
-    }
-
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_platformHome))
-        {
-            Directory.Delete(_platformHome, recursive: true);
-        }
-    }
+    public void Dispose() => _scopedHome.Dispose();
 
     [Fact]
     public void The_briefing_names_the_authors_objective_and_criteria_when_this_node_can_read_them()

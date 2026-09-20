@@ -38,10 +38,11 @@ namespace Hall9k.Tests.Daemon;
 /// "spawns real processes heavily enough to contend," so this collection's membership is a judgment
 /// call recorded here rather than a mechanically-enforced one, and is deliberately not guarded to
 /// avoid asserting a precision the source can't actually verify. <c>Hall9k.Tests.Integration.VerificationRunnerTests</c>
-/// and its other <c>[Collection("Hall9kHome")]</c> siblings that spawn real processes are left out
-/// on the same judgment: xUnit allows one collection per class, <c>Hall9kHome</c> already serializes
-/// them for install-directory isolation unrelated to this contention, none of them overlapped any
-/// of the three failing windows, and windows-latest CI itself never schedules them next to this
+/// and <c>Hall9k.Tests.Integration.VerificationRunnerTests</c>'s own
+/// <c>[Collection("Environment")]</c> membership is left out on the same judgment: xUnit allows
+/// one collection per class, <c>Environment</c> already serializes it for its own
+/// MSBUILDDISABLENODEREUSE isolation unrelated to this contention, it never overlapped any
+/// of the three failing windows, and windows-latest CI itself never schedules it next to this
 /// class at all (<c>ci.yml</c> filters <c>Category=RequiresDocker</c> off that leg) — only the
 /// Windows node's own unfiltered full suite still can, a narrower, named residual left for the
 /// Decisions Log entry below rather than folded in on suspicion. Removes the contention this
