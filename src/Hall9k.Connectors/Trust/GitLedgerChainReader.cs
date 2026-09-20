@@ -57,6 +57,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     private readonly ProcessRunner runner = runner ?? ExternalProcess.Runner;
 
     private const string OwnersRefPrefix = "refs/hall9k/ledger/owners/";
+    private const string NodesRefPrefix = "refs/hall9k/ledger/nodes/";
     private const string MembersRefName = "refs/hall9k/ledger/members";
 
     /// <summary>The only principal <see cref="IsSignedByAsync"/> ever writes into a temporary
@@ -90,6 +91,8 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
+        await AttachRootNodeIdsAsync(repositoryPath, ownerChains, cancellationToken);
+
         (IReadOnlyList<ProjectMember> members, IReadOnlyList<UnverifiedLedgerWrite> memberUnverified,
             string? genesisRootFingerprint, string? projectKey) =
             await ComputeMembersAsync(repositoryPath, ownerChains, cancellationToken);
@@ -99,21 +102,35 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     }
 
     /// <summary>Every <c>refs/hall9k/ledger/owners/&lt;fingerprint&gt;</c> ref origin currently
-    /// holds, from one <c>ls-remote</c> against the whole prefix — mirrors
+    /// holds — the owners prefix's own suffixes, one per root fingerprint.</summary>
+    private Task<IReadOnlyList<string>> DiscoverOwnerRootsAsync(string repositoryPath, CancellationToken cancellationToken) =>
+        DiscoverRefSuffixesAsync(repositoryPath, OwnersRefPrefix, cancellationToken);
+
+    /// <summary>Every <c>refs/hall9k/ledger/nodes/&lt;node-id&gt;</c> ref origin currently holds —
+    /// every node this project's ledger has ever seen announce itself, one per node id, regardless
+    /// of whether that node has ever been vouched into anyone's own chain.</summary>
+    private Task<IReadOnlyList<string>> DiscoverNodeIdsAsync(string repositoryPath, CancellationToken cancellationToken) =>
+        DiscoverRefSuffixesAsync(repositoryPath, NodesRefPrefix, cancellationToken);
+
+    /// <summary>Every ref under <paramref name="prefix"/> origin currently holds, from one
+    /// <c>ls-remote</c> against the whole prefix, as the suffix past that prefix — mirrors
     /// <c>GitLedgerMessageTransport.ProbeCoreAsync</c>'s own parsing exactly, including its own
-    /// choice to throw on a genuine failure rather than read one as "no roots at all" (independent
-    /// pre-PR review, cycle 1, adversarial lens, medium).</summary>
-    private async Task<IReadOnlyList<string>> DiscoverOwnerRootsAsync(string repositoryPath, CancellationToken cancellationToken)
+    /// choice to throw on a genuine failure rather than read one as "nothing under this prefix"
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium). Shared by
+    /// <see cref="DiscoverOwnerRootsAsync"/> and <see cref="DiscoverNodeIdsAsync"/> — identical
+    /// shape, different prefix.</summary>
+    private async Task<IReadOnlyList<string>> DiscoverRefSuffixesAsync(
+        string repositoryPath, string prefix, CancellationToken cancellationToken)
     {
-        ProcessResult result = await runner("git", ["ls-remote", "origin", $"{OwnersRefPrefix}*"], repositoryPath, cancellationToken);
+        ProcessResult result = await runner("git", ["ls-remote", "origin", $"{prefix}*"], repositoryPath, cancellationToken);
         if (result.ExitCode != 0)
         {
             throw new InvalidOperationException(
-                $"git ls-remote against {repositoryPath} for the owners prefix failed "
+                $"git ls-remote against {repositoryPath} for the {prefix} prefix failed "
                 + $"(exit {result.ExitCode}): {result.StandardError.Trim()}");
         }
 
-        List<string> roots = [];
+        List<string> suffixes = [];
         foreach (string line in result.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
         {
             string[] parts = line.Split('\t', 2);
@@ -123,13 +140,67 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
 
             string refName = parts[1].Trim();
-            if (refName.StartsWith(OwnersRefPrefix, StringComparison.Ordinal))
+            if (refName.StartsWith(prefix, StringComparison.Ordinal))
             {
-                roots.Add(refName[OwnersRefPrefix.Length..]);
+                suffixes.Add(refName[prefix.Length..]);
             }
         }
 
-        return roots;
+        return suffixes;
+    }
+
+    /// <summary>
+    /// Finds each root's own node id — the node whose own key established that root
+    /// (<c>h9k project join</c>'s no-<c>--owner</c> path writes <c>root.yaml</c> under that exact
+    /// node's own key) — so a root with no <c>owners/&lt;root&gt;/nodes/&lt;id&gt;.yaml</c> vouch
+    /// entry of its own (a root never vouches itself) still resolves as part of its own fleet
+    /// (<see cref="TrustedOwner.FleetNodeIds"/>). Scans every node this project's ledger has ever
+    /// seen announce itself (<c>refs/hall9k/ledger/nodes/*</c>), reading each one's own
+    /// self-announced <c>node.yaml</c>: a node whose declared public key fingerprints back to a
+    /// root already in <paramref name="ownerChains"/> is trusted as that root's own node only when
+    /// the commit that currently produces that content is signed by that identical root key — the
+    /// same self-consistency <c>ComputeOwnerChainAsync</c>'s own root.yaml check already applies,
+    /// since a node cannot forge a signature over a key it does not hold. Skipped entirely when
+    /// nothing self-certified above ever produced an owner chain to attach a node id to.
+    /// </summary>
+    private async Task AttachRootNodeIdsAsync(
+        string repositoryPath, Dictionary<string, TrustedOwner> ownerChains, CancellationToken cancellationToken)
+    {
+        if (ownerChains.Count == 0)
+        {
+            return;
+        }
+
+        IReadOnlyList<string> nodeIds = await DiscoverNodeIdsAsync(repositoryPath, cancellationToken);
+        foreach (string nodeId in nodeIds)
+        {
+            string refName = $"{NodesRefPrefix}{nodeId}";
+            await FetchRefAsync(repositoryPath, refName, cancellationToken);
+            string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
+            if (tip is null)
+            {
+                continue;
+            }
+
+            string path = $"nodes/{nodeId}/node.yaml";
+            string? content = await ReadAtCommitAsync(repositoryPath, tip, path, cancellationToken);
+            string? publicKeyLine = content is null ? null : ExtractQuotedYamlValue(content, "public_key");
+            if (publicKeyLine is null || !TryFingerprint(publicKeyLine, out string fingerprint)
+                || !ownerChains.TryGetValue(fingerprint, out TrustedOwner? owner) || owner.RootNodeId is not null)
+            {
+                // No key, an unparseable one, a fingerprint that names no root this walk trusts, or
+                // this root's own node id was already found by an earlier ref in this same scan —
+                // fingerprints are unique to one key, so at most one node id can ever legitimately
+                // match a given root either way.
+                continue;
+            }
+
+            IReadOnlyList<string> commits = await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken);
+            if (commits.Count > 0 && await IsSignedByAsync(repositoryPath, commits[0], owner.RootPublicKeyLine, cancellationToken))
+            {
+                ownerChains[fingerprint] = owner with { RootNodeId = nodeId };
+            }
+        }
     }
 
     /// <summary>
