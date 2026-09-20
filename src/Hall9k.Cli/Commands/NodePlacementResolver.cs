@@ -3,13 +3,13 @@ using Hall9k.Domain.Shared.Exceptions;
 namespace Hall9k.Cli.Commands;
 
 /// <summary>
-/// Resolves <c>h9k task assign --node</c>'s own argument against the owner's known fleet for a
-/// project (idea 202383dc: an owner can place a task on one of their own nodes) — this node's own
-/// id always counts, and every other candidate has to be a node the project's own ledger currently
-/// vouches for that owner (<c>TaskAssignCommand</c> builds the candidate list from
-/// <c>TrustedOwner.Nodes</c> plus this node's own id before calling here). Kept pure and
-/// I/O-free, mirroring <see cref="TaskIdResolver"/>'s own shape, so the refusal for an unknown node
-/// is a plain unit test against a fixed candidate list rather than one that needs a ledger.
+/// Resolves <c>h9k task assign --node</c>'s own argument against a candidate fleet
+/// (idea 202383dc: an owner can place a task on one of their own nodes), built by
+/// <c>TaskAssignCommand.ResolveNodeIdAsync</c> from the project's own ledger — every node it
+/// currently vouches for the task's own owner, plus this install's own node id when (and only
+/// when) that owner is this install's own. Kept pure and I/O-free, mirroring
+/// <see cref="TaskIdResolver"/>'s own shape, so the refusal for an unknown node is a plain unit
+/// test against a fixed candidate list rather than one that needs a ledger.
 /// </summary>
 internal static class NodePlacementResolver
 {
