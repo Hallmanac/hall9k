@@ -1846,6 +1846,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await SeedNodeFileAsync(ledger, nodeA, cts.Token);
         InMemoryMessageTransport transport = new(ledger);
         EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
         MessageOutbox messageOutbox = new(transport);
         (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
 
@@ -1904,12 +1905,201 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         List<EventReplicationCodec.ReplicatedEventRecord> teamBatch = [.. EventReplicationCodec.DecodeBatch(teamEnvelope.Body)!];
         teamBatch.Should().HaveCount(3, "the share, and the resent capture and revision, all at team scope")
             .And.OnlyContain(record => record.StreamId == ideaId);
-        teamBatch.Select(record => record.EventTypeName).Should().Contain(
+        // Deterministic origin-sequence order, not an unordered .Contain: the forward scan adds the
+        // triggering share to this batch BEFORE the resend pass (in the same call) adds the earlier
+        // capture and revision behind it, so without FlushAsync's own sort-before-encode this would
+        // land as [share, capture, revision] — backwards relative to true history, and the
+        // receiving inbox's own out-of-order guard would refuse the whole out-of-order tail
+        // (independent pre-PR review, cycle 3, conformance lens, high).
+        teamBatch.Select(record => record.EventTypeName).Should().Equal(
         [
             typeof(IdeaCaptured).FullName,
             typeof(IdeaRevised).FullName,
             typeof(IdeaScopeSet).FullName,
         ]);
+
+        // Run the resent batch through the real inbox, not just decode it — a genuinely new team
+        // member, never a fleet sibling, must reconstruct the idea's complete history from this one
+        // envelope alone (independent pre-PR review, cycle 4, conformance lens, medium: neither of
+        // this cycle's own high-severity fixes had a test that exercised the receiving side at all).
+        await using DocumentStore storeB = OpenStoreB();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult applied = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(6),
+                trustChain: null, cts.Token);
+            applied.EventsApplied.Should().Be(3, "the share, capture, and revision all apply cleanly, in order");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            IdeaDetails? details = await session.LoadAsync<IdeaDetails>(ideaId, cts.Token);
+            details.Should().NotBeNull("the receiver reconstructs the idea from this one envelope alone");
+            details!.Text.Should().Be("Fleet-only for now, sharpened");
+            details.Scope.Should().Be(ReplicationScope.Team);
+        }
+    }
+
+    /// <summary>
+    /// idea 8c5993c5, independent pre-PR review cycle 3 (adversarial, high) and cycle 4
+    /// (conformance, high): a scope change can just as easily be appended at a fleet sibling that
+    /// only ever holds a stream by replication, never at the stream's own true origin. That
+    /// sibling's own resend must never forward the earlier history it only holds by replication —
+    /// forwarding it would hand the true origin node its own facts back under a fresh envelope,
+    /// which the origin holds no <see cref="ReplicatedEventRecord"/> for and would re-append as an
+    /// undeduped second copy (cycle 3's own fix, <see cref="ResendStreamHistoryAsync"/>'s
+    /// OriginEventId check). But the true origin still owes that history to the team once it learns
+    /// of the scope change, which it only ever does the way any other node does: by receiving the
+    /// SAME scope-changing event back by replication. Cycle 4's own fix is what lets the true
+    /// origin's next forward scan notice that a FOREIGN-origin candidate is scope-changing and
+    /// resend its own earlier native history rather than skip it outright before ever checking.
+    /// </summary>
+    [Fact]
+    public async Task A_scope_change_appended_at_a_fleet_sibling_lets_the_true_origin_catch_up_its_own_history()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string ownerFingerprint = "owner-a-fingerprint";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        await SeedNodeFileAsync(ledger, nodeB, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+        (LedgerCommitter committerB, LedgerSigningKey signingKeyB) = Signing("node-b");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        Guid ideaId = DomainId.New();
+
+        // Node A: the idea's own true origin, switched on before it exists, then captured and
+        // revised — two native events, sent fleet-scoped and moved past by the first sweep.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, ownerFingerprint, Now, cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaCaptured captured = IdeaDecider.Capture(
+                ideaId, ownerId, "Fleet-only for now", projectId: projectId, Now.AddSeconds(1), ProjectHome.None);
+            session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+            session.Events.Append(ideaId, IdeaDecider.Revise(idea, "Fleet-only for now, sharpened", Now.AddSeconds(2), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult aFirstSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, ownerFingerprint, Now.AddSeconds(3), cts.Token);
+            aFirstSweep.EventsQueued.Should().Be(2, "the capture and revision, sent fleet-scoped and moved past");
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(3), cts.Token);
+        }
+
+        // Node B: same owner root, a fleet sibling that only ever holds this idea by replication.
+        // Switched on before receiving anything, exactly like A, so the two replicated events land
+        // past B's own switch-on point and are eligible for B's own resend consideration below.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeB, new NodeRegistered(nodeB, ownerId, "node-b", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeB, projectId, ownerFingerprint, Now, cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, nodeB, ownerFingerprint, Now.AddSeconds(4), trustChain: null,
+                cts.Token);
+            read.EventsApplied.Should().Be(2, "B holds the capture and revision only by replication, never natively");
+        }
+
+        // B's own next sweep finds nothing new to send — a replicated fact never travels, not even
+        // on B's own first look at it — but moves B's own position past both events, the same
+        // "first sweep moves past" staging the sharing test above relies on: needed here so the
+        // resend pass below actually considers them, rather than finding them still inside the
+        // ordinary forward scan of this very same call.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationQueueResult bSettleSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeB, projectId, ownerFingerprint, Now.AddSeconds(5), cts.Token);
+            bSettleSweep.EventsQueued.Should().Be(0, "a replicated fact never travels, not even on B's own first look at it");
+        }
+
+        // B shares the idea with the team — its own native event, on top of the two it only holds
+        // by replication.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+            session.Events.Append(ideaId, IdeaDecider.Share(idea, Now.AddSeconds(6), ownerId)!);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // B's own sweep: the share travels, but B's own resend must never forward the two events it
+        // only holds by replication (cycle 3's own fix).
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationQueueResult bShareSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeB, projectId, ownerFingerprint, Now.AddSeconds(7), cts.Token);
+            bShareSweep.EventsQueued.Should().Be(
+                1, "only the share itself travels from B — it holds no native history of its own to resend");
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeB, projectId, "shared-project-key", adoptUnassigned: false, committerB,
+                signingKeyB, Now.AddSeconds(7), cts.Token);
+        }
+
+        // Node A receives the share back by replication: a foreign-origin fact landing on its own
+        // copy of the very stream it itself originated.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeB, projectId, nodeA, ownerFingerprint, Now.AddSeconds(8), trustChain: null,
+                cts.Token);
+            read.EventsApplied.Should().Be(1, "the share — the only fact from B that A does not already hold natively");
+        }
+
+        // A's own next sweep has to notice the widened scope on this foreign-origin candidate and
+        // resend ITS OWN earlier native history — cycle 4's own fix, the one this test exists for.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult aSecondSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, ownerFingerprint, Now.AddSeconds(9), cts.Token);
+            aSecondSweep.EventsQueued.Should().Be(
+                2, "A resends its own capture and revision now that team scope has landed on its own stream — "
+                + "never the share itself, which is foreign-origin here and already reached the team from B directly");
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(9), cts.Token);
+        }
+
+        TransportReadResult readA = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        List<MessageEnvelopeV1> aEnvelopes = [.. readA.Envelopes.Select(raw => MessageEnvelopeCodec.Decode(raw.Content).Envelope!)];
+        MessageEnvelopeV1 aTeamEnvelope = aEnvelopes.Single(envelope =>
+            envelope.To == MessageAudience.Project
+            && EventReplicationCodec.DecodeBatch(envelope.Body)!.Any(record => record.StreamId == ideaId));
+        List<EventReplicationCodec.ReplicatedEventRecord> resent = [.. EventReplicationCodec.DecodeBatch(aTeamEnvelope.Body)!];
+        resent.Select(record => record.EventTypeName).Should().Equal(
+        [
+            typeof(IdeaCaptured).FullName,
+            typeof(IdeaRevised).FullName,
+        ], "A's own resend, oldest first, never re-including the foreign-origin share it just received");
+        resent.Should().OnlyContain(record => record.StreamId == ideaId);
     }
 
     /// <summary>
