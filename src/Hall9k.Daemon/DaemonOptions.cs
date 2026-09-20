@@ -218,7 +218,7 @@ public sealed class DaemonOptions
     public TimeSpan OrchestratorPresenceSweepPollInterval { get; set; } = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// How often <c>CourierSweepEngine</c> checks every project registered on this node for the
+    /// How often <c>CourierSweepLoop</c> checks every project registered on this node for the
     /// feed courier's own four spawn conditions (idea 89471598, piece 3): undrained items, a live
     /// orchestrator, no courier already running, and the batching wait elapsed. Short, the same
     /// reasoning <see cref="OrchestratorPresenceSweepPollInterval"/> already gives: nothing here
