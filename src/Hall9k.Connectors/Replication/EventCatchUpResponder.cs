@@ -52,8 +52,8 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership)
         Guid requesterNodeId,
         EventReplicationCodec.EventsRequestRecord request,
         DateTimeOffset now,
-        CancellationToken cancellationToken,
-        TrustChain? trustChain = null)
+        TrustChain? trustChain,
+        CancellationToken cancellationToken)
     {
         // idea 8c5993c5: the requester's own owner root, resolved from the live trust chain — null
         // when none was supplied, or when the requester is not vouched into any owner chain this
