@@ -24,7 +24,8 @@ namespace Hall9k.Tests.Domain;
 /// a class that still calls <c>Environment.SetEnvironmentVariable</c> naming <c>HALL9K_HOME</c> or
 /// <c>HALL9K_CONNECTION_STRING</c> directly (rather than going through
 /// <c>ScopedTestHome</c>/<c>ScopedConnectionString</c>) races every other one unless both carry
-/// <c>[Collection("Environment")]</c>, the one serialized collection left — a test never sets
+/// <c>[Collection("Environment")]</c>, the one collection left for a process-wide environment
+/// variable — a test never sets
 /// either variable itself except to hand <c>HALL9K_HOME</c> to a real child process, which still
 /// needs the literal environment variable, since a child inherits its parent's environment, not
 /// its parent's <see cref="AsyncLocal{T}"/> state.
@@ -114,13 +115,16 @@ public sealed class HomeEnvironmentIsolationTests
         @"^[ \t]*\[Trait\(""Category"",\s*""Environment""\)\]",
         RegexOptions.Multiline | RegexOptions.Compiled);
 
-    // Matches an InitializeAsync method's own signature up to its opening brace — an
+    // Matches an async InitializeAsync method's own signature up to its opening brace — an
     // expression-bodied InitializeAsync ("=> Task.CompletedTask;") has no brace to match and is
     // skipped, which is correct: there is no block body there for a scope construction to hide
     // inside. A plain call site ("await fixture.InitializeAsync()") is followed by ';' or ')'
-    // rather than '{' and is likewise skipped.
+    // rather than '{' and is likewise skipped. The leading "async" is required: only an async
+    // method's own await unwinds the ExecutionContext a scope construction mutated, so a
+    // synchronous "Task InitializeAsync() { ... }" (no await, mutating the same context the test
+    // method goes on to run in) has none of this rule's own bug to catch.
     private static readonly Regex InitializeAsyncSignature = new(
-        @"\bInitializeAsync\s*\(\s*\)\s*",
+        @"\basync\s+Task\s+InitializeAsync\s*\(\s*\)\s*",
         RegexOptions.Compiled);
 
     [Fact]
@@ -148,7 +152,8 @@ public sealed class HomeEnvironmentIsolationTests
             List<ClassFrame> frames = FindClassFrames(code, originalIndex, source);
 
             int start = 0;
-            while (IndexOfMemberBoundary(code, SetEnvironmentVariableCall, start) is int callIndex)
+            int callIndex;
+            while ((callIndex = code.IndexOf(SetEnvironmentVariableCall, start, StringComparison.Ordinal)) >= 0)
             {
                 start = callIndex + SetEnvironmentVariableCall.Length;
 
@@ -196,7 +201,8 @@ public sealed class HomeEnvironmentIsolationTests
         offenders.Should().BeEmpty(
             "a class that writes HALL9K_HOME or HALL9K_CONNECTION_STRING directly (rather than " +
             $"through ScopedTestHome/ScopedConnectionString) races every other one unless it carries " +
-            $"{CollectionAttribute} and {TraitAttribute} — the one serialized collection left; " +
+            $"{CollectionAttribute} and {TraitAttribute} — the one collection left for a " +
+            "process-wide environment variable; " +
             "either route the write through the shared test helper instead, or add both attributes " +
             "if this class genuinely hands the variable to a real child process");
 
@@ -360,32 +366,6 @@ public sealed class HomeEnvironmentIsolationTests
             }
         }
     }
-
-    /// <summary>
-    /// Same as <see cref="string.IndexOf(string, int, StringComparison)"/> except a match is
-    /// rejected when the character right after it is itself an identifier character, so a
-    /// call-shaped marker cannot be fooled by a longer real identifier sharing its prefix. Every
-    /// marker here already ends in <c>"</c> or a call's own text, an unambiguous boundary, so this
-    /// mirrors the guard it replaces without needing that guard's own bare-name special case.
-    /// </summary>
-    private static int? IndexOfMemberBoundary(string source, string member, int start)
-    {
-        int index = start;
-        while ((index = source.IndexOf(member, index, StringComparison.Ordinal)) >= 0)
-        {
-            int afterMatch = index + member.Length;
-            if (afterMatch >= source.Length || !IsIdentifierCharacter(source[afterMatch]))
-            {
-                return index;
-            }
-
-            index = afterMatch;
-        }
-
-        return null;
-    }
-
-    private static bool IsIdentifierCharacter(char c) => char.IsLetterOrDigit(c) || c == '_';
 
     private sealed record ClassFrame(string Name, int BodyStart, int BodyEnd, bool HasAttribute, bool HasTrait);
 
