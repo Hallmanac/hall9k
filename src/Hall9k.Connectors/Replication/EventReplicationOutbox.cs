@@ -189,6 +189,18 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 return;
             }
 
+            // The resend pass below adds a scope-changing stream's own EARLIER history to a batch
+            // that may already hold that same stream's triggering scope-change record (added by the
+            // forward scan, in scan order, before the resend pass ever runs) — sorted here, by each
+            // record's own true origin sequence, so the receiving inbox always applies a stream's
+            // events oldest first regardless of which pass queued them. Safe across streams and
+            // origins too: EventReplicationInbox.OriginHighWaterAsync only ever compares sequences
+            // within the SAME (stream, origin) pair, so reordering unrelated records has no effect
+            // (independent pre-PR review, cycle 3, conformance lens, high — a resend's history used
+            // to land after the scope-change event that triggered it, and the receiver's own
+            // out-of-order guard refused the entire out-of-order tail).
+            state.Records.Sort((left, right) => left.OriginSequence.CompareTo(right.OriginSequence));
+
             StorePositionSnapshot(audience);
             await MessageOutbox.QueueAsync(
                 session, nodeId, projectId, fromOwnerFingerprint, audience, about: null, MessageKind.Events,
@@ -420,14 +432,25 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
     /// call, which would double-queue it if resent here too — the LIVE, scan-mutated set cannot make
     /// this call, since every sequence the forward scan itself reprocesses is removed from it as that
     /// happens, making a sequence the forward scan just queued indistinguishable, by the time this
-    /// resend pass runs, from one the fast skip genuinely never touched. Forwards own-or-replicated
-    /// events alike, true origin preserved, the identical technique
-    /// <see cref="EventCatchUpResponder"/> already uses to answer a catch-up request for one stream: a
-    /// scope change run from a fleet sibling that only ever received this stream by replication must
-    /// still be able to resend its full history, not just whatever it produced itself. Sends nothing,
-    /// and leaves the caller to treat the stream as handled regardless, when the stream currently
-    /// reads <see cref="ReplicationScope.Private"/> — it was toggled back before this ran, and a
-    /// later scope-widening event re-marks it if that changes again.
+    /// resend pass runs, from one the fast skip genuinely never touched. Forwards only what THIS
+    /// NODE produced natively — the identical exclusion the ordinary forward scan applies to a
+    /// candidate carrying <see cref="ReplicationEventHeaders.OriginEventId"/> — never an
+    /// already-replicated fact under its own true origin, unlike <see cref="EventCatchUpResponder"/>:
+    /// that responder answers ONE requester by name and can skip that exact requester when it IS the
+    /// candidate's own origin, but this resend queues a BROADCAST envelope
+    /// (<see cref="MessageAudience.Project"/> or <see cref="MessageAudience.Owner"/>) that always
+    /// reaches every member of its own audience, which always includes the candidate's own true
+    /// origin node — so forwarding a foreign-origin fact here would hand that node its own history
+    /// back under a fresh envelope, and it holds no <see cref="ReplicatedEventRecord"/> for an event
+    /// it produced natively to dedupe against (independent pre-PR review, cycle 3, adversarial lens,
+    /// high). A fleet sibling that only ever holds a stream by replication can still append a fresh
+    /// scope-changing event onto it (that new event travels normally, via the ordinary forward scan),
+    /// but this resend cannot back-fill history it never itself produced — the gap closes instead
+    /// when the stream's own true origin node next runs its own forward scan and finds the widened
+    /// scope on the very same stream. Sends nothing, and leaves the caller to treat the stream as
+    /// handled regardless, when the stream currently reads <see cref="ReplicationScope.Private"/> —
+    /// it was toggled back before this ran, and a later scope-widening event re-marks it if that
+    /// changes again.
     /// </summary>
     private async Task ResendStreamHistoryAsync(
         IDocumentSession session, Guid nodeId, Guid projectId, string fromOwnerFingerprint, Guid streamId,
@@ -455,6 +478,26 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             // double-queue it.
             if (candidate.Sequence > sinceSequence && pendingPrivateAtScanStart.Contains(candidate.Sequence))
             {
+                continue;
+            }
+
+            if (candidate.GetHeader(ReplicationEventHeaders.OriginEventId) is not null)
+            {
+                // Already a fact this node received by replication, never one it produced itself —
+                // the identical exclusion the ordinary forward scan applies, and non-negotiable here
+                // too: this resend is a BROADCAST (MessageAudience.Project or MessageAudience.Owner),
+                // which always reaches every member of its own audience, and a foreign-origin
+                // candidate's own true origin node is always a member of whichever broadcast audience
+                // its own scope addresses — the item's own owner (Fleet) or the whole project (Team).
+                // EventCatchUpResponder can safely forward an already-replicated fact under its own
+                // true origin because it answers ONE requester by name and skips that exact requester
+                // when it IS the origin; a broadcast has no such single recipient to skip, so the only
+                // safe rule is the forward scan's own: only what THIS node produced natively ever
+                // rides an envelope this resend queues. Forwarding a foreign-origin record here would
+                // hand the origin node back its own history under a fresh envelope, and that node
+                // holds no ReplicatedEventRecord for its own natively-produced events to dedupe
+                // against, so it would re-append a second, un-deduped copy onto its own stream
+                // (independent pre-PR review, cycle 3, adversarial lens, high).
                 continue;
             }
 
@@ -489,8 +532,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 return;
             }
 
-            EventReplicationCodec.ReplicatedEventRecord record =
-                ToRecordPreservingOrigin(candidate, nodeId, fromOwnerFingerprint, projectId);
+            EventReplicationCodec.ReplicatedEventRecord record = ToRecord(candidate, nodeId, fromOwnerFingerprint, projectId);
             string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
             await addAsync(
                 AudienceFor(resolved.Scope, record.OriginOwnerRootFingerprint, fromOwnerFingerprint),
@@ -515,28 +557,6 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             System.Text.Json.JsonSerializer.Serialize(candidate.Data, candidate.EventType),
             candidate.Id,
             candidate.Sequence,
-            originNodeId,
-            originOwnerRootFingerprint,
-            candidate.Timestamp,
-            projectId);
-    }
-
-    /// <summary>The resend pass's own record builder — <see cref="ToRecord"/>'s twin, except it
-    /// preserves an ALREADY-REPLICATED event's own true origin (<see cref="ReplicationEventOriginResolver"/>)
-    /// rather than assuming every candidate is this node's own, since a resend may run on a fleet
-    /// sibling that only ever received the stream by replication.</summary>
-    private static EventReplicationCodec.ReplicatedEventRecord ToRecordPreservingOrigin(
-        IEvent candidate, Guid nodeId, string fromOwnerFingerprint, Guid projectId)
-    {
-        (Guid originNodeId, string originOwnerRootFingerprint, Guid originEventId, long originSequence) =
-            ReplicationEventOriginResolver.Resolve(candidate, nodeId, fromOwnerFingerprint);
-
-        return new EventReplicationCodec.ReplicatedEventRecord(
-            candidate.StreamId,
-            candidate.EventType.FullName ?? candidate.EventType.Name,
-            System.Text.Json.JsonSerializer.Serialize(candidate.Data, candidate.EventType),
-            originEventId,
-            originSequence,
             originNodeId,
             originOwnerRootFingerprint,
             candidate.Timestamp,
