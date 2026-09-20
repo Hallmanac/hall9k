@@ -143,6 +143,16 @@ public sealed class StackedBaseBranchGuardTests
                 continue;
             }
 
+            // The feed courier's own prompt (CourierPromptBuilder, idea 89471598, piece 3) is a
+            // substring match on "PromptBuilder.Build(" purely by name coincidence: it runs as a
+            // run with no task, touches no worktree and no branch at all, and carries neither the
+            // checkpoint/recompose protocol nor the self-review phase — the two rules a base
+            // branch exists to serve. There is no base for it to be handed.
+            if (lines[i].Contains("CourierPromptBuilder.Build(", StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             // Long argument lists here, so a wider window than the git-call scan's three lines —
             // baseBranch sits last by convention (CancellationToken aside, prompts take none).
             string window = string.Join(' ', lines.Skip(i).Take(10));

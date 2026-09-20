@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Courier;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
@@ -67,5 +68,6 @@ public static class MartenConfiguration
         opts.Projections.Add<UnverifiedLedgerWriteDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<InviteDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<OrchestratorPresenceDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<CourierRunDetailsProjection>(ProjectionLifecycle.Inline);
     }
 }
