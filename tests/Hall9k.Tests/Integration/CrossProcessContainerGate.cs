@@ -161,11 +161,27 @@ internal static class CrossProcessContainerGate
                     if (TryOpen(permitPath) is { } stream)
                     {
                         string sidecarPath = permitPath + ContainerGateDirectory.SidecarSuffix;
-                        TryWriteEvidence(
-                            sidecarPath,
-                            ContainerGateDirectory.FormatSidecar(
-                                Environment.ProcessId, Process.GetCurrentProcess().StartTime.ToUniversalTime(),
-                                Environment.CurrentDirectory, DateTimeOffset.UtcNow));
+
+                        // Guarded end to end, not just inside TryWriteEvidence's own try: stream is
+                        // an exclusive lock nothing else in this method owns yet, so any throw here
+                        // — the write itself, or reading the process's own current directory or
+                        // start time first — must release it before propagating, or the permit
+                        // leaks open for the rest of this process's life (independent pre-PR
+                        // review, this cycle).
+                        try
+                        {
+                            TryWriteEvidence(
+                                sidecarPath,
+                                ContainerGateDirectory.FormatSidecar(
+                                    Environment.ProcessId, Process.GetCurrentProcess().StartTime.ToUniversalTime(),
+                                    Environment.CurrentDirectory, DateTimeOffset.UtcNow));
+                        }
+                        catch
+                        {
+                            stream.Dispose();
+                            throw;
+                        }
+
                         return new Permit(stream, sidecarPath);
                     }
                 }
@@ -293,6 +309,13 @@ internal static class CrossProcessContainerGate
             // the wait itself instead of degrading it, contrary to this method's own contract).
             // Either way this is a lost evidence write, never something that fails the wait.
         }
+        catch (UnauthorizedAccessException)
+        {
+            // Same reasoning as TryDeleteEvidence's own identical catch below: a leftover sidecar
+            // or wait file this account cannot overwrite (a different owner, a read-only path) is
+            // still just a lost evidence write, not a reason to fail the acquire that is about to
+            // return a perfectly good permit (independent pre-PR review, this cycle).
+        }
     }
 
     private static void TryDeleteEvidence(string path)
@@ -417,14 +440,20 @@ internal static class CrossProcessContainerGate
     {
         public ValueTask DisposeAsync()
         {
-            stream.Dispose();
+            // Deleted before the lock below is released, not after: the sidecar carries no pid or
+            // acquisition nonce, so once the exclusive lock is gone a different process can open
+            // the same slot and write its own sidecar in the gap, and this call's own delete would
+            // then remove that other holder's file instead of its own (independent pre-PR review,
+            // this cycle). No other process can take this slot while the lock is still held, so
+            // deleting first closes the window entirely.
+            TryDeleteEvidence(sidecarPath);
 
             // Removed with the permit on the graceful path — a process killed hard enough that it
             // never runs this leaves its own sidecar behind exactly like a killed process leaves
             // discoverableWaitFile behind above, which is deliberate: that leftover is the
             // evidence a killed gate's own timeout diagnostic names (ContainerGateDirectory
             // .DescribeContents), naming who held the permit rather than nothing at all.
-            TryDeleteEvidence(sidecarPath);
+            stream.Dispose();
             return ValueTask.CompletedTask;
         }
     }
