@@ -195,6 +195,68 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
         await store.Advanced.ResetAllData(cts.Token);
     }
 
+    /// <summary>
+    /// The other door that clears <see cref="TaskListItem.AssignedOwnerFingerprint"/> back to
+    /// null (<see cref="TaskAggregate.Apply(TaskHolderTakenOver)"/>, mirrored on both
+    /// projections): a forced takeover is the taker's own local reassignment, never a cross-node
+    /// grant, so it carries no fingerprint of its own — the null it leaves is the true current
+    /// answer, not one this repair still owes, even though the stream's own latest
+    /// <see cref="TaskAssigned"/> event still carries the fingerprint the takeover deliberately
+    /// superseded (independent pre-PR review, cycle 1, both lenses: without this, the repair
+    /// re-selects the document at every daemon start, forever).
+    /// </summary>
+    [Fact]
+    public async Task A_task_taken_over_after_a_fingerprinted_assignment_is_not_mistaken_for_one_the_repair_still_owes()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        await store.Advanced.ResetAllData(cts.Token);
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        const string fingerprint = "owner-x-root-fingerprint";
+        Guid takerNodeId = DomainId.New();
+        Guid takerOwnerId = DomainId.New();
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            TaskAdded added = Add(taskId, "Assigned with a fingerprint, then forced over to a new holder");
+            TaskAggregate task = new();
+            task.Apply(added);
+            TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, node.OwnerId);
+            task.Apply(published);
+            TaskAssigned assigned = TaskDecider.Assign(
+                task, node.OwnerId, [], Now, node.OwnerId, assignedOwnerRootFingerprint: fingerprint);
+            task.Apply(assigned);
+            TaskClaimed claimed = TaskDecider.Claim(
+                task, node.NodeId, node.OwnerId, runId, Now, ownerRootFingerprint: fingerprint);
+            task.Apply(claimed);
+            TaskHolderTakenOver takenOver = TaskDecider.TakeOver(
+                task, takerNodeId, takerOwnerId, newHolderOwnerRootFingerprint: null,
+                "the previous holder went dark", takenByOwnerId: takerOwnerId, Now.AddMinutes(5));
+
+            seed.Events.StartStream<TaskAggregate>(taskId, added, published, assigned, claimed, takenOver);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskListItem row = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            row.AssignedOwnerId.Should().Be(takerOwnerId, "the takeover reassigns to the taker's own owner");
+            row.AssignedOwnerFingerprint.Should().BeNull(
+                "a forced takeover carries no fingerprint of its own and clears whatever the prior "
+                + "assignment recorded");
+        }
+
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().BeEmpty(
+            "the null fingerprint here is already the true current answer — the takeover, not a "
+            + "discarding projection, is what cleared it — so the repair must not re-select it on "
+            + "every daemon start");
+
+        await store.Advanced.ResetAllData(cts.Token);
+    }
+
     [Fact]
     public async Task A_dependent_projected_before_the_recovery_keeps_the_hold_its_stream_still_records()
     {

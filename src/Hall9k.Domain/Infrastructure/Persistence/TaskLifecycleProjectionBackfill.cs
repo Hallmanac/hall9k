@@ -263,35 +263,82 @@ public static class TaskLifecycleProjectionBackfill
     /// event's own field. No <c>jsonb_exists</c> marker can find this: the key is present on these
     /// documents, as an explicit null, exactly as it is on a document that has never carried a
     /// fingerprint for a genuine reason (an event older than the field, or a task never reassigned
-    /// since a grant-clearing door last touched it) — the two are indistinguishable from the
+    /// since a fingerprint-clearing door last touched it) — the two are indistinguishable from the
     /// document alone. Reading the raw event is the only way to tell them apart, so this reasons
     /// from <see cref="TaskAssigned"/>'s own history per stream rather than from a document key:
     /// grouped by task id, the latest assignment by <see cref="TaskAssigned.AssignedAt"/> is the
     /// one whose fingerprint (or lack of one) the current document should carry, since a later
     /// assignment always supersedes an earlier one's fingerprint exactly as
-    /// <see cref="TaskAggregate.Apply(Events.TaskAssigned)"/> does. Restricted to a document still
-    /// carrying an <see cref="TaskListItem.AssignedOwnerId"/> so a task unassigned since its last
-    /// fingerprinted assignment — whose null fingerprint is already the true current answer — is
-    /// never mistaken for one this repair still owes.
+    /// <see cref="TaskAggregate.Apply(Events.TaskAssigned)"/> does.
+    /// <para>
+    /// A forced takeover (<see cref="Events.TaskHolderTakenOver"/>, <see cref="TaskDecider.TakeOver"/>)
+    /// is the one door that legitimately clears the fingerprint back to null <em>after</em> a
+    /// fingerprinted assignment, without appending a fresh <see cref="TaskAssigned"/> of its own —
+    /// the taker's own local reassignment, never a cross-node grant, so it carries no fingerprint to
+    /// mirror. Left unaccounted for, a stream the assignment's own latest event still names as
+    /// fingerprinted would be re-selected at every daemon start forever, even though the document's
+    /// null is already the true current answer (independent pre-PR review, cycle 1, both lenses).
+    /// A stream is excluded here whenever its latest takeover lands no earlier than its latest
+    /// fingerprinted assignment.
+    /// </para>
+    /// <para>
+    /// Restricted throughout to the candidate document ids that could possibly need this repair — a
+    /// non-null <see cref="TaskListItem.AssignedOwnerId"/> beside a null
+    /// <see cref="TaskListItem.AssignedOwnerFingerprint"/> — read first and used to bound every event
+    /// query below, rather than materializing this store's entire <see cref="TaskAssigned"/> (and
+    /// <see cref="Events.TaskHolderTakenOver"/>) history on every daemon start regardless of how many
+    /// documents could possibly be stale (independent pre-PR review, cycle 1, adversarial lens).
+    /// </para>
     /// </summary>
     private static async Task<Guid[]> StaleFingerprintStreamsAsync(
         IQuerySession session, CancellationToken cancellationToken)
     {
+        IReadOnlyList<Guid> candidateRows = await session.Query<TaskListItem>()
+            .Where(task => task.AssignedOwnerId != null && task.AssignedOwnerFingerprint == null)
+            .Select(task => task.Id)
+            .ToListAsync(cancellationToken);
+        IReadOnlyList<Guid> candidateDetails = await session.Query<TaskDetails>()
+            .Where(task => task.AssignedOwnerId != null && task.AssignedOwnerFingerprint == null)
+            .Select(task => task.Id)
+            .ToListAsync(cancellationToken);
+        Guid[] candidates = [.. candidateRows.Concat(candidateDetails).Distinct()];
+        if (candidates.Length == 0)
+        {
+            return [];
+        }
+
         IReadOnlyList<TaskAssigned> assignments = await session.Events
             .QueryRawEventDataOnly<TaskAssigned>()
+            .Where(assigned => candidates.Contains(assigned.Id))
             .ToListAsync(cancellationToken);
         if (assignments.Count == 0)
         {
             return [];
         }
 
-        Guid[] currentlyFingerprinted = [.. assignments
+        Dictionary<Guid, DateTimeOffset> latestFingerprintedAssignmentAt = assignments
             .GroupBy(assigned => assigned.Id)
-            .Where(stream => stream
-                .OrderByDescending(assigned => assigned.AssignedAt)
-                .First()
-                .AssignedOwnerRootFingerprint is not null)
-            .Select(stream => stream.Key)];
+            .Select(stream => stream.OrderByDescending(assigned => assigned.AssignedAt).First())
+            .Where(latest => latest.AssignedOwnerRootFingerprint is not null)
+            .ToDictionary(latest => latest.Id, latest => latest.AssignedAt);
+        if (latestFingerprintedAssignmentAt.Count == 0)
+        {
+            return [];
+        }
+
+        Guid[] fingerprintedIds = [.. latestFingerprintedAssignmentAt.Keys];
+        IReadOnlyList<TaskHolderTakenOver> takeovers = await session.Events
+            .QueryRawEventDataOnly<TaskHolderTakenOver>()
+            .Where(takenOver => fingerprintedIds.Contains(takenOver.Id))
+            .ToListAsync(cancellationToken);
+        Dictionary<Guid, DateTimeOffset> latestTakeoverAt = takeovers
+            .GroupBy(takenOver => takenOver.Id)
+            .ToDictionary(stream => stream.Key, stream => stream.Max(takenOver => takenOver.TakenAt));
+
+        Guid[] currentlyFingerprinted = [.. latestFingerprintedAssignmentAt
+            .Where(entry => !latestTakeoverAt.TryGetValue(entry.Key, out DateTimeOffset takenAt)
+                || takenAt <= entry.Value)
+            .Select(entry => entry.Key)];
         if (currentlyFingerprinted.Length == 0)
         {
             return [];
