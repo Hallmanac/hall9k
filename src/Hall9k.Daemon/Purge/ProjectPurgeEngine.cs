@@ -1,5 +1,6 @@
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -49,9 +50,10 @@ internal sealed record PurgeOneResult(
 /// from <c>mt_streams.id</c> — deleting the child rows first is safe regardless.
 /// </para>
 /// <para>
-/// Scope is the project's own stream and every task, run, idea, and epic stream it owns, with
-/// their projection documents — <c>ProjectDetails</c>, <c>TaskDetails</c>/<c>TaskListItem</c>,
-/// <c>RunDetails</c>/<c>RunListItem</c>, <c>IdeaDetails</c>, and <c>EpicDetails</c>. The
+/// Scope is the project's own stream and every task, run, idea, epic, and orchestrator-presence
+/// stream it owns, with their projection documents — <c>ProjectDetails</c>,
+/// <c>TaskDetails</c>/<c>TaskListItem</c>, <c>RunDetails</c>/<c>RunListItem</c>,
+/// <c>IdeaDetails</c>, <c>EpicDetails</c>, and <c>OrchestratorPresenceDetails</c>. The
 /// acceptance criteria for this purge name only tasks, runs, and ideas, but an epic is owned by a
 /// project the same way those three are — <c>EpicAdded.ProjectId</c> is a required field, and
 /// <c>h9k epic add</c> refuses without one — so leaving an epic behind is not a scope decision,
@@ -232,7 +234,21 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
             .Select(epic => epic.Id)
             .ToListAsync(cancellationToken))];
 
-        Guid[] everyStreamId = [project.Id, .. taskIds, .. runIds, .. ideaIds, .. epicIds];
+        // Orchestrator presence (idea 89471598, piece 1) is a stream of this project's too, but
+        // keyed by (node, project) rather than by the project id alone, so it is not among the
+        // ids above and neither delete below would reach it. Left behind, it is not an inert
+        // orphan: the daemon's own presence sweep keeps re-aggregating a window for a project
+        // that no longer exists, and h9k status keeps printing a line for it under a name it can
+        // no longer resolve. Queried rather than derived, because the key needs a node id —
+        // only this node's own rows can be here (these events are node-scoped and never
+        // replicate), and the query is correct either way.
+        Guid[] orchestratorPresenceIds = [.. (await session.Query<OrchestratorPresenceDetails>()
+            .Where(presence => presence.ProjectId == project.Id)
+            .Select(presence => presence.Id)
+            .ToListAsync(cancellationToken))];
+
+        Guid[] everyStreamId =
+            [project.Id, .. taskIds, .. runIds, .. ideaIds, .. epicIds, .. orchestratorPresenceIds];
 
         // The spend governor's own undercount (independent pre-PR review, cycle 1, adversarial
         // lens, medium): PeriodSpend.ReadAsync sums TokensRecorded (on a run's own stream) and
@@ -319,6 +335,17 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         if (epicIds.Length > 0)
         {
             session.QueueSqlCommand("delete from mt_doc_epicdetails where id = ANY(?)", epicIds);
+        }
+
+        // Guarded the same way the four above are, and for the same reason the typed deletes two
+        // blocks up avoid raw SQL: mt_doc_orchestratorpresencedetails is created lazily, on this
+        // projection's first-ever write, so a raw DELETE naming it outright would fail on an
+        // install where no orchestrator window has ever registered. A non-empty id list is
+        // itself proof the table exists.
+        if (orchestratorPresenceIds.Length > 0)
+        {
+            session.QueueSqlCommand(
+                "delete from mt_doc_orchestratorpresencedetails where id = ANY(?)", orchestratorPresenceIds);
         }
 
         await session.SaveChangesAsync(cancellationToken);
