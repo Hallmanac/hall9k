@@ -401,6 +401,53 @@ public sealed class ProjectHomeRecipeTests : IDisposable
         rendered.Should().NotContain("Atlassian CLI", "no Jira board is bound");
     }
 
+    [Fact]
+    public void The_render_says_so_when_no_gates_are_configured()
+    {
+        string home = ProjectHomePaths.DefaultFor("hall9k");
+
+        string rendered = ProjectAgentsDocument.Render(home, SomeProject());
+
+        rendered.Should().Contain("## Build / test / run");
+        rendered.Should().Contain("This project configures no verification gates of its own");
+    }
+
+    [Fact]
+    public void The_render_lists_an_ordinary_gates_command()
+    {
+        string home = ProjectHomePaths.DefaultFor("hall9k");
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test"));
+
+        string rendered = ProjectAgentsDocument.Render(home, project);
+
+        rendered.Should().Contain("- `test`: `dotnet test`");
+    }
+
+    /// <summary>
+    /// A host-coupled gate's own line in this render never prints its bare command (task:
+    /// host-coupled suites run only in the node's serialized host gate) — a session reading this
+    /// file and running that command directly is exactly what raced the daemon's own serialized
+    /// host gate for the same permits in the origin incident this task answers. The same wording
+    /// the prompt builders use for the identical fact, so a session reading either never sees the
+    /// host-coupled gate described two different ways.
+    /// </summary>
+    [Fact]
+    public void The_render_never_prints_a_host_coupled_gates_command()
+    {
+        string home = ProjectHomePaths.DefaultFor("hall9k");
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands.Add(new VerifyCommand("integration", "dotnet test", "Category=RequiresDocker"));
+
+        string rendered = ProjectAgentsDocument.Render(home, project);
+
+        rendered.Should().NotContain("- `integration`: `dotnet test`");
+        rendered.Should().Contain(
+            "`integration` runs only in the daemon's own serialized host gate; a session working "
+            + "here never runs it directly");
+        rendered.Should().Contain("a single touched test class, scoped by name");
+    }
+
     /// <summary>
     /// The claim gate is a fact a session working in this home has to know, not a preference (idea
     /// 64c75e43): with it on, a task linked to a card does not dispatch on this install until the

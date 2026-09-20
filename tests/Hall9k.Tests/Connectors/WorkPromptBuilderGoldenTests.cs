@@ -250,6 +250,20 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         AssertMatchesGolden("append-checkpoint-commit-rules-standard", prompt.ToString());
     }
 
+    /// <summary>
+    /// A host-coupled gate's own recompose checklist line never prints its bare command (task:
+    /// host-coupled suites run only in the node's serialized host gate) — the session that ran it
+    /// directly here is exactly what raced the daemon's own serialized host gate for the same
+    /// permits in the origin incident this task answers.
+    /// </summary>
+    [Fact]
+    public void AppendCheckpointCommitRules_host_coupled_gate_matches_its_golden()
+    {
+        StringBuilder prompt = new();
+        WorkPromptBuilder.AppendCheckpointCommitRules(prompt, ProjectWithHostCoupledGate(), WorktreePath);
+        AssertMatchesGolden("append-checkpoint-commit-rules-host-coupled", prompt.ToString());
+    }
+
     [Fact]
     public void AppendCheckpointCommitRules_stacked_matches_its_golden()
     {
@@ -347,6 +361,20 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
         StringBuilder prompt = new();
         WorkPromptBuilder.AppendPlatformSettingsReminderRule(prompt, ProjectWithGate());
         AssertMatchesGolden("append-platform-settings-reminder-rule-with-gates", prompt.ToString());
+    }
+
+    /// <summary>
+    /// This reminder's own gate list never names a host-coupled gate's bare command either (task:
+    /// host-coupled suites run only in the node's serialized host gate) — the same leak
+    /// <see cref="WorkPromptBuilder.AppendGateLines"/> closes, just in this rule's own comma list
+    /// rather than a bulleted one.
+    /// </summary>
+    [Fact]
+    public void AppendPlatformSettingsReminderRule_host_coupled_gate_matches_its_golden()
+    {
+        StringBuilder prompt = new();
+        WorkPromptBuilder.AppendPlatformSettingsReminderRule(prompt, ProjectWithHostCoupledGate());
+        AssertMatchesGolden("append-platform-settings-reminder-rule-host-coupled", prompt.ToString());
     }
 
     [Fact]
@@ -620,6 +648,13 @@ public sealed class WorkPromptBuilderGoldenTests : IDisposable
     {
         ProjectDetails project = SomeProject();
         project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test"));
+        return project;
+    }
+
+    private static ProjectDetails ProjectWithHostCoupledGate()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands.Add(new VerifyCommand("test", "dotnet test", "Category=RequiresDocker"));
         return project;
     }
 

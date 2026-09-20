@@ -140,6 +140,24 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
         AssertMatchesGolden("build-rebase", prompt);
     }
 
+    /// <summary>
+    /// A host-coupled gate's own line in the rebase checklist never prints its bare command
+    /// (task: host-coupled suites run only in the node's serialized host gate) — the session that
+    /// ran it directly here is exactly what raced the daemon's own serialized host gate for the
+    /// same permits in the origin incident this task answers.
+    /// </summary>
+    [Fact]
+    public void BuildRebase_host_coupled_gate_matches_its_golden()
+    {
+        TaskDetails task = SomeTask();
+        task.FollowUpReason = "The pull request's branch now conflicts with main.";
+        string prompt = AgentPromptBuilder.BuildRebase(
+            task, ProjectWithHostCoupledGate(), "task/1-slug", "https://github.com/acme/web/pull/7",
+            CommitStyle.Narrative,
+            humanResolution: "Keep the newer retry-budget constant; the old ceiling was a stopgap.");
+        AssertMatchesGolden("build-rebase-host-coupled", prompt);
+    }
+
     [Fact]
     public void BuildPreFinalPassRebase_matches_its_golden()
     {
@@ -293,6 +311,24 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
         AssertMatchesGolden("build-review-fix", prompt);
     }
 
+    /// <summary>
+    /// A host-coupled gate's own line in the review-fix self-check's touched-tests checklist
+    /// never prints its bare command (task: host-coupled suites run only in the node's serialized
+    /// host gate) — the session that ran it directly here is exactly what raced the daemon's own
+    /// serialized host gate for the same permits in the origin incident this task answers.
+    /// </summary>
+    [Fact]
+    public void BuildReviewFix_host_coupled_gate_matches_its_golden()
+    {
+        TaskDetails task = SomeTask();
+        task.InteractiveModeEnabled = true;
+        string prompt = AgentPromptBuilder.BuildReviewFix(
+            task, ProjectWithHostCoupledGate(), "task/1-slug",
+            findings: "FINDING: severity=high; scope=in-scope; at=src/Limiter.cs:42\nThe limiter never resets.",
+            cycle: 2, interactiveSessionAddress: "agent://milestones/1");
+        AssertMatchesGolden("build-review-fix-host-coupled", prompt);
+    }
+
     [Fact]
     public void BuildContextSynthesis_matches_its_golden()
     {
@@ -390,4 +426,11 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
         VerifyCommands = [new VerifyCommand("build", "dotnet build"), new VerifyCommand("test", "dotnet test")],
         WritingConventions = WritingConventions.Default,
     };
+
+    private static ProjectDetails ProjectWithHostCoupledGate()
+    {
+        ProjectDetails project = SomeProject();
+        project.VerifyCommands.Add(new VerifyCommand("integration", "dotnet test", "Category=RequiresDocker"));
+        return project;
+    }
 }

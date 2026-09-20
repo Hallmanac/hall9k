@@ -196,6 +196,11 @@ public static class ProjectAgentsDocument
             : "- Claim gate: off — assignment inside Hall9k is the only claim rule");
         document.AppendLine();
 
+        document.AppendLine("## Build / test / run");
+        document.AppendLine();
+        AppendVerifyGateLines(document, project);
+        document.AppendLine();
+
         document.AppendLine("## Tools this project needs");
         document.AppendLine();
         foreach (string dependency in ToolDependencies(project))
@@ -286,4 +291,35 @@ public static class ProjectAgentsDocument
     /// the name is the fact and the alignment is the decoration.
     /// </summary>
     private static string Column(string name) => name + new string(' ', Math.Max(1, 13 - name.Length));
+
+    /// <summary>
+    /// This project's own verify gates, exactly as <c>h9k project set --verify</c> registered
+    /// them: an ordinary gate's bare command, or, for the project's host-coupled gate, a sentence
+    /// in its command's place naming the one thing a session reading this file may still run
+    /// itself — the touched test class alone, scoped by name, never the gate's own full command
+    /// (task: host-coupled suites run only in the node's serialized host gate). The same wording
+    /// <c>WorkPromptBuilder.AppendGateLines</c> and <c>AgentPromptBuilder</c>'s own rebase and
+    /// review-fix checklists use for the identical fact, so a session reading any of the four
+    /// never sees the host-coupled gate described two different ways.
+    /// </summary>
+    private static void AppendVerifyGateLines(StringBuilder document, ProjectDetails project)
+    {
+        if (project.VerifyCommands.Count == 0)
+        {
+            document.AppendLine(
+                "This project configures no verification gates of its own "
+                + "(`h9k project set --verify \"name=command\"` registers one).");
+            return;
+        }
+
+        foreach (VerifyCommand gate in project.VerifyCommands)
+        {
+            document.AppendLine(gate.IsHostCoupled
+                ? $"- `{gate.Name}` runs only in the daemon's own serialized host gate; a session "
+                  + "working here never runs it directly — the one exception is a single touched "
+                  + "test class, scoped by name (e.g. `dotnet test --filter \"FullyQualifiedName~ThatClass\"`), "
+                  + "never the gate's own full command."
+                : $"- `{gate.Name}`: `{gate.Command}`");
+        }
+    }
 }
