@@ -207,10 +207,14 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             // them would apply the same forwarded batch onto its own store, including the batch's
             // own true origin node, which holds no ReplicatedEventRecord for events it produced
             // natively and would re-append them as an undeduped second copy onto its own stream
-            // (independent pre-PR review, cycle 1, adversarial lens, high). An ordinary outbox
-            // flush's own "events" envelope is always MessageAudience.Project (EventReplicationOutbox
-            // never targets one node), so this check is a no-op for it — Matches("project", ...)
-            // always returns true — and only ever refuses a catch-up answer addressed elsewhere.
+            // (independent pre-PR review, cycle 1, adversarial lens, high). On main, an ordinary
+            // outbox flush's own "events" envelope was always MessageAudience.Project, so this check
+            // was a no-op for it — Matches("project", ...) always returned true — and only ever
+            // refused a catch-up answer addressed elsewhere. Idea 8c5993c5 changed that: the outbox
+            // now also addresses a fleet-scoped item's own events to MessageAudience.Owner(<fingerprint>),
+            // so this same check does real work for an ordinary flush too, the moment fleet scope is
+            // in play — it is what keeps a fleet item off another owner's node, not only a catch-up
+            // answer off an uninvolved member's.
             if (!envelope.To.Matches(myNodeId, myOwnerFingerprint))
             {
                 continue;
