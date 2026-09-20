@@ -177,6 +177,15 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
     /// </summary>
     private static string WorkspaceMarkup(IdeaDetails idea)
     {
+        // A workspace home replicated from a node on a different operating system is a fact about
+        // that machine, not a directory on this one — resolving it here (IdeaPaths.ResolveDirectory
+        // stats this host's own disk) would read or build a path from the wrong OS's syntax. Print
+        // exactly what was recorded instead.
+        if (idea.WorkspaceHome is { HasValue: true, IsNativeForm: false } foreign)
+        {
+            return $"{foreign.Value.EscapeMarkup()} [dim](recorded on another node's own operating system — not a directory here)[/]";
+        }
+
         string ideaDirectory = IdeaPaths.ResolveDirectory(
             idea.WorkspaceHome, ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text), idea.Id);
         string path = IdeaPaths.WorkspaceDirectory(ideaDirectory);

@@ -688,6 +688,18 @@ public sealed class SpikeEngine(
                 return;
             }
 
+            if (idea.WorkspaceHome.HasValue && !idea.WorkspaceHome.IsNativeForm)
+            {
+                // A workspace home replicated from a node on a different operating system names a
+                // directory on THAT machine, never this one — building a path from it and calling
+                // Directory.CreateDirectory would misread a foreign path's own syntax as this
+                // host's and create a bogus directory tree relative to wherever that misreading
+                // happens to land. Best-effort already covers this: the run directory's own copy,
+                // read back by h9k task show, is the durable record either way (this method's own
+                // doc comment).
+                return;
+            }
+
             string ideaDirectory = IdeaPaths.ResolveDirectory(
                 idea.WorkspaceHome, IdeaDocumentRenderer.DirectoryName(idea), idea.Id);
             string destination = Path.Combine(IdeaPaths.WorkspaceDirectory(ideaDirectory), "spikes", taskId.ToString(), "findings.md");

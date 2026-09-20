@@ -469,8 +469,24 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
         }
     }
 
+    /// <summary>
+    /// Whether this idea's own recorded workspace home is safe to touch a directory for on THIS
+    /// host: absent (no home was ever recorded) or rooted in this host's own path shape. False for
+    /// a value replicated from a node on a different operating system (idea 202383dc: a Windows
+    /// path applied on macOS, or the reverse) — a node-local fact about a different machine, never
+    /// a directory this one can create or read. <see cref="RenderIdea"/> skips such an idea
+    /// entirely rather than let anything downstream mistake that value for a path on this disk.
+    /// </summary>
+    public static bool CanRenderIdea(IdeaDetails idea) =>
+        !idea.WorkspaceHome.HasValue || idea.WorkspaceHome.IsNativeForm;
+
     private RenderOutcome RenderIdea(string ideasRoot, IdeaDetails idea, ProjectDetails project)
     {
+        if (!CanRenderIdea(idea))
+        {
+            return RenderOutcome.Unchanged;
+        }
+
         try
         {
             string directoryName = IdeaDocumentRenderer.DirectoryName(idea);
