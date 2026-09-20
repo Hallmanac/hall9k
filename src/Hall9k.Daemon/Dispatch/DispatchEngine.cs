@@ -725,8 +725,14 @@ public sealed class DispatchEngine(
             session, archivedProjects, ownerRootFingerprint, cancellationToken);
         ReportFingerprintMismatches(await ReadFingerprintMismatchedTaskIdsAsync(
             session, ownerRootFingerprint, cancellationToken));
-        ReportNodePlacementSkips(await ReadNodePlacementMismatchedTaskIdsAsync(
-            session, ownerRootFingerprint, node.NodeId, cancellationToken));
+        // Guarded on the sink rather than paid unconditionally: LogDebug's own call is a no-op at
+        // the ordinary Information level, but the query behind it is not, and nothing else reads
+        // this result (independent pre-PR review, cycle 1, conformance lens).
+        if (logger.IsEnabled(LogLevel.Debug))
+        {
+            ReportNodePlacementSkips(await ReadNodePlacementMismatchedTaskIdsAsync(
+                session, ownerRootFingerprint, node.NodeId, cancellationToken));
+        }
 
         // Measured after the queue is read rather than before it, because a project cap can only
         // be measured against the projects that actually have a candidate this sweep — a paused
