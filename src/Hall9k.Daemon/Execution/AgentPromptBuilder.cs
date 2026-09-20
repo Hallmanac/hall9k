@@ -1130,7 +1130,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "required-before-finish");
         foreach (VerifyCommand gate in project.VerifyCommands)
         {
-            prompt.AppendLine($"    - `{gate.Command}`");
+            AppendGateLine(prompt, gate, indent: "    ");
         }
 
         AppendFragment(prompt, file, "commit-fix-note");
@@ -1151,6 +1151,25 @@ public static class AgentPromptBuilder
         }
 
         AppendOwnerVoiceRule(prompt, string.Empty, voiceSkill, CodeReviewVoiceContext);
+    }
+
+    /// <summary>
+    /// One gate's own line inside a checklist this session is told to run — an ordinary gate's
+    /// bare command, exactly as printed before, or, for the project's host-coupled gate, a
+    /// sentence in its command's place naming the one thing this session may still run itself:
+    /// the touched test class alone, scoped by name, never the gate's own full command (task:
+    /// host-coupled suites run only in the node's serialized host gate). Shared by the rebase
+    /// checklist and the review-fix self-check's own touched-tests checklist so the two can never
+    /// say this differently.
+    /// </summary>
+    private static void AppendGateLine(StringBuilder prompt, VerifyCommand gate, string indent)
+    {
+        prompt.AppendLine(gate.IsHostCoupled
+            ? $"{indent}- `{gate.Name}` runs only in the daemon's own serialized host gate; this session "
+              + "never runs it here — the one exception is a single touched test class, scoped by name "
+              + "(e.g. `dotnet test --filter \"FullyQualifiedName~ThatClass\"`), never the gate's own full "
+              + "command."
+            : $"{indent}- `{gate.Command}`");
     }
 
     /// <summary>
@@ -3934,7 +3953,7 @@ public static class AgentPromptBuilder
             AppendFragment(prompt, file, "run-touched-tests-lead");
             foreach (VerifyCommand gate in project.VerifyCommands)
             {
-                prompt.AppendLine($"     - `{gate.Command}`");
+                AppendGateLine(prompt, gate, indent: "     ");
             }
 
             int foregroundCeilingMinutes = WorkPromptBuilder.ForegroundCeilingMinutes(commandTimeout);

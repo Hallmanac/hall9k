@@ -818,12 +818,28 @@ public static class WorkPromptBuilder
     public static void AppendSharedRepositoryHistorySafetyRule(StringBuilder prompt) =>
         AppendFragment(prompt, $"{TemplateDirectory}/shared-repository-history-safety.md", "note");
 
+    /// <summary>
+    /// One line per gate — an ordinary gate's bare command, exactly as this method has always
+    /// printed it, or, for the project's host-coupled gate, a sentence in its command's place
+    /// naming the one thing this session may still run: the touched test class alone, scoped by
+    /// name, never the gate's own full command (task: host-coupled suites run only in the node's
+    /// serialized host gate). A session that ran the bare command here is exactly what raced the
+    /// daemon's own serialized host gate for the same permits in the origin incident this task
+    /// answers.
+    /// </summary>
     private static void AppendGateLines(StringBuilder prompt, ProjectDetails project)
     {
         const string file = $"{TemplateDirectory}/gate-line.md";
         foreach (VerifyCommand gate in project.VerifyCommands)
         {
-            AppendFragment(prompt, file, "line", ("Command", gate.Command));
+            if (gate.IsHostCoupled)
+            {
+                AppendFragment(prompt, file, "host-coupled-line", ("Name", gate.Name));
+            }
+            else
+            {
+                AppendFragment(prompt, file, "line", ("Command", gate.Command));
+            }
         }
     }
 
@@ -1398,8 +1414,15 @@ public static class WorkPromptBuilder
         }
         else
         {
+            // A host-coupled gate's own bare command never appears here either (task:
+            // host-coupled suites run only in the node's serialized host gate) — this list is a
+            // timeout-sizing reminder, not an instruction to run anything, but printing the raw
+            // command is exactly the same leak AppendGateLines exists to close, just in a comma
+            // list instead of a bulleted one (blast-radius sweep, same shape).
             AppendFragment(prompt, file, "with-gates", ("Gates", string.Join(", ",
-                project.VerifyCommands.Select(gate => $"`{gate.Command}`"))));
+                project.VerifyCommands.Select(gate => gate.IsHostCoupled
+                    ? $"`{gate.Name}` (the daemon's own host gate)"
+                    : $"`{gate.Command}`"))));
         }
     }
 
