@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Daemon.Purge;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -56,6 +57,8 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid purgedEpicId = await SeedEpicAsync(store, purgedProjectId, ownerId, cts.Token);
         await SeedGitHubAccessAsync(store, purgedProjectId, cts.Token);
         await SeedPromptAddendaSyncPositionAsync(store, purgedProjectId, cts.Token);
+        Guid nodeId = DomainId.New();
+        Guid purgedPresenceId = await SeedOrchestratorPresenceAsync(store, nodeId, purgedProjectId, cts.Token);
         await SchedulePastDuePurgeAsync(store, purgedProjectId, ownerId, cts.Token);
 
         // A sibling project, untouched by this sweep — the control that proves the purge is
@@ -67,6 +70,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid survivingEpicId = await SeedEpicAsync(store, survivingProjectId, ownerId, cts.Token);
         await SeedGitHubAccessAsync(store, survivingProjectId, cts.Token);
         await SeedPromptAddendaSyncPositionAsync(store, survivingProjectId, cts.Token);
+        Guid survivingPresenceId = await SeedOrchestratorPresenceAsync(store, nodeId, survivingProjectId, cts.Token);
 
         ProjectPurgeEngine engine = new(store, NullLogger<ProjectPurgeEngine>.Instance);
         ProjectPurgeSweepResult result = await engine.SweepOnceAsync(cts.Token);
@@ -99,7 +103,13 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<IdeaDetails>(purgedIdeaId, cts.Token)).Should().BeNull();
             (await query.LoadAsync<EpicDetails>(purgedEpicId, cts.Token)).Should().BeNull();
 
-            Guid[] purgedStreamIds = [purgedProjectId, .. purgedTaskIds, purgedRunId, purgedIdeaId, purgedEpicId];
+            (await query.LoadAsync<OrchestratorPresenceDetails>(purgedPresenceId, cts.Token)).Should().BeNull(
+                "an orchestrator presence stream is keyed by (node, project) rather than by the "
+                + "project id, so a purge has to find it by query or leave the daemon sweeping a "
+                + "window for a project that no longer exists");
+
+            Guid[] purgedStreamIds =
+                [purgedProjectId, .. purgedTaskIds, purgedRunId, purgedIdeaId, purgedEpicId, purgedPresenceId];
             long eventRows = (await query.QueryAsync<long>(
                 "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, purgedStreamIds)).Single();
             eventRows.Should().Be(0, "no event for the purged project or anything it owned should remain");
@@ -115,7 +125,10 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<RunDetails>(survivingRunId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<IdeaDetails>(survivingIdeaId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<EpicDetails>(survivingEpicId, cts.Token)).Should().NotBeNull();
-            Guid[] survivingStreamIds = [survivingProjectId, survivingTaskIds[0], survivingRunId, survivingIdeaId, survivingEpicId];
+            (await query.LoadAsync<OrchestratorPresenceDetails>(survivingPresenceId, cts.Token)).Should().NotBeNull();
+            Guid[] survivingStreamIds =
+                [survivingProjectId, survivingTaskIds[0], survivingRunId, survivingIdeaId, survivingEpicId,
+                 survivingPresenceId];
             long survivingEventRows = (await query.QueryAsync<long>(
                 "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, survivingStreamIds)).Single();
             survivingEventRows.Should().BeGreaterThan(0, "the sibling project's own history is untouched");
@@ -396,6 +409,23 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         await using IDocumentSession session = store.LightweightSession();
         session.Store(new PromptAddendaSyncPosition { Id = projectId, LastScannedGlobalSequence = 1 });
         await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Registers an orchestrator window for the project (idea 89471598, piece 1) — a stream of
+    /// its own, keyed by (node, project) rather than by the project id, so a purge has to find it
+    /// by query or leave it behind, still being swept by the daemon and still printed by
+    /// <c>h9k status</c> under a project name nothing can resolve. Returns its stream id.
+    /// </summary>
+    private static async Task<Guid> SeedOrchestratorPresenceAsync(
+        IDocumentStore store, Guid nodeId, Guid projectId, CancellationToken cancellationToken)
+    {
+        Guid streamId = OrchestratorPresenceStreamId.For(nodeId, projectId);
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<OrchestratorPresenceAggregate>(streamId, new OrchestratorLaunched(
+            nodeId, projectId, "orchestrator", 48213, "claude-code", Now, Now));
+        await session.SaveChangesAsync(cancellationToken);
+        return streamId;
     }
 
     private static async Task<Guid[]> SeedTasksAsync(
