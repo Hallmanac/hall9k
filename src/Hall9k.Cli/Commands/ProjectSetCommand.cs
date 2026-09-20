@@ -4,6 +4,7 @@ using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Connectors.Verification;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -327,6 +328,20 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "override flag; a tracker that cannot be read holds the claim rather than releasing it")]
         public string? ClaimGate { get; init; }
 
+        [CommandOption("--orchestrator-feed <actionable|transitions|everything>")]
+        [Description(
+            "How much of this project's own history h9k orchestrator feed hands an orchestrator "
+            + "window (idea 89471598). Three nested bands, each a superset of the one before it. "
+            + "'actionable' is only what somebody is owed: parks and disputes, gate and run failures, "
+            + "a merge that stays failed, daemon trouble, and any message from a person or another "
+            + "node's window. 'transitions' (the default) adds the work's own movement: task state "
+            + "changes, ideas logged or updated, and claims or takeovers involving another node. "
+            + "'everything' adds the machinery's own movement, a run's phase changes. A message from a "
+            + "person is admitted at every band, including the narrowest. The band decides what the "
+            + "feed shows, never what the platform records — every item is an event that is on this "
+            + "node's own log either way.")]
+        public string? OrchestratorFeed { get; init; }
+
         [CommandOption("--take-policy <auto|ask>")]
         [Description(
             "Who answers a member's cooperative claim request for this project's own tasks (idea "
@@ -613,6 +628,9 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             claimGate: settings.ClaimGate is { } claimGate
                 ? Optional<ClaimGate>.Of(ClaimGate.Parse(claimGate))
                 : Optional<ClaimGate>.None,
+            orchestratorFeed: settings.OrchestratorFeed is { } orchestratorFeed
+                ? Optional<OrchestratorFeedLevel>.Of(OrchestratorFeedLevel.Parse(orchestratorFeed))
+                : Optional<OrchestratorFeedLevel>.None,
             takePolicy: settings.TakePolicy is { } takePolicy
                 ? Optional<TakePolicy>.Of(TakePolicy.Parse(takePolicy))
                 : Optional<TakePolicy>.None,

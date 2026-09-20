@@ -84,7 +84,8 @@ public static class ProjectDecider
         Optional<CloseLinkedIssueRule> closeLinkedIssue = default,
         Optional<IReadOnlyList<string>> neverCloseLabels = default,
         Optional<WritingConventions> writingConventions = default,
-        Optional<WorkItemProvider> primaryTracker = default)
+        Optional<WorkItemProvider> primaryTracker = default,
+        Optional<OrchestratorFeedLevel> orchestratorFeed = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -288,6 +289,21 @@ public static class ProjectDecider
                 + "tracker shows that item assigned to this install's own tracker identity).");
         }
 
+        // The identical closed-set discipline as ClaimGate just above, for the orchestrator
+        // feed's own band (idea 89471598, piece 2). OrchestratorFeedLevel's implicit string
+        // conversion deliberately wraps anything, so this is the one place the three bands are
+        // actually enforced — and an unrecognized band would read at the default's breadth,
+        // silently giving an operator a feed they did not ask for.
+        if (orchestratorFeed.HasValue
+            && orchestratorFeed.Value is { } chosenFeedLevel
+            && !OrchestratorFeedLevel.All.Contains(chosenFeedLevel))
+        {
+            throw new DomainValidationException(
+                $"The orchestrator feed level must be one of "
+                + $"{string.Join(", ", OrchestratorFeedLevel.All.Select(level => level.Value))} (how much of "
+                + "this project's own history h9k orchestrator feed hands a window).");
+        }
+
         // The identical closed-set discipline as ClaimGate just above, for the other setting idea
         // 202383dc, item 5 introduces: who answers a cooperative claim request.
         if (takePolicy.HasValue
@@ -415,7 +431,8 @@ public static class ProjectDecider
             CloseLinkedIssue: closeLinkedIssue,
             NeverCloseLabels: normalizedNeverCloseLabels,
             WritingConventions: writingConventions,
-            PrimaryTracker: primaryTracker);
+            PrimaryTracker: primaryTracker,
+            OrchestratorFeed: orchestratorFeed);
     }
 
     /// <summary>

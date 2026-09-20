@@ -173,6 +173,7 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--branch-template", "{key}-{slug}")
                 .WithExample("project", "set", "hall9k", "--auto-pr-review", "first")
                 .WithExample("project", "set", "hall9k", "--claim-gate", "tracker-assignee")
+                .WithExample("project", "set", "hall9k", "--orchestrator-feed", "actionable")
                 .WithExample("project", "set", "hall9k", "--close-linked-issue", "never")
                 .WithExample("project", "set", "hall9k", "--never-close-labels", "epic,adr")
                 .WithExample(

@@ -251,6 +251,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Review stage composition", ReviewStageCompositionRow(project));
         table.AddRow("Auto pr-review", AutoPrReviewRow(project, autoPrReview));
         table.AddRow("Claim gate", ClaimGateRow(project, claimGateRecorded));
+        table.AddRow("Orchestrator feed", OrchestratorFeedRow(project));
         table.AddRow("Take policy", TakePolicyRow(project, history.WasRecorded(change => change.TakePolicy)));
         table.AddRow("Take timeout", TakeTimeoutRow(project, history.WasRecorded(change => change.TakeTimeoutMinutes)));
         table.AddRow("Close linked issue", CloseLinkedIssueRow(
@@ -349,6 +350,30 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             : $"{value} [dim]— a GitHub reviewer assignment mints nothing here; every request GitHub makes "
               + "of this install's own login is still recorded and shown as a needs-you row in h9k status. "
               + $"Turn it on:[/] h9k project set {name} --auto-pr-review normal";
+    }
+
+    /// <summary>
+    /// How much of this project's history <c>h9k orchestrator feed</c> hands a window (idea
+    /// 89471598, piece 2). No recorded-versus-default distinction here, unlike
+    /// <see cref="ClaimGateRow"/>: the three bands behave identically whether a human chose one
+    /// or the project simply never did, so a row separating the two would draw a line the
+    /// platform itself does not.
+    /// </summary>
+    internal static string OrchestratorFeedRow(ProjectDetails project)
+    {
+        string name = project.Name.EscapeMarkup();
+        string what = project.OrchestratorFeed.Value switch
+        {
+            "Actionable" => "parks and disputes, gate and run failures, a merge that stays failed, daemon "
+                + "trouble, and any message from a person or another node's window",
+            "Transitions" => "the actionable band, plus task state changes, ideas logged or updated, and "
+                + "claims or takeovers involving another node",
+            "Everything" => "the transitions band, plus a run's own phase changes",
+            _ => "a band this build does not recognize; it reads as wide as transitions",
+        };
+        return $"{project.OrchestratorFeed.Value.ToLowerInvariant().EscapeMarkup()} [dim]— {what}. Read it: "
+            + $"h9k orchestrator feed --project {name}; change the band: h9k project set {name} "
+            + "--orchestrator-feed actionable|transitions|everything[/]";
     }
 
     /// <summary>
