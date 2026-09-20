@@ -24,6 +24,14 @@ public sealed class OwnerAggregate
     /// </summary>
     public VoiceSkillName VoiceSkill { get; private set; } = VoiceSkillName.None;
 
+    /// <summary>
+    /// The review personas this owner has declared (idea b9b09779, piece 1) — the local member
+    /// record today, the ledger's own member record once the distributed-team chain ships. Empty
+    /// until they declare one, which is the ordinary case and reads as the engineer's review
+    /// everywhere (<see cref="ReviewPersona.ForReview"/>).
+    /// </summary>
+    public IReadOnlyList<ReviewPersona> ReviewPersonas { get; private set; } = [];
+
     public DateTimeOffset RegisteredAt { get; private set; }
 
     /// <summary>
@@ -68,6 +76,11 @@ public sealed class OwnerAggregate
         if (@event.VoiceSkill.HasValue)
         {
             VoiceSkill = @event.VoiceSkill.Value ?? VoiceSkillName.None;
+        }
+
+        if (@event.ReviewPersonas.HasValue)
+        {
+            ReviewPersonas = ReviewPersona.Declared(@event.ReviewPersonas.Value);
         }
     }
 

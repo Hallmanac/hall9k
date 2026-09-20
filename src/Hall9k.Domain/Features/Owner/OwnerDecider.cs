@@ -24,11 +24,22 @@ public static class OwnerDecider
     /// human types it (<see cref="Hall9k.Domain.Infrastructure.Storage.VoiceSkillLocation"/>), and
     /// an owner's nodes do not all have the same directories.
     /// </param>
+    /// <param name="reviewPersonas">
+    /// The review personas this owner declares (idea b9b09779, piece 1). An empty list is a legal
+    /// explicit value on the same terms Unknown and <see cref="VoiceSkillName.None"/> are above: it
+    /// clears the declaration, which is what <c>--clear-personas</c> records, and reads as the
+    /// engineer's review everywhere. Normalized here rather than at the command, so every writer
+    /// records the same canonical set: recognized personas once each, in
+    /// <see cref="ReviewPersona.All"/>'s fixed order. A word nobody could read is refused rather
+    /// than silently dropped — an owner who typed <c>--persona qaa</c> must not walk away believing
+    /// they declared a QA review.
+    /// </param>
     public static OwnerSettingsChanged ChangeSettings(
         OwnerAggregate owner,
         Optional<ReviewRerequestPolicy> reviewRerequest,
         DateTimeOffset changedAt,
-        Optional<VoiceSkillName> voiceSkill = default)
+        Optional<VoiceSkillName> voiceSkill = default,
+        Optional<IReadOnlyList<ReviewPersona>> reviewPersonas = default)
     {
         // Unknown is a legal explicit value: it clears the owner's preference so the
         // project setting or the node default decides again (the CommitStyle convention).
@@ -44,10 +55,32 @@ public static class OwnerDecider
                 + "pass after a fix follow-up pushes, Decisions Log #62).");
         }
 
+        // An unreadable persona reaching here carries no word to quote back — ReviewPersona.Unknown
+        // serializes as the empty string, and the word the human actually typed was already
+        // refused by ReviewPersona.Parse where they typed it. Refused rather than silently dropped
+        // all the same: an owner must never walk away believing they declared a review nothing
+        // recorded.
+        if (reviewPersonas.HasValue
+            && reviewPersonas.Value?.Any(persona => persona is not { HasValue: true }) == true)
+        {
+            throw new DomainValidationException(
+                "One of these review personas is not one the platform recognizes. The set is fixed: "
+                + $"{string.Join(", ", ReviewPersona.All.Select(persona => persona.Value))} — each one maps "
+                + "to its own review prompt and criteria in the platform's persona registry "
+                + "(idea b9b09779). Declaring none reads as the engineer's review.");
+        }
+
         // A voice skill's own shape is VoiceSkillName.Parse's rule, enforced where the string is
         // parsed; nothing is left for this decider to re-check, since a name that got this far is
         // either well-formed or None.
-        return new OwnerSettingsChanged(owner.Id, reviewRerequest, changedAt, voiceSkill);
+        return new OwnerSettingsChanged(
+            owner.Id,
+            reviewRerequest,
+            changedAt,
+            voiceSkill,
+            reviewPersonas.HasValue
+                ? Optional<IReadOnlyList<ReviewPersona>>.Of(ReviewPersona.Declared(reviewPersonas.Value))
+                : Optional<IReadOnlyList<ReviewPersona>>.None);
     }
 
     public static OwnerRootClaimed ClaimRoot(OwnerAggregate owner, string rootFingerprint, bool verified, DateTimeOffset claimedAt)

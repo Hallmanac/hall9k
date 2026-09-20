@@ -51,6 +51,7 @@ public sealed class OwnerShowCommand : Hall9kAsyncCommand<OwnerShowCommand.Setti
             : string.Join(", ", projects.Select(project => project.Name.EscapeMarkup()).Order(StringComparer.OrdinalIgnoreCase)));
         table.AddRow("Re-request review", DescribePolicy(owner.ReviewRerequest));
         table.AddRow("Voice skill", VoiceSkillOption.Describe(owner.VoiceSkill));
+        table.AddRow("Review personas", ReviewPersonaOption.Describe(owner.ReviewPersonas));
 
         // The owner's linked accounts (idea 202383dc, A2b, item 1): an identity holds a list of
         // accounts, not one — an owner authenticated as more than one GitHub login on this install
