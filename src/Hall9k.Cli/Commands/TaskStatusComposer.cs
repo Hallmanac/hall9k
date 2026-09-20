@@ -360,14 +360,15 @@ internal static class TaskStatusComposer
     /// carries one: <paramref name="ownerId"/> is the assigning node's own local Guid for that
     /// owner, which means nothing on a peer node that never registered it (Owner events are
     /// OwnerScoped and never replicate), while the fingerprint is the one fact every node of the
-    /// same owner can recognize. Falls back to the plain id lookup — for an assignment written
-    /// before the field existed, or for one this node happens to recognize <paramref
-    /// name="ownerId"/> against despite the fingerprint itself resolving nothing (the same
-    /// root-rewrite shape <c>h9k task show</c>'s own <c>AssigneeMarkupAsync</c> names by id) —
-    /// before falling back further to the fingerprint's own short prefix, the same truncation
+    /// same owner can recognize. The plain id lookup is used only when the assignment carries no
+    /// fingerprint at all (an event written before the field existed) — once a fingerprint is
+    /// recorded, the id is never trusted on its own: a locally-resolvable id whose own owner
+    /// record's root fingerprint disagrees with the recorded one (an owner-root rewrite) falls
+    /// through to the fingerprint's own short prefix instead, the same truncation
     /// <c>PublishedFacts.HeldElsewhereFact</c> already uses for a foreign root fingerprint in a
-    /// table column, rather than the full 64 hex characters. "?" only when neither the id nor a
-    /// fingerprint resolves anything at all.
+    /// table column, rather than the full 64 hex characters — the same "known by fingerprint only"
+    /// shape <c>h9k task show</c>'s own <c>AssigneeMarkupAsync</c> reports for it, never a plain
+    /// name. "?" is reachable only on the no-fingerprint path, when the id resolves nothing either.
     /// </summary>
     private static string AssigneeDisplay(Guid ownerId, string? ownerFingerprint, TaskStatusContext context)
     {
@@ -377,7 +378,6 @@ internal static class TaskStatusComposer
         }
 
         return context.OwnersByFingerprint?.GetValueOrDefault(fingerprint)
-            ?? context.Owners.GetValueOrDefault(ownerId)
             ?? fingerprint[..Math.Min(12, fingerprint.Length)];
     }
 
