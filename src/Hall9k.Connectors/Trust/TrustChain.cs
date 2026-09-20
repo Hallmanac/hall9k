@@ -35,11 +35,13 @@ public sealed record TrustedNode(string NodeId, string PublicKeyLine, string Fin
 /// no <c>owners/&lt;root&gt;/nodes/&lt;id&gt;.yaml</c> entry for <see cref="Nodes"/> to drop on
 /// revocation, so <c>owners/&lt;root&gt;/revoked/&lt;id&gt;.yaml</c> is the only record a revocation
 /// of it ever leaves. Consulted by <see cref="FleetNodeIds"/> alone, so <see cref="RootNodeId"/>
-/// itself is never cleared here — a later re-vouch (or, for the root's own node, simply this same
-/// node id going unrevoked again in ref order) restores it to the fleet without
-/// <see cref="GitLedgerChainReader"/> needing to re-discover it (independent pre-PR review, cycle 1,
-/// conformance lens, medium: a revoked root node stayed in the fleet forever, disagreeing with
-/// <c>h9k node revoke</c>'s own success message).
+/// itself is never cleared here — the root's own node id stays revoked until a later
+/// <c>owners/&lt;root&gt;/nodes/&lt;id&gt;.yaml</c> vouch for that same id lands, which
+/// <see cref="GitLedgerChainReader"/> both removes from <see cref="RevokedNodeIds"/> and adds to
+/// <see cref="Nodes"/> in the identical commit that applies it, so the id returns to the fleet
+/// through <see cref="Nodes"/> rather than through <see cref="RootNodeId"/> specifically
+/// (independent pre-PR review, cycle 1, conformance lens, medium: a revoked root node stayed in the
+/// fleet forever, disagreeing with <c>h9k node revoke</c>'s own success message).
 /// </param>
 public sealed record TrustedOwner(
     string RootFingerprint, string RootPublicKeyLine, IReadOnlyList<TrustedNode> Nodes, string? RootNodeId = null,
