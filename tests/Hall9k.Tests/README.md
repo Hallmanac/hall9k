@@ -44,16 +44,51 @@ attributes. A budget miss under load is thrown as `PublishBudgetExceededExceptio
 elapsed publish time and the dotnet-family process count it saw and classifies as an
 infrastructure-class timeout rather than a product assertion (`GateInfrastructureFailureClassifier`).
 
-## `Category=Hall9kHome`
+## Redirecting the platform home and the database connection string
 
-Carried by every class `HomeEnvironmentIsolationTests` requires to sit in the
-`[Collection("Hall9kHome")]` serial lane — every class that sets or resolves a `HALL9K_HOME`-derived
-path (see that guard's own doc comment for the full list of risky members it scans for). The
-collection is what actually serializes them against each other; the trait is what gives
-`--verify-gate-filter` and an ordinary cycle gate a `Category` to match on, the identical role
-`RequiresDocker`/`PublishesBinary` already play. `HomeEnvironmentIsolationTests` fails the build for
-a class that carries the collection without the trait beside it, the same "carries both attributes"
-shape `PublishLaneGuardTests` already enforces for `PublishesBinary`.
+`PlatformPaths.Home` and `Hall9kDatabase.Resolve` each consult a flow-scoped `AsyncLocal` override
+before their own `HALL9K_HOME`/`HALL9K_CONNECTION_STRING` environment variable (Decisions Log
+PLACEHOLDER-98484f36), so redirecting either one for a test no longer means racing every other test
+that also redirects it — the override lives on that test's own async flow, invisible to every other
+flow running in parallel in the same process. Use `Hall9k.Tests.TestSupport.ScopedTestHome`:
+
+- `private readonly ScopedTestHome _home = new();` — a fresh temporary directory, opened from a
+  constructor or a field initializer, disposed (directory deleted, override restored) from the
+  class's own `Dispose`/`DisposeAsync`.
+- `new ScopedTestHome(postgres.ConnectionString)` — the same, plus redirecting the connection string
+  to a `PostgresFixture`'s own container for the scope's whole lifetime.
+- `using ScopedConnectionString scope = new(postgres.ConnectionString);` — a narrower, one-off swap
+  of only the connection string, opened inside a single test or helper method, for a class whose own
+  `ScopedTestHome` is already open elsewhere and must not have its home swapped out from under it for
+  the swap's duration.
+
+**Never** open either type inside an `async Task InitializeAsync()` (xUnit's `IAsyncLifetime`
+method): `await` unwinds the `ExecutionContext` a callee mutated back to what its caller held once
+that callee's own task completes, so an override set there is already gone by the time the test
+method itself runs. A constructor or a field initializer is a plain synchronous call, mutating the
+same context the test method goes on to run in, which is why it works. A test never sets
+`HALL9K_HOME`/`HALL9K_CONNECTION_STRING` directly at all, except to hand `HALL9K_HOME` to a real
+child process it spawns (which still needs the literal environment variable, since a child inherits
+its parent's environment, not its parent's `AsyncLocal` state).
+
+`HomeEnvironmentIsolationTests` enforces two rules over the whole test project: no class writes
+either variable directly outside `[Collection("Environment")]` (below), and no class opens either
+scope type inside `InitializeAsync`.
+
+## `[Collection("Environment")]` / `Category=Environment`
+
+The one xUnit collection this project still serializes classes into on purpose, for whichever
+process-wide environment variable has no flow-scoped alternative: the claude path
+(`HALL9K_CLAUDE_PATH`), a `Hall9k__*` operating setting, the MSBuild node-reuse flag
+(`MSBUILDDISABLENODEREUSE`), and a couple of narrower ones (`CLAUDE_PID`,
+`CLAUDE_CODE_SESSION_ID`). `Hall9k.Tests.Fakes.EnvironmentVariableScope` is the shared save/restore
+helper for this category; every caller still needs `[Collection("Environment")]` +
+`[Trait("Category", "Environment")]` on its own class, the same "carries both attributes" shape
+`PublishLaneGuardTests` enforces for `PublishesBinary`. A class that needs a genuinely process-wide
+variable with no test-unique alternative (unlike a Jira credential, which can just use its own
+class-unique `HALL9K_TEST_*` name instead of the shared production one) belongs here; a class that
+only touches `HALL9K_HOME`/`HALL9K_CONNECTION_STRING` belongs on `ScopedTestHome`/
+`ScopedConnectionString` above instead, never in this collection.
 
 ## `[Collection("RealProcessSpawn")]`
 
@@ -107,8 +142,11 @@ guarded anyway.) Capture through the
 
 `ProcessWideStateGuardTests` fails the build for any file in `tests/` that mutates one of the three
 directly, and names the helper to use instead. Two adjacent rules live elsewhere for reasons of
-their own: `HALL9K_HOME` and the rest of the environment are `HomeEnvironmentIsolationTests`'
-surface, answered with the shared `[Collection("Hall9kHome")]` serial lane rather than a scoping
-helper (a variable production code re-reads on every call has nowhere per-test to be scoped to),
-and `PostgresFixture`'s own container-gate wait notice goes to a `TraceSource`
-(`CrossProcessContainerGate.WaitNotice`) precisely so that no capture can pick it up.
+their own: `HALL9K_HOME` and `HALL9K_CONNECTION_STRING` are `HomeEnvironmentIsolationTests`' surface,
+answered with `ScopedTestHome`/`ScopedConnectionString` (see "Redirecting the platform home and the
+database connection string" above) rather than the `[Collection("Environment")]` serial lane the
+rest of this project's residual process-wide variables still need, since both production readers
+consult a flow-scoped override before their environment variable rather than re-reading the
+environment variable with nowhere per-test to be scoped to; and `PostgresFixture`'s own
+container-gate wait notice goes to a `TraceSource` (`CrossProcessContainerGate.WaitNotice`)
+precisely so that no capture can pick it up.
