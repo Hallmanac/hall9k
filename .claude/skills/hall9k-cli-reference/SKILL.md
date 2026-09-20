@@ -131,8 +131,11 @@ one, and `--replace` takes it over, recording it as shut down first. The daemon'
 sweep records a registered window whose process is gone as lost, with the time it noticed.
 `h9k orchestrator status [--project <name>]` and the `h9k status` header both print the same
 line: the live window's session name, CLI, process id and age, or "none live" with the last
-shutdown or loss time. The feed courier that is to act on it, spawning only while a window is up,
-is designed and not built (idea 89471598, piece 3).
+shutdown or loss time. The feed courier that acts on it, spawning only while a window is up
+(idea 89471598, piece 3), delivers the project's own undrained feed items to that window and
+exits — a short-lived session on its own model role (`h9k config set --model-courier <model>`,
+floored at `claude-sonnet-5` rather than the platform default), batched behind a per-project wait
+(`h9k project set <name> --courier-max-wait <seconds>`) that an urgent item bypasses.
 
 **The same bare repo also carries a hidden ledger** (Decisions Log #189, idea
 202383dc), a set of

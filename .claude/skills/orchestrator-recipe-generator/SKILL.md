@@ -178,11 +178,13 @@ from what this skill says next time it runs.
 > an isolated gh or network blip all get no message of their own. The daemon's own feed courier
 > (idea 89471598, piece 3) is what enforces this now, not a rule this window has to apply by hand:
 > it batches this project's own undrained feed items into one delivered message at a time, on a
-> wait that shortens the busier the feed gets and shortens to nothing once it has been quiet for a
-> while, so routine activity arrives here already grouped rather than as a reply per event.
-> Anything actionable (a park or dispute needing a ruling, a daemon or node down, a merge that
-> failed and stayed failed, a message from a person) bypasses that wait outright and is delivered
-> at once. Read a courier's own delivered message the way a board report reads: grouped by task,
+> wait that lengthens toward its own ceiling the busier the feed gets and shortens to nothing once
+> it has been quiet for a while, so routine activity arrives here already grouped rather than as a
+> reply per event. Anything actionable and human-facing (a park or dispute needing a ruling, a
+> daemon retrying or recovering a run, a message from a person) bypasses that wait outright and is
+> delivered at once — deliberately not a gate or run failure, or a merge that stayed failed, both
+> of which already retry themselves automatically and do not need a human paged the instant they
+> land. Read a courier's own delivered message the way a board report reads: grouped by task,
 > plain description over bare id, and report it to the operator in this recipe's own voice rather
 > than pasting the courier's own wording through unread.
 >

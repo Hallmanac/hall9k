@@ -117,15 +117,19 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
 
 ## Models by role and what it costs
 
-- **Build, fix, review, synthesis, refinement, and publication are the six model roles, each
-  independently settable** (`--model-build`, `--model-fix`, `--model-review`,
-  `--model-synthesis`, `--model-refinement`, `--model-publication`). The shipped default puts the
-  same exact model id on every role, deliberately: an exact id (`claude-opus-5[1m]`), not a tier
-  alias (`opus`), because an alias is re-pointed as new models ship and drifting silently is the
-  whole problem this setting exists to close (Decisions Log #33). `fable` is the human-interactive
-  tier for a session a person is actually in, not a silent-agent default for build, fix, or
-  review. Leave the six roles at the shipped default unless you have a specific reason to move
-  one, and record that reason when you do. `--model-review-verify` and `--model-review-finalpass`
+- **Build, fix, review, synthesis, refinement, publication, and the feed courier are the seven
+  model roles, each independently settable** (`--model-build`, `--model-fix`, `--model-review`,
+  `--model-synthesis`, `--model-refinement`, `--model-publication`, `--model-courier`). The
+  shipped default puts the same exact model id on every role but one, deliberately: an exact id
+  (`claude-opus-5[1m]`), not a tier alias (`opus`), because an alias is re-pointed as new models
+  ship and drifting silently is the whole problem this setting exists to close (Decisions Log
+  #33). The courier is the one deliberate exception (idea 89471598, piece 3): it ships floored at
+  `claude-sonnet-5` rather than blank, since a short-lived session that only relays a project's
+  own feed to a live orchestrator window has no business defaulting to the same tier a build or
+  review session does. `fable` is the human-interactive tier for a session a person is actually
+  in, not a silent-agent default for build, fix, or review. Leave the other six roles at the
+  shipped default unless you have a specific reason to move one, and record that reason when you
+  do. `--model-review-verify` and `--model-review-finalpass`
   are narrower knobs under `--model-review`, for a middle Verify-shape pass and the mandatory
   FinalFullPass respectively, each falling through to `--model-review` when unset:
 
