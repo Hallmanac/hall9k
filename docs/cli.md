@@ -73,7 +73,13 @@ each with its own required `--reason`.
 `--clear-queue-first` sets or clears a task-level scheduling marker — the next free dispatch slot
 takes this task regardless of assignment age — and is settable in any live state except Abandoned
 (Decisions Log #127). `publish` is the readiness gate. `assign` is the
-dispatch trigger. The path back for an edit is `unassign → draft → revise → publish → assign`.
+dispatch trigger. `assign <id> --node <id-or-fragment>` narrows that to one of the owner's own
+nodes — only that node's own dispatcher claims the task, and every other node of the same owner
+stands down without a forced take; run with no owner argument against a task already assigned, it
+changes only the placement. A bare `--node` with nothing named clears an existing placement, and a
+forced takeover or cooperative grant that moves a placed task to another node records that node as
+the new placement on its own (idea 202383dc: an owner can place a task on one of their own nodes).
+The path back for an edit is `unassign → draft → revise → publish → assign`.
 `set-session-cap <id> <cap>` overrides how many agent sessions this task's own run may hold
 simultaneously — settable any time, even mid-run — in place of the node's global default.
 `set-review-caps` overrides the node's compiled review-cycle-cap defaults for one task —
