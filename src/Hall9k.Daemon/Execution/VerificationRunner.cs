@@ -1334,6 +1334,18 @@ public sealed partial class VerificationRunner(
                         gateWaitDirectory, options.Value.VerifyGateTimeout);
                 }
 
+                // Text only, never a classification input: what actually decided
+                // timeoutIsInfrastructureFailure above is the gate's own captured output and the
+                // per-run wait-evidence directory, exactly as before this task. This is
+                // additional evidence for a human reading the failure — who, if anyone, held the
+                // shared container gate's permits at the moment this gate was killed — not a
+                // second vote on what the kill means (task: a killed gate names who held the
+                // permits).
+                if (ContainerGateDirectory.DescribeContents(ContainerGateDirectory.Resolve()) is { } gateDirectoryListing)
+                {
+                    timeoutFailure = $"{timeoutFailure} {gateDirectoryListing}";
+                }
+
                 return (false, timeoutFailure, timeoutIsInfrastructureFailure, timeoutExcerpt, false);
             }
 

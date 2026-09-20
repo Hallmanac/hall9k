@@ -76,9 +76,21 @@ internal static class CrossProcessContainerGate
     /// </summary>
     internal static readonly TraceSource WaitNotice = new("Hall9k.Tests.ContainerGate", SourceLevels.Information);
 
-    public static async Task<IAsyncDisposable> AcquireAsync(
-        string gateDirectory, int maxConcurrent, CancellationToken cancellationToken)
+    public static Task<IAsyncDisposable> AcquireAsync(
+        string gateDirectory, int maxConcurrent, CancellationToken cancellationToken) =>
+        AcquireAsync(gateDirectory, maxConcurrent, cancellationToken, livenessProbe: null);
+
+    /// <summary>
+    /// <paramref name="livenessProbe"/> is <see cref="ContainerGateDirectory.IsProcessAlive"/> by
+    /// default — real by default and replaceable by a fake in a test, so the dead-waiter sweep
+    /// below (and a killed gate's own stale-holder read, <see cref="ContainerGateDirectory.DescribeContents"/>)
+    /// can be proven without ever spawning or killing a real process.
+    /// </summary>
+    internal static async Task<IAsyncDisposable> AcquireAsync(
+        string gateDirectory, int maxConcurrent, CancellationToken cancellationToken,
+        ContainerGateDirectory.LivenessProbe? livenessProbe)
     {
+        ContainerGateDirectory.LivenessProbe isAlive = livenessProbe ?? ContainerGateDirectory.IsProcessAlive;
         // Below 1, the slot loop below never runs, so every caller would spin at PollInterval
         // until its own cancellation fires instead of ever finding out why (independent review,
         // this cycle) — fail fast here instead, since this is a general-purpose gate helper, not
@@ -130,19 +142,41 @@ internal static class CrossProcessContainerGate
             ? null
             : Path.Combine(waitEvidenceDirectory, $"waiting-{Environment.ProcessId}-{Guid.NewGuid():N}.txt");
 
+        // Set on the first pass through the loop below that fails to find an open slot — the
+        // moment this call genuinely becomes a waiter, as opposed to a caller that acquires on
+        // its very first check and never waits at all. Swept once right there, in addition to the
+        // periodic five-second tick below, so a directory already carrying 25 stale wait files
+        // from long-dead pids (the origin incident this sweep exists to fix) is cleaned starting
+        // from the very first class queued behind it rather than only after that class's own
+        // first evidence tick a full second later.
+        bool becameWaiter = false;
+
         try
         {
             while (true)
             {
                 for (int slot = 0; slot < maxConcurrent; slot++)
                 {
-                    if (TryOpen(Path.Combine(gateDirectory, $"permit-{slot}.lock")) is { } stream)
+                    string permitPath = Path.Combine(gateDirectory, $"permit-{slot}.lock");
+                    if (TryOpen(permitPath) is { } stream)
                     {
-                        return new Permit(stream);
+                        string sidecarPath = permitPath + ContainerGateDirectory.SidecarSuffix;
+                        TryWriteEvidence(
+                            sidecarPath,
+                            ContainerGateDirectory.FormatSidecar(
+                                Environment.ProcessId, Process.GetCurrentProcess().StartTime.ToUniversalTime(),
+                                Environment.CurrentDirectory, DateTimeOffset.UtcNow));
+                        return new Permit(stream, sidecarPath);
                     }
                 }
 
                 cancellationToken.ThrowIfCancellationRequested();
+
+                if (!becameWaiter)
+                {
+                    becameWaiter = true;
+                    SweepDeadWaiters(gateDirectory, isAlive);
+                }
 
                 // At least one caller of this gate waits with no deadline at all (PostgresFixture's
                 // own InitializeAsync, since a fixed deadline sized for one process's load
@@ -154,6 +188,8 @@ internal static class CrossProcessContainerGate
                 DateTimeOffset now = DateTimeOffset.UtcNow;
                 if (now >= nextLogAt)
                 {
+                    SweepDeadWaiters(gateDirectory, isAlive);
+
                     // Deliberately does not name "another process on this machine" as the holder:
                     // unlike GitWorktreeManager.AcquireCrossProcessLockAsync, this gate has no
                     // in-process semaphore in front of it, so this process's own other test classes
@@ -206,6 +242,38 @@ internal static class CrossProcessContainerGate
             {
                 TryDeleteEvidence(waitEvidenceFile);
             }
+        }
+    }
+
+    /// <summary>
+    /// Deletes every discoverable wait file in <paramref name="gateDirectory"/> whose own recorded
+    /// process is no longer alive on this machine (task: the container gate sweeps dead waiters'
+    /// files) — the origin incident this exists to fix: a killed gate's process tree never runs
+    /// the <c>finally</c> above that would otherwise clean its own wait file up, so 25 of them from
+    /// long-dead pids had accumulated in the shared directory by the time this was diagnosed. A
+    /// file this call cannot parse a pid out of (not one of this gate's own <c>waiting-*.txt</c>
+    /// files at all) is left alone rather than guessed at.
+    /// </summary>
+    private static void SweepDeadWaiters(string gateDirectory, ContainerGateDirectory.LivenessProbe isAlive)
+    {
+        try
+        {
+            foreach (string path in Directory.EnumerateFiles(gateDirectory, "waiting-*.txt"))
+            {
+                if (ContainerGateDirectory.TryExtractWaiterProcessId(Path.GetFileName(path), out int processId)
+                    && !isAlive(processId, null))
+                {
+                    TryDeleteEvidence(path);
+                }
+            }
+        }
+        catch (IOException)
+        {
+            // gateDirectory itself vanished mid-enumeration (a temp-directory reaper racing this
+            // wait, the identical race TryOpen's own DirectoryNotFoundException handling already
+            // documents below) — this sweep is best-effort tidying, never this call's own reason
+            // to acquire or wait, so a lost sweep here just means the next tick tries again rather
+            // than failing an otherwise-healthy wait.
         }
     }
 
@@ -345,11 +413,18 @@ internal static class CrossProcessContainerGate
         }
     }
 
-    private sealed class Permit(FileStream stream) : IAsyncDisposable
+    private sealed class Permit(FileStream stream, string sidecarPath) : IAsyncDisposable
     {
         public ValueTask DisposeAsync()
         {
             stream.Dispose();
+
+            // Removed with the permit on the graceful path — a process killed hard enough that it
+            // never runs this leaves its own sidecar behind exactly like a killed process leaves
+            // discoverableWaitFile behind above, which is deliberate: that leftover is the
+            // evidence a killed gate's own timeout diagnostic names (ContainerGateDirectory
+            // .DescribeContents), naming who held the permit rather than nothing at all.
+            TryDeleteEvidence(sidecarPath);
             return ValueTask.CompletedTask;
         }
     }

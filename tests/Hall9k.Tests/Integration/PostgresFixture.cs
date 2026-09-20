@@ -1,3 +1,4 @@
+using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx;
 using Marten;
@@ -109,35 +110,12 @@ public sealed class PostgresFixture : IAsyncLifetime
     // Fixed and machine-wide, so every dotnet test process, whatever repository or worktree it
     // runs from, contends for the identical set of permit files — that is what makes the bound
     // machine-wide rather than per process (see CrossProcessContainerGate's own doc comment).
-    // Named for what it gates rather than for this fixture, since the directory itself is the
-    // shared, process-external state — a second gate for something unrelated would get its own
-    // subdirectory rather than colliding here. Resolved by ResolveGateDirectory below rather than
-    // Path.GetTempPath() directly — see that method for why.
-    private static readonly string GateDirectory = ResolveGateDirectory();
-
-    // Path.GetTempPath() is not actually the same location for every process on this machine: on
-    // Unix it reads $TMPDIR, which is unset (falls back to /tmp) in plenty of same-user contexts
-    // that are not the caller's own interactive shell — a systemd unit with PrivateTmp=true, a
-    // scrubbed service environment, sudo without -E — so two processes on the same machine can
-    // resolve two different temp roots, form two independent permit sets, and silently double
-    // the bound this gate exists to enforce, reappearing between an operator's own shell and a
-    // daemon-launched agent session rather than between dotnet test invocations. /tmp is the one
-    // location POSIX guarantees regardless of $TMPDIR, so Unix hardcodes it instead of asking
-    // Path.GetTempPath() to resolve it. Windows keeps Path.GetTempPath(): this repo's own Windows
-    // hosts do not scrub %TEMP% between an operator's shell and a headless dispatch the way a
-    // Unix service environment scrubs $TMPDIR, so the ambiguity this guards against does not
-    // arise there today. A mount-namespace-level isolation (PrivateTmp=true itself) still defeats
-    // even a hardcoded /tmp — no path choice can see across a namespace boundary — and a second,
-    // differently-permissioned user account does not silently form its own independent
-    // contention set the way a different $TMPDIR resolution would: the fixed path is shared, but
-    // the permit files under it are not, so a second account fails outright with a clear,
-    // actionable error (CrossProcessContainerGate.TryOpen's own UnauthorizedAccessException
-    // handling) instead of quietly doubling the bound; neither case is what this closes.
-    private static string ResolveGateDirectory()
-    {
-        string root = OperatingSystem.IsWindows() ? Path.GetTempPath() : "/tmp";
-        return Path.Combine(root, "hall9k-postgres-container-gate");
-    }
+    // Resolved by ContainerGateDirectory.Resolve() (Hall9k.Daemon), not a literal duplicated here:
+    // a killed gate's own timeout diagnostic (VerificationRunner) is that same directory's other
+    // reader, and Hall9k.Tests already references Hall9k.Daemon — the reverse direction is what
+    // AGENTS.md's reference graph forbids — so this writer reads the reader's own resolution
+    // rather than risking the two silently drifting onto two different directories.
+    private static readonly string GateDirectory = ContainerGateDirectory.Resolve();
 
     private readonly PostgreSqlContainer _container = new PostgreSqlBuilder("postgres:18-alpine")
         .WithPortBinding(PostgreSqlBuilder.PostgreSqlPort, assignRandomHostPort: true)
