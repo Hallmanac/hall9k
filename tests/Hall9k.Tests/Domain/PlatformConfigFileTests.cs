@@ -2,6 +2,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -10,30 +11,36 @@ namespace Hall9k.Tests.Domain;
 /// The "hall9k" section of the platform config file (backlog 59) is a merge target, never a
 /// clobber: writing a setting here must never disturb <c>connectionString</c> (owned by
 /// <see cref="Hall9kDatabase"/>) or a hand-edited key this feature does not model.
+/// <para>
+/// This class still clears <c>HALL9K_CONNECTION_STRING</c> directly rather than through
+/// <c>ScopedConnectionString</c>: it needs the environment variable tier itself suppressed
+/// (Decisions Log PLACEHOLDER-98484f36), and <c>ScopedConnectionString</c> can only redirect to a
+/// specific value, not force "nothing configured" ahead of whatever the real shell happens to
+/// export — so this literal write stays, and the class carries <c>[Collection("Environment")]</c>
+/// for it. <c>HALL9K_HOME</c> itself is redirected through <c>ScopedTestHome</c> like everywhere
+/// else.
+/// </para>
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 public sealed class PlatformConfigFileTests : IDisposable
 {
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-cfg-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome scopedHome = new();
+
     private readonly string? previousConnectionString =
         Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
 
-    public PlatformConfigFileTests()
-    {
-        Directory.CreateDirectory(home);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+    private string home => scopedHome.Home;
+
+    public PlatformConfigFileTests() =>
         // The connection string chain checks this before it ever reads the config file, so a
         // value already in this shell would otherwise outrank what this test just wrote there.
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, null);
-    }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-        Directory.Delete(home, recursive: true);
+        scopedHome.Dispose();
     }
 
     [Fact]

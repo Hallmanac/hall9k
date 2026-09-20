@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -10,9 +11,15 @@ namespace Hall9k.Tests.Domain;
 /// setting's effective value came from (backlog 59), resolved the same way <c>DaemonOptions</c>
 /// binds at daemon startup: environment variable, then the platform config file, then the
 /// built-in default.
+/// <para>
+/// Every <c>Hall9k__*</c> setting below has no flow-scoped alternative (Decisions Log
+/// PLACEHOLDER-98484f36), so this class still writes them directly and joins the one serial
+/// collection left for that; <c>HALL9K_HOME</c> itself is redirected through
+/// <c>ScopedTestHome</c> like everywhere else.
+/// </para>
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 public sealed class OperatingSettingsResolverTests : IDisposable
 {
     // Every environment variable this resolver reads, so a variable the dev-loop happens to
@@ -40,15 +47,13 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         "Hall9k__SpendPeriod",
     ];
 
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-resolve-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome scopedHome = new();
+
     private readonly Dictionary<string, string?> previous =
         EnvironmentVariables.ToDictionary(name => name, Environment.GetEnvironmentVariable);
 
     public OperatingSettingsResolverTests()
     {
-        Directory.CreateDirectory(home);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
         foreach (string name in EnvironmentVariables)
         {
             Environment.SetEnvironmentVariable(name, null);
@@ -57,13 +62,12 @@ public sealed class OperatingSettingsResolverTests : IDisposable
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
         foreach ((string name, string? value) in previous)
         {
             Environment.SetEnvironmentVariable(name, value);
         }
 
-        Directory.Delete(home, recursive: true);
+        scopedHome.Dispose();
     }
 
     [Fact]

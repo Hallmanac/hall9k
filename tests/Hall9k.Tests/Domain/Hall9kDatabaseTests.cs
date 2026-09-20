@@ -1,40 +1,45 @@
 using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
 
 /// <summary>
-/// The connection-string precedence Decisions Log #73 resolves (§15 row 29): environment
-/// variable, then the platform config file, then a per-project override file — and, above
-/// all, no plausible-looking default when nothing is configured (Decisions Log #58).
+/// The connection-string precedence Decisions Log #73 resolves (§15 row 29): the flow-scoped
+/// test override, then the environment variable, then the platform config file, then a
+/// per-project override file — and, above all, no plausible-looking default when nothing is
+/// configured (Decisions Log #58).
+/// <para>
+/// This class still writes <c>HALL9K_CONNECTION_STRING</c> directly (rather than through
+/// <c>ScopedConnectionString</c>) because it is the one place that has to: it is testing the
+/// environment-variable precedence tier itself, and going through the flow-scoped override
+/// instead would outrank that tier and never exercise the code path under test. That literal
+/// write is still process-wide, so this class carries <c>[Collection("Environment")]</c>
+/// (Decisions Log PLACEHOLDER-98484f36) — <c>HALL9K_HOME</c> itself is redirected through
+/// <c>ScopedTestHome</c> like everywhere else, since nothing here tests its own environment
+/// variable tier the way the connection string's precedence chain is tested below.
+/// </para>
 /// </summary>
-// HALL9K_HOME and HALL9K_CONNECTION_STRING are process-wide state every test here
-// redirects; sharing the collection serializes this file against every other test that
-// does the same (IdeaSurfaceTests and friends), so a concurrent swap can never be read
-// mid-assertion.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 public sealed class Hall9kDatabaseTests : IDisposable
 {
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-db-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome scopedHome = new();
+
     private readonly string? previousConnectionString =
         Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
 
-    public Hall9kDatabaseTests()
-    {
-        Directory.CreateDirectory(home);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+    private string home => scopedHome.Home;
+
+    public Hall9kDatabaseTests() =>
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, null);
-    }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-        Directory.Delete(home, recursive: true);
+        scopedHome.Dispose();
     }
 
     [Fact]
@@ -114,6 +119,22 @@ public sealed class Hall9kDatabaseTests : IDisposable
         resolution.Value.Should().Be("env-value");
         resolution.Origin.Should().Be(ConnectionStringOrigin.EnvironmentVariable);
         resolution.Source.Should().Be(Hall9kDatabase.EnvironmentVariableName);
+    }
+
+    [Fact]
+    public void The_flow_scoped_test_override_outranks_the_environment_variable()
+    {
+        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, "env-value");
+
+        ConnectionStringResolution resolution;
+        using (new ScopedConnectionString("override-value"))
+        {
+            resolution = Hall9kDatabase.Resolve(startDirectory: home);
+        }
+
+        resolution.Value.Should().Be(
+            "override-value", "a test's own ScopedConnectionString must outrank the ambient environment variable");
+        resolution.Origin.Should().Be(ConnectionStringOrigin.EnvironmentVariable);
     }
 
     [Fact]

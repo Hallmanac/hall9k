@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -13,16 +14,12 @@ namespace Hall9k.Tests.Domain;
 /// <see cref="IdeaLifecycleTests"/> and <see cref="IdeaPaths"/> for the capture-time decision
 /// between the two.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME, so it shares the collection with the other tests
-// that do: serialized, never yanking a home out from under a running one.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Redirects the process-wide HALL9K_HOME.
 public sealed class IdeaWorkspaceTests : IDisposable
 {
-    private readonly string _home = Path.Combine(Path.GetTempPath(), $"hall9k-ideas-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
-    public IdeaWorkspaceTests() => Environment.SetEnvironmentVariable("HALL9K_HOME", _home);
+    private string _home => _scopedHome.Home;
 
     [Fact]
     public void The_global_directory_lives_under_the_platform_home_beside_the_runs()
@@ -79,12 +76,5 @@ public sealed class IdeaWorkspaceTests : IDisposable
         IdeaPaths.EnsureWorkspace(ideaDirectory).Should().Be(IdeaPaths.EnsureWorkspace(ideaDirectory));
     }
 
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_home))
-        {
-            Directory.Delete(_home, recursive: true);
-        }
-    }
+    public void Dispose() => _scopedHome.Dispose();
 }

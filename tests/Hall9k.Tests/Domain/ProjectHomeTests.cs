@@ -8,6 +8,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -17,18 +18,14 @@ namespace Hall9k.Tests.Domain;
 /// rides both the registration and the settings event, and a layout that is stated once so the
 /// recipe and the render cannot disagree about it.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME, so it shares the collection with the other tests
-// that do: serialized, never yanking a home out from under a running one.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Redirects the process-wide HALL9K_HOME.
 public sealed class ProjectHomeTests : IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 23, 12, 0, 0, TimeSpan.Zero);
 
-    private readonly string _home = Path.Combine(Path.GetTempPath(), $"hall9k-home-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
-    public ProjectHomeTests() => Environment.SetEnvironmentVariable("HALL9K_HOME", _home);
+    private string _home => _scopedHome.Home;
 
     [Fact]
     public void A_home_is_absolute_or_it_is_refused()
@@ -314,12 +311,5 @@ public sealed class ProjectHomeTests : IDisposable
         ProjectCheckout.ForReading(legacy).Should().Be("/repos/hall9k");
     }
 
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_home))
-        {
-            Directory.Delete(_home, recursive: true);
-        }
-    }
+    public void Dispose() => _scopedHome.Dispose();
 }
