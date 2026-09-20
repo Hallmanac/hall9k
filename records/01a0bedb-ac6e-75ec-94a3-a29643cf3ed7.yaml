@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a0bedb-ac6e-75ec-94a3-a29643cf3ed7
+project: hall9k
+type: bugfix
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#515
+objective: |-
+  VerificationRunnerTests.Daemon_shutdown_mid_gate_leaves_GateEnded_unwritten_and_the_gate_still_recorded_active passes on a loaded host: the test cancels the daemon-shutdown token only after observing the gate start on the run, so the cancel always lands while the gate process is running instead of racing a fixed one-second timer against the spawn
+criteria:
+  - The test starts VerifyAsync as a task, polls RunDetails.ActiveGate (an inline projection, so a read after GateStarted's own SaveChangesAsync is exact) at a short interval until it is set or the verify task completes, then cancels the shutdown token and asserts on the task; the poll and the whole test stay under the existing two-minute hard stop, and the 30-second gate pause remains only as the bound the gate would otherwise run to
+  - The sibling test Overrunning_gate_times_out_as_a_failure_not_a_hang is left alone (its timer is the runner's own VerifyGateTimeout, linked after GateStarted, so it does not share the race); the failing test's doc comment, which claims the two rely on the same one-second margin, is corrected
+  - |-
+    Production code is unchanged and the assertion stays as strong as today: a mid-gate shutdown cancellation propagates as OperationCanceledException, ActiveGate stays set with the gate's name, GateStarted is recorded once, and no GateEnded is appended
+  - dotnet build and dotnet test pass, with no parallel copies of the suite or artificial host load run to prove it; the decision log carries one entry under this task's placeholder; no test creates branches or touches GitHub
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/43cf3ed7-verificationrunnertests-daemon
+published: 2026-09-20 14:38:24Z
+context: |-
+  Evidence (Windows project window hall9k-56, 2026-09-20 08:45 EDT, run 01a0bd91-e3bb on 37b5ec69): on the mandatory final full pass the host gate started 07:53:10 and at 6m14s this test failed for real: the subprocess sleeps 30s, the test cancels at 1s and asserts ActiveGate is still set, and it came back null. Three runs shared the machine (two build sessions live throughout). After that failure no test completed for the remaining 24 minutes and the gate was killed at the 30-minute limit; xUnit names nothing until it finishes, so the hung test is unknown and is a separate question. The daemon routed the run to its settling-gate repair lap. This is a timing test whose correctness depends on wall-clock ordering under load, the same shape as the flakes the 2026-09-08 runtime analysis and the 09-18 test-hygiene pass called out. Fix the test, not the host: memory never-stress-the-host-to-chase-a-flake applies. Unassigned; feature work outranks sweeps, assign when the lane drains or when Brian says.
