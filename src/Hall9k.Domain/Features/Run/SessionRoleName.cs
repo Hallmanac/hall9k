@@ -92,6 +92,14 @@ public static class SessionRoleName
     /// </summary>
     public const string StackAssessment = "stack-assessment";
 
+    /// <summary>
+    /// The read-only session that composes a project's run skill (idea b9b09779, piece 4). The
+    /// one role here whose <see cref="For"/> prefix is a PROJECT's short id rather than a task's:
+    /// this session belongs to no task and no run at all, which is exactly the fact a reader of a
+    /// session list needs to see. Not part of the epic's named vocabulary; still named.
+    /// </summary>
+    public const string RunSkillDiscovery = "run-skill-discovery";
+
     /// A narrow recovery session resolving a conflict the pre-final-pass rebase check hit (task:
     /// a run rebases its branch onto the current base branch) — dispatched inside the build run
     /// itself, unlike <see cref="Rebase"/>'s own post-PR follow-up. The one shared prefix both
@@ -142,6 +150,11 @@ public static class SessionRoleName
         : lens == ReviewLens.Verify ? ReviewVerify(cycle)
         : ReviewConformance(cycle);
 
-    /// <summary>Composes the full <c>&lt;task-shortid&gt;-&lt;role&gt;</c> name from a role string produced by one of this class's own members.</summary>
-    public static string For(string taskShortId, string role) => $"{taskShortId}-{role}";
+    /// <summary>
+    /// Composes the full <c>&lt;shortid&gt;-&lt;role&gt;</c> name from a role string produced by
+    /// one of this class's own members. <paramref name="shortId"/> is the task's short id for
+    /// every role but one: <see cref="RunSkillDiscovery"/> belongs to a project rather than a
+    /// task, and passes the project's.
+    /// </summary>
+    public static string For(string shortId, string role) => $"{shortId}-{role}";
 }

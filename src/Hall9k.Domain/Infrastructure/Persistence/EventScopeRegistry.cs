@@ -235,6 +235,18 @@ public static class EventScopeRegistry
         [typeof(ProjectPromptAddendumSet)] = EventScope.ProjectScoped,
         [typeof(ProjectPromptAddendumRemoved)] = EventScope.ProjectScoped,
 
+        // idea b9b09779, piece 4: the run skill itself is the team-visible fact — one composed
+        // document about a repository every member shares — so it travels at the same tier the
+        // addenda above do. The two events around it do not: a request is one node's own ask for
+        // work its own daemon will do, and a dispatch is that node's own session mechanics, both
+        // the "this node's own process" side of the 2026-09-13 ruling. A failure stays with them:
+        // it is a fact about one node's session, not about the repository (a peer whose own
+        // discovery succeeded must not have its board read as failed).
+        [typeof(ProjectRunSkillRecorded)] = EventScope.ProjectScoped,
+        [typeof(ProjectRunSkillDiscoveryRequested)] = EventScope.NodeScoped,
+        [typeof(ProjectRunSkillDiscoveryDispatched)] = EventScope.NodeScoped,
+        [typeof(ProjectRunSkillDiscoveryFailed)] = EventScope.NodeScoped,
+
         // GitHub access observed through this install's own connected account (idea 202383dc,
         // A2b): both are what THIS node's own gh call saw, through THIS node's own registered
         // credential, never a canonical team fact another node's differently-connected account

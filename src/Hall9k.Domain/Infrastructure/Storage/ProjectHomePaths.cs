@@ -223,6 +223,23 @@ public static class ProjectHomePaths
         Path.Combine(PromptAddendaDirectory(home), $"{builderKey}.md");
 
     /// <summary>
+    /// Where the run-skill discovery session's own artifacts land (idea b9b09779, piece 4): its
+    /// prompt, stream, settings, and stderr, under the names <see cref="RunPaths"/> gives any
+    /// named session. Its own directory under the home rather than a run directory because this
+    /// session belongs to no run and no task — there is no <c>tasks/&lt;task&gt;/runs/&lt;run&gt;/</c>
+    /// for it to sit under, and inventing one would put a session nobody can find from a task
+    /// inside a task's own folder. The skill itself never lands here: it lives on the ledger, and
+    /// this directory holds only the transcript of composing it.
+    /// <para>
+    /// Deliberately absent from <see cref="Directories"/>, unlike every entry the class doc above
+    /// calls part of the always-there shape: a home that has never had a discovery session
+    /// dispatched has nothing to put here, and the executor creates the directory itself at the
+    /// moment of the first spawn. Nothing reads it expecting it to exist.
+    /// </para>
+    /// </summary>
+    public static string RunSkillDirectory(string home) => Path.Combine(home, "run-skill");
+
+    /// <summary>
     /// Every directory the shape is made of, in creation order. One list so the recipe that
     /// creates a home and the render that describes it cannot drift apart —
     /// <see cref="ArchivedTasksDirectory"/> included, even though nothing lands there until a

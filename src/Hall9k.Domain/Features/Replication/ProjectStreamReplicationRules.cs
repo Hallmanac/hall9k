@@ -37,7 +37,12 @@ public static class ProjectStreamReplicationRules
     /// teammate's copy locally is harmless bookkeeping, not a fenced action), and
     /// <see cref="ProjectPromptAddendumSet"/>/<see cref="ProjectPromptAddendumRemoved"/> (idea
     /// b9b09779, piece 6 — the same tier <see cref="Hall9k.Domain.Infrastructure.Persistence.EventScopeRegistry"/>
-    /// classifies them at: team-visible guidance, not a per-install decision). Each one is applied to the receiver's own
+    /// classifies them at: team-visible guidance, not a per-install decision), and
+    /// <see cref="ProjectRunSkillRecorded"/> (idea b9b09779, piece 4 — one composed description of
+    /// how the SHARED repository is stood up, so it is team-facing by construction, and applying a
+    /// teammate's copy is descriptive bookkeeping with no fenced action behind it; the request,
+    /// dispatch and failure events beside it are node-scoped and never travel at all, so they need
+    /// no entry here). Each one is applied to the receiver's own
     /// Project stream id in place of the sender's: the aggregate's id IS the coordinate being
     /// rewritten, not a field carried inside it. <see cref="IsProjectLifecycleEvent"/> covers
     /// everything else on this same stream that must NOT do that.
@@ -47,7 +52,8 @@ public static class ProjectStreamReplicationRules
         || eventType == typeof(MemberVouched)
         || eventType == typeof(MemberRemoved)
         || eventType == typeof(ProjectPromptAddendumSet)
-        || eventType == typeof(ProjectPromptAddendumRemoved);
+        || eventType == typeof(ProjectPromptAddendumRemoved)
+        || eventType == typeof(ProjectRunSkillRecorded);
 
     /// <summary>
     /// True for the Project aggregate's own per-install lifecycle decisions (independent pre-PR

@@ -758,4 +758,96 @@ public static class ProjectDecider
 
         return new ProjectKeyAssigned(projectId, projectKey, assignedAt);
     }
+
+    /// <summary>
+    /// How long a project's run skill may be (idea b9b09779, piece 4). Generous for a real
+    /// procedure with commands and citations in it, and bounded because a QA or design review
+    /// session reads the whole thing on its first turn before it does anything else — the same
+    /// reasoning and the same tier as <see cref="PromptAddendumMaximumLength"/>, one size up
+    /// because a full-text run skill legitimately carries more than house guidance does.
+    /// </summary>
+    public const int RunSkillMaximumLength = 12000;
+
+    /// <summary>
+    /// Asks for this project's run skill to be discovered: <c>h9k project add</c> at registration
+    /// and <c>h9k project set --discover-run-skill</c> both come through here. Deliberately
+    /// unconditional on what already exists — re-running discovery over a repository whose launch
+    /// story has changed is exactly what the command is for, and the daemon's own survey is what
+    /// decides whether a session is worth dispatching at all.
+    /// </summary>
+    public static ProjectRunSkillDiscoveryRequested RequestRunSkillDiscovery(
+        Guid projectId, Guid requestedByOwnerId, DateTimeOffset requestedAt) =>
+        new(projectId, requestedAt, requestedByOwnerId);
+
+    /// <summary>
+    /// Records the run skill as it now stands — the one event every route goes through (a
+    /// discovery session's composed markdown handed back through the daemon, the daemon's own
+    /// none-discoverable record, and <c>h9k project run-skill set --file</c>). The shared shape is
+    /// enforced here rather than at each call site, so a hand-set file and a session's answer are
+    /// held to the identical contract: <see cref="RunSkillDocument.Headings"/> all present, a real
+    /// shape, and a length a reading session can afford.
+    /// </summary>
+    public static ProjectRunSkillRecorded RecordRunSkill(
+        Guid projectId, string? content, RunSkillShape shape, RunSkillAuthor author, string? composedAgainstCommit,
+        Guid recordedByOwnerId, DateTimeOffset recordedAt)
+    {
+        if (shape == RunSkillShape.Unknown)
+        {
+            throw new DomainValidationException(
+                "A run skill needs a real shape: "
+                + $"{string.Join(", ", RunSkillShape.All.Select(known => known.Value))}.");
+        }
+
+        if (author == RunSkillAuthor.Unknown)
+        {
+            throw new DomainValidationException(
+                "A run skill needs a real author — who composed it is an audit fact, never left blank.");
+        }
+
+        string trimmed = content?.Trim() ?? string.Empty;
+        if (trimmed.IsBlank())
+        {
+            throw new DomainValidationException(
+                "A run skill needs content. A repository with no discoverable way to run it gets the "
+                + "none-discoverable skill, which says so in full, rather than an empty one.");
+        }
+
+        if (RunSkillDocument.MissingHeadings(trimmed) is { Count: > 0 } missing)
+        {
+            throw new DomainValidationException(
+                $"This run skill is missing {string.Join(", ", missing)}. Every project's run skill carries the "
+                + $"same six sections in the same order ({string.Join(", ", RunSkillDocument.Headings)}), so a "
+                + "reader standing any project up reads the same document. Add the missing heading(s), even if "
+                + "the section's honest content is that there are none.");
+        }
+
+        if (trimmed.Length > RunSkillMaximumLength)
+        {
+            throw new DomainValidationException(
+                $"This run skill is {trimmed.Length} characters, past the {RunSkillMaximumLength}-character cap. "
+                + "A review session reads the whole thing before it does anything else, so a long one spends "
+                + "its context rather than standing the project up. Point at the repository's own files by path "
+                + "instead of restating them.");
+        }
+
+        return new ProjectRunSkillRecorded(
+            projectId, trimmed, shape, composedAgainstCommit?.Trim() ?? string.Empty, author, recordedAt,
+            recordedByOwnerId);
+    }
+
+    /// <summary>
+    /// Records that a discovery produced nothing usable. The reason is required: an unexplained
+    /// failure is one a human cannot act on, and <c>h9k project show</c> prints it verbatim.
+    /// </summary>
+    public static ProjectRunSkillDiscoveryFailed FailRunSkillDiscovery(
+        Guid projectId, string? reason, DateTimeOffset failedAt)
+    {
+        if (reason.IsBlank())
+        {
+            throw new DomainValidationException(
+                "A failed run-skill discovery needs the reason it failed, recorded on the event.");
+        }
+
+        return new ProjectRunSkillDiscoveryFailed(projectId, reason.Trim(), failedAt);
+    }
 }

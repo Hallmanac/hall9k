@@ -582,4 +582,48 @@ public sealed class ProjectAggregate
     public void Apply(ProjectPromptAddendumRemoved @event) => _promptAddenda.Remove(@event.BuilderKey);
 
     public void Apply(ProjectKeyAssigned @event) => ProjectKey = @event.ProjectKey;
+
+    /// <summary>
+    /// This node's own audit trail of the project's run skill (idea b9b09779, piece 4) — how to
+    /// stand the project up locally. Null until one has been composed. The ledger file the daemon
+    /// writes from <see cref="ProjectRunSkillRecorded"/> is what a member on another machine
+    /// actually reads; this is never consulted for that, only for <c>h9k project run-skill show</c>
+    /// and the line <c>h9k project show</c> prints.
+    /// </summary>
+    public ProjectRunSkill? RunSkill { get; private set; }
+
+    /// <summary>When a discovery was last asked for and has not yet been answered; null otherwise.</summary>
+    public DateTimeOffset? RunSkillDiscoveryRequestedAt { get; private set; }
+
+    /// <summary>When the daemon last spawned a discovery session for this project; null before the first.</summary>
+    public DateTimeOffset? RunSkillDiscoveryDispatchedAt { get; private set; }
+
+    /// <summary>Why the last discovery produced nothing usable; null once a later one succeeds or a fresh one is asked for.</summary>
+    public string? RunSkillDiscoveryFailure { get; private set; }
+
+    public void Apply(ProjectRunSkillDiscoveryRequested @event)
+    {
+        RunSkillDiscoveryRequestedAt = @event.RequestedAt;
+        RunSkillDiscoveryFailure = null;
+    }
+
+    public void Apply(ProjectRunSkillDiscoveryDispatched @event) => RunSkillDiscoveryDispatchedAt = @event.DispatchedAt;
+
+    public void Apply(ProjectRunSkillRecorded @event)
+    {
+        RunSkill = new ProjectRunSkill(
+            @event.Content, RunSkillShape.FromInput(@event.Shape), @event.ComposedAgainstCommit,
+            RunSkillAuthor.FromInput(@event.Author), @event.RecordedAt, @event.RecordedByOwnerId);
+        // A hand-set skill settles an outstanding request too: somebody answered the question the
+        // request was asking, and leaving it outstanding would have the next sweep dispatch a
+        // session to compose over what a human just wrote by hand.
+        RunSkillDiscoveryRequestedAt = null;
+        RunSkillDiscoveryFailure = null;
+    }
+
+    public void Apply(ProjectRunSkillDiscoveryFailed @event)
+    {
+        RunSkillDiscoveryRequestedAt = null;
+        RunSkillDiscoveryFailure = @event.Reason;
+    }
 }

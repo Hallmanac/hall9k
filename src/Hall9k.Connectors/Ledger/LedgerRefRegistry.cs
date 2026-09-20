@@ -134,6 +134,19 @@ public static class LedgerRefRegistry
     /// <summary>The exact path one builder's own addendum lives at: <c>prompt-addenda/&lt;builder-key&gt;.md</c>.</summary>
     public static string PromptAddendumPath(string builderKey) => $"{PromptAddendaPathPrefix}{builderKey}.md";
 
+    /// <summary>
+    /// A project's run skill (idea b9b09779, piece 4): one <c>run-skill.md</c> describing how to
+    /// stand this project up locally, composed by a discovery agent and written only by the daemon
+    /// (never a dispatched session) from a <c>ProjectRunSkillRecorded</c> event. Exact, the same
+    /// reason <see cref="PromptAddenda"/> is: the ref name is fixed and known up front. One file,
+    /// not a prefix's worth, because a project has exactly one way it is stood up and a second
+    /// file here would be a second answer to the one question this ref exists to answer.
+    /// </summary>
+    public static readonly LedgerRefEntry RunSkill = RegisterExact("refs/hall9k/ledger/run-skill");
+
+    /// <summary>The only path inside <see cref="RunSkill"/>.</summary>
+    public const string RunSkillPath = "run-skill.md";
+
     public static LedgerRefEntry RegisterExact(string refName) => Register(refName, LedgerRefKind.Exact);
 
     public static LedgerRefEntry RegisterPrefix(string prefix) => Register(

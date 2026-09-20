@@ -179,6 +179,32 @@ public sealed class ProjectDetails
     /// of the project's ledger-derived key (idea 202383dc, M2). Null until a join actually reads
     /// one back from the ledger.</summary>
     public string? ProjectKey { get; set; }
+
+    /// <summary>Mirrors <see cref="ProjectAggregate.RunSkill"/>: this node's own audit trail of
+    /// how to stand this project up locally (idea b9b09779, piece 4), never what a member on
+    /// another machine reads — that is the ledger file the daemon writes from the same event.</summary>
+    public ProjectRunSkill? RunSkill { get; set; }
+
+    /// <summary>Mirrors <see cref="ProjectAggregate.RunSkillDiscoveryRequestedAt"/>.</summary>
+    public DateTimeOffset? RunSkillDiscoveryRequestedAt { get; set; }
+
+    /// <summary>Mirrors <see cref="ProjectAggregate.RunSkillDiscoveryDispatchedAt"/>.</summary>
+    public DateTimeOffset? RunSkillDiscoveryDispatchedAt { get; set; }
+
+    /// <summary>Mirrors <see cref="ProjectAggregate.RunSkillDiscoveryFailure"/>.</summary>
+    public string? RunSkillDiscoveryFailure { get; set; }
+
+    /// <summary>
+    /// Whether a run-skill discovery has been asked for and no session has been spawned for that
+    /// particular ask yet — what the daemon's own sweep claims work off. Compared on the
+    /// timestamps rather than a boolean flag so a fresh request made while an older session is
+    /// still in flight (a repository that has since changed, a session that died) supersedes it
+    /// and earns its own dispatch, which is the whole point of <c>--discover-run-skill</c> being
+    /// re-runnable.
+    /// </summary>
+    public bool RunSkillDiscoveryOutstanding =>
+        RunSkillDiscoveryRequestedAt is { } requested
+        && (RunSkillDiscoveryDispatchedAt is not { } dispatched || dispatched < requested);
 }
 
 public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDetails, Guid>
@@ -519,4 +545,28 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
 
     public void Apply(IEvent<ProjectKeyAssigned> @event, ProjectDetails view) =>
         view.ProjectKey = @event.Data.ProjectKey;
+
+    public void Apply(IEvent<ProjectRunSkillDiscoveryRequested> @event, ProjectDetails view)
+    {
+        view.RunSkillDiscoveryRequestedAt = @event.Data.RequestedAt;
+        view.RunSkillDiscoveryFailure = null;
+    }
+
+    public void Apply(IEvent<ProjectRunSkillDiscoveryDispatched> @event, ProjectDetails view) =>
+        view.RunSkillDiscoveryDispatchedAt = @event.Data.DispatchedAt;
+
+    public void Apply(IEvent<ProjectRunSkillRecorded> @event, ProjectDetails view)
+    {
+        view.RunSkill = new ProjectRunSkill(
+            @event.Data.Content, RunSkillShape.FromInput(@event.Data.Shape), @event.Data.ComposedAgainstCommit,
+            RunSkillAuthor.FromInput(@event.Data.Author), @event.Data.RecordedAt, @event.Data.RecordedByOwnerId);
+        view.RunSkillDiscoveryRequestedAt = null;
+        view.RunSkillDiscoveryFailure = null;
+    }
+
+    public void Apply(IEvent<ProjectRunSkillDiscoveryFailed> @event, ProjectDetails view)
+    {
+        view.RunSkillDiscoveryRequestedAt = null;
+        view.RunSkillDiscoveryFailure = @event.Data.Reason;
+    }
 }
