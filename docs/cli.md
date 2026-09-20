@@ -851,6 +851,49 @@ directory, so one set before that exists could never reach a prompt. `list`/`sho
 daemon has not been able to push a project's own addenda to the ledger for a while, since until that
 push lands, nothing above has actually reached a prompt yet.
 
+### The run skill
+
+```bash
+h9k project set <project> --discover-run-skill                        # ask for one (or a fresh one)
+h9k project run-skill show <project>
+h9k project run-skill set <project> --file <path> --shape pointer|full-text|none-discoverable
+```
+
+Every project carries a run skill on its ledger: how to stand it up locally, so a review session or
+an orchestrator on any member's machine never has to guess. `h9k project add` asks for one at
+registration; `--discover-run-skill` asks again once the repository's launch story has changed, or
+after a discovery failed. Registration asks once the home is built rather than before, and the
+daemon leaves a request standing while there is still no checkout with files in it to read, so a
+project whose repository is a long clone is discovered when the clone lands instead of being told
+to repair a home that is fine. Only after half an hour with still nothing there is that recorded
+as a failure.
+
+A discovery that fails over a project that already has a skill leaves the old one in place, and
+both `h9k project show` and `h9k project run-skill show` print the failure beside it, so a skill
+the repository may have outgrown never reads as current.
+
+The order of work is tools before tokens. The daemon surveys the repository first — root briefings,
+`docs/`, `.claude/skills/*/SKILL.md`, build manifests — and hands what it found to a read-only
+discovery session, so no session spends turns on a directory listing. A repository the survey finds
+nothing in never gets a session at all: the daemon records the none-discoverable skill itself, and
+`h9k project show` reads `run skill: none discoverable` rather than nothing.
+
+Every run skill is the same six sections in the same order (prerequisites, one-time setup, launch,
+how to know it is up, address or entry point, human steps), and its first line states which of two
+shapes it is. **Pointer** means the repository already documents launching it, so the skill points
+at those files by path and adds only what they leave out. **Full text** means it does not, so the
+skill holds the whole procedure and cites the file each step derives from. Which of the two it is
+is the composing agent's call, made from the files rather than from the scan's guess. Anything the
+agent could not determine — a secret, a login, a service it could not reach — goes under human
+steps with what is needed, and is never guessed at.
+
+The session never writes the ledger. It reports the markdown in its own summary, the daemon records
+the event (with the author, the time, and the commit the daemon itself read with `git rev-parse
+HEAD`), and the daemon's own sweep writes `run-skill.md` on `refs/hall9k/ledger/run-skill` — the
+same "CLI records the fact, the daemon alone writes the ledger" split the prompt addenda use.
+`run-skill set --file` goes through the identical event and the identical six-section check, so a
+hand-written skill reads the same way as a composed one.
+
 ### Branch naming
 
 `h9k project set <project> --branch-template "<TEXT>"`

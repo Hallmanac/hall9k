@@ -48,6 +48,9 @@ h9k project prompt-addendum set <name> <builder> --file <path> [--over-cap "<rea
 h9k project prompt-addendum show <name> <builder>   # prints one builder's own addendum exactly as this node's event stream last recorded it (PLACEHOLDER-503a7acf)
 h9k project prompt-addendum list <name>   # every builder this project could address, and whether it currently has an addendum (PLACEHOLDER-503a7acf)
 h9k project prompt-addendum remove <name> <builder>   # clears a builder's addendum; the daemon deletes it from the ledger on its next sweep (PLACEHOLDER-503a7acf)
+h9k project set <name> --discover-run-skill   # ask the daemon to (re)discover how this project is stood up locally; h9k project add asks once at registration, this is how you ask again after the repository's launch story changed or an earlier discovery failed. Records only the ask; the daemon surveys the repository and dispatches a read-only session on its next run-skill sweep (#PLACEHOLDER-0569c229)
+h9k project run-skill show <name>   # print this project's run skill as this node's stream last recorded it, with who composed it, when, and against which commit; a project with none says what it is waiting on (#PLACEHOLDER-0569c229)
+h9k project run-skill set <name> --file <path> --shape pointer|full-text|none-discoverable [--against-commit <SHA>]   # replace the run skill by hand, through the same event a discovery session's answer comes back through; the file must carry all six shared sections and the shape line is written for you (#PLACEHOLDER-0569c229)
 h9k owner show [<owner>]     # one owner: identity (root fingerprint once established, else this install's local Guid), the projects registered to them, and every standing preference their work runs by. Omit the argument when this platform has one owner
 h9k owner set [<owner>] --rerequest-review on|off|default   # whether closeout asks a pull request's reviewers for another pass once a fix follow-up pushed (Decisions Log #62). A project setting outranks this; the node default (DaemonOptions.DefaultReviewRerequest, off) sits under both
 h9k owner set [<owner>] --voice-skill <NAME> | --clear-voice-skill   # the skill this owner WRITES IN, by name. Every prompt seam where a session composes text a human reads as the owner's (a pull request description, a review-thread reply, a commit message, a posted review finding, a drafted reply to a GitHub mention) then tells that session to load the skill and its matching context first: contexts/code-review.md for prose the session posts, contexts/explainer.md for a draft the owner reads and decides on. The skill is the owner's own — referenced by name, never copied into a project, a prompt template, or the platform — so the name must already be a skill directory in the owner's user skills (~/.claude/skills/<NAME>) or in a project home's skills/; a name in neither is refused naming both paths. Structure authority does not move: the repository's own PR-description rule and the project's --writing-conventions still decide the shape, the voice skill decides only the prose. --clear-voice-skill forgets it, and every seam then renders as it does for an owner who never named one
@@ -1188,6 +1191,43 @@ builder's own loader actually reads, which is what already reaches a fellow memb
 ahead of the distributed-team chain (idea 202383dc, M2b). Past the 4000-character cap `set` stops,
 naming the cap, the size, and `--over-cap "<why>"` as the escape hatch; the reason is recorded on
 the event, and a builder that splices an over-cap addendum marks that plainly in the prompt itself.
+
+**Every project carries a run skill on the ledger: how to stand it up locally, composed by an
+agent and written by the daemon** (idea b9b09779, piece 4; #PLACEHOLDER-0569c229). `h9k project
+add` asks for one at registration and `h9k project set <project> --discover-run-skill` asks again;
+`h9k project run-skill show` prints it and `h9k project run-skill set --file --shape` replaces it
+by hand through the identical event. The order of work is tools before tokens. The daemon's own
+`RunSkillRepositorySurvey` scans the repository first (root briefings, `docs/`,
+`.claude/skills/*/SKILL.md`, build manifests) and hands what it found to the session, so no session
+spends turns on a directory listing; a repository the survey finds nothing in never gets a session
+at all, because the answer is already known — the daemon records the none-discoverable skill
+itself, authored `platform` rather than credited to a session that never ran, and `h9k project
+show` reads "run skill: none discoverable" instead of nothing.
+
+Every run skill is the same six sections in the same order (prerequisites, one-time setup, launch,
+how to know it is up, address or entry point, human steps), enforced on the way in by
+`ProjectDecider.RecordRunSkill` for a session's answer and a hand-set file alike, and its first
+line states which of two shapes it is: **pointer**, when the repository already covers launching it
+and the skill points at those files by path and adds only what they leave out, or **full-text**,
+when it does not and the skill holds the whole procedure with the file each step derives from cited
+in parentheses. That call is the composing agent's, made from the files rather than from the scan's
+guess. Anything the agent could not determine — a secret, a login, a service it could not reach —
+is listed under human steps with what is needed and never guessed at; a plausible invented value is
+worse than an admitted gap, because the whole document is trusted precisely for distinguishing the
+two. A session whose trailer cannot be read, or whose document misses a section, is recorded as a
+failed discovery rather than half-recorded, and `h9k project show` names the reason — beside the
+old skill when there is one, since a failed re-discovery leaves the previous document standing and
+a row that printed it silently had the owner reading it as current. A request whose project has no
+checkout with files in it yet is left standing rather than consumed (`h9k project add` registers
+and asks before it clones), and becomes a failure only once `RunSkillCheckoutGrace` has passed with
+still nothing to read.
+
+No agent writes the ledger for this either: the discovery session composes markdown and reports it
+in its own summary, the daemon parses it, appends `ProjectRunSkillRecorded` (project-scoped, so the
+distributed-team chain carries it once it ships), and the daemon's own sweep is the only thing that
+ever writes `run-skill.md` on `refs/hall9k/ledger/run-skill`. The commit a skill was composed
+against is read by the daemon with `git rev-parse HEAD`, never taken from the session, and is
+recorded blank rather than filled in when it could not be read.
 
 **A pull request GitHub assigns to this install's own login is a go signal in its own right, on
 every project unless it has opted out** (idea e5e98a33, Decisions Log #34's own amendment, #133,
