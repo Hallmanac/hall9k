@@ -1,0 +1,29 @@
+hall9k-task-record: 1
+task-id: 01a0bc3d-5853-73e4-ba95-993319489eff
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#504
+objective: Every idea and task carries a replication scope, private, fleet, or team; ideas and drafts start at fleet so only the owner's own nodes see them, publishing a task makes it team, and h9k idea share and h9k task share make an item team on the owner's word, whatever its state
+criteria:
+  - |-
+    Every idea and task carries a scope: private, fleet, or team. h9k idea scope <id> <scope> and h9k task scope <id> <scope> set it as a recorded event naming who and when; h9k idea share <id> and h9k task share <id> set team the same way and work on a draft as well as a published item; the existing set-private command stays as an alias for private; h9k idea show and h9k task show name the scope
+  - |-
+    Defaults: a new idea and a new draft start at fleet; publishing a task sets team; team is one-way, so once other members hold a copy the scope never goes back below team; existing items keep their current effective scope (team if shared today, private if private today) and only new items take the new defaults
+  - The replication outbox addresses a fleet item's events to the owner's root fingerprint (owner:<fingerprint>, the addressing an invite proof already uses) and a team item's to the project; a private item's events never leave; a scope change re-sends the item's full history at the new scope so a shared item arrives whole
+  - The inbox applies owner-addressed events only when addressed to this node's own owner root, verified through the trust chain; the catch-up responder serves an item only to a requester its scope allows and answers events-unavailable otherwise; a fleet item never appears on another member's board, feed, or status
+  - Unit tests cover the defaults, the share transition on a draft and on a published item, the one-way rule, addressing per scope, the full-history resend, the inbox refusing owner-addressed events for another owner, the responder's refusal, and the show output as a golden; no test creates branches or touches GitHub
+  - dotnet build and dotnet test pass; the decision log carries one entry under this task's placeholder; docs/concepts.md describes the three scopes, the defaults, and the share commands
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/19489eff-every-idea-and-task-carries-a
+published: 2026-09-20 00:35:34Z
+context: |-
+  Replication scopes per idea and task: private (this node only), fleet (every node of the owner, addressed to owner:<fingerprint> on the transport the way an invite proof already is), and team (every member's fleet, addressed to the project). Ideas start at fleet, not team; a draft task starts at fleet so the owner's own nodes see it; publishing moves a task to team; an idea moves to team only on an explicit share (h9k idea share <id>, which a discovery walk can do at its end). A fleet-scoped item never appears on another member's board or feed. Builds on the existing private flag (h9k idea set-private, drafts private by default) and on the trust chain's signature checks, which keep a fleet item inside the fleet. Brian, 2026-09-19: an owner should be able to work an idea alone or within their fleet until it is ready for the team. Priority: fold-in before any team rollout, alongside idea 18464daa (publish approvals).
+
+  Walked with Brian 2026-09-19 20:1x EDT from idea 8c5993c5; his calls: a share command for ideas and tasks that works on drafts; team is one-way; existing shared ideas keep team. Why one task: the scope field, the defaults, and the addressing are useless apart. Why fleet is cheap: the transport already carries owner-addressed envelopes (an invite proof goes to owner:<fingerprint>) and the trust chain already verifies who may write, so a fleet item stays inside the fleet by the same signatures that keep a spoofed message out. Builds on: the private flag (h9k idea set-private, ReplicationOwnership.IsPrivate, drafts private by default), EventReplicationOutbox (addressing), EventReplicationInbox (application), EventCatchUpResponder (scope check beside the private check), EventScopeRegistry. Relation: idea 18464daa (publish approvals) needs a draft that can be shared for approval, which h9k task share provides. Vocabulary: fleet means an owner's own nodes. Placement: Mac (its own outbox and inbox code; a free slot now).
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/8c5993c5-replication-scopes-per-idea-and-task-private-this-node-only/workspace
