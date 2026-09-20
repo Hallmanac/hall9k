@@ -312,6 +312,21 @@ public sealed class RunLauncher(
                         ?.ReviewPersonas)
                 : null;
 
+            // Then, for whichever of those personas can stand the product up, what this run will
+            // actually do about it (idea b9b09779, piece 3): the project's own drive setting and
+            // whether there is a run skill to drive with. Resolved here, once, and recorded with
+            // the plan below, so every session of this review is told the same thing and the
+            // report describes the review that ran rather than the settings as they stand later.
+            // Re-planned rather than patched because the plan is a pure value and its own
+            // filtering is what keeps a decision for a persona that did not run out of it.
+            if (personaPlan is not null)
+            {
+                personaPlan = ReviewPersonaRegistry.Plan(
+                    personaPlan.Requested,
+                    await ReviewDriveResolver.ResolveAllAsync(
+                        personaPlan.Ran, session, project, cancellationToken));
+            }
+
             // The primary session's own name (task: every dispatched agent session launches
             // under a human-readable id-and-role name) — decided here, once, from the same
             // three-way split the prompt selection below re-derives for its own purpose, because
@@ -485,7 +500,7 @@ public sealed class RunLauncher(
             {
                 session.Events.Append(runId, new PrReviewPersonasSelected(
                     runId, personaPlan.Requested, personaPlan.Ran, personaPlan.Skipped,
-                    personaPlan.FellBackToEngineer, DateTimeOffset.UtcNow));
+                    personaPlan.FellBackToEngineer, DateTimeOffset.UtcNow, personaPlan.DriveDecisions));
             }
 
             // Appended right behind the dispatch, in the same commit, so the run record can never
@@ -520,8 +535,11 @@ public sealed class RunLauncher(
                 // kind. For an assignee who declared no persona that first session is the
                 // engineer's adversarial lens, exactly as it has always been.
                 string baseBranch = prReviewFacts!.BaseRefName.IsNotBlank() ? prReviewFacts.BaseRefName : project.BaseBranch;
-                prompt = personaPlan!.Sessions[0].BuildPrompt(new ReviewPersonaPromptRequest(
-                    task, project, worktree.Branch, baseBranch, options.Value.VerifyGateTimeout));
+                ReviewPersonaSession primarySession = personaPlan!.Sessions[0];
+                ReviewDriveDecision primaryDrive = personaPlan.DriveFor(primarySession.Persona);
+                prompt = primarySession.BuildPrompt(new ReviewPersonaPromptRequest(
+                    task, project, worktree.Branch, baseBranch, options.Value.VerifyGateTimeout, primaryDrive,
+                    primaryDrive.Drives ? ProjectRunSkillReader.Read(project) : null));
 
                 // This mint itself came from a GitHub mention (idea 2f079bcd, decision 2 and 3):
                 // the primary session's own ordinary verdict is not enough here, so it is also

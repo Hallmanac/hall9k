@@ -291,7 +291,8 @@ public sealed class PrReviewEngine(
             if (!live)
             {
                 if (!await DispatchFollowOnSessionAsync(
-                    runId, taskId, runDirectory, run, task, project, session, cancellationToken))
+                    runId, taskId, runDirectory, run, task, project, session, plan.DriveFor(session.Persona),
+                    cancellationToken))
                 {
                     return;
                 }
@@ -486,7 +487,7 @@ public sealed class PrReviewEngine(
     /// </summary>
     private async Task<bool> DispatchFollowOnSessionAsync(
         Guid runId, Guid taskId, string runDirectory, RunDetails run, TaskDetails task, ProjectDetails project,
-        ReviewPersonaSession personaSession, CancellationToken cancellationToken)
+        ReviewPersonaSession personaSession, ReviewDriveDecision drive, CancellationToken cancellationToken)
     {
         await using (IDocumentSession fenceSession = store.LightweightSession())
         {
@@ -522,8 +523,17 @@ public sealed class PrReviewEngine(
         string baseBranch = run.PrReviewBaseRefName.IsNotBlank() ? run.PrReviewBaseRefName : project.BaseBranch;
 
         Guid sessionId = DomainId.New();
+
+        // The drive decision comes off the run's own recorded plan, never a fresh resolve here,
+        // for the same reason the base branch above does: the project setting or the ledger's
+        // run skill can move between the primary session's dispatch and this one's, and every
+        // session of one review has to have been told the same thing (idea b9b09779, piece 3).
+        // The run skill's own text is read off this project document now, since nothing records
+        // it on the stream — a project that has one at this instant and had one at dispatch is
+        // the ordinary case, and the decision above, not this read, is what the report describes.
+        string? runSkill = drive.Drives ? ProjectRunSkillReader.Read(project) : null;
         string prompt = personaSession.BuildPrompt(new ReviewPersonaPromptRequest(
-            task, project, run.Branch, baseBranch, _options.VerifyGateTimeout));
+            task, project, run.Branch, baseBranch, _options.VerifyGateTimeout, drive, runSkill));
         AgentModel model = _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
         // pr-review has no cycle loop — one pass per persona session — so every session name the
         // registry hands back reads as cycle 1 always, never RunDetails.ReviewCycle, which
