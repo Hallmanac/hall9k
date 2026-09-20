@@ -2422,7 +2422,7 @@ surface, and nothing the P2P layer (§16 #38-#58) touches.
 > pre-final-pass rebase step. Every citation of the placeholder elsewhere in this
 > repository was rewritten to `#246` in the same commit.
 
-PLACEHOLDER-70160be0. **A replicated idea's `WorkspaceHomeDirectory` no longer aborts every later event from its capturing node just because it is rooted in a different operating system's path shape, and a replicated event whose own projection fails no longer blocks or corrupts the records around it.** Why: task 70160be0 hit an intersection of two existing facts. A node captures an idea while running Windows; a receiving node on macOS or Linux replicates it; and `ProjectHome.Parse` refused the Windows-shaped absolute path as not absolute, at which point `EventReplicationInbox` staged every record a read's own batch carried into one shared save, so that one refusal rolled back the whole read, cursor advance included, and the sender's every later event failed the identical way forever, exactly the worst case idea 202383dc's own doc already named.
+247. **A replicated idea's `WorkspaceHomeDirectory` no longer aborts every later event from its capturing node just because it is rooted in a different operating system's path shape, and a replicated event whose own projection fails no longer blocks or corrupts the records around it.** Why: task 70160be0 hit an intersection of two existing facts. A node captures an idea while running Windows; a receiving node on macOS or Linux replicates it; and `ProjectHome.Parse` refused the Windows-shaped absolute path as not absolute, at which point `EventReplicationInbox` staged every record a read's own batch carried into one shared save, so that one refusal rolled back the whole read, cursor advance included, and the sender's every later event failed the identical way forever, exactly the worst case idea 202383dc's own doc already named.
 
 **The fix.** `ProjectHome.Parse` now recognizes both the POSIX and the Windows shape of an absolute path on every host: a leading slash, a drive letter plus colon plus separator, or a UNC double backslash. A genuinely relative path is still refused, including Windows' own drive-relative form (`\Users\bob`), which matches neither shape. A value rooted in the OTHER host's own shape is kept exactly as received rather than run through `Path.GetFullPath`, since this host's own normalization rules would mangle a foreign-shaped path rather than clean it up. `ProjectHome.IsNativeForm` is the read-side guard a caller checks before treating a recorded value as a directory on this machine: `h9k idea show` already carried this guard, and `h9k idea promote` and `h9k idea archive` now carry it too, naming the recorded value plainly instead of resolving or creating a directory from it when the shape is foreign.
 
@@ -2437,6 +2437,12 @@ PLACEHOLDER-70160be0. **A replicated idea's `WorkspaceHomeDirectory` no longer a
 > pre-final-pass rebase step — the log's next free number once this branch is
 > rebased onto its base. Every citation of the placeholder elsewhere in this
 > repository will be rewritten to that number in the same commit.
+
+> Renumbering placement note: this entry was appended under placeholder
+> `PLACEHOLDER-70160be0` and assigned **#247** by the mechanical pre-final-pass
+> rebase step — the log's next free number once this branch was rebased onto its base.
+> Every citation of the placeholder elsewhere in this repository was rewritten to
+> `#247` in the same commit.
 
 ---
 
