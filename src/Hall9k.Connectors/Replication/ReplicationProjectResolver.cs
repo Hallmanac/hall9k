@@ -14,7 +14,17 @@ namespace Hall9k.Connectors.Replication;
 /// stream belongs to — idea 8c5993c5), and whether the stream IS the Project aggregate's own stream
 /// rather than one that merely belongs to it. The Project and Epic streams themselves have no scope
 /// of their own to narrow, so they always resolve <see cref="ReplicationScope.Team"/>.</summary>
-public sealed record ReplicationOwnership(Guid? ProjectId, ReplicationScope Scope, bool IsProjectStreamItself = false)
+/// <param name="TaskId">
+/// The task this stream belongs to — itself for a Task stream, the owning task for a Run stream,
+/// and null for every other family, which belongs to no single task. Replication has no use for
+/// it; the orchestrator feed (idea 89471598, piece 2) groups on it, and resolving it here rather
+/// than in a second resolver is what keeps one answer to "which stream is this".
+/// </param>
+public sealed record ReplicationOwnership(
+    Guid? ProjectId,
+    ReplicationScope Scope,
+    bool IsProjectStreamItself = false,
+    Guid? TaskId = null)
 {
     /// <summary>The pre-8c5993c5 two-valued read, kept for callers that only ever asked "private or not".</summary>
     public bool IsPrivate => Scope == ReplicationScope.Private;
@@ -29,10 +39,16 @@ public sealed record ReplicationOwnership(Guid? ProjectId, ReplicationScope Scop
 /// </summary>
 public sealed class ReplicationProjectResolver
 {
-    public async Task<ReplicationOwnership> ResolveAsync(IQuerySession session, IEvent candidate, CancellationToken cancellationToken)
-    {
-        Guid streamId = candidate.StreamId;
+    public Task<ReplicationOwnership> ResolveAsync(IQuerySession session, IEvent candidate, CancellationToken cancellationToken) =>
+        ResolveAsync(session, candidate.StreamId, cancellationToken);
 
+    /// <summary>
+    /// The same answer for a stream named directly, for a caller that already has the id and no
+    /// <see cref="IEvent"/> to hand (the orchestrator feed reads through its own candidate
+    /// record). The stream is all the overload above ever looked at.
+    /// </summary>
+    public async Task<ReplicationOwnership> ResolveAsync(IQuerySession session, Guid streamId, CancellationToken cancellationToken)
+    {
         if (await session.LoadAsync<ProjectDetails>(streamId, cancellationToken) is { } project)
         {
             // The Project aggregate's own id, unlike a Task/Idea/Epic id, is never shared across
@@ -50,7 +66,7 @@ public sealed class ReplicationProjectResolver
 
         if (await session.LoadAsync<TaskDetails>(streamId, cancellationToken) is { } task)
         {
-            return new ReplicationOwnership(task.ProjectId, task.Scope);
+            return new ReplicationOwnership(task.ProjectId, task.Scope, TaskId: task.Id);
         }
 
         if (await session.LoadAsync<IdeaDetails>(streamId, cancellationToken) is { } idea)
@@ -66,7 +82,8 @@ public sealed class ReplicationProjectResolver
         if (await session.LoadAsync<RunDetails>(streamId, cancellationToken) is { } run)
         {
             TaskDetails? owningTask = await session.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
-            return new ReplicationOwnership(owningTask?.ProjectId, owningTask?.Scope ?? ReplicationScope.Team);
+            return new ReplicationOwnership(
+                owningTask?.ProjectId, owningTask?.Scope ?? ReplicationScope.Team, TaskId: run.TaskId);
         }
 
         return new ReplicationOwnership(null, ReplicationScope.Team);
