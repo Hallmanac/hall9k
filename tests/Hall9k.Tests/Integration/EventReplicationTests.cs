@@ -1941,6 +1941,117 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// idea 8c5993c5, independent pre-PR review cycle 8 (adversarial lens, high, with no regression
+    /// test of its own — the finding this test resolves): the sibling above proves the resend lands
+    /// before its own trigger for a stream small enough to fit one envelope, so it can never exercise
+    /// the overflow split at all. Here the fleet-scoped idea's own history alone exceeds
+    /// <see cref="EventReplicationOutbox.MaxEventsPerEnvelope"/>, forcing <c>FlushAsync</c> to split
+    /// the resend across more than one envelope before the share event that triggered it is ever
+    /// added — the exact shape cycle 7's own fix (moving <c>ResendIfNeededAsync</c> ahead of the
+    /// trigger's own <c>AddAsync</c> call) exists to get right. A move of that call back after the
+    /// trigger's own <c>AddAsync</c> would let a mid-scan overflow flush carry the trigger out in an
+    /// earlier envelope than some of the history it depends on, and this test's own ascending-
+    /// sequence assertion across every envelope, in send order, catches exactly that regression.
+    /// </summary>
+    [Fact]
+    public async Task Sharing_a_fleet_scoped_idea_with_history_wider_than_one_envelope_resends_it_in_order_before_the_trigger()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        // Capture plus enough revisions to push the idea's own history past one envelope's worth of
+        // records (EventReplicationOutbox.MaxEventsPerEnvelope) on its own, before the share ever runs.
+        const int RevisionCount = EventReplicationOutbox.MaxEventsPerEnvelope + 50;
+
+        Guid ideaId = DomainId.New();
+        IdeaAggregate idea = new();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaCaptured captured = IdeaDecider.Capture(
+                ideaId, ownerId, "Fleet-only, revision 0", projectId: projectId, Now.AddSeconds(1), ProjectHome.None);
+            idea.Apply(captured);
+            session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+
+            for (int i = 1; i <= RevisionCount; i++)
+            {
+                IdeaRevised revised = IdeaDecider.Revise(idea, $"Fleet-only, revision {i}", Now.AddSeconds(1 + i), ownerId);
+                idea.Apply(revised);
+                session.Events.Append(ideaId, revised);
+            }
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // First sweep: sent once, fleet audience only, split across as many envelopes as the history
+        // alone already needs — and the position moves past every one of them.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult firstSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(500), cts.Token);
+            firstSweep.EventsQueued.Should().Be(RevisionCount + 1, "the capture plus every revision, all sent fleet-scoped");
+        }
+
+        // Shared with the team — a scope-widening event past the position the first sweep already reached.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.Append(ideaId, IdeaDecider.Share(idea, Now.AddSeconds(501), ownerId)!);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult secondSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(502), cts.Token);
+            secondSweep.EventsQueued.Should().Be(
+                RevisionCount + 2,
+                "the share event itself, plus the resend of the capture and every revision the first sweep already moved past");
+        }
+
+        await messageOutbox.FlushAsync(
+            _postgres.Store.LightweightSession(), RepositoryPath, nodeA, projectId, "shared-project-key",
+            adoptUnassigned: false, committer, signingKey, Now.AddSeconds(502), cts.Token);
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        List<MessageEnvelopeV1> envelopes = [.. read.Envelopes.Select(raw => MessageEnvelopeCodec.Decode(raw.Content).Envelope!)];
+
+        // Send order, not decoded/regrouped: the same order a receiving inbox actually reads them in.
+        List<MessageEnvelopeV1> teamEnvelopes = [.. envelopes.Where(envelope => envelope.To == MessageAudience.Project)];
+        teamEnvelopes.Should().HaveCountGreaterThan(
+            1, "more resend history than MaxEventsPerEnvelope forces the flush to split it across envelopes");
+
+        List<EventReplicationCodec.ReplicatedEventRecord> orderedTeamRecords =
+            [.. teamEnvelopes.SelectMany(envelope => EventReplicationCodec.DecodeBatch(envelope.Body)!)];
+        orderedTeamRecords.Should().HaveCount(RevisionCount + 2)
+            .And.OnlyContain(record => record.StreamId == ideaId);
+
+        // The defining assertion: across every envelope the flush produced, in the order they were
+        // queued, the stream's own origin sequence only ever increases — so the resent history always
+        // reads strictly before the share that triggered it, envelope split or not. Moving
+        // ResendIfNeededAsync back after the trigger's own AddAsync call would instead let an early
+        // overflow flush carry the trigger out ahead of some later-flushed slice of its own history,
+        // breaking this exact ordering.
+        orderedTeamRecords.Select(record => record.OriginSequence).Should().BeInAscendingOrder();
+        orderedTeamRecords[^1].EventTypeName.Should().Be(
+            typeof(IdeaScopeSet).FullName, "the share event is always the newest fact on this stream, so it always sorts last");
+    }
+
+    /// <summary>
     /// idea 8c5993c5, independent pre-PR review cycle 3 (adversarial, high) and cycle 4
     /// (conformance, high): a scope change can just as easily be appended at a fleet sibling that
     /// only ever holds a stream by replication, never at the stream's own true origin. That
