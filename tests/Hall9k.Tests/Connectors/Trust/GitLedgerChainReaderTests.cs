@@ -195,6 +195,38 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_node_that_retired_its_own_self_created_root_no_longer_attaches_to_it()
+    {
+        // independent pre-PR review, cycle 1, adversarial lens, medium: a node that once
+        // self-created a root (no --owner) and later re-ran h9k project join --owner <real> against
+        // its real owner keeps the same key — so it still fingerprints back to the root it
+        // originally established — while RetireSelfRootEverywhereAsync retires that self-created
+        // root by adding a retired.yaml beside root.yaml, never by removing root.yaml itself, so the
+        // retired root still self-certifies. The node's own node.yaml is rewritten by that rerun to
+        // carry the real owner's fingerprint as owner_fingerprint. Without checking that field, this
+        // node kept re-attaching as the retired root's own RootNodeId forever.
+        string hub = _repo.CreateHub();
+        (string retiredRepo, GeneratedIdentity retiredRoot) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(retiredRepo, retiredRoot, retiredRoot);
+
+        (string realRepo, GeneratedIdentity realOwner) = await EstablishGenesisRootAsync(hub);
+
+        // The node re-runs h9k project join --owner <realOwner>: same key, same node id, but its own
+        // node.yaml now claims the real owner instead of itself.
+        await WriteNodeFileAsync(retiredRepo, retiredRoot, retiredRoot, ownerFingerprint: realOwner.Fingerprint);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains[retiredRoot.Fingerprint].RootNodeId.Should().BeNull(
+            "the node's own current claim no longer names the retired root, whatever key it was signed with");
+        chain.OwnerChains[retiredRoot.Fingerprint].FleetNodeIds().Should().NotContain(retiredRoot.NodeId);
+        chain.UnverifiedWrites.Should().NotContain(
+            write => write.Kind == "node" && write.Identifier == retiredRoot.NodeId.ToString(),
+            "a node moving on from its own retired root is a legitimate, correctly signed write, not a forgery");
+    }
+
+    [Fact]
     public async Task A_strangers_root_and_node_file_are_ignored_everywhere()
     {
         string hub = _repo.CreateHub();
@@ -643,11 +675,19 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         await WriteAsync(repositoryPath, refName, path, content, root);
     }
 
-    private async Task WriteNodeFileAsync(string repositoryPath, GeneratedIdentity node, GeneratedIdentity signer)
+    private async Task WriteNodeFileAsync(
+        string repositoryPath, GeneratedIdentity node, GeneratedIdentity signer, string? ownerFingerprint = null)
     {
         string refName = $"refs/hall9k/ledger/nodes/{node.NodeId}";
         string path = $"nodes/{node.NodeId}/node.yaml";
-        string content = BuildYaml(("node_id", node.NodeId.ToString()), ("public_key", node.PublicKeyLine));
+        // Mirrors ProjectJoinCommand.WriteNodeFileAsync's own real content: owner_fingerprint
+        // defaults to this node's own fingerprint, the exact claim a plain "no --owner" join
+        // records for the node establishing its own root — the shape every self-announcing root
+        // test below relies on.
+        string content = BuildYaml(
+            ("node_id", node.NodeId.ToString()),
+            ("public_key", node.PublicKeyLine),
+            ("owner_fingerprint", ownerFingerprint ?? node.Fingerprint));
         await WriteAsync(repositoryPath, refName, path, content, signer);
     }
 

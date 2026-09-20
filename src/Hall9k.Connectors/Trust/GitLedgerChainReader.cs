@@ -167,6 +167,20 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// every other verification surface. Skipped entirely when nothing self-certified above ever
     /// produced an owner chain to attach a node id to.
     /// <para>
+    /// A candidate's own declared <c>owner_fingerprint</c> field must still equal the very root its
+    /// key fingerprints to, not merely have equalled it once: a node that self-created a root and
+    /// later re-runs <c>h9k project join --owner</c> against its real owner keeps the same key (so
+    /// it still fingerprints back to the root it originally established) while
+    /// <c>RetireSelfRootEverywhereAsync</c> retires that self-created root by adding a
+    /// <c>retired.yaml</c> beside its <c>root.yaml</c> — never removing <c>root.yaml</c> itself, so
+    /// the retired root still self-certifies above — and the rerun's own <c>WriteNodeFileAsync</c>
+    /// rewrites that node's <c>owner_fingerprint</c> to the real owner. Without this check, the
+    /// retired root's chain would re-attach that node as its own root node forever, and
+    /// <c>EventCatchUpCoordinator.ResolveMemberRole</c> would resolve the node's role against the
+    /// retired, non-member root instead of its real owner whenever the two chains happen to iterate
+    /// in that order (independent pre-PR review, cycle 1, adversarial lens, medium).
+    /// </para>
+    /// <para>
     /// Every node ref this scan could possibly need is fetched once, by a single wildcard refspec,
     /// rather than one <c>git fetch</c> per node id: <see cref="DiscoverNodeIdsAsync"/> already
     /// names exactly which node ids origin currently holds, so a wildcard fetch of that same prefix
@@ -211,6 +225,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             string path = $"nodes/{nodeId}/node.yaml";
             string? content = await ReadAtCommitAsync(repositoryPath, tip, path, cancellationToken);
             string? publicKeyLine = content is null ? null : ExtractQuotedYamlValue(content, "public_key");
+            string? ownerFingerprintLine = content is null ? null : ExtractQuotedYamlValue(content, "owner_fingerprint");
             if (publicKeyLine is null || !TryFingerprint(publicKeyLine, out string fingerprint)
                 || !ownerChains.TryGetValue(fingerprint, out TrustedOwner? owner))
             {
@@ -221,7 +236,20 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             IReadOnlyList<string> commits = await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken);
             if (commits.Count > 0 && await IsSignedByAsync(repositoryPath, commits[0], owner.RootPublicKeyLine, cancellationToken))
             {
-                ownerChains[fingerprint] = owner with { RootNodeId = nodeId };
+                // Self-certification holds — but only actually attach when this node's own current
+                // claim still names this exact root: `h9k project join --owner` rewrites a node's
+                // own owner_fingerprint field the moment it points itself at a real owner, while
+                // RetireSelfRootEverywhereAsync retires that self-created root by adding a
+                // retired.yaml beside it, never by removing root.yaml itself — so the retired root
+                // still self-certifies above, but this same node's key must not re-attach to it
+                // once the node itself has moved on (independent pre-PR review, cycle 1, adversarial
+                // lens, medium: a node that retired its own self-created root in favor of a real
+                // owner kept re-attaching to the retired root here, so EventCatchUpCoordinator could
+                // resolve its role against the retired, non-member root instead of its real owner).
+                if (ownerFingerprintLine == fingerprint)
+                {
+                    ownerChains[fingerprint] = owner with { RootNodeId = nodeId };
+                }
             }
             else
             {
