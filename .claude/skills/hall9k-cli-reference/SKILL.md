@@ -114,7 +114,7 @@ workspace. The hall9k project's own move into its default home landed as that cu
 worked from its `repo/dev` worktree.
 
 **The platform knows whether an orchestrator window is live for a project on this node**
-(Decisions Log #PLACEHOLDER-579dcd44, idea 89471598). A window declares itself at launch with
+(Decisions Log #237, idea 89471598). A window declares itself at launch with
 `h9k orchestrator register --project <name> --session <session-name> --pid <pid> [--cli claude-code]
 [--replace]`, which the launch anchor calls as its own first start-up step, and drops the claim
 with `h9k orchestrator deregister --project <name> --pid <pid>`, which the recipe's restart and

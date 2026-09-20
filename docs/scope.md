@@ -1008,7 +1008,7 @@ Whether a window is actually up is a separate, recorded fact: a window registers
 (`h9k orchestrator register`) as the launch anchor's first start-up step and deregisters when the
 recipe restarts or closes it, the daemon records a registered window whose process is gone as
 lost, and `h9k orchestrator status` and the `h9k status` header both name the live one. Liveness
-is by process id, so it holds for any vendor's CLI (Decisions Log #PLACEHOLDER-579dcd44).
+is by process id, so it holds for any vendor's CLI (Decisions Log #237).
 
 ### The help tree
 
