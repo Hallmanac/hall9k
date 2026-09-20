@@ -46,11 +46,33 @@ public sealed class IdeaDetails
     /// <summary>How many times the note was rewritten after capture.</summary>
     public int Revisions => Math.Max(History.Count - 1, 0);
 
-    /// <summary>Mirrors <see cref="IdeaAggregate.Scope"/>.</summary>
-    public ReplicationScope Scope { get; set; } = ReplicationScope.Team;
+    private ReplicationScope? _scope;
+    private bool _legacyIsPrivate;
 
-    /// <summary>Mirrors <see cref="IdeaAggregate.IsPrivate"/>.</summary>
-    public bool IsPrivate => Scope == ReplicationScope.Private;
+    /// <summary>
+    /// Mirrors <see cref="IdeaAggregate.Scope"/>. Falls back to <see cref="IsPrivate"/>'s own legacy
+    /// value when no 'scope' key was ever recorded, so a document written before this field existed
+    /// still reads its true scope even before <c>IdeaDetailsProjectionBackfill</c> re-projects it —
+    /// see <see cref="Hall9k.Domain.Features.Tasks.Projections.TaskDetails.Scope"/>'s own doc for why
+    /// the fallback lives on the getter rather than relying on the backfill alone (independent pre-PR
+    /// review, cycle 7, conformance lens, high).
+    /// </summary>
+    public ReplicationScope Scope
+    {
+        get => _scope ?? (_legacyIsPrivate ? ReplicationScope.Private : ReplicationScope.Team);
+        set => _scope = value;
+    }
+
+    /// <summary>
+    /// Mirrors <see cref="IdeaAggregate.IsPrivate"/>. No current write ever sets this — every
+    /// projection handler sets <see cref="Scope"/> directly — but the setter stays public so a
+    /// document written before <see cref="Scope"/> existed still deserializes its own legacy value.
+    /// </summary>
+    public bool IsPrivate
+    {
+        get => Scope == ReplicationScope.Private;
+        set => _legacyIsPrivate = value;
+    }
 }
 
 public sealed class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, Guid>

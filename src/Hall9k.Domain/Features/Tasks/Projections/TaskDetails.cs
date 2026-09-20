@@ -252,11 +252,36 @@ public sealed class TaskDetails
     public DateTimeOffset? ClaimedAt { get; set; }
     /// <summary>See <see cref="TaskAggregate.IsInteractiveClaim"/>: same discriminator, read off this projection.</summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
-    /// <summary>Mirrors <see cref="TaskAggregate.Scope"/>.</summary>
-    public ReplicationScope Scope { get; set; } = ReplicationScope.Team;
+    private ReplicationScope? _scope;
+    private bool _legacyIsPrivate;
 
-    /// <summary>See <see cref="TaskAggregate.IsPrivate"/>: the pre-8c5993c5 two-valued read of <see cref="Scope"/>.</summary>
-    public bool IsPrivate => Scope == ReplicationScope.Private;
+    /// <summary>
+    /// Mirrors <see cref="TaskAggregate.Scope"/>. Falls back to <see cref="IsPrivate"/>'s own legacy
+    /// value when no 'scope' key was ever recorded, so a document written before this field existed
+    /// still reads its true scope even before <c>TaskLifecycleProjectionBackfill</c> re-projects it —
+    /// the backfill repairs the document at rest, but this getter is what keeps every reader honest
+    /// in the window before that repair runs (independent pre-PR review, cycle 7, conformance lens,
+    /// high: <see cref="Hall9k.Connectors.Replication.ReplicationProjectResolver"/> reads this
+    /// property directly, and a silent Team default there let a private task's history broadcast to
+    /// the whole project on the very first sweep after this build ships).
+    /// </summary>
+    public ReplicationScope Scope
+    {
+        get => _scope ?? (_legacyIsPrivate ? ReplicationScope.Private : ReplicationScope.Team);
+        set => _scope = value;
+    }
+
+    /// <summary>
+    /// The pre-8c5993c5 stored flag (see <see cref="TaskAggregate.IsPrivate"/>). No current write
+    /// ever sets this — every projection handler sets <see cref="Scope"/> directly — but the setter
+    /// stays public so a document written before <see cref="Scope"/> existed still deserializes its
+    /// own legacy value, which <see cref="Scope"/>'s own getter falls back to.
+    /// </summary>
+    public bool IsPrivate
+    {
+        get => Scope == ReplicationScope.Private;
+        set => _legacyIsPrivate = value;
+    }
     /// <summary>See <see cref="TaskAggregate.InteractiveModeEnabled"/>: same recorded, task-level fact, read off this projection.</summary>
     public bool InteractiveModeEnabled { get; set; }
     /// <summary>

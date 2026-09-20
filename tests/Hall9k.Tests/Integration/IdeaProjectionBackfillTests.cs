@@ -110,15 +110,18 @@ public sealed class IdeaProjectionBackfillTests(PostgresFixture postgres) : ICla
     }
 
     /// <summary>
-    /// <see cref="IdeaDetails.Scope"/> (idea 8c5993c5) defaults to <see cref="ReplicationScope.Team"/>
-    /// on a document with no <c>scope</c> key at all, which is exactly wrong for an idea that was
-    /// marked private under the pre-8c5993c5 flag: without this marker, the stale document reads
-    /// team-scoped, and <see cref="EventReplicationOutbox"/> — which reads scope off this projection,
-    /// never the aggregate — would queue that private idea's whole held-back history to the project
-    /// the moment the daemon upgrades (independent pre-PR review, cycle 1, both lenses, high).
+    /// <see cref="IdeaDetails.Scope"/> (idea 8c5993c5) falls back to the legacy <see cref="IdeaDetails.IsPrivate"/>
+    /// flag on a document with no <c>scope</c> key at all, so an idea that was marked private under
+    /// the pre-8c5993c5 flag still reads <see cref="ReplicationScope.Private"/> even before the
+    /// backfill below ever runs: <see cref="EventReplicationOutbox"/> reads scope off this
+    /// projection, never the aggregate, and a silent Team default here would have queued that
+    /// private idea's whole held-back history to the project the moment the daemon upgraded
+    /// (independent pre-PR review, cycle 1, both lenses, high; cycle 7, conformance lens, high —
+    /// the fallback is what closes the race between this backfill and the very first replication
+    /// sweep, which the daemon starts concurrently at startup with no ordering between them).
     /// </summary>
     [Fact]
-    public async Task A_private_idea_projected_before_the_scope_marker_landed_is_restored_after_the_backfill_runs()
+    public async Task A_private_idea_projected_before_the_scope_marker_landed_reads_private_via_legacy_fallback_and_stays_private_after_the_backfill_runs()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         DocumentStore store = postgres.Store;
@@ -142,8 +145,9 @@ public sealed class IdeaProjectionBackfillTests(PostgresFixture postgres) : ICla
         {
             IdeaDetails stale = (await query.LoadAsync<IdeaDetails>(ideaId, cts.Token))!;
             stale.Scope.Should().Be(
-                ReplicationScope.Team, "the pre-marker document never wrote this key, and the member initializer falls back to team");
-            stale.IsPrivate.Should().BeFalse("a computed read off the wrongly-defaulted scope reads the same way");
+                ReplicationScope.Private,
+                "the pre-marker document never wrote 'scope', but it still carries the legacy 'isPrivate' key, which the getter falls back to");
+            stale.IsPrivate.Should().BeTrue("a computed read off the legacy-derived scope reads the same way");
         }
 
         IReadOnlyList<Guid> rebuilt = await IdeaDetailsProjectionBackfill.RunAsync(store, cts.Token);
