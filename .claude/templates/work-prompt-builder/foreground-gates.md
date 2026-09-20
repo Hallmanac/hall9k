@@ -9,8 +9,9 @@
   another session — starts while it is still writing to it. A command run with no
   explicit `timeout` only gets `BASH_DEFAULT_TIMEOUT_MS`, {{DefaultCeilingMinutes}} minutes
   today — request an explicit `timeout` up to the actual foreground ceiling,
-  `BASH_MAX_TIMEOUT_MS`, {{ForegroundCeilingMinutes}} minutes today, sized so this
-  project's full verification suite fits inside one foreground run.
+  `BASH_MAX_TIMEOUT_MS`, {{ForegroundCeilingMinutes}} minutes today, sized so every gate
+  this session itself runs fits inside one foreground run — a project's own host-coupled
+  gate, if it has one, is never among them; the gate list above says so wherever it applies.
 ===session-does-not-run-gates===
   Never start anything with the harness's own background tools — Bash's
   `run_in_background`, `Monitor`, `ScheduleWakeup`, or any other scheduled check-in —

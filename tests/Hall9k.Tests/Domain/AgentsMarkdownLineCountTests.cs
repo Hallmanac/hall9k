@@ -54,11 +54,17 @@ namespace Hall9k.Tests.Domain;
 /// replaced was cut rather than kept beside it, and the replacement is wrapped at the same ~100
 /// columns everything else here uses; the remaining six lines are the rule's own content, not
 /// slack. Ceiling to 222.
+/// A sixth: task 57e538ee added the one sentence naming `dotnet test` with no filter as this
+/// project's own host-coupled gate, directly under the "Build / test / run" block that used to
+/// print it as an ordinary command with no such warning — the exact gap the origin incident (two
+/// host-coupled gates killed at their 30-minute limit racing a session's own hand-run full suite)
+/// traced back to, and a turn-1 fact for every dispatched session working in this repo, not a
+/// narrower audience's concern. Five more lines, ceiling to 227.
 /// </para>
 /// </summary>
 public sealed class AgentsMarkdownLineCountTests
 {
-    private const int LineCeiling = 222;
+    private const int LineCeiling = 227;
 
     [Fact]
     public void AGENTS_markdown_stays_at_or_under_its_recorded_line_ceiling()

@@ -29,6 +29,11 @@ docker compose up -d         # Postgres only (installed mode / manual runs)
 ./src/Hall9k.Cli/bin/Debug/net10.0/h9k     # the CLI binary after build
 ```
 
+`dotnet test` with no filter is this project's own host-coupled gate: it runs only in the
+daemon's own serialized host gate, never as a bare command a session runs directly here — the
+one exception is a single touched test class, scoped by name (e.g. `dotnet test --filter
+"FullyQualifiedName~ThatClass"`), never the gate's own full command.
+
 Every other `h9k`/`h9kd` command — install/update/uninstall, project/task/idea/epic lifecycle,
 Jira/GitHub backlog integration, branch templates, auto-pr-review — is documented in the
 `hall9k-cli-reference` skill; load it on demand rather than assuming a dispatched session was

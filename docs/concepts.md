@@ -451,7 +451,11 @@ intermediate review-cycle pass in between skips it outright, recorded as such ra
 instantaneous pass, so `h9k task show`'s Gates cell reads "skipped (host-coupled)" for that pass.
 When it does run, it is serialized against every other run's own host-coupled gate on the same
 node — at most one runs at a time — and a run waiting its turn reports that wait as its own phase
-(`h9k task show` says "waiting for the host-coupled gate slot"), never as a failure.
+(`h9k task show` says "waiting for the host-coupled gate slot"), never as a failure. A dispatched
+session is never the one running it: every gate list a session's own prompt shows names a
+host-coupled gate as the daemon's own serialized gate rather than printing its bare command, with
+one narrow exception — a single touched test class, scoped by name — so a session never races the
+daemon's own serialized slot for the same permits by hand-running the gate's full command itself.
 
 Depth: PLAN.md §16, Decisions Log #225.
 
