@@ -835,6 +835,36 @@ can only be refused on arrival. The full history stays readable on the node that
 broadcast closes when a member answers it, or when one says it holds nothing that matches.
 
 Depth: [scope.md](scope.md), Decisions Log #236.
+
+## The orchestrator's presence
+
+An orchestrator window is a live process on one machine, and nothing else on the platform could
+answer "is one actually up right now" until it started saying so itself. A window registers
+(`h9k orchestrator register --project <name> --session <name> --pid <pid>`) as the first step of
+its own start-up, and deregisters (`h9k orchestrator deregister`) when it closes or restarts —
+the launch anchor both recipes generate runs both calls automatically, so an operator never types
+either by hand. `h9k orchestrator status` and the `h9k status` header both print the identical
+sentence: the live window's session name, agent CLI, process id and age, or "none live" with when
+one was last shut down or lost.
+
+**Liveness is checked against the process table, not trusted from the record.** A registration
+says a window declared itself live at some point; the daemon's own presence sweep, and both CLI
+surfaces on demand, ask the operating system whether that process id is still the one running —
+so a terminal closed without a clean deregister reads as gone within one sweep interval rather
+than forever. Checked by process id alone, which is why this works for any vendor's agent CLI, not
+only Claude Code.
+
+**Registering a second live window for the same project is refused by default**, naming the one
+already registered; `--replace` takes over from it deliberately. Two windows driving one board
+both dispatch against the same queue and both drain the same feed, and only the operator knows
+whether the second terminal is the one they meant to use.
+
+Presence is a fact about one machine: it never replicates to another node, the same way a process
+table itself never could. It is what the feed courier below asks before ever spawning — a courier
+that found nobody to deliver to would just be another kind of noise.
+
+Depth: [PLAN.md §16](../PLAN.md), Decisions Log #237.
+
 ## The orchestrator feed
 
 The three surfaces above answer "where does everything stand right now". The feed answers the
@@ -874,6 +904,53 @@ what an orchestrator would want to know, not a mirror of the log, so a new event
 silent and adding it is a decision somebody makes.
 
 Depth: [PLAN.md §16](../PLAN.md), Decisions Log #241.
+
+## The feed courier
+
+Presence answers whether a window is up; the feed answers what it missed. Neither one, on its
+own, gets the news to a window that is already open — an orchestrator still had to think to ask.
+The feed courier is what closes that loop: the daemon spawns a short-lived, cheap-model agent
+that delivers a project's undrained feed items into its live orchestrator session and exits, so
+no window ever has to poll for what happened.
+
+**Four conditions gate every spawn**, checked once per project on a short sweep: the feed has
+undrained items at that project's own level, an orchestrator is live for it on this node (the
+presence section above), no courier for that project is already running, and a batching wait has
+elapsed since the last one. The wait is what turns a burst of activity into one delivery instead
+of many: it is zero once the feed has been quiet for ten minutes, and ramps up toward a ceiling —
+`h9k project set <name> --courier-max-wait`, sixty seconds by default — the more recently
+something new has landed. A park, a dispute, daemon trouble, or a message from a person
+dispatches at once regardless of that wait; a per-day spawn cap (five hundred by default) is the
+backstop against a genuine storm even of those. A manual `h9k orchestrator feed --drain` holds a
+short lease on the project's own cursor while it runs, and the courier never spawns into that
+window.
+
+**The courier's own prompt is deliberately small** — no recipe, no AGENTS.md, none of the
+repository context an ordinary dispatch carries. It is the feed items exactly as `--drain` itself
+would print them, plus one instruction: address the orchestrator's own registered session by name
+through Claude Code's cross-session mesh (the `SendMessage` tool every headless session already
+carries) and report back whether the send landed. Delivery is an adapter keyed off the
+orchestrator's own registered CLI — Claude Code today, another vendor's CLI whenever one earns its
+own adapter — and a project whose orchestrator runs under a CLI with no adapter simply keeps its
+feed undrained, logged, rather than guessing at a mechanism nobody has described.
+
+**The daemon drains the feed itself, never the courier.** The sequence to drain through is
+captured before the courier is ever spawned, so an item that arrives mid-delivery is never
+credited to a message that never carried it; once the courier reports delivery, the daemon
+advances the cursor to that captured sequence. A session that fails, times out, or never reports
+back leaves the cursor exactly where it stood, and the identical items are what the next courier
+—or the next manual `--drain`— sees.
+
+**It runs as a run with no task** — the seam a courier needed and no earlier role did, since
+every other dispatched session is either a task's own build/review/fix work or, for card
+publication, a task's own errand with no run of its own. A courier is neither: it belongs to a
+project, not a task, so it opens its own stream and is recorded with its own model, its own
+token spend, and its own outcome, folded into `h9k status`'s spend line the same as any other
+role's. It is its own role in the model-by-role policy (`h9k config set --model-courier`), and
+the one role that ships with a non-blank opinion of its own — `claude-sonnet-5`, cheap by
+construction — rather than every other role's blank "ask the project or platform default".
+
+Depth: [PLAN.md §16](../PLAN.md), Decisions Log PLACEHOLDER-504c9c3b.
 
 ## Owners, nodes, and connections
 
