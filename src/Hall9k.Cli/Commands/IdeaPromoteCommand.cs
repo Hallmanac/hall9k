@@ -188,13 +188,31 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
             agentContext.AppendLine(context).AppendLine();
         }
 
-        string ideaDirectory = IdeaPaths.ResolveDirectory(
-            idea.WorkspaceHome, ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text), idea.Id);
         agentContext.AppendLine(
             "Discovery workspace (research notes, gathered files, and prototypes from before this "
             + "was a task; may be empty):");
-        agentContext.Append(IdeaPaths.WorkspaceDirectory(ideaDirectory));
+        agentContext.Append(WorkspaceDescription(idea));
         return agentContext.ToString();
+    }
+
+    /// <summary>
+    /// The discovery workspace as a path on this machine, or — for a home replicated from a node
+    /// on a different operating system (<c>ProjectHome.IsNativeForm</c>'s own doc) — the recorded
+    /// value said plainly rather than a directory <see cref="IdeaPaths.ResolveDirectory"/> would
+    /// otherwise fabricate by misreading a foreign path's own syntax as this host's
+    /// (independent pre-PR review, cycle 1, both lenses, medium; AGENTS.md, never guess at
+    /// unobserved facts).
+    /// </summary>
+    internal static string WorkspaceDescription(IdeaAggregate idea)
+    {
+        if (idea.WorkspaceHome is { HasValue: true, IsNativeForm: false } foreign)
+        {
+            return $"{foreign.Value} (recorded on another node's own operating system — not a directory here)";
+        }
+
+        string ideaDirectory = IdeaPaths.ResolveDirectory(
+            idea.WorkspaceHome, ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text), idea.Id);
+        return IdeaPaths.WorkspaceDirectory(ideaDirectory);
     }
 
     /// <summary>
@@ -229,10 +247,7 @@ public sealed class IdeaPromoteCommand : Hall9kAsyncCommand<IdeaPromoteCommand.S
         AnsiConsole.MarkupLine(seed.Context.IsNotBlank()
             ? "[dim]  context:[/] the rest of the note, plus the discovery workspace path"
             : "[dim]  context:[/] the discovery workspace path");
-        string ideaDirectory = IdeaPaths.ResolveDirectory(
-            idea.WorkspaceHome, ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text), idea.Id);
-        AnsiConsole.MarkupLine(
-            $"[dim]  workspace:[/] {IdeaPaths.WorkspaceDirectory(ideaDirectory).EscapeMarkup()}");
+        AnsiConsole.MarkupLine($"[dim]  workspace:[/] {WorkspaceDescription(idea).EscapeMarkup()}");
 
         if (SharpenNudge(seed.Objective, seed.Context, objectiveGiven) is { } nudge)
         {

@@ -261,16 +261,63 @@ public sealed class IdeaSurfaceTests
         context.Should().Contain(IdeaPaths.WorkspaceDirectory(IdeaPaths.GlobalDirectory(ideaId)));
     }
 
+    /// <summary>
+    /// A home replicated from a node on a different operating system names a directory on THAT
+    /// machine, never this one — the persisted agent context a promoted draft carries must say so
+    /// plainly rather than fabricate a path on this host by misreading the foreign syntax
+    /// (independent pre-PR review, cycle 1, both lenses, medium; AGENTS.md, never guess at
+    /// unobserved facts).
+    /// </summary>
+    [Fact]
+    public void The_draft_names_a_foreign_nodes_home_plainly_instead_of_guessing_a_directory_for_it()
+    {
+        IdeaAggregate idea = CapturedIdea(out _, ForeignHome);
+
+        string context = IdeaPromoteCommand.AgentContext(idea, context: null);
+
+        context.Should().Contain(ForeignHomePath);
+        context.Should().Contain("recorded on another node's own operating system");
+    }
+
+    /// <summary>
+    /// The identical guard as <see cref="IdeaPromoteCommand"/>'s own, proved separately because
+    /// <c>h9k idea archive</c> reads and prints the workspace through its own copy of the check
+    /// rather than a shared helper (independent pre-PR review, cycle 1, both lenses, medium).
+    /// </summary>
+    [Fact]
+    public void Archiving_names_a_foreign_nodes_home_plainly_instead_of_guessing_a_directory_for_it()
+    {
+        IdeaAggregate idea = CapturedIdea(out _, ForeignHome);
+
+        string description = IdeaArchiveCommand.WorkspaceDescription(idea);
+
+        description.Should().Contain(ForeignHomePath);
+        description.Should().Contain("recorded on another node's own operating system");
+    }
+
     /// <summary>An idea with no recorded home, so its workspace resolves to the platform-global location.</summary>
-    private static IdeaAggregate CapturedIdea(out Guid ideaId)
+    private static IdeaAggregate CapturedIdea(out Guid ideaId) =>
+        CapturedIdea(out ideaId, Hall9k.Domain.Features.Project.ProjectHome.None);
+
+    private static IdeaAggregate CapturedIdea(out Guid ideaId, Hall9k.Domain.Features.Project.ProjectHome workspaceHome)
     {
         ideaId = DomainId.New();
         IdeaAggregate idea = new();
         idea.Apply(IdeaDecider.Capture(
-            ideaId, DomainId.New(), "Give ideas a discovery workspace", projectId: null, Now,
-            Hall9k.Domain.Features.Project.ProjectHome.None));
+            ideaId, DomainId.New(), "Give ideas a discovery workspace", projectId: null, Now, workspaceHome));
         return idea;
     }
+
+    /// <summary>
+    /// A path rooted in the OTHER host's own shape, whichever host this suite happens to run on
+    /// (this project's own CI runs both ubuntu and windows) — a Windows drive path off Windows, a
+    /// POSIX path on it.
+    /// </summary>
+    private static readonly string ForeignHomePath =
+        OperatingSystem.IsWindows() ? "/home/bob/.hall9k/projects/hall9k" : @"C:\Users\bob\.hall9k\projects\hall9k";
+
+    private static Hall9k.Domain.Features.Project.ProjectHome ForeignHome =>
+        Hall9k.Domain.Features.Project.ProjectHome.Parse(ForeignHomePath);
 
     private static IReadOnlyList<IdeaRow> Rows() =>
     [
