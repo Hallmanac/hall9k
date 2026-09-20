@@ -946,9 +946,11 @@ every other dispatched session is either a task's own build/review/fix work or, 
 publication, a task's own errand with no run of its own. A courier is neither: it belongs to a
 project, not a task, so it opens its own stream and is recorded with its own model, its own
 token spend, and its own outcome, folded into `h9k status`'s spend line the same as any other
-role's. It is its own role in the model-by-role policy (`h9k config set --model-courier`), and
-the one role that ships with a non-blank opinion of its own — `claude-sonnet-5`, cheap by
-construction — rather than every other role's blank "ask the project or platform default".
+role's. It is its own role in the model-by-role policy (`h9k config set --model-courier`); its
+own field ships blank exactly like every other role's ("ask the project or platform default"),
+but its *resolution* is the one deliberate exception — a blank courier bottoms out at
+`claude-sonnet-5`, cheap by construction, rather than falling all the way through to the platform
+default the way every other role's blank does.
 
 Depth: [PLAN.md §16](../PLAN.md), Decisions Log PLACEHOLDER-504c9c3b.
 
