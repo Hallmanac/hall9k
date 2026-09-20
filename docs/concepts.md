@@ -902,3 +902,39 @@ request already outstanding (`h9k task push-to-jira`, run by hand while still a 
 too, since that session mints its card regardless of the flag.
 
 Depth: [PLAN.md §6.2, §6.6, §10](../PLAN.md), Decisions Log #65, #95, #96, #97.
+
+## Replication scopes
+
+Every idea and every task carries a **replication scope**: how far its own events travel across
+the fleet of nodes an owner runs and the team of members a project has.
+
+- **Private** — never leaves this node. The old `set-private on` flag, still available as an
+  alias.
+- **Fleet** — reaches every node the same owner runs, addressed to that owner's own root identity
+  the same way an invite proof already is, and never to any other project member's node. This is
+  the resting scope for a fresh idea or a fresh draft: an owner can work something alone or within
+  their own fleet before it is ready for the team.
+- **Team** — reaches every project member's own fleet. One-way: once a scope reaches team, no
+  command can narrow it back down, because another member may already hold a copy and there is no
+  message that un-sends what they already have.
+
+**Defaults.** A newly captured idea and a freshly added draft task both start at fleet scope.
+Publishing a task (`h9k task publish`) always sets team scope, unconditionally — a published task
+is the door a task reaches the team through with no separate command needed. An idea has no such
+automatic door: it reaches the team only on the explicit word below. An item that existed before
+this feature keeps the effective scope it already had — team if it was already shared (not
+marked private), private if it was.
+
+**Setting it directly.** `h9k idea scope <id> <private|fleet|team>` and `h9k task scope <id>
+<private|fleet|team>` set the scope as a recorded event naming who and when, refused if the item
+is already at that scope or already team and asked to go narrower.
+
+**Sharing.** `h9k idea share <id>` and `h9k task share <id>` are sugar for setting team scope —
+the one door onto team an idea has, and the door that lets a task's draft reach the team before it
+is ready to publish (useful when a draft needs a teammate's eyes for approval). Both work on an
+item in any state, a draft included.
+
+A scope change re-sends the item's whole history at its new, wider scope, so a teammate who was
+never addressed before receives it whole rather than only whatever happens from that point on.
+
+Depth: [PLAN.md §16](../PLAN.md) (idea 202383dc's own replication scaffolding; idea 8c5993c5, this feature's own Decisions Log entry).
