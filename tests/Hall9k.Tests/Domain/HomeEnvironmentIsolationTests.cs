@@ -5,353 +5,118 @@ using Xunit;
 namespace Hall9k.Tests.Domain;
 
 /// <summary>
-/// PlatformPaths.Home resolves the process-wide HALL9K_HOME environment variable on every call,
-/// and xUnit runs distinct collections in parallel within the one test process — so any test
-/// that sets HALL9K_HOME (the h9k-update scratch-home tests, chief among them) races any test
-/// that resolves a path built on it, unless both share one xUnit collection, which xUnit runs
-/// serially within itself. That collection is "Hall9kHome" (see e.g. <see
-/// cref="Hall9k.Tests.Cli.UpdateCommandTests"/>), and this test is the guard that keeps every
-/// class touching that surface inside it: it scans this project's own sources for the risky
-/// members (<c>Environment.GetEnvironmentVariable</c>/<c>SetEnvironmentVariable</c>,
-/// <c>PlatformPaths.Home</c>, every <c>RunPaths</c> member that reads it, and the other
-/// production accessors that resolve <c>PlatformPaths.Home</c> transitively, directly or through
-/// another such accessor —
-/// <c>ProjectHomePaths.ProjectsRoot</c>, <c>ProjectHomePaths.DefaultFor</c>,
-/// <c>SkillLibraryPaths.CanonicalDirectory</c>,
-/// <c>CredentialVault.Directory</c> and the members that compose on it this list can express
-/// (<c>FileFor</c>, <c>StoreAsync</c>, <c>Holds</c>, <c>Discard</c> — <c>ResolveAsync</c> also
-/// composes on <c>FileFor</c>, transitively through <c>FromFileAsync</c>, but as an instance
-/// member its call sites read <c>CredentialVault.Default.ResolveAsync(…)</c>, a shape this list's
-/// <c>Type.Member</c> text scheme cannot itself name, so it is not listed here — see the coverage
-/// note below),
-/// <c>PostgresRuntime.ComposeDirectory</c>,
-/// <c>IdeaPaths.GlobalDirectory</c>, <c>Hall9kDatabase.ConfigFile</c>,
-/// <c>PlatformConfigFile.ReadOperatingSettingsAsync</c>,
-/// <c>PlatformConfigFile.TryReadOperatingSettingsAsync</c>,
-/// <c>PlatformConfigFile.WriteOperatingSettingsAsync</c>,
-/// <c>WindowsDaemonAutostart.TaskXmlContent</c>, and every
-/// <c>DaemonRuntime</c> member that reads <c>RunPaths.Root</c> — see <see
-/// cref="RiskyMembers"/>) and fails the build for any CLASS that uses one without itself
-/// carrying <c>[Collection("Hall9kHome")]</c>, rather than trusting every future test author to
-/// remember the rule. Origin: <c>RunPathsTests.With_no_home_a_new_run_falls_back_to_the_platform_global_location</c>
-/// intermittently observed an <c>h9k-update-*</c> scratch home under parallel execution — gate
-/// strikes on 34a618a6 (2026-08-29) and cea5ae6e (2026-08-30) — because it lived outside this
-/// collection while <c>UpdateCommandTests</c> mutated HALL9K_HOME from inside it.
+/// <see cref="Hall9k.Domain.Infrastructure.Storage.PlatformPaths.Home"/> and
+/// <see cref="Hall9k.Domain.Infrastructure.Persistence.Hall9kDatabase.Resolve"/> each consult a
+/// flow-scoped <see cref="AsyncLocal{T}"/> override before their own process-wide environment
+/// variable (<c>HALL9K_HOME</c>, <c>HALL9K_CONNECTION_STRING</c>), and
+/// <c>Hall9k.Tests.TestSupport.ScopedTestHome</c>/<c>ScopedConnectionString</c> are the one place
+/// that ever opens either override — so, unlike before this seam existed, two tests that each
+/// redirect their own home or connection string never race each other, and a class that only
+/// <em>reads</em> one of those two production members needs no serialization at all. What can
+/// still race is a literal write of the real environment variable itself — genuinely process-wide,
+/// with no flow-scoped alternative — which is what this guard's first fact still polices, narrowed
+/// from the old wide "every class that reads a home-derived path" scan down to exactly that.
 /// <para>
-/// The check is per CLASS, not per file (<see cref="FindClassFrames"/>): xUnit does not inherit
-/// <c>[Collection]</c> from a containing type, so a nested class racing HALL9K_HOME needs its
-/// own attribute even when the file's outer class already carries one — see
-/// <c>RunPathsTests</c>'s nested <c>ResolveCurrentDirectoryTests</c> and
-/// <c>AnticipateDirectoryAfterSweepTests</c>, which carry none because, unlike their enclosing
-/// class, neither reads <c>PlatformPaths.Home</c>.
+/// Two rules, over this whole test project:
 /// </para>
 /// <para>
-/// The scan strips comments and string literals before matching (see
-/// <see cref="TestSourceTree.StripCommentsAndStrings"/>) — <c>ReviewVerdictValidationTests</c> is dense with
-/// <c>InlineData</c> fixtures whose prose literally quotes <c>PlatformPaths.Home</c> and
-/// <c>RunPaths.Root</c> as example finding text, without either ever being called from that
-/// file. A naive substring search over the raw source would falsely conscript it into this
-/// collection for content that never touches the environment.
+/// 1. <see cref="Every_direct_write_of_home_or_connection_string_sits_in_the_environment_collection"/> —
+/// a class that still calls <c>Environment.SetEnvironmentVariable</c> naming <c>HALL9K_HOME</c> or
+/// <c>HALL9K_CONNECTION_STRING</c> directly (rather than going through
+/// <c>ScopedTestHome</c>/<c>ScopedConnectionString</c>) races every other one unless both carry
+/// <c>[Collection("Environment")]</c>, the one serialized collection left — a test never sets
+/// either variable itself except to hand <c>HALL9K_HOME</c> to a real child process, which still
+/// needs the literal environment variable, since a child inherits its parent's environment, not
+/// its parent's <see cref="AsyncLocal{T}"/> state.
 /// </para>
 /// <para>
-/// This is a per-CLASS check on that class's own source text, which is where it stops: a future
-/// refactor that pulls a repeated risky call out into a shared helper or base class (a
-/// <c>TemporaryHome</c> fixture, say) moves the requirement onto a type with no test methods of
-/// its own, where <c>[Collection]</c> has no runtime effect — every class that then merely *uses*
-/// that helper carries no risky-member text and so needs no attribute as far as this scan can
-/// tell, even though it still races HALL9K_HOME through the helper exactly as before. Extracting
-/// a risky call this way needs a human to re-derive the collection requirement for every caller;
-/// this guard cannot follow it there. The same blind spot reaches ordinary production code, not
-/// only extracted test helpers: <c>WindowsDaemonAutostart.TaskXmlContent</c> raced undetected
-/// until review named it explicitly, because it reached <c>RunPaths.Root</c> through a private
-/// property this list had not yet enumerated. An instance member composing on an already-listed
-/// static one is the same gap in a different shape — <c>CredentialVault.ResolveAsync</c> reaches
-/// the listed <c>FileFor</c>, but a class calling only <c>ResolveAsync</c> carries none of this
-/// list's text and passes the guard unflagged; there is no live miss today because every current
-/// caller already carries the attribute for an independent reason, but a future one would not be
-/// caught here.
+/// 2. <see cref="No_scope_is_opened_inside_an_async_lifetime_method"/> — a class that constructs
+/// <c>ScopedTestHome</c> or <c>ScopedConnectionString</c> inside an <c>async Task
+/// InitializeAsync()</c> (xUnit's <c>IAsyncLifetime</c> method) opens a scope that is already gone
+/// by the time the test method itself runs: <c>await</c> unwinds the
+/// <see cref="ExecutionContext"/> a callee mutated back to what the caller held once that callee's
+/// own task completes, so an override set inside <c>InitializeAsync</c> never reaches the test xUnit
+/// invokes afterward. Open it from a constructor or a field initializer instead — a plain
+/// synchronous call, which mutates the *same* context the test method goes on to run in, rather
+/// than a separately awaited one. See <c>ScopedTestHome</c>'s own doc comment for the precise
+/// mechanism.
 /// </para>
 /// <para>
-/// The class holds a second fact,
-/// <see cref="No_postgres_backed_test_class_is_serialized_for_a_home_it_never_touches"/>,
-/// which reads the same rule backwards over the Postgres-backed classes alone: one of those
-/// carrying the attribute without naming a risky member is not a correctness problem but a
-/// wall-clock one, since it holds a container in the serial lane for nothing. See that fact for
-/// why it is scoped to those classes rather than applied tree-wide.
+/// Both facts are per-CLASS, not per-file: xUnit does not inherit <c>[Collection]</c> from a
+/// containing type, so a nested class needs its own attribute even when its enclosing class
+/// already carries one. Both strip comments and string literals before matching (see
+/// <see cref="TestSourceTree.StripCommentsAndStrings"/>), so prose that merely quotes one of these
+/// members is never mistaken for a real call.
 /// </para>
 /// </summary>
 public sealed class HomeEnvironmentIsolationTests
 {
     private const string SelfFileName = "HomeEnvironmentIsolationTests.cs";
-    private const string CollectionAttribute = "[Collection(\"Hall9kHome\")]";
-    private const string TraitAttribute = """[Trait("Category", "Hall9kHome")]""";
-    private const string PostgresFixtureDeclaration = "IClassFixture<PostgresFixture>";
+    private const string CollectionAttribute = "[Collection(\"Environment\")]";
+    private const string TraitAttribute = """[Trait("Category", "Environment")]""";
 
-    private static readonly string[] RiskyMembers =
+    // Deliberately narrow, unlike the old RiskyMembers list this guard replaces: with the
+    // flow-scoped seam in place, a *read* of PlatformPaths.Home or Hall9kDatabase.Resolve can
+    // never observe another test's redirected value (each lives on that test's own AsyncLocal
+    // flow), so only a literal write of the real environment variable is still genuinely
+    // process-wide and worth catching here.
+    //
+    // The call itself, unquoted, is what gets matched against the comment/string-stripped code —
+    // its argument (what distinguishes a HALL9K_HOME/HALL9K_CONNECTION_STRING write from any
+    // other Environment.SetEnvironmentVariable call) is a string literal or a dotted member
+    // reference, and StripCommentsAndStrings removes string literal *content* entirely, so a
+    // marker embedding one (as an earlier draft of this guard did) can never match the stripped
+    // text at all — it would silently never fire. Matching the call alone in stripped code, then
+    // reading its raw, unstripped argument text directly (see the scan below), is what actually
+    // works for both a quoted argument and a member reference.
+    private const string SetEnvironmentVariableCall = "Environment.SetEnvironmentVariable(";
+
+    private static readonly string[] HomeOrConnectionStringArguments =
     [
-        "Environment.SetEnvironmentVariable",
-        "Environment.GetEnvironmentVariable",
-        "PlatformPaths.Home",
-        "RunPaths.Root",
-        "RunPaths.GlobalDirectory",
-        "RunPaths.ResolveDirectory(",
-        // The rest resolve PlatformPaths.Home transitively and take no home parameter of their
-        // own to redirect instead, so reaching HALL9K_HOME through one of these is just as racy
-        // as calling PlatformPaths.Home directly. This list is bounded, not provably closed: a
-        // grep of src/ for "PlatformPaths." finds every accessor that reads it *directly*, but
-        // not one that reaches it through another accessor already on this list (as
-        // ProjectHomePaths.DefaultFor reaches it through ProjectsRoot, and every DaemonRuntime
-        // member below reaches it through RunPaths.Root) — that chain can run arbitrarily deep,
-        // so each entry here was found by reading callers of an already-listed member, not by a
-        // search guaranteed to terminate. Cycle-2 review found the seven below unlisted; treat a
-        // future one found the same way as a gap in this list, not a false alarm.
-        "ProjectHomePaths.ProjectsRoot",
-        "ProjectHomePaths.DefaultFor",
-        "SkillLibraryPaths.CanonicalDirectory",
-        "SkillLibraryPaths.Skill(",
-        "SkillLibraryPaths.PublishedManifest",
-        "SkillLibraryPaths.Published(",
-        "CredentialVault.Directory",
-        "CredentialVault.FileFor(",
-        "CredentialVault.StoreAsync(",
-        "CredentialVault.Holds(",
-        "CredentialVault.Discard(",
-        "PostgresRuntime.ComposeDirectory",
-        "PostgresRuntime.ComposeFile",
-        "PostgresRuntime.WriteComposeFile(",
-        "IdeaPaths.GlobalDirectory",
-        "IdeaPaths.ResolveDirectory(",
-        "Hall9kDatabase.ConfigFile",
-        "Hall9kDatabase.Resolve",
-        "Hall9kDatabase.ConnectionStringStateAndValueInConfigFile",
-        "Hall9kDatabase.WriteConfiguredConnectionStringAsync",
-        "PlatformConfigFile.ReadOperatingSettingsAsync",
-        "PlatformConfigFile.TryReadOperatingSettingsAsync",
-        "PlatformConfigFile.WriteOperatingSettingsAsync",
-        "DaemonRuntime.BinDirectory",
-        "DaemonRuntime.StagingBinDirectory",
-        "DaemonRuntime.LogFile",
-        "DaemonRuntime.PidFile",
-        "DaemonRuntime.LockFile",
-        "DaemonRuntime.StopRequestFile",
-        "DaemonRuntime.StartingMarkerFile",
-        // Reaches PlatformPaths.Home through RunPaths.Root by way of the private
-        // LaunchScriptFile property, not through anything already on this list — a production
-        // accessor found the same way as everything above, not a test-side helper.
-        "WindowsDaemonAutostart.TaskXmlContent(",
-        // Reach RunPaths.Root through DaemonRuntime.PidFile / DaemonRuntime.StartingMarkerFile
-        // without a caller having to name either directly (task 92da629d).
-        "DaemonProcess.Probe(",
-        "DaemonProcess.ProbeBootStatus(",
-        // The recipes/ canonical set (task: an operator starts a lean node or project
-        // orchestrator window) is SkillLibraryPaths's own sibling, one level up: same
-        // reaches-PlatformPaths.Home-with-no-redirect shape, found the same way (reading
-        // RecipeSkillPublisher's own callers of RecipeLibraryPaths).
-        "RecipeLibraryPaths.CanonicalDirectory",
-        "RecipeLibraryPaths.LaunchAnchorFile",
-        "RecipeLibraryPaths.SettingsFile",
-        "RecipeLibraryPaths.OrchestratorRecipeFile",
-        "RecipeLibraryPaths.JournalFile",
-        "RecipeLibraryPaths.PublishedManifest",
-        "RecipeLibraryPaths.ClaudeDirectory",
-        "RecipeLibraryPaths.ClaudeSkillsDirectory",
-        "OrchestratorRecipeContext.NodeWorkingDirectory",
-        "RecipeSkillPublisher.PublishCanonical(",
-        "RecipeSkillPublisher.Seed(",
-        "RecipeSkillPublisher.SeedNode(",
-        // The canonical prompt-template set (task: agent prompt prose lives in shipped markdown
-        // templates rather than hard-coded C# strings) is SkillLibraryPaths's own sibling, found
-        // the same way: reading TemplatePublisher's own callers of TemplateLibraryPaths.
-        "TemplateLibraryPaths.CanonicalDirectory",
-        "TemplateLibraryPaths.PublishedManifest",
-        "TemplatePublisher.PublishCanonical(",
-        "TemplatePublisher.RemovePublished(",
-        // PromptTemplates.ResolvePath falls back to TemplateLibraryPaths.CanonicalDirectory
-        // whenever a checkout's own .claude/templates does not carry the file asked for, so a test
-        // calling either of these races HALL9K_HOME exactly as directly calling
-        // TemplateLibraryPaths.CanonicalDirectory would — and ReviewLapPromptBuilder.Build calls
-        // PromptTemplates.Load internally on every one of its own branches, so it carries the same
-        // risk one layer up (independent pre-PR review, cycle 1).
-        "PromptTemplates.Load(",
-        "PromptTemplates.AppendTemplate(",
-        "ReviewLapPromptBuilder.Build(",
-        // WorkPromptBuilder moved its own prose onto the same mechanism (task: WorkPromptBuilder's
-        // prose lives in templates), but unlike ReviewLapPromptBuilder it exposes its Append* rules
-        // as public members of their own — Hall9k.Daemon.Execution.AgentPromptBuilder calls each one
-        // directly through a `using static` import, and a test can just as easily call one of them
-        // directly without ever going through Build — so every one of them carries the same risk
-        // Build itself does, and each needs its own entry rather than Build alone standing in for
-        // the whole surface (independent pre-PR review, cycle 1, conformance lens).
-        "WorkPromptBuilder.Build(",
-        "WorkPromptBuilder.AppendOperatorGuidanceSection(",
-        "WorkPromptBuilder.AppendAdoptedContextRule(",
-        "WorkPromptBuilder.AppendBlockerContextRule(",
-        "WorkPromptBuilder.AppendHandoffRules(",
-        "WorkPromptBuilder.AppendSelfReviewPhaseRules(",
-        "WorkPromptBuilder.AppendCheckpointCommitRules(",
-        "WorkPromptBuilder.AppendOwnerVoiceRule(",
-        "WorkPromptBuilder.AppendSessionEndsAtFinalMessageRule(",
-        "WorkPromptBuilder.AppendForegroundGatesRule(",
-        "WorkPromptBuilder.AppendNoHostLoadForFlakeReproductionRule(",
-        "WorkPromptBuilder.AppendCommitDisciplineRuleForInteractiveSession(",
-        "WorkPromptBuilder.AppendSelfDeliveryRule(",
-        "WorkPromptBuilder.AppendSelfRegistrationRule(",
-        "WorkPromptBuilder.AppendFindLiveAgentsRule(",
-        "WorkPromptBuilder.AppendPlatformSettingsReminderRule(",
-        "WorkPromptBuilder.AppendExternalInteractionLoggingRule(",
-        "WorkPromptBuilder.AppendOutboundMilestoneRules(",
-        "WorkPromptBuilder.AppendInteractiveBoundaryChoices(",
-        "WorkPromptBuilder.AppendProjectHome(",
-        "WorkPromptBuilder.AppendHomeSkillRule(",
-        // AgentPromptBuilder moved its own prose onto the same mechanism (task: AgentPromptBuilder's
-        // prose lives in shipped markdown templates rather than C# string literals), and every one
-        // of its public entry points calls PromptTemplates.Load or AppendTemplate internally, so
-        // each carries the same risk ReviewLapPromptBuilder.Build already does one layer up
-        // (independent pre-PR review, cycle 1, conformance lens).
-        "AgentPromptBuilder.Build(",
-        "AgentPromptBuilder.BuildFollowUp(",
-        "AgentPromptBuilder.BuildReviewRequestedChanges(",
-        "AgentPromptBuilder.BuildFixChecks(",
-        "AgentPromptBuilder.BuildRebase(",
-        "AgentPromptBuilder.BuildPreFinalPassRebase(",
-        "AgentPromptBuilder.BuildSettlingGateRepair(",
-        "AgentPromptBuilder.BuildStackReplay(",
-        "AgentPromptBuilder.BuildReview(",
-        "AgentPromptBuilder.BuildPrReviewLens(",
-        "AgentPromptBuilder.BuildReviewVerify(",
-        "AgentPromptBuilder.BuildReviewVerdictReprompt(",
-        "AgentPromptBuilder.BuildBudgetRetry(",
-        "AgentPromptBuilder.BuildSessionErrorRetry(",
-        "AgentPromptBuilder.BuildUncommittedWorkRecovery(",
-        "AgentPromptBuilder.BuildReviewFix(",
-        "AgentPromptBuilder.BuildContextSynthesis(",
-        "AgentPromptBuilder.BuildCardPublication(",
+        "\"HALL9K_HOME\"",
+        "\"HALL9K_CONNECTION_STRING\"",
+        "Hall9kDatabase.EnvironmentVariableName",
+    ];
+
+    private static readonly string[] ScopeConstructionMarkers =
+    [
+        "new ScopedTestHome(",
+        "new ScopedConnectionString(",
     ];
 
     private static readonly Regex ClassDeclaration = new(
         @"^[ \t]*(?:(?:public|private|internal|protected|sealed|abstract|static|partial|new|unsafe)\s+)*(?<kw>class)\s+(?<name>\w+)",
         RegexOptions.Multiline | RegexOptions.Compiled);
 
-    // Anchored to a line start so a comment or doc comment that merely quotes the attribute text
-    // (e.g. "// needs no [Collection(\"Hall9kHome\")] of its own") is never mistaken for a real
-    // one: a "//" or "///" line never matches this, only a line whose first non-blank characters
-    // are the attribute itself. FindClassFrames matches this against raw source, not the
-    // comment/string-stripped code — stripping drops string literal content entirely, which would
-    // erase the very "Hall9kHome" text this regex needs to see — but then requires the matched
-    // line's own first character (attributeMatch.Index, which the ^[ \t]*\[... pattern anchors to
-    // wherever the line's leading whitespace begins, not to the "[" itself) to have survived
-    // stripping into real code, so a raw or verbatim string literal that quotes the attribute at a
-    // line start (e.g. a const fixture whose text is itself a code sample) still cannot credit a
-    // class that carries no real attribute: that line sits inside the literal's skipped interior
-    // and never reaches the stripped output.
+    // Same anchoring rationale as the guard this replaces: a "//"/"///" line quoting the attribute
+    // never matches, only a line whose first non-blank characters are the attribute itself, and the
+    // match is required to have survived comment/string stripping into real code (see
+    // FindClassFrames below) so a string literal that merely quotes the attribute cannot credit a
+    // class that carries no real one.
     private static readonly Regex CollectionAttributeLine = new(
-        @"^[ \t]*\[Collection\(""Hall9kHome""\)\]",
+        @"^[ \t]*\[Collection\(""Environment""\)\]",
         RegexOptions.Multiline | RegexOptions.Compiled);
 
-    // Same shape and same reasoning as CollectionAttributeLine immediately above: this guard
-    // requires [Collection("Hall9kHome")] mechanically, but nothing previously required the
-    // [Trait("Category", "Hall9kHome")] that commit 85066d2f added alongside it and that
-    // --verify-gate-filter actually selects on, so the two could silently diverge — a class
-    // could gain the collection (satisfying this guard) and never gain the trait, and its
-    // home-touching tests would keep running in the ordinary gate on every review lap
-    // (independent pre-PR review, cycle 3, conformance lens, medium). PublishesBinary already
-    // has this same "carries both attributes" pairing enforced (PublishLaneGuardTests); this is
-    // the same pairing for Hall9kHome.
     private static readonly Regex TraitAttributeLine = new(
-        @"^[ \t]*\[Trait\(""Category"",\s*""Hall9kHome""\)\]",
+        @"^[ \t]*\[Trait\(""Category"",\s*""Environment""\)\]",
         RegexOptions.Multiline | RegexOptions.Compiled);
 
+    // Matches an InitializeAsync method's own signature up to its opening brace — an
+    // expression-bodied InitializeAsync ("=> Task.CompletedTask;") has no brace to match and is
+    // skipped, which is correct: there is no block body there for a scope construction to hide
+    // inside. A plain call site ("await fixture.InitializeAsync()") is followed by ';' or ')'
+    // rather than '{' and is likewise skipped.
+    private static readonly Regex InitializeAsyncSignature = new(
+        @"\bInitializeAsync\s*\(\s*\)\s*",
+        RegexOptions.Compiled);
+
     [Fact]
-    public void Every_test_class_touching_the_platform_home_environment_shares_the_serialized_collection()
+    public void Every_direct_write_of_home_or_connection_string_sits_in_the_environment_collection()
     {
         (string testsDirectory, string[] files) = TestSources();
 
         List<string> offenders = [];
-        int riskyMemberHits = 0;
-
-        foreach (string file in files)
-        {
-            string source = File.ReadAllText(file);
-
-            (IEnumerable<string> classOffenders, string code) = ClassesUsingRiskyMembersWithoutTheCollection(source);
-
-            foreach (string className in classOffenders)
-            {
-                offenders.Add($"{Path.GetRelativePath(testsDirectory, file)} -> {className}");
-            }
-
-            // Counted over the stripped code, not the raw source: this floor exists to catch the
-            // scan going dark (StripCommentsAndStrings regressing to return empty or truncated
-            // code, which would make ClassesUsingRiskyMembersWithoutTheCollection above find
-            // nothing to search), and counting the raw source instead would make this floor stay
-            // comfortably clear even while that exact failure mode was happening.
-            foreach (string member in RiskyMembers)
-            {
-                riskyMemberHits += CountOccurrences(code, member);
-            }
-        }
-
-        offenders.Should().BeEmpty(
-            "every test class that sets or resolves a HALL9K_HOME-derived path races every other " +
-            $"one unless it shares the {CollectionAttribute} xUnit collection — xUnit does not " +
-            "inherit [Collection] from a containing type, so a nested class needs its own " +
-            "attribute even when its enclosing class already carries one; add it directly above " +
-            "the offending class (see RunPathsTests or UpdateCommandTests) rather than special-casing it here. " +
-            $"It also needs {TraitAttribute} beside {CollectionAttribute}, not just the collection alone — " +
-            "that trait is what --verify-gate-filter actually selects a host-coupled gate's tests on, so a " +
-            "class carrying only the collection still runs in the ordinary gate on every review lap");
-
-        // A floor on what the scan actually saw, so this test can pass green while checking
-        // nothing — TestSourceTree.RootDirectory() no longer resolving to tests/Hall9k.Tests, or
-        // the whole scan going dark some other way — turns into a failing assertion here instead of a guard that
-        // reports success while protecting nothing. This is a wholesale-breakage check, not a
-        // per-entry one: renaming any single RiskyMembers entry (or the production member it
-        // names) still leaves the aggregate count comfortably clear of the floor, since it is the
-        // total across every entry, not any one entry's own count. The floors sit well below
-        // today's actual counts (well over a hundred files, several hundred hits) so ordinary
-        // test-tree growth or shrinkage never brushes them.
-        files.Length.Should().BeGreaterThan(
-            100,
-            "this is far fewer .cs files than the test tree actually holds — TestSourceTree.RootDirectory() is " +
-            "probably no longer resolving to tests/Hall9k.Tests");
-
-        riskyMemberHits.Should().BeGreaterThan(
-            100,
-            "this is far fewer risky-member hits than the test tree actually contains — the scan " +
-            "itself is probably broken (TestSourceTree.RootDirectory() misresolving, or the whole RiskyMembers " +
-            "list gone stale at once) rather than working as intended; a single renamed entry can " +
-            "still leave this floor comfortably clear, so this only catches wholesale breakage");
-    }
-
-    /// <summary>
-    /// The same rule read the other way round, and the direction that costs wall-clock time
-    /// rather than correctness: a Postgres-backed class carrying
-    /// <c>[Collection("Hall9kHome")]</c> it does not need runs one at a time, inside the
-    /// collection every HALL9K_HOME-touching class in the tree shares, so its container is
-    /// started, used and torn down with no other container-backed class allowed to overlap it.
-    /// The serial lane is the expensive lane; only a class that genuinely races HALL9K_HOME
-    /// belongs in it. Every container-backed class that keeps the attribute today names a
-    /// <see cref="RiskyMembers"/> member in its own source, and this fails the build for one
-    /// that does not — so the attribute cannot drift back onto a class by copy-paste from a
-    /// sibling, which is how twenty-six of fifty container-backed classes came to sit in
-    /// the serial lane before this direction of the rule was checked at all (PLAN.md §16 #157).
-    /// <para>
-    /// Scoped to the classes that take <see cref="Hall9k.Tests.Integration.PostgresFixture"/>
-    /// deliberately, rather than applied tree-wide. A DB-free class in this collection costs
-    /// milliseconds, so there is nothing to reclaim by policing it, while the wider scan would
-    /// report every class carrying the attribute for a reason this text-level scan cannot see —
-    /// the shared-helper blind spot the type's own doc comment above describes. Across the two
-    /// dozen container-backed classes that blind spot is checkable by hand, and was: none of them
-    /// reaches HALL9K_HOME through a helper.
-    /// </para>
-    /// </summary>
-    [Fact]
-    public void No_postgres_backed_test_class_is_serialized_for_a_home_it_never_touches()
-    {
-        (string testsDirectory, string[] files) = TestSources();
-
-        List<string> offenders = [];
-        int postgresBackedClasses = 0;
+        int hits = 0;
 
         foreach (string file in files)
         {
@@ -360,64 +125,154 @@ public sealed class HomeEnvironmentIsolationTests
 
             if (!balanced)
             {
-                // Reported rather than skipped, for the same reason the other fact reports it:
-                // a file whose class boundaries cannot be trusted is a hole in this scan, and a
-                // hole nobody is told about is how a guard comes to protect nothing.
                 offenders.Add(
                     $"{Path.GetRelativePath(testsDirectory, file)} -> <StripCommentsAndStrings " +
-                    "desynced on this file: stripped brace depth never returned to zero>");
+                    "desynced on this file: stripped brace depth never returned to zero, so class " +
+                    "boundaries here cannot be trusted>");
                 continue;
             }
 
             List<ClassFrame> frames = FindClassFrames(code, originalIndex, source);
 
-            foreach (ClassFrame frame in frames.Where(frame => frame.TakesPostgresFixture))
+            int start = 0;
+            while (IndexOfMemberBoundary(code, SetEnvironmentVariableCall, start) is int callIndex)
             {
-                postgresBackedClasses++;
+                start = callIndex + SetEnvironmentVariableCall.Length;
 
-                if (!frame.HasAttribute)
+                // The argument is read from raw source, not stripped code: it is either a string
+                // literal (whose content stripping removed entirely) or a dotted member reference
+                // (which survives stripping unchanged, but reading it the same way as the string
+                // case keeps this one rule rather than two).
+                int rawArgumentStart = originalIndex[callIndex] + SetEnvironmentVariableCall.Length;
+                while (rawArgumentStart < source.Length && char.IsWhiteSpace(source[rawArgumentStart]))
+                {
+                    rawArgumentStart++;
+                }
+
+                bool isHomeOrConnectionString = HomeOrConnectionStringArguments.Any(argument =>
+                    rawArgumentStart + argument.Length <= source.Length
+                    && string.CompareOrdinal(source, rawArgumentStart, argument, 0, argument.Length) == 0);
+
+                if (!isHomeOrConnectionString)
                 {
                     continue;
                 }
 
-                // The frame's own body range, nested classes included: a risky-member hit inside
-                // a nested class credits the enclosing one too. That errs toward leaving an
-                // attribute in place, which is the safe direction for this guard to be wrong in —
-                // tolerating a serial class that could have run parallel costs seconds, while
-                // demanding the removal of an attribute something still needs costs a flaky
-                // suite.
-                bool touchesHome = RiskyMembers.Any(
-                    member => IndexOfMemberBoundary(code, member, frame.BodyStart) is int index
-                              && index < frame.BodyEnd);
+                hits++;
+                ClassFrame? frame = InnermostFrame(frames, callIndex);
 
-                if (!touchesHome)
+                if (frame is null)
+                {
+                    offenders.Add(
+                        $"{Path.GetRelativePath(testsDirectory, file)} -> <'{SetEnvironmentVariableCall}' at " +
+                        $"stripped offset {callIndex} landed inside no class frame>");
+                }
+                else if (!frame.HasAttribute)
                 {
                     offenders.Add($"{Path.GetRelativePath(testsDirectory, file)} -> {frame.Name}");
+                }
+                else if (!frame.HasTrait)
+                {
+                    offenders.Add(
+                        $"{Path.GetRelativePath(testsDirectory, file)} -> {frame.Name} " +
+                        $"(carries {CollectionAttribute} but not {TraitAttribute})");
                 }
             }
         }
 
         offenders.Should().BeEmpty(
-            $"a class taking IClassFixture<PostgresFixture> and carrying {CollectionAttribute} runs " +
-            "in the serial lane, so its Postgres container never overlaps another test class's — " +
-            "which is worth paying only for a class that actually sets or resolves a " +
-            "HALL9K_HOME-derived path. None of these name a risky member in their own source; " +
-            "drop the attribute and let the class run in the container-gated parallel lane, or, " +
-            "if it reaches HALL9K_HOME through a helper this text-level scan cannot see, add that " +
-            "helper's own accessor to RiskyMembers so the reason is checkable rather than " +
-            "remembered");
+            "a class that writes HALL9K_HOME or HALL9K_CONNECTION_STRING directly (rather than " +
+            $"through ScopedTestHome/ScopedConnectionString) races every other one unless it carries " +
+            $"{CollectionAttribute} and {TraitAttribute} — the one serialized collection left; " +
+            "either route the write through the shared test helper instead, or add both attributes " +
+            "if this class genuinely hands the variable to a real child process");
 
-        postgresBackedClasses.Should().BeGreaterThan(
-            15,
-            "far fewer classes take IClassFixture<PostgresFixture> than this suite actually has — " +
-            "FindClassFrames is probably no longer reading a declaration's base list into " +
-            "ClassFrame.TakesPostgresFixture, which would leave this guard passing green while " +
-            "checking nothing");
+        files.Length.Should().BeGreaterThan(
+            100,
+            "this is far fewer .cs files than the test tree actually holds — TestSourceTree.RootDirectory() is " +
+            "probably no longer resolving to tests/Hall9k.Tests");
+
+        // A positive control: DatabaseDoctorTests and a handful of other classes still redirect
+        // HALL9K_CONNECTION_STRING through the shared helper's own file, which itself never
+        // matches these markers (it writes the AsyncLocal override, not the environment variable)
+        // — but the environment-only classes (RunSupervisorTests' HALL9K_CLAUDE_PATH, and the rest
+        // of the small Environment collection) still write a literal environment variable other
+        // than these two, which this fact does not scan for at all. So the floor here is small and
+        // exists only to catch the scan going dark, not to describe today's exact count.
+        hits.Should().BeGreaterThan(
+            0,
+            "no direct HALL9K_HOME/HALL9K_CONNECTION_STRING write was found anywhere in the test " +
+            "tree — a class that hands one to a real child process should still have one; the scan " +
+            "itself is more likely broken (TestSourceTree.RootDirectory() misresolving, or " +
+            "StripCommentsAndStrings regressed) than every such write having genuinely disappeared");
+    }
+
+    [Fact]
+    public void No_scope_is_opened_inside_an_async_lifetime_method()
+    {
+        // Positive control on the detection mechanism itself, independent of whatever the tree
+        // currently contains: a synthetic sample the regex/brace-walk below must catch, so this
+        // fact cannot pass green while its own scan has quietly gone dark.
+        const string sample = """
+            public async Task InitializeAsync()
+            {
+                _scope = new ScopedTestHome();
+            }
+            """;
+        (string sampleCode, _, bool sampleBalanced) = TestSourceTree.StripCommentsAndStrings(sample);
+        sampleBalanced.Should().BeTrue();
+        List<(int Start, int End)> sampleBodies = [.. FindInitializeAsyncBodies(sampleCode)];
+        sampleBodies.Should().ContainSingle();
+        ScopeConstructionMarkers.Any(marker =>
+            sampleCode.IndexOf(marker, sampleBodies[0].Start, StringComparison.Ordinal) is int i
+            && i >= 0 && i < sampleBodies[0].End).Should().BeTrue(
+            "the detection helper below must catch this synthetic sample, or this fact is " +
+            "protecting nothing against the real tree");
+
+        (string testsDirectory, string[] files) = TestSources();
+
+        List<string> offenders = [];
+
+        foreach (string file in files)
+        {
+            string source = File.ReadAllText(file);
+            (string code, int[] originalIndex, bool balanced) = TestSourceTree.StripCommentsAndStrings(source);
+
+            if (!balanced)
+            {
+                // Already reported by the sibling fact above; this fact's own coverage over the
+                // same file cannot be trusted either, but re-reporting the identical file twice
+                // would only be noise.
+                continue;
+            }
+
+            List<ClassFrame> frames = FindClassFrames(code, originalIndex, source);
+
+            foreach ((int start, int end) in FindInitializeAsyncBodies(code))
+            {
+                foreach (string marker in ScopeConstructionMarkers)
+                {
+                    int index = code.IndexOf(marker, start, StringComparison.Ordinal);
+                    if (index >= 0 && index < end)
+                    {
+                        ClassFrame? frame = InnermostFrame(frames, index);
+                        string className = frame?.Name ?? "<unknown class>";
+                        offenders.Add($"{Path.GetRelativePath(testsDirectory, file)} -> {className}");
+                    }
+                }
+            }
+        }
+
+        offenders.Should().BeEmpty(
+            "a scope constructed inside async Task InitializeAsync() is gone by the time the test " +
+            "method itself runs (await unwinds the ExecutionContext a callee mutated back to what " +
+            "the caller held once that callee's task completes) — open ScopedTestHome/" +
+            "ScopedConnectionString from a constructor or a field initializer instead, a plain " +
+            "synchronous call that mutates the same context the test method goes on to run in");
     }
 
     /// <summary>
-    /// This project's own sources, minus this file (whose <see cref="RiskyMembers"/> list names
-    /// every risky member by definition) and minus build output. Shared by both facts so a
+    /// This project's own sources, minus this file and build output. Shared by both facts so a
     /// change to what counts as a test source cannot land on one and not the other.
     /// </summary>
     private static (string TestsDirectory, string[] Files) TestSources()
@@ -434,126 +289,68 @@ public sealed class HomeEnvironmentIsolationTests
         return (testsDirectory, files);
     }
 
-    private static int CountOccurrences(string source, string member)
+    /// <summary>
+    /// Walks <paramref name="code"/> (already comment/string stripped) tracking an
+    /// <c>InitializeAsync ( )</c> signature followed immediately by <c>{</c>, then tracks brace
+    /// depth to that block's own closing <c>}</c>. An expression-bodied
+    /// <c>InitializeAsync() => ...;</c> or a plain call site is never followed by <c>{</c> and is
+    /// correctly skipped — there is no block body there for a scope construction to hide inside.
+    /// </summary>
+    private static IEnumerable<(int Start, int End)> FindInitializeAsyncBodies(string code)
     {
-        int count = 0;
-        int start = 0;
-
-        while (IndexOfMemberBoundary(source, member, start) is int index)
+        foreach (Match match in InitializeAsyncSignature.Matches(code))
         {
-            count++;
-            start = index + member.Length;
-        }
+            int i = match.Index + match.Length;
+            while (i < code.Length && char.IsWhiteSpace(code[i]))
+            {
+                i++;
+            }
 
-        return count;
+            if (i >= code.Length || code[i] != '{')
+            {
+                continue;
+            }
+
+            int depth = 0;
+            int start = i;
+            for (; i < code.Length; i++)
+            {
+                if (code[i] == '{')
+                {
+                    depth++;
+                }
+                else if (code[i] == '}')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        yield return (start, i);
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>
     /// Same as <see cref="string.IndexOf(string, int, StringComparison)"/> except a match is
-    /// rejected when the character right after it is itself an identifier character — otherwise a
-    /// bare-property entry like <c>PostgresRuntime.ComposeFile</c> also matches inside
-    /// <c>PostgresRuntime.ComposeFileContents</c>, a plain string constant that never resolves
-    /// <c>PlatformPaths.Home</c>, and needlessly conscripts any class that reads only the
-    /// contents constant. A rejected match still advances the search by one character rather than
-    /// by the whole member length, so a shorter real match starting inside the false one is not
-    /// skipped over. The check applies only when <paramref name="member"/> is a bare name: a
-    /// call-shaped entry like <c>CredentialVault.Discard(</c> already ends in <c>(</c>, which is
-    /// itself an unambiguous boundary — the character after the match is the call's first
-    /// argument, not more of the member name — so applying the identifier check there would
-    /// reject a real call whose first argument starts with an identifier character (e.g.
-    /// <c>Discard(reference)</c>), which is most of them. Cycle-2 review found this: it silently
-    /// dropped ten call-shaped entries down to matching only zero-argument calls.
+    /// rejected when the character right after it is itself an identifier character, so a
+    /// call-shaped marker cannot be fooled by a longer real identifier sharing its prefix. Every
+    /// marker here already ends in <c>"</c> or a call's own text, an unambiguous boundary, so this
+    /// mirrors the guard it replaces without needing that guard's own bare-name special case.
     /// </summary>
     private static int? IndexOfMemberBoundary(string source, string member, int start)
     {
-        bool memberEndsAtCall = member.Length > 0 && member[^1] == '(';
-
         int index;
         while ((index = source.IndexOf(member, start, StringComparison.Ordinal)) >= 0)
         {
-            int after = index + member.Length;
-            if (memberEndsAtCall || after >= source.Length || !IsIdentifierChar(source[after]))
-            {
-                return index;
-            }
-
-            start = index + 1;
+            return index;
         }
 
         return null;
     }
 
-    private static bool IsIdentifierChar(char c) => char.IsLetterOrDigit(c) || c == '_';
-
-    /// <summary>
-    /// The names of every class in <paramref name="source"/> whose body uses a member from
-    /// <see cref="RiskyMembers"/> without that same class carrying <see cref="CollectionAttribute"/>,
-    /// alongside the comment/string-stripped code the scan searched — the caller's own risky-member
-    /// floor counts hits over this same stripped text, since counting the raw source instead would
-    /// leave the floor comfortably clear even if the scan itself had gone dark.
-    /// <see cref="TestSourceTree.StripCommentsAndStrings"/> is a heuristic, not a parser, and a
-    /// source shape it desyncs on drops coverage silently unless something notices — so a
-    /// risky-member hit that lands inside no class frame at all, or a file whose stripped brace
-    /// depth never returns to zero, is itself reported as an offender (a synthetic one, not a
-    /// real class name) rather than dropped: the origin cycle-2 review found exactly this gap in
-    /// a multi-line interpolation-hole file whose desync silently excused it from the guard
-    /// entirely.
-    /// </summary>
-    private static (IEnumerable<string> Offenders, string Code) ClassesUsingRiskyMembersWithoutTheCollection(string source)
-    {
-        (string code, int[] originalIndex, bool balanced) = TestSourceTree.StripCommentsAndStrings(source);
-        List<ClassFrame> frames = FindClassFrames(code, originalIndex, source);
-
-        HashSet<string> offenders = [];
-
-        if (!balanced)
-        {
-            offenders.Add(
-                "<StripCommentsAndStrings desynced on this file: stripped brace depth never " +
-                "returned to zero, so class boundaries here cannot be trusted>");
-        }
-
-        foreach (string member in RiskyMembers)
-        {
-            int start = 0;
-            while (IndexOfMemberBoundary(code, member, start) is int index)
-            {
-                ClassFrame? frame = InnermostFrame(frames, index);
-                if (frame is null)
-                {
-                    offenders.Add(
-                        $"<'{member}' at stripped offset {index} landed inside no class frame — " +
-                        "either it sits in a non-class top-level type (a record, struct, or " +
-                        "interface, none of which FindClassFrames tracks) that needs its own " +
-                        "place to carry [Collection(\"Hall9kHome\")], or StripCommentsAndStrings " +
-                        "or FindClassFrames desynced on this file>");
-                }
-                else if (!frame.HasAttribute)
-                {
-                    offenders.Add(frame.Name);
-                }
-                else if (!frame.HasTrait)
-                {
-                    // The collection is present but the filterable trait is not — the two can
-                    // otherwise drift silently apart, since this guard only ever required the
-                    // former (see TraitAttributeLine's own doc comment above).
-                    offenders.Add($"{frame.Name} (carries {CollectionAttribute} but not {TraitAttribute})");
-                }
-
-                start = index + member.Length;
-            }
-        }
-
-        return (offenders, code);
-    }
-
-    private sealed record ClassFrame(
-        string Name,
-        int BodyStart,
-        int BodyEnd,
-        bool HasAttribute,
-        bool HasTrait,
-        bool TakesPostgresFixture);
+    private sealed record ClassFrame(string Name, int BodyStart, int BodyEnd, bool HasAttribute, bool HasTrait);
 
     private static ClassFrame? InnermostFrame(List<ClassFrame> frames, int codeIndex)
     {
@@ -574,32 +371,16 @@ public sealed class HomeEnvironmentIsolationTests
     }
 
     /// <summary>
-    /// Walks <paramref name="code"/> (already comment/string stripped, so every brace is a real
-    /// one) tracking brace depth to find each class's own body range and whether that specific
-    /// class — not just the file somewhere — carries <see cref="CollectionAttribute"/>
-    /// immediately above its declaration. A class declaration is recognised at the start of a
-    /// line (this project's own formatting always puts one there), which is also what keeps a
-    /// generic constraint like <c>where T : class</c> — "class" mid-line, not a declaration —
-    /// from being mistaken for one.
-    /// <para>
-    /// The attribute search window for a class at brace depth <c>d</c> runs from the end of the
-    /// previous sibling declaration at that same depth (or the enclosing scope's own opening
-    /// brace, for the first child; or file start, at depth 0) up to the class keyword itself —
-    /// tracked in <c>lastBoundaryAtDepth</c> in <paramref name="originalIndex"/>'s coordinates and
-    /// updated every time a <c>}</c> returns to depth <c>d</c> — so an outer class's own attribute
-    /// is never mistaken for a nested or sibling class's. The window is matched against
-    /// <paramref name="source"/>, not <paramref name="code"/> (see <see
-    /// cref="CollectionAttributeLine"/>), with the surviving code positions derived from
-    /// <paramref name="originalIndex"/> as the guard against a match landing inside a comment or
-    /// string literal that the stripped text would have hidden: a real attribute's own opening
-    /// <c>[</c> always survives stripping, while one quoted inside a string or comment never does.
-    /// </para>
+    /// Walks <paramref name="code"/> tracking brace depth to find each class's own body range and
+    /// whether that specific class carries <see cref="CollectionAttribute"/>/<see cref="TraitAttribute"/>
+    /// immediately above its declaration — ported from the guard this file replaces, minus the
+    /// PostgresFixture-specific tracking that guard also carried, which this one has no use for.
     /// </summary>
     private static List<ClassFrame> FindClassFrames(string code, int[] originalIndex, string source)
     {
         HashSet<int> codePositions = [.. originalIndex];
         List<ClassFrame> frames = [];
-        Stack<(string Name, bool HasAttribute, bool HasTrait, bool TakesPostgresFixture, int BodyDepth, int BodyStart)> open = [];
+        Stack<(string Name, bool HasAttribute, bool HasTrait, int BodyDepth, int BodyStart)> open = [];
         Dictionary<int, int> lastBoundaryAtDepth = new() { [0] = 0 };
         Match[] declarations = [.. ClassDeclaration.Matches(code).Cast<Match>()];
         int nextDeclaration = 0;
@@ -632,21 +413,7 @@ public sealed class HomeEnvironmentIsolationTests
                 depth++;
                 if (armed is { } pendingClass)
                 {
-                    // The declaration's own text, from its class keyword through to its body's
-                    // opening brace, so a base list written on the line below the primary
-                    // constructor still counts — ReviewEngineTests, which takes two fixtures,
-                    // is written that way.
-                    string declaration = source.Substring(
-                        pendingClass.KeywordOriginalIndex,
-                        originalIndex[i] - pendingClass.KeywordOriginalIndex);
-
-                    open.Push((
-                        pendingClass.Name,
-                        pendingClass.HasAttribute,
-                        pendingClass.HasTrait,
-                        declaration.Contains(PostgresFixtureDeclaration, StringComparison.Ordinal),
-                        depth,
-                        i + 1));
+                    open.Push((pendingClass.Name, pendingClass.HasAttribute, pendingClass.HasTrait, depth, i + 1));
                     armed = null;
                 }
 
@@ -658,8 +425,8 @@ public sealed class HomeEnvironmentIsolationTests
             {
                 if (open.Count > 0 && open.Peek().BodyDepth == depth)
                 {
-                    (string name, bool hasAttribute, bool hasTrait, bool takesPostgresFixture, _, int bodyStart) = open.Pop();
-                    frames.Add(new ClassFrame(name, bodyStart, i, hasAttribute, hasTrait, takesPostgresFixture));
+                    (string name, bool hasAttribute, bool hasTrait, _, int bodyStart) = open.Pop();
+                    frames.Add(new ClassFrame(name, bodyStart, i, hasAttribute, hasTrait));
                 }
 
                 depth--;
@@ -667,13 +434,8 @@ public sealed class HomeEnvironmentIsolationTests
                 continue;
             }
 
-            // A body-less class declaration ("sealed class Foo;", valid C# and already in use at
-            // CommandTreeHelpTests.cs) has no '{' to disarm it: without this, `armed` stays set
-            // past the declaration's own terminator, the file's next unrelated '{' is misread as
-            // that class's body, and — since disarming only happens inside the `armed is null`
-            // branch above — every declaration after it is silently skipped for the rest of the
-            // file. It has no body a risky-member call could land in, so clearing `armed` here
-            // without emitting a frame is correct: nothing is lost, only the dangling state.
+            // A body-less class declaration ("sealed class Foo;") has no '{' to disarm it — see
+            // the guard this replaces for the full rationale.
             if (c == ';' && armed is not null)
             {
                 armed = null;
