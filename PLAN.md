@@ -2375,6 +2375,15 @@ surface, and nothing the P2P layer (§16 #38-#58) touches.
 > Every citation of the placeholder elsewhere in this repository was rewritten to
 > `#242` in the same commit.
 
+243. **`Daemon_shutdown_mid_gate_leaves_GateEnded_unwritten_and_the_gate_still_recorded_active` cancels the daemon-shutdown token only after observing the gate actually start, not on a fixed one-second timer.** Why: hall9k-56 (Windows project window), run 01a0bd91-e3bb on node 37b5ec69, 2026-09-20 08:45 EDT — the mandatory final full pass failed this test for real: the subprocess sleeps 30 seconds, the fixed timer cancelled at 1 second, and on a loaded host (three runs sharing the machine) the gate subprocess had not yet spawned when the cancellation landed, so `RunDetails.ActiveGate` read back null. The same shape the 2026-09-08 runtime analysis and the 09-18 test-hygiene pass already called out: a timing test whose correctness depends on wall-clock ordering under load. Per AGENTS.md's own rule, the fix is to the test, never to load the host to chase it. **The fix.** The test now starts `VerifyAsync` as a task and polls `RunDetails.ActiveGate` — an inline projection, exact the instant `GateStarted`'s own `SaveChangesAsync` returns — at a 50-millisecond interval until it is set or the verify task completes, then cancels the shutdown token and asserts on the result; the poll and the whole test still stay under the existing two-minute hard stop, and the gate's 30-second pause remains only the bound the gate would otherwise run to, never a margin the test itself waits out. `Overrunning_gate_times_out_as_a_failure_not_a_hang` was left alone: its timeout is the runner's own `VerifyGateTimeout`, linked only after `GateStarted` is recorded, so it never raced the spawn either — the failing test's doc comment claiming the two shared a one-second margin was wrong and is corrected. No production code changed; the assertions are unchanged in strength. `dotnet build` and `dotnet test` pass; no test creates a branch or touches GitHub. **Does this block the later vision?** No — a polling change inside one integration test, no event, no schema, nothing touching the P2P identity layer (§16 #38-#58).
+
+> Renumbering placement note: this entry carried #241, which collided with an
+> entry (the orchestrator feed decision, #241 above) that reached the base
+> after this branch's own fork point. Rebasing this branch onto that base
+> reassigned it to **#243** — #242 was already taken by the root-fleet
+> decision that also reached the base in the same window — the log's next
+> free number; no citation of #241 elsewhere in the repository pointed at
+> this entry, so none needed rewriting.
 ---
 
 ## 17. Reference Materials
