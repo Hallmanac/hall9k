@@ -86,7 +86,8 @@ public static class ProjectDecider
         Optional<WritingConventions> writingConventions = default,
         Optional<WorkItemProvider> primaryTracker = default,
         Optional<OrchestratorFeedLevel> orchestratorFeed = default,
-        Optional<int?> courierMaxWaitSeconds = default)
+        Optional<int?> courierMaxWaitSeconds = default,
+        Optional<bool> designReviewDrive = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -446,7 +447,8 @@ public static class ProjectDecider
             WritingConventions: writingConventions,
             PrimaryTracker: primaryTracker,
             OrchestratorFeed: orchestratorFeed,
-            CourierMaxWaitSeconds: courierMaxWaitSeconds);
+            CourierMaxWaitSeconds: courierMaxWaitSeconds,
+            DesignReviewDrive: designReviewDrive);
     }
 
     /// <summary>

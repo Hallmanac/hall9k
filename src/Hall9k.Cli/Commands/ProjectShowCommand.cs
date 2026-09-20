@@ -250,6 +250,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Lifetime review-cycle budget", ReviewCapRow(project, project.LifetimeReviewCycleBudget, "lifetime-review-cycle-budget"));
         table.AddRow("Review stage composition", ReviewStageCompositionRow(project));
         table.AddRow("Auto pr-review", AutoPrReviewRow(project, autoPrReview));
+        table.AddRow("Design review drive", DesignReviewDriveRow(
+            project, ReviewDriveSetting.From(ReviewPersona.Designer, history)));
         table.AddRow("Claim gate", ClaimGateRow(project, claimGateRecorded));
         table.AddRow("Orchestrator feed", OrchestratorFeedRow(project));
         table.AddRow("Courier max wait", CourierMaxWaitRow(
@@ -445,6 +447,28 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         return $"{project.OrchestratorFeed.Value.ToLowerInvariant().EscapeMarkup()} [dim]— {what}. Read it: "
             + $"h9k orchestrator feed --project {name}; change the band: h9k project set {name} "
             + "--orchestrator-feed actionable|transitions|everything[/]";
+    }
+
+    /// <summary>
+    /// Whether the designer persona's review drives this project's running product, and where
+    /// that answer came from (idea b9b09779, piece 3) — printed always, and on the same terms
+    /// auto pr-review's row above is: this setting defaults to ON, so a bare "off" a reader could
+    /// take for the platform's own initial state is exactly the confusion Decisions Log #161
+    /// names. The row says which of the two it is and names the command that reverses it.
+    /// </summary>
+    internal static string DesignReviewDriveRow(ProjectDetails project, ReviewDriveSetting setting)
+    {
+        string name = project.Name.EscapeMarkup();
+        string value = $"{setting.OnOff} [dim]({OriginNote(setting.Recorded)})[/]";
+        return setting.Enabled
+            ? $"{value} [dim]— a design review here stands the product up on the review worktree, walks the "
+              + "changed user-facing flows, and cites a screenshot beside each finding it drove out. It "
+              + "still needs a run skill on this project's ledger; with none the review is "
+              + $"code-and-design-file only and says so. Turn it off:[/] h9k project set {name} "
+              + "--design-review-drive off"
+            : $"{value} [dim]— every design review here is code-and-design-file only: nothing starts this "
+              + "project's app, and the report states that rather than leaving it assumed. Turn it on:[/] "
+              + $"h9k project set {name} --design-review-drive on";
     }
 
     /// <summary>

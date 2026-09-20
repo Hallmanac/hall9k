@@ -248,4 +248,20 @@ public sealed record ProjectSettingsChanged(
     /// preference, node-scoped like <see cref="OrchestratorFeed"/> beside it, never a team
     /// decision: an operator's own terminal is what a courier interrupts.
     /// </summary>
-    Optional<int?> CourierMaxWaitSeconds = default);
+    Optional<int?> CourierMaxWaitSeconds = default,
+    /// <summary>
+    /// Whether the designer persona's review may stand this project's product up and drive it
+    /// through browser automation, or reads the diff and the design files alone (idea b9b09779,
+    /// piece 3). Default on, which is why <see cref="Project.ReviewDriveSetting"/> rather than
+    /// the projection is what resolves the effective value: a projection cannot tell a recorded
+    /// "off" from the field's own initialised state, the same reason <see cref="AutoPrReview"/>
+    /// has a resolver of its own (Decisions Log #161). Trailing and optional so every stream
+    /// written before this setting existed replays byte-for-byte unchanged, and reads as a
+    /// project that never chose.
+    /// <para>
+    /// The QA persona's own drive setting (piece 2) lands beside this one as its own field with
+    /// its own default, off; there is deliberately no single field keyed by persona, since a
+    /// reader of one persona's setting must never have to parse another's out of the same value.
+    /// </para>
+    /// </summary>
+    Optional<bool> DesignReviewDrive = default);
