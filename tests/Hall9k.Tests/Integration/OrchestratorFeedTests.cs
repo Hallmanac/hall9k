@@ -226,6 +226,43 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
             .Which.Description.Should().Be("a message from abcdef012345: are you still on the stacked pair?");
     }
 
+    /// <summary>
+    /// The feed courier's own manual-drain lease (idea 89471598, piece 3), round-tripped through
+    /// the real store the way <c>OrchestratorFeedCommand</c>'s own <c>--drain</c> path writes and
+    /// deletes it: held while a manual drain is in progress, gone once it completes, so the
+    /// courier's gate never mistakes a finished drain for one still running.
+    /// </summary>
+    [Fact]
+    public async Task A_drain_lease_is_held_until_deleted_and_gone_once_it_is()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = DomainId.New();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Store(OrchestratorFeedDrainLease.Held(projectId, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession read = _postgres.Store.QuerySession())
+        {
+            OrchestratorFeedDrainLease? lease = await read.LoadAsync<OrchestratorFeedDrainLease>(projectId, cts.Token);
+            OrchestratorFeedDrainLease.IsHeld(lease, Now).Should().BeTrue();
+            OrchestratorFeedDrainLease.IsHeld(lease, Now + OrchestratorFeedDrainLease.Duration).Should().BeFalse(
+                "the lease's own duration is a ceiling on how long it protects a drain, not an indefinite hold");
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Delete<OrchestratorFeedDrainLease>(projectId);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession afterDelete = _postgres.Store.QuerySession();
+        OrchestratorFeedDrainLease? gone = await afterDelete.LoadAsync<OrchestratorFeedDrainLease>(projectId, cts.Token);
+        OrchestratorFeedDrainLease.IsHeld(gone, Now).Should().BeFalse();
+    }
+
     private async Task<Guid> SeedProjectAsync(Guid ownerId, CancellationToken cancellationToken)
     {
         Guid projectId = DomainId.New();

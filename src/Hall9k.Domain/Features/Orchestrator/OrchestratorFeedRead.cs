@@ -29,4 +29,11 @@ namespace Hall9k.Domain.Features.Orchestrator;
 public sealed record OrchestratorFeedRead(
     IReadOnlyList<OrchestratorFeedItem> Items,
     long DrainableThroughSequence,
-    bool ScanWasCapped);
+    bool ScanWasCapped)
+{
+    /// <summary>
+    /// Whether the feed courier's own spawn gate (idea 89471598, piece 3) dispatches at once for
+    /// this read regardless of its own batching wait — true the moment any item in it is.
+    /// </summary>
+    public bool HasUrgentItem => Items.Any(item => item.IsUrgent);
+}
