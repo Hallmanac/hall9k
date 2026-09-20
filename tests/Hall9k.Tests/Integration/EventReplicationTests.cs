@@ -1881,7 +1881,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         // Shared with the team — a scope-widening event past the position the first sweep already reached.
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
-            session.Events.Append(ideaId, IdeaDecider.Share(idea, Now.AddSeconds(4), ownerId));
+            session.Events.Append(ideaId, IdeaDecider.Share(idea, Now.AddSeconds(4), ownerId)!);
             await session.SaveChangesAsync(cts.Token);
         }
 

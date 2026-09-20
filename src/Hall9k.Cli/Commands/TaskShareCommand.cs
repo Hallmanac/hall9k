@@ -15,8 +15,9 @@ namespace Hall9k.Cli.Commands;
 /// Shares a task with the team on the owner's own word (idea 8c5993c5) — sugar for
 /// <c>h9k task scope &lt;id&gt; team</c>, and the one door onto team scope for a draft that is not
 /// ready to publish yet (idea 18464daa's own use: sharing a draft for publish approval). Works on a
-/// draft as well as a published task. Refused when the task is already team scope, since team is
-/// one-way — a published task always is, so this is mostly useful before publish.
+/// draft as well as a published task: a published task is always already team scope
+/// (<see cref="Hall9k.Domain.Features.Tasks.TaskAggregate.Apply(Hall9k.Domain.Features.Tasks.Events.TaskPublished)"/>),
+/// and sharing one again is a no-op success rather than a refusal.
 /// </summary>
 public sealed class TaskShareCommand : Hall9kAsyncCommand<TaskShareCommand.Settings>
 {
@@ -37,9 +38,12 @@ public sealed class TaskShareCommand : Hall9kAsyncCommand<TaskShareCommand.Setti
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        TaskScopeSet set = TaskDecider.Share(task, DateTimeOffset.UtcNow, context.OwnerId);
-        session.Events.Append(taskId, set);
-        await session.SaveChangesAsync(cancellationToken);
+        TaskScopeSet? set = TaskDecider.Share(task, DateTimeOffset.UtcNow, context.OwnerId);
+        if (set is not null)
+        {
+            session.Events.Append(taskId, set);
+            await session.SaveChangesAsync(cancellationToken);
+        }
 
         string shortId = TaskListCommand.ShortId(taskId);
         AnsiConsole.MarkupLine($"[green]Task {shortId} is now shared with the team.[/]");
