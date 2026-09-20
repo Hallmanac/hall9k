@@ -1,3 +1,4 @@
+using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
@@ -25,6 +26,7 @@ using Hall9k.Tests.Fakes;
 using JasperFx;
 using JasperFx.Events;
 using Marten;
+using Microsoft.Extensions.Logging;
 using Weasel.Core;
 using Xunit;
 
@@ -2704,6 +2706,182 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         {
             (await session.LoadAsync<IdeaDetails>(ideaId, cts.Token)).Should().BeNull(
                 "a fleet item never appears on another owner's node at all");
+        }
+    }
+
+    /// <summary>
+    /// Idea 202383dc's own worst case: one record in a sender's batch whose own inline projection
+    /// throws (<c>JasperFx.Events.Daemon.ApplyEventException</c> — genuinely malformed data, from a
+    /// corrupted record or a sender on an older, less careful build) used to roll back the WHOLE
+    /// read's one shared save, taking the cursor advance and every other record in the batch — the
+    /// good ones included — down with it: the next sweep would re-read the identical envelope, hit
+    /// the identical record, and fail forever. The bad record here is built by hand and pushed
+    /// straight onto the wire via <see cref="MessageOutbox.QueueAsync"/>, bypassing node A's own
+    /// local store entirely — the one way to get a genuinely malformed fact onto an outbox, since
+    /// node A's own commit path enforces the identical rule the receiver does.
+    /// </summary>
+    [Fact]
+    public async Task A_records_own_projection_failure_is_skipped_and_recorded_without_blocking_the_rest_of_the_batch()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        ListLogger<EventReplicationInbox> logger = new();
+        EventReplicationInbox replicationInbox = new(transport, logger);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid badIdeaId = DomainId.New();
+        Guid goodIdeaId = DomainId.New();
+        Guid badOriginEventId = DomainId.New();
+        Guid goodOriginEventId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        // Genuinely relative — refused by ProjectHome.Parse under every rule, old and new alike —
+        // so this is not the cross-OS-form case ProjectHome.Parse itself was widened to accept; it
+        // is the residual failure mode this defence still has to survive regardless of cause.
+        IdeaCaptured badCaptured = new(
+            badIdeaId, ownerId, "A poison capture", projectId, Now.AddSeconds(1), "not-an-absolute-path", ReplicationScope.Fleet);
+        IdeaCaptured goodCaptured = new(
+            goodIdeaId, ownerId, "A perfectly good capture", projectId, Now.AddSeconds(1), string.Empty, ReplicationScope.Fleet);
+        EventReplicationCodec.ReplicatedEventRecord badRecord = new(
+            badIdeaId, typeof(IdeaCaptured).FullName!, JsonSerializer.Serialize(badCaptured, jsonOptions),
+            badOriginEventId, OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), projectId);
+        EventReplicationCodec.ReplicatedEventRecord goodRecord = new(
+            goodIdeaId, typeof(IdeaCaptured).FullName!, JsonSerializer.Serialize(goodCaptured, jsonOptions),
+            goodOriginEventId, OriginSequence: 2, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([badRecord, goodRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        EventReplicationReadResult read;
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: null, cts.Token);
+        }
+
+        read.SenderIgnored.Should().BeFalse();
+        read.EventsApplied.Should().Be(1, "the poison record is skipped; the good record right after it still lands");
+        logger.Entries.Should().Contain(entry =>
+            entry.Level == LogLevel.Error
+            && entry.Message.Contains(badOriginEventId.ToString())
+            && entry.Message.Contains(nodeA.ToString()),
+            "the failure is logged naming both the event id and the sender");
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<IdeaDetails>(goodIdeaId, cts.Token)).Should().NotBeNull(
+                "the record after the poison one in the same batch still applies");
+            (await session.LoadAsync<IdeaDetails>(badIdeaId, cts.Token)).Should().BeNull(
+                "the poison event's own projection never actually lands");
+            (await session.LoadAsync<ReplicatedEventRecord>(badOriginEventId, cts.Token)).Should().NotBeNull(
+                "recorded as handled so a later sweep never retries, and fails on, the identical event again");
+        }
+
+        // A second sweep proves the cursor genuinely advanced past the envelope that carried the
+        // poison record, rather than getting stuck re-reading it forever.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: null, cts.Token);
+            secondRead.EventsApplied.Should().Be(0, "both records were already resolved last read, one applied and one skipped");
+        }
+    }
+
+    /// <summary>
+    /// A poison genesis record is permanently skipped rather than retried, so nothing is ever
+    /// coming to materialise this stream properly — a later record in the SAME batch that targets
+    /// the identical, still-nonexistent stream must not be left to StartStream it anyway: Marten's
+    /// own inline projection auto-vivifies a document for any event with no matching Create
+    /// (IdeaDetailsProjection's own doc, exercised deliberately for legitimate out-of-order
+    /// delivery elsewhere in this suite), which here would leave a permanently-headless IdeaDetails
+    /// nothing will ever repair.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_record_for_a_stream_whose_own_genesis_just_failed_is_also_skipped_rather_than_starting_a_headless_document()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        ListLogger<EventReplicationInbox> logger = new();
+        EventReplicationInbox replicationInbox = new(transport, logger);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid badIdeaId = DomainId.New();
+        Guid badOriginEventId = DomainId.New();
+        Guid followUpOriginEventId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        IdeaCaptured badCaptured = new(
+            badIdeaId, ownerId, "A poison capture", projectId, Now.AddSeconds(1), "not-an-absolute-path", ReplicationScope.Fleet);
+        IdeaRevised followUpRevision = new(badIdeaId, "A revision of a capture that never landed", Now.AddSeconds(2), ownerId);
+        EventReplicationCodec.ReplicatedEventRecord badRecord = new(
+            badIdeaId, typeof(IdeaCaptured).FullName!, JsonSerializer.Serialize(badCaptured, jsonOptions),
+            badOriginEventId, OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), projectId);
+        EventReplicationCodec.ReplicatedEventRecord followUpRecord = new(
+            badIdeaId, typeof(IdeaRevised).FullName!, JsonSerializer.Serialize(followUpRevision, jsonOptions),
+            followUpOriginEventId, OriginSequence: 2, nodeA, "owner-a-fingerprint", Now.AddSeconds(2), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([badRecord, followUpRecord]), Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: null, cts.Token);
+            read.EventsApplied.Should().Be(0, "the genesis record failed and the follow-up refuses to build on a stream that never started");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<IdeaDetails>(badIdeaId, cts.Token)).Should().BeNull(
+                "no headless document — nothing repairs it once the genesis record is permanently skipped");
+            (await session.LoadAsync<ReplicatedEventRecord>(badOriginEventId, cts.Token)).Should().NotBeNull();
+            (await session.LoadAsync<ReplicatedEventRecord>(followUpOriginEventId, cts.Token)).Should().NotBeNull(
+                "the follow-up is recorded too, so it is never retried either");
         }
     }
 
