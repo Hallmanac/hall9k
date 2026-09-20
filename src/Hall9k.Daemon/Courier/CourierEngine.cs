@@ -43,18 +43,35 @@ public sealed class CourierEngine(
         IReadOnlyList<OrchestratorPresenceDetails> presences;
         await using (IQuerySession query = store.QuerySession())
         {
+            // Registered=false is a window this node once saw and no longer has: the presence
+            // sweep never deletes the row, only appends OrchestratorLost against it, so it would
+            // otherwise sit here forever, paying every tick's own cheap checks for a window that
+            // is provably never coming back. Filtered here rather than left to TickAsync's own
+            // orchestratorLive check, which still exists for the case that check alone cannot
+            // rule out: a window registered on this node whose process has since died without the
+            // presence sweep having caught up to it yet.
             presences = await query.Query<OrchestratorPresenceDetails>()
-                .Where(presence => presence.NodeId == nodeId)
+                .Where(presence => presence.NodeId == nodeId && presence.Registered)
                 .ToListAsync(cancellationToken);
         }
+
+        // Ticked concurrently rather than one project's turn at a time: TickAsync's own spawn path
+        // blocks on SessionResultWaiter for up to CourierTimeout (three minutes) once it decides to
+        // spawn, and a serial loop would let one slow or hung project's courier delay every other
+        // project's tick behind it in the list — including an urgent item on one of them, whose
+        // whole point is bypassing the batching wait to reach a live orchestrator "at once". Each
+        // tick opens its own session and touches only its own project's documents, so nothing here
+        // is shared state a concurrent run could race.
+        CourierTickOutcome[] outcomes = await Task.WhenAll(
+            presences.Select(presence => TickAsync(presence, cancellationToken)));
 
         int delivered = 0;
         int failed = 0;
         int noAdapter = 0;
         int dayCapHits = 0;
-        foreach (OrchestratorPresenceDetails presence in presences)
+        foreach (CourierTickOutcome outcome in outcomes)
         {
-            switch (await TickAsync(presence, cancellationToken))
+            switch (outcome)
             {
                 case CourierTickOutcome.Delivered:
                     delivered++;
@@ -87,6 +104,18 @@ public sealed class CourierEngine(
         DayCapHit,
     }
 
+    /// <summary>
+    /// How far past a courier's own <see cref="DaemonOptions.CourierTimeout"/> a run with no
+    /// recorded outcome must stand before <see cref="TickAsync"/> treats it as stranded rather
+    /// than still running. <see cref="SpawnAsync"/> bounds its own wait to that timeout and
+    /// records an outcome on every path out of it now (a delivery, a failure, a timeout, or a
+    /// shutdown mid-flight) — the only way <see cref="CourierRunDetails.CompletedAt"/> can still
+    /// be null this far past dispatch is a daemon that stopped existing outright (a kill -9, a
+    /// host power loss) before any of those paths ran. The margin is slack for save latency
+    /// alone, not a second budget for the session itself.
+    /// </summary>
+    private static readonly TimeSpan StrandedRunGrace = TimeSpan.FromMinutes(1);
+
     private async Task<CourierTickOutcome> TickAsync(
         OrchestratorPresenceDetails presence, CancellationToken cancellationToken)
     {
@@ -103,32 +132,60 @@ public sealed class CourierEngine(
 
         bool orchestratorLive = presence.Registered
             && OrchestratorLiveness.IsStillRunning(presence.ProcessId, presence.ProcessStartedAt, probe);
-
-        OrchestratorFeedDrainLease? lease =
-            await session.LoadAsync<OrchestratorFeedDrainLease>(project.Id, cancellationToken);
-        bool manualDrainLeaseHeld = OrchestratorFeedDrainLease.IsHeld(lease, now);
-
-        OrchestratorFeedReader reader = new(new ReplicationProjectResolver());
-        OrchestratorFeedRead read = await reader.ReadUndrainedAsync(
-            session, project.Id, project.OrchestratorFeed, now, cancellationToken);
+        if (!orchestratorLive)
+        {
+            // CourierGate.Decide refuses the instant it sees no live orchestrator regardless of
+            // what the feed holds, so the expensive full-history scan below (independent pre-PR
+            // review, conformance lens) is never worth paying for a project nobody is watching
+            // right now — every stale, long-since-closed presence this node has ever registered a
+            // window for pays this same cheap check and nothing more.
+            return CourierTickOutcome.NotThisTick;
+        }
 
         CourierRunDetails? lastRun = await session.Query<CourierRunDetails>()
             .Where(run => run.ProjectId == project.Id)
             .OrderByDescending(run => run.DispatchedAt)
             .FirstOrDefaultAsync(cancellationToken);
-        bool courierAlreadyRunning = lastRun is { CompletedAt: null };
-        TimeSpan? elapsedSinceLastCourier = lastRun?.CompletedAt is { } lastCompletedAt
-            ? now - lastCompletedAt
-            : null;
-
-        // The newest pending item's own age is the "how recently did something new arrive"
-        // signal CourierGate.Wait ramps against: read.Items is oldest-first (OrchestratorFeedSelection's
-        // own construction order), so the last entry is the newest one.
-        TimeSpan quietFor = TimeSpan.Zero;
-        if (read.Items.Count > 0)
+        bool courierAlreadyRunning = false;
+        if (lastRun is { CompletedAt: null } running)
         {
-            TimeSpan elapsed = now - read.Items[^1].At;
-            quietFor = elapsed > TimeSpan.Zero ? elapsed : TimeSpan.Zero;
+            if (now - running.DispatchedAt > _options.CourierTimeout + StrandedRunGrace)
+            {
+                // Stranded: SpawnAsync's own wait is bounded to CourierTimeout and every path out
+                // of it now records an outcome, so a run still unfinished this far past dispatch
+                // means the daemon that dispatched it stopped existing before any of those paths
+                // could run. Adopted here as failed rather than left to block every future
+                // courier for this project forever (RecordOutcomeAsync's own doc names exactly
+                // this hazard; independent pre-PR review, conformance and adversarial lenses).
+                logger.LogWarning(
+                    "Project {ProjectName}: the feed courier dispatched at {DispatchedAt:u} never "
+                    + "recorded an outcome and has stood past its own timeout ({Timeout}) — marking it "
+                    + "failed so future couriers for this project are not blocked",
+                    project.Name, running.DispatchedAt, _options.CourierTimeout);
+                await RecordOutcomeAsync(
+                    store, project.Id, running.Id, AgentModel.Unknown, delivered: false,
+                    "The daemon that dispatched this courier never recorded how it ended (a stop, a "
+                    + "crash, or an unclean shutdown); marked failed after it stood past its own "
+                    + "timeout so future couriers for this project are not blocked.",
+                    drainableThroughSequence: 0, result: null, now, cancellationToken);
+            }
+            else
+            {
+                courierAlreadyRunning = true;
+            }
+        }
+
+        if (courierAlreadyRunning)
+        {
+            return CourierTickOutcome.NotThisTick;
+        }
+
+        OrchestratorFeedDrainLease? lease =
+            await session.LoadAsync<OrchestratorFeedDrainLease>(project.Id, cancellationToken);
+        bool manualDrainLeaseHeld = OrchestratorFeedDrainLease.IsHeld(lease, now);
+        if (manualDrainLeaseHeld)
+        {
+            return CourierTickOutcome.NotThisTick;
         }
 
         DateOnly today = DateOnly.FromDateTime(now.UtcDateTime);
@@ -136,12 +193,47 @@ public sealed class CourierEngine(
             await session.LoadAsync<CourierDaySpawnCounter>(project.Id, cancellationToken);
         int spawnsToday = CourierDaySpawnCounter.CountFor(dayCounter, today);
 
+        TimeSpan? elapsedSinceLastCourier = lastRun?.CompletedAt is { } lastCompletedAt
+            ? now - lastCompletedAt
+            : null;
+        bool lastCourierFailed = lastRun is { CompletedAt: not null, Delivered: false };
+
+        // Reached only once every cheap, single-document check above has already passed: the full
+        // per-project history scan (independent pre-PR review, conformance lens) is the one
+        // genuinely expensive step in a tick, and every project without a live orchestrator, a
+        // courier already running, or a manual drain in progress now never pays it.
+        OrchestratorFeedReader reader = new(new ReplicationProjectResolver());
+        OrchestratorFeedRead read = await reader.ReadUndrainedAsync(
+            session, project.Id, project.OrchestratorFeed, now, cancellationToken);
+
+        // Items newer than the settling window are printed but not yet safe to drain
+        // (OrchestratorFeedRead's own doc): delivering one now and finding the drain made no
+        // progress would hand the identical item back on the very next tick — an urgent one twice
+        // before it had even settled (independent pre-PR review, adversarial lens). The gate and
+        // the prompt both act on this narrower, actually-drainable set instead.
+        IReadOnlyList<OrchestratorFeedItem> deliverableItems =
+            [.. read.Items.Where(item => item.Sequence <= read.DrainableThroughSequence)];
+        OrchestratorFeedRead deliverableRead = read with { Items = deliverableItems };
+
+        // The newest pending item's own age is the "how recently did something new arrive" signal
+        // CourierGate.Wait ramps against, read off the full set on purpose (not the drainable-only
+        // one above): a fresh burst should hold the batching wait open even before it settles.
+        // read.Items is oldest-first (OrchestratorFeedSelection's own construction order), so the
+        // last entry is the newest one.
+        TimeSpan quietFor = TimeSpan.Zero;
+        if (read.Items.Count > 0)
+        {
+            TimeSpan elapsed = now - read.Items[^1].At;
+            quietFor = elapsed > TimeSpan.Zero ? elapsed : TimeSpan.Zero;
+        }
+
         CourierSpawnDecision decision = CourierGate.Decide(
-            hasUndrainedItems: read.Items.Count > 0,
+            hasUndrainedItems: deliverableRead.Items.Count > 0,
             orchestratorLive,
             courierAlreadyRunning,
             manualDrainLeaseHeld,
-            hasUrgentItem: read.HasUrgentItem,
+            hasUrgentItem: deliverableRead.HasUrgentItem,
+            lastCourierFailed,
             elapsedSinceLastCourier,
             quietFor,
             _options.CourierQuietThreshold,
@@ -181,7 +273,8 @@ public sealed class CourierEngine(
             return CourierTickOutcome.NoAdapter;
         }
 
-        return await SpawnAsync(session, project, presence, adapter, read, now, today, dayCounter, cancellationToken);
+        return await SpawnAsync(
+            session, project, presence, adapter, deliverableRead, now, today, dayCounter, cancellationToken);
     }
 
     private async Task<CourierTickOutcome> SpawnAsync(
@@ -206,52 +299,94 @@ public sealed class CourierEngine(
         session.Store(CourierDaySpawnCounter.Incremented(dayCounter, project.Id, today));
         await session.SaveChangesAsync(cancellationToken);
 
-        SpawnedAgent agent = await executor.SpawnAsync(
-            new AgentSpawnRequest(
-                runId, runId, RunPaths.GlobalDirectory(runId), RunPaths.GlobalDirectory(runId), prompt,
-                ExecutorMode.Subscription, model, project.SkipPermissions,
-                // No recipe and no AGENTS.md (the acceptance criteria's own wording): dropping the
-                // checkout-scoped settings and doctrine files is exactly what this flag already
-                // does for a pull request's own untrusted head, and a courier's own artifact
-                // directory carries neither anyway — belt and suspenders.
-                UntrustedWorkingDirectory: true,
-                MaxTurns: _options.CourierMaxTurns)
-            {
-                SessionName = SessionRoleName.For(DomainId.Short(project.Id), SessionRoleName.Courier),
-            },
-            cancellationToken);
-
-        logger.LogInformation(
-            "Project {ProjectName}: feed courier dispatched (pid {ProcessId}, model {Model}, {ItemCount} item(s))",
-            project.Name, agent.ProcessId, model.Value, read.Items.Count);
-
-        AgentResult? result;
-        bool timedOut = false;
-        using CancellationTokenSource budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        budget.CancelAfter(_options.CourierTimeout);
+        // Everything from here on is recorded, on every path out, before this method returns or
+        // rethrows: the dispatch just above is already committed, so a path that leaves without
+        // ever appending CourierRunCompleted is exactly the permanent-block hazard
+        // RecordOutcomeAsync's own doc names (independent pre-PR review, conformance and
+        // adversarial lenses) — TickAsync's own stranded-run adoption only covers a daemon that
+        // stops existing outright; every path that runs at all closes the rest of that gap here.
+        SpawnedAgent? agent = null;
+        AgentResult? result = null;
+        bool delivered;
+        string outcome;
         try
         {
-            result = (await SessionResultWaiter.WaitAsync(
-                RunPaths.StreamFile(RunPaths.GlobalDirectory(runId)), agent.ProcessId, agent.StartedAt,
-                processManager, onOutput: null, budget.Token)).Result;
+            agent = await executor.SpawnAsync(
+                new AgentSpawnRequest(
+                    runId, runId, RunPaths.GlobalDirectory(runId), RunPaths.GlobalDirectory(runId), prompt,
+                    ExecutorMode.Subscription, model, project.SkipPermissions,
+                    // No recipe and no AGENTS.md (the acceptance criteria's own wording): dropping the
+                    // checkout-scoped settings and doctrine files is exactly what this flag already
+                    // does for a pull request's own untrusted head, and a courier's own artifact
+                    // directory carries neither anyway — belt and suspenders.
+                    UntrustedWorkingDirectory: true,
+                    MaxTurns: _options.CourierMaxTurns)
+                {
+                    SessionName = SessionRoleName.For(DomainId.Short(project.Id), SessionRoleName.Courier),
+                },
+                cancellationToken);
+
+            logger.LogInformation(
+                "Project {ProjectName}: feed courier dispatched (pid {ProcessId}, model {Model}, {ItemCount} item(s))",
+                project.Name, agent.ProcessId, model.Value, read.Items.Count);
+
+            bool timedOut = false;
+            using CancellationTokenSource budget = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            budget.CancelAfter(_options.CourierTimeout);
+            try
+            {
+                result = (await SessionResultWaiter.WaitAsync(
+                    RunPaths.StreamFile(RunPaths.GlobalDirectory(runId)), agent.ProcessId, agent.StartedAt,
+                    processManager, onOutput: null, budget.Token)).Result;
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                logger.LogWarning(
+                    "Project {ProjectName}: the feed courier exceeded {Timeout} — terminating it",
+                    project.Name, _options.CourierTimeout);
+                TerminateQuietly(project.Name, agent);
+                timedOut = true;
+                result = null;
+            }
+
+            (delivered, outcome) = CourierDeliveryOutcome.Parse(result, timedOut, _options.CourierTimeout);
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            logger.LogWarning(
-                "Project {ProjectName}: the feed courier exceeded {Timeout} — terminating it",
-                project.Name, _options.CourierTimeout);
-            processManager.Terminate(agent.ProcessId, agent.StartedAt);
-            timedOut = true;
-            result = null;
-        }
-        catch (OperationCanceledException)
-        {
-            processManager.Terminate(agent.ProcessId, agent.StartedAt);
+            // The daemon is stopping. Whatever was started is stopped with it, and the outcome is
+            // still recorded — with a token of its own, since cancellationToken is already
+            // cancelled and cannot be used to save — so this run never reads as "still running"
+            // forever. CardPublicationEngine.StopForShutdownAsync is the identical shape for the
+            // sibling auxiliary session (independent pre-PR review, conformance lens).
+            if (agent is { } started)
+            {
+                TerminateQuietly(project.Name, started);
+            }
+
+            await RecordShutdownOutcomeAsync(project.Name, project.Id, runId, model);
             throw;
         }
+        catch (Exception exception)
+        {
+            // Nothing else here is expected to throw — executor.SpawnAsync failing (a missing
+            // binary, a spawn failure) or something unexpected escaping the wait above — but the
+            // dispatch is already committed, so leaving this run's own outcome unrecorded strands
+            // it the same way an uncaught shutdown cancellation would (independent pre-PR review,
+            // conformance and adversarial lenses). The sweep loop's own catch-all still logs and
+            // retries the *next* tick; this is what keeps this run from blocking every tick after it.
+            logger.LogError(
+                exception,
+                "Project {ProjectName}: the feed courier could not be seen through to an outcome; "
+                + "recording it as failed",
+                project.Name);
+            if (agent is { } started)
+            {
+                TerminateQuietly(project.Name, started);
+            }
 
-        (bool delivered, string outcome) =
-            CourierDeliveryOutcome.Parse(result, timedOut, _options.CourierTimeout);
+            delivered = false;
+            outcome = $"The daemon could not see this courier through to an outcome: {exception.Message}";
+        }
 
         await RecordOutcomeAsync(
             store, project.Id, runId, model, delivered, outcome, read.DrainableThroughSequence, result,
@@ -262,6 +397,50 @@ public sealed class CourierEngine(
             project.Name, delivered ? "delivered" : "did not deliver");
 
         return delivered ? CourierTickOutcome.Delivered : CourierTickOutcome.Failed;
+    }
+
+    /// <summary>
+    /// How long the shutdown path gets to record an outcome — mirrors
+    /// <c>CardPublicationEngine.ShutdownRecordTimeout</c> for the identical reason: this runs
+    /// while the daemon is stopping, and a stop that waits on Postgres is worse than an outcome
+    /// <see cref="TickAsync"/>'s own stranded-run adoption records on a later restart instead.
+    /// </summary>
+    private static readonly TimeSpan ShutdownRecordTimeout = TimeSpan.FromSeconds(5);
+
+    private async Task RecordShutdownOutcomeAsync(
+        string projectName, Guid projectId, Guid runId, AgentModel model)
+    {
+        try
+        {
+            using CancellationTokenSource shutdown = new(ShutdownRecordTimeout);
+            await RecordOutcomeAsync(
+                store, projectId, runId, model, delivered: false,
+                "The daemon stopped while this courier was running, and it was stopped with it.",
+                drainableThroughSequence: 0, result: null, DateTimeOffset.UtcNow, shutdown.Token);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Project {ProjectName}: could not record the feed courier's outcome during shutdown; "
+                + "it will be adopted as stranded once it stands past its own timeout",
+                projectName);
+        }
+    }
+
+    private void TerminateQuietly(string projectName, SpawnedAgent agent)
+    {
+        try
+        {
+            processManager.Terminate(agent.ProcessId, agent.StartedAt);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception,
+                "Project {ProjectName}: could not terminate the feed courier (pid {ProcessId})",
+                projectName, agent.ProcessId);
+        }
     }
 
     /// <summary>
