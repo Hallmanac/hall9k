@@ -635,6 +635,7 @@ h9k project set myproject --writing-conventions "Plain sentences. No em dashes. 
 
 h9k owner set --rerequest-review on
 h9k owner set --voice-skill my-voice
+h9k owner set --persona engineer --persona qa
 ```
 
 `h9k owner set --voice-skill <name>` names the skill the owner writes in, and every prompt seam
@@ -643,6 +644,15 @@ reply, a commit message, a posted review finding, a drafted reply to a GitHub me
 that session to load it and its matching context before writing. The skill is the owner's own,
 referenced by name and never copied anywhere, so it has to already exist in the owner's user skills
 (`~/.claude/skills/<name>`) or in a project home's `skills/`. `--clear-voice-skill` forgets it.
+
+`h9k owner set --persona engineer|qa|designer` declares the review personas this member holds — the
+lens a pull request assigned to them is reviewed through. The option is repeatable and replaces the
+whole declaration, so pass every persona in one command; `--clear-personas` declares none, which is
+the ordinary case and reads as the engineer's review. The pr-review task the assignment mints runs
+one review session per declared persona on its single worktree and branch, and its findings report
+carries one section per persona. Only the engineer's prompt is registered today, so a declared `qa`
+or `designer` is named in the report and in `h9k task show` as skipped rather than silently
+ignored.
 
 `h9k project show <name>` prints every setting a project runs by, alongside how it is registered.
 Ask `h9k project set --help` for the current list and what each value means.

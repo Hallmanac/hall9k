@@ -49,6 +49,7 @@ h9k project prompt-addendum remove <name> <builder>   # clears a builder's adden
 h9k owner show [<owner>]     # one owner: identity (root fingerprint once established, else this install's local Guid), the projects registered to them, and every standing preference their work runs by. Omit the argument when this platform has one owner
 h9k owner set [<owner>] --rerequest-review on|off|default   # whether closeout asks a pull request's reviewers for another pass once a fix follow-up pushed (Decisions Log #62). A project setting outranks this; the node default (DaemonOptions.DefaultReviewRerequest, off) sits under both
 h9k owner set [<owner>] --voice-skill <NAME> | --clear-voice-skill   # the skill this owner WRITES IN, by name. Every prompt seam where a session composes text a human reads as the owner's (a pull request description, a review-thread reply, a commit message, a posted review finding, a drafted reply to a GitHub mention) then tells that session to load the skill and its matching context first: contexts/code-review.md for prose the session posts, contexts/explainer.md for a draft the owner reads and decides on. The skill is the owner's own — referenced by name, never copied into a project, a prompt template, or the platform — so the name must already be a skill directory in the owner's user skills (~/.claude/skills/<NAME>) or in a project home's skills/; a name in neither is refused naming both paths. Structure authority does not move: the repository's own PR-description rule and the project's --writing-conventions still decide the shape, the voice skill decides only the prose. --clear-voice-skill forgets it, and every seam then renders as it does for an owner who never named one
+h9k owner set [<owner>] --persona engineer|qa|designer [--persona ...] | --clear-personas   # the review personas this member holds — the lens they review somebody else's pull request through (idea b9b09779, Decisions Log #PLACEHOLDER-ec35ceca). A pull request assigned to them mints the same pr-review task it always has, and that task runs one review session per declared persona on its single worktree and branch, each with its own transcript and findings file, reported in one findings report sectioned engineer, QA, designer. The set is FIXED — each persona maps to its own prompt and criteria in the platform's persona registry, so there is no free-text persona and an unrecognized word is refused naming the set. --persona is repeatable and REPLACES the whole declaration rather than adding to it: pass every persona the member holds in one command. Declaring none is the ordinary case and reads as the engineer's review (code, logic, functionality: today's pull-request review, unchanged), so nothing changes for anyone who never passes this; --clear-personas goes back to that. Today only the engineer has a prompt registered — QA's lands with the idea's piece 2, the designer's with piece 3 — so a declared qa or designer is named in the findings report and in h9k task show as skipped rather than silently ignored, and a member who declared ONLY unregistered personas gets the engineer's review in their place (recorded, and said plainly in the report) rather than an unreviewed pull request. h9k owner show prints the declaration; h9k task show on the pr-review task prints which personas ran, which reports are in, and which session failed
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived, --epic)
 h9k task pull <task-id> [--project <PROJECT>]   # ask this project's other members for one task's whole event stream by id, with no linked tracker item needed — the deliberate twin of the broadcast h9k task add --from-issue already queues when the ledger names a task this node does not hold. Pass the task's FULL id (a fragment can only ever match a task already here, which is the case with nothing to pull); an id naming some other kind of stream is refused, and so is a task stream this node holds only the tail of, which no ask can repair. Queues one project-wide events-request and returns, touching no git and no network; a second run reports the one still outstanding rather than queueing another, and the task appears on this node's board once an answer lands. Served from below the answering node's replication switch-on point, since an explicit ask lifts it; a private task is never served (task a56cf16e, Decisions Log #236)
 h9k status                   # the attention pane: state, phase, and attention on every row; also this node's own identity, unread message count, and any ignored message sender
@@ -1226,7 +1227,29 @@ fresh task, noted as a re-review. An assignment withdrawn before the run dispatc
 task honestly (abandoned, the go signal recalled by the same authority that gave it); withdrawn
 after the run is Claimed or parked, it is recorded as an observation only — findings already
 produced are never discarded for a reviewer reshuffle. The pr-review run itself (#99) is entirely
-untouched: this changes only when a review starts, never what it does once it has.
+untouched by the speeds: they change only when a review starts, never what it does once it has.
+
+**What the pr-review run does, once it has started, is decided by the assignee's review personas**
+(idea b9b09779 piece 1, Decisions Log #PLACEHOLDER-ec35ceca) — see `h9k owner set --persona` above
+for the declaration itself. The run reads the ASSIGNEE's personas (`task.AssignedOwnerId`, falling
+back to the dispatching node's owner on an unassigned task), resolves them through the persona
+registry once, and records the result on its own stream before a session spawns, so what a
+finished run is said to have done never shifts because a persona was registered afterwards. Every
+persona's sessions run on the task's one worktree and branch, one after another, each with its own
+transcript and its own `review-1-<slug>-findings.md`; the merged `review-1-findings.md` carries one
+`##` section per persona in the fixed order, with the engineer's two lenses as `###` sections under
+its own. Only the engineer's sessions failing fails the run — an additional persona's failed
+session is recorded and named in the report and in `h9k task show`, so one bad session never costs
+the other personas their findings.
+
+**Every review carries one standing question** (same decision): did this change alter how the
+application runs locally? It is appended to the finding contract, which is the one section every
+review prompt shares, so it reaches both pre-PR lenses, the Verify pass, the verdict reprompt and
+the pr-review lens alike. A reviewer answers on a `RUN-SKILL DRIFT:` line; a `no` is recorded as
+checked and printed in the report, so a report can show the question was asked rather than leaving
+silence to be read as a no. A `yes` comes with a finding carrying a `kind=run-skill-drift` tag,
+which is fixed, routed or carried as a ride-along on exactly the terms its severity and scope
+already decide — the kind says what sort of finding it is, never what the platform does with it.
 
 **A reviewer runs their own review lap on top of that same pr-review task** (Decisions Log #149,
 idea 21ddf2b3, walked 2026-09-06). `h9k pr review` is the reviewer's counterpart to
