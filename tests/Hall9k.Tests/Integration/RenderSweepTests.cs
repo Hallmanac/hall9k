@@ -24,6 +24,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using JasperFx.Events;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -59,8 +60,6 @@ namespace Hall9k.Tests.Integration;
 /// explicitly and half of them are about what happens when a home is NOT materialised.
 /// </para>
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
@@ -68,21 +67,16 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
 
     private const string TokenVariable = "HALL9K_TEST_PUBLICATION_JIRA_TOKEN";
 
-    private readonly string _home = SetTempHome();
+    private readonly ScopedTestHome _scopedHome = new();
     private readonly string _repository = Path.Combine(Path.GetTempPath(), $"hall9k-repo-{Guid.NewGuid():N}");
 
-    private static string SetTempHome()
-    {
-        string home = Path.Combine(Path.GetTempPath(), $"hall9k-home-{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-        return home;
-    }
+    private string _home => _scopedHome.Home;
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
+        _scopedHome.Dispose();
         Environment.SetEnvironmentVariable(TokenVariable, null);
-        foreach (string directory in new[] { _home, _repository, _renderHome })
+        foreach (string directory in new[] { _repository, _renderHome })
         {
             try
             {

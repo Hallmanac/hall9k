@@ -38,10 +38,9 @@ namespace Hall9k.Tests.Integration;
 /// and a closed PR fails the run but keeps the branch.
 /// </summary>
 // The handoff that lands at true closeout is read from the run directory, so this class
-// owns HALL9K_HOME for its duration (Decisions Log #36) and shares the serializing
-// collection with every other test that does.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// redirects PlatformPaths.Home for its own async flow (Decisions Log #36,
+// PLACEHOLDER-98484f36) through the shared ScopedTestHome helper rather than the retired
+// Hall9kHome serial collection.
 [Trait("Category", "RequiresDocker")]
 public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
@@ -49,9 +48,17 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
     private const string PullRequestUrl = "https://github.com/x/y/pull/7";
 
+    // Class-unique rather than the production "JIRA_TOKEN" name (Decisions Log
+    // PLACEHOLDER-98484f36): the seam has no flow-scoped alternative for an arbitrary
+    // credential variable, so a fixed name would still race any other test's own Jira token —
+    // the same reasoning TrackerAssignmentTests' own token variable now follows.
+    private const string JiraTokenVariable = "HALL9K_TEST_CLOSEOUT_JIRA_TOKEN";
+
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hall9k-closeout-{Guid.NewGuid():N}");
 
-    private readonly string _home = SetTempHome();
+    private readonly ScopedTestHome _scopedHome = new();
+
+    private string _home => _scopedHome.Home;
 
     // SeedJiraConnectionAsync records this as the registered connection's credential reference,
     // which is exactly what TellJiraAsync's own JiraAccount now resolves through CredentialVault
@@ -59,16 +66,9 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
     // era, where the credential itself never mattered to a fake process runner.
     private readonly bool _jiraTokenSet = SetJiraToken();
 
-    private static string SetTempHome()
-    {
-        string home = Path.Combine(Path.GetTempPath(), $"hall9k-home-{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-        return home;
-    }
-
     private static bool SetJiraToken()
     {
-        Environment.SetEnvironmentVariable("JIRA_TOKEN", "a-token");
+        Environment.SetEnvironmentVariable(JiraTokenVariable, "a-token");
         return true;
     }
 
@@ -5926,7 +5926,7 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
         Guid connectionId = DomainId.New();
         session.Events.StartStream<ConnectionAggregate>(connectionId, ConnectionDecider.Register(
             connectionId, ownerId, WorkItemProvider.Jira, "brian@hallmanac.com",
-            CredentialReference.EnvironmentVariable("JIRA_TOKEN"), Now, new Uri("https://hall9k.atlassian.net")));
+            CredentialReference.EnvironmentVariable(JiraTokenVariable), Now, new Uri("https://hall9k.atlassian.net")));
         await session.SaveChangesAsync(cancellationToken);
     }
 
@@ -6170,18 +6170,8 @@ public sealed class CloseoutEngineTests(PostgresFixture postgres) : IClassFixtur
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-        Environment.SetEnvironmentVariable("JIRA_TOKEN", null);
-        try
-        {
-            if (Directory.Exists(_home))
-            {
-                Directory.Delete(_home, recursive: true);
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-        }
+        Environment.SetEnvironmentVariable(JiraTokenVariable, null);
+        _scopedHome.Dispose();
 
         // Through TemporaryTree: this root holds real git repositories, whose loose objects git
         // leaves read-only, and a bare Directory.Delete refuses one outright on Windows.

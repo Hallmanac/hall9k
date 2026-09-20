@@ -15,6 +15,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -28,10 +29,8 @@ namespace Hall9k.Tests.Integration;
 /// database: every assertion here is about how many runs a node is carrying, and a sibling
 /// test's leftover lease would be counted as one of them.
 /// </summary>
-// One test asks whether a run's result reached disk, so this class redirects the
-// process-wide HALL9K_HOME too and joins the collection that serializes the classes doing it.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// One test asks whether a run's result reached disk, so this class also redirects HALL9K_HOME
+// (via ScopedTestHome), scoped to this class's own async flow rather than process-wide.
 [Trait("Category", "RequiresDocker")]
 public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
@@ -53,29 +52,11 @@ public sealed class DispatchCeilingTests(PostgresFixture postgres) : IClassFixtu
     private const string ResultLine =
         """{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1200,"output_tokens":300},"total_cost_usd":0.0123}""";
 
-    private readonly string _home = SetTempHome();
+    private readonly ScopedTestHome _scopedHome = new();
 
-    private static string SetTempHome()
-    {
-        string home = Path.Combine(Path.GetTempPath(), $"hall9k-ceiling-home-{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-        return home;
-    }
+    private string _home => _scopedHome.Home;
 
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-        try
-        {
-            if (Directory.Exists(_home))
-            {
-                Directory.Delete(_home, recursive: true);
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-        }
-    }
+    public void Dispose() => _scopedHome.Dispose();
 
     [Fact]
     public async Task The_ceiling_defers_the_rest_of_the_queue_oldest_first_and_publishes_what_it_carries()

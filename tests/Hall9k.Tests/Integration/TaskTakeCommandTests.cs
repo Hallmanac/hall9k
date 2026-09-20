@@ -13,10 +13,10 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Xunit;
 
@@ -29,37 +29,27 @@ namespace Hall9k.Tests.Integration;
 /// 2026-09-13 testing rule).
 /// </summary>
 // The two success-path tests drive RunAsync all the way through, which rings the doorbell
-// (Hall9k.Cli.Infrastructure.Doorbell). That resolves its connection off the ambient
-// HALL9K_CONNECTION_STRING rather than this fixture, so each points it at the fixture for the
-// duration of its own call, the same way ClaimRefusalTests and StoreBackedCommandTests do.
+// (Hall9k.Cli.Infrastructure.Doorbell). That resolves its connection off Hall9kDatabase.Resolve
+// rather than this fixture, so each points it at the fixture for the duration of its own call
+// through ScopedConnectionString, the same way ClaimRefusalTests and StoreBackedCommandTests do.
 [Trait("Category", "RequiresDocker")]
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 18, 12, 0, 0, TimeSpan.Zero);
     private const string RepositoryPath = "/does/not/matter/on/a/fake/ledger";
 
     private readonly PostgresFixture _postgres;
-    private readonly string _home = Path.Combine(Path.GetTempPath(), $"hall9k-task-take-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
+
+    private string _home => _scopedHome.Home;
 
     public TaskTakeCommandTests(PostgresFixture postgres) => _postgres = postgres;
 
-    public async Task InitializeAsync()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _home);
-        await _postgres.Store.Advanced.Clean.CompletelyRemoveAllAsync();
-    }
+    public async Task InitializeAsync() => await _postgres.Store.Advanced.Clean.CompletelyRemoveAllAsync();
 
     public Task DisposeAsync()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_home))
-        {
-            Directory.Delete(_home, recursive: true);
-        }
-
+        _scopedHome.Dispose();
         return Task.CompletedTask;
     }
 
@@ -167,17 +157,11 @@ public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyn
         TrackerAssignmentTake take = new(gh, requester: null);
 
         TaskTakeCommand.Settings settings = new() { Id = taskId.ToString(), Force = true, Reason = "Offline for six hours." };
-        string? previousConnectionString = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, _postgres.ConnectionString);
         int exitCode;
-        try
+        using (ScopedConnectionString scope = new(_postgres.ConnectionString))
         {
             exitCode = await TaskTakeCommand.RunAsync(
                 _postgres.Store, session, settings, ledger, chainReader, take, new NodeKeyStore(), CancellationToken.None);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
         }
 
         exitCode.Should().Be(
@@ -355,17 +339,11 @@ public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyn
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, CancellationToken.None);
 
         TaskTakeCommand.Settings settings = new() { Id = taskId.ToString(), Force = true, Reason = "Offline for six hours." };
-        string? previousConnectionString = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, _postgres.ConnectionString);
         int exitCode;
-        try
+        using (ScopedConnectionString scope = new(_postgres.ConnectionString))
         {
             exitCode = await TaskTakeCommand.RunAsync(
                 _postgres.Store, session, settings, ledger, chainReader, take: null, new NodeKeyStore(), CancellationToken.None);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
         }
 
         exitCode.Should().Be(ExitCodes.Ok);

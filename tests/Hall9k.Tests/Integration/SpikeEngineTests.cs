@@ -41,8 +41,6 @@ namespace Hall9k.Tests.Integration;
 /// real spawned process.
 /// </summary>
 [Trait("Category", "RequiresDocker")]
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 19, 12, 0, 0, TimeSpan.Zero);
@@ -58,7 +56,7 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         DocumentStore store = postgres.Store;
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-spike-prototype-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             (string originPath, string repoPath) = await CreateOriginAndCloneAsync(root, cts.Token);
@@ -104,7 +102,6 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -121,7 +118,7 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         DocumentStore store = postgres.Store;
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-spike-research-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             (string originPath, string repoPath) = await CreateOriginAndCloneAsync(root, cts.Token);
@@ -168,7 +165,6 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -184,7 +180,7 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         DocumentStore store = postgres.Store;
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-spike-experiment-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             (string originPath, string repoPath) = await CreateOriginAndCloneAsync(root, cts.Token);
@@ -219,7 +215,6 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -235,7 +230,7 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         DocumentStore store = postgres.Store;
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-spike-budget-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             (_, string repoPath) = await CreateOriginAndCloneAsync(root, cts.Token);
@@ -265,7 +260,6 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -283,7 +277,7 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         DocumentStore store = postgres.Store;
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-spike-budget-kill-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             (_, string repoPath) = await CreateOriginAndCloneAsync(root, cts.Token);
@@ -323,7 +317,6 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -341,7 +334,7 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         DocumentStore store = postgres.Store;
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-spike-token-watch-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             (_, string repoPath) = await CreateOriginAndCloneAsync(root, cts.Token);
@@ -398,7 +391,6 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -414,7 +406,7 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         DocumentStore store = postgres.Store;
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-spike-notmet-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             (_, string repoPath) = await CreateOriginAndCloneAsync(root, cts.Token);
@@ -450,7 +442,6 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -467,7 +458,7 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         DocumentStore store = postgres.Store;
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-spike-idea-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             (_, string repoPath) = await CreateOriginAndCloneAsync(root, cts.Token);
@@ -521,7 +512,6 @@ public sealed class SpikeEngineTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }

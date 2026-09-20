@@ -39,8 +39,6 @@ namespace Hall9k.Tests.Integration;
 /// 2026-08-18: after PR #11 merged, a lease-expiry requeue spawned generation 6 to
 /// rebuild the feature that was already on main).
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
@@ -763,10 +761,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         // Isolated from the real platform home: PullRequestOpener resolves a blank
-        // RunDirectory through RunPaths.GlobalDirectory, which reads HALL9K_HOME directly —
+        // RunDirectory through RunPaths.GlobalDirectory, which reads PlatformPaths.Home —
         // this test must not write into whatever real home this machine has configured
         // (HomeEnvironmentIsolationTests's own guard is what caught this).
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             // "github.com" only needs to appear in the remote URL IsGitHubOriginAsync reads back — a
@@ -872,7 +870,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -895,7 +892,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
 
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-review-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             string originPath = Path.Combine(root, "github.com-origin.git");
@@ -1017,7 +1014,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -1038,10 +1034,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-moved-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         // Isolated from the real platform home: PullRequestOpener resolves a blank
-        // RunDirectory through RunPaths.GlobalDirectory, which reads HALL9K_HOME directly —
+        // RunDirectory through RunPaths.GlobalDirectory, which reads PlatformPaths.Home —
         // this test must not write into whatever real home this machine has configured
         // (HomeEnvironmentIsolationTests's own guard is what caught this).
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             string originPath = Path.Combine(root, "github.com-origin.git");
@@ -1142,7 +1138,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -1168,10 +1163,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-local-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         // Isolated from the real platform home: PullRequestOpener resolves a blank
-        // RunDirectory through RunPaths.GlobalDirectory, which reads HALL9K_HOME directly —
+        // RunDirectory through RunPaths.GlobalDirectory, which reads PlatformPaths.Home —
         // this test must not write into whatever real home this machine has configured
         // (HomeEnvironmentIsolationTests's own guard is what caught this).
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             string originPath = Path.Combine(root, "github.com-origin.git");
@@ -1270,7 +1265,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -1295,10 +1289,10 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         string root = Path.Combine(Path.GetTempPath(), $"hall9k-resume-open-reason-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
         // Isolated from the real platform home: PullRequestOpener resolves a blank
-        // RunDirectory through RunPaths.GlobalDirectory, which reads HALL9K_HOME directly —
+        // RunDirectory through RunPaths.GlobalDirectory, which reads PlatformPaths.Home —
         // this test must not write into whatever real home this machine has configured
         // (HomeEnvironmentIsolationTests's own guard is what caught this).
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             string originPath = Path.Combine(root, "github.com-origin.git");
@@ -1394,7 +1388,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }
@@ -1500,7 +1493,7 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         Directory.CreateDirectory(root);
         // Isolated from the real platform home, the same reason every resume-at-open test is
         // (HomeEnvironmentIsolationTests's own guard is what caught this).
-        Environment.SetEnvironmentVariable("HALL9K_HOME", Path.Combine(root, "home"));
+        using ScopedTestHome homeScope = new();
         try
         {
             string originPath = Path.Combine(root, "github.com-origin.git");
@@ -1594,7 +1587,6 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", null);
             TemporaryTree.TryDelete(root);
         }
     }

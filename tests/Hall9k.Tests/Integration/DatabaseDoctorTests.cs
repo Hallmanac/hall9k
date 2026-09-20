@@ -3,6 +3,7 @@ using Hall9k.Cli.Diagnostics;
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using JasperFx;
 using Marten;
 using Npgsql;
@@ -26,10 +27,9 @@ namespace Hall9k.Tests.Integration;
 /// what lets one container serve them.
 /// </para>
 /// </summary>
-// The full-check test points HALL9K_CONNECTION_STRING at the fixture, which is process-wide
-// state; sharing the collection serializes this against every other test that redirects it.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Several tests below point HALL9K_CONNECTION_STRING at a database of their own for the
+// duration of one DatabaseDoctor.RunAsync call, through ScopedConnectionString, which is
+// flow-scoped rather than process-wide, so no shared collection is needed for it any more.
 [Trait("Category", "RequiresDocker")]
 public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
@@ -48,22 +48,14 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
     [Fact]
     public async Task Running_the_full_check_against_a_healthy_server_reports_success()
     {
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-        try
-        {
-            RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached in this test");
+        using ScopedConnectionString scope = new(postgres.ConnectionString);
+        RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached in this test");
 
-            string? healthyConnectionString =
-                await DatabaseDoctor.RunAsync(offerFixes: false, assumeYes: false, runner.Runner, CancellationToken.None);
+        string? healthyConnectionString =
+            await DatabaseDoctor.RunAsync(offerFixes: false, assumeYes: false, runner.Runner, CancellationToken.None);
 
-            healthyConnectionString.Should().Be(postgres.ConnectionString);
-            runner.Calls.Should().BeEmpty("a reachable server never needs to probe Docker at all");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
-        }
+        healthyConnectionString.Should().Be(postgres.ConnectionString);
+        runner.Calls.Should().BeEmpty("a reachable server never needs to probe Docker at all");
     }
 
     [Fact]
@@ -99,26 +91,18 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
     {
         string untouched = await FreshDatabaseAsync(CancellationToken.None);
 
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, untouched);
-        try
-        {
-            (await DatabaseReachability.SchemaPresentAsync(untouched, CancellationToken.None))
-                .Should().BeFalse("a database of this test's own, which nothing has touched");
+        using ScopedConnectionString scope = new(untouched);
+        (await DatabaseReachability.SchemaPresentAsync(untouched, CancellationToken.None))
+            .Should().BeFalse("a database of this test's own, which nothing has touched");
 
-            RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
+        RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
 
-            string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: true, runner.Runner, CancellationToken.None);
+        string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: true, runner.Runner, CancellationToken.None);
 
-            resolved.Should().Be(untouched);
-            runner.Calls.Should().BeEmpty("a reachable server with --yes never needs Docker at all, only the schema apply");
-            (await DatabaseReachability.SchemaPresentAsync(untouched, CancellationToken.None))
-                .Should().BeTrue("--yes has to apply the schema itself, with nobody there to answer \"Shall I set that up now?\"");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
-        }
+        resolved.Should().Be(untouched);
+        runner.Calls.Should().BeEmpty("a reachable server with --yes never needs Docker at all, only the schema apply");
+        (await DatabaseReachability.SchemaPresentAsync(untouched, CancellationToken.None))
+            .Should().BeTrue("--yes has to apply the schema itself, with nobody there to answer \"Shall I set that up now?\"");
     }
 
     /// <summary>
@@ -152,19 +136,13 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
         (await DatabaseReachability.SchemaPresentAsync(stale, CancellationToken.None)).Should().BeTrue(
             "the old build already created mt_streams — this is staleness, not absence");
 
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, stale);
-        try
+        using (ScopedConnectionString scope = new(stale))
         {
             RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
 
             string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: true, runner.Runner, CancellationToken.None);
 
             resolved.Should().Be(stale);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
         }
 
         // The proof that matters: this platform's own store, opened exactly as every ordinary
@@ -209,21 +187,13 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
             await session.SaveChangesAsync(CancellationToken.None);
         }
 
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, stale);
-        try
-        {
-            RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
+        using ScopedConnectionString scope = new(stale);
+        RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
 
-            string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None);
+        string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None);
 
-            resolved.Should().BeNull(
-                "nobody confirmed the update and CreateOnly cannot self-heal an Update-shaped difference the way it self-heals a missing table");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
-        }
+        resolved.Should().BeNull(
+            "nobody confirmed the update and CreateOnly cannot self-heal an Update-shaped difference the way it self-heals a missing table");
     }
 
     /// <summary>
@@ -253,23 +223,15 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
             await session.SaveChangesAsync(CancellationToken.None);
         }
 
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, stale);
-        try
-        {
-            RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
+        using ScopedConnectionString scope = new(stale);
+        RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
 
-            string? resolved = await DatabaseDoctor.RunAsync(
-                offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None, staleSchemaRepairedByCaller: true);
+        string? resolved = await DatabaseDoctor.RunAsync(
+            offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None, staleSchemaRepairedByCaller: true);
 
-            resolved.Should().Be(
-                stale,
-                "the caller already promised to repair a stale schema itself before using this connection string");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
-        }
+        resolved.Should().Be(
+            stale,
+            "the caller already promised to repair a stale schema itself before using this connection string");
     }
 
     /// <summary>
@@ -298,22 +260,14 @@ public sealed class DatabaseDoctorTests(PostgresFixture postgres) : IClassFixtur
             await store.Storage.ApplyAllConfiguredChangesToDatabaseAsync();
         }
 
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, current);
-        try
-        {
-            RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
+        using ScopedConnectionString scope = new(current);
+        RecordingProcessRunner runner = RecordingProcessRunner.Failing("docker not reached — the server is already reachable");
 
-            string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None);
+        string? resolved = await DatabaseDoctor.RunAsync(offerFixes: true, assumeYes: false, runner.Runner, CancellationToken.None);
 
-            resolved.Should().Be(
-                current,
-                "every configured schema object was just applied, so there is nothing left for this build to call stale");
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
-        }
+        resolved.Should().Be(
+            current,
+            "every configured schema object was just applied, so there is nothing left for this build to call stale");
     }
 
     /// <summary>A minimal stand-in event: this test only needs something to append, not a real aggregate.</summary>

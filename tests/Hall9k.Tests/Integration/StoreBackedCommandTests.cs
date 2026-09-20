@@ -28,6 +28,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -93,36 +94,22 @@ namespace Hall9k.Tests.Integration;
 /// </para>
 /// </summary>
 // Several of these drive a command all the way to its success path, which rings the doorbell
-// (Hall9k.Cli.Infrastructure.Doorbell). That resolves its connection through the ambient
-// HALL9K_CONNECTION_STRING rather than this fixture, so each such test points it at the fixture
-// for its own duration. The register-session tests mutate CLAUDE_PID, and the spend-pressure ones
-// mutate Hall9k__SpendBudgetTokens and Hall9k__SpendPeriod. All of it is process-wide state, same
-// as DatabaseDoctorTests, which is what puts this class in the Hall9kHome collection.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// (Hall9k.Cli.Infrastructure.Doorbell); that resolves its connection through
+// Hall9kDatabase.Resolve rather than this fixture, so each such test points it at the fixture
+// for its own duration through ScopedConnectionString. This class still redirects two other
+// process-wide settings with no flow-scoped alternative, Hall9k__SpendBudgetTokens and
+// Hall9k__SpendPeriod — that is what puts it in the Environment collection now, not HALL9K_HOME
+// (redirected through ScopedTestHome instead).
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 [Trait("Category", "RequiresDocker")]
 public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
 
-    // Declared above _home on purpose: field initializers run in declaration order, so this has to
-    // read HALL9K_HOME before SetTempHome overwrites it.
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
-    private readonly string _home = SetTempHome();
-
-    /// <summary>
-    /// The home every seam in this class reads through, redirected before anything reads it. A
-    /// field initializer rather than a constructor body, because a type with a primary constructor
-    /// cannot declare one of its own. The spend-pressure tests set HALL9K_HOME to this same
-    /// directory again themselves, after creating it, which is what they always did.
-    /// </summary>
-    private static string SetTempHome()
-    {
-        string home = Path.Combine(Path.GetTempPath(), $"hall9k-home-{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-        return home;
-    }
+    private string _home => _scopedHome.Home;
 
     /// <summary>
     /// Writes the scripted summary as a session's terminal result event, the way a real
@@ -477,26 +464,15 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
 
     public void Dispose()
     {
-        // Restored rather than cleared: this class holds five seams that each redirect
+        // Restored rather than cleared: this class holds several seams that each redirect
         // process-wide state, and putting back what was there is the only teardown that is correct
         // whichever of them ran last.
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-
         foreach ((string name, string? value) in _previousSpendSettings)
         {
             Environment.SetEnvironmentVariable(name, value);
         }
 
-        try
-        {
-            if (Directory.Exists(_home))
-            {
-                Directory.Delete(_home, recursive: true);
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-        }
+        _scopedHome.Dispose();
     }
 
     // ── h9k task register-session ──
@@ -810,18 +786,15 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
         Guid taskId = await SeedTaskAsync(store, cts.Token);
 
         // A successful request rings the doorbell (Hall9k.Cli.Infrastructure.Doorbell), which
-        // resolves its connection off HALL9K_CONNECTION_STRING rather than this fixture, so it
+        // resolves its connection off Hall9kDatabase.Resolve rather than this fixture, so it
         // has to be pointed at the fixture for the one call below that actually succeeds.
-        string? previousConnectionString = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
+        // ScopedConnectionString rather than a second ScopedTestHome: this class's own _scopedHome
+        // already owns PlatformPaths.Home for this flow, and opening a second one here would
+        // silently swap Home out from under it for the call's duration too.
         TaskPushToJiraCommand.AutoRequestOutcome outcome;
-        try
+        using (new ScopedConnectionString(postgres.ConnectionString))
         {
             outcome = await TaskPushToJiraCommand.TryAutoRequestAsync(store, taskId, DomainId.New(), cts.Token);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
         }
 
         outcome.Should().Be(TaskPushToJiraCommand.AutoRequestOutcome.Requested);
@@ -1143,8 +1116,6 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
     public async Task An_unconfirmed_budget_reports_this_shells_own_period_not_the_daemons_stale_default()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        Directory.CreateDirectory(_home);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _home);
         Environment.SetEnvironmentVariable("Hall9k__SpendBudgetTokens", "5000000");
         Environment.SetEnvironmentVariable("Hall9k__SpendPeriod", "day");
 
@@ -1192,8 +1163,6 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
     public async Task A_period_only_config_change_still_surfaces_the_pending_change_note()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
-        Directory.CreateDirectory(_home);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _home);
         Environment.SetEnvironmentVariable("Hall9k__SpendBudgetTokens", "5000000");
         Environment.SetEnvironmentVariable("Hall9k__SpendPeriod", "day");
 

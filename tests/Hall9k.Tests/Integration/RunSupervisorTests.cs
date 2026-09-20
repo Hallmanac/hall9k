@@ -35,10 +35,11 @@ using Xunit;
 
 namespace Hall9k.Tests.Integration;
 
-// Both classes redirect the process-wide HALL9K_HOME; sharing a collection serializes
-// them so one test's home is never yanked out from under the other's tail loop.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// HALL9K_CLAUDE_PATH has no flow-scoped alternative (Decisions Log PLACEHOLDER-98484f36), so
+// this class still writes it directly and joins the one serial collection left for that.
+// HALL9K_HOME is redirected through ScopedTestHome like everywhere else.
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 [Trait("Category", "RequiresDocker")]
 public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable, IAsyncLifetime
 {
@@ -59,7 +60,9 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     private const string ResultLine =
         """{"type":"result","subtype":"success","is_error":false,"usage":{"input_tokens":1200,"cache_read_input_tokens":840000,"cache_creation_input_tokens":21000,"output_tokens":300},"total_cost_usd":0.0123}""";
 
-    private readonly string _home = SetTempHome();
+    private readonly ScopedTestHome _scopedHome = new();
+
+    private string _home => _scopedHome.Home;
 
     // NewSupervisor always hands ReviewEngine (and PrReviewEngine) a real ClaudeExecutor,
     // regardless of whatever executor a test passes in for the primary/verification path — see
@@ -72,13 +75,6 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     // same reason.
     private readonly string? _previousClaudePath = PinClaudeBinaryOffPath();
     private readonly List<string> _createdWorktreePaths = [];
-
-    private static string SetTempHome()
-    {
-        string home = Path.Combine(Path.GetTempPath(), $"hall9k-home-{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-        return home;
-    }
 
     private static string? PinClaudeBinaryOffPath()
     {
@@ -3656,9 +3652,8 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
         Environment.SetEnvironmentVariable("HALL9K_CLAUDE_PATH", _previousClaudePath);
-        TemporaryTree.TryDelete(_home);
+        _scopedHome.Dispose();
 
         foreach (string worktreePath in _createdWorktreePaths)
         {
