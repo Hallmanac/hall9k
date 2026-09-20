@@ -21,6 +21,19 @@ namespace Hall9k.Domain.Features.Project;
 /// before this type replays into it unchanged. Location is a setting; the shape inside it is
 /// the contract (ruled at the project-home discovery, 2026-08-23).
 /// </para>
+/// <para>
+/// A value replicated from another node (an idea's <c>WorkspaceHomeDirectory</c>, chiefly) may be
+/// rooted in a form foreign to THIS host — a Windows path replayed on macOS, or the reverse — since
+/// the field records where a home lives on the node that captured it, not this one. Rejecting that
+/// as "not absolute" would abort every later event from that sender (idea 202383dc's own worst
+/// case). <see cref="Parse"/> recognises both the POSIX and the Windows shape of an absolute path
+/// on every host; only a value rooted in the CURRENT host's own shape is run through
+/// <see cref="Path.GetFullPath(string)"/>, since normalising a foreign-form path with this host's
+/// own rules would mangle it (<c>Path.GetFullPath</c> on macOS reads a Windows drive path as
+/// relative and prepends the working directory to it). A foreign-form value is kept exactly as
+/// received — this type's whole job is recording the fact, never resolving it into a directory on
+/// this machine.
+/// </para>
 /// </summary>
 [JsonConverter(typeof(ProjectHomeJsonConverter))]
 public sealed record ProjectHome
@@ -36,6 +49,29 @@ public sealed record ProjectHome
     public bool HasValue => Value.IsNotBlank();
 
     /// <summary>
+    /// True when a recorded home is rooted in THIS host's own path shape — false for one replicated
+    /// from a node on a different operating system, and false for <see cref="None"/>, which names no
+    /// shape at all. A caller that would read or create a directory from <see cref="Value"/> checks
+    /// this first: a foreign-form value is a node-local fact about a different machine, never a path
+    /// this one can resolve (see this type's own doc comment).
+    /// </summary>
+    public bool IsNativeForm => HasValue && (OperatingSystem.IsWindows() ? IsWindowsRooted(Value) : IsPosixRooted(Value));
+
+    /// <summary>A leading slash — the POSIX shape of an absolute path, recognised on every host regardless of which one is running.</summary>
+    private static bool IsPosixRooted(string path) => path.Length > 0 && path[0] == '/';
+
+    /// <summary>
+    /// The Windows shape of an absolute path, recognised on every host regardless of which one is
+    /// running: a drive letter followed by a colon and a separator (<c>C:\...</c> or <c>C:/...</c>),
+    /// or a UNC path's leading double backslash (<c>\\server\share</c>). A bare leading backslash
+    /// with no drive letter (<c>\Users\bob</c>) is drive-relative, not absolute, and deliberately
+    /// does not match either shape here.
+    /// </summary>
+    private static bool IsWindowsRooted(string path) =>
+        (path.Length >= 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] is '\\' or '/')
+        || (path.Length >= 2 && path[0] == '\\' && path[1] == '\\');
+
+    /// <summary>
     /// The home as an absolute path, or a refusal naming the rule. Blank is <see cref="None"/>
     /// rather than an error: clearing the recorded home is a legitimate thing to ask for, and it
     /// is how a project says "no home here yet".
@@ -48,13 +84,26 @@ public sealed record ProjectHome
             return None;
         }
 
-        if (!Path.IsPathRooted(trimmed))
+        bool posixRooted = IsPosixRooted(trimmed);
+        bool windowsRooted = IsWindowsRooted(trimmed);
+        if (!posixRooted && !windowsRooted)
         {
             throw new DomainValidationException(
                 $"'{trimmed}' is not an absolute path. A project's home is recorded once and read "
                 + "back by the daemon, which runs in no particular directory, so a relative path "
                 + "would name a different place for every caller. Pass a full path "
                 + "(~/.hall9k/projects/<name> is the default).");
+        }
+
+        bool nativeForm = OperatingSystem.IsWindows() ? windowsRooted : posixRooted;
+        if (!nativeForm)
+        {
+            // Rooted in the OTHER host's own shape — a value replicated from a node on a
+            // different operating system. Kept exactly as received: running it through
+            // GetFullPath below would apply THIS host's own separator and rooting rules to a
+            // path that was never in that shape to begin with, mangling it rather than
+            // normalising it.
+            return new ProjectHome(trimmed);
         }
 
         // Collapses . and .. and any duplicated separators, so two spellings of one directory
