@@ -16,6 +16,16 @@ public enum ConnectionStringOrigin
     /// <summary><see cref="Hall9kDatabase.EnvironmentVariableName"/>.</summary>
     EnvironmentVariable,
 
+    /// <summary>
+    /// <see cref="Hall9kDatabase.ConnectionStringOverrideForTests"/>, a flow-scoped override only
+    /// a test can open (<c>Hall9k.Tests.TestSupport.ScopedTestHome</c>/<c>ScopedConnectionString</c>)
+    /// — distinct from <see cref="EnvironmentVariable"/> because no environment variable was
+    /// actually read to produce this value, and a diagnostic naming one would send a reader
+    /// hunting for a variable that was never consulted. No production code ever sets this override,
+    /// so this origin is never observed outside the test project.
+    /// </summary>
+    TestOverride,
+
     /// <summary><see cref="Hall9kDatabase.ConfigFile"/>.</summary>
     PlatformConfigFile,
 

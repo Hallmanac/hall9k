@@ -94,8 +94,7 @@ public static class Hall9kDatabase
 
         if (ConnectionStringOverride.Value is { Length: > 0 } fromOverride)
         {
-            return new ConnectionStringResolution(
-                fromOverride, ConnectionStringOrigin.EnvironmentVariable, EnvironmentVariableName);
+            return new ConnectionStringResolution(fromOverride, ConnectionStringOrigin.TestOverride, null);
         }
 
         if (Environment.GetEnvironmentVariable(EnvironmentVariableName) is { Length: > 0 } fromEnvironment)

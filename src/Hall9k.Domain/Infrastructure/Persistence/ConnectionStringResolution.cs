@@ -19,6 +19,7 @@ public sealed record ConnectionStringResolution(string? Value, ConnectionStringO
     {
         ConnectionStringOrigin.Configured => "explicit configuration",
         ConnectionStringOrigin.EnvironmentVariable => $"the {Source} environment variable",
+        ConnectionStringOrigin.TestOverride => "a test's own flow-scoped override",
         ConnectionStringOrigin.PlatformConfigFile => $"the platform config file ({Source})",
         ConnectionStringOrigin.PlatformConfigFileMalformed => $"the platform config file ({Source}) — but it isn't valid JSON",
         ConnectionStringOrigin.PlatformConfigFileUnreadable => $"the platform config file ({Source}) — but it could not be read",

@@ -134,7 +134,9 @@ public sealed class Hall9kDatabaseTests : IDisposable
 
         resolution.Value.Should().Be(
             "override-value", "a test's own ScopedConnectionString must outrank the ambient environment variable");
-        resolution.Origin.Should().Be(ConnectionStringOrigin.EnvironmentVariable);
+        resolution.Origin.Should().Be(
+            ConnectionStringOrigin.TestOverride, "no environment variable was actually read to produce this value");
+        resolution.Source.Should().BeNull();
     }
 
     [Fact]
