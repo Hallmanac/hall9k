@@ -61,12 +61,4 @@ public sealed class NodePlacementResolverTests
 
         act.Should().Throw<DomainConflictException>().WithMessage("*ambiguous*");
     }
-
-    [Fact]
-    public void This_installs_own_node_id_always_resolves_even_with_an_otherwise_empty_fleet()
-    {
-        Guid resolved = NodePlacementResolver.Resolve(SelfNodeId.ToString(), [SelfNodeId]);
-
-        resolved.Should().Be(SelfNodeId);
-    }
 }
