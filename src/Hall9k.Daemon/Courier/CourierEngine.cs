@@ -216,6 +216,20 @@ public sealed class CourierEngine(
         OrchestratorFeedRead read = await reader.ReadUndrainedAsync(
             session, project.Id, project.OrchestratorFeed, now, cancellationToken);
 
+        if (read.Items.Count == 0 && read.ScanWasCapped)
+        {
+            // Nothing at all was admitted out of this capped scan — not even an item still inside
+            // the settling window, which read.Items would still carry if there were one — so every
+            // event up to read.DrainableThroughSequence has been considered once and rejected, and
+            // advancing the cursor there cannot drop anything. Left undrained here, a project whose
+            // own events are outnumbered past the scan's own cap (OrchestratorFeedReader.MaxEventsPerRead)
+            // by another project's ordinary traffic on this node would have its cursor frozen
+            // forever: every future tick re-reads the identical noise-only window and never reaches
+            // the real item waiting past it (independent pre-PR review, cycle 4, conformance lens).
+            await OrchestratorFeedReader.DrainAsync(
+                session, project.Id, read.DrainableThroughSequence, now, cancellationToken);
+        }
+
         // Items newer than the settling window are printed but not yet safe to drain
         // (OrchestratorFeedRead's own doc): delivering one now and finding the drain made no
         // progress would hand the identical item back on the very next tick — an urgent one twice
