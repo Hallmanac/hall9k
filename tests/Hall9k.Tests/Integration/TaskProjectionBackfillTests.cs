@@ -580,6 +580,59 @@ public sealed class TaskProjectionBackfillTests(PostgresFixture postgres) : ICla
     }
 
     /// <summary>
+    /// <see cref="TaskDetails.Scope"/> (idea 8c5993c5) defaults to <see cref="ReplicationScope.Team"/>
+    /// on a document with no <c>scope</c> key at all, which is exactly wrong for a task that was
+    /// marked private under the pre-8c5993c5 flag: without this marker, the stale document reads
+    /// team-scoped, and <see cref="EventReplicationOutbox"/> — which reads scope off this projection,
+    /// never the aggregate — would queue that private task's whole held-back history to the project
+    /// the moment the daemon upgrades (independent pre-PR review, cycle 1, both lenses, high).
+    /// </summary>
+    [Fact]
+    public async Task A_private_task_projected_before_the_scope_marker_landed_is_restored_after_the_backfill_runs()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        Guid taskId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        await using (IDocumentSession seed = store.LightweightSession())
+        {
+            TaskAdded added = Add(taskId, "Kept close for now, projected before the scope marker landed");
+            TaskAggregate task = new();
+            task.Apply(added);
+            TaskScopeSet madePrivate = TaskDecider.SetPrivate(task, isPrivate: true, Now.AddMinutes(1), ownerId);
+            seed.Events.StartStream<TaskAggregate>(taskId, [added, madePrivate]);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await StripKeyAsync(taskId, "scope", cts.Token);
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails stale = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            stale.Scope.Should().Be(
+                ReplicationScope.Team, "the pre-marker document never wrote this key, and the member initializer falls back to team");
+            stale.IsPrivate.Should().BeFalse("a computed read off the wrongly-defaulted scope reads the same way");
+
+            TaskListItem staleRow = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            staleRow.Scope.Should().Be(ReplicationScope.Team, "the list item defaults identically");
+        }
+
+        (await TaskLifecycleProjectionBackfill.RunAsync(store, cts.Token)).Should().Equal(
+            [taskId], "the missing key is a staleness marker, so the window closes at the next daemon start");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            TaskDetails details = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            details.Scope.Should().Be(ReplicationScope.Private, "the stream always recorded the privacy set; the rebuild restores it");
+            details.IsPrivate.Should().BeTrue();
+
+            TaskListItem row = (await query.LoadAsync<TaskListItem>(taskId, cts.Token))!;
+            row.Scope.Should().Be(ReplicationScope.Private);
+        }
+    }
+
+    /// <summary>
     /// <see cref="TaskListItem.QueuePriorityMarked"/> (task 45136b29) exists only on the list
     /// item, and a document written before the field landed carries no key at all — the same
     /// class of defect the markers above cover, but with the worst failure mode of any of them:

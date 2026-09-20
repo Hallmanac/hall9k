@@ -31,7 +31,8 @@ public static class IdeaDetailsProjectionBackfill
     private const string StaleDocument =
         "(not jsonb_exists(d.data, 'cutTaskIds')"
         + " or not jsonb_exists(d.data, 'archiveReason')"
-        + " or not jsonb_exists(d.data, 'concludedAt'))";
+        + " or not jsonb_exists(d.data, 'concludedAt')"
+        + " or not jsonb_exists(d.data, 'scope'))";                 // pre-replication-scope (idea 8c5993c5)
 
     /// <summary>
     /// Rebuilds every idea stream still carrying an out-of-date document and returns the ids it
