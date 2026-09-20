@@ -124,6 +124,29 @@ public sealed class CourierGateTests
             .Should().Be(CourierSpawnDecision.Spawn);
     }
 
+    [Fact]
+    public void A_failed_delivery_still_waits_out_the_ceiling_even_once_the_stuck_items_own_age_reads_as_quiet()
+    {
+        // The undelivered item's own age is what quietFor measures, and it only grows while
+        // nothing new arrives — so without a wait floor of its own, a failed delivery would ride
+        // the ordinary ramp down to zero and respawn on every sweep tick once the feed has looked
+        // "quiet" for ten minutes, which is exactly backwards for a project stuck on a failing
+        // send: the day cap alone would be left to stop it.
+        Decide(
+                lastCourierFailed: true,
+                elapsedSinceLastCourier: TimeSpan.FromSeconds(1), quietFor: TimeSpan.FromMinutes(15))
+            .Should().Be(CourierSpawnDecision.Waiting);
+    }
+
+    [Fact]
+    public void A_failed_delivery_spawns_again_once_its_own_ceiling_wait_has_elapsed()
+    {
+        Decide(
+                lastCourierFailed: true,
+                elapsedSinceLastCourier: TimeSpan.FromSeconds(60), quietFor: TimeSpan.FromMinutes(15))
+            .Should().Be(CourierSpawnDecision.Spawn);
+    }
+
     [Theory]
     [InlineData(0, 60)]
     [InlineData(300, 30)]

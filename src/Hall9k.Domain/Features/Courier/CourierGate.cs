@@ -67,7 +67,19 @@ public static class CourierGate
             return CourierSpawnDecision.Spawn;
         }
 
-        if (elapsedSinceLastCourier is null || elapsedSinceLastCourier >= Wait(quietFor, quietThreshold, maxWait))
+        // A failed delivery gets a wait floor of its own — maxWait, the same ceiling the ordinary
+        // ramp already tops out at — rather than the ordinary quiet-based ramp, which reads the
+        // undelivered item's own age and keeps ramping down to zero the longer a stuck project's
+        // identical, still-undrained item sits there unchanged. Left on the ordinary ramp, the
+        // urgent-bypass guard above stops the immediate-respawn runaway only until the feed has
+        // been quiet for quietThreshold, and then hands it straight back: elapsedSinceLastCourier
+        // is measured from the failed run's own completion, so once that ramp reaches zero the very
+        // next sweep tick (CourierSweepPollInterval, ten seconds) sees elapsedSinceLastCourier >=
+        // TimeSpan.Zero and spawns again, repeating every tick until the day cap alone stops it —
+        // the identical runaway the guard above was written to close (independent pre-PR review,
+        // cycle 4, adversarial lens).
+        TimeSpan wait = lastCourierFailed ? maxWait : Wait(quietFor, quietThreshold, maxWait);
+        if (elapsedSinceLastCourier is null || elapsedSinceLastCourier >= wait)
         {
             return CourierSpawnDecision.Spawn;
         }
