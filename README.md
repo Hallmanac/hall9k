@@ -523,6 +523,23 @@ other context lines, isolate it with `head -1` before piping to your clipboard t
 `Select-Object -First 1` on Windows, since standard PowerShell has no `head`:
 `h9k orchestrator launch-text show --project hall9k | Select-Object -First 1 | clip` (omit
 `--project` for the node's own launch text).
+Whether a window is actually up is a fact the platform keeps rather than guesses. The anchor's
+first start-up step is `h9k orchestrator register --project <name> --session <session-name>
+--pid $CLAUDE_PID --cli claude-code`, and the recipe's restart and close steps run
+`h9k orchestrator deregister --project <name> --pid $CLAUDE_PID`, so the trail exists without you
+doing anything. A window drops its own claim and only its own, which is what the pid on the
+deregister is for: a window you left open and closed later cannot unregister the one that took
+over from it.
+It has to be declared: Claude Code's own session registry cannot tell the orchestrator window
+from the discovery, refinement, and planning sessions that also run in the same project home, and
+another vendor's CLI may keep no registry at all, so liveness is checked against the process id
+alone. Registering the same session twice is a no-op, and a second live orchestrator for the same
+project on this machine is refused naming the first unless you pass `--replace`. The daemon
+records a registered window whose process is gone as lost, and a registration that finds the
+previous window already gone records that loss itself, so nothing leaves the record unended. `h9k orchestrator status` and the
+`h9k status` header both name the live window, or say "none live" with the last shutdown or loss
+time.
+
 `h9k orchestrator launch-text show`/`set` reads and replaces that launch line, one setting per
 agent CLI, and `h9k orchestrator measure` runs a fixed one-turn probe against it so "lean" is a
 number you can watch rather than a promise: a same-day dry run of the skill's own first real run

@@ -1012,6 +1012,8 @@ the winner and why. See [operations.md](operations.md#who-gets-the-next-free-slo
 ### Orchestrator windows
 
 `h9k orchestrator node [--cli]` · `h9k orchestrator project [PROJECT] [--cli]` ·
+`h9k orchestrator register --project --session --pid [--cli] [--replace]` ·
+`h9k orchestrator deregister --project --pid` · `h9k orchestrator status [--project]` ·
 `h9k orchestrator launch-text show | set` · `h9k orchestrator measure`
 
 Never launches anything — the design's own explicit refusal to have Hall9k spawn an interactive
@@ -1027,6 +1029,24 @@ scoped sessions) is never platform-rendered — only a tiny, always-overwritten 
 written instead by the `orchestrator-recipe-generator` skill, which `h9k install` and
 `h9k project add`/`init` publish and seed. See
 [README's Orchestrator windows](../README.md#orchestrator-windows) for the full picture.
+
+`register`/`deregister`/`status` are how the platform knows whether a window is actually up for a
+project on this node. A window registers itself as the anchor's first start-up step, naming its
+session, process id, and agent CLI; the recipe's restart and close steps deregister it, naming
+that same process id, so the audit trail exists without the operator doing anything. A window
+drops its own claim and only its own: `deregister` against a registration some other window holds
+reports whose it is and leaves it standing, so a stale window's close step cannot unregister the
+replacement that took over from it. Presence has to be declared rather than
+discovered: Claude Code's own session registry cannot tell the orchestrator window from the
+discovery, refinement, and planning sessions running in the same project home, and another
+vendor's CLI may keep no registry at all, so liveness is checked against the process id alone.
+Registering the same session again is a no-op; a second live orchestrator for the same project on
+this node is refused naming the live one, unless `--replace` records that one as shut down first.
+The daemon's presence sweep records a registered window whose process is gone as lost, and a
+`register` that finds the previous window already gone records that loss itself in the same
+write, so no window ever leaves the stream without an ending. `status`
+and the `h9k status` header print the same line: the live window's session, CLI, process id and
+age, or "none live" with the last shutdown or loss time.
 
 ## Identifiers
 
