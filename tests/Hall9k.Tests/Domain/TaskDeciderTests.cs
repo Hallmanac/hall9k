@@ -2704,20 +2704,21 @@ public sealed class TaskDeciderTests
     {
         TaskAggregate task = DraftTask();
 
-        task.Apply(TaskDecider.Share(task, Now, Owner));
+        task.Apply(TaskDecider.Share(task, Now, Owner)!);
 
         task.Scope.Should().Be(ReplicationScope.Team);
         task.State.Should().Be(TaskState.Draft, "sharing is not publishing — idea 18464daa's own use is sharing a draft for publish approval");
     }
 
     [Fact]
-    public void Share_works_on_an_already_published_task_too_though_it_is_already_team()
+    public void Share_works_on_an_already_published_task_too_as_an_idempotent_no_op()
     {
         TaskAggregate task = PublishedTask();
 
-        Action act = () => TaskDecider.Share(task, Now, Owner);
+        TaskScopeSet? set = TaskDecider.Share(task, Now, Owner);
 
-        act.Should().Throw<DomainConflictException>().WithMessage("*already*", "publish already set team, so there is nothing left to change");
+        set.Should().BeNull("publish already set team, so sharing again is a no-op success rather than a refusal");
+        task.Scope.Should().Be(ReplicationScope.Team);
     }
 
     [Fact]

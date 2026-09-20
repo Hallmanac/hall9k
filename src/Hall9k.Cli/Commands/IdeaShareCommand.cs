@@ -13,7 +13,7 @@ namespace Hall9k.Cli.Commands;
 /// Shares an idea with the team on the owner's own word (idea 8c5993c5) — sugar for
 /// <c>h9k idea scope &lt;id&gt; team</c>, the one door onto team scope an idea has besides being cut
 /// into a published task. Works on a captured idea in any state; a discovery walk can call this at
-/// its own end. Refused when the idea is already team scope, since team is one-way.
+/// its own end. Sharing an idea already at team scope is a no-op success rather than a refusal.
 /// </summary>
 public sealed class IdeaShareCommand : Hall9kAsyncCommand<IdeaShareCommand.Settings>
 {
@@ -34,9 +34,12 @@ public sealed class IdeaShareCommand : Hall9kAsyncCommand<IdeaShareCommand.Setti
             ?? throw new DomainNotFoundException($"No idea {ideaId}.");
 
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        IdeaScopeSet set = IdeaDecider.Share(idea, DateTimeOffset.UtcNow, context.OwnerId);
-        session.Events.Append(ideaId, set);
-        await session.SaveChangesAsync(cancellationToken);
+        IdeaScopeSet? set = IdeaDecider.Share(idea, DateTimeOffset.UtcNow, context.OwnerId);
+        if (set is not null)
+        {
+            session.Events.Append(ideaId, set);
+            await session.SaveChangesAsync(cancellationToken);
+        }
 
         string shortId = TaskListCommand.ShortId(ideaId);
         AnsiConsole.MarkupLine($"[green]Idea {shortId} is now shared with the team.[/]");

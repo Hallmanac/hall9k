@@ -682,12 +682,14 @@ public static class TaskDecider
     /// idea 8c5993c5: <c>h9k task share</c> — sugar for <see cref="SetScope"/> at
     /// <see cref="ReplicationScope.Team"/>, the door that lets a draft reach the team before it is
     /// ready to publish (idea 18464daa's own use: sharing a draft for publish approval). Works on a
-    /// draft as well as a published task, exactly as <see cref="SetScope"/> does — publishing already
-    /// sets team on its own (<see cref="TaskAggregate.Apply(TaskPublished)"/>), so this is mostly
-    /// useful before that point.
+    /// draft as well as a published task — unlike <see cref="SetScope"/>, this is idempotent rather
+    /// than refusing the no-op: sharing is the one command where "already there" is success, since a
+    /// published task is always already Team (<see cref="TaskAggregate.Apply(TaskPublished)"/>) and a
+    /// caller that shares out of habit or from a script should not have to check first. Returns null
+    /// for that no-op case; the caller appends nothing.
     /// </summary>
-    public static TaskScopeSet Share(TaskAggregate task, DateTimeOffset setAt, Guid setByOwnerId) =>
-        SetScope(task, ReplicationScope.Team, setAt, setByOwnerId);
+    public static TaskScopeSet? Share(TaskAggregate task, DateTimeOffset setAt, Guid setByOwnerId) =>
+        task.Scope == ReplicationScope.Team ? null : SetScope(task, ReplicationScope.Team, setAt, setByOwnerId);
 
     /// <summary>
     /// idea 8c5993c5: the pre-8c5993c5 <c>h9k task set-private</c> alias, kept as sugar over

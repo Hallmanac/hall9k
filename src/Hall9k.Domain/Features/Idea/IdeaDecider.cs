@@ -230,10 +230,12 @@ public static class IdeaDecider
     /// idea 8c5993c5: <c>h9k idea share</c> — sugar for <see cref="SetScope"/> at
     /// <see cref="ReplicationScope.Team"/>. Unlike a task, which reaches team automatically on
     /// publish, an idea has no such automatic door: it reaches the team only on this explicit word.
-    /// Works on a captured idea in any state, exactly as <see cref="SetScope"/> does.
+    /// Works on a captured idea in any state — unlike <see cref="SetScope"/>, this is idempotent
+    /// rather than refusing the no-op: sharing is the one command where "already there" is success.
+    /// Returns null for that no-op case; the caller appends nothing.
     /// </summary>
-    public static IdeaScopeSet Share(IdeaAggregate idea, DateTimeOffset setAt, Guid setByOwnerId) =>
-        SetScope(idea, ReplicationScope.Team, setAt, setByOwnerId);
+    public static IdeaScopeSet? Share(IdeaAggregate idea, DateTimeOffset setAt, Guid setByOwnerId) =>
+        idea.Scope == ReplicationScope.Team ? null : SetScope(idea, ReplicationScope.Team, setAt, setByOwnerId);
 
     /// <summary>
     /// idea 8c5993c5: the pre-8c5993c5 <c>h9k idea set-private</c> alias, kept as sugar over

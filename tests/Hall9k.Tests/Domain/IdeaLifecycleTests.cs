@@ -290,7 +290,7 @@ public sealed class IdeaLifecycleTests
     {
         IdeaAggregate idea = Captured("An idea worth the team's eyes");
 
-        idea.Apply(IdeaDecider.Share(idea, Now, Owner));
+        idea.Apply(IdeaDecider.Share(idea, Now, Owner)!);
 
         idea.Scope.Should().Be(ReplicationScope.Team);
     }
@@ -301,7 +301,7 @@ public sealed class IdeaLifecycleTests
         IdeaAggregate idea = Captured("Discovery finished here");
         idea.Apply(IdeaDecider.Archive(idea, "Superseded", Now, Owner));
 
-        idea.Apply(IdeaDecider.Share(idea, Now.AddMinutes(1), Owner));
+        idea.Apply(IdeaDecider.Share(idea, Now.AddMinutes(1), Owner)!);
 
         idea.Scope.Should().Be(ReplicationScope.Team);
     }
@@ -323,15 +323,25 @@ public sealed class IdeaLifecycleTests
     public void Team_scope_is_one_way_and_refuses_to_narrow_back_to_fleet_or_private()
     {
         IdeaAggregate idea = Captured("Shared with the team already");
-        idea.Apply(IdeaDecider.Share(idea, Now, Owner));
+        idea.Apply(IdeaDecider.Share(idea, Now, Owner)!);
 
         Action toFleet = () => IdeaDecider.SetScope(idea, ReplicationScope.Fleet, Now.AddMinutes(1), Owner);
         Action toPrivate = () => IdeaDecider.SetPrivate(idea, isPrivate: true, Now.AddMinutes(1), Owner);
-        Action shareAgain = () => IdeaDecider.Share(idea, Now.AddMinutes(1), Owner);
 
         toFleet.Should().Throw<DomainConflictException>().WithMessage("*one-way*");
         toPrivate.Should().Throw<DomainConflictException>().WithMessage("*one-way*");
-        shareAgain.Should().Throw<DomainConflictException>().WithMessage("*already*");
+    }
+
+    [Fact]
+    public void Sharing_an_idea_already_at_team_scope_is_an_idempotent_no_op()
+    {
+        IdeaAggregate idea = Captured("Shared with the team already");
+        idea.Apply(IdeaDecider.Share(idea, Now, Owner)!);
+
+        IdeaScopeSet? shareAgain = IdeaDecider.Share(idea, Now.AddMinutes(1), Owner);
+
+        shareAgain.Should().BeNull("it is already at team scope, so sharing again is a no-op success rather than a refusal");
+        idea.Scope.Should().Be(ReplicationScope.Team);
     }
 
     [Fact]
