@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -10,28 +11,12 @@ namespace Hall9k.Tests.Domain;
 /// resolving the install's canonical copy — the only place these fixtures ever write a template —
 /// once a checkout's own <c>.claude/templates</c> does not carry the relative path being asked for.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (the canonical directory PromptTemplates falls back to),
-// so it shares the collection with every other test that does.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Redirects the process-wide HALL9K_HOME (the canonical directory PromptTemplates falls back to).
 public sealed class PromptTemplatesTests : IDisposable
 {
-    private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-prompt-templates-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
-    public PromptTemplatesTests()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _platformHome);
-    }
-
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_platformHome))
-        {
-            Directory.Delete(_platformHome, recursive: true);
-        }
-    }
+    public void Dispose() => _scopedHome.Dispose();
 
     [Fact]
     public void Load_substitutes_every_token_and_leaves_everything_else_untouched()

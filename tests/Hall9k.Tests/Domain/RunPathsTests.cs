@@ -14,18 +14,14 @@ namespace Hall9k.Tests.Domain;
 /// <see cref="Hall9k.Domain.Features.Run.Projections.RunDetails"/> for the fallback a stream
 /// written before this existed replays through.
 /// </summary>
-// GlobalDirectory resolves through PlatformPaths.Home, which reads the process-wide HALL9K_HOME
-// variable — the same one the h9k-update scratch-home tests redirect. This class compares two
-// independently-resolved GlobalDirectory calls (or one against RunPaths.ResolveDirectory's own
-// fallback), so a mutation landing between those two reads is directly observable here; sharing
-// the "Hall9kHome" collection serializes this against every test that redirects the variable
-// (origin: RunPathsTests.With_no_home_a_new_run_falls_back_to_the_platform_global_location
-// intermittently observed an h9k-update-* scratch home, gate strikes on 34a618a6 2026-08-29 and
-// cea5ae6e 2026-08-30). The nested ResolveCurrentDirectoryTests and
-// AnticipateDirectoryAfterSweepTests classes below take an explicit home directory rather than
-// reading PlatformPaths.Home, so they carry no attribute of their own.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// GlobalDirectory resolves through PlatformPaths.Home — only ever reads it, never writes it, and
+// a read can never observe a different test's own redirected home now that HALL9K_HOME goes
+// through the flow-scoped ScopedTestHome seam rather than a process-wide write (Decisions Log
+// PLACEHOLDER-98484f36; origin of the seam itself: this test intermittently observed an
+// h9k-update-* scratch home under the old process-wide mechanism, gate strikes on 34a618a6
+// 2026-08-29 and cea5ae6e 2026-08-30). So this class needs no serializing collection at all. The
+// nested ResolveCurrentDirectoryTests and AnticipateDirectoryAfterSweepTests classes below take an
+// explicit home directory rather than reading PlatformPaths.Home in the first place.
 public sealed class RunPathsTests
 {
     [Fact]
