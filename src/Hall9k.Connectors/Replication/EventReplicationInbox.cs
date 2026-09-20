@@ -8,6 +8,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Persistence;
 using JasperFx.Events;
+using JasperFx.Events.Daemon;
 using Marten;
 using Marten.Events;
 using Microsoft.Extensions.Logging;
@@ -59,6 +60,17 @@ public sealed record EventReplicationReadResult(bool SenderIgnored, int EventsAp
 /// holds only the post-switch-on TAIL of, whose pre-switch-on head an explicit pull then serves
 /// (task a56cf16e, Decisions Log #235) — applying that head would replay the stream backwards and
 /// leave the aggregate reading as it did at its creation.
+/// </para>
+/// <para>
+/// Each record this class applies is saved on its own, rather than every record a read's own
+/// batch of envelopes carries being staged into one save at the end: a record whose own inline
+/// projection throws (<see cref="JasperFx.Events.Daemon.ApplyEventException"/> — a genuinely
+/// malformed fact, or a defect in whatever projection its event type feeds) is caught, logged
+/// with its own event id and sender, and recorded as handled without ever landing, so this exact
+/// event is never retried and never blocks the records around it (<see cref="ApplyAsync"/>). The
+/// cursor still advances past the envelope that carried it either way — <see cref="ReadFromAsync"/>
+/// tracks the highest sequence considered independently of whether any single record inside it
+/// applied — so a poison event can cost this node that one fact, never a sender's whole future.
 /// </para>
 /// </summary>
 public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<EventReplicationInbox>? logger = null)
@@ -167,6 +179,16 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // read once per stream per read, before anything is appended to it, and kept current as
         // records land. See ApplyAsync's own doc for the invariant it enforces.
         Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream = [];
+        // Every stream a record failed to START this read (ApplyAsync's own ApplyEventException
+        // catch, reached while streamExists was false): Marten auto-materialises a document for the
+        // very next event this node applies to that same stream regardless of that event's own
+        // type — the identical "starts a document even with no matching Create" behaviour
+        // IdeaDetailsProjection's own doc already relies on for legitimate out-of-order delivery —
+        // and here there is no true genesis event still to come that would ever repopulate it, since
+        // the one that failed is now permanently skipped. A later record in the SAME read for a
+        // stream that never actually started is refused the identical way, rather than left to
+        // auto-vivify a document nothing will ever repair.
+        HashSet<Guid> streamsThatFailedToStartThisRead = [];
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
             highestSeqConsidered = raw.Seq;
@@ -251,8 +273,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 streamIdsAnsweredThisRead.Add(record.StreamId);
                 if (await ApplyAsync(
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
-                    originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream, now,
-                    cancellationToken))
+                    streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead, originProgressThisRead,
+                    originHighWaterByStream, now, cancellationToken))
                 {
                     applied++;
                 }
@@ -365,9 +387,10 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// holds from the same origin — see <paramref name="originHighWaterByStream"/>.</summary>
     private async Task<bool> ApplyAsync(
         IDocumentSession session, EventReplicationCodec.ReplicatedEventRecord record, Guid senderNodeId, Guid projectId,
-        string? originProjectKey, HashSet<Guid> streamsStartedThisRead, HashSet<Guid> originEventIdsAppliedThisRead,
-        Dictionary<Guid, long> originProgressThisRead, Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
-        DateTimeOffset now, CancellationToken cancellationToken)
+        string? originProjectKey, HashSet<Guid> streamsStartedThisRead, HashSet<Guid> streamsThatFailedToStartThisRead,
+        HashSet<Guid> originEventIdsAppliedThisRead, Dictionary<Guid, long> originProgressThisRead,
+        Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream, DateTimeOffset now,
+        CancellationToken cancellationToken)
     {
         if (!originEventIdsAppliedThisRead.Add(record.OriginEventId))
         {
@@ -464,6 +487,28 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         bool streamExists = streamsStartedThisRead.Contains(effectiveStreamId)
             || await session.Events.FetchStreamStateAsync(effectiveStreamId, cancellationToken) is not null;
 
+        // A record for a stream this read already tried, and failed, to START (streamsThatFailedToStartThisRead's
+        // own doc) is refused the same way rather than left to StartStream a fresh, headless document:
+        // the record that would have been this stream's true genesis is now permanently skipped, so
+        // nothing is ever coming to repair it.
+        if (!streamExists && streamsThatFailedToStartThisRead.Contains(effectiveStreamId))
+        {
+            logger?.LogWarning(
+                "Replicated event {OriginEventId} (origin {OriginNodeId} sequence {OriginSequence}) targets "
+                + "stream {StreamId}, whose own genesis record already failed to apply earlier in this same "
+                + "read — skipped rather than starting a headless document nothing will ever repair",
+                record.OriginEventId, record.OriginNodeId, record.OriginSequence, effectiveStreamId);
+            session.Store(new ReplicatedEventRecord
+            {
+                Id = record.OriginEventId,
+                StreamId = effectiveStreamId,
+                ProjectId = projectId,
+                AppliedAt = now,
+            });
+            await session.SaveChangesAsync(cancellationToken);
+            return false;
+        }
+
         // An event is only ever APPENDED to a local stream — Marten has no way to put one before
         // what is already there — so a record that belongs earlier than an event this stream
         // already holds from the same origin cannot be applied at all: doing it anyway replays the
@@ -492,11 +537,6 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         StreamAction action = streamExists
             ? session.Events.Append(effectiveStreamId, data)
             : session.Events.StartStream(effectiveStreamId, data);
-        streamsStartedThisRead.Add(effectiveStreamId);
-        if (record.OriginSequence > highestHeld)
-        {
-            originHighWater[record.OriginNodeId] = record.OriginSequence;
-        }
 
         IEvent appended = action.Events[^1];
         appended.SetHeader(ReplicationEventHeaders.OriginNodeId, record.OriginNodeId.ToString());
@@ -532,6 +572,16 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // node's own progress from that forwarded high-water mark would make a later gap-fill request
         // start past events this node was never actually sent (independent pre-PR review, cycle 1,
         // conformance and adversarial lenses, medium).
+        //
+        // Resolved and staged here, ahead of the save below, rather than after it: everything this
+        // record stages — the append, the headers, the ReplicatedEventRecord, and this — has to
+        // land in the SAME SaveChangesAsync call the catch below can eject as one unit. Staging it
+        // after a successful save, in a session shared across every record this read processes,
+        // would leave it sitting uncommitted until a LATER record's own failure ejects the whole
+        // session's pending changes — taking this already-decided update down with it even though
+        // its own record never failed.
+        long? originProgressKnownHighest = null;
+        long? originProgressAdvancedTo = null;
         if (senderNodeId == record.OriginNodeId)
         {
             if (!originProgressThisRead.TryGetValue(record.OriginNodeId, out long knownHighest))
@@ -541,9 +591,10 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 knownHighest = persisted?.HighestOriginSequenceApplied ?? 0;
             }
 
+            originProgressKnownHighest = knownHighest;
             if (record.OriginSequence > knownHighest)
             {
-                originProgressThisRead[record.OriginNodeId] = record.OriginSequence;
+                originProgressAdvancedTo = record.OriginSequence;
                 session.Store(new EventOriginProgress
                 {
                     Id = EventReplicationStreamId.ForOriginProgress(projectId, record.OriginNodeId),
@@ -552,10 +603,63 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                     HighestOriginSequenceApplied = record.OriginSequence,
                 });
             }
-            else
+        }
+
+        // Flushed here, per record, rather than left pending for the read's one final
+        // SaveChangesAsync at the bottom of ReadFromAsync: an inline projection this event's own
+        // type feeds (IdeaDetailsProjection, say) runs synchronously inside THIS save, in the same
+        // transaction as the append, and a defect in it throws JasperFx.Events.Daemon's own
+        // ApplyEventException and rolls the whole transaction back — the append included. Saving
+        // per record, rather than batching every record this read has queued into one save at the
+        // end, is what keeps that rollback scoped to this one record instead of every record in
+        // the read, known-good ones included.
+        try
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (ApplyEventException exception)
+        {
+            // Nothing staged above actually landed — Marten rolled it all back with the rest of
+            // this save's own transaction. Ejecting this record's own pending changes and
+            // recording a bare ReplicatedEventRecord in a fresh save is what keeps this exact
+            // origin event from being retried, and failing the same way, forever: a single poison
+            // event must never freeze this sender's whole replication stream (idea 202383dc's own
+            // worst case), whichever projection actually threw.
+            logger?.LogError(exception,
+                "Replicated event {OriginEventId} (origin {OriginNodeId} sequence {OriginSequence}) from "
+                + "sender {SenderNodeId} failed to apply its own projection — skipped and recorded so it "
+                + "is never retried",
+                record.OriginEventId, record.OriginNodeId, record.OriginSequence, senderNodeId);
+            session.EjectAllPendingChanges();
+            if (!streamExists)
             {
-                originProgressThisRead[record.OriginNodeId] = knownHighest;
+                // This record would have started the stream — nothing else this node holds for it
+                // yet. Remembered so a later record THIS SAME READ that targets the identical,
+                // still-nonexistent stream is refused rather than auto-vivifying a headless
+                // document (streamsThatFailedToStartThisRead's own doc).
+                streamsThatFailedToStartThisRead.Add(effectiveStreamId);
             }
+
+            session.Store(new ReplicatedEventRecord
+            {
+                Id = record.OriginEventId,
+                StreamId = effectiveStreamId,
+                ProjectId = projectId,
+                AppliedAt = now,
+            });
+            await session.SaveChangesAsync(cancellationToken);
+            return false;
+        }
+
+        streamsStartedThisRead.Add(effectiveStreamId);
+        if (record.OriginSequence > highestHeld)
+        {
+            originHighWater[record.OriginNodeId] = record.OriginSequence;
+        }
+
+        if (originProgressKnownHighest is { } knownHighestValue)
+        {
+            originProgressThisRead[record.OriginNodeId] = originProgressAdvancedTo ?? knownHighestValue;
         }
 
         return true;
