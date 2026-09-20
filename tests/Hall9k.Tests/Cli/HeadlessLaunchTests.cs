@@ -16,8 +16,10 @@ namespace Hall9k.Tests.Cli;
 /// composed from two already-proven precedents, <c>WindowsProcessManager</c> and
 /// <c>DaemonLifecycle.SpawnDetachedWindows</c>, rather than independently verified here).
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// HALL9K_CLAUDE_PATH has no flow-scoped alternative (Decisions Log PLACEHOLDER-98484f36), so
+// this class still writes it directly and joins the one serial collection left for that.
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 public sealed class HeadlessLaunchTests : IDisposable
 {
     private readonly string _scratchDirectory = Path.Combine(Path.GetTempPath(), $"hall9k-headless-launch-{Guid.NewGuid():N}");

@@ -8,6 +8,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -20,8 +21,7 @@ namespace Hall9k.Tests.Cli;
 /// with what gh handed back is.
 /// </summary>
 // UpdateCommand publishes under HALL9K_HOME; redirecting it to a temp directory keeps
-// the write off a developer's or CI runner's real home, and sharing the collection
-// serializes this against every other HALL9K_HOME redirect. The PATH-linking step is
+// the write off a developer's or CI runner's real home. The PATH-linking step is
 // skipped here (RunAsync's linkOntoPath: false) rather than redirected, because it
 // mutates the REAL process PATH and home directory — redirecting those two env vars
 // process-wide would race any concurrently running test that shells out to git/gh/docker
@@ -31,28 +31,24 @@ namespace Hall9k.Tests.Cli;
 // a symlink into a temp directory that was deleted moments later). LinkOntoPath and
 // ComputeUserPath already have direct unit coverage with fake paths in
 // InstallCommandTests, so skipping the step here loses no coverage.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class UpdateCommandTests : IDisposable
 {
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-update-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
     private readonly string workspace = Path.Combine(Path.GetTempPath(), $"h9k-update-workspace-{Path.GetRandomFileName()}");
+
+    private string home => _scopedHome.Home;
 
     public UpdateCommandTests()
     {
-        Directory.CreateDirectory(home);
         Directory.CreateDirectory(workspace);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
+        _scopedHome.Dispose();
         // Best-effort, matching InstallCommand.TryDelete's own reason: a recently-written
         // executable can still be held by Defender or an indexer, and an unguarded delete
         // here would replace the test's real outcome with an unrelated IOException.
-        InstallCommand.TryDelete(home);
         InstallCommand.TryDelete(workspace);
     }
 

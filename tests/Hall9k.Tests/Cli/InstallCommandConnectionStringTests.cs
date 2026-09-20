@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -13,32 +14,37 @@ namespace Hall9k.Tests.Cli;
 /// reason a fresh install couldn't already see. <see cref="InstallCommand.FinishAsync"/> now
 /// writes that answer down for a genuinely unconfigured machine, and — just as important —
 /// never touches a connection string that already resolves from somewhere.
+/// <para>
+/// This class still writes <c>HALL9K_CONNECTION_STRING</c> directly (clearing it in the
+/// constructor, and — in one test — setting it to a specific value to prove it still outranks
+/// install's own write): it is exercising that environment-variable precedence tier itself, which
+/// <c>ScopedConnectionString</c> cannot stand in for (Decisions Log PLACEHOLDER-98484f36). That
+/// literal write is what keeps this class in <c>[Collection("Environment")]</c>; <c>HALL9K_HOME</c>
+/// is redirected through <c>ScopedTestHome</c> like everywhere else.
+/// </para>
 /// </summary>
-// HALL9K_HOME and HALL9K_CONNECTION_STRING are process-wide state; sharing the collection
-// serializes this against every other test that redirects the same environment.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 public sealed class InstallCommandConnectionStringTests : IDisposable
 {
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-install-conn-{Path.GetRandomFileName()}");
+    private readonly ScopedTestHome scopedHome = new();
     private readonly string staging = Path.Combine(Path.GetTempPath(), $"h9k-install-conn-staging-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+
     private readonly string? previousConnectionString =
         Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
 
+    private string home => scopedHome.Home;
+
     public InstallCommandConnectionStringTests()
     {
-        Directory.CreateDirectory(home);
         Directory.CreateDirectory(staging);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, null);
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-        InstallCommand.TryDelete(home);
+        scopedHome.Dispose();
         InstallCommand.TryDelete(staging);
     }
 

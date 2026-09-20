@@ -25,9 +25,9 @@ public sealed class HostCoupledGateParityTests
 {
     [Theory]
     [InlineData("dotnet test", null)]
-    [InlineData("dotnet test", "Category=Hall9kHome")]
-    [InlineData("""dotnet test --filter "Category=Existing" """, "Category=Hall9kHome")]
-    [InlineData("dotnet build", "Category=Hall9kHome")]
+    [InlineData("dotnet test", "Category=Environment")]
+    [InlineData("""dotnet test --filter "Category=Existing" """, "Category=Environment")]
+    [InlineData("dotnet build", "Category=Environment")]
     [InlineData("dotnet test | tail -200", "Category=RealProcessSpawn")]
     public void ComposeGateCommand_matches_the_daemons_own_copy(string command, string? hostCoupledFilter)
     {
@@ -40,13 +40,13 @@ public sealed class HostCoupledGateParityTests
     }
 
     [Theory]
-    [InlineData("dotnet test", "Category=Hall9kHome")]
-    [InlineData("""dotnet test --filter "Category=Existing" """, "Category=Hall9kHome")]
+    [InlineData("dotnet test", "Category=Environment")]
+    [InlineData("""dotnet test --filter "Category=Existing" """, "Category=Environment")]
     [InlineData("""dotnet test --filter='Category=Existing'""", "Category=RealProcessSpawn")]
     [InlineData("dotnet test --filter Category=Existing", "Category=RealProcessSpawn")]
-    [InlineData("dotnet test&&dotnet format", "Category=Hall9kHome")]
-    [InlineData("dotnet test|tail -200", "Category=Hall9kHome")]
-    [InlineData("dotnet test;echo done", "Category=Hall9kHome")]
+    [InlineData("dotnet test&&dotnet format", "Category=Environment")]
+    [InlineData("dotnet test|tail -200", "Category=Environment")]
+    [InlineData("dotnet test;echo done", "Category=Environment")]
     public void ApplyTestFilter_matches_the_daemons_own_copy(string command, string filterExpression)
     {
         string cliResult = HostCoupledGate.ApplyTestFilter(command, filterExpression);

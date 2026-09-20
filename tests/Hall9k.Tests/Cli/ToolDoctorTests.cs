@@ -20,7 +20,7 @@ namespace Hall9k.Tests.Cli;
 /// this class wrote in a directory of its own, or a connection string it holds — so nothing it
 /// observes depends on the machine's <c>HALL9K_CONNECTION_STRING</c>, its real
 /// <see cref="Hall9kDatabase.ConfigFile"/>, or its live Postgres. That is why this class sets no
-/// environment variable and carries no <c>[Collection("Hall9kHome")]</c>: it has no process-wide
+/// environment variable and carries no serializing <c>[Collection]</c> at all: it has no process-wide
 /// state left to race anyone over. Origin incident (2026-09-17 11:15 EDT, run 01a0af3c):
 /// <see cref="An_unreachable_configured_database_reports_gh_as_unconfirmed_rather_than_silently_skipped"/>
 /// failed because it arranged itself by exporting <c>HALL9K_CONNECTION_STRING</c> and capturing

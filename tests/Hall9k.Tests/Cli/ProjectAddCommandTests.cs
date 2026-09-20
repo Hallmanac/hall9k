@@ -7,6 +7,7 @@ using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -27,21 +28,16 @@ namespace Hall9k.Tests.Cli;
 /// path").
 /// </para>
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (ProjectHomePaths.DefaultFor reads it), so it shares
-// the collection with the other tests that do: serialized, never racing a concurrent test that
-// points it somewhere else mid-assertion.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Redirects the process-wide HALL9K_HOME (ProjectHomePaths.DefaultFor reads it).
 public sealed class ProjectAddCommandTests : IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 12, 12, 0, 0, TimeSpan.Zero);
 
-    private readonly string _home = Path.Combine(Path.GetTempPath(), $"hall9k-project-add-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
-    public ProjectAddCommandTests() => Environment.SetEnvironmentVariable("HALL9K_HOME", _home);
+    private string _home => _scopedHome.Home;
 
-    public void Dispose() => Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
+    public void Dispose() => _scopedHome.Dispose();
 
     [Fact]
     public void Default_home_collision_is_detected_when_the_archived_project_still_holds_it()

@@ -1,18 +1,15 @@
-using Xunit;
-
 namespace Hall9k.Tests.Fakes;
 
 /// <summary>
 /// Saves and restores the named environment variables around a test, isolating it from every
-/// other. Carries <c>[Collection("Hall9kHome")]</c> itself even though the attribute has no
-/// runtime effect on a type with no test methods of its own: <c>HomeEnvironmentIsolationTests</c>'s
-/// own scan flags any class using <c>Environment.SetEnvironmentVariable</c>/<c>GetEnvironmentVariable</c>
-/// without it, this helper included, and every caller still needs the attribute on its own test
-/// class too — this only satisfies the scan for this file, it does not extend serialization to a
-/// caller that omits it.
+/// other — the shared helper for whichever process-wide variable has no flow-scoped alternative
+/// (the claude path, a <c>Hall9k__*</c> setting, the MSBuild node-reuse flag, and so on;
+/// <c>HALL9K_HOME</c>/<c>HALL9K_CONNECTION_STRING</c> themselves go through <c>ScopedTestHome</c>/
+/// <c>ScopedConnectionString</c> instead, Decisions Log PLACEHOLDER-98484f36). Every caller still
+/// needs <c>[Collection("Environment")]</c> on its own test class — this generic helper's own
+/// parameterized <c>name</c> argument is not something a source scan can trace back to a specific
+/// variable, so it carries no attribute of its own to satisfy.
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class EnvironmentVariableScope : IDisposable
 {
     private readonly (string Name, string? Previous)[] _saved;
