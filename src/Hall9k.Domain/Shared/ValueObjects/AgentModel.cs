@@ -32,6 +32,18 @@ public sealed record AgentModel
     /// </summary>
     public const string PlatformFallback = "claude-opus-5[1m]";
 
+    /// <summary>
+    /// The feed courier's own bottom-of-chain default (idea 89471598, piece 3): an exact model id
+    /// for the identical drift reason <see cref="PlatformFallback"/> is one, and its own value
+    /// rather than <see cref="PlatformFallback"/> because a courier is deliberately cheap by
+    /// construction — a few thousand tokens against a small, recipe-free prompt — while
+    /// <see cref="PlatformFallback"/> is sized for an ordinary build or review dispatch. Read by
+    /// <c>DaemonOptions.ResolveCourierModel</c> and named in <c>h9k config set --model-courier</c>'s
+    /// own description, so the two surfaces state the identical number rather than each holding
+    /// their own copy of it.
+    /// </summary>
+    public const string CourierDefault = "claude-sonnet-5";
+
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly AgentModel Unknown = new("");
 

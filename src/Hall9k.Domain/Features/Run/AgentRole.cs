@@ -34,6 +34,14 @@ public sealed record AgentRole
     /// the end — it makes no Jira call itself, through MCP or otherwise (Decisions Log #102).
     /// </summary>
     public static readonly AgentRole Publication = new("Publication");
+    /// <summary>
+    /// Delivers a project's orchestrator feed to its live orchestrator session and exits (idea
+    /// 89471598, piece 3) — a run with no task, unlike every role above. Its own role because
+    /// nothing else on this list runs with no task to record itself against, and because the
+    /// courier's own model default sits underneath a floor of its own (<c>DaemonOptions.
+    /// ResolveCourierModel</c>) rather than the platform's <c>DefaultModel</c>.
+    /// </summary>
+    public static readonly AgentRole Courier = new("Courier");
     /// <summary>Not recognized or not yet set. Serializes as an empty string.</summary>
     public static readonly AgentRole Unknown = new("");
 

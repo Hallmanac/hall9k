@@ -1,4 +1,5 @@
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Cli.Infrastructure;
 
@@ -182,10 +183,18 @@ public static class OperatingSettingsRendering
     /// a configured <c>--model-review</c> that those passes run on the project or platform default
     /// when they in fact run on that configured review model.
     /// </summary>
-    private static string FallthroughDescription(string role) =>
-        role is nameof(RoleModelSettings.ReviewVerify) or nameof(RoleModelSettings.ReviewFinalFullPass)
-            ? "whatever --model-review itself resolves to"
-            : "the project or platform default";
+    private static string FallthroughDescription(string role) => role switch
+    {
+        nameof(RoleModelSettings.ReviewVerify) or nameof(RoleModelSettings.ReviewFinalFullPass) =>
+            "whatever --model-review itself resolves to",
+        // The courier's own floor beneath the project default is its own, never the platform
+        // default every other role falls through to (DaemonOptions.ResolveCourierModel's own
+        // doc): stating the generic fallthrough here would tell an operator running with no
+        // courier override that a courier runs on the platform's ordinary build/review tier when
+        // it in fact runs on its own cheaper one.
+        nameof(RoleModelSettings.Courier) => $"the project default, or {AgentModel.CourierDefault} beneath that",
+        _ => "the project or platform default",
+    };
 
     /// <summary>
     /// The row label for a role model column: ordinarily <see cref="KebabCase"/> of the C#

@@ -218,6 +218,56 @@ public sealed class DaemonOptions
     public TimeSpan OrchestratorPresenceSweepPollInterval { get; set; } = TimeSpan.FromSeconds(15);
 
     /// <summary>
+    /// How often <c>CourierSweepEngine</c> checks every project registered on this node for the
+    /// feed courier's own four spawn conditions (idea 89471598, piece 3): undrained items, a live
+    /// orchestrator, no courier already running, and the batching wait elapsed. Short, the same
+    /// reasoning <see cref="OrchestratorPresenceSweepPollInterval"/> already gives: nothing here
+    /// reaches the network, only a handful of local queries per registered project, and the
+    /// interval is how promptly an urgent item (a park, a dispute, daemon trouble, a message from
+    /// a person) actually reaches a live orchestrator once it dispatches at once regardless of the
+    /// wait.
+    /// </summary>
+    public TimeSpan CourierSweepPollInterval { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// How long the feed must have produced nothing new for the courier's own batching wait to
+    /// read as zero (idea 89471598, piece 3, Brian's ruling 2026-09-19: "the wait is zero after
+    /// ten quiet minutes and grows with recent activity"). See <c>CourierGate.Wait</c> for the
+    /// ramp itself. A daemon setting rather than a per-project one, unlike
+    /// <see cref="ProjectAggregate.CourierMaxWaitSeconds"/>'s own ceiling: how quiet is
+    /// quiet is a fact about the shape of the ramp, not a team's own reading preference.
+    /// </summary>
+    public TimeSpan CourierQuietThreshold { get; set; } = TimeSpan.FromMinutes(10);
+
+    /// <summary>
+    /// The default per-project ceiling on how many couriers may spawn in one UTC day (idea
+    /// 89471598, piece 3, Brian's ruling 2026-09-19: 500) — the storm guard: a project whose feed
+    /// keeps producing urgent items (which bypass the batching wait entirely) could otherwise
+    /// spawn one courier per urgent item all day. A flat daemon default rather than a per-project
+    /// override, unlike <see cref="ProjectAggregate.CourierMaxWaitSeconds"/>: this is a
+    /// runaway backstop in the shape of <see cref="MaxAutomaticCloseoutRuns"/>, not a reading
+    /// preference, and five hundred courier spawns is already far past what any real project's
+    /// own event volume produces in a day.
+    /// </summary>
+    public int CourierDaySpawnCap { get; set; } = 500;
+
+    /// <summary>
+    /// The wall-clock ceiling on one courier session (idea 89471598, piece 3) — generous next to
+    /// what the job actually is (read a small prompt, call SendMessage once, report back), the
+    /// same "bounded by construction" reasoning <see cref="StackAssessmentTimeout"/> gives its own
+    /// narrow auxiliary session.
+    /// </summary>
+    public TimeSpan CourierTimeout { get; set; } = TimeSpan.FromMinutes(3);
+
+    /// <summary>
+    /// The turn cap a courier session is spawned with (idea 89471598, piece 3), passed straight
+    /// through as <c>claude -p --max-turns</c> the same way <see cref="StackAssessmentMaxTurns"/>
+    /// bounds its own narrow auxiliary session. A courier's whole job is one SendMessage call and
+    /// a closing line; eight turns is generous headroom for that, not a tight budget for it.
+    /// </summary>
+    public int CourierMaxTurns { get; set; } = 8;
+
+    /// <summary>
     /// The absolute lifetime ceiling of automatic closeout actions (reopen dispatches, plus
     /// errored-review re-requests) one task's pull request may spend, whatever obstruction
     /// each one answered — the true runaway backstop (log #11 spirit, backlog 45), separate
@@ -726,6 +776,31 @@ public sealed class DaemonOptions
             ? finalPassDefault
             : ResolveModel(AgentRole.Review, taskModel, projectModel);
     }
+
+    /// <summary>
+    /// The effective model for a feed courier (idea 89471598, piece 3): the node's own
+    /// <see cref="RoleModelDefaults.Courier"/>, then the project's own <c>--model</c> — the same
+    /// node-default/project-override shape <see cref="ResolveModel"/> already gives Build and
+    /// Review — but bottoming out at <see cref="AgentModel.CourierDefault"/> rather than
+    /// <see cref="DefaultModel"/>. There is no task override parameter, unlike every other role's
+    /// own resolve method: a courier runs as a run with no task, so there is no task-level chain
+    /// link to read in the first place.
+    /// <para>
+    /// Its own floor rather than a non-blank <see cref="RoleModelDefaults.Courier"/> compiled
+    /// default, for the same reason <see cref="ResolveVerifyReviewModel"/> and
+    /// <see cref="ResolveFinalFullPassReviewModel"/> each get their own method instead of a
+    /// non-blank field: every other role in <see cref="RoleModelDefaults"/> ships blank by
+    /// design (Decisions Log #33 — "one configured model everywhere, no tiering" — and
+    /// <c>ModelPolicyTests</c> asserts it), so giving this one field alone a shipped value would
+    /// be a silent, single-field exception to that invariant rather than a documented one. A
+    /// courier is deliberately cheap by construction (a few thousand tokens against a small,
+    /// recipe-free prompt) — Sonnet is the platform's own answer to "what should a cheap role run
+    /// on" until the spend data Decisions Log #33 anticipated says otherwise, exactly the number
+    /// the acceptance criteria for this feature names.
+    /// </para>
+    /// </summary>
+    public AgentModel ResolveCourierModel(AgentModel? projectModel) =>
+        AgentModel.Resolve(taskOverride: null, ModelByRole.For(AgentRole.Courier), projectModel, AgentModel.CourierDefault);
 }
 
 /// <summary>
@@ -753,6 +828,15 @@ public sealed class RoleModelDefaults
 
     /// <summary>The session that writes a task up as a card in an external tracker (backlog 18).</summary>
     public string Publication { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The feed courier (idea 89471598, piece 3) — delivers a project's orchestrator feed to its
+    /// live orchestrator session and exits. Blank like every sibling above ("no role opinion,
+    /// ask the next level down"): its own non-blank floor is <see cref="DaemonOptions.ResolveCourierModel"/>'s,
+    /// not this field's compiled default, which is why this stays empty rather than following
+    /// the acceptance criteria's shipped default directly — see that method's own doc for why.
+    /// </summary>
+    public string Courier { get; set; } = string.Empty;
 
     /// <summary>
     /// The Review role's model for a <see cref="Hall9k.Domain.Features.Run.ReviewMode.Verify"/>
@@ -783,6 +867,7 @@ public sealed class RoleModelDefaults
         _ when role == AgentRole.Synthesis => AgentModel.FromInput(Synthesis),
         _ when role == AgentRole.Refinement => AgentModel.FromInput(Refinement),
         _ when role == AgentRole.Publication => AgentModel.FromInput(Publication),
+        _ when role == AgentRole.Courier => AgentModel.FromInput(Courier),
         _ => AgentModel.Unknown,
     };
 }

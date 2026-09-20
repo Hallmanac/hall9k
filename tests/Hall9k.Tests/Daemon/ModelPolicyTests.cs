@@ -184,6 +184,40 @@ public sealed class ModelPolicyTests
         options.ResolveFinalFullPassReviewModel(taskModel: null, projectModel: null).Should().Be(AgentModel.Fable);
     }
 
+    /// <summary>
+    /// The feed courier (idea 89471598, piece 3) is the one role that ships with an opinion of
+    /// its own: with nothing configured at any level, it still resolves to its own cheap floor
+    /// rather than the platform's ordinary build/review default — the opposite of every role
+    /// this file's own first test asserts.
+    /// </summary>
+    [Fact]
+    public void An_unconfigured_courier_resolves_to_its_own_floor_rather_than_the_platform_default()
+    {
+        DaemonOptions options = new() { DefaultModel = "claude-opus-5" };
+
+        options.ResolveCourierModel(projectModel: null).Value.Should().Be(AgentModel.CourierDefault);
+    }
+
+    [Fact]
+    public void A_node_role_default_outranks_the_couriers_own_floor()
+    {
+        DaemonOptions options = new() { ModelByRole = new RoleModelDefaults { Courier = "haiku" } };
+
+        options.ResolveCourierModel(projectModel: null).Should().Be(AgentModel.Haiku);
+    }
+
+    [Fact]
+    public void A_project_default_outranks_the_couriers_own_floor_but_not_the_node_role_default()
+    {
+        DaemonOptions options = new();
+
+        options.ResolveCourierModel(projectModel: AgentModel.Opus).Should().Be(AgentModel.Opus);
+
+        options.ModelByRole.Courier = "haiku";
+        options.ResolveCourierModel(projectModel: AgentModel.Opus).Should().Be(
+            AgentModel.Haiku, "the node's own per-role default is more specific than the project's");
+    }
+
     [Fact]
     public void A_fresh_spawn_always_states_its_model()
     {
