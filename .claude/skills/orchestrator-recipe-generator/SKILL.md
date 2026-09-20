@@ -60,18 +60,16 @@ facts" applies to what you write here exactly as it does to the platform's own a
   makes — on Windows and everywhere else alike, not a Windows-only trait — so a recipe's start-up
   sequence should say to read a task's own rendered `tasks/<id>/task.md` (or widen with `h9k task
   show`) rather than trust wrapped CLI text for anything long.
-- How this machine reads a file's current byte size, for the background waiter's own byte-offset
-  polling (*Start-up sequence* step 3 below): BSD `stat -f %z <path>` (macOS), GNU `stat -c %s
-  <path>` (Linux), or PowerShell's `(Get-Item <path>).Length` (Windows). No recipe this skill
-  writes arms `tail -F` or the `Monitor` tool for any watch, on this machine or any other. Brian's
-  ruling, 2026-09-15: Monitor expires every thirty minutes and wakes the window on every expiry and
-  every re-arm, and routine monitor events, expiries, and re-arms are never surfaced to the
-  operator (see *Talking to the operator* below and step 3's own contract). Decide which
-  file-size command this machine actually has rather than probing `tail` for a capability nothing
-  here uses.
-- Where `h9kd.log` lives: `h9k daemon status` prints the path. Confirm the timestamps it writes
-  are local time and which zone, by reading the newest line and comparing it to `date` run in the
-  same breath — do not assume the log's zone matches the operator's; compare, do not infer.
+- No recipe this skill writes arms `tail -F`, a byte-offset log waiter, or the `Monitor` tool for
+  any watch, on this machine or any other (idea 89471598, piece 3): the daemon's own feed courier
+  now delivers a project's undrained feed items — actionable ones (a park, a dispute, daemon
+  trouble, a message from a person) at once, everything else batched — directly into this
+  session's own registered orchestrator presence, so nothing here has to poll `h9kd.log` for news.
+  Brian's ruling, 2026-09-15, which is why Monitor was never the answer either: it expires every
+  thirty minutes and wakes the window on every expiry and every re-arm, and routine monitor events,
+  expiries, and re-arms are never surfaced to the operator (see *Talking to the operator* below).
+- Where `h9kd.log` lives: `h9k daemon status` prints the path — still worth knowing for `h9k logs`
+  and for reading a specific incident by hand, even though nothing here tails it as a watch.
 - Which agent CLIs are installed: check `PATH` for `claude` and note whatever else you find (for
   example `codex`, `cursor`, `gemini`) by name in the recipe's header, without composing a launch
   line for any of them — only `claude-code` has a computed default today
@@ -175,17 +173,18 @@ from what this skill says next time it runs.
 > is the item's id plus a plain description of what it actually is, never a bare id: the operator
 > reads the board through the descriptions, not the hex.
 >
-> Routine monitor events are never surfaced to the operator, full stop, not merely deprioritized: a
-> session completing, a push, a merge, a closeout line, a reopen for a normal lap, an isolated gh or
-> network blip, or a background waiter's own routine match all get no message, only silent
-> bookkeeping. Roll what happened into one summary about every three hours, grouped by whatever this
-> window is scoped to (a task for a project orchestrator, a project for a node orchestrator), or
-> fold it into the next message going out anyway for another reason. Routine background events are
-> covered by the identical rule, whichever waiter produced them: never surfaced on their own, their
-> summary arriving only on this three-hourly cadence or folded into the next outbound message.
-> Anything actionable (a park or dispute needing a ruling, a daemon or node down, three gh failures
-> in a row, a merge that failed and stayed failed, a call made on the operator's behalf under a
-> standing grant) supersedes the quiet rule and is reported at once.
+> Routine events are never surfaced to the operator one at a time, full stop, not merely
+> deprioritized: a session completing, a push, a merge, a closeout line, a reopen for a normal lap,
+> an isolated gh or network blip all get no message of their own. The daemon's own feed courier
+> (idea 89471598, piece 3) is what enforces this now, not a rule this window has to apply by hand:
+> it batches this project's own undrained feed items into one delivered message at a time, on a
+> wait that shortens the busier the feed gets and shortens to nothing once it has been quiet for a
+> while, so routine activity arrives here already grouped rather than as a reply per event.
+> Anything actionable (a park or dispute needing a ruling, a daemon or node down, a merge that
+> failed and stayed failed, a message from a person) bypasses that wait outright and is delivered
+> at once. Read a courier's own delivered message the way a board report reads: grouped by task,
+> plain description over bare id, and report it to the operator in this recipe's own voice rather
+> than pasting the courier's own wording through unread.
 >
 > This voice is a default the operator may edit in place, in their own copy of this recipe. Record
 > a hand edit like that in this file's own provenance header, under `hand-edited-since`, the
@@ -268,23 +267,17 @@ Project mode:
   written by whichever window receives it, the moment it is given) and nothing else. This is a
   different file from any idea workspace's own feedback file from before the recipe was
   generated; do not merge the two.
-- Seed the background waiter script(s) that start-up step 3 below describes — `notes/waiters/
-  log-waiter.sh` (POSIX) or `notes/waiters/log-waiter.ps1` (Windows), plus one more of the same
-  shape per non-`h9kd.log` source a recipe's own start-up step polls (a mailbox waiter, for
-  example) — **only when absent**, under the identical rule as `journal.md`/`sessions.md`/
-  `notes/prototype-feedback.md` immediately above: never regenerated, never given a `.new` sibling.
-  The moment a live window is running one, its script (and the offset and gh-streak state files
-  beside it) is that window's own live operational state, not recipe content the platform's
-  `.new`-and-reconcile flow at `recipes/` governs — the same one-rule-per-folder reasoning the
-  journal and registry bullet above gives. A regeneration against a project or node whose waiter
-  scripts already exist (a hand-written `notes/waiters/log-waiter.sh` a live window is already
-  running against, say) leaves them untouched and says so in your summary; only a home with none
-  yet gets them written, built with this machine's own resolved facts exactly as step 3 describes.
+- Write nothing under `notes/waiters/` (idea 89471598, piece 3): that directory held the
+  byte-offset log-waiter scripts an earlier version of this skill seeded, retired now that the
+  daemon's own feed courier delivers proactively instead of a window polling for news. A project
+  or node home that still carries one from before this ruling is a stopgap this skill no longer
+  writes, never touched by a regeneration, and worth naming in your summary so the operator knows
+  it is safe to remove by hand once no window is still running it.
 
 Node mode: the same shape, one file, `recipes/orchestrator.md` (or `.new`) against the node
-contract below, plus the same journal/sessions/notes/waiter-script seeding rule at the node's own
+contract below, plus the same journal/sessions/notes seeding rule at the node's own
 home root as resolved above (`<node home>/journal.md`, `<node home>/sessions.md`,
-`<node home>/notes/prototype-feedback.md`, `<node home>/notes/waiters/log-waiter.*` — `~/.hall9k`
+`<node home>/notes/prototype-feedback.md` — `~/.hall9k`
 only where that is what discovery actually found, never assumed).
 
 Never write `recipes/settings.json`, never write or edit `recipes/launch-anchor.md`, and never put
@@ -310,172 +303,19 @@ and budget.
 1. Read `journal.md` (at the project home's own root, beside `notes/`) — the open loop: what is in
    flight, what is expected to land, what to do first. Trust it over anything remembered.
 2. Read `sessions.md` (same root) — the registry of sessions this window has spawned.
-3. Arm a silent background waiter for `h9kd.log`, never the `Monitor` tool, for this watch or any
-   other. Brian's ruling, 2026-09-15: `Monitor` expires every thirty minutes and wakes this window
-   on every expiry and every re-arm, and routine monitor events, expiries, and re-arms are never
-   surfaced to the operator (see *Talking to the operator* above). `h9kd.log` carries far more
-   routine lines (a session completing, a routine push, an ordinary merge) than actionable ones, so
-   the filtering has to happen inside the waiter itself, before anything reaches this thread, not
-   after. Start it with the Bash tool's `run_in_background: true`, once at start-up and again,
-   silently, every time it exits or is found dead: a self-contained loop, with no foreground timeout
-   and no follow pipeline left running between polls, that polls the log by byte offset on an
-   interval (15 seconds is a reasonable default; there is nothing here to tune around an expiry,
-   because nothing here expires), appends every routine match to
-   `notes/monitor-tally.log`, and prints and exits only on an actionable line. A waiter exiting means
-   exactly two things happen, in order, and neither is ever mentioned to the operator as it happens:
-   act on what the waiter printed, then re-arm it. A waiter killed outright (low memory, a session
-   restart) is re-armed exactly as silently as one that exited on its own; the operator sees only
-   what an actionable line itself says, or the rolled-up three-hourly summary below: never the
-   exit, the kill, the polling gap, or the re-arm.
-
-   Build the waiter script (POSIX shell on macOS/Linux; PowerShell 7 on Windows) once, at
-   generation time, with these facts resolved for this machine rather than left as placeholders:
-
-   - The log path from `h9k daemon status` (never hand-typed as `~/.hall9k/h9kd.log`, which is only
-     that command's own default) and the file-size command discovery found above (`stat -f %z` on
-     BSD/macOS, `stat -c %s` on GNU/Linux, `(Get-Item <path>).Length` on PowerShell).
-   - An offset file beside the waiter (for example `notes/waiters/log-waiter.offset`): read on each
-     poll, and initialized to the log's current end-of-file the first time the waiter ever runs, so
-     a fresh window never replays the log's entire history as though it had just happened. If the
-     log's size is smaller than the stored offset on a later poll (the daemon's own log rotation,
-     `DaemonLogRotation` in `src/Hall9k.Daemon`, copies the file past an 8 MB threshold and then
-     truncates it — a plain restart only ever appends), reset the offset to zero rather than reading
-     a negative-length slice.
-   - Each poll: if the log has grown past the stored offset, read the new bytes (POSIX:
-     `tail -c +$((off+1)) <path> | head -c $((size-off))`; PowerShell: a stream read starting at the
-     stored offset), then split them into complete lines at each newline. The daemon's own
-     auto-flushing console logger can write one line across more than one syscall, so a poll can land
-     mid-line: keep whatever bytes follow the chunk's own last newline unread and untested, and
-     advance the stored offset only to the byte just past that last newline, never to the chunk's raw
-     end, so a line still being written is completed and tested whole on a later poll instead of
-     being tested as two fragments split across two polls, neither of which matches anything. Test
-     every complete line this poll actually consumed, in the order they appear, before returning to
-     the timer: exiting on the first actionable line, the shape an earlier version of this waiter
-     used, throws away every line after it in the same chunk — actionable or routine — the moment two
-     events land in one poll window (a run failure immediately followed by a park, say, or a park
-     followed by a batch of routine merges); process the whole consumed chunk every poll, never only
-     its first line.
-   - Two patterns, named and built separately, never merged into one, and tested independently of
-     each other rather than one gated behind the other: a line the actionable pattern names is never
-     required to also match the routine pattern first. An earlier version of this pipeline chained
-     them (routine, then actionable-if-routine-matched) to save a second `grep` pass; running that
-     exact chain against a `held for a human` line and the daemon's own `Application is shutting
-     down` line shows why that chaining is wrong, not merely inefficient: neither of those two
-     actionable shapes shares a single word with the routine pattern below, so under a routine-gated
-     test both are silently dropped before the actionable test ever sees them, the opposite of what
-     this waiter exists to do. Test both patterns against every consumed line, independently, in this
-     order: actionable first (a match is printed to stdout at once, so the operator sees it the
-     moment this poll's scan reaches it, but testing continues on into the rest of the chunk rather
-     than exiting here), then, only for a line actionable did not match, routine (a match is appended
-     to the tally; no match to either pattern means the line is genuinely uninteresting and is
-     dropped, untallied). Once every complete line this poll consumed has been tested, the loop exits
-     if at least one actionable line was printed this poll, so the calling window can act on it and
-     re-arm, and otherwise returns to the timer for the next poll. An **actionable** pattern,
-     matched case-insensitively, naming every shape that ends the wait: `dispute`, `fatal`,
-     `unhandled`, `needs you`, `parked for the human`, a task held for a human (`held for a human`:
-     `DispatchEngine.cs`'s own dependency-hold line, `Task {TaskId} is held for a human rather than
-     unblocked: {Reason}`, a park a dependency's own failure or abandonment forces, worded
-     differently from `parked for the human` and not covered by it), a merge that failed and stayed
-     failed (`merge attempt failed \(([0-9]+)/\1\)`, a captured, repeated group, not a literal
-     `\(3/3\)`: `MaxMechanicalResolutionAttempts` (`src/Hall9k.Daemon/DaemonOptions.cs`) is
-     configurable and defaults to 3, not fixed at it, so a node set to 2 or 4 logs its own final
-     attempt as `(2/2)` or `(4/4)`), an unhandled exception (`Unhandled exception`), the daemon
-     stopping (`Application is shutting down`, the daemon host's own real shutdown line, the default
-     `Microsoft.Hosting.Lifetime` logger, not an invented `daemon (stopped|exiting)` the daemon never
-     actually writes), a session ending in error (`error: True`), and a run failed, covering every
-     shape the daemon logs a run failure under since each one puts different words around the run's
-     guid: `Run [0-9a-f-]{36} failed` and `Run [0-9a-f-]{36} pr-review failed` (the guid directly
-     followed by "failed", covering `failed:`, `failed before the gates:`, and `failed in the review
-     loop:` alike); `Launch failed for run [0-9a-f-]{36}` (`RunLauncher.cs`) and `PR opening failed
-     for run [0-9a-f-]{36}` (`PullRequestOpener.cs`) and `Run [0-9a-f-]{36} verification failed at
-     gate` (`VerificationRunner.cs`) and `Run [0-9a-f-]{36}: error-result retry spawn failed`
-     (`RunSupervisor.cs`); and the four shapes where a run fails without the word "failed" ever
-     appearing next to its guid at all: `Review loop crashed for run [0-9a-f-]{36}|Pr-review loop
-     crashed for run [0-9a-f-]{36}|Monitor for run [0-9a-f-]{36} crashed|Resumed pipeline for run
-     [0-9a-f-]{36} crashed` (`ReviewEngine.cs`, `PrReviewEngine.cs`, `RunSupervisor.cs`). Finally, an
-     orphaned run that actually happened, not the routine zero-count line every daemon start logs
-     regardless of whether anything was orphaned (`failed [1-9][0-9]* orphaned run`, not the bare
-     `orphaned run` that also matches that routine case). A **routine** pattern, matched
-     case-insensitively, naming every shape worth tallying once actionable has already ruled a line
-     out: `parked|failed|error|merged|closeout complete|reopened|dispute|needs you|adopted|fatal|
-     unhandled|\[2001\]|pushed to existing PR|gh failure|crashed`. `\[2001\]` is the fixed log id
-     `PullRequestOpened` logs under (Decisions Log #195's own reason for matching on it rather than
-     the literal wording beside it: the id survives a reworded message, so a "pull request opened"
-     line still reaches the tally if the daemon's own phrasing ever changes). `held for a human` and
-     `Application is shutting down` are left out of this list on purpose, not an oversight: both are
-     exact substrings of an actionable alternative already, so any line either one matches is always
-     claimed by the actionable test first and would never actually reach this one. The daemon's own
-     log capitalizes freely (`Unhandled exception`, `Failed to connect`, `outcome Disputed`), so a
-     case-sensitive match on either pattern misses exactly the crash and dispute lines this waiter
-     exists to catch. Never widen either pattern with a routine word like "merged" or "completed" on
-     its own. On POSIX, test both patterns through `command
-     grep`, never bare `grep`: a session's own shell snapshot can install a `grep` shell function
-     pointed at a different program (this harness's own shell resolves bare `grep` to ugrep, which
-     rejects the backreference the merge-attempt alternative above depends on), and `command`
-     bypasses a shell function or alias to reach the real binary on `PATH`.
-   - A `gh failure` line in `h9kd.log` (`PullRequestMonitor.cs`, `AutoPrReviewMonitor.cs`: "sweep hit
-     a gh failure; widening the poll interval to ...") is routine on its own, but three in a row with
-     no recovery between them is the actionable "three gh failures in a row" case the voice block
-     promises is reported at once (Decisions Log #195). Keep a second small counter file beside the
-     offset file (for example `notes/waiters/log-waiter.gh-streak`), persisted across re-arms the same
-     way the offset is: increment it each time a consumed line matches `gh failure`, reset it to zero
-     each time a consumed line matches the daemon's own recovery line (`poll interval reset`,
-     `PullRequestMonitor.cs`/`AutoPrReviewMonitor.cs`'s "sweep succeeded; poll interval reset to
-     ..."), and the moment it reaches 3, print a line naming the streak, reset the counter to zero,
-     and count this poll as having produced an actionable match, alongside anything else the actionable
-     pattern itself matched in the same chunk. Every individual `gh failure` line still lands in the
-     routine tally regardless of the streak's own count, so an isolated blip stays quiet in the
-     three-hourly summary rather than lost outright.
-   - Drop the one known false-positive the routine pattern otherwise lets through, before testing
-     either pattern: a line containing `error: False`, dropped case-sensitively. A real failure line
-     reads `error: True`, never `error: False`, so this single drop clears the busiest false
-     positive without touching anything else.
-   - In project mode, drop any line naming a sibling project sharing this node before testing either
-     pattern, the same exclusion an earlier version of this pipeline used: build it at generation
-     time from each sibling's own resolved facts (`h9k project show <name>` for every other name
-     `h9k project list` prints, never a guessed slug or a bare name alternation), two alternatives
-     per sibling anchored to the log's own structural shapes (`project <name>;` and the sibling's own
-     `Home` row from that `show` with a trailing path separator appended, so a project whose name
-     prefixes another's, or whose home path prefixes a sibling's, is never dropped or over-dropped by
-     accident). Write the resolved pattern out as real text before the recipe is saved, never left as
-     a literal placeholder token. Leave this stage out entirely whenever discovery finds no sibling
-     project sharing this node, or in node mode: a node orchestrator is not scoped to any single
-     project, so every registered project's own actionable signal belongs to it and there is nothing
-     to exclude.
-   - Every actionable line this poll's chunk contains is printed to stdout as the scan reaches it:
-     this is the only text that ever reaches the operator through this waiter, for the calling window
-     to read as it happens and, once the whole chunk has been tested, act on and re-arm. Every routine
-     survivor that actionable did not already claim is appended to `notes/monitor-tally.log` (inside
-     this home's own `notes/` directory, created by the append itself the first time a line lands
-     there), silent bookkeeping this window reads back at its next periodic summary (see *The periodic
-     summary* below), never reported now. A poll whose chunk contains no actionable line appends
-     whatever routine matches it found and returns to the timer without exiting.
-
-   **Windows notes.** The Bash tool on this platform runs Git Bash even when the rest of the session
-   targets PowerShell, and Git Bash expands `$HOME` to its own `/c/...`-style path before `pwsh` ever
-   sees it, which `pwsh` cannot open; every path the waiter script, its offset file, its gh-failure
-   streak file, and `notes/monitor-tally.log` use on a Windows machine is written out literal and
-   full, exactly as discovery observed it, never a `$HOME`-relative shorthand. This waiter runs no `tail -F` and no
-   other pipeline that keeps a child process alive between polls: each poll opens the log, reads
-   what is new, and closes it again, so there is nothing left running to orphan, on Windows or
-   anywhere else. A node window that used to periodically sweep for a `tail` process that an
-   expired Monitor pipeline had left orphaned has nothing left to sweep for, and that practice is
-   unnecessary once every window on that node runs this waiter instead of arming Monitor.
-
-   A recipe that already carries its own step for polling something other than `h9kd.log` (a
-   mailbox, a channel, any outside source) gets this same background-waiter shape, not whatever
-   shape it may have been hand-written in before this ruling: a one-shot Bash `run_in_background`
-   loop that polls its own source by cursor rather than by byte offset (for a GitHub-issue-based
-   channel, the `created_at` of the newest comment already read), drops what this window itself
-   posted, and processes every new comment or message from someone else the same poll finds, not
-   only the first, printing each one to stdout as it is found and only then, once the whole poll's
-   batch has been checked, exiting to act on and re-arm — exactly as the log waiter above processes
-   its own chunk before deciding whether to exit. Where the source is reached through a CLI
-   that can itself fail transiently (`gh`, for one), a single failure is not actionable on its own:
-   track a streak alongside the loop instead, reset it the moment a call succeeds, and surface it
-   only once three failures land in a row (matching the actionable list's own "three gh failures in
-   a row"); log every single failure to a drops file the same shape as the routine tally, so an
-   isolated blip stays quiet but is still visible on request rather than lost.
+3. Nothing to arm here (idea 89471598, piece 3). An earlier version of this recipe armed a
+   silent background waiter that polled `h9kd.log` by byte offset, tallied routine lines, and
+   surfaced only an actionable one — retired now that the daemon's own feed courier does this
+   job instead, proactively: once this window registers (the launch anchor's own start-up call,
+   before this recipe ever runs), the daemon spawns a short-lived, cheap-model courier the moment this project's
+   feed has undrained items and this window is live, delivering them straight into this session
+   through `SendMessage` rather than waiting for anyone to poll. A park, a dispute, daemon trouble,
+   or a message from a person arrives at once; everything else arrives batched, on a wait that
+   shortens the quieter this project's feed gets. Nothing here has to distinguish the two kinds or
+   read a log for either. If a courier message never arrives for something you would have expected
+   to hear about, `h9k orchestrator feed --project <name>` (a plain read, step 4 below) still shows
+   whatever is genuinely undrained — the courier's own delivery failing leaves the cursor exactly
+   where it stood, so nothing is ever silently lost, only delayed.
 4. Run `h9k orchestrator feed --project <name> --drain` — what happened while no window was live.
    This is the platform's own answer to that question and it replaces reading the log tally at
    start-up: every item is an event already on this node's own log, past this project's own feed
@@ -489,12 +329,10 @@ and budget.
    nothing is normal on a node whose other projects are busy, and the cap line still prints under
    it; what ends that loop early is a pass reporting the cursor unchanged, which means it cannot
    advance yet however many more times you run it. Do not reconstruct any of this by
-   tailing `h9kd.log` or by reading `notes/monitor-tally.log`: the tally is the *live* watch's own
-   holding pen for routine lines the waiter saw while this window was up (step 3, and the periodic
-   summary below), never the record of what happened before it started — that file does not exist
-   on a fresh window, and a byte offset initialised past the log's end is deliberately blind to
-   everything older than the moment the waiter armed. When something in the drain needs looking
-   into, `h9k task show <id>` and `h9k logs <id>` are the way in, exactly as they are for a
+   tailing `h9kd.log`: the drain above is the platform's own complete record of what happened
+   while no window was live, and the feed courier (step 3) is what keeps a live window current
+   from here on — nothing here needs a second, hand-rolled account of either. When something in
+   the drain needs looking into, `h9k task show <id>` and `h9k logs <id>` are the way in, exactly as they are for a
    `h9k status` row. `h9k orchestrator feed --project <name> --since <time>` reads the same
    history without moving the cursor, for a look further back than the last drain left.
 5. Run `h9k daemon status`, then `h9k status`. Ask the daemon directly rather than inferring its
@@ -504,26 +342,6 @@ and budget.
    them, and what this window will do next. If the journal was not enough to re-orient you and you
    had to ask the operator something the journal should have told you, add one line to the
    journal's re-orientation log so the next rewrite of this recipe can carry that field.
-
-**The periodic summary.** The voice block above rolls routine monitor activity into one summary
-about every three hours instead of a reply per event; this is the mechanical half of that rule.
-Before anything else, check for a `notes/monitor-tally.log.reading` already sitting there: a prior
-summary that renamed the live tally but died before reading and deleting it (a killed session, a
-crash) leaves it stranded, and the step below would otherwise rename straight over it, silently
-destroying whatever it holds: a plain rename overwrites an existing destination with nothing to
-warn about it. If one is already there, read and report it first (folded into this same summary,
-not a separate one), then delete it, before touching the live tally at all. Only then does the
-regular step run. At each one, never read the live tally and then truncate it as two separate
-steps: the loop above can append a line between them, and that line is lost for good with no
-summary ever having reported it. Move it out of the way first instead: rename
-`notes/monitor-tally.log` to `notes/monitor-tally.log.reading` (skip the rest of this step if the
-rename fails because the file does not exist yet; nothing has been appended since the last
-summary), read everything from the renamed copy, then delete it (PowerShell: `Rename-Item` then
-`Remove-Item` the same way). The loop's own next append recreates `notes/monitor-tally.log` fresh
-at the original path, exactly as if this step had not run. Run `h9k status` alongside what was
-read, group what both show by task, and report that as the one summary the voice block describes.
-Folding the tally into a message already going out for another reason, per the voice block, moves
-and reads the file the same way.
 
 **The journal (`journal.md`, at the project home's own root).** A rewritten state document, never
 an append-only log: rewrite it whenever a ruling is made, a walk finishes, a pull request merges,
@@ -584,9 +402,10 @@ draft's criteria), spawn a lean session instead of doing it here:
 
 **Presence: closing and restarting.** The platform tracks whether an orchestrator window is live
 for this project on this node, and consumers act on that answer: `h9k status` and
-`h9k orchestrator status` both name the live window today, and the feed courier, which is
-designed but not built (idea 89471598, piece 3), is to spawn only while one is up. The launch
-anchor already registers this window as its own first start-up step
+`h9k orchestrator status` both name the live window today, and the feed courier (idea 89471598,
+piece 3) spawns only while one is up — which is exactly what makes step 3 above true: this
+window's own registration is what the courier checks before it ever delivers anything into it.
+The launch anchor already registers this window as its own first start-up step
 (`h9k orchestrator register --project <name> --session <name> --pid $CLAUDE_PID --cli claude-code`),
 so the recipe never repeats that step. What the recipe owns is the other end, and it owns it in
 two places, both of which the recipe you write must state explicitly:
@@ -675,15 +494,17 @@ Same shape as the project recipe above, with these differences:
   request, rules on a park, walks a task's criteria, or drafts work into any project's board — a
   project orchestrator does those, and name where its recipe lives for each project discovery
   found registered on this node.
+- **Start-up sequence step 3** says plainly that no courier ever reaches this window: presence,
+  the feed, and the feed courier (idea 89471598, pieces 1 through 3) are all scoped to a project,
+  never a node, so there is nothing here to arm and nothing here that will ever deliver on its
+  own. A node orchestrator that needs to know what a project is doing reaches that project's own
+  window instead (see *The node seam* below), the same way it always has.
 - **Start-up sequence step 4**, the feed drain, runs once per project discovery found registered on
   this node — `h9k orchestrator feed --project <name> --drain` for each, in turn — since the feed's
   cursor is per project and there is no node-wide one. A node with no projects registered skips it
   entirely rather than inventing a command with nothing to name.
 - **Start-up sequence step 5** is `h9k daemon status`, `h9k config show`, and `h9k project list`
   instead of `h9k status` (there is no single project's board to check from here).
-- **The periodic summary** groups by project instead of task, reading `h9k project list` and
-  `h9k daemon status` alongside the tally rather than `h9k status`, since there is no single
-  project's board to group against at this scope.
 - **The node seam** is stated the other direction: nothing stops a node-scope command running
   here, and the node recipe never forwards anywhere — it is the destination a project window
   forwards to. If a project needs attention and no project orchestrator is up, name which

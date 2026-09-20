@@ -1023,9 +1023,22 @@ event type to level, with no model in it, and the level is a per-project setting
 (`h9k project set <name> --orchestrator-feed actionable|transitions|everything`, default
 `transitions`); a message from a person is admitted at every level. The feed keeps no store of
 its own — a cursor over this node's own event log plus a filter — so nothing is buffered and
-nothing is lost by not reading it. What does **not** exist yet is anything that reads the feed on
-its own: the courier that wakes a window when items land is designed and unbuilt
-(Decisions Log #241).
+nothing is lost by not reading it.
+
+The daemon reads the feed on its own now: a short-lived, cheap-model **feed courier** (idea
+89471598, piece 3) spawns per project once undrained items exist, an orchestrator is live for
+that project on this node, no courier for it is already running, and a batching wait has
+elapsed. The wait is a ceiling (`h9k project set <name> --courier-max-wait`, sixty seconds by
+default) a busy feed climbs toward and a quiet one drops from — zero after ten quiet minutes — and
+a park, a dispute, daemon trouble, or a message from a person bypasses it outright. A per-day
+spawn cap (five hundred by default) guards a storm. The courier's own prompt carries no recipe and
+no AGENTS.md — just the feed items as `--drain` itself would print them, plus the instruction to
+address the orchestrator's own registered session through Claude Code's cross-session mesh
+(`SendMessage`) and report back; the daemon drains the feed itself once it sees the reported
+delivery, so a failed send leaves the cursor exactly where it was for the next attempt. It runs as
+a run with no task, its own model role (`h9k config set --model-courier`, `claude-sonnet-5` by
+default — cheap by construction, unlike every other role's blank shipped opinion), counted in
+`h9k status`'s spend line the same as any other role's.
 
 ### The help tree
 
