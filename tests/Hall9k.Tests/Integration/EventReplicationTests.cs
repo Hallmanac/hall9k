@@ -633,6 +633,99 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// The identical gate, for the identical reason, one piece later (idea b9b09779, piece 4;
+    /// this branch's own self-review, blast-radius sweep): <see cref="ProjectRunSkillRecorded"/>
+    /// is classified <see cref="EventScope.ProjectScoped"/> because a run skill describes the
+    /// SHARED repository, and without its own entry in
+    /// <see cref="ProjectStreamReplicationRules.IsProjectAggregateStreamEvent"/> a replicated copy
+    /// would land on a phantom stream keyed by the sender's foreign project id — the receiving
+    /// member would never see the skill, which is the whole point of putting it on the ledger.
+    /// </summary>
+    [Fact]
+    public async Task A_recorded_run_skill_applies_to_the_receivers_own_project_stream()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        Guid projectIdB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdA,
+                new ProjectRegistered(projectIdA, ownerId, DomainId.New(), "Shared Project", "/repo-a", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(
+                projectIdB,
+                new ProjectRegistered(projectIdB, ownerId, DomainId.New(), "Shared Project", "/repo-b", null, "main", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(1), cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.Append(
+                projectIdA,
+                new ProjectRunSkillRecorded(
+                    projectIdA, "Run skill shape: pointer.\n\n## Launch\n\nmake dev\n", RunSkillShape.Pointer,
+                    "abc123", RunSkillAuthor.DiscoverySession, Now.AddSeconds(2), ownerId));
+            // The node-scoped events beside it never travel, so a request appended here must not
+            // reach node B at all — the EventsApplied count below is what proves it.
+            session.Events.Append(
+                projectIdA, new ProjectRunSkillDiscoveryRequested(projectIdA, Now.AddSeconds(2), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4), trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeFalse();
+            read.EventsApplied.Should().Be(1, "only the recorded skill travels; the request beside it is node-scoped");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            ProjectDetails? receiverProject = await session.LoadAsync<ProjectDetails>(projectIdB, cts.Token);
+            receiverProject.Should().NotBeNull();
+            receiverProject!.RunSkill.Should().NotBeNull();
+            receiverProject.RunSkill!.Shape.Should().Be(RunSkillShape.Pointer);
+            receiverProject.RunSkill.Content.Should().Contain("make dev");
+
+            // Never a phantom stream under node A's own, foreign project id.
+            (await session.LoadAsync<ProjectDetails>(projectIdA, cts.Token)).Should().BeNull();
+        }
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 3, conformance lens (ProjectStreamReplicationRules.cs:572):
     /// applying a teammate's own per-install lifecycle decision (archive, reactivate, rename,
     /// schedule or cancel a purge) to the receiver's own Project stream let another node's local
