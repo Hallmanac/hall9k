@@ -68,6 +68,13 @@ public sealed class TaskListItem
     /// </summary>
     public string? AssignedOwnerFingerprint { get; set; }
     /// <summary>
+    /// Advisory dispatch placement mirroring <see cref="TaskAggregate.PlacedOnNodeId"/> (idea
+    /// 202383dc: an owner can place a task on one of their own nodes). Carried on this lean row
+    /// because the daemon's own queue read (this class's own doc) is where it actually gates: null
+    /// admits every node of the granted owner, a value admits only the node it names.
+    /// </summary>
+    public Guid? PlacedOnNodeId { get; set; }
+    /// <summary>
     /// When a human said "do this" — the moment that made the task claimable, and so the key
     /// the dispatcher queues on (Decisions Log #64). It is deliberately not <see cref="AddedAt"/>:
     /// a task drafted in January and assigned today is newer work than one drafted and assigned
@@ -425,6 +432,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
     {
         view.AssignedOwnerId = @event.Data.AssignedOwnerId;
         view.AssignedOwnerFingerprint = @event.Data.AssignedOwnerRootFingerprint;
+        if (@event.Data.PlacedOnNodeId.HasValue)
+        {
+            view.PlacedOnNodeId = @event.Data.PlacedOnNodeId.Value;
+        }
+
         view.AssignedAt = @event.Data.AssignedAt;
         view.UnmetDependencies = [.. @event.Data.UnmetDependencies];
         view.DeadDependencies = [];
@@ -436,10 +448,15 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
             : TaskState.Blocked;
     }
 
+    /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskPlacementChanged)"/> — see its own doc.</summary>
+    public void Apply(IEvent<TaskPlacementChanged> @event, TaskListItem view) =>
+        view.PlacedOnNodeId = @event.Data.PlacedOnNodeId;
+
     public void Apply(IEvent<TaskUnassigned> @event, TaskListItem view)
     {
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
+        view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
@@ -457,6 +474,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
 
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
+        view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
@@ -627,6 +645,9 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.CurrentRunId = null;
         view.AssignedOwnerId = @event.Data.NewHolderOwnerId;
         view.AssignedOwnerFingerprint = null;
+        // The takeover itself names the new node, so the old placement (if any) is retired the
+        // same way TaskAggregate.Apply(Events.TaskHolderTakenOver) retires its own copy.
+        view.PlacedOnNodeId = @event.Data.NewHolderNodeId;
         // Reassigned to the taker's own owner, the same "unassigning and assigning again" shape
         // AssignedAt's own doc gives a reassignment — mirrors TaskDetails.Apply(TaskHolderTakenOver),
         // which sets it to TakenAt for the identical reason (conformance pre-PR review, cycle 1:
@@ -666,6 +687,9 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
             view.CurrentRunId = null;
             view.AssignedOwnerId = @event.Data.GrantedToOwnerId;
             view.AssignedOwnerFingerprint = @event.Data.GrantedToOwnerFingerprint;
+            // Mirrors TaskAggregate.Apply(Events.TaskHolderReleased): the grant moves the task to
+            // the requester's own node, retiring whatever placement it carried before.
+            view.PlacedOnNodeId = @event.Data.GrantedToNodeId;
             view.AssignedAt = @event.Data.ReleasedAt;
             view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
         }

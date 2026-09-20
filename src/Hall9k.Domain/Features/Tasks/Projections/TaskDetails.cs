@@ -139,6 +139,12 @@ public sealed class TaskDetails
     /// <summary>Mirrors <see cref="TaskAggregate.AssignedOwnerFingerprint"/> — see its own doc (idea 20723ef8).</summary>
     public string? AssignedOwnerFingerprint { get; set; }
     /// <summary>
+    /// Mirrors <see cref="TaskAggregate.PlacedOnNodeId"/> — see its own doc (idea 202383dc: an
+    /// owner can place a task on one of their own nodes). Null means unplaced; <c>h9k task show</c>
+    /// and <c>h9k status</c> name the node when it is set.
+    /// </summary>
+    public Guid? PlacedOnNodeId { get; set; }
+    /// <summary>
     /// When a human said "do this": the moment that made the task claimable, and the key the
     /// dispatcher queues on once the concurrency ceiling makes the tail of the queue wait
     /// (Decisions Log #64). Kept here as well as on <see cref="TaskListItem"/> because the
@@ -682,6 +688,11 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
     {
         view.AssignedOwnerId = @event.Data.AssignedOwnerId;
         view.AssignedOwnerFingerprint = @event.Data.AssignedOwnerRootFingerprint;
+        if (@event.Data.PlacedOnNodeId.HasValue)
+        {
+            view.PlacedOnNodeId = @event.Data.PlacedOnNodeId.Value;
+        }
+
         view.AssignedAt = @event.Data.AssignedAt;
         view.UnmetDependencies = [.. @event.Data.UnmetDependencies];
         view.DeadDependencies = [];
@@ -695,10 +706,15 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
             : TaskState.Blocked;
     }
 
+    /// <summary>Mirrors <see cref="TaskAggregate.Apply(Events.TaskPlacementChanged)"/> — see its own doc.</summary>
+    public void Apply(IEvent<TaskPlacementChanged> @event, TaskDetails view) =>
+        view.PlacedOnNodeId = @event.Data.PlacedOnNodeId;
+
     public void Apply(IEvent<TaskUnassigned> @event, TaskDetails view)
     {
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
+        view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
@@ -721,6 +737,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
 
         view.AssignedOwnerId = null;
         view.AssignedOwnerFingerprint = null;
+        view.PlacedOnNodeId = null;
         view.AssignedAt = null;
         view.UnmetDependencies = [];
         view.DeadDependencies = [];
@@ -933,6 +950,9 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
 
         view.AssignedOwnerId = @event.Data.NewHolderOwnerId;
         view.AssignedOwnerFingerprint = null;
+        // The takeover itself names the new node, retiring whatever placement it carried before —
+        // mirrors TaskAggregate.Apply(Events.TaskHolderTakenOver)'s own copy.
+        view.PlacedOnNodeId = @event.Data.NewHolderNodeId;
         view.AssignedAt = @event.Data.TakenAt;
 
         view.InteractiveModeEnabled = false;
@@ -972,6 +992,9 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
 
             view.AssignedOwnerId = @event.Data.GrantedToOwnerId;
             view.AssignedOwnerFingerprint = @event.Data.GrantedToOwnerFingerprint;
+            // Mirrors TaskAggregate.Apply(Events.TaskHolderReleased): the grant moves the task to
+            // the requester's own node, retiring whatever placement it carried before.
+            view.PlacedOnNodeId = @event.Data.GrantedToNodeId;
             view.AssignedAt = @event.Data.ReleasedAt;
 
             view.InteractiveModeEnabled = false;
