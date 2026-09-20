@@ -11,6 +11,9 @@ using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -1939,6 +1942,106 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             details.Should().NotBeNull("the receiver reconstructs the idea from this one envelope alone");
             details!.Text.Should().Be("Fleet-only for now, sharpened");
             details.Scope.Should().Be(ReplicationScope.Team);
+        }
+    }
+
+    /// <summary>
+    /// idea 8c5993c5, independent pre-PR review, idea 19489eff, cycle 11, adversarial lens, medium:
+    /// <see cref="ReplicationProjectResolver"/> resolves a run's own scope from its owning task's,
+    /// never independently, so a run's history must be resent alongside its task's own whenever the
+    /// task's scope widens — otherwise a teammate newly let in by the share receives the task whole
+    /// but no run history at all, leaving <c>RunDetails</c> unreconstructed on their node.
+    /// </summary>
+    [Fact]
+    public async Task Sharing_a_fleet_scoped_task_resends_its_runs_history_too()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Fleet-only draft with a run already on it",
+                ["done"], TaskType.Feature, null, null, null, Now.AddSeconds(1), ownerId);
+            session.Events.StartStream<TaskAggregate>(
+                taskId, added, new TaskClaimed(taskId, nodeA, ownerId, 1, runId, Now.AddSeconds(2)));
+            session.Events.StartStream<RunAggregate>(runId, new RunDispatched(
+                runId, taskId, nodeA, ownerId, 1, DomainId.New(), "/wt/fleet-run", "task/fleet-run",
+                ExecutorMode.Subscription, Now.AddSeconds(2)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // First sweep: the task's own history and the run's own history, both sent fleet-scoped —
+        // and the position moves past all three events.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult firstSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            firstSweep.EventsQueued.Should().Be(3, "the task's own add and claim, plus the run's own dispatch");
+        }
+
+        // Shared with the team — a scope-widening event past the position the first sweep already reached.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            TaskAggregate task = (await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cts.Token))!;
+            session.Events.Append(taskId, TaskDecider.Share(task, Now.AddSeconds(4), ownerId)!);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult secondSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(5), cts.Token);
+            secondSweep.EventsQueued.Should().Be(
+                4, "the share itself, the resent add and claim, and — the fix under test — the resent run dispatch");
+        }
+
+        await messageOutbox.FlushAsync(
+            _postgres.Store.LightweightSession(), RepositoryPath, nodeA, projectId, "shared-project-key",
+            adoptUnassigned: false, committer, signingKey, Now.AddSeconds(5), cts.Token);
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        List<MessageEnvelopeV1> envelopes = [.. read.Envelopes.Select(raw => MessageEnvelopeCodec.Decode(raw.Content).Envelope!)];
+
+        MessageEnvelopeV1 teamEnvelope = envelopes.Single(envelope => envelope.To == MessageAudience.Project);
+        List<EventReplicationCodec.ReplicatedEventRecord> teamBatch = [.. EventReplicationCodec.DecodeBatch(teamEnvelope.Body)!];
+        teamBatch.Select(record => record.StreamId).Should().Contain(
+            runId, "the run's own history must reach the team alongside its task's, not be left behind");
+        teamBatch.Should().Contain(record => record.EventTypeName == typeof(RunDispatched).FullName);
+
+        // Run the resent batch through the real inbox: a genuinely new team member reconstructs the
+        // run, not just the task, from this one envelope alone.
+        await using DocumentStore storeB = OpenStoreB();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(6),
+                trustChain: null, cts.Token);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            RunDetails? run = await session.LoadAsync<RunDetails>(runId, cts.Token);
+            run.Should().NotBeNull("the receiver reconstructs the run from the resent history, not just the task");
         }
     }
 
