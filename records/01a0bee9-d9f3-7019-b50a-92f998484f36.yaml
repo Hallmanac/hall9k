@@ -1,0 +1,25 @@
+hall9k-task-record: 1
+task-id: 01a0bee9-d9f3-7019-b50a-92f998484f36
+project: hall9k
+type: refactor
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#512
+objective: |-
+  The test suite's Hall9kHome serial lane dissolves: a test redirects the platform home and the database connection string through a flow-scoped seam instead of process-wide environment variables, so the classes that today queue one at a time on a single thread run in parallel and the Mac's host gate drops from about eighteen minutes to the longest single class's own time, ReviewEngineTests at about six minutes
+criteria:
+  - |-
+    PlatformPaths.Home and the database connection-string resolver (Hall9kDatabase.Resolve) each consult a flow-scoped override before their environment variable: a test opens one scope that redirects both the home and the connection string for its own async flow and every background task it starts, two tests running in parallel never see each other's values, and disposing the scope restores the previous ones; production behavior with no scope open is unchanged, and no production code sets a scope
+  - |-
+    One shared test helper replaces the private SetTempHome copies and the direct writes of HALL9K_HOME and HALL9K_CONNECTION_STRING in the converted classes: it creates a fresh temporary home, opens the scope from a constructor or field initializer (never inside an async lifetime method, whose flow-scoped values do not reach the test), and removes the directory on dispose; the existing home-isolation guard (HomeEnvironmentIsolationTests) is rewritten in this task to two rules, no write of either variable outside the environment collection and no scope opened inside an async lifetime method, and it fails the build when either is broken
+  - Every class carrying both the Hall9kHome and RequiresDocker marks (28 at drafting) is converted to the helper and drops its Hall9kHome collection tag, so those classes run in parallel and contend for the four machine-wide container permits like the other Postgres classes; any class that hands the home to a child process keeps the environment variable for the child; classes that write any other process-wide environment variable (the claude path, Hall9k__ settings, the MSBuild node-reuse flag) move to a small serial collection named for the environment, and the two that set a Jira token switch to class-unique variable names instead of joining it
+  - |-
+    The gain is shown in the pull request description: the host gate's wall-clock from the daemon log for the branch's own final full pass, against the most recent final pass on main before it on the same node; a test asserts the Postgres fixture still acquires a permit from the cross-process container gate before starting a container and that the cap is still four; no test is run in parallel copies or under artificial load to produce the numbers
+  - dotnet build and dotnet test pass with the host gate green on the branch's final full pass; the decision log carries one entry under this task's placeholder naming the seam and the rule that a test never sets HALL9K_HOME except to hand it to a child process; the repository's testing guidance gains a short section on redirecting the home through the helper; no test creates branches or touches GitHub
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/98484f36-the-test-suite-s-hall9khome-se
+published: 2026-09-20 14:22:56Z
+context: |-
+  Drafted 2026-09-20 09:0x EDT at Brian's ask from the gate-timeout discussion; walked with him before publishing. Evidence: the Mac's final pass on 19489eff this morning ran the fast gate in 65 seconds and the host gate in 18m19s alone in its slot; Windows's host gate ran past the 30-minute limit on 37b5ec69. notes/test-suite-runtime-analysis-2026-09-08.md traced the time to the [Collection("Hall9kHome")] lane: xUnit runs a collection on one thread, and the classes in it (79 files today, 29 of them each starting a Postgres container in series) reproduce the gate's wall-clock. Production reads HALL9K_HOME in exactly one place, PlatformPaths.Home, on every access; 53 test files set the variable directly and 18 use SetTempHome. The container bound is unchanged by this work: CrossProcessContainerGate holds at most four containers machine-wide through exclusive file locks on fixed slot files, across every process, and the host gate is serialized per node, so parallel classes queue for permits rather than adding containers. Classes that spawn a real child process (the RealProcessSpawn set) still need the variable in the child's environment and keep a smaller serial collection of their own.
