@@ -14,8 +14,6 @@ namespace Hall9k.Tests.Daemon;
 /// a leftover <c>{{Placeholder}}</c> here is exactly the defect it would be anywhere else: a
 /// fragment the builder forgot to fill.
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class StackAssessmentPromptTests
 {
     [Fact]

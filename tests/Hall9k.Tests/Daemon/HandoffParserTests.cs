@@ -12,14 +12,10 @@ namespace Hall9k.Tests.Daemon;
 /// handoff, and a result carrying no marker parses to null rather than to an empty string
 /// the closeout append would have to interpret.
 /// </summary>
-// Several tests here call RunPaths.GlobalDirectory, which reads the process-wide HALL9K_HOME
-// variable through PlatformPaths.Home. None currently compares two independent reads against
-// each other, so none is provably racy today, but that is a property of the current assertions,
-// not of the API surface — sharing the "Hall9kHome" collection covers it the same way every
-// other HALL9K_HOME-touching test class is covered, rather than relying on that distinction
-// holding as this file changes.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Several tests here call RunPaths.GlobalDirectory, which reads PlatformPaths.Home — but only
+// ever reads it, and a read can never observe a different test's own redirected home now that
+// HALL9K_HOME goes through the flow-scoped ScopedTestHome seam rather than a process-wide write
+// (Decisions Log PLACEHOLDER-98484f36), so this class needs no serializing collection.
 public sealed class HandoffParserTests
 {
     [Fact]

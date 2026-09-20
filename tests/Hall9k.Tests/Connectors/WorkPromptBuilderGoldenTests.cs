@@ -9,6 +9,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
@@ -30,26 +31,14 @@ namespace Hall9k.Tests.Connectors;
 /// same reason a raw path can never appear in a checked-in fixture directly.
 /// </para>
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class WorkPromptBuilderGoldenTests : IDisposable
 {
-    private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-work-prompt-golden-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
     private readonly List<string> _scratchDirectories = [];
-
-    public WorkPromptBuilderGoldenTests()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _platformHome);
-    }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_platformHome))
-        {
-            Directory.Delete(_platformHome, recursive: true);
-        }
+        _scopedHome.Dispose();
 
         foreach (string directory in _scratchDirectories.Where(Directory.Exists))
         {

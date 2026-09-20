@@ -6,6 +6,7 @@ using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
@@ -26,30 +27,23 @@ namespace Hall9k.Tests.Connectors;
 /// </para>
 /// </summary>
 // Redirects the process-wide HALL9K_HOME (SkillLibraryPaths.CanonicalDirectory and
-// TemplateLibraryPaths.CanonicalDirectory both hang off it), so it shares the collection with
-// every other test that does.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// TemplateLibraryPaths.CanonicalDirectory both hang off it).
 public sealed class TemplateSkillDiscoveryIsolationTests : IDisposable
 {
     private readonly string _worktreePath = Path.Combine(Path.GetTempPath(), $"h9k-template-isolation-{Guid.NewGuid():N}");
-    private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-template-isolation-home-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
+
+    private string _platformHome => _scopedHome.Home;
 
     public TemplateSkillDiscoveryIsolationTests()
     {
         Directory.CreateDirectory(_worktreePath);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _platformHome);
     }
 
     public void Dispose()
     {
         Directory.Delete(_worktreePath, recursive: true);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_platformHome))
-        {
-            Directory.Delete(_platformHome, recursive: true);
-        }
+        _scopedHome.Dispose();
     }
 
     [Fact]

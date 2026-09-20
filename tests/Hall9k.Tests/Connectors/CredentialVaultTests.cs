@@ -3,6 +3,7 @@ using Hall9k.Connectors.Credentials;
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
@@ -13,29 +14,20 @@ namespace Hall9k.Tests.Connectors;
 /// type exists to prevent is the quiet one: a reference that resolves to something other than
 /// what it names.
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class CredentialVaultTests : IDisposable
 {
     private const string Variable = "HALL9K_TEST_VAULT_TOKEN";
 
     private readonly CancellationTokenSource _cancellation = new(TimeSpan.FromMinutes(1));
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
-    private readonly string _home = Path.Combine(Path.GetTempPath(), $"hall9k-home-{Guid.NewGuid():N}");
+    private readonly ScopedTestHome _scopedHome = new();
 
     private CancellationToken Token => _cancellation.Token;
 
-    public CredentialVaultTests() => Environment.SetEnvironmentVariable("HALL9K_HOME", _home);
-
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
         Environment.SetEnvironmentVariable(Variable, null);
         _cancellation.Dispose();
-        if (Directory.Exists(_home))
-        {
-            Directory.Delete(_home, recursive: true);
-        }
+        _scopedHome.Dispose();
     }
 
     [Fact]

@@ -1,6 +1,8 @@
 using FluentAssertions;
 using Hall9k.Daemon;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Microsoft.Extensions.Configuration;
 using Xunit;
 
@@ -13,9 +15,15 @@ namespace Hall9k.Tests.Daemon;
 /// <c>Host.CreateApplicationBuilder</c> hands <c>Program</c> — an environment variables source
 /// already present — and bind the real <see cref="DaemonOptions"/> against the result, because the
 /// property that matters is what ends up bound, not which provider produced it.
+/// <para>
+/// Every <c>Hall9k__*</c> setting below has no flow-scoped alternative (Decisions Log
+/// PLACEHOLDER-98484f36), so this class still writes them directly and joins the one serial
+/// collection left for that; <c>HALL9K_HOME</c> itself is redirected through
+/// <c>ScopedTestHome</c> like everywhere else.
+/// </para>
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 public sealed class PlatformConfigFileSourceTests : IDisposable
 {
     // Every DaemonOptions env var this feature covers, so a variable the dev-loop happens to
@@ -35,15 +43,13 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
         "Hall9k__LifetimeReviewCycleBudget",
     ];
 
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-cfgsrc-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome scopedHome = new();
+
     private readonly Dictionary<string, string?> previous =
         EnvironmentVariables.ToDictionary(name => name, Environment.GetEnvironmentVariable);
 
     public PlatformConfigFileSourceTests()
     {
-        Directory.CreateDirectory(home);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
         foreach (string name in EnvironmentVariables)
         {
             Environment.SetEnvironmentVariable(name, null);
@@ -52,13 +58,12 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
         foreach ((string name, string? value) in previous)
         {
             Environment.SetEnvironmentVariable(name, value);
         }
 
-        Directory.Delete(home, recursive: true);
+        scopedHome.Dispose();
     }
 
     private static DaemonOptions Bind(IConfigurationBuilder builder)
@@ -278,20 +283,38 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
     /// <see cref="ArgumentException"/> for a non-rooted root, which turns this method's
     /// never-crash-the-daemon contract into an unhandled startup exception when
     /// <c>HALL9K_HOME</c> is set to a relative path. Origin: the cycle-4 pre-PR review.
+    /// <para>
+    /// This is the one test in the class that has to reach past <c>ScopedTestHome</c> and clear
+    /// this flow's own home override directly: the override always outranks the literal
+    /// environment variable, so leaving it set would make <see cref="PlatformPaths.Home"/> resolve
+    /// to the class-wide scope's absolute directory regardless of what this test writes to
+    /// <c>HALL9K_HOME</c>, and the relative-path behavior under test would never actually run.
+    /// </para>
     /// </summary>
     [Fact]
     public async Task A_relative_home_directory_does_not_crash_the_insert()
     {
-        string relativeHome = Path.GetRelativePath(Directory.GetCurrentDirectory(), home);
+        string relativeHome = Path.GetRelativePath(Directory.GetCurrentDirectory(), scopedHome.Home);
+        string? previousOverride = PlatformPaths.HomeOverrideForTests;
+        string? previousEnvironmentHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+        PlatformPaths.HomeOverrideForTests = null;
         Environment.SetEnvironmentVariable("HALL9K_HOME", relativeHome);
-        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.MaxConcurrentAgentSessions = 7, CancellationToken.None);
-        ConfigurationBuilder builder = new();
-        builder.AddEnvironmentVariables();
+        try
+        {
+            await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.MaxConcurrentAgentSessions = 7, CancellationToken.None);
+            ConfigurationBuilder builder = new();
+            builder.AddEnvironmentVariables();
 
-        Action insert = () => PlatformConfigFileSource.Insert(builder);
+            Action insert = () => PlatformConfigFileSource.Insert(builder);
 
-        insert.Should().NotThrow();
-        Bind(builder).MaxConcurrentAgentSessions.Should().Be(7);
+            insert.Should().NotThrow();
+            Bind(builder).MaxConcurrentAgentSessions.Should().Be(7);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("HALL9K_HOME", previousEnvironmentHome);
+            PlatformPaths.HomeOverrideForTests = previousOverride;
+        }
     }
 
     /// <summary>
