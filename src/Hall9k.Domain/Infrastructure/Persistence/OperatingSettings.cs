@@ -309,6 +309,15 @@ public sealed class RoleModelSettings
     public string? Publication { get; set; }
 
     /// <summary>
+    /// The feed courier (idea 89471598, piece 3) — delivers a project's orchestrator feed to its
+    /// live orchestrator session and exits. Blank like every sibling above; its own non-blank
+    /// floor beneath the project and platform defaults is <c>AgentModel.CourierDefault</c>, read
+    /// by <c>DaemonOptions.ResolveCourierModel</c> rather than baked in here.
+    /// </summary>
+    [JsonConverter(typeof(LenientModelStringJsonConverter))]
+    public string? Courier { get; set; }
+
+    /// <summary>
     /// The Review role's model for a Verify-shape pass specifically (Brian's ruling, 2026-08-29):
     /// blank falls through to whatever <see cref="Review"/> itself resolves to, so this is not a
     /// seventh role — Verify is still Review-role work — it is a narrower override <see
@@ -341,6 +350,7 @@ public sealed class RoleModelSettings
         yield return (nameof(Synthesis), Synthesis);
         yield return (nameof(Refinement), Refinement);
         yield return (nameof(Publication), Publication);
+        yield return (nameof(Courier), Courier);
     }
 }
 

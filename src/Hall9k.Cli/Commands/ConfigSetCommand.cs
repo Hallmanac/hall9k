@@ -118,6 +118,17 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [Description("This node's model for the Publication role — writing a task up as an external tracker card. 'default' clears it.")]
         public string? ModelPublication { get; init; }
 
+        [CommandOption("--model-courier <MODEL>")]
+        [Description(
+            "This node's model for the Courier role (idea 89471598, piece 3) — delivers a project's "
+            + "orchestrator feed to its live orchestrator session and exits. Unlike every other "
+            + "--model-<role> option, 'default' here does not clear to the platform default: a "
+            + $"courier's own floor beneath the project and platform defaults is {AgentModel.CourierDefault}, "
+            + "cheap by design, so clearing this override still leaves a courier running on a "
+            + "deliberately inexpensive model rather than falling through to the same tier a build or "
+            + "review session runs on.")]
+        public string? ModelCourier { get; init; }
+
         [CommandOption("--max-compliance-review-cycles <N>")]
         [Description(
             "This node's cycle cap for the conformance review track (DaemonOptions.MaxComplianceReviewCycles, "
@@ -304,7 +315,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
-            && settings.ModelPublication is null && settings.MaxComplianceReviewCycles is null
+            && settings.ModelPublication is null && settings.ModelCourier is null
+            && settings.MaxComplianceReviewCycles is null
             && settings.MaxAdversarialReviewCycles is null && settings.MaxFinalFullPassRounds is null
             && settings.LifetimeReviewCycleBudget is null && settings.SpendBudget is null
             && settings.SpendPeriod is null && settings.ReviewStageComposition is null
@@ -339,7 +351,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null
             && settings.ModelFix is null && settings.ModelSynthesis is null && settings.ModelRefinement is null
-            && settings.ModelPublication is null && settings.InteractiveClaimStaleAfterDays is null
+            && settings.ModelPublication is null && settings.ModelCourier is null
+            && settings.InteractiveClaimStaleAfterDays is null
             && settings.MaxComplianceReviewCycles is null && settings.MaxAdversarialReviewCycles is null
             && settings.MaxFinalFullPassRounds is null && settings.LifetimeReviewCycleBudget is null
             && settings.SpendBudget is null && settings.SpendPeriod is null
@@ -547,6 +560,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         ApplyModel("model (synthesis)", settings.ModelSynthesis, value => operating.ModelByRole.Synthesis = value, changed);
         ApplyModel("model (refinement)", settings.ModelRefinement, value => operating.ModelByRole.Refinement = value, changed);
         ApplyModel("model (publication)", settings.ModelPublication, value => operating.ModelByRole.Publication = value, changed);
+        ApplyModel("model (courier)", settings.ModelCourier, value => operating.ModelByRole.Courier = value, changed);
 
         if (settings.MessagePollActiveMin is { } activeMin)
         {
