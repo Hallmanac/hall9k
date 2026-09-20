@@ -879,9 +879,10 @@ owner's own nodes gets to claim it. A node this project's own ledger does not cu
 that owner's fleet is refused outright (`h9k node vouch` first), and `--node` with nothing named
 clears an existing placement, handing the choice back to whichever node gets there first.
 Placement and the takeover levers agree by construction (idea 202383dc, items 4 and 5): a forced
-`h9k task take --force` or a cooperative grant already reassigns a task to the taker's own owner,
-and the same event now also rewrites the placement to the taker's own node, so the node that just
-lost the task stops trying to reclaim it without a second `h9k task assign --node`.
+`h9k task take --force` or a cooperative grant that moves an already-*placed* task rewrites the
+placement to the taker's own node in the same event, so the node that just lost the task stops
+trying to reclaim it without a second `h9k task assign --node`. A never-placed task stays unplaced
+through either lever, keeping the automatic cross-node recovery it had before placement existed.
 
 GitHub gets a write path of its own, because an issue's shape (title, body, labels) is uniform
 enough for the platform to author deterministically, with no agent needed. A project's **backlog
