@@ -176,6 +176,7 @@ public static class CliCommandTree
                 .WithExample("project", "set", "hall9k", "--orchestrator-feed", "actionable")
                 .WithExample("project", "set", "hall9k", "--close-linked-issue", "never")
                 .WithExample("project", "set", "hall9k", "--never-close-labels", "epic,adr")
+                .WithExample("project", "set", "hall9k", "--discover-run-skill")
                 .WithExample(
                     "project", "set", "hall9k", "--review-stage-composition", "none", "--accept-reduced-review");
             project.AddCommand<ProjectRemoveCommand>("remove")
@@ -294,6 +295,36 @@ public static class CliCommandTree
                 addendum.AddCommand<ProjectPromptAddendumRemoveCommand>("remove")
                     .WithDescription("Clear a prompt builder's addendum. The daemon deletes it from the ledger on its next sweep.")
                     .WithExample("project", "prompt-addendum", "remove", "hall9k", "work");
+            });
+            project.AddBranch("run-skill", runSkill =>
+            {
+                runSkill.SetDescription(
+                    "How to stand this project up on any member's machine (idea b9b09779, piece 4) — "
+                    + "composed by a read-only discovery session from the repository's own README, docs, "
+                    + "AGENTS.md, CLAUDE.md, skills, and build files, written to the ledger by the daemon, "
+                    + "and carried in one shape every project shares so a review session or an "
+                    + "orchestrator never has to guess.");
+                runSkill.AddCommand<ProjectRunSkillShowCommand>("show")
+                    .WithDescription(
+                        "Print this project's run skill exactly as this node's event stream last recorded "
+                        + "it, with who composed it, when, and against which commit. A project with none "
+                        + "yet says what it is waiting on: a discovery the daemon will answer on its next "
+                        + "sweep, a session dispatched with nothing recorded since (still composing, or "
+                        + "lost mid-wait and never redispatched on its own), one that failed and why, or "
+                        + "nobody having asked.")
+                    .WithExample("project", "run-skill", "show", "hall9k");
+                runSkill.AddCommand<ProjectRunSkillSetCommand>("set")
+                    .WithDescription(
+                        "Replace the run skill by hand, through the same event a discovery session's own "
+                        + "answer comes back through — recorded here only, with the daemon writing the "
+                        + "ledger on its next sweep. The file must carry all six shared sections; --shape "
+                        + "states pointer, full-text, or none-discoverable, and the skill's first line is "
+                        + "written from it. h9k project set <project> --discover-run-skill is the other "
+                        + "way to change it: ask an agent to compose one instead.")
+                    .WithExample("project", "run-skill", "set", "hall9k", "--file", "run.md", "--shape", "pointer")
+                    .WithExample(
+                        "project", "run-skill", "set", "hall9k", "--file", "run.md", "--shape", "full-text",
+                        "--against-commit", "a542639f");
             });
         });
 

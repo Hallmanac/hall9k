@@ -408,6 +408,18 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "such as \"Generated with Claude\" or a Co-Authored-By trailer. 'default' (or an empty "
             + "value) restores it")]
         public string? WritingConventions { get; init; }
+
+        [CommandOption("--discover-run-skill")]
+        [Description(
+            "Ask the daemon to (re)discover this project's run skill (idea b9b09779, piece 4): how to "
+            + "stand the project up locally, composed by a read-only session that reads this "
+            + "repository's own README, docs, AGENTS.md, CLAUDE.md, skills, and build files, and "
+            + "written to the ledger by the daemon. h9k project add asks for this once at "
+            + "registration; pass it here whenever the repository's launch story has changed, or when "
+            + "an earlier discovery failed. Re-runnable and idempotent in effect: a later discovery "
+            + "replaces whatever is recorded now. Not a setting — nothing about the project changes, "
+            + "and the answer arrives on the daemon's next run-skill sweep rather than here.")]
+        public bool DiscoverRunSkill { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -717,11 +729,27 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             settingsEvents.Add(teamChanged);
         }
 
+        // A request, never a setting: it rides along in the same append so one command is one
+        // commit, but it carries no field and changes nothing about how the project runs. The
+        // daemon's own sweep is what answers it.
+        if (settings.DiscoverRunSkill)
+        {
+            settingsEvents.Add(ProjectDecider.RequestRunSkillDiscovery(details.Id, context.OwnerId, changedAt));
+        }
+
         session.Events.Append(details.Id, settingsEvents);
         await session.SaveChangesAsync(cancellationToken);
         await Doorbell.RingAsync($"project-changed:{details.Id}", cancellationToken);
 
         AnsiConsole.MarkupLine($"[green]Project '{details.Name.EscapeMarkup()}' settings updated.[/]");
+
+        if (settings.DiscoverRunSkill)
+        {
+            AnsiConsole.MarkupLine(
+                "[green]Run-skill discovery requested.[/] The daemon surveys the repository on its next "
+                + "run-skill sweep and dispatches a read-only session to compose the skill when there is "
+                + $"something to read. Watch it land: h9k project run-skill show {details.Name.EscapeMarkup()}");
+        }
 
         // The refusal path names the consequence (ProjectDecider.ChangeSettings's own call into
         // RefuseWithoutAcknowledgment); the accepted path has to name it too, or the only operator
