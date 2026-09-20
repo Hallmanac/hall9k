@@ -244,14 +244,19 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         }
 
         // Resolves once per stream per call, whether the mark came from a PRIOR, interrupted call
-        // (loaded into pendingFullResend below, before the forward scan ever starts) or from a
-        // trigger this call's own forward scan just found. Called INLINE at the point of discovery —
-        // never deferred to after the whole scan — so a stream's resent history always finishes
-        // being added to a batch before the forward scan can add anything later, newer, or unrelated
-        // to that same audience: run too late, a mid-scan overflow flush can carry the trigger event
-        // out in one envelope while the resend it depends on ships in a later one, and the receiver's
-        // out-of-order guard then refuses the whole out-of-order tail for good (independent pre-PR
-        // review, cycle 7, adversarial lens, high).
+        // (loaded into pendingFullResend above, at line 105, before the forward scan ever starts) or
+        // from a trigger found among THIS call's own candidates. Called from the pre-pass below,
+        // before the forward scan below ever adds a single record to a batch — not merely before
+        // that trigger's own AddAsync — so a stream's resent history always finishes being added to a
+        // batch before the forward scan can add anything else for that SAME stream: run any later,
+        // records the forward scan itself adds for that stream (a revision sitting between the
+        // resend's own upper bound and the trigger, say) can already occupy an open batch, and a
+        // mid-scan overflow flush then carries THOSE out in an earlier envelope while the resend's
+        // own, lower-sequenced history ships in a later one — the receiver's out-of-order guard then
+        // refuses the whole out-of-order tail for good (independent pre-PR review, cycle 9,
+        // conformance lens, high — running this inline at the point of discovery, immediately before
+        // the trigger's own AddAsync, still let forward-scan-added records for the SAME stream sit in
+        // the batch ahead of the resend whenever they were added earlier in this same scan).
         HashSet<Guid> resentStreamsThisCall = [];
 
         async Task ResendIfNeededAsync(Guid streamId)
@@ -277,6 +282,41 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         foreach (Guid streamId in pendingFullResend.ToList())
         {
             await ResendIfNeededAsync(streamId);
+        }
+
+        // Every scope-changing candidate in THIS call's own batch is resent here, in one pre-pass
+        // over the full candidate list, before the forward scan below adds a single record to any
+        // batch — never deferred to the point the forward scan itself reaches that candidate. Reached
+        // there, the resend would run only after the forward scan had already added that SAME
+        // stream's own earlier, lower-sequenced-than-the-trigger-but-higher-than-the-resend's-bound
+        // candidates (a revision between the last sweep's high-water mark and this share, say) to an
+        // open batch — exactly what a mid-scan overflow flush could then ship in an earlier envelope
+        // than the resend's own history (independent pre-PR review, cycle 9, conformance lens, high).
+        // Safe to call before the triggering candidate's own ownership is ever resolved:
+        // ResendStreamHistoryAsync resolves and checks project match, privacy, and origin for every
+        // history record it considers on its own, so a candidate belonging to a different project's
+        // outbox or already private simply resends nothing here. Foreign-origin triggers are included
+        // deliberately — the same as the removed inline calls below used to include them — since a
+        // foreign-origin scope-change fact still means the stream's true origin node owes its own
+        // earlier native history to the newly wider audience. The same fast-skip the forward scan
+        // itself applies (candidate.Sequence <= highestQueuedSequence, unless still pendingPrivate)
+        // governs which candidates even count as a trigger here: an ALREADY-settled scope-changing
+        // candidate — TaskPublished from a prior sweep, say, revisited only because some other
+        // stream's own held-back private event has kept sinceSequence from advancing as far as this
+        // project's own high-water mark already has — must never re-trigger a resend of a stream this
+        // outbox already sent at its current scope, or every such sweep would re-queue that stream's
+        // whole history again for as long as anything nearby stays held back.
+        foreach (IEvent candidate in candidates)
+        {
+            if (candidate.Sequence <= highestQueuedSequence && !pendingPrivate.Contains(candidate.Sequence))
+            {
+                continue;
+            }
+
+            if (IsScopeChangingEventType(candidate.EventType))
+            {
+                await ResendIfNeededAsync(candidate.StreamId);
+            }
         }
 
         foreach (IEvent candidate in candidates)
@@ -383,19 +423,12 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             {
                 // Sending it back out would echo a teammate's own event back at them under a fresh
                 // local event id and this node's own origin stamp, forever — only what this node
-                // itself wrote ever rides an envelope. But a scope-widening event replicated in still
-                // means THIS node's own earlier native history on the same stream may be owed to
-                // whoever the wider scope newly reaches: the stream's own true origin node learns
-                // that exactly this way, from its own copy of the scope-change event landing here,
-                // not by inspecting who sent it — skipping this check for every foreign-origin event
-                // silently broke that closing move ResendStreamHistoryAsync's own doc comment
-                // promises the true origin makes (independent pre-PR review, cycle 4, conformance
-                // lens, high).
-                if (IsScopeChangingEventType(candidate.EventType))
-                {
-                    await ResendIfNeededAsync(candidate.StreamId);
-                }
-
+                // itself wrote ever rides an envelope. A scope-widening foreign-origin event's own
+                // stream is still marked for resend — the pre-pass above already did that, for every
+                // scope-changing candidate in this call's own list, before this forward scan started —
+                // so the stream's own true origin node still learns to resend its own earlier native
+                // history even though this node's own copy of the event itself never travels either
+                // way (independent pre-PR review, cycle 4, conformance lens, high).
                 lastIncludedSequence = candidate.Sequence;
                 continue;
             }
@@ -404,23 +437,20 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             // pendingPrivate member (the fast skip above is the only thing that could have let it
             // through) — never treated as "already sent" the way the high-water mark alone would
             // read it. It is owed, whichever sweep first held it back.
-            if (IsScopeChangingEventType(candidate.EventType))
-            {
-                // idea 8c5993c5: this stream just moved to a scope at least this wide — everything
-                // it holds below this scan's own starting position (sinceSequence), OR sitting in
-                // the fast-skip gap between sinceSequence and highestQueuedSequence (a gap that
-                // opens whenever some OTHER stream's held-back private event has kept sinceSequence
-                // from advancing as far as this project's own high-water mark already has), never
-                // reached whatever audience it is newly eligible for. Resent HERE, before this
-                // trigger's own record is ever added to a batch below — see ResendIfNeededAsync's own
-                // doc for why the ordering matters (independent pre-PR review, cycle 1, adversarial
-                // lens, medium: bounding the resend to sinceSequence alone left the gap neither
-                // resent nor re-queued, since the ordinary forward scan fast-skips it too; cycle 7,
-                // adversarial lens, high: resending after the trigger's own AddAsync call let a
-                // mid-scan overflow flush split the two across envelopes out of order).
-                await ResendIfNeededAsync(candidate.StreamId);
-            }
-
+            //
+            // idea 8c5993c5: if this candidate is itself scope-changing, the pre-pass above already
+            // resent this stream's own earlier history — below this scan's own starting position
+            // (sinceSequence), or sitting in the fast-skip gap between sinceSequence and
+            // highestQueuedSequence — before any record for this stream reached a batch, native or
+            // foreign origin alike, so this candidate's own record below always lands in the same or
+            // a LATER envelope than that resent history, never an earlier one (independent pre-PR
+            // review, cycle 1, adversarial lens, medium: bounding the resend to sinceSequence alone
+            // left the gap neither resent nor re-queued; cycle 7, adversarial lens, high: resending
+            // after the trigger's own AddAsync call let a mid-scan overflow flush split the two across
+            // envelopes out of order; cycle 9, conformance lens, high: resending inline, immediately
+            // before only THIS candidate's own AddAsync, still let earlier forward-scan-added records
+            // for the SAME stream — added before the scan ever reached this trigger — split away from
+            // the resend across an overflow flush).
             EventReplicationCodec.ReplicatedEventRecord record = ToRecord(candidate, nodeId, fromOwnerFingerprint, projectId);
             string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
             await AddAsync(
