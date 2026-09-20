@@ -609,16 +609,20 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
         await session.SaveChangesAsync(cancellationToken);
 
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(session, context.OwnerId, cancellationToken);
+
         if (task.HolderNodeId is not { } holderNodeId)
         {
-            // The ordinary dispatch sweep only ever claims a Queued task whose own AssignedOwnerId
-            // matches the claiming node's owner (DispatchEngine's own queue query, Decisions Log
-            // #34) — a fact this command has to check rather than assume, since a task with no
-            // ledger holder can still be assigned to somebody else's owner (independent pre-PR
-            // review, cycle 1, conformance lens: the earlier version promised the sweep would claim
-            // it regardless, which is simply false when the owners differ, and nothing here
-            // reassigns it).
-            if (task.AssignedOwnerId == context.OwnerId)
+            // The ordinary dispatch sweep claims a Queued task granted to the claiming node's
+            // owner — by a bare AssignedOwnerId match, or, for a task assigned on a sibling node
+            // of the same owner, by the recorded root fingerprint (idea f72138e1, widening
+            // TaskDecider.IsGrantedToThisOwner to every ordinary assignment) — a fact this command
+            // has to check rather than assume, since a task with no ledger holder can still be
+            // assigned to somebody else's owner (independent pre-PR review, cycle 1, conformance
+            // lens: the earlier version promised the sweep would claim it regardless, which is
+            // simply false when the owners differ, and nothing here reassigns it).
+            if (TaskDecider.IsGrantedToThisOwner(
+                task.AssignedOwnerId, task.AssignedOwnerFingerprint, context.OwnerId, ownerRootFingerprint))
             {
                 if (task.State == TaskState.Queued)
                 {
@@ -713,7 +717,6 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
 
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(task.ProjectId, cancellationToken)
             ?? throw new DomainNotFoundException($"No project {task.ProjectId}.");
-        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(session, context.OwnerId, cancellationToken);
         if (ownerRootFingerprint is null)
         {
             throw new DomainValidationException(
