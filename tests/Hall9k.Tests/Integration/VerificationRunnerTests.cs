@@ -121,10 +121,15 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// gate on record as permanently running with nothing to ever catch it; the full suite would
     /// still pass.
     /// <para>
-    /// The outer token is cancelled a moment after the gate starts, the same margin
-    /// <see cref="Overrunning_gate_times_out_as_a_failure_not_a_hang"/> already relies on for its
-    /// own real subprocess: the gate pauses 30 seconds and the cancellation fires after 1, so the
-    /// process is still running (never confirmed exited) when the outer token cuts in.
+    /// The shutdown token is cancelled only once the gate is observed to have actually started,
+    /// not after a fixed timer racing the spawn: the test polls <see cref="RunDetails.ActiveGate"/>
+    /// (an inline projection, so a read taken after <see cref="GateStarted"/>'s own
+    /// <c>SaveChangesAsync</c> is exact) until it is set, then cancels. This is a different
+    /// mechanism from <see cref="Overrunning_gate_times_out_as_a_failure_not_a_hang"/>'s own
+    /// timeout, which is the runner's <c>VerifyGateTimeout</c>, itself only started after
+    /// <see cref="GateStarted"/> is recorded — that test never raced the spawn either, and shares
+    /// no margin with this one. The gate's own 30-second pause here just needs to outlast the
+    /// short poll; it is never a race the test itself waits out.
     /// </para>
     /// </summary>
     [Fact]
@@ -136,16 +141,26 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
             store, [new VerifyCommand("slow", GateScript.New().Pause(TimeSpan.FromSeconds(30)).Command)], hardStop.Token);
 
         using CancellationTokenSource shutdown = CancellationTokenSource.CreateLinkedTokenSource(hardStop.Token);
-        shutdown.CancelAfter(TimeSpan.FromSeconds(1));
 
-        Func<Task> act = () =>
+        Task<bool> verifyTask =
             NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, shutdown.Token);
 
+        RunDetails? run = null;
+        while (run?.ActiveGate is null && !verifyTask.IsCompleted)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(50), hardStop.Token);
+            await using IQuerySession pollQuery = store.QuerySession();
+            run = await pollQuery.LoadAsync<RunDetails>(runId, hardStop.Token);
+        }
+
+        shutdown.Cancel();
+
+        Func<Task> act = () => verifyTask;
         await act.Should().ThrowAsync<OperationCanceledException>(
             "a genuine daemon-shutdown cancellation propagates rather than being swallowed as a gate failure");
 
         await using IQuerySession query = store.QuerySession();
-        RunDetails run = (await query.LoadAsync<RunDetails>(runId, hardStop.Token))!;
+        run = (await query.LoadAsync<RunDetails>(runId, hardStop.Token))!;
         run.ActiveGate.Should().NotBeNull(
             "the daemon never confirmed the gate's own process dead, so the record must still show it attached");
         run.ActiveGate!.GateName.Should().Be("slow");
