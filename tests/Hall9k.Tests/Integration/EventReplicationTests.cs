@@ -2885,6 +2885,103 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         }
     }
 
+    /// <summary>
+    /// The same guard as the previous test, but the genesis record and its follow-up arrive in TWO
+    /// separate sweeps rather than the same batch — the ordinary timeline for a capture and a
+    /// later revise. <c>streamsThatFailedToStartThisRead</c> is scoped to one read alone, so
+    /// without a persisted, cross-read form of the same check the second read would find no memory
+    /// of the first read's own failure and let the follow-up auto-vivify the exact permanently-
+    /// headless <c>IdeaDetails</c> the previous test proves a same-read follow-up cannot
+    /// (independent pre-PR review, cycle 1, both lenses, medium).
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_record_arriving_in_a_later_sweep_is_also_skipped_once_its_streams_genesis_already_failed()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        ListLogger<EventReplicationInbox> logger = new();
+        EventReplicationInbox replicationInbox = new(transport, logger);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid badIdeaId = DomainId.New();
+        Guid badOriginEventId = DomainId.New();
+        Guid followUpOriginEventId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        IdeaCaptured badCaptured = new(
+            badIdeaId, ownerId, "A poison capture", projectId, Now.AddSeconds(1), "not-an-absolute-path", ReplicationScope.Fleet);
+        IdeaRevised followUpRevision = new(badIdeaId, "A revision of a capture that never landed", Now.AddSeconds(10), ownerId);
+        EventReplicationCodec.ReplicatedEventRecord badRecord = new(
+            badIdeaId, typeof(IdeaCaptured).FullName!, JsonSerializer.Serialize(badCaptured, jsonOptions),
+            badOriginEventId, OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(1), projectId);
+        EventReplicationCodec.ReplicatedEventRecord followUpRecord = new(
+            badIdeaId, typeof(IdeaRevised).FullName!, JsonSerializer.Serialize(followUpRevision, jsonOptions),
+            followUpOriginEventId, OriginSequence: 2, nodeA, "owner-a-fingerprint", Now.AddSeconds(10), projectId);
+
+        // The genesis record alone, flushed and read by itself — the FIRST sweep, complete on its
+        // own before the follow-up is even minted, so nothing in EventReplicationInbox's own
+        // in-memory, per-read state can still be holding it by the time the follow-up arrives.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([badRecord]), Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult firstRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: null, cts.Token);
+            firstRead.EventsApplied.Should().Be(0, "the poison genesis never lands");
+        }
+
+        // The follow-up, flushed and read in a wholly separate sweep afterward.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([followUpRecord]), Now.AddSeconds(11), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(11), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(12),
+                trustChain: null, cts.Token);
+            secondRead.EventsApplied.Should().Be(
+                0, "the follow-up refuses to build on a stream whose genesis already failed, even across sweeps");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<IdeaDetails>(badIdeaId, cts.Token)).Should().BeNull(
+                "no headless document — a later sweep must not auto-vivify what the first sweep already refused");
+            (await session.LoadAsync<ReplicatedEventRecord>(followUpOriginEventId, cts.Token)).Should().NotBeNull(
+                "the follow-up is recorded too, so it is never retried either");
+        }
+    }
+
     private static async Task<Guid> SeedQueuedTaskAsync(
         IDocumentStore store, Guid projectId, Guid ownerId, DateTimeOffset now, CancellationToken cancellationToken)
     {
