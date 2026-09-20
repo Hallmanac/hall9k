@@ -3381,7 +3381,7 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "gates-passed");
         foreach (VerifyCommand gate in gates)
         {
-            prompt.AppendLine($"  - `{gate.Command}`");
+            AppendGateLine(prompt, gate, indent: "  ");
         }
     }
 
