@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
@@ -10,6 +11,7 @@ using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Queries;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 using Spectre.Console;
 using Spectre.Console.Cli;
@@ -50,6 +52,20 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             + "the same take on an unassigned item, and a non-interactive one warns and proceeds "
             + "without writing anything")]
         public bool Take { get; init; }
+
+        [CommandOption("--node [NODE]")]
+        [Description(
+            "Places this task on one of the owner's own nodes (its id, or an unambiguous fragment): "
+            + "only that node's own dispatcher claims it, and every other node of the same owner "
+            + "stands down without a forced take. Refused for a node this project's own ledger does "
+            + "not currently vouch into the owner's fleet (h9k node vouch <id> first) — this "
+            + "install's own node id always qualifies. The bare flag, with nothing named, clears an "
+            + "existing placement so any of the owner's nodes may claim it again; omit the option "
+            + "entirely to leave whatever placement the task already carries untouched. h9k task "
+            + "show and h9k status name the placed node. A forced or cooperative take that moves the "
+            + "task to another node records that node as the new placement on its own, with no "
+            + "second --node needed.")]
+        public FlagValue<string> Node { get; init; } = new();
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -61,6 +77,30 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         TaskAggregate task = await session.Events.AggregateStreamAsync<TaskAggregate>(taskId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No task {taskId}.");
 
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+
+        // TaskDecider.Assign is Published-only and refuses to run again once a task is Queued or
+        // Blocked ("already assigned; unassign it first") — so a --node against an already-assigned
+        // task, with no owner named alongside it, changes placement in place instead of attempting
+        // (and failing) a full reassignment nobody asked for.
+        if (task.AssignedOwnerId is not null && settings.Owner.IsBlank() && settings.Node.IsSet)
+        {
+            // --take assigns a tracker item as part of landing a fresh assignment (TakeBeforeAssigningAsync,
+            // below) — this branch never reaches that door, so a --take alongside a placement-only
+            // change would otherwise be silently dropped rather than doing what it was asked
+            // (self-review, this session).
+            if (settings.Take)
+            {
+                throw new DomainValidationException(
+                    "--take only ever runs as part of a fresh assignment, and this task is already assigned "
+                    + "— --node alone changes only its placement here and never touches the tracker. Drop "
+                    + "--take, or unassign and reassign with both --node and --take together if you meant a "
+                    + "fresh assignment.");
+            }
+
+            return await ChangePlacementOnlyAsync(session, task, context, settings.Node, cancellationToken);
+        }
+
         OwnerDetails owner = settings.Owner.IsNotBlank()
             ? await OwnerResolver.ResolveAsync(session, settings.Owner, cancellationToken)
             : await OwnerResolver.SoleOwnerAsync(session, cancellationToken)
@@ -68,8 +108,11 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                     "More than one owner is registered, so who this task is for cannot be inferred. "
                     + "Name them: h9k task assign <id> <owner>");
 
-        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        TaskAssigned assigned = await AppendAsync(session, task, owner, context.OwnerId, cancellationToken);
+        Optional<Guid?> placement = await ResolvePlacementAsync(
+            session, settings.Node, owner.RootFingerprint, task.ProjectId, context.NodeId, new GitLedgerChainReader(),
+            cancellationToken);
+        TaskAssigned assigned = await AppendAsync(
+            session, task, owner, context.OwnerId, cancellationToken, placement);
 
         // Composed above, committed below, and the tracker written to in between — the order is the
         // whole of "one command moves the tracker and the board together". TaskDecider.Assign has
@@ -284,6 +327,97 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     }
 
     /// <summary>
+    /// Resolves <c>--node</c> into what <see cref="Handlers.TaskDecider.Assign"/> understands:
+    /// absent leaves whatever placement the task already carries alone (the ordinary case, and
+    /// every re-assignment that never mentions <c>--node</c>), a bare flag clears it, and a value
+    /// resolves to a node id and pins it.
+    /// </summary>
+    internal static async Task<Optional<Guid?>> ResolvePlacementAsync(
+        IQuerySession session, FlagValue<string> node, string? ownerRootFingerprint, Guid projectId, Guid thisNodeId,
+        ILedgerChainReader chainReader, CancellationToken cancellationToken)
+    {
+        if (!node.IsSet)
+        {
+            return Optional<Guid?>.None;
+        }
+
+        if (node.Value.IsBlank())
+        {
+            return Optional<Guid?>.Of(null);
+        }
+
+        return Optional<Guid?>.Of(await ResolveNodeIdAsync(
+            session, node.Value, ownerRootFingerprint, projectId, thisNodeId, chainReader, cancellationToken));
+    }
+
+    /// <summary>
+    /// The fleet a <c>--node</c> value resolves against: this install's own node id plus every
+    /// node this project's own ledger currently vouches into <paramref name="ownerRootFingerprint"/>'s
+    /// chain (idea 202383dc) — never this node's local <c>NodeDetails</c>, which never replicates a
+    /// foreign node's own record. Shared by <see cref="ResolvePlacementAsync"/> (a fresh assignment)
+    /// and <see cref="ChangePlacementOnlyAsync"/> (changing placement on one already assigned), so
+    /// the two doors onto <c>--node</c> can never resolve the identical argument two different ways.
+    /// </summary>
+    internal static async Task<Guid> ResolveNodeIdAsync(
+        IQuerySession session, string nodeIdOrFragment, string? ownerRootFingerprint, Guid projectId, Guid thisNodeId,
+        ILedgerChainReader chainReader, CancellationToken cancellationToken)
+    {
+        ProjectDetails project = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken)
+            ?? throw new DomainNotFoundException($"No project {projectId}.");
+
+        HashSet<Guid> fleet = [thisNodeId];
+        if (ownerRootFingerprint is { } root && project.RepositoryPath.IsNotBlank())
+        {
+            TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+            if (chain.OwnerChains.TryGetValue(root, out TrustedOwner? trustedOwner))
+            {
+                foreach (TrustedNode trustedNode in trustedOwner.Nodes)
+                {
+                    if (Guid.TryParse(trustedNode.NodeId, out Guid vouchedNodeId))
+                    {
+                        fleet.Add(vouchedNodeId);
+                    }
+                }
+            }
+        }
+
+        return NodePlacementResolver.Resolve(nodeIdOrFragment, fleet);
+    }
+
+    /// <summary>
+    /// <c>--node</c> against a task <see cref="Handlers.TaskDecider.Assign"/> itself can no longer
+    /// touch (already Queued, Blocked, or further along) and with no owner named alongside it: a
+    /// placement-only change through <see cref="Handlers.TaskDecider.SetPlacement"/>, which moves
+    /// nothing else about the task. <paramref name="node"/>'s own value resolves against this
+    /// project's own ledger the identical way a fresh assignment's does, using this task's own
+    /// recorded <see cref="TaskAggregate.AssignedOwnerFingerprint"/> when it carries one rather than
+    /// a locally-resolved <c>OwnerDetails</c>, since a task assigned by a peer node's own root may
+    /// never have registered an <c>OwnerDetails</c> record here at all.
+    /// </summary>
+    private static async Task<int> ChangePlacementOnlyAsync(
+        IDocumentSession session, TaskAggregate task, BootstrapContext context, FlagValue<string> node,
+        CancellationToken cancellationToken)
+    {
+        Guid? placedOnNodeId = node.Value.IsNotBlank()
+            ? await ResolveNodeIdAsync(
+                session, node.Value, task.AssignedOwnerFingerprint, task.ProjectId, context.NodeId,
+                new GitLedgerChainReader(), cancellationToken)
+            : null;
+
+        TaskPlacementChanged changed = TaskDecider.SetPlacement(task, placedOnNodeId, DateTimeOffset.UtcNow, context.OwnerId);
+        session.Events.Append(task.Id, changed);
+        await session.SaveChangesAsync(cancellationToken);
+        await Doorbell.RingAsync($"task-assigned:{task.Id}", cancellationToken);
+
+        string shortId = TaskListCommand.ShortId(task.Id);
+        AnsiConsole.MarkupLine(placedOnNodeId is { } placed
+            ? $"[green]Task {shortId} placed on node {TaskListCommand.ShortId(placed)}[/] — only that node's "
+                + "own dispatcher claims it; every other node of this owner stands down."
+            : $"[green]Placement cleared for task {shortId}[/] — any of this owner's nodes may claim it.");
+        return ExitCodes.Ok;
+    }
+
+    /// <summary>
     /// Appends the assignment onto an open session (the caller saves), so h9k task publish can
     /// offer assignment in the same transaction it publishes in. Dependencies are read here
     /// rather than passed in: where the task lands — Queued or Blocked — is decided by whether
@@ -294,7 +428,8 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         TaskAggregate task,
         OwnerDetails assignedOwner,
         Guid assignedByOwnerId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Optional<Guid?> placeOnNode = default)
     {
         // An archived project's own tasks stay exactly as they are (task: a project can be
         // archived, listed as archived, reactivated, and renamed) — refused here rather than left
@@ -313,7 +448,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             session, task.BlockedBy, cancellationToken);
         TaskAssigned assigned = TaskDecider.Assign(
             task, assignedOwner.Id, dependencies, DateTimeOffset.UtcNow, assignedByOwnerId,
-            assignedOwner.RootFingerprint);
+            assignedOwner.RootFingerprint, placeOnNode);
         session.Events.Append(task.Id, assigned);
         return assigned;
     }
@@ -342,6 +477,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                 + $"#{stackedParent.PullRequestNumber}, which it is stacked on and which was last observed "
                 + $"{remoteState.Describe()}. It dispatches once that pull request is observed open; the "
                 + "closeout watcher's own sweep looks on its cadence.");
+            AnnouncePlacement(assigned);
             return;
         }
 
@@ -350,6 +486,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             AnsiConsole.MarkupLine(
                 $"[green]Task {shortId} assigned to {owner.Name.EscapeMarkup()}[/] — queued; "
                 + "the next dispatch cycle on one of their nodes claims it.");
+            AnnouncePlacement(assigned);
             return;
         }
 
@@ -382,5 +519,25 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             ? "[dim]It queues itself the moment the last one clears — its stacked parent at Delivered "
               + "(pull request open), any other blocker at its merge — nothing else to do.[/]"
             : "[dim]It queues itself the moment the last one's pull request merges — nothing else to do.[/]");
+        AnnouncePlacement(assigned);
+    }
+
+    /// <summary>
+    /// The one extra line <c>--node</c> earns, printed after whichever landing sentence
+    /// <see cref="AnnounceAsync"/> already gives: named when a placement was set, a plain note when
+    /// one was cleared, and nothing at all when <c>--node</c> was never mentioned (the ordinary
+    /// case, unchanged from before this feature existed).
+    /// </summary>
+    private static void AnnouncePlacement(TaskAssigned assigned)
+    {
+        if (assigned.PlacedOnNodeId is not { HasValue: true } placement)
+        {
+            return;
+        }
+
+        AnsiConsole.MarkupLine(placement.Value is { } placedNodeId
+            ? $"[dim]Placed on node {TaskListCommand.ShortId(placedNodeId)} — only that node's own "
+                + "dispatcher claims it; every other node of this owner stands down.[/]"
+            : "[dim]Placement cleared — any of this owner's nodes may claim it.[/]");
     }
 }
