@@ -28,7 +28,8 @@ namespace Hall9k.Tests.Cli;
 /// path").
 /// </para>
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (ProjectHomePaths.DefaultFor reads it).
+// Redirects HALL9K_HOME through this class's own ScopedTestHome, never the process-wide
+// variable itself (ProjectHomePaths.DefaultFor reads it).
 public sealed class ProjectAddCommandTests : IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 12, 12, 0, 0, TimeSpan.Zero);

@@ -38,15 +38,16 @@ namespace Hall9k.Tests.Daemon;
 /// "spawns real processes heavily enough to contend," so this collection's membership is a judgment
 /// call recorded here rather than a mechanically-enforced one, and is deliberately not guarded to
 /// avoid asserting a precision the source can't actually verify. <c>Hall9k.Tests.Integration.VerificationRunnerTests</c>
-/// and <c>Hall9k.Tests.Integration.VerificationRunnerTests</c>'s own
-/// <c>[Collection("Environment")]</c> membership is left out on the same judgment: xUnit allows
-/// one collection per class, <c>Environment</c> already serializes it for its own
-/// MSBUILDDISABLENODEREUSE isolation unrelated to this contention, it never overlapped any
-/// of the three failing windows, and windows-latest CI itself never schedules it next to this
-/// class at all (<c>ci.yml</c> filters <c>Category=RequiresDocker</c> off that leg) — only the
-/// Windows node's own unfiltered full suite still can, a narrower, named residual left for the
-/// Decisions Log entry below rather than folded in on suspicion. Removes the contention this
-/// suite itself was causing, rather than widening a deadline to hide it.
+/// and <c>Hall9k.Tests.Integration.RunSupervisorTests</c> — a sixth real-process spawner of its
+/// own — are left out on the same judgment, on top of their own
+/// <c>[Collection("Environment")]</c> membership: xUnit allows one collection per class,
+/// <c>Environment</c> already serializes each of them for its own MSBUILDDISABLENODEREUSE
+/// isolation unrelated to this contention, neither overlapped any of the three failing windows,
+/// and windows-latest CI itself never schedules either next to this class at all (<c>ci.yml</c>
+/// filters <c>Category=RequiresDocker</c> off that leg) — only the Windows node's own unfiltered
+/// full suite still can, a narrower, named residual left for the Decisions Log entry below rather
+/// than folded in on suspicion. Removes the contention this suite itself was causing, rather than
+/// widening a deadline to hide it.
 /// </para>
 /// </summary>
 [Collection("RealProcessSpawn")]

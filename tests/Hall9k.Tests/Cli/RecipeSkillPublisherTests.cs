@@ -13,7 +13,8 @@ namespace Hall9k.Tests.Cli;
 /// node or project orchestrator window), through the identical hash-manifest publish/shadow/retire
 /// discipline the ordinary skill set already uses.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME.
+// Redirects HALL9K_HOME through this class's own ScopedTestHome, never the process-wide
+// variable itself.
 public sealed class RecipeSkillPublisherTests : IDisposable
 {
     private readonly string _source = Path.Combine(Path.GetTempPath(), $"hall9k-recipe-skill-source-{Guid.NewGuid():N}");

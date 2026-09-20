@@ -13,7 +13,8 @@ namespace Hall9k.Tests.Cli;
 /// origin incident, 2026-08-23). Before this existed, uninstall deleted
 /// <c>~/.hall9k/skills</c> wholesale, taking an operator's hand-written skills with it.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (the canonical skill set hangs off it).
+// Redirects HALL9K_HOME through this class's own ScopedTestHome, never the process-wide
+// variable itself (the canonical skill set hangs off it).
 public sealed class SkillSeederRemovePublishedTests : IDisposable
 {
     private readonly string _source = Path.Combine(Path.GetTempPath(), $"h9k-remove-published-source-{Guid.NewGuid():N}");

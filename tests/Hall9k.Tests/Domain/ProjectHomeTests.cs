@@ -18,7 +18,8 @@ namespace Hall9k.Tests.Domain;
 /// rides both the registration and the settings event, and a layout that is stated once so the
 /// recipe and the render cannot disagree about it.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME.
+// Redirects HALL9K_HOME through this class's own ScopedTestHome, never the process-wide
+// variable itself.
 public sealed class ProjectHomeTests : IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 23, 12, 0, 0, TimeSpan.Zero);

@@ -13,7 +13,8 @@ namespace Hall9k.Tests.Cli;
 /// scoped to the canonical prompt-template set instead (task: agent prompt prose lives in shipped
 /// markdown templates rather than hard-coded C# strings).
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (the canonical template set hangs off it).
+// Redirects HALL9K_HOME through this class's own ScopedTestHome, never the process-wide
+// variable itself (the canonical template set hangs off it).
 public sealed class TemplatePublisherTests : IDisposable
 {
     private readonly string _source = Path.Combine(Path.GetTempPath(), $"h9k-templates-source-{Guid.NewGuid():N}");

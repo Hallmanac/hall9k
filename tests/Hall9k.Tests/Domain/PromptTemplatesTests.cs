@@ -11,7 +11,8 @@ namespace Hall9k.Tests.Domain;
 /// resolving the install's canonical copy — the only place these fixtures ever write a template —
 /// once a checkout's own <c>.claude/templates</c> does not carry the relative path being asked for.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (the canonical directory PromptTemplates falls back to).
+// Redirects HALL9K_HOME through this class's own ScopedTestHome, never the process-wide
+// variable itself (the canonical directory PromptTemplates falls back to).
 public sealed class PromptTemplatesTests : IDisposable
 {
     private readonly ScopedTestHome _scopedHome = new();
