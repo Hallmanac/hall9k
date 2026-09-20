@@ -57,16 +57,17 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         [Description(
             "Places this task on one of the owner's own nodes (its id, or an unambiguous fragment): "
             + "only that node's own dispatcher claims it, and every other node of the same owner "
-            + "stands down without a forced take. Refused for a node this project's own ledger does "
-            + "not currently vouch into the owner's fleet (h9k node vouch <id> first) — this "
-            + "install's own node id qualifies without a ledger lookup only when the task is this "
-            + "install's own owner's work; placing another owner's task still needs that owner's "
-            + "own vouch. The bare flag, with nothing named, clears an "
-            + "existing placement so any of the owner's nodes may claim it again; omit the option "
-            + "entirely to leave whatever placement the task already carries untouched. h9k task "
-            + "show and h9k status name the placed node. A forced or cooperative take that moves the "
-            + "task to another node records that node as the new placement on its own, with no "
-            + "second --node needed.")]
+            + "stands down without a forced take. The owner's own fleet is their root node, the one "
+            + "whose key established it in this project's ledger, plus every node currently vouched "
+            + "into it (a root never needs h9k node vouch against itself). Refused for a node "
+            + "outside both sets (h9k node vouch <id> first) — this install's own node id also "
+            + "qualifies without a ledger lookup when the task is this install's own owner's work; "
+            + "placing another owner's task still needs that owner's own root or vouch. The bare "
+            + "flag, with nothing named, clears an existing placement so any of the owner's nodes "
+            + "may claim it again; omit the option entirely to leave whatever placement the task "
+            + "already carries untouched. h9k task show and h9k status name the placed node. A "
+            + "forced or cooperative take that moves the task to another node records that node as "
+            + "the new placement on its own, with no second --node needed.")]
         public FlagValue<string> Node { get; init; } = new();
     }
 
@@ -354,19 +355,20 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     }
 
     /// <summary>
-    /// The fleet a <c>--node</c> value resolves against: every node this project's own ledger
-    /// currently vouches into <paramref name="ownerRootFingerprint"/>'s chain (idea 202383dc),
-    /// plus this install's own node id — but only when <paramref name="ownerIsThisInstall"/> says
-    /// the task is actually this install's own owner's work, never a different owner's. Without
-    /// that guard, an owner sharing a project with somebody else could place that somebody's task
-    /// onto this node merely by naming this node's own fragment, a node no dispatcher then ever
-    /// claims it from — the ledger is what says who this node may legitimately act for, and this
-    /// install's own id skips that check only for the one case the ledger cannot yet vouch for
-    /// itself: a fresh, still-unvouched single-node project (independent pre-PR review, cycle 1,
-    /// adversarial lens). Never this node's local <c>NodeDetails</c>, which never replicates a
-    /// foreign node's own record. Shared by <see cref="ResolvePlacementAsync"/> (a fresh assignment)
-    /// and <see cref="ChangePlacementOnlyAsync"/> (changing placement on one already assigned), so
-    /// the two doors onto <c>--node</c> can never resolve the identical argument two different ways.
+    /// The fleet a <c>--node</c> value resolves against: <see cref="TrustedOwner.FleetNodeIds"/> for
+    /// <paramref name="ownerRootFingerprint"/>'s own chain (idea 202383dc) — the owner's own root
+    /// node, when the ledger can name it, plus every node currently vouched into it — plus this
+    /// install's own node id, but only when <paramref name="ownerIsThisInstall"/> says the task is
+    /// actually this install's own owner's work, never a different owner's. Without that guard, an
+    /// owner sharing a project with somebody else could place that somebody's task onto this node
+    /// merely by naming this node's own fragment, a node no dispatcher then ever claims it from —
+    /// the ledger is what says who this node may legitimately act for, and this install's own id
+    /// skips that check only for the one case the ledger cannot yet vouch for itself: a fresh,
+    /// still-unvouched single-node project (independent pre-PR review, cycle 1, adversarial lens).
+    /// Never this node's local <c>NodeDetails</c>, which never replicates a foreign node's own
+    /// record. Shared by <see cref="ResolvePlacementAsync"/> (a fresh assignment) and
+    /// <see cref="ChangePlacementOnlyAsync"/> (changing placement on one already assigned), so the
+    /// two doors onto <c>--node</c> can never resolve the identical argument two different ways.
     /// </summary>
     internal static async Task<Guid> ResolveNodeIdAsync(
         IQuerySession session, string nodeIdOrFragment, string? ownerRootFingerprint, bool ownerIsThisInstall,
@@ -375,10 +377,9 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken)
             ?? throw new DomainNotFoundException($"No project {projectId}.");
 
-        HashSet<Guid> fleet = ownerIsThisInstall ? [thisNodeId] : [];
-        if (ownerRootFingerprint is { } root && project.RepositoryPath.IsNotBlank())
+        TrustChain chain = TrustChain.Empty;
+        if (ownerRootFingerprint is not null && project.RepositoryPath.IsNotBlank())
         {
-            TrustChain chain;
             try
             {
                 chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
@@ -389,20 +390,27 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                     $"Could not read '{project.Name}'s own ledger chain: {exception.Message} Re-run "
                     + $"h9k task assign ... --node {nodeIdOrFragment} once the remote is reachable again.");
             }
-
-            if (chain.OwnerChains.TryGetValue(root, out TrustedOwner? trustedOwner))
-            {
-                foreach (TrustedNode trustedNode in trustedOwner.Nodes)
-                {
-                    if (Guid.TryParse(trustedNode.NodeId, out Guid vouchedNodeId))
-                    {
-                        fleet.Add(vouchedNodeId);
-                    }
-                }
-            }
         }
 
-        return NodePlacementResolver.Resolve(nodeIdOrFragment, fleet);
+        return NodePlacementResolver.Resolve(nodeIdOrFragment, ResolveFleet(chain, ownerRootFingerprint, ownerIsThisInstall, thisNodeId));
+    }
+
+    /// <summary>
+    /// The fleet's own composition, pulled out of <see cref="ResolveNodeIdAsync"/> as pure,
+    /// DB-free logic so it is unit-testable against a hand-built <see cref="TrustChain"/> the same
+    /// way <see cref="NodePlacementResolver.Resolve"/> already is, rather than only reachable
+    /// through a real project document and a real (or faked) ledger read.
+    /// </summary>
+    internal static HashSet<Guid> ResolveFleet(
+        TrustChain chain, string? ownerRootFingerprint, bool ownerIsThisInstall, Guid thisNodeId)
+    {
+        HashSet<Guid> fleet = ownerIsThisInstall ? [thisNodeId] : [];
+        if (ownerRootFingerprint is { } root && chain.OwnerChains.TryGetValue(root, out TrustedOwner? trustedOwner))
+        {
+            fleet.UnionWith(trustedOwner.FleetNodeIds());
+        }
+
+        return fleet;
     }
 
     /// <summary>
