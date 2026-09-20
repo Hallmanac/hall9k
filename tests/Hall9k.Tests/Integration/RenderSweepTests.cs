@@ -70,8 +70,6 @@ public sealed class RenderSweepTests(PostgresFixture postgres) : IClassFixture<P
     private readonly ScopedTestHome _scopedHome = new();
     private readonly string _repository = Path.Combine(Path.GetTempPath(), $"hall9k-repo-{Guid.NewGuid():N}");
 
-    private string _home => _scopedHome.Home;
-
     public void Dispose()
     {
         _scopedHome.Dispose();

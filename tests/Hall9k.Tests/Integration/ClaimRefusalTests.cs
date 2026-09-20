@@ -52,7 +52,7 @@ namespace Hall9k.Tests.Integration;
 // modelByRole.build made a test pass for the wrong reason). Two tests also each redirect one
 // Hall9k__* setting directly (DefaultModel, ReviewStageComposition), which has no flow-scoped
 // alternative (Decisions Log PLACEHOLDER-98484f36) — that is what keeps this class in
-// [Collection("Environment")], the one serial collection left.
+// [Collection("Environment")], the one collection left for a process-wide environment variable.
 [Collection("Environment")]
 [Trait("Category", "Environment")]
 [Trait("Category", "RequiresDocker")]
@@ -61,8 +61,6 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
     private static readonly DateTimeOffset Now = new(2026, 9, 3, 12, 0, 0, TimeSpan.Zero);
     private readonly List<string> _repositoryRoots = [];
     private readonly ScopedTestHome _scopedHome = new();
-
-    private string _home => _scopedHome.Home;
 
     [Fact]
     public async Task A_draft_task_is_refused_and_told_to_publish_first_by_task_start()

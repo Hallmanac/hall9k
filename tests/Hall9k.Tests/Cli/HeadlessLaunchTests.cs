@@ -17,7 +17,8 @@ namespace Hall9k.Tests.Cli;
 /// <c>DaemonLifecycle.SpawnDetachedWindows</c>, rather than independently verified here).
 /// </summary>
 // HALL9K_CLAUDE_PATH has no flow-scoped alternative (Decisions Log PLACEHOLDER-98484f36), so
-// this class still writes it directly and joins the one serial collection left for that.
+// this class still writes it directly and joins the one collection left for a process-wide
+// environment variable.
 [Collection("Environment")]
 [Trait("Category", "Environment")]
 public sealed class HeadlessLaunchTests : IDisposable

@@ -20,8 +20,6 @@ public sealed class DaemonLifecycleStopTests : IDisposable
     private readonly ScopedTestHome _scopedHome = new();
     private static readonly DeferredDaemonAutostart NoAutostart = new("not supported in this test");
 
-    private string _home => _scopedHome.Home;
-
     public void Dispose() => _scopedHome.Dispose();
 
     [Fact]

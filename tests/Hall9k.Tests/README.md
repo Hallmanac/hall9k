@@ -77,8 +77,8 @@ scope type inside `InitializeAsync`.
 
 ## `[Collection("Environment")]` / `Category=Environment`
 
-The one xUnit collection this project still serializes classes into on purpose, for whichever
-process-wide environment variable has no flow-scoped alternative: the claude path
+The one collection left for a process-wide environment variable, for whichever
+one has no flow-scoped alternative: the claude path
 (`HALL9K_CLAUDE_PATH`), a `Hall9k__*` operating setting, the MSBuild node-reuse flag
 (`MSBUILDDISABLENODEREUSE`), and a couple of narrower ones (`CLAUDE_PID`,
 `CLAUDE_CODE_SESSION_ID`). `Hall9k.Tests.Fakes.EnvironmentVariableScope` is the shared save/restore

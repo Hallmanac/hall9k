@@ -24,8 +24,8 @@ namespace Hall9k.Tests.Cli;
 // config file this class writes to and reads back from, and ScopedConnectionString can only
 // redirect to a specific value, not force "nothing configured" ahead of whatever the ambient
 // environment names (Decisions Log PLACEHOLDER-98484f36). That literal write is what keeps this
-// class in the one serial collection left; HALL9K_HOME is redirected through ScopedTestHome like
-// everywhere else.
+// class in the one collection left for a process-wide environment variable; HALL9K_HOME is
+// redirected through ScopedTestHome like everywhere else.
 [Collection("Environment")]
 [Trait("Category", "Environment")]
 public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable

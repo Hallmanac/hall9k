@@ -41,8 +41,6 @@ public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyn
     private readonly PostgresFixture _postgres;
     private readonly ScopedTestHome _scopedHome = new();
 
-    private string _home => _scopedHome.Home;
-
     public TaskTakeCommandTests(PostgresFixture postgres) => _postgres = postgres;
 
     public async Task InitializeAsync() => await _postgres.Store.Advanced.Clean.CompletelyRemoveAllAsync();

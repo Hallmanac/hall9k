@@ -18,8 +18,8 @@ namespace Hall9k.Tests.Cli;
 /// run's recorded process id, which is the only signal available to a self-registered session
 /// h9k never spawned. Both are genuinely process-wide environment variables with no flow-scoped
 /// alternative (Decisions Log PLACEHOLDER-98484f36), so this class carries
-/// <c>[Collection("Environment")]</c>, the one serial collection left, so it never races a
-/// different collection's own env-var test.
+/// <c>[Collection("Environment")]</c>, the one collection left for a process-wide environment
+/// variable, so it never races a different collection's own env-var test.
 /// </summary>
 [Collection("Environment")]
 [Trait("Category", "Environment")]

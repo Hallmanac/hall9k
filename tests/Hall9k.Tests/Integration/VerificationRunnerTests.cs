@@ -28,8 +28,9 @@ using Xunit;
 namespace Hall9k.Tests.Integration;
 
 // MSBUILDDISABLENODEREUSE has no flow-scoped alternative (Decisions Log PLACEHOLDER-98484f36),
-// so the one test that sets it directly keeps this class in the one serial collection left for
-// that. HALL9K_HOME is redirected through ScopedTestHome like everywhere else.
+// so the one test that sets it directly keeps this class in the one collection left for a
+// process-wide environment variable. HALL9K_HOME is redirected through ScopedTestHome like
+// everywhere else.
 [Collection("Environment")]
 [Trait("Category", "Environment")]
 [Trait("Category", "RequiresDocker")]
@@ -49,8 +50,6 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
     private readonly ScopedTestHome _scopedHome = new();
     private readonly string _worktree = Path.Combine(Path.GetTempPath(), $"hall9k-vt-{Guid.NewGuid():N}");
-
-    private string _home => _scopedHome.Home;
 
     [Fact]
     public async Task All_gates_passing_records_verification_passed_with_logs()
@@ -2212,8 +2211,8 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// Task: at most one host-coupled gate runs on a node at a time — a second run wanting one
     /// waits for the first to finish, and the wait is recorded and shown as the run's own phase
     /// rather than counted as a failure. Two runs seeded here share this test process's own
-    /// <c>HALL9K_HOME</c> (<see cref="PlatformPaths.Home"/>, redirected by <c>_home</c> for the
-    /// whole test class), so both contend for the identical cross-process permit file regardless
+    /// <c>HALL9K_HOME</c> (<see cref="PlatformPaths.Home"/>, redirected by <c>_scopedHome</c> for
+    /// the whole test class), so both contend for the identical cross-process permit file regardless
     /// of which node id each was seeded with — verifying them concurrently proves serialization
     /// the same way two real daemon processes on one machine would.
     /// </summary>

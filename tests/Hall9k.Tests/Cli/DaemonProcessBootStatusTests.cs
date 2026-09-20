@@ -16,8 +16,6 @@ public sealed class DaemonProcessBootStatusTests : IDisposable
 {
     private readonly ScopedTestHome _scopedHome = new();
 
-    private string _home => _scopedHome.Home;
-
     public void Dispose() => _scopedHome.Dispose();
 
     [Fact]

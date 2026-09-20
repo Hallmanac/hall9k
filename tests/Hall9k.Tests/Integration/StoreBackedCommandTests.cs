@@ -109,8 +109,6 @@ public sealed class StoreBackedCommandTests(PostgresFixture postgres) : IClassFi
 
     private readonly ScopedTestHome _scopedHome = new();
 
-    private string _home => _scopedHome.Home;
-
     /// <summary>
     /// Writes the scripted summary as a session's terminal result event, the way a real
     /// claude session ends (log #2), then returns without marking the pid alive — the scripted
