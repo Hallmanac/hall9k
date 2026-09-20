@@ -622,6 +622,9 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // or retried — so no assignment travels here either, but the still-open blockers are
         // loaded the same way so the warn-and-acknowledge path below can name them, the same bar
         // the just-assigned Published case holds an assignment to.
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, context.OwnerId, cancellationToken);
+
         IReadOnlyList<TaskDependency>? dependencies = null;
         IReadOnlyList<TaskDependency>? unmetAtEntry = null;
         if (task.State == TaskState.Published)
@@ -641,7 +644,8 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
                     _ => "Its story has already moved past dispatch.",
                 });
         }
-        else if (task.AssignedOwnerId != context.OwnerId)
+        else if (!TaskDecider.IsGrantedToThisOwner(
+            task.AssignedOwnerId, task.AssignedOwnerFingerprint, context.OwnerId, ownerRootFingerprint))
         {
             // Names the owner the way every other owner reference in Hall9k does — the raw Guid
             // this refusal used to print is an internal id nobody outside the database recognizes
@@ -716,8 +720,6 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
 
         Guid runId = DomainId.New();
         DateTimeOffset claimedAt = DateTimeOffset.UtcNow;
-        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
-            session, context.OwnerId, cancellationToken);
         // Resolved the same way DispatchEngine.TryClaimAsync resolves it for its own Claim, so a
         // task whose latest run was a foreign node's own headless work resumes that branch here
         // too rather than falling through to a fresh cut — an interactive claim shares this

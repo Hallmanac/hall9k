@@ -302,6 +302,9 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         Guid claudeSessionId, string sessionName, bool acknowledgeUnmetDependencies, bool interactiveMode,
         TrackerClaimGate? trackerClaimGate, CancellationToken cancellationToken)
     {
+        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
+            session, context.OwnerId, cancellationToken);
+
         IReadOnlyList<TaskDependency>? dependencies = null;
         IReadOnlyList<TaskDependency>? unmetAtEntry = null;
         if (task.State == TaskState.Published)
@@ -328,11 +331,17 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
                     _ => "Its story has already moved past dispatch.",
                 });
         }
-        else if (task.AssignedOwnerId != context.OwnerId)
+        else if (!TaskDecider.IsGrantedToThisOwner(
+            task.AssignedOwnerId, task.AssignedOwnerFingerprint, context.OwnerId, ownerRootFingerprint))
         {
+            // Names the owner the way every other owner reference in Hall9k does, mirroring
+            // h9k task work's own identical refusal.
+            OwnerDetails? assignedOwner = task.AssignedOwnerId is { } assignedOwnerId
+                ? await session.LoadAsync<OwnerDetails>(assignedOwnerId, cancellationToken)
+                : null;
             throw new DomainConflictException(
-                $"Task {task.Id} is assigned to {task.AssignedOwnerId} — a deliberate kick-off only starts your "
-                + "own owner's work.");
+                $"Task {task.Id} is assigned to {assignedOwner?.Name ?? task.AssignedOwnerId?.ToString() ?? "an unknown owner"} "
+                + "— a deliberate kick-off only starts your own owner's work.");
         }
         else if (task.State == TaskState.Blocked)
         {
@@ -398,8 +407,6 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
 
         Guid runId = DomainId.New();
         DateTimeOffset claimedAt = DateTimeOffset.UtcNow;
-        string? ownerRootFingerprint = await OwnerRootFingerprintResolver.ResolveAsync(
-            session, context.OwnerId, cancellationToken);
         // Resolved the same way DispatchEngine.TryClaimAsync resolves it for its own Claim, so a
         // task whose latest run was a foreign node's own headless work resumes that branch here
         // too rather than falling through to a fresh cut — a deliberate claim shares this branch's
