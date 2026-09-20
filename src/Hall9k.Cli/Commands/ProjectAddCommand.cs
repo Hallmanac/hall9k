@@ -221,6 +221,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         {
             AnsiConsole.MarkupLine(
                 $"[dim]No home created (--no-home). Give it one later:[/] h9k project init {name.EscapeMarkup()}");
+            await AskForRunSkillAsync(session, projectId, name, context.OwnerId, cancellationToken);
             await TryJoinAsync(session, projectId, name, repositoryPath, cancellationToken);
             return ExitCodes.Ok;
         }
@@ -238,11 +239,55 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             home.Value, project, cancellationToken, materialiseRepository: settings.RepositoryPath.IsBlank());
         bool ok = ProjectHomeRecipe.Report(steps);
 
+        await AskForRunSkillAsync(session, projectId, name, context.OwnerId, cancellationToken);
         await TryJoinAsync(session, projectId, name, repositoryPath, cancellationToken);
 
         AnsiConsole.MarkupLine(OrchestratorPointer.ForProject(name));
 
         return ok ? ExitCodes.Ok : ExitCodes.Error;
+    }
+
+    /// <summary>
+    /// Asks for this project's run skill (idea b9b09779, piece 4), so registration gets one
+    /// without anybody having to know the command. Only the ask is recorded: composing the skill
+    /// means reading the repository, and that is the daemon's sweep's job.
+    /// <para>
+    /// Appended AFTER the home has been built, not alongside the registration itself. A request
+    /// committed before the bare clone and repo/dev exist is a request the sweep can land on
+    /// mid-clone, where an absent or half-checked-out tree is indistinguishable from a broken
+    /// home: the tick either consumed the request with a failure telling the operator to repair a
+    /// home that finished fine a minute later, or surveyed a partly-written tree and recorded a
+    /// finding about files that simply had not landed yet (independent pre-PR review, cycle 1,
+    /// both lenses). The daemon's own <c>RunSkillCheckoutGrace</c> covers what this ordering
+    /// cannot, which is every other way a checkout can be briefly absent.
+    /// </para>
+    /// <para>
+    /// A home-less registration (--no-home) still asks, and the sweep records the honest "no
+    /// checkout to read" failure naming h9k project init rather than this command guessing at
+    /// whether the operator will ever give it one.
+    /// </para>
+    /// <para>
+    /// Best-effort and never fatal, the same reasoning <see cref="TryJoinAsync"/> records for
+    /// itself: the registration above already committed, so reporting the whole of h9k project
+    /// add as failed over an ask that one command re-makes would misdescribe what happened. It
+    /// says so instead, and names that command.
+    /// </para>
+    /// </summary>
+    private static async Task AskForRunSkillAsync(
+        IDocumentSession session, Guid projectId, string name, Guid ownerId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            session.Events.Append(
+                projectId, ProjectDecider.RequestRunSkillDiscovery(projectId, ownerId, DateTimeOffset.UtcNow));
+            await session.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLine(
+                $"[yellow]Registered, but could not ask for a run skill:[/] {exception.Message.EscapeMarkup()} "
+                + $"Ask with: h9k project set {name.EscapeMarkup()} --discover-run-skill");
+        }
     }
 
     /// <summary>

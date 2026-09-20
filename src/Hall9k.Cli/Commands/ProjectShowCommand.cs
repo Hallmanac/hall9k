@@ -266,6 +266,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + "the close-linked-issue default; a task's own override still wins over the label[/]");
         table.AddRow("Writing conventions", WritingConventionsRow(
             project, history.WasRecorded(change => change.WritingConventions)));
+        table.AddRow("Run skill", RunSkillRow(project));
         table.AddRow("Settings changed", project.SettingsChangedAt is { } changedAt
             ? $"[dim]{changedAt.ToLocalTime():g}[/]"
             : "[dim]never — still the registration defaults[/]");
@@ -298,6 +299,74 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             : $"[dim]{text} ({OriginNote(recorded)}); state your own: h9k project set "
               + $"{project.Name.EscapeMarkup()} --writing-conventions \"<how prose has to read>\"[/]";
     }
+
+    /// <summary>
+    /// Whether this project has a run skill on the ledger, and which shape it is (idea b9b09779,
+    /// piece 4). The four absences are told apart rather than collapsed into one blank, which is
+    /// the whole point of the row: a repository genuinely without a discoverable way to run it
+    /// reads "none discoverable" — a real finding somebody established — while one nobody has
+    /// asked about, one with a discovery still in flight, and one whose discovery failed each say
+    /// so in their own words, because acting on them differs.
+    /// <para>
+    /// A failure is reported beside a skill that already exists, not only in place of one that
+    /// does not: a re-discovery over a project whose launch story changed leaves the OLD skill
+    /// standing, and a row that printed it with no trailer had the owner reading a stale document
+    /// as current and waiting for a replacement nothing was going to send (independent pre-PR
+    /// review, cycle 1, adversarial lens). The two trailers are mutually exclusive by
+    /// construction, since asking again clears the last failure.
+    /// </para>
+    /// </summary>
+    internal static string RunSkillRow(ProjectDetails project)
+    {
+        if (project.RunSkill is { } skill)
+        {
+            string trailer = project switch
+            {
+                { RunSkillDiscoveryOutstanding: true } => " [dim]— a fresh discovery is outstanding[/]",
+                { RunSkillDiscoveryFailure: { } failed } =>
+                    $" [yellow]— the last discovery failed and this is the skill it did not replace:[/] "
+                    + $"[dim]{failed.EscapeMarkup()} Ask again: h9k project set "
+                    + $"{project.Name.EscapeMarkup()} --discover-run-skill[/]",
+                _ => string.Empty,
+            };
+            return skill.Shape == RunSkillShape.NoneDiscoverable
+                ? $"none discoverable [dim]— nothing in this repository says how to run it, as of "
+                  + $"{skill.RecordedAt.ToLocalTime():g}; read it: h9k project run-skill show "
+                  + $"{project.Name.EscapeMarkup()}[/]{trailer}"
+                : $"{skill.Shape.Value} [dim]— composed by {skill.Author.Value} "
+                  + $"{skill.RecordedAt.ToLocalTime():g}; read it: h9k project run-skill show "
+                  + $"{project.Name.EscapeMarkup()}[/]{trailer}";
+        }
+
+        if (project.RunSkillDiscoveryFailure is { } failure)
+        {
+            return $"[yellow]discovery failed[/] [dim]— {failure.EscapeMarkup()} Ask again: h9k project set "
+                + $"{project.Name.EscapeMarkup()} --discover-run-skill[/]";
+        }
+
+        return project.RunSkillDiscoveryRequestedAt is { } requestedAt
+            ? $"[dim]{RunSkillPendingState(project, requestedAt)}[/]"
+            : $"[dim]none — ask for one: h9k project set {project.Name.EscapeMarkup()} --discover-run-skill[/]";
+    }
+
+    /// <summary>
+    /// An asked-for discovery that has produced nothing yet, told apart from one that has been
+    /// dispatched. The daemon's sweep answers an outstanding request, so that one is genuinely on
+    /// its way. A request already dispatched, with no skill and no failure behind it, is two
+    /// states the timestamps cannot tell apart: a session composing right now (the sweep spawns
+    /// and waits inline, for as long as RunSkillDiscoveryTimeout allows) and one lost mid-wait to
+    /// a daemon restart. Both are named rather than one asserted, because which it is has not
+    /// been observed — and only the second is ever worth asking again for, since a lost one is
+    /// never redispatched on its own, the same one-shot discipline the stack assessment keeps.
+    /// </summary>
+    private static string RunSkillPendingState(ProjectDetails project, DateTimeOffset requestedAt) =>
+        project.RunSkillDiscoveryOutstanding
+            ? $"being discovered — asked for {requestedAt.ToLocalTime():g}, and the daemon answers it on its "
+              + "next run-skill sweep"
+            : $"a discovery session was dispatched {project.RunSkillDiscoveryDispatchedAt?.ToLocalTime():g} and "
+              + "has recorded nothing since — it is either still composing or was lost mid-wait, and a lost "
+              + $"one is never redispatched on its own, so ask again if it stays this way: h9k project set "
+              + $"{project.Name.EscapeMarkup()} --discover-run-skill";
 
     /// <summary>
     /// Whether dispatched agents run with <c>--dangerously-skip-permissions</c>, and whether that
