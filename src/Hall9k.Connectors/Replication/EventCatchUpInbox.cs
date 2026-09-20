@@ -107,7 +107,8 @@ public sealed class EventCatchUpInbox(
                     continue;
                 }
 
-                await responder.AnswerAsync(session, myNodeId, myOwnerFingerprint, projectId, senderNodeId, request, now, cancellationToken);
+                await responder.AnswerAsync(
+                    session, myNodeId, myOwnerFingerprint, projectId, senderNodeId, request, now, cancellationToken, trustChain);
                 answered++;
             }
             else if (envelope.Kind == MessageKind.EventsUnavailable)

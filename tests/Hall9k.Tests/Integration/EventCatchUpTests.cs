@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Replication;
@@ -12,6 +13,7 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using JasperFx;
 using JasperFx.Events;
@@ -532,7 +534,18 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         }
 
         Guid publicTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now, cts.Token);
-        Guid privateTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+        // A draft, never published — idea 8c5993c5: a published task always reads team scope, and
+        // team is one-way, so only a still-fleet draft can legitimately be set private here.
+        Guid privateTaskId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                privateTaskId, projectId, "A private draft", ["it ships"], TaskType.Feature, null, null, null,
+                Now.AddSeconds(1), ownerId);
+            session.Events.StartStream<TaskAggregate>(privateTaskId, added);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             TaskAggregate privateTask =
@@ -574,6 +587,107 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         }
 
         read.Envelopes.Should().NotBeEmpty("an assertion loop over nothing proves nothing");
+    }
+
+    /// <summary>
+    /// idea 8c5993c5: "the catch-up responder serves an item only to a requester its scope allows"
+    /// — a fleet-scoped task's own events answer a requester of the SAME owner, but never a
+    /// requester the trust chain names under a genuinely different owner root, while a team-scoped
+    /// task in the same project answers either.
+    /// </summary>
+    [Fact]
+    public async Task A_fleet_scoped_tasks_own_events_answer_only_a_requester_of_the_same_owner()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid requesterSameOwner = DomainId.New();
+        Guid requesterDifferentOwner = DomainId.New();
+
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver());
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeA, Now, cts.Token);
+        }
+
+        // A fleet-scoped draft (never published) and a team-scoped published task, side by side.
+        Guid fleetTaskId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                fleetTaskId, projectId, "Fleet-only draft", ["it ships"], TaskType.Feature, null, null, null,
+                Now.AddSeconds(1), ownerId);
+            session.Events.StartStream<TaskAggregate>(fleetTaskId, added);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid teamTaskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(2), cts.Token);
+
+        // The requester's own owner is resolved from the trust chain (idea 8c5993c5) — the SAME
+        // owner root vouches for node A and for requesterSameOwner; a genuinely different root
+        // vouches for requesterDifferentOwner.
+        // The root key matches "owner-a-fingerprint" exactly — the same value passed as
+        // AnswerAsync's own myOwnerFingerprint below, since that is what a fleet task's own origin
+        // owner fingerprint resolves to here (EventOriginStampingListener stamps no real owner
+        // claim in this minimal fixture, so ReplicationEventOriginResolver falls back to it).
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                ["owner-a-fingerprint"] = new TrustedOwner(
+                    "owner-a-fingerprint", "ssh-ed25519 AAAAFAKE owner-a-root",
+                    [
+                        new TrustedNode(nodeA.ToString(), "ssh-ed25519 AAAAFAKE node-a", "node-a-fingerprint", Now),
+                        new TrustedNode(requesterSameOwner.ToString(), "ssh-ed25519 AAAAFAKE same-owner", "same-owner-fingerprint", Now),
+                    ]),
+                ["owner-x-root"] = new TrustedOwner(
+                    "owner-x-root", "ssh-ed25519 AAAAFAKE owner-x-root",
+                    [new TrustedNode(requesterDifferentOwner.ToString(), "ssh-ed25519 AAAAFAKE different-owner", "different-owner-fingerprint", Now)]),
+            },
+            [new ProjectMember("owner-a-fingerprint", MembershipRole.Owner, Now), new ProjectMember("owner-x-root", MembershipRole.Member, Now)]);
+
+        EventReplicationCodec.EventsRequestRecord bootstrapRequest =
+            new(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await responder.AnswerAsync(
+                session, nodeA, "owner-a-fingerprint", projectId, requesterSameOwner, bootstrapRequest, Now.AddSeconds(3),
+                cts.Token, trustChain);
+            await responder.AnswerAsync(
+                session, nodeA, "owner-a-fingerprint", projectId, requesterDifferentOwner, bootstrapRequest, Now.AddSeconds(3),
+                cts.Token, trustChain);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(4), cts.Token);
+        }
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        List<MessageEnvelopeV1> envelopes = [.. read.Envelopes.Select(raw => MessageEnvelopeCodec.Decode(raw.Content).Envelope!)];
+
+        MessageEnvelopeV1 sameOwnerAnswer = envelopes.Single(envelope => envelope.To == MessageAudience.Node(requesterSameOwner));
+        EventReplicationCodec.DecodeBatch(sameOwnerAnswer.Body)!.Select(record => record.StreamId).Should()
+            .Contain(fleetTaskId, "the same-owner requester is exactly who a fleet item's own fleet reaches")
+            .And.Contain(teamTaskId);
+
+        MessageEnvelopeV1 differentOwnerAnswer = envelopes.Single(envelope => envelope.To == MessageAudience.Node(requesterDifferentOwner));
+        differentOwnerAnswer.Kind.Should().Be(MessageKind.Events, "the team task still answers this requester");
+        EventReplicationCodec.DecodeBatch(differentOwnerAnswer.Body)!.Select(record => record.StreamId).Should()
+            .NotContain(fleetTaskId, "a fleet item never answers a requester outside the item's own owner")
+            .And.Contain(teamTaskId);
     }
 
     /// <summary>

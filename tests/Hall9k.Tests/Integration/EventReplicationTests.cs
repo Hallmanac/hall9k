@@ -1026,7 +1026,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             session.Events.StartStream<IdeaAggregate>(
-                ideaId, new IdeaCaptured(ideaId, ownerId, "A private thought", projectId, Now.AddSeconds(1), string.Empty));
+                ideaId, new IdeaCaptured(ideaId, ownerId, "A private thought", projectId, Now.AddSeconds(1), string.Empty, ReplicationScope.Fleet));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -1110,7 +1110,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             session.Events.StartStream<IdeaAggregate>(
-                ideaId, new IdeaCaptured(ideaId, ownerId, "A private thought", projectId, Now.AddSeconds(1), string.Empty));
+                ideaId, new IdeaCaptured(ideaId, ownerId, "A private thought", projectId, Now.AddSeconds(1), string.Empty, ReplicationScope.Fleet));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -1201,7 +1201,7 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         await using (IDocumentSession session = _postgres.Store.LightweightSession())
         {
             session.Events.StartStream<IdeaAggregate>(
-                ideaId, new IdeaCaptured(ideaId, ownerId, "A private thought", projectId, Now.AddSeconds(1), string.Empty));
+                ideaId, new IdeaCaptured(ideaId, ownerId, "A private thought", projectId, Now.AddSeconds(1), string.Empty, ReplicationScope.Fleet));
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -1766,6 +1766,211 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
             (await session.LoadAsync<TaskDetails>(youngTaskId, cts.Token)).Should().NotBeNull();
             (await session.LoadAsync<TaskDetails>(oldTaskId, cts.Token)).Should().BeNull(
                 "the old task's own events were pruned away and never reached node B directly");
+        }
+    }
+
+    /// <summary>
+    /// idea 8c5993c5: a fleet-scoped item's events address <c>owner:&lt;fingerprint&gt;</c> — every
+    /// node this same owner runs, and no one else's — while a team-scoped item's events still
+    /// address the whole project, exactly as every event always has.
+    /// </summary>
+    [Fact]
+    public async Task A_fleet_scoped_ideas_events_address_the_owner_root_while_a_team_scoped_tasks_events_address_the_project()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        // Fresh idea: fleet scope by default (idea 8c5993c5).
+        Guid ideaId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(
+                ideaId, ownerId, "A thought for the fleet", projectId: projectId, Now.AddSeconds(1), ProjectHome.None));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Published task: team scope unconditionally.
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(2), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        List<MessageEnvelopeV1> envelopes = [.. read.Envelopes.Select(raw => MessageEnvelopeCodec.Decode(raw.Content).Envelope!)];
+
+        MessageEnvelopeV1 ideaEnvelope = envelopes.Single(envelope =>
+            EventReplicationCodec.DecodeBatch(envelope.Body)!.Any(record => record.StreamId == ideaId));
+        ideaEnvelope.To.Should().Be(MessageAudience.Owner("owner-a-fingerprint"), "a fleet item reaches only this owner's own nodes");
+
+        MessageEnvelopeV1 taskEnvelope = envelopes.Single(envelope =>
+            EventReplicationCodec.DecodeBatch(envelope.Body)!.Any(record => record.StreamId == taskId));
+        taskEnvelope.To.Should().Be(MessageAudience.Project, "a team item still reaches the whole project");
+    }
+
+    /// <summary>
+    /// idea 8c5993c5: "a scope change re-sends the item's full history at the new scope so a shared
+    /// item arrives whole" — a fleet item's own earlier events, already sent once to the owner's own
+    /// fleet and moved past by this outbox's own forward position, must reach the wider team
+    /// audience too once it is shared, not just whatever happens after the share.
+    /// </summary>
+    [Fact]
+    public async Task Sharing_a_fleet_scoped_idea_resends_its_full_history_at_team_scope()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid ideaId = DomainId.New();
+        IdeaAggregate idea = new();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaCaptured captured = IdeaDecider.Capture(
+                ideaId, ownerId, "Fleet-only for now", projectId: projectId, Now.AddSeconds(1), ProjectHome.None);
+            idea.Apply(captured);
+            session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+            IdeaRevised revised = IdeaDecider.Revise(idea, "Fleet-only for now, sharpened", Now.AddSeconds(2), ownerId);
+            idea.Apply(revised);
+            session.Events.Append(ideaId, revised);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // First sweep: sent once, fleet audience only — and the position moves past both events.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult firstSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(3), cts.Token);
+            firstSweep.EventsQueued.Should().Be(2, "the idea's own capture and revision, both sent fleet-scoped");
+        }
+
+        // Shared with the team — a scope-widening event past the position the first sweep already reached.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.Append(ideaId, IdeaDecider.Share(idea, Now.AddSeconds(4), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult secondSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(5), cts.Token);
+            secondSweep.EventsQueued.Should().Be(
+                3, "the share event itself, plus the resend of the capture and revision the first sweep already moved past");
+        }
+
+        await messageOutbox.FlushAsync(
+            _postgres.Store.LightweightSession(), RepositoryPath, nodeA, projectId, "shared-project-key",
+            adoptUnassigned: false, committer, signingKey, Now.AddSeconds(5), cts.Token);
+
+        TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        List<MessageEnvelopeV1> envelopes = [.. read.Envelopes.Select(raw => MessageEnvelopeCodec.Decode(raw.Content).Envelope!)];
+
+        MessageEnvelopeV1 teamEnvelope = envelopes.Single(envelope => envelope.To == MessageAudience.Project);
+        List<EventReplicationCodec.ReplicatedEventRecord> teamBatch = [.. EventReplicationCodec.DecodeBatch(teamEnvelope.Body)!];
+        teamBatch.Should().HaveCount(3, "the share, and the resent capture and revision, all at team scope")
+            .And.OnlyContain(record => record.StreamId == ideaId);
+        teamBatch.Select(record => record.EventTypeName).Should().Contain(
+        [
+            typeof(IdeaCaptured).FullName,
+            typeof(IdeaRevised).FullName,
+            typeof(IdeaScopeSet).FullName,
+        ]);
+    }
+
+    /// <summary>
+    /// idea 8c5993c5: "the inbox applies owner-addressed events only when addressed to this node's
+    /// own owner root" — a fleet item's own events, addressed to owner A's root, never apply on a
+    /// genuinely different owner's node even though that node reads the identical outbox.
+    /// </summary>
+    [Fact]
+    public async Task A_fleet_scoped_ideas_events_never_apply_on_a_different_owners_node()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid ideaId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<IdeaAggregate>(ideaId, IdeaDecider.Capture(
+                ideaId, ownerId, "Fleet-only", projectId: projectId, Now.AddSeconds(1), ProjectHome.None));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        // Node B: a genuinely different owner reading the identical outbox ref.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3),
+                trustChain: null, cts.Token);
+            read.EventsApplied.Should().Be(0, "the fleet envelope is addressed to owner A's own root, never owner B's");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            (await session.LoadAsync<IdeaDetails>(ideaId, cts.Token)).Should().BeNull(
+                "a fleet item never appears on another owner's node at all");
         }
     }
 
