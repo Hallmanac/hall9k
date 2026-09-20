@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Projections;
@@ -65,5 +66,6 @@ public static class MartenConfiguration
         opts.Projections.Add<LegacyMessageAdoptionDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<UnverifiedLedgerWriteDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<InviteDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<OrchestratorPresenceDetailsProjection>(ProjectionLifecycle.Inline);
     }
 }

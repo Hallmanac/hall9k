@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Run.Events;
@@ -265,6 +266,15 @@ public static class EventScopeRegistry
         // idea 202383dc, M2a: this node's own switch-on point — never a team fact, and reading it
         // from another node would be meaningless (each node's own global sequence is local).
         [typeof(ReplicationSwitchedOn)] = EventScope.NodeScoped,
+
+        // Hall9k.Domain.Features.Orchestrator — idea 89471598, piece 1: whether an orchestrator
+        // window is up for a project is a fact about one machine's own process table, and no
+        // other node can check it or act on it. The identical reasoning InteractiveSessionStarted
+        // and RunProcessStarted already stay node-scoped for, applied to the window over the
+        // project rather than to a run's own session.
+        [typeof(OrchestratorLaunched)] = EventScope.NodeScoped,
+        [typeof(OrchestratorShutDown)] = EventScope.NodeScoped,
+        [typeof(OrchestratorLost)] = EventScope.NodeScoped,
 
         // Hall9k.Domain.Features.Message — idea 202383dc, M1a: messages are ephemeral, ruled
         // 2026-09-13 ("read receipts and bookmark announcements are dead ... messages are

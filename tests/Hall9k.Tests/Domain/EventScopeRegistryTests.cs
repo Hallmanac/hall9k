@@ -59,6 +59,9 @@ public sealed class EventScopeRegistryTests
         "Hall9k.Domain.Features.AutoPrReview.ReviewRequestOutcome",
         "Hall9k.Domain.Features.AutoPrReview.ReviewMentionOutcome",
         "Hall9k.Domain.Features.Orchestrator.LaunchText",
+        "Hall9k.Domain.Features.Orchestrator.OrchestratorProcessSighting",
+        "Hall9k.Domain.Features.Orchestrator.OrchestratorRegistrationDecision",
+        "Hall9k.Domain.Features.Orchestrator.OrchestratorDeregistrationDecision",
     ];
 
     [Fact]
