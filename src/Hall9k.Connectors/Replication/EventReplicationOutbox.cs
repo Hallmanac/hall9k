@@ -28,10 +28,15 @@ public sealed record EventReplicationQueueResult(int EnvelopesQueued, int Events
 /// each — and queues each one through the ordinary <see cref="MessageOutbox.QueueAsync"/>, so the
 /// daemon's existing per-project flush lands them in the same commit as any other pending mail. A
 /// fact this node itself received by replication (carrying <see cref="ReplicationEventHeaders.OriginEventId"/>)
-/// never re-enters this scan: only what this node itself produced travels, exactly as the acceptance
-/// criterion says, and re-sending a teammate's own fact back at them under a fresh local event id and
-/// this node's own origin stamp would otherwise echo forever, each hop minting a new duplicate on
-/// both ends. A currently-private task or idea's own events are skipped, never blocking any other
+/// is still classified by this scan, but never itself travels: only what this node itself produced
+/// rides an envelope, exactly as the acceptance criterion says, and re-sending a teammate's own fact
+/// back at them under a fresh local event id and this node's own origin stamp would otherwise echo
+/// forever, each hop minting a new duplicate on both ends. A foreign-origin event that is ALSO a
+/// scope-widening one still marks its own stream for resend below, so the stream's own true origin
+/// node — which receives that same scope-change fact by replication like any other node — learns to
+/// resend its own earlier native history even though this node's own copy of the event itself is
+/// excluded from ever being forwarded (independent pre-PR review, cycle 4, conformance lens). A
+/// currently-private task or idea's own events are skipped, never blocking any other
 /// stream's own events in the same scan — but the durable position this project's own next scan
 /// resumes from never advances past the earliest one still owed to a teammate (<see
 /// cref="EventReplicationOutboxPosition.PendingPrivateSequences"/>; the same gap-stop idiom
@@ -268,15 +273,14 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 continue;
             }
 
-            if (candidate.GetHeader(ReplicationEventHeaders.OriginEventId) is not null)
-            {
-                // Already a fact this node received by replication, not one it produced itself —
-                // sending it back out would echo a teammate's own event back at them under a fresh
-                // local event id and this node's origin stamp, forever. Only what this node itself
-                // wrote travels.
-                lastIncludedSequence = candidate.Sequence;
-                continue;
-            }
+            // Whether this is a fact this node received by replication, not one it produced itself
+            // — resolved before the ownership lookup below because it still governs whether the
+            // record below is ever sent, but no longer skips the lookup outright: a scope-changing
+            // event of foreign origin still needs to be classified so THIS node's own earlier native
+            // history on the same stream can be marked for resend (independent pre-PR review,
+            // cycle 4, conformance lens, high — see the isForeignOrigin branch below for why the
+            // event itself never travels either way).
+            bool isForeignOrigin = candidate.GetHeader(ReplicationEventHeaders.OriginEventId) is not null;
 
             ReplicationOwnership resolved = await ownership.ResolveAsync(session, candidate, cancellationToken);
             if (resolved.ProjectId != projectId)
@@ -312,8 +316,36 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 // hold back every other stream's own events. Recorded (or kept recorded) as owed, so
                 // a later sweep re-finds it by sequence rather than trusting highestQueuedSequence's
                 // reading once the flag clears and some other stream has since pushed the mark past
-                // it (the fast skip above, and the position cap below, both key off this set).
-                pendingPrivate.Add(candidate.Sequence);
+                // it (the fast skip above, and the position cap below, both key off this set) — only
+                // for a native event, since a foreign-origin one never reaches AddAsync below either
+                // way and has nothing to resend-mark while its own resolved scope still reads
+                // Private.
+                if (!isForeignOrigin)
+                {
+                    pendingPrivate.Add(candidate.Sequence);
+                }
+
+                continue;
+            }
+
+            if (isForeignOrigin)
+            {
+                // Sending it back out would echo a teammate's own event back at them under a fresh
+                // local event id and this node's own origin stamp, forever — only what this node
+                // itself wrote ever rides an envelope. But a scope-widening event replicated in still
+                // means THIS node's own earlier native history on the same stream may be owed to
+                // whoever the wider scope newly reaches: the stream's own true origin node learns
+                // that exactly this way, from its own copy of the scope-change event landing here,
+                // not by inspecting who sent it — skipping this check for every foreign-origin event
+                // silently broke that closing move ResendStreamHistoryAsync's own doc comment
+                // promises the true origin makes (independent pre-PR review, cycle 4, conformance
+                // lens, high).
+                if (IsScopeChangingEventType(candidate.EventType))
+                {
+                    pendingFullResend.Add(candidate.StreamId);
+                }
+
+                lastIncludedSequence = candidate.Sequence;
                 continue;
             }
 
