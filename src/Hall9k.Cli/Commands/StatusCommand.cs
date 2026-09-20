@@ -1,7 +1,9 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
+using Hall9k.Cli.Orchestrator;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
@@ -69,6 +71,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await using IQuerySession session = store.QuerySession();
 
         await WriteIdentityLineAsync(session, cancellationToken);
+        await WriteOrchestratorLineAsync(session, cancellationToken);
         await WriteMessagesLineAsync(session, cancellationToken);
         await WriteReplicatedEventsIgnoredSendersAsync(session, cancellationToken);
         await WriteEventCatchUpRequestsAsync(session, cancellationToken);
@@ -327,6 +330,51 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]identity: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>
+    /// Which orchestrator window, if any, is live on this machine (idea 89471598, piece 1) — one
+    /// line per project that has ever had one registered here, in the same words
+    /// <c>h9k orchestrator status</c> prints, because both read
+    /// <see cref="OrchestratorPresenceLine.Describe"/>.
+    /// <para>
+    /// Silent for a project nothing has ever registered against on this machine, the same "a quiet
+    /// pane says nothing" posture the rest of this command holds: an install where no window has
+    /// ever registered would otherwise gain a permanent line about a feature it does not use. A
+    /// project that HAS had one still prints its "none live" line, because there the absence is
+    /// the news.
+    /// </para>
+    /// </summary>
+    private static async Task WriteOrchestratorLineAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (await OrchestratorStatusCommand.ThisNodeIdAsync(session, cancellationToken) is not { } nodeId)
+            {
+                return;
+            }
+
+            IReadOnlyList<OrchestratorPresenceDetails> presences = await session.Query<OrchestratorPresenceDetails>()
+                .Where(presence => presence.NodeId == nodeId)
+                .ToListAsync(cancellationToken);
+            if (presences.Count == 0)
+            {
+                return;
+            }
+
+            OrchestratorProcessTableProbe probe = new();
+            DateTimeOffset now = DateTimeOffset.UtcNow;
+            foreach (OrchestratorPresenceDetails presence in presences.OrderBy(presence => presence.ProjectId))
+            {
+                ProjectDetails? project = await session.LoadAsync<ProjectDetails>(presence.ProjectId, cancellationToken);
+                string line = OrchestratorPresenceLine.Describe(presence, probe, now);
+                AnsiConsole.MarkupLineInterpolated($"[dim]{project?.Name ?? "unknown project"} {line}[/]");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]orchestrator: unavailable ({exception.Message})[/]");
         }
     }
 
