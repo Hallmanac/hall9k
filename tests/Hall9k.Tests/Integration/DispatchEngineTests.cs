@@ -15,6 +15,7 @@ using Hall9k.Tests.Fakes;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Npgsql;
 using Xunit;
 
 namespace Hall9k.Tests.Integration;
@@ -569,5 +570,103 @@ public sealed class DispatchEngineTests(PostgresFixture postgres) : IClassFixtur
             cleanup.Delete<TaskLease>(taskId);
             await cleanup.SaveChangesAsync(cts.Token);
         }
+    }
+
+    /// <summary>
+    /// The Marten pre-filter itself — <c>ReadQueueAsync</c>'s own
+    /// <c>t.PlacedOnNodeId == null || t.PlacedOnNodeId == thisNodeId</c> clause (idea 202383dc: an
+    /// owner can place a task on one of their own nodes) — rather than the pure decision behind it,
+    /// which <see cref="DispatchEngineNodePlacementGateTests"/> already covers seam-for-seam
+    /// (independent pre-PR review, cycle 1, human verdict). A <see cref="TaskListItem"/> written
+    /// before this branch has no <c>placedOnNodeId</c> key in its stored document at all — never an
+    /// explicit null, which every document this branch's own code writes always carries once
+    /// assigned — and this is the clause that decides whether that legacy row still reads as
+    /// unplaced and dispatchable, the same as a row with an explicit null and unlike a row placed on
+    /// a different node of the same owner's fleet.
+    /// </summary>
+    [Fact]
+    public async Task A_legacy_document_with_the_placement_key_entirely_absent_reads_as_unplaced()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid otherNodeId = DomainId.New();
+
+        DaemonOptions options = new() { MaxConcurrentTaskRuns = 500, LeaseTimeout = TimeSpan.FromSeconds(60) };
+        DispatchEngine engine = new(
+            store, node, new DaemonConnection(postgres.ConnectionString), new FakeProcessManager(),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            Options.Create(options), NullLogger<DispatchEngine>.Instance);
+
+        Guid legacyTaskId = await SeedAssignedAsync(
+            store, node.OwnerId, "Assigned before the placement key existed", Optional<Guid?>.None, cts.Token);
+        Guid otherNodeTaskId = await SeedAssignedAsync(
+            store, node.OwnerId, "Placed on a different node of the same fleet",
+            Optional<Guid?>.Of(otherNodeId), cts.Token);
+        Guid thisNodeTaskId = await SeedAssignedAsync(
+            store, node.OwnerId, "Placed on this node", Optional<Guid?>.Of(node.NodeId), cts.Token);
+        Guid unplacedTaskId = await SeedAssignedAsync(
+            store, node.OwnerId, "Never placed at all", Optional<Guid?>.None, cts.Token);
+
+        // Turns the legacy row's document back into the shape an older projection actually left
+        // it (TaskProjectionBackfillTests's own pattern): the key stripped off entirely, not set
+        // back to null, since a real pre-placement document was never written with the key at all.
+        await using (NpgsqlConnection connection = new(postgres.ConnectionString))
+        {
+            await connection.OpenAsync(cts.Token);
+            await using NpgsqlCommand stripKey = new(
+                "update mt_doc_tasklistitem set data = data - 'placedOnNodeId' where id = @id", connection);
+            stripKey.Parameters.AddWithValue("id", legacyTaskId);
+            (await stripKey.ExecuteNonQueryAsync(cts.Token)).Should().Be(1);
+        }
+
+        // This class shares one database across every test method (see the class's own note on
+        // Cap_sweep_and_reclaim_walk_the_full_lease_lifecycle), and a sibling test's own leftover
+        // Queued task under the same shared node can ride along in this call's result — so each
+        // seeded task's own fate is asserted by id, never the returned list's overall shape.
+        IReadOnlyList<ClaimedWork> claimed = await engine.ClaimEligibleAsync(cts.Token);
+        IReadOnlyList<Guid> claimedIds = [.. claimed.Select(work => work.TaskId)];
+
+        claimedIds.Should().Contain(
+            legacyTaskId, "the legacy row with no placement key at all reads as unplaced, the same as an explicit null");
+        claimedIds.Should().Contain(unplacedTaskId, "an explicit null is the ordinary unplaced shape and was always claimable");
+        claimedIds.Should().Contain(thisNodeTaskId, "a placement naming this exact node still admits this node's own claim");
+        claimedIds.Should().NotContain(
+            otherNodeTaskId, "a placement naming a different node of the same fleet stands this node down without a forced take");
+
+        await using (IDocumentSession cleanup = store.LightweightSession())
+        {
+            cleanup.Delete<TaskLease>(legacyTaskId);
+            cleanup.Delete<TaskLease>(thisNodeTaskId);
+            cleanup.Delete<TaskLease>(unplacedTaskId);
+            await cleanup.SaveChangesAsync(cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// One task, drafted, published, and assigned to <paramref name="ownerId"/> with the given
+    /// advisory placement — the lifecycle <see cref="TaskSeed.Start"/> already walks, but that
+    /// helper has no placement parameter, so this walks the same three events by hand rather than
+    /// widen a shared seed for one test.
+    /// </summary>
+    private static async Task<Guid> SeedAssignedAsync(
+        DocumentStore store, Guid ownerId, string objective, Optional<Guid?> placedOnNodeId,
+        CancellationToken cancellationToken)
+    {
+        Guid id = DomainId.New();
+        TaskAggregate task = new();
+        TaskAdded added = TaskDecider.Add(
+            id, DomainId.New(), objective, ["done"], TaskType.Chore, null, null, null, Now, ownerId);
+        task.Apply(added);
+        TaskPublished published = TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now, ownerId);
+        task.Apply(published);
+        TaskAssigned assigned = TaskDecider.Assign(
+            task, ownerId, [], Now, ownerId, placedOnNodeId: placedOnNodeId);
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<TaskAggregate>(id, added, published, assigned);
+        await session.SaveChangesAsync(cancellationToken);
+        return id;
     }
 }
