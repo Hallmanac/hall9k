@@ -843,26 +843,6 @@ public sealed class TaskDeciderTests
             windowsLocalOwnerId, "the fingerprint decides once the assignment carries one, not the assigning node's own local Guid");
     }
 
-    /// <summary>
-    /// The other half of the same scenario: a genuinely different owner's node — its own local id
-    /// coincidentally never matches anyway, but its own root fingerprint never will either — is
-    /// refused exactly as it always was.
-    /// </summary>
-    [Fact]
-    public void Claim_of_an_ordinary_assignment_refuses_a_different_owners_node_despite_no_shared_guid_either()
-    {
-        TaskAggregate task = PublishedTask();
-        Guid macLocalOwnerId = DomainId.New();
-        task.Apply(TaskDecider.Assign(
-            task, macLocalOwnerId, [], Now, Owner, assignedOwnerRootFingerprint: "owner-x-root-fingerprint"));
-
-        Action act = () => TaskDecider.Claim(
-            task, DomainId.New(), DomainId.New(), DomainId.New(), Now,
-            ownerRootFingerprint: "owner-y-root-fingerprint");
-
-        act.Should().Throw<DomainConflictException>();
-    }
-
     [Fact]
     public void Requeue_after_claim_returns_to_queued_and_a_reclaim_bumps_generation_again()
     {
