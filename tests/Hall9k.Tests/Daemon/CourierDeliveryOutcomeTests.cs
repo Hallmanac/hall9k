@@ -39,6 +39,19 @@ public sealed class CourierDeliveryOutcomeTests
     }
 
     [Fact]
+    public void A_summary_that_quotes_the_delivered_marker_before_a_real_failed_line_reads_as_not_delivered()
+    {
+        string summary = $"I was asked to end with `{CourierPromptBuilder.DeliveredMarker}` if the send "
+            + $"succeeded; it did not, so:\n{CourierPromptBuilder.FailedMarkerPrefix} - no session named "
+            + "hall9k-orchestrator";
+
+        (bool delivered, string outcome) = CourierDeliveryOutcome.Parse(Result(summary), timedOut: false, Timeout);
+
+        delivered.Should().BeFalse();
+        outcome.Should().Contain("without a delivered marker");
+    }
+
+    [Fact]
     public void A_result_with_no_marker_at_all_reads_as_not_delivered()
     {
         (bool delivered, string outcome) = CourierDeliveryOutcome.Parse(
