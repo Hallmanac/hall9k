@@ -197,6 +197,81 @@ public sealed class CourierEngineTests : IClassFixture<PostgresFixture>, IAsyncL
             run => run.CompletedAt != null && !run.Delivered);
     }
 
+    /// <summary>
+    /// The capped-scan hole (independent pre-PR review, cycle 4, conformance lens): a project
+    /// whose own item sits past <see cref="OrchestratorFeedReader.MaxEventsPerRead"/> worth of
+    /// noise from the rest of this node's log must still have its cursor move forward on a tick
+    /// that admits nothing, or every later tick re-reads the identical noise-only window forever
+    /// and the real item is never reached.
+    /// </summary>
+    [Fact]
+    public async Task A_capped_scan_that_admits_nothing_still_advances_the_cursor()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = _postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewIsolatedNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const int processId = 55_001;
+        DateTimeOffset processStartedAt = Now;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.StartStream<ProjectAggregate>(projectId, ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"project-{DomainId.Short(projectId)}", "/repo", null, null, Now));
+
+            session.Events.StartStream<OrchestratorPresenceAggregate>(
+                OrchestratorPresenceStreamId.For(node.NodeId, projectId),
+                new OrchestratorLaunched(
+                    node.NodeId, projectId, "orchestrator", processId, "claude-code", processStartedAt, Now));
+
+            // Padding the raw log past MaxEventsPerRead with a type OrchestratorFeedInterest's own
+            // Bands table has no entry for at all (a courier's own dispatch is never a feed item),
+            // so every one of these is rejected before a project is ever resolved for it — cheap
+            // noise that fills the scan's own cap ahead of the real item seeded below.
+            for (int i = 0; i < OrchestratorFeedReader.MaxEventsPerRead + 50; i++)
+            {
+                Guid paddingId = DomainId.New();
+                session.Events.StartStream(paddingId, new CourierRunDispatched(
+                    paddingId, DomainId.New(), node.NodeId, AgentModel.CourierDefault, Now));
+            }
+
+            // The real item, written last and so past the cap: an ordinary message, which this
+            // project's own default band admits regardless of which level it reads at.
+            session.Events.StartStream<MessageAggregate>(
+                MessageStreamId.ForMessage(DomainId.New(), projectId, 1),
+                new MessageReceived(
+                    DomainId.New(), 1, Now, "abcdef0123456789", "project", null,
+                    MessageKind.Note.Value, "are you still on the stacked pair?", Now, projectId));
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await Task.Delay(OrchestratorFeedSelection.SettlingWindow + TimeSpan.FromSeconds(2), cts.Token);
+
+        FakeOrchestratorProcessProbe probe = new FakeOrchestratorProcessProbe().Running(processId, processStartedAt);
+        FakeProcessManager processManager = new();
+        CountingExecutor executor = new();
+        CourierEngine engine = new(
+            store, node, executor, processManager, probe, Options.Create(new DaemonOptions()),
+            NullLogger<CourierEngine>.Instance);
+
+        CourierSweepResult sweep = await engine.SweepOnceAsync(cts.Token);
+
+        sweep.Should().Be(
+            new CourierSweepResult(Delivered: 0, Failed: 0, NoAdapter: 0, DayCapHits: 0),
+            "the capped scan admitted nothing for this project this tick, so there is nothing yet to "
+            + "spawn a courier for");
+        executor.Spawns.Should().BeEmpty();
+
+        await using IQuerySession query = store.QuerySession();
+        long cursor = await OrchestratorFeedReader.CursorAsync(query, projectId, cts.Token);
+        cursor.Should().BeGreaterThan(
+            OrchestratorFeedCursor.NeverDrained,
+            "a capped scan admitting zero items for this project must still advance past the noise it "
+            + "already considered, or the project's own item past the cap is never reached on any "
+            + "future tick either");
+    }
+
     /// <summary>Records every spawn request without ever completing one — any call here at all
     /// is itself the failure the test above exists to catch.</summary>
     private sealed class CountingExecutor : IExecutor
