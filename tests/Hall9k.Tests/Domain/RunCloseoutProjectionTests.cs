@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -322,6 +323,11 @@ public sealed class RunCloseoutProjectionTests
     [Fact]
     public void Run_list_item_reconstructed_from_a_missing_run_record_still_has_a_resolvable_directory()
     {
+        // view.RunDirectory and the RunPaths.GlobalDirectory(id) below are two independent
+        // PlatformPaths.Home-derived reads, so this scope keeps them consistent with each other
+        // regardless of what any other test's own literal HALL9K_HOME write is doing concurrently
+        // (independent pre-PR review, cycle 1, both lenses; same shape as RunPathsTests).
+        using ScopedTestHome scope = new();
         RunListItemProjection projection = new();
         Guid id = DomainId.New();
         RunListItem view = projection.Create(new FakeEvent<RunRecordReconstructed>(new RunRecordReconstructed(

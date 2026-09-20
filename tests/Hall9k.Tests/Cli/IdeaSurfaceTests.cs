@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Tests.TestSupport;
 using Spectre.Console;
 using Spectre.Console.Rendering;
 using Xunit;
@@ -17,9 +18,11 @@ namespace Hall9k.Tests.Cli;
 /// sugar over that same door — that shows exactly what it took from the note rather than asking
 /// to be trusted.
 /// </summary>
-// Two tests below resolve IdeaPaths.WorkspaceDirectory, which reads the process-wide
-// HALL9K_HOME. Sharing the collection serializes this file against every test that
-// redirects that variable, so a concurrent home swap can never be read mid-assertion.
+// Two tests below resolve IdeaPaths.WorkspaceDirectory both directly and through
+// IdeaPromoteCommand.AgentContext, comparing the two reads against each other — each one opens
+// its own ScopedTestHome so that pair stays consistent regardless of what any other test's own
+// literal HALL9K_HOME write is doing concurrently (independent pre-PR review, cycle 1, both
+// lenses; same shape as RunPathsTests, which names the origin incident).
 public sealed class IdeaSurfaceTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 20, 12, 0, 0, TimeSpan.Zero);
@@ -235,6 +238,7 @@ public sealed class IdeaSurfaceTests
     [Fact]
     public void The_draft_carries_the_workspace_pointer_rather_than_the_files()
     {
+        using ScopedTestHome scope = new();
         IdeaAggregate idea = CapturedIdea(out Guid ideaId);
 
         string context = IdeaPromoteCommand.AgentContext(idea, "The rest of what the note said.");
@@ -248,6 +252,7 @@ public sealed class IdeaSurfaceTests
     [Fact]
     public void A_note_with_nothing_left_over_still_hands_the_workspace_to_the_agent()
     {
+        using ScopedTestHome scope = new();
         IdeaAggregate idea = CapturedIdea(out Guid ideaId);
 
         string context = IdeaPromoteCommand.AgentContext(idea, context: null);
