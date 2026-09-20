@@ -137,6 +137,38 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_forgery_sorting_after_the_already_resolved_genuine_root_node_is_still_named()
+    {
+        // independent pre-PR review, cycle 3, both lenses, medium: AttachRootNodeIdsAsync used to
+        // stop scanning node refs the moment every owner chain already had a RootNodeId, so a
+        // forgery claiming an already-resolved root's own key went unrecorded whenever ls-remote's
+        // refname order happened to place it after the genuine self-announced node ref. Node ids
+        // are pinned (rather than left to GenerateIdentity's own random Guid) so the genuine ref
+        // reliably sorts before the forged one, reproducing the exact ordering the bug depended on.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity ownerNode = owner with { NodeId = Guid.Parse("00000000-0000-0000-0000-000000000001") };
+        await WriteNodeFileAsync(ownerRepo, ownerNode, owner);
+
+        GeneratedIdentity stranger = GenerateIdentity();
+        string strangerRepo = _repo.CloneNode(hub);
+        Guid forgedNodeId = Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff");
+        string refName = $"refs/hall9k/ledger/nodes/{forgedNodeId}";
+        string path = $"nodes/{forgedNodeId}/node.yaml";
+        string content = BuildYaml(("node_id", forgedNodeId.ToString()), ("public_key", owner.PublicKeyLine));
+        await WriteAsync(strangerRepo, refName, path, content, stranger);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains[owner.Fingerprint].RootNodeId.Should().Be(
+            ownerNode.NodeId.ToString(), "the genuine self-announced node still resolves regardless of the forgery elsewhere");
+        chain.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "node" && write.Identifier == forgedNodeId.ToString() && write.RootFingerprint == owner.Fingerprint,
+            "the forgery must be named even though it sorts after the already-resolved genuine root node");
+    }
+
+    [Fact]
     public async Task A_revoked_root_node_is_dropped_from_its_own_fleet()
     {
         // independent pre-PR review, cycle 1, conformance lens, medium: the root's own node has no
