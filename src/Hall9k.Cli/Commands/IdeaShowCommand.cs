@@ -42,6 +42,7 @@ public sealed class IdeaShowCommand : Hall9kAsyncCommand<IdeaShowCommand.Setting
         header.AddRow("[bold]Idea[/]", idea.Text.EscapeMarkup());
         header.AddRow("State", StateMarkup(idea.State));
         header.AddRow("Id", $"[dim]{idea.Id}[/]");
+        header.AddRow("Scope", ScopeInput.Markup(idea.Scope));
         header.AddRow("Project", await ProjectMarkupAsync(session, idea, cancellationToken));
         header.AddRow("Captured", $"{idea.CapturedAt.ToLocalTime():g} "
             + $"[dim]({TaskStatusComposer.RelativeAge(DateTimeOffset.UtcNow - idea.CapturedAt)})[/]");

@@ -102,6 +102,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         header.AddRow("Id", $"[dim]{details.Id}[/]");
+        header.AddRow("Scope", ScopeInput.Markup(details.Scope));
         header.AddRow("Assigned to", await AssigneeMarkupAsync(session, details, cancellationToken));
         if (details.PlacedOnNodeId is { } placedOnNodeId)
         {
