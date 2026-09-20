@@ -1,8 +1,11 @@
 using Hall9k.Connectors.Messaging;
+using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 
@@ -15,22 +18,22 @@ namespace Hall9k.Connectors.Replication;
 public sealed record EventReplicationQueueResult(int EnvelopesQueued, int EventsQueued);
 
 /// <summary>
-/// The outbound half of event replication (idea 202383dc, M2a): on this node's own current global
-/// event log, past this project's own durable <see cref="EventReplicationOutboxPosition"/> (never
-/// before this node's own <see cref="NodeAggregate.ReplicationSwitchOnSequence"/>, recorded here the
-/// first time this method ever runs), reads every <see cref="EventScope.ProjectScoped"/> event that
-/// belongs to <paramref name="projectId"/>, batches it into envelopes of kind
-/// <see cref="MessageKind.Events"/> — capped at <see cref="MaxEventsPerEnvelope"/> events or
-/// <see cref="MaxBytesPerEnvelope"/> bytes each — and queues each one through the ordinary
-/// <see cref="MessageOutbox.QueueAsync"/>, so the daemon's existing per-project flush lands them in
-/// the same commit as any other pending mail. A fact this node itself received by replication
-/// (carrying <see cref="ReplicationEventHeaders.OriginEventId"/>) never re-enters this scan: only
-/// what this node itself produced travels, exactly as the acceptance criterion says, and re-sending
-/// a teammate's own fact back at them under a fresh local event id and this node's own origin stamp
-/// would otherwise echo forever, each hop minting a new duplicate on both ends. A currently-private
-/// task or idea's own events are skipped, never blocking any other stream's own events in the same
-/// scan — but the durable position this project's own next scan resumes from never advances past
-/// the earliest one still owed to a teammate (<see
+/// The outbound half of event replication (idea 202383dc, M2a; scoped per item by idea 8c5993c5): on
+/// this node's own current global event log, past this project's own durable
+/// <see cref="EventReplicationOutboxPosition"/> (never before this node's own
+/// <see cref="NodeAggregate.ReplicationSwitchOnSequence"/>, recorded here the first time this method
+/// ever runs), reads every <see cref="EventScope.ProjectScoped"/> event that belongs to
+/// <paramref name="projectId"/>, batches it into envelopes of kind <see cref="MessageKind.Events"/> —
+/// capped at <see cref="MaxEventsPerEnvelope"/> events or <see cref="MaxBytesPerEnvelope"/> bytes
+/// each — and queues each one through the ordinary <see cref="MessageOutbox.QueueAsync"/>, so the
+/// daemon's existing per-project flush lands them in the same commit as any other pending mail. A
+/// fact this node itself received by replication (carrying <see cref="ReplicationEventHeaders.OriginEventId"/>)
+/// never re-enters this scan: only what this node itself produced travels, exactly as the acceptance
+/// criterion says, and re-sending a teammate's own fact back at them under a fresh local event id and
+/// this node's own origin stamp would otherwise echo forever, each hop minting a new duplicate on
+/// both ends. A currently-private task or idea's own events are skipped, never blocking any other
+/// stream's own events in the same scan — but the durable position this project's own next scan
+/// resumes from never advances past the earliest one still owed to a teammate (<see
 /// cref="EventReplicationOutboxPosition.PendingPrivateSequences"/>; the same gap-stop idiom
 /// <c>GitLedgerMessageTransport.ReadSinceAsync</c> already uses for a numeric seq gap), so clearing
 /// the flag later always finds it again rather than having silently skipped past it forever. A
@@ -46,6 +49,23 @@ public sealed record EventReplicationQueueResult(int EnvelopesQueued, int Events
 /// rescan neither drops a held-back event forever nor pays a full reclassification-and-resolve pass
 /// for every already-sent event it re-reads while anything nearby stays private (independent pre-PR
 /// review, cycle 5, both lenses).
+/// <para>
+/// Idea 8c5993c5: an eligible event's own audience follows its resolved <see cref="ReplicationScope"/>
+/// — <see cref="ReplicationScope.Team"/> addresses <see cref="MessageAudience.Project"/> exactly as
+/// every event always has, and <see cref="ReplicationScope.Fleet"/> addresses
+/// <see cref="MessageAudience.Owner"/> at the event's own origin owner root fingerprint, so it
+/// reaches every one of that owner's own nodes and no one else's — the same addressing an invite
+/// proof already uses. The two audiences batch and flush independently, since a single envelope
+/// carries one audience. Whenever a scope-widening event (<see cref="IdeaScopeSet"/>,
+/// <see cref="IdeaPrivacySet"/>, <see cref="TaskScopeSet"/>, <see cref="TaskPrivacySet"/>, or
+/// <see cref="TaskPublished"/>) passes through this scan, its own stream is marked
+/// (<see cref="EventReplicationOutboxPosition.PendingFullResendStreamIds"/>) for a one-time resend of
+/// every earlier event on that stream still sitting below this scan's own starting position — the
+/// only way a newly-wider audience (a teammate an idea was just shared with, say) ever receives
+/// history this outbox already sent narrower and moved past. The resend is bounded to that starting
+/// position exactly so it never re-queues what the ordinary forward scan in the SAME call already
+/// queued afresh at the current scope.
+/// </para>
 /// </summary>
 public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
 {
@@ -72,23 +92,75 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         // highestQueuedSequence, which is what lets a formerly-private event be told apart from an
         // already-sent one once some other stream's own later event has pushed the mark past it
         // (independent pre-PR review, cycle 5, adversarial lens).
-        HashSet<long> pendingPrivate = position?.PendingPrivateSequences is { Count: > 0 } saved ? [.. saved] : [];
+        HashSet<long> pendingPrivate = position?.PendingPrivateSequences is { Count: > 0 } savedPrivate ? [.. savedPrivate] : [];
+
+        // Streams a scope-widening event marked for a one-time full-history resend at their own new,
+        // wider scope (idea 8c5993c5) — never cleared until that resend actually runs, so a crash
+        // between marking and resending finds it again rather than silently dropping it.
+        HashSet<Guid> pendingFullResend = position?.PendingFullResendStreamIds is { Count: > 0 } savedResend ? [.. savedResend] : [];
 
         IReadOnlyList<IEvent> candidates = await session.Events.QueryAllRawEvents()
             .Where(e => e.Sequence > sinceSequence)
             .OrderBy(e => e.Sequence)
             .ToListAsync(cancellationToken);
 
-        if (candidates.Count == 0)
+        if (candidates.Count == 0 && pendingFullResend.Count == 0)
         {
             return new EventReplicationQueueResult(0, 0);
         }
 
-        List<EventReplicationCodec.ReplicatedEventRecord> batch = [];
-        long batchBytes = 0;
-        long lastIncludedSequence = sinceSequence;
         int envelopesQueued = 0;
         int eventsQueued = 0;
+        long lastIncludedSequence = sinceSequence;
+        Dictionary<MessageAudience, PendingEnvelopeBatch> batches = [];
+
+        // Stores the position doc reflecting progress so far, immediately before the envelope that
+        // progress belongs to — the identical "advance and queue land in one commit" idiom the
+        // single-batch version of this method always used, generalized across as many audiences and
+        // flush points (mid-scan overflow, end of scan, the resend pass) as one call now has.
+        void StorePositionSnapshot() => session.Store(new EventReplicationOutboxPosition
+        {
+            Id = projectId,
+            LastFlushedGlobalSequence = CapAtHeldBackPosition(lastIncludedSequence, pendingPrivate),
+            HighestQueuedSequence = highestQueuedSequence,
+            PendingPrivateSequences = [.. pendingPrivate],
+            PendingFullResendStreamIds = [.. pendingFullResend],
+        });
+
+        async Task FlushAsync(MessageAudience audience)
+        {
+            if (!batches.TryGetValue(audience, out PendingEnvelopeBatch? state) || state.Records.Count == 0)
+            {
+                return;
+            }
+
+            StorePositionSnapshot();
+            await MessageOutbox.QueueAsync(
+                session, nodeId, projectId, fromOwnerFingerprint, audience, about: null, MessageKind.Events,
+                EventReplicationCodec.EncodeBatch(state.Records), now, cancellationToken);
+            envelopesQueued++;
+            eventsQueued += state.Records.Count;
+            batches[audience] = new PendingEnvelopeBatch();
+        }
+
+        async Task AddAsync(MessageAudience audience, EventReplicationCodec.ReplicatedEventRecord record, string recordJson)
+        {
+            if (!batches.TryGetValue(audience, out PendingEnvelopeBatch? state))
+            {
+                state = new PendingEnvelopeBatch();
+                batches[audience] = state;
+            }
+
+            if (state.Records.Count >= MaxEventsPerEnvelope
+                || (state.Records.Count > 0 && state.Bytes + recordJson.Length > MaxBytesPerEnvelope))
+            {
+                await FlushAsync(audience);
+                state = batches[audience];
+            }
+
+            state.Records.Add(record);
+            state.Bytes += recordJson.Length;
+        }
 
         foreach (IEvent candidate in candidates)
         {
@@ -96,11 +168,11 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             {
                 // Already scanned in an earlier sweep and conclusively settled then — queued, or
                 // found to be none of this project's business — with nothing left here that could
-                // change that reading except its own privacy flag, and a still-private candidate is
-                // exactly what pendingPrivate tracks. Skipping the classification and ownership
-                // resolution below for the rest is what keeps a long-held-back private draft from
-                // making every sweep re-read and re-resolve the whole rest of the project's history
-                // past it (independent pre-PR review, cycle 5, conformance lens, medium).
+                // change that reading except its own scope, and a still-private candidate is exactly
+                // what pendingPrivate tracks. Skipping the classification and ownership resolution
+                // below for the rest is what keeps a long-held-back private draft from making every
+                // sweep re-read and re-resolve the whole rest of the project's history past it
+                // (independent pre-PR review, cycle 5, conformance lens, medium).
                 lastIncludedSequence = candidate.Sequence;
                 continue;
             }
@@ -163,7 +235,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 continue;
             }
 
-            if (resolved.IsPrivate)
+            if (resolved.Scope == ReplicationScope.Private)
             {
                 // Skip only this event, never the rest of the scan: a private task or idea must not
                 // hold back every other stream's own events. Recorded (or kept recorded) as owed, so
@@ -180,22 +252,18 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             // read it. It is owed, whichever sweep first held it back.
             EventReplicationCodec.ReplicatedEventRecord record = ToRecord(candidate, nodeId, fromOwnerFingerprint, projectId);
             string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
+            await AddAsync(AudienceFor(resolved.Scope, record.OriginOwnerRootFingerprint, fromOwnerFingerprint), record, recordJson);
 
-            if (batch.Count >= MaxEventsPerEnvelope
-                || (batch.Count > 0 && batchBytes + recordJson.Length > MaxBytesPerEnvelope))
+            if (IsScopeChangingEventType(candidate.EventType))
             {
-                await FlushBatchAsync(
-                    session, nodeId, projectId, fromOwnerFingerprint, batch,
-                    CapAtHeldBackPosition(lastIncludedSequence, pendingPrivate), highestQueuedSequence, pendingPrivate,
-                    now, cancellationToken);
-                envelopesQueued++;
-                eventsQueued += batch.Count;
-                batch = [];
-                batchBytes = 0;
+                // idea 8c5993c5: this stream just moved to a scope at least this wide — everything
+                // it holds below this scan's own starting position (sinceSequence) never reached
+                // whatever audience it is newly eligible for, and the resend pass below is the one
+                // chance to catch it up. Bounding it to sinceSequence, rather than resending here
+                // too, is what keeps it from re-queuing what THIS scan just queued afresh.
+                pendingFullResend.Add(candidate.StreamId);
             }
 
-            batch.Add(record);
-            batchBytes += recordJson.Length;
             lastIncludedSequence = candidate.Sequence;
             // Math.Max, not a plain assignment: a pendingPrivate member being caught up here can
             // have a LOWER sequence than the mark already reached through other streams, and a plain
@@ -207,29 +275,27 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             pendingPrivate.Remove(candidate.Sequence);
         }
 
-        long finalPosition = CapAtHeldBackPosition(lastIncludedSequence, pendingPrivate);
+        // Batches stay open across the resend pass below, rather than flushing here first: a
+        // scope-changing candidate's own envelope and the history the resend pass sends to the
+        // identical new audience belong in one envelope together whenever they both fit, not two.
+        foreach (Guid streamId in pendingFullResend.ToList())
+        {
+            await ResendStreamHistoryAsync(
+                session, nodeId, projectId, fromOwnerFingerprint, streamId, switchOnSequence, sinceSequence,
+                AddAsync, cancellationToken);
+            // Handled either way: fully resent at whatever scope it currently reads, or found
+            // private again by the time this ran (nothing to send right now) — a future
+            // scope-widening event re-adds it if that ever changes.
+            pendingFullResend.Remove(streamId);
+        }
 
-        if (batch.Count > 0)
+        foreach (MessageAudience audience in batches.Keys.ToList())
         {
-            await FlushBatchAsync(
-                session, nodeId, projectId, fromOwnerFingerprint, batch, finalPosition, highestQueuedSequence,
-                pendingPrivate, now, cancellationToken);
-            envelopesQueued++;
-            eventsQueued += batch.Count;
+            await FlushAsync(audience);
         }
-        else if (finalPosition > sinceSequence
-            || highestQueuedSequence > (position?.HighestQueuedSequence ?? 0)
-            || !pendingPrivate.SetEquals(position?.PendingPrivateSequences ?? []))
-        {
-            session.Store(new EventReplicationOutboxPosition
-            {
-                Id = projectId,
-                LastFlushedGlobalSequence = finalPosition,
-                HighestQueuedSequence = highestQueuedSequence,
-                PendingPrivateSequences = [.. pendingPrivate],
-            });
-            await session.SaveChangesAsync(cancellationToken);
-        }
+
+        StorePositionSnapshot();
+        await session.SaveChangesAsync(cancellationToken);
 
         return new EventReplicationQueueResult(envelopesQueued, eventsQueued);
     }
@@ -239,26 +305,99 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
     private static long CapAtHeldBackPosition(long candidatePosition, HashSet<long> pendingPrivate) =>
         pendingPrivate.Count > 0 ? Math.Min(candidatePosition, pendingPrivate.Min() - 1) : candidatePosition;
 
-    private static async Task FlushBatchAsync(
-        IDocumentSession session, Guid nodeId, Guid projectId, string fromOwnerFingerprint,
-        List<EventReplicationCodec.ReplicatedEventRecord> batch, long positionAfterBatch, long highestQueuedSequence,
-        HashSet<long> pendingPrivate, DateTimeOffset now, CancellationToken cancellationToken)
-    {
-        // Stored in the same session as the QueueAsync call below, which saves it: the position
-        // advance and the queued envelope land in one commit, so a crash between the two can never
-        // happen (idea 202383dc: "a restart never re-sends or skips").
-        session.Store(new EventReplicationOutboxPosition
-        {
-            Id = projectId,
-            LastFlushedGlobalSequence = positionAfterBatch,
-            HighestQueuedSequence = highestQueuedSequence,
-            PendingPrivateSequences = [.. pendingPrivate],
-        });
+    /// <summary>
+    /// idea 8c5993c5: <see cref="ReplicationScope.Team"/> addresses the whole project, exactly as
+    /// every event always has; <see cref="ReplicationScope.Fleet"/> addresses the event's own origin
+    /// owner root — every one of that owner's own nodes, the addressing an invite proof already
+    /// uses. Never called for <see cref="ReplicationScope.Private"/>, which never reaches here.
+    /// <paramref name="fromOwnerFingerprint"/> is the fallback for
+    /// <see cref="EventOriginStampingListener.UnclaimedOwnerRootFingerprint"/> — a candidate appended
+    /// before this node's own owner had claimed a root at all, which that listener's own doc says to
+    /// resolve rather than trust as a final answer; this node's own current fingerprint is the
+    /// ordinary case such a candidate belongs to.
+    /// </summary>
+    private static MessageAudience AudienceFor(ReplicationScope scope, string originOwnerRootFingerprint, string fromOwnerFingerprint) =>
+        scope == ReplicationScope.Team
+            ? MessageAudience.Project
+            : MessageAudience.Owner(
+                string.IsNullOrWhiteSpace(originOwnerRootFingerprint) ? fromOwnerFingerprint : originOwnerRootFingerprint);
 
-        string body = EventReplicationCodec.EncodeBatch(batch);
-        await MessageOutbox.QueueAsync(
-            session, nodeId, projectId, fromOwnerFingerprint, MessageAudience.Project, about: null,
-            MessageKind.Events, body, now, cancellationToken);
+    /// <summary>
+    /// Every event type whose own appearance means the stream it lives on just widened its
+    /// replication scope (idea 8c5993c5) — the trigger for a one-time full-history resend of that
+    /// stream, below. <see cref="TaskPublished"/> is included because publishing always sets team
+    /// scope unconditionally (<see cref="Hall9k.Domain.Features.Tasks.TaskAggregate.Apply(TaskPublished)"/>),
+    /// with no separate scope event of its own.
+    /// </summary>
+    private static bool IsScopeChangingEventType(Type eventType) =>
+        eventType == typeof(IdeaScopeSet)
+        || eventType == typeof(IdeaPrivacySet)
+        || eventType == typeof(TaskScopeSet)
+        || eventType == typeof(TaskPrivacySet)
+        || eventType == typeof(TaskPublished);
+
+    /// <summary>
+    /// idea 8c5993c5: resends <paramref name="streamId"/>'s own history strictly between this node's
+    /// own switch-on point and <paramref name="upperBoundSequence"/> — the ordinary forward scan's
+    /// own starting position for THIS call, never past it, so this never re-queues what that scan
+    /// just queued afresh at the stream's current scope in the same call. Forwards own-or-replicated
+    /// events alike, true origin preserved, the identical technique <see cref="EventCatchUpResponder"/>
+    /// already uses to answer a catch-up request for one stream: a scope change run from a fleet
+    /// sibling that only ever received this stream by replication must still be able to resend its
+    /// full history, not just whatever it produced itself. Sends nothing, and leaves the caller to
+    /// treat the stream as handled regardless, when the stream currently reads
+    /// <see cref="ReplicationScope.Private"/> — it was toggled back before this ran, and a later
+    /// scope-widening event re-marks it if that changes again.
+    /// </summary>
+    private async Task ResendStreamHistoryAsync(
+        IDocumentSession session, Guid nodeId, Guid projectId, string fromOwnerFingerprint, Guid streamId,
+        long switchOnSequence, long upperBoundSequence,
+        Func<MessageAudience, EventReplicationCodec.ReplicatedEventRecord, string, Task> addAsync,
+        CancellationToken cancellationToken)
+    {
+        IReadOnlyList<IEvent> history = await session.Events.QueryAllRawEvents()
+            .Where(e => e.StreamId == streamId && e.Sequence > switchOnSequence && e.Sequence <= upperBoundSequence)
+            .OrderBy(e => e.Sequence)
+            .ToListAsync(cancellationToken);
+
+        foreach (IEvent candidate in history)
+        {
+            EventScope scope;
+            try
+            {
+                scope = EventScopeRegistry.ClassificationOf(candidate.EventType);
+            }
+            catch (InvalidOperationException)
+            {
+                continue;
+            }
+
+            if (scope != EventScope.ProjectScoped)
+            {
+                continue;
+            }
+
+            ReplicationOwnership resolved = await ownership.ResolveAsync(session, candidate, cancellationToken);
+            if (resolved.ProjectId != projectId)
+            {
+                continue;
+            }
+
+            if (resolved.IsProjectStreamItself && ProjectStreamReplicationRules.IsProjectIdentityEvent(candidate.EventType))
+            {
+                continue;
+            }
+
+            if (resolved.Scope == ReplicationScope.Private)
+            {
+                return;
+            }
+
+            EventReplicationCodec.ReplicatedEventRecord record =
+                ToRecordPreservingOrigin(candidate, nodeId, fromOwnerFingerprint, projectId);
+            string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
+            await addAsync(AudienceFor(resolved.Scope, record.OriginOwnerRootFingerprint, fromOwnerFingerprint), record, recordJson);
+        }
     }
 
     private static EventReplicationCodec.ReplicatedEventRecord ToRecord(
@@ -266,8 +405,11 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
     {
         string originNodeIdText = candidate.GetHeader(EventOriginStampingListener.NodeIdHeader) as string ?? string.Empty;
         Guid originNodeId = Guid.TryParse(originNodeIdText, out Guid parsedNodeId) ? parsedNodeId : nodeId;
-        string originOwnerRootFingerprint =
-            candidate.GetHeader(EventOriginStampingListener.OwnerRootFingerprintHeader) as string ?? fromOwnerFingerprint;
+        // string.Empty (never null) is EventOriginStampingListener.UnclaimedOwnerRootFingerprint —
+        // that listener's own doc says to resolve or fall back rather than trust it as a final
+        // answer, so a blank header falls back exactly as a missing one would.
+        string originHeaderValue = candidate.GetHeader(EventOriginStampingListener.OwnerRootFingerprintHeader) as string ?? string.Empty;
+        string originOwnerRootFingerprint = string.IsNullOrWhiteSpace(originHeaderValue) ? fromOwnerFingerprint : originHeaderValue;
 
         return new EventReplicationCodec.ReplicatedEventRecord(
             candidate.StreamId,
@@ -275,6 +417,28 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             System.Text.Json.JsonSerializer.Serialize(candidate.Data, candidate.EventType),
             candidate.Id,
             candidate.Sequence,
+            originNodeId,
+            originOwnerRootFingerprint,
+            candidate.Timestamp,
+            projectId);
+    }
+
+    /// <summary>The resend pass's own record builder — <see cref="ToRecord"/>'s twin, except it
+    /// preserves an ALREADY-REPLICATED event's own true origin (<see cref="ReplicationEventOriginResolver"/>)
+    /// rather than assuming every candidate is this node's own, since a resend may run on a fleet
+    /// sibling that only ever received the stream by replication.</summary>
+    private static EventReplicationCodec.ReplicatedEventRecord ToRecordPreservingOrigin(
+        IEvent candidate, Guid nodeId, string fromOwnerFingerprint, Guid projectId)
+    {
+        (Guid originNodeId, string originOwnerRootFingerprint, Guid originEventId, long originSequence) =
+            ReplicationEventOriginResolver.Resolve(candidate, nodeId, fromOwnerFingerprint);
+
+        return new EventReplicationCodec.ReplicatedEventRecord(
+            candidate.StreamId,
+            candidate.EventType.FullName ?? candidate.EventType.Name,
+            System.Text.Json.JsonSerializer.Serialize(candidate.Data, candidate.EventType),
+            originEventId,
+            originSequence,
             originNodeId,
             originOwnerRootFingerprint,
             candidate.Timestamp,
@@ -311,5 +475,11 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         session.Events.Append(nodeId, NodeDecider.SwitchOnReplication(node, currentGlobalSequence, now));
         await session.SaveChangesAsync(cancellationToken);
         return currentGlobalSequence;
+    }
+
+    private sealed class PendingEnvelopeBatch
+    {
+        public List<EventReplicationCodec.ReplicatedEventRecord> Records { get; } = [];
+        public long Bytes { get; set; }
     }
 }

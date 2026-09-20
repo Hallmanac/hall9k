@@ -196,6 +196,11 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
                 taskId, senderProjectId, "Node A's own pre-existing task", ["it ships"], TaskType.Feature, null, null, null,
                 Now.AddSeconds(1), ownerAId);
             session.Events.StartStream<TaskAggregate>(taskId, added);
+            // Published, not left draft: idea 8c5993c5 has a fresh draft default to fleet scope,
+            // which never crosses an owner boundary — node B below is a genuinely different owner,
+            // and this test is about cross-owner replication bootstrapping, not fleet scoping, so
+            // the task needs team scope to be the "some peer content" this test's own name promises.
+            session.Events.Append(taskId, new TaskPublished(taskId, Now.AddSeconds(1), ownerAId));
             await session.SaveChangesAsync(cts.Token);
         }
 

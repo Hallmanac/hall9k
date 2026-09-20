@@ -3,16 +3,22 @@ using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 
 namespace Hall9k.Connectors.Replication;
 
-/// <summary>One project-scoped event's own project (for the outbound flush), whether it lives on
-/// a Task or Idea stream (directly, or by way of the Run that stream belongs to) that is currently
-/// private (idea 202383dc, M2a), and whether the stream IS the Project aggregate's own stream
-/// rather than one that merely belongs to it.</summary>
-public sealed record ReplicationOwnership(Guid? ProjectId, bool IsPrivate, bool IsProjectStreamItself = false);
+/// <summary>One project-scoped event's own project (for the outbound flush), the current
+/// replication scope of the Task or Idea stream it lives on (directly, or by way of the Run that
+/// stream belongs to — idea 8c5993c5), and whether the stream IS the Project aggregate's own stream
+/// rather than one that merely belongs to it. The Project and Epic streams themselves have no scope
+/// of their own to narrow, so they always resolve <see cref="ReplicationScope.Team"/>.</summary>
+public sealed record ReplicationOwnership(Guid? ProjectId, ReplicationScope Scope, bool IsProjectStreamItself = false)
+{
+    /// <summary>The pre-8c5993c5 two-valued read, kept for callers that only ever asked "private or not".</summary>
+    public bool IsPrivate => Scope == ReplicationScope.Private;
+}
 
 /// <summary>
 /// Resolves which project owns a raw event's own stream (idea 202383dc, M2a's outbound flush needs
@@ -39,30 +45,30 @@ public sealed class ReplicationProjectResolver
             // the RECEIVER's own Project stream on apply (ProjectStreamReplicationRules), never the
             // sender's (independent pre-PR review, cycle 1, adversarial lens: the earlier build here
             // wrongly excluded the whole stream, ProjectTeamSettingsChanged included).
-            return new ReplicationOwnership(project.Id, IsPrivate: false, IsProjectStreamItself: true);
+            return new ReplicationOwnership(project.Id, ReplicationScope.Team, IsProjectStreamItself: true);
         }
 
         if (await session.LoadAsync<TaskDetails>(streamId, cancellationToken) is { } task)
         {
-            return new ReplicationOwnership(task.ProjectId, task.IsPrivate);
+            return new ReplicationOwnership(task.ProjectId, task.Scope);
         }
 
         if (await session.LoadAsync<IdeaDetails>(streamId, cancellationToken) is { } idea)
         {
-            return new ReplicationOwnership(idea.ProjectId, idea.IsPrivate);
+            return new ReplicationOwnership(idea.ProjectId, idea.Scope);
         }
 
         if (await session.LoadAsync<EpicDetails>(streamId, cancellationToken) is { } epic)
         {
-            return new ReplicationOwnership(epic.ProjectId, IsPrivate: false);
+            return new ReplicationOwnership(epic.ProjectId, ReplicationScope.Team);
         }
 
         if (await session.LoadAsync<RunDetails>(streamId, cancellationToken) is { } run)
         {
             TaskDetails? owningTask = await session.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
-            return new ReplicationOwnership(owningTask?.ProjectId, owningTask?.IsPrivate ?? false);
+            return new ReplicationOwnership(owningTask?.ProjectId, owningTask?.Scope ?? ReplicationScope.Team);
         }
 
-        return new ReplicationOwnership(null, IsPrivate: false);
+        return new ReplicationOwnership(null, ReplicationScope.Team);
     }
 }

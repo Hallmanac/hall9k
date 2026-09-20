@@ -57,4 +57,16 @@ public sealed class EventReplicationOutboxPosition
     /// </para>
     /// </summary>
     public List<long> PendingPrivateSequences { get; set; } = [];
+
+    /// <summary>
+    /// Every stream id a scope-widening event (<c>IdeaScopeSet</c>, <c>IdeaPrivacySet</c>,
+    /// <c>TaskScopeSet</c>, <c>TaskPrivacySet</c>, or <c>TaskPublished</c>) has marked for a one-time
+    /// full-history resend at its own new scope (idea 8c5993c5) — never cleared until that resend
+    /// actually runs, so a scope change followed by a crash finds the stream again rather than
+    /// silently leaving a teammate with only a partial history. Bounded by however many streams have
+    /// widened scope since the last time this project's outbox actually ran, which is ordinary
+    /// project activity, not a growth risk the way <see cref="PendingPrivateSequences"/> guards
+    /// against for a single long-held-private stream.
+    /// </summary>
+    public List<Guid> PendingFullResendStreamIds { get; set; } = [];
 }
