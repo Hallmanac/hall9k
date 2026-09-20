@@ -645,9 +645,14 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.CurrentRunId = null;
         view.AssignedOwnerId = @event.Data.NewHolderOwnerId;
         view.AssignedOwnerFingerprint = null;
-        // The takeover itself names the new node, so the old placement (if any) is retired the
-        // same way TaskAggregate.Apply(Events.TaskHolderTakenOver) retires its own copy.
-        view.PlacedOnNodeId = @event.Data.NewHolderNodeId;
+        // Only when a placement already named some node — mirrors
+        // TaskAggregate.Apply(Events.TaskHolderTakenOver)'s own guard (independent pre-PR review,
+        // cycle 1, conformance lens): a never-placed task must stay unplaced rather than becoming
+        // pinned to the taking node.
+        if (view.PlacedOnNodeId is not null)
+        {
+            view.PlacedOnNodeId = @event.Data.NewHolderNodeId;
+        }
         // Reassigned to the taker's own owner, the same "unassigning and assigning again" shape
         // AssignedAt's own doc gives a reassignment — mirrors TaskDetails.Apply(TaskHolderTakenOver),
         // which sets it to TakenAt for the identical reason (conformance pre-PR review, cycle 1:
@@ -687,9 +692,15 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
             view.CurrentRunId = null;
             view.AssignedOwnerId = @event.Data.GrantedToOwnerId;
             view.AssignedOwnerFingerprint = @event.Data.GrantedToOwnerFingerprint;
-            // Mirrors TaskAggregate.Apply(Events.TaskHolderReleased): the grant moves the task to
-            // the requester's own node, retiring whatever placement it carried before.
-            view.PlacedOnNodeId = @event.Data.GrantedToNodeId;
+            // Only when a placement already named some node — mirrors
+            // TaskAggregate.Apply(Events.TaskHolderReleased)'s own guard (independent pre-PR
+            // review, cycle 1, conformance lens): a never-placed task must stay unplaced rather
+            // than becoming pinned to the grant's own destination.
+            if (view.PlacedOnNodeId is not null)
+            {
+                view.PlacedOnNodeId = @event.Data.GrantedToNodeId;
+            }
+
             view.AssignedAt = @event.Data.ReleasedAt;
             view.State = view.UnmetDependencies.Count == 0 ? TaskState.Queued : TaskState.Blocked;
         }

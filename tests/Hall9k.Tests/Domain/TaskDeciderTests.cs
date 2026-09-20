@@ -979,7 +979,10 @@ public sealed class TaskDeciderTests
     [Fact]
     public void A_cooperative_grant_rewrites_the_placement_to_the_requesters_own_node()
     {
-        TaskAggregate task = ClaimedTask();
+        TaskAggregate task = PublishedTask();
+        Guid staleNodeId = DomainId.New();
+        task.Apply(TaskDecider.Assign(task, Owner, [], Now, Owner, placedOnNodeId: Optional<Guid?>.Of(staleNodeId)));
+        task.Apply(TaskDecider.Claim(task, staleNodeId, Owner, DomainId.New(), Now));
         Guid requesterNodeId = DomainId.New();
         Guid requesterOwnerId = DomainId.New();
         task.Apply(TaskDecider.RequestTake(task, requesterNodeId, requesterOwnerId, "requester-fingerprint", "Why", Now));
@@ -988,6 +991,36 @@ public sealed class TaskDeciderTests
 
         task.PlacedOnNodeId.Should().Be(
             requesterNodeId, "a cooperative grant moves the task to the requester's own node, retiring whatever placement it carried before");
+    }
+
+    [Fact]
+    public void A_forced_takeover_of_a_never_placed_task_leaves_it_unplaced()
+    {
+        // Independent pre-PR review, cycle 1, conformance lens: an unconditional rewrite here
+        // used to pin even a never-placed task to the taking node, narrowing dispatch it never
+        // had before this feature existed — a task nobody placed must keep the automatic
+        // cross-node recovery a lease-gone requeue already gave it.
+        TaskAggregate task = ClaimedTask();
+        Guid newHolderNodeId = DomainId.New();
+        Guid newHolderOwnerId = DomainId.New();
+
+        task.Apply(TaskDecider.TakeOver(
+            task, newHolderNodeId, newHolderOwnerId, "new-owner-fingerprint", "Absent for six hours.", newHolderOwnerId, Now));
+
+        task.PlacedOnNodeId.Should().BeNull("this task was never placed, so a takeover must not pin it to the taking node");
+    }
+
+    [Fact]
+    public void A_cooperative_grant_on_a_never_placed_task_leaves_it_unplaced()
+    {
+        TaskAggregate task = ClaimedTask();
+        Guid requesterNodeId = DomainId.New();
+        Guid requesterOwnerId = DomainId.New();
+        task.Apply(TaskDecider.RequestTake(task, requesterNodeId, requesterOwnerId, "requester-fingerprint", "Why", Now));
+
+        task.Apply(TaskDecider.GrantTake(task, requesterNodeId, requesterOwnerId, Now));
+
+        task.PlacedOnNodeId.Should().BeNull("this task was never placed, so a grant must not pin it to the requester's own node");
     }
 
     [Fact]
