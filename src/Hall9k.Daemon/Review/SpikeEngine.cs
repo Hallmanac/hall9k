@@ -690,13 +690,18 @@ public sealed class SpikeEngine(
 
             if (idea.WorkspaceHome.HasValue && !idea.WorkspaceHome.IsNativeForm)
             {
-                // A workspace home replicated from a node on a different operating system names a
-                // directory on THAT machine, never this one — building a path from it and calling
-                // Directory.CreateDirectory would misread a foreign path's own syntax as this
-                // host's and create a bogus directory tree relative to wherever that misreading
-                // happens to land. Best-effort already covers this: the run directory's own copy,
-                // read back by h9k task show, is the durable record either way (this method's own
-                // doc comment).
+                // A workspace home replicated from a node on a different operating system FAMILY
+                // names a directory on THAT machine, never this one — building a path from it and
+                // calling Directory.CreateDirectory would misread a foreign path's own syntax as
+                // this host's and create a bogus directory tree relative to wherever that
+                // misreading happens to land. Best-effort already covers this: the run directory's
+                // own copy, read back by h9k task show, is the durable record either way (this
+                // method's own doc comment). IsNativeForm tests path SHAPE, not host identity
+                // (ProjectHome.IsNativeForm's own doc): a home replicated from another node of the
+                // SAME family (macOS from Linux, or the reverse) still reads as native and reaches
+                // the Directory.CreateDirectory below on a directory that may not exist on THIS
+                // machine either — the catch around this whole method is what keeps that residual
+                // case from failing the run either way.
                 return;
             }
 
