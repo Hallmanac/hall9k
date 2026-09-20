@@ -14,8 +14,24 @@ namespace Hall9k.Daemon.Review;
 /// callable the registry can hold, rather than a signature every future persona has to match by
 /// hand.
 /// </summary>
+/// <param name="Drive">
+/// What this run decided about standing the product up for the persona whose prompt is being
+/// built (idea b9b09779, piece 3) — resolved once at dispatch and recorded on the run stream, so
+/// the prompt and the report it produces cannot disagree about whether the session was meant to
+/// drive. Null for a persona that never drives (the engineer's two lenses), whose prompt has no
+/// seam for it.
+/// </param>
+/// <param name="RunSkill">
+/// This project's run skill, verbatim, when it has one on its ledger and the persona being
+/// prompted may drive with it — the only thing that says how this particular project is stood up
+/// locally, so a driving session follows it rather than inventing a command. Null whenever
+/// <see cref="ReviewDriveDecision.ProjectHasRunSkill"/> is false, which is the same fact read
+/// two ways: the decision's boolean is what the run records and the report reads, and this is the
+/// text the prompt carries.
+/// </param>
 public sealed record ReviewPersonaPromptRequest(
-    TaskDetails Task, ProjectDetails Project, string Branch, string BaseBranch, TimeSpan? CommandTimeout);
+    TaskDetails Task, ProjectDetails Project, string Branch, string BaseBranch, TimeSpan? CommandTimeout,
+    ReviewDriveDecision? Drive = null, string? RunSkill = null);
 
 /// <summary>
 /// One agent session a persona's review is made of. Most personas are one session; the engineer's
@@ -44,13 +60,21 @@ public sealed record ReviewPersonaPromptRequest(
 /// first and its conformance lens second only because the engineer is the only registered
 /// persona, and a session's own screening must not change with what else its assignee declared.
 /// </param>
+/// <param name="ComposeSection">
+/// How this session's raw findings file becomes its part of the report, when the platform rather
+/// than the session decides the section's shape (idea b9b09779, piece 3: the design review owes a
+/// section per lens in a fixed order, a stated drive state, and an offer whose presence is the
+/// platform's call, not the reviewing agent's). Null — every engineer session — means the file is
+/// carried into the report verbatim, exactly as a pr-review report has always carried it.
+/// </param>
 public sealed record ReviewPersonaSession(
     ReviewPersona Persona,
     string Slug,
     string Heading,
     string RoleName,
     bool SeesTaskContext,
-    Func<ReviewPersonaPromptRequest, string> BuildPrompt);
+    Func<ReviewPersonaPromptRequest, string> BuildPrompt,
+    Func<string, ReviewDriveDecision, string>? ComposeSection = null);
 
 /// <summary>
 /// One persona's registration: what it reviews for, and the sessions that do the reviewing. A
@@ -63,11 +87,19 @@ public sealed record ReviewPersonaSession(
 /// failed the run; false for an additional persona, whose failure is recorded and named in the
 /// report instead, so one persona's bad session never costs the others their findings.
 /// </param>
+/// <param name="CanDriveTheProduct">
+/// Whether this persona's review is one that may stand the project's product up and drive it
+/// (idea b9b09779, pieces 2 and 3). True for the designer; true for QA once piece 2 lands; false
+/// for the engineer, whose review reads a diff and has never started anything. It is what tells
+/// the dispatch to resolve a <see cref="ReviewDriveDecision"/> at all, so a persona that cannot
+/// drive never records one and never carries a drive sentence in its report.
+/// </param>
 public sealed record ReviewPersonaEntry(
     ReviewPersona Persona,
     string Criteria,
     bool FailureFailsTheRun,
-    IReadOnlyList<ReviewPersonaSession> Sessions)
+    IReadOnlyList<ReviewPersonaSession> Sessions,
+    bool CanDriveTheProduct = false)
 {
     /// <summary>Whether this persona has a review prompt to dispatch at all.</summary>
     public bool IsRegistered => Sessions.Count > 0;
@@ -85,12 +117,29 @@ public sealed record ReviewPersonaEntry(
 /// said plainly in the report, because it is the one case where a review runs that nobody declared.
 /// </param>
 /// <param name="Sessions">Every session to dispatch, flattened in persona order then session order. The first is the run's own primary session.</param>
+/// <param name="DriveDecisions">
+/// One entry per persona in <paramref name="Ran"/> that can drive the product, as this run
+/// resolved it (idea b9b09779, piece 3). Empty on a plan built with none supplied, which is what
+/// every caller that has no project stream to read passes.
+/// </param>
 public sealed record ReviewPersonaPlan(
     IReadOnlyList<ReviewPersona> Requested,
     IReadOnlyList<ReviewPersona> Ran,
     IReadOnlyList<ReviewPersona> Skipped,
     bool FellBackToEngineer,
-    IReadOnlyList<ReviewPersonaSession> Sessions);
+    IReadOnlyList<ReviewPersonaSession> Sessions,
+    IReadOnlyList<ReviewDriveDecision> DriveDecisions)
+{
+    /// <summary>
+    /// What this run decided about <paramref name="persona"/> driving. A persona with nothing
+    /// recorded falls back to <see cref="ReviewDriveDecision.NoneFor"/> — the persona's own
+    /// default setting and no run skill — which is the honest read of a run that never recorded
+    /// one: it cannot have driven, because nothing told it how.
+    /// </summary>
+    public ReviewDriveDecision DriveFor(ReviewPersona persona) =>
+        DriveDecisions.FirstOrDefault(decision => decision.Persona == persona)
+        ?? ReviewDriveDecision.NoneFor(persona);
+}
 
 /// <summary>
 /// The persona registry (idea b9b09779, piece 1): the one place a review persona is mapped to its
@@ -145,7 +194,20 @@ public static class ReviewPersonaRegistry
         "User experience, conformance to the proposed design, transitions and animations, CSS "
         + "practice, accessibility, and the project's own design system where it has one.",
         FailureFailsTheRun: false,
-        []);
+        [
+            new ReviewPersonaSession(
+                ReviewPersona.Designer,
+                DesignReviewSection.SessionSlug,
+                "Design (seven lenses)",
+                SessionRoleName.ReviewDesign(PrReviewCycle),
+                // Handed the task's own context, unlike the engineer's adversarial lens: the
+                // conformance lens here judges the change against a proposed design named on the
+                // linked task or issue, and a session that never saw the task cannot find it.
+                SeesTaskContext: true,
+                DesignReviewPromptBuilder.Build,
+                DesignReviewSection.Compose),
+        ],
+        CanDriveTheProduct: true);
 
     /// <summary>
     /// A pr-review run never re-reviews — one pass per persona session, no cycle loop — so every
@@ -165,7 +227,8 @@ public static class ReviewPersonaRegistry
     /// nothing reads as the engineer's review (<see cref="ReviewPersona.ForReview"/>), which is
     /// what keeps this invisible to everyone who never declares a persona.
     /// </summary>
-    public static ReviewPersonaPlan Plan(IEnumerable<ReviewPersona>? declared)
+    public static ReviewPersonaPlan Plan(
+        IEnumerable<ReviewPersona>? declared, IEnumerable<ReviewDriveDecision>? driveDecisions = null)
     {
         IReadOnlyList<ReviewPersona> requested = ReviewPersona.ForReview(declared);
         IReadOnlyList<ReviewPersona> ran = [.. requested.Where(persona => For(persona).IsRegistered)];
@@ -183,7 +246,29 @@ public static class ReviewPersonaRegistry
         }
 
         return new ReviewPersonaPlan(
-            requested, ran, skipped, fellBack, [.. ran.SelectMany(persona => For(persona).Sessions)]);
+            requested, ran, skipped, fellBack, [.. ran.SelectMany(persona => For(persona).Sessions)],
+            DrivesOf(ran, driveDecisions));
+    }
+
+    /// <summary>
+    /// The drive decisions this plan keeps: one per persona in <paramref name="ran"/> that can
+    /// actually drive, taken from <paramref name="supplied"/> where the caller resolved one and
+    /// defaulted to "no run skill, so no driving" where it did not. Filtered by
+    /// <see cref="ReviewPersonaEntry.CanDriveTheProduct"/> rather than carried as passed, so a
+    /// decision for a persona that does not run, or for one that never drives, cannot reach a
+    /// report through a caller's mistake.
+    /// </summary>
+    private static IReadOnlyList<ReviewDriveDecision> DrivesOf(
+        IReadOnlyList<ReviewPersona> ran, IEnumerable<ReviewDriveDecision>? supplied)
+    {
+        ReviewDriveDecision[] offered = supplied?.ToArray() ?? [];
+        return
+        [
+            .. ran.Where(persona => For(persona).CanDriveTheProduct)
+                .Select(persona =>
+                    offered.FirstOrDefault(decision => decision.Persona == persona)
+                    ?? ReviewDriveDecision.NoneFor(persona)),
+        ];
     }
 
     /// <summary>
@@ -199,7 +284,7 @@ public static class ReviewPersonaRegistry
     /// </summary>
     public static ReviewPersonaPlan Recorded(
         IEnumerable<ReviewPersona>? requested, IEnumerable<ReviewPersona>? ran, IEnumerable<ReviewPersona>? skipped,
-        bool fellBackToEngineer)
+        bool fellBackToEngineer, IEnumerable<ReviewDriveDecision>? driveDecisions = null)
     {
         IReadOnlyList<ReviewPersona> recordedRan = ReviewPersona.Declared(ran);
         IReadOnlyList<ReviewPersonaSession> sessions = [.. recordedRan.SelectMany(persona => For(persona).Sessions)];
@@ -219,7 +304,8 @@ public static class ReviewPersonaRegistry
             recordedRan,
             ReviewPersona.Declared(skipped),
             fellBackToEngineer,
-            sessions);
+            sessions,
+            DrivesOf(recordedRan, driveDecisions));
     }
 
     private static string BuildLens(ReviewPersonaPromptRequest request, ReviewLens lens) =>

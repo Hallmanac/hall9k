@@ -535,6 +535,11 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         {
             ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory,
             "agent-prompt-builder", "mention-followup-prompt-builder",
+            // DesignReviewPromptBuilder's own package, a literal for the identical reason the
+            // two above it are: that builder lives in Hall9k.Daemon.Execution, which this
+            // project never references. Every pr-review run whose assignee declared the designer
+            // persona needs it (idea b9b09779, piece 3).
+            "design-review-prompt-builder",
         })
         {
             string requiredTemplatePackage = Path.Combine(fromRelease, "templates", templateDirectory);

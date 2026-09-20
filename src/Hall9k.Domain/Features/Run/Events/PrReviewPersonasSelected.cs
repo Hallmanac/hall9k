@@ -17,10 +17,20 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// it is recorded rather than inferred from <paramref name="Ran"/> disagreeing with
 /// <paramref name="Requested"/>.
 /// </param>
+/// <param name="DriveDecisions">
+/// For each persona whose review can stand the product up (idea b9b09779, piece 3 — the
+/// designer today, QA once piece 2 lands), whether this run's own dispatch decided it would:
+/// the project's drive setting as it stood at dispatch, and whether there was a run skill on the
+/// ledger to drive with. Recorded here rather than re-resolved when the report is composed,
+/// because both inputs can move while a review is in flight and the report must say what
+/// happened, not what would be decided now. Empty for a run whose stream predates this, and for
+/// every run whose personas cannot drive at all.
+/// </param>
 public sealed record PrReviewPersonasSelected(
     Guid Id,
     IReadOnlyList<ReviewPersona> Requested,
     IReadOnlyList<ReviewPersona> Ran,
     IReadOnlyList<ReviewPersona> Skipped,
     bool FellBackToEngineer,
-    DateTimeOffset SelectedAt);
+    DateTimeOffset SelectedAt,
+    IReadOnlyList<ReviewDriveDecision>? DriveDecisions = null);

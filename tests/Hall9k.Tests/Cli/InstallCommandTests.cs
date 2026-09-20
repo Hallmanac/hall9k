@@ -299,6 +299,7 @@ public sealed class InstallCommandTests : IDisposable
         {
             ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory,
             AgentPromptBuilder.TemplateDirectory, MentionFollowUpPromptBuilder.TemplateDirectory,
+            DesignReviewPromptBuilder.TemplateDirectory,
         })
         {
             string templatePackage = Path.Combine(directory, "templates", templateDirectory);
@@ -346,7 +347,7 @@ public sealed class InstallCommandTests : IDisposable
         foreach (string templateDirectory in new[]
         {
             ReviewLapPromptBuilder.TemplateDirectory, AgentPromptBuilder.TemplateDirectory,
-            MentionFollowUpPromptBuilder.TemplateDirectory,
+            MentionFollowUpPromptBuilder.TemplateDirectory, DesignReviewPromptBuilder.TemplateDirectory,
         })
         {
             string templatePackage = Path.Combine(directory, "templates", templateDirectory);
@@ -368,7 +369,7 @@ public sealed class InstallCommandTests : IDisposable
         foreach (string templateDirectory in new[]
         {
             ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory,
-            MentionFollowUpPromptBuilder.TemplateDirectory,
+            MentionFollowUpPromptBuilder.TemplateDirectory, DesignReviewPromptBuilder.TemplateDirectory,
         })
         {
             string templatePackage = Path.Combine(directory, "templates", templateDirectory);
@@ -390,7 +391,7 @@ public sealed class InstallCommandTests : IDisposable
         foreach (string templateDirectory in new[]
         {
             ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory,
-            AgentPromptBuilder.TemplateDirectory,
+            AgentPromptBuilder.TemplateDirectory, DesignReviewPromptBuilder.TemplateDirectory,
         })
         {
             string templatePackage = Path.Combine(directory, "templates", templateDirectory);
@@ -401,6 +402,34 @@ public sealed class InstallCommandTests : IDisposable
         string? problem = InstallCommand.ValidateReleasePayload(directory);
 
         problem.Should().Contain(MentionFollowUpPromptBuilder.TemplateDirectory);
+    }
+
+    /// <summary>
+    /// Every pr-review run whose assignee declared the designer persona needs this package at
+    /// runtime (idea b9b09779, piece 3), so a payload without it is as incomplete as one missing
+    /// any other builder's prose — and the refusal names it rather than failing later inside a
+    /// dispatched session.
+    /// </summary>
+    [Fact]
+    public void A_release_payload_missing_only_the_design_review_prompt_builder_package_is_refused()
+    {
+        Directory.CreateDirectory(directory);
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9k")), "cli\n");
+        File.WriteAllText(Path.Combine(directory, InstallCommand.BinaryFileName("h9kd")), "daemon\n");
+        foreach (string templateDirectory in new[]
+        {
+            ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory,
+            AgentPromptBuilder.TemplateDirectory, MentionFollowUpPromptBuilder.TemplateDirectory,
+        })
+        {
+            string templatePackage = Path.Combine(directory, "templates", templateDirectory);
+            Directory.CreateDirectory(templatePackage);
+            File.WriteAllText(Path.Combine(templatePackage, "build.md"), "# build\n");
+        }
+
+        string? problem = InstallCommand.ValidateReleasePayload(directory);
+
+        problem.Should().Contain(DesignReviewPromptBuilder.TemplateDirectory);
     }
 
     [Fact]
