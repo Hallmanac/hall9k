@@ -268,6 +268,44 @@ public sealed class DaemonOptions
     public int CourierMaxTurns { get; set; } = 8;
 
     /// <summary>
+    /// How often <c>RunSkillSweepEngine</c> answers an outstanding run-skill discovery request
+    /// and pushes a newly recorded run skill to the ledger (idea b9b09779, piece 4). A fixed
+    /// interval for the same reason <see cref="PromptAddendaSweepPollInterval"/> is one, and a
+    /// slower one: a discovery is asked for at registration and rarely again, so a minute's wait
+    /// before it starts costs nothing anyone notices.
+    /// </summary>
+    public TimeSpan RunSkillSweepPollInterval { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// The turn ceiling on a run-skill discovery session (idea b9b09779, piece 4) — the same
+    /// mechanically-enforced narrowness <see cref="StackAssessmentMaxTurns"/> gives the stack
+    /// assessment, a little wider because this session reads several files before it writes
+    /// anything. Its job is read-and-compose, never build-and-verify, so a session that has not
+    /// finished in this many turns is not close.
+    /// </summary>
+    public int RunSkillDiscoveryMaxTurns { get; set; } = 25;
+
+    /// <summary>
+    /// The wall-clock bound on a run-skill discovery session, alongside
+    /// <see cref="RunSkillDiscoveryMaxTurns"/> rather than instead of it — the same "bounded
+    /// twice over" shape <see cref="StackAssessmentTimeout"/> keeps, because a turn cap alone
+    /// does nothing about one turn that hangs.
+    /// </summary>
+    public TimeSpan RunSkillDiscoveryTimeout { get; set; } = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// How long <c>RunSkillSweepEngine</c> leaves a discovery request outstanding while the
+    /// project still has no checkout with files in it, before recording the honest "nothing to
+    /// read" failure. A home being made and a home that is broken look identical from here —
+    /// <c>h9k project add</c> asks for the discovery and then bare-clones the repository and cuts
+    /// <c>repo/dev</c> — so the grace is what tells them apart, and it is generous because what
+    /// it is waiting on is a clone of an arbitrarily large repository over an arbitrarily slow
+    /// link. Costs a project whose home genuinely never materialised nothing but a later answer,
+    /// which nobody is waiting on by then.
+    /// </summary>
+    public TimeSpan RunSkillCheckoutGrace { get; set; } = TimeSpan.FromMinutes(30);
+
+    /// <summary>
     /// The absolute lifetime ceiling of automatic closeout actions (reopen dispatches, plus
     /// errored-review re-requests) one task's pull request may spend, whatever obstruction
     /// each one answered — the true runaway backstop (log #11 spirit, backlog 45), separate
