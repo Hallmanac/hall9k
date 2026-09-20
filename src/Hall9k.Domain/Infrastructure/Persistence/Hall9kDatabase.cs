@@ -14,7 +14,8 @@ namespace Hall9k.Domain.Infrastructure.Persistence;
 /// <para>
 /// Precedence, highest first: the <paramref name="configured"/> parameter (Aspire's
 /// dev-loop wiring, which injects a connection string directly rather than through any
-/// of the homes below); the <see cref="EnvironmentVariableName"/> environment variable
+/// of the homes below); <see cref="ConnectionStringOverrideForTests"/>, a flow-scoped
+/// override only a test can open; the <see cref="EnvironmentVariableName"/> environment variable
 /// (this shell, this invocation — the same mechanism <c>DaemonEnvironment</c> captures
 /// for a launchd-started daemon); the platform config file (<see cref="ConfigFile"/>, a
 /// durable per-machine setting written by <c>h9k doctor</c>'s start-offer, by <c>h9k
@@ -43,6 +44,29 @@ public static class Hall9kDatabase
 
     public const string EnvironmentVariableName = "HALL9K_CONNECTION_STRING";
 
+    /// <summary>
+    /// A flow-scoped override that outranks <see cref="EnvironmentVariableName"/> in
+    /// <see cref="Resolve"/>'s own precedence, the connection-string counterpart to
+    /// <see cref="Storage.PlatformPaths.HomeOverrideForTests"/>: the test project's
+    /// <c>ScopedTestHome</c> helper opens it for its own async flow — and everything that flow
+    /// starts — so two tests pointing at different Postgres containers in parallel never resolve
+    /// each other's connection string. No production code ever sets it (Decisions Log
+    /// PLACEHOLDER-98484f36).
+    /// </summary>
+    private static readonly AsyncLocal<string?> ConnectionStringOverride = new();
+
+    /// <summary>
+    /// Test-only accessor for <see cref="ConnectionStringOverride"/>, reachable only through
+    /// <c>InternalsVisibleTo</c> for <c>Hall9k.Tests</c>. Set it from a constructor or field
+    /// initializer, never inside an <c>async Task InitializeAsync()</c> — see
+    /// <see cref="Storage.PlatformPaths.HomeOverrideForTests"/> for why.
+    /// </summary>
+    internal static string? ConnectionStringOverrideForTests
+    {
+        get => ConnectionStringOverride.Value;
+        set => ConnectionStringOverride.Value = value;
+    }
+
     /// <summary>The platform config file: a durable per-machine setting under <c>~/.hall9k</c>.</summary>
     public static string ConfigFile => Path.Combine(PlatformPaths.Home, "config.json");
 
@@ -66,6 +90,12 @@ public static class Hall9kDatabase
         if (configured is { Length: > 0 })
         {
             return new ConnectionStringResolution(configured, ConnectionStringOrigin.Configured, null);
+        }
+
+        if (ConnectionStringOverride.Value is { Length: > 0 } fromOverride)
+        {
+            return new ConnectionStringResolution(
+                fromOverride, ConnectionStringOrigin.EnvironmentVariable, EnvironmentVariableName);
         }
 
         if (Environment.GetEnvironmentVariable(EnvironmentVariableName) is { Length: > 0 } fromEnvironment)
