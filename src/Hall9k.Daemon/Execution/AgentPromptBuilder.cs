@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Text;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Connectors.RunSkills;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Review;
@@ -359,6 +360,20 @@ public static class AgentPromptBuilder
 
     /// <summary>The stack assessment trailer's evidence-block marker.</summary>
     public const string StackAssessmentEvidenceMarker = "EVIDENCE:";
+
+    /// <summary>
+    /// The run-skill discovery trailer's shape line (idea b9b09779, piece 4) — pointer or
+    /// full-text, the composing session's own call. Never none-discoverable: that outcome is the
+    /// daemon's own, decided from the repository survey before a session is ever dispatched, so a
+    /// session that reached this prompt at all has something to read and is choosing between two.
+    /// </summary>
+    public const string RunSkillShapeMarker = "RUN SKILL SHAPE:";
+
+    /// <summary>
+    /// The run-skill discovery trailer's document marker: everything after this line, to the end
+    /// of the session's summary, is the composed markdown verbatim.
+    /// </summary>
+    public const string RunSkillMarkdownMarker = "RUN SKILL MARKDOWN:";
 
     /// <summary>
     /// The follow-up variant (PR closeout, Decisions Log #20): the agent resumes the task's
@@ -1219,6 +1234,110 @@ public static class AgentPromptBuilder
         AppendFragment(prompt, file, "closing");
 
         return prompt.ToString();
+    }
+
+    /// <summary>
+    /// The read-only discovery session that composes a project's run skill (idea b9b09779, piece
+    /// 4). Project-scoped rather than run-scoped — there is no task here, and so no external-
+    /// interaction logging rule, which is keyed on a task id this session does not have and would
+    /// hand it a command it cannot run.
+    /// <para>
+    /// <paramref name="survey"/> is what the daemon's own mechanical scan already found, rendered
+    /// into the prompt rather than left for the session to rediscover: tools before tokens. Its
+    /// classification is stated to the session as a guess to overturn, never as a verdict — the
+    /// pointer / full-text call is the session's, made from the files themselves, which is the
+    /// whole reason this is an agent's job and not another scan.
+    /// </para>
+    /// </summary>
+    public static string BuildRunSkillDiscovery(
+        ProjectDetails project, string worktreePath, string headCommit, RunSkillSurvey survey, int maximumLength,
+        TimeSpan? commandTimeout = null)
+    {
+        const string file = $"{TemplateDirectory}/run-skill-discovery.md";
+        StringBuilder prompt = new();
+        prompt.AppendLine(Fragment(file, "heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "read-only-declaration");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "context-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "context",
+            ("ProjectName", project.Name),
+            ("WorktreePath", worktreePath),
+            ("HeadCommit", headCommit.IsNotBlank() ? headCommit : "(could not be read)"),
+            ("BaseBranch", project.BaseBranch));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "evidence-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "evidence-intro");
+        prompt.AppendLine();
+        AppendEvidence(prompt, file, "evidence-launch-heading", survey.LaunchCoverage);
+        AppendEvidence(prompt, file, "evidence-documentation-heading", survey.Documentation);
+        AppendEvidence(prompt, file, "evidence-build-heading", survey.BuildFiles);
+        AppendFragment(prompt, file, "evidence-widen");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "shape-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "shape-choice");
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "shape-pointer");
+        AppendFragment(prompt, file, "shape-full-text");
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "shape-boundary");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "document-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "document-intro");
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "document-sections");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "human-steps-heading"));
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "human-steps");
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "quality-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "quality",
+            ("MaximumLength", maximumLength.ToString(CultureInfo.InvariantCulture)));
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "trailer-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "trailer-contract",
+            ("ShapeMarker", RunSkillShapeMarker),
+            ("MarkdownMarker", RunSkillMarkdownMarker));
+        prompt.AppendLine();
+        AppendSharedRepositoryHistorySafetyRule(prompt);
+        AppendForegroundGatesRule(
+            prompt, commandTimeout ?? ClaudeSettingsFile.DefaultCommandTimeout, sessionRunsGates: false);
+        AppendFragment(prompt, file, "closing");
+
+        return prompt.ToString();
+    }
+
+    /// <summary>
+    /// One of the survey's three buckets: its heading, then a bullet per file, or the template's
+    /// own "(nothing in this category)" line. Always rendered, even when empty — an absent
+    /// heading would read as an oversight, while an explicitly empty one tells the session the
+    /// scan genuinely found nothing of that kind rather than that it never looked.
+    /// </summary>
+    private static void AppendEvidence(
+        StringBuilder prompt, string file, string headingFragment, IReadOnlyList<RunSkillEvidence> evidence)
+    {
+        prompt.AppendLine(Fragment(file, headingFragment));
+        if (evidence.Count == 0)
+        {
+            prompt.AppendLine(Fragment(file, "evidence-empty"));
+        }
+
+        foreach (RunSkillEvidence found in evidence)
+        {
+            prompt.AppendLine($"- `{found.Path}` — {found.Why}");
+        }
+
+        prompt.AppendLine();
     }
 
     /// <summary>

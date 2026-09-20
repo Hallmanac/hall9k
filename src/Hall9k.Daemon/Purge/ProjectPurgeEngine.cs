@@ -344,6 +344,11 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         session.Delete<OrchestratorFeedDrainLease>(project.Id);
         session.Delete<CourierDaySpawnCounter>(project.Id);
 
+        // RunSkillSyncPosition (idea b9b09779, piece 4) is that same shape once more, for the
+        // same reason: project-id-keyed, never a stream, lazily created on this project's
+        // first-ever run-skill push.
+        session.Delete<RunSkillSyncPosition>(project.Id);
+
         if (taskIds.Length > 0)
         {
             session.QueueSqlCommand("delete from mt_doc_taskdetails where id = ANY(?)", taskIds);
