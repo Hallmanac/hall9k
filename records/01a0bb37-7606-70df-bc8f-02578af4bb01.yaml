@@ -1,0 +1,23 @@
+hall9k-task-record: 1
+task-id: 01a0bb37-7606-70df-bc8f-02578af4bb01
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#417
+objective: A daemon restart that adopts a run in the middle of a verification gate ends that gate's orphaned process tree and re-runs the gate instead of racing it, the restart path waits for a live gate before stopping, and a gate start that fails to record never leaves an unrecorded tree behind
+criteria:
+  - At startup, a run adopted in Verifying or UnderReview whose RunDetails.ActiveGate names a process still alive by pid and start time has that tree ended with ProcessManagerBase.TerminateTree (snapshot-and-recheck), the pids logged, and GateEnded appended, before the pipeline resumes and re-runs the gate from the start; a stale ActiveGate whose process is gone is left to the resumed pipeline
+  - An IOException opening the verify log at gate start is returned as an infrastructure failure of that gate naming the recorded gate process, spends the gate's existing single retry (PendingGateRetry), and never re-enters through the stranded-pipeline sweep
+  - |-
+    h9k daemon stop warns by name of any run on this node whose ActiveGate names a live process, under a Working run or a Delivered task's follow-up alike, and proceeds; h9k update --restart and h9k install --restart, in the shared restart path before the stop, wait for such gates with a total deadline of the verify gate limit, re-querying each poll, then stop; the flag --now overrides the wait and restarts at once (Brian, 2026-09-20: wait, flag as override); a store the CLI cannot reach prints that the check was skipped and proceeds
+  - The GateStarted append at gate start is wrapped so that any failure to record it kills the just-started process tree before rethrowing, so no unrecorded gate process outlives the method
+  - Unit tests cover adoption over a recorded live gate and over a stale record through FakeProcessManager, the verify-log failure path, the stop warning, the bounded wait with a gate ending and another starting inside it, and the --now override; no test creates branches, touches GitHub, or spawns a real gate
+  - dotnet build and dotnet test pass; the decision log carries one entry under this task's placeholder; docs/concepts.md's adoption paragraph says a gate the old daemon left running is ended, never raced
+dependencies: [01a0bedb-ac6e-75ec-94a3-a29643cf3ed7, 01a0bee9-d9f3-7019-b50a-92f998484f36, 01a0bf47-9bb7-7612-99b2-1e7f57e538ee]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/8af4bb01-a-daemon-restart-that-adopts-a
+published: 2026-09-20 15:44:47Z
+context: |-
+  Captured 2026-09-19 15:5x EDT by the Mac project window from the Windows node window's report over the transport. Incident, verbatim in substance: h9k update --restart to v0.10.2 on Windows at 15:44:41 EDT landed two minutes into a56cf16e's test gate (the daemon's own dotnet test); catch-up adopted the run, but the orphaned test process tree still held verify-test.log locked, and the resumed pipeline crashed on it every 5 seconds until the operator killed the orphan tree by hand at 15:46 EDT; the gate then re-ran from the start under the new daemon. On the Mac the same restart at 15:24 avoided it only because the node window checked the log for a running gate first. Brian's rule of the day: only the daemon's own in-flight action blocks a restart, live agent sessions are adopted; a running gate IS the daemon's own action, and the platform should protect itself rather than rely on an operator reading the log. Pointers: RunSupervisor.AdoptOrphansAsync (adopts on alive-or-result; RunResultFile), VerificationRunner (gate spawn and verify-*.log handling), the daemon stop path in the CLI. Windows-specific note: the lock was a Windows file-share lock; on macOS the same orphan would race the log rather than lock it, so the fix must be cross-platform. Lineage: a gap in restart adoption (the #372 and adoption work), not a fix of a fix.
