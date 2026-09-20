@@ -38,6 +38,29 @@ public sealed class IdeaDetailsProjectionTests
         view.State.Should().Be(IdeaState.Captured);
     }
 
+    /// <summary>
+    /// The receiving-node counterpart to <c>IdeaLifecycleTests</c>'s own aggregate test: the inline
+    /// projection Marten actually flushes replicated writes through must not throw either, or the
+    /// whole SaveChangesAsync call that applies this event rolls back — which is what used to
+    /// abort every later event from the sending node (idea 202383dc's own worst case).
+    /// </summary>
+    [Fact]
+    public void A_capture_carrying_the_other_operating_systems_path_form_never_throws_and_round_trips_verbatim()
+    {
+        IdeaDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        string foreignWorkspaceHome = OperatingSystem.IsWindows()
+            ? "/Users/bob/.hall9k/projects/hall9k"
+            : @"C:\Users\bob\.hall9k\projects\hall9k";
+
+        IdeaDetails view = projection.Create(new FakeEvent<IdeaCaptured>(
+            new IdeaCaptured(id, DomainId.New(), "A replicated thought", ProjectId: null, Now, foreignWorkspaceHome)));
+
+        view.WorkspaceHome.Value.Should().Be(foreignWorkspaceHome);
+        view.WorkspaceHome.IsNativeForm.Should().BeFalse();
+        view.State.Should().Be(IdeaState.Captured);
+    }
+
     [Fact]
     public void An_assignment_binds_the_project_capture_did_not_know()
     {

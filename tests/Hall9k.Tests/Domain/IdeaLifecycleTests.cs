@@ -33,6 +33,30 @@ public sealed class IdeaLifecycleTests
         idea.Text.Should().Be("Ideas should have a discovery workspace");
     }
 
+    /// <summary>
+    /// A replicated <see cref="IdeaCaptured"/> carries whatever the CAPTURING node's own host
+    /// recorded — a Windows path applied on macOS, or the reverse — since <c>WorkspaceHomeDirectory</c>
+    /// is a node-local fact, not something this receiver ever resolved to a directory of its own.
+    /// <see cref="ProjectHome.Parse"/> must accept the foreign shape rather than refuse it as "not
+    /// absolute", which used to abort every later event from that sender.
+    /// </summary>
+    [Fact]
+    public void A_capture_carrying_the_other_operating_systems_path_form_never_throws_and_round_trips_verbatim()
+    {
+        string foreignWorkspaceHome = OperatingSystem.IsWindows()
+            ? "/Users/bob/.hall9k/projects/hall9k"
+            : @"C:\Users\bob\.hall9k\projects\hall9k";
+        IdeaCaptured captured = new(
+            DomainId.New(), Owner, "A replicated thought", ProjectId: null, Now, foreignWorkspaceHome);
+
+        IdeaAggregate idea = new();
+        idea.Apply(captured);
+
+        idea.WorkspaceHome.Value.Should().Be(foreignWorkspaceHome);
+        idea.WorkspaceHome.IsNativeForm.Should().BeFalse();
+        idea.State.Should().Be(IdeaState.Captured, "the replay itself must complete, not just the workspace field");
+    }
+
     [Fact]
     public void Capture_refuses_an_empty_thought_and_says_what_capture_costs()
     {

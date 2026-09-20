@@ -39,6 +39,60 @@ public sealed class ProjectHomeTests : IDisposable
             .WithMessage("*absolute*", "a home is read back by a daemon that is in no particular directory");
     }
 
+    /// <summary>
+    /// A replicated <c>IdeaCaptured.WorkspaceHomeDirectory</c> records where a home lived on the
+    /// node that captured it, not this one — a Windows node's own path replayed on macOS, or the
+    /// reverse. Rejecting the foreign shape as "not absolute" is what used to abort every later
+    /// event from that sender (idea <c>202383dc</c>'s own worst case). Both shapes are recognised on
+    /// every host; only the shape THIS host's own <see cref="Path.GetFullPath(string)"/> understands
+    /// is normalised through it, and a genuinely relative path is still refused exactly as before.
+    /// </summary>
+    [Fact]
+    public void A_foreign_operating_systems_form_is_kept_verbatim_while_the_native_one_still_normalises()
+    {
+        string posixPath = "/Users/bob/.hall9k/projects/hall9k";
+        string windowsDrivePath = @"C:\Users\bob\.hall9k\projects\hall9k";
+        string windowsUncPath = @"\\fileserver\share\hall9k";
+
+        ProjectHome posix = ProjectHome.Parse(posixPath);
+        ProjectHome windowsDrive = ProjectHome.Parse(windowsDrivePath);
+        ProjectHome windowsUnc = ProjectHome.Parse(windowsUncPath);
+
+        if (OperatingSystem.IsWindows())
+        {
+            posix.Value.Should().Be(posixPath, "a POSIX-rooted path is foreign on Windows and must never be run through GetFullPath");
+            posix.IsNativeForm.Should().BeFalse();
+            windowsDrive.Value.Should().Be(Path.GetFullPath(windowsDrivePath), "a drive-rooted path is native on Windows");
+            windowsDrive.IsNativeForm.Should().BeTrue();
+            windowsUnc.Value.Should().Be(Path.GetFullPath(windowsUncPath), "a UNC path is native on Windows");
+            windowsUnc.IsNativeForm.Should().BeTrue();
+        }
+        else
+        {
+            posix.Value.Should().Be(Path.GetFullPath(posixPath), "a POSIX path is native off Windows");
+            posix.IsNativeForm.Should().BeTrue();
+            windowsDrive.Value.Should().Be(windowsDrivePath, "a drive-rooted path is foreign off Windows and must never be run through GetFullPath");
+            windowsDrive.IsNativeForm.Should().BeFalse();
+            windowsUnc.Value.Should().Be(windowsUncPath, "a UNC path is foreign off Windows and must never be run through GetFullPath");
+            windowsUnc.IsNativeForm.Should().BeFalse();
+        }
+
+        ProjectHome.None.IsNativeForm.Should().BeFalse("an absence names no shape at all");
+    }
+
+    /// <summary>
+    /// A bare leading backslash with no drive letter (<c>\Users\bob</c>) is Windows' own
+    /// drive-relative shape, not an absolute path in either form — it must still be refused, on
+    /// every host, exactly like the plain relative case above.
+    /// </summary>
+    [Fact]
+    public void A_drive_relative_windows_looking_path_is_still_refused_as_not_absolute()
+    {
+        Action driveRelative = () => ProjectHome.Parse(@"\Users\bob\.hall9k\projects\hall9k");
+
+        driveRelative.Should().Throw<DomainValidationException>().WithMessage("*absolute*");
+    }
+
     [Fact]
     public void Blank_is_the_honest_absence_rather_than_an_error()
     {
