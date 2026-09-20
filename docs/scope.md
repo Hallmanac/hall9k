@@ -782,7 +782,11 @@ template, or the platform, and the name has to already be a skill directory in t
 skills (`~/.claude/skills/<name>`) or in a project home's `skills/` — a name that is in neither is
 refused naming both paths. Structure authority does not move: the repository's own PR-description
 rule and the project's writing conventions still decide the shape, and the voice skill decides only
-the prose. The node has a
+the prose. They also declare zero or more review personas from the fixed set engineer, QA,
+designer — `h9k owner set --persona <name>` (repeatable), cleared with `--clear-personas` — which
+decide how a pull request assigned to them is reviewed: one review session per persona on the
+pr-review task's single worktree, reported in one report sectioned in that fixed order. Declaring
+none reads as the engineer's review, which is what every member gets today. The node has a
 ceiling the dispatcher respects, counted directly in task runs (Decisions Log #111) — the retired
 session-denominated setting still converts when the new one is absent, and a per-run session cap
 (global default, overridable per task even mid-run) governs how many agent sessions one run may

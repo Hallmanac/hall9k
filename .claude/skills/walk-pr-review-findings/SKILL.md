@@ -38,11 +38,30 @@ so posting a review under their login as their review is exactly what this skill
 ## Process
 
 1. **Present findings one at a time** (or in small related groups), in the report's own order —
-   adversarial first, conformance second, exactly as the report sections them. For each, show the
-   owner: what it says, its severity/scope as the reviewer stated them, and (for conformance) that
+   exactly as the report sections them. For each, show the owner: what it says, its
+   severity/scope as the reviewer stated them, and (for conformance) that
    its basis may be thinner than a task's own acceptance criteria — the report already frames a
    thin-basis finding as a context note rather than a blocker, but the owner's judgment is final
    either way.
+
+   The report's sections are its review personas, in the fixed order engineer, QA, designer, with
+   the engineer's own two lenses (adversarial first, conformance second) under its heading. Walk
+   every persona's section in that order and present them as one walk, not as separate reviews:
+   the owner is deciding what to post on one pull request, whoever read it. A section can say
+   something other than findings, and each means something different:
+   - **"Skipped: no review prompt is registered for the … persona yet."** The assignee declared
+     that persona and the platform cannot yet run its review. Nothing to direct; tell the owner it
+     did not run rather than passing over the section in silence.
+   - **"Not delivered: …"** That persona's session died. Same: name it, do not silently present a
+     report that only looks complete.
+   - **"the engineer's review ran in their place"** near the top. Nothing the assignee declared
+     could be run, so the engineer's review stood in. Worth saying once, up front.
+
+   Each session's findings open with a **Run-skill drift** line: the pass's answer to the standing
+   question of whether the change altered how the application runs locally. "checked, no" means it
+   was asked and answered; "not answered by this pass" means it was not, which is worth mentioning
+   once rather than reading as a no. A yes comes with its own finding tagged `run-skill-drift`,
+   which is directed exactly like any other finding.
 
 2. **Ask for a directive per finding**, one of:
    - **Dismiss.** Nothing posted for it. Say so and move on.

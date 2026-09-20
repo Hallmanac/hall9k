@@ -639,10 +639,12 @@ on-closeout|never|when-all-tasks-close`, [below](#closing-a-linked-issue)), the 
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 
-`owner set` holds the two preferences that belong to the human rather than to a project: the review
-re-request policy (`--rerequest-review on|off|default`, which a project setting outranks) and the
+`owner set` holds the preferences that belong to the human rather than to a project: the review
+re-request policy (`--rerequest-review on|off|default`, which a project setting outranks), the
 skill the owner writes in (`--voice-skill <name>`, forgotten with `--clear-voice-skill`, printed by
-`owner show`). A named voice skill makes every prompt seam where a session composes text a human
+`owner show`), and the review personas they hold (`--persona engineer|qa|designer`, repeatable,
+cleared with `--clear-personas`, also printed by `owner show`). A named voice skill makes every
+prompt seam where a session composes text a human
 reads as the owner's — a pull request description, a review-thread reply, a commit message, a posted
 review finding, a drafted reply to a GitHub mention — tell that session to load the skill and its
 matching context before writing: `contexts/code-review.md` for prose the session posts itself,
@@ -652,6 +654,19 @@ has to already be a skill directory in the owner's user skills (`~/.claude/skill
 project home's `skills/`; a name in neither is refused naming both paths. It settles the prose only:
 the repository's own PR-description rule and the project's `--writing-conventions` still decide the
 structure.
+
+A declared persona is the lens somebody else's pull request gets reviewed through when it is
+assigned to this member. The set is fixed, because each persona maps to its own prompt and criteria
+in the platform's persona registry: `engineer` is today's review of code, logic and functionality,
+`qa` is compliance and functionality through the lens of blast radius, `designer` is user
+experience, the proposed design, accessibility and the project's design system. A pull request
+assigned to them mints the same pr-review task it always has, and that task runs one review session
+per declared persona on its single worktree and branch, reported in one findings report sectioned
+engineer, QA, designer. Declaring none is the ordinary case and reads as the engineer's review, so
+nothing changes for anyone who never passes the option. Only the engineer's prompt is registered
+today, so a declared `qa` or `designer` is named in the report and in `task show` as skipped rather
+than silently ignored, and a member who declared only unregistered personas gets the engineer's
+review in their place rather than an unreviewed pull request.
 
 Which pre-PR review stages a run gets is itself a project-, task-, and node-level setting
 (`--review-stage-composition <full-pipeline|adversarial-only|conformance-only|skip-final-pass|none>`
