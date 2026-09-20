@@ -14,7 +14,8 @@ namespace Hall9k.Tests.Cli;
 /// <c>Path.GetDirectoryName(skillsSource)</c>'s own sibling derivation, or in the
 /// <c>PublishSkills</c>/<c>PublishTemplates</c> call sequence itself, had nothing here to catch it.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (both canonical directories hang off it).
+// Redirects HALL9K_HOME through this class's own ScopedTestHome, never the process-wide
+// variable itself (both canonical directories hang off it).
 public sealed class InstallCommandFinishAsyncPublicationTests : IDisposable
 {
     private readonly string staging = Path.Combine(Path.GetTempPath(), $"h9k-install-finish-staging-{Path.GetRandomFileName()}");

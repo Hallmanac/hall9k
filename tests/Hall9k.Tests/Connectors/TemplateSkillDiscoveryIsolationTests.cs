@@ -26,8 +26,9 @@ namespace Hall9k.Tests.Connectors;
 /// pre-PR review, cycle 1: the worktree-level guard above had no home-level counterpart).
 /// </para>
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (SkillLibraryPaths.CanonicalDirectory and
-// TemplateLibraryPaths.CanonicalDirectory both hang off it).
+// Redirects HALL9K_HOME through this class's own ScopedTestHome, never the process-wide
+// variable itself (SkillLibraryPaths.CanonicalDirectory and TemplateLibraryPaths.CanonicalDirectory
+// both hang off it).
 public sealed class TemplateSkillDiscoveryIsolationTests : IDisposable
 {
     private readonly string _worktreePath = Path.Combine(Path.GetTempPath(), $"h9k-template-isolation-{Guid.NewGuid():N}");

@@ -15,7 +15,8 @@ namespace Hall9k.Tests.Cli;
 /// and answerable for every directory it makes. No git here — the repo/ half has its own tests
 /// against a real repository; these cover the shape, the skill seeding and the render.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (the canonical skill set hangs off it).
+// Redirects HALL9K_HOME through this class's own ScopedTestHome, never the process-wide
+// variable itself (the canonical skill set hangs off it).
 public sealed class ProjectHomeRecipeTests : IDisposable
 {
     private readonly ScopedTestHome _scopedHome = new();
