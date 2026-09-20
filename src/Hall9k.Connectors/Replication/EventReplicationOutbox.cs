@@ -99,6 +99,20 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         // between marking and resending finds it again rather than silently dropping it.
         HashSet<Guid> pendingFullResend = position?.PendingFullResendStreamIds is { Count: > 0 } savedResend ? [.. savedResend] : [];
 
+        // A snapshot of the two fast-skip inputs exactly as loaded, before the forward scan below
+        // mutates either one — what the resend pass (below) needs to tell "the forward scan already
+        // handled this sequence in THIS SAME call" apart from "the forward scan's own fast skip
+        // passed over it, and it is this resend's own gap to close". The LIVE, scan-mutated
+        // variables cannot answer that: by the time the resend pass runs, every sequence the forward
+        // scan actually reprocessed has already been removed from pendingPrivate (or has already
+        // pushed highestQueuedSequence past it), making a freshly-queued sequence indistinguishable
+        // from one the fast skip genuinely never touched — and resending it a second time here would
+        // double-queue whatever the forward scan already sent this same call (independent pre-PR
+        // review, cycle 1, adversarial lens, medium — the fix for the fast-skip gap otherwise
+        // reintroduces the exact double-send the sinceSequence bound always existed to prevent).
+        long highestQueuedSequenceAtScanStart = highestQueuedSequence;
+        HashSet<long> pendingPrivateAtScanStart = [.. pendingPrivate];
+
         IReadOnlyList<IEvent> candidates = await session.Events.QueryAllRawEvents()
             .Where(e => e.Sequence > sinceSequence)
             .OrderBy(e => e.Sequence)
@@ -114,18 +128,59 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         long lastIncludedSequence = sinceSequence;
         Dictionary<MessageAudience, PendingEnvelopeBatch> batches = [];
 
+        // The earliest sequence sitting in any audience's own still-unflushed batch, excluding
+        // whichever audience is about to be committed alongside this very snapshot — the floor
+        // a position advance must never cross. Per-audience batches flush one at a time, each in
+        // its own commit (MessageOutbox.QueueAsync calls SaveChangesAsync itself), so a snapshot
+        // taken while flushing audience A must not claim credit for records still waiting,
+        // uncommitted, in audience B's own open batch: a crash or a thrown exception between the
+        // two commits would otherwise leave those records permanently unsent, since the next
+        // sweep's own sinceSequence and fast-skip both read the (falsely advanced) position as
+        // "already handled" (independent pre-PR review, cycle 1, both lenses, high — the single
+        // shared position doc no longer commits atomically with a single shared batch once a scan
+        // can produce more than one audience).
+        long OpenBatchFloor(MessageAudience? excluding)
+        {
+            long floor = long.MaxValue;
+            foreach ((MessageAudience audience, PendingEnvelopeBatch state) in batches)
+            {
+                if (excluding is not null && audience == excluding)
+                {
+                    continue;
+                }
+
+                if (state.Records.Count == 0 || state.FirstSequence is not { } first)
+                {
+                    continue;
+                }
+
+                floor = Math.Min(floor, first - 1);
+            }
+
+            return floor;
+        }
+
         // Stores the position doc reflecting progress so far, immediately before the envelope that
         // progress belongs to — the identical "advance and queue land in one commit" idiom the
         // single-batch version of this method always used, generalized across as many audiences and
         // flush points (mid-scan overflow, end of scan, the resend pass) as one call now has.
-        void StorePositionSnapshot() => session.Store(new EventReplicationOutboxPosition
+        // <paramref name="flushing"/> names the one audience whose own batch is being committed in
+        // the SAME transaction as this snapshot — safe to credit — so every OTHER audience's still-
+        // open batch caps how far both fields below are allowed to advance.
+        void StorePositionSnapshot(MessageAudience? flushing = null)
         {
-            Id = projectId,
-            LastFlushedGlobalSequence = CapAtHeldBackPosition(lastIncludedSequence, pendingPrivate),
-            HighestQueuedSequence = highestQueuedSequence,
-            PendingPrivateSequences = [.. pendingPrivate],
-            PendingFullResendStreamIds = [.. pendingFullResend],
-        });
+            long floor = OpenBatchFloor(flushing);
+            long safeLastIncluded = floor == long.MaxValue ? lastIncludedSequence : Math.Min(lastIncludedSequence, floor);
+            long safeHighestQueued = floor == long.MaxValue ? highestQueuedSequence : Math.Min(highestQueuedSequence, floor);
+            session.Store(new EventReplicationOutboxPosition
+            {
+                Id = projectId,
+                LastFlushedGlobalSequence = CapAtHeldBackPosition(safeLastIncluded, pendingPrivate),
+                HighestQueuedSequence = safeHighestQueued,
+                PendingPrivateSequences = [.. pendingPrivate],
+                PendingFullResendStreamIds = [.. pendingFullResend],
+            });
+        }
 
         async Task FlushAsync(MessageAudience audience)
         {
@@ -134,7 +189,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 return;
             }
 
-            StorePositionSnapshot();
+            StorePositionSnapshot(audience);
             await MessageOutbox.QueueAsync(
                 session, nodeId, projectId, fromOwnerFingerprint, audience, about: null, MessageKind.Events,
                 EventReplicationCodec.EncodeBatch(state.Records), now, cancellationToken);
@@ -143,7 +198,8 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             batches[audience] = new PendingEnvelopeBatch();
         }
 
-        async Task AddAsync(MessageAudience audience, EventReplicationCodec.ReplicatedEventRecord record, string recordJson)
+        async Task AddAsync(
+            MessageAudience audience, EventReplicationCodec.ReplicatedEventRecord record, string recordJson, long sequence)
         {
             if (!batches.TryGetValue(audience, out PendingEnvelopeBatch? state))
             {
@@ -158,6 +214,9 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 state = batches[audience];
             }
 
+            // The lowest sequence in this open batch — OpenBatchFloor's own read of how far a
+            // snapshot taken while some OTHER audience flushes may safely advance.
+            state.FirstSequence ??= sequence;
             state.Records.Add(record);
             state.Bytes += recordJson.Length;
         }
@@ -252,15 +311,21 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             // read it. It is owed, whichever sweep first held it back.
             EventReplicationCodec.ReplicatedEventRecord record = ToRecord(candidate, nodeId, fromOwnerFingerprint, projectId);
             string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
-            await AddAsync(AudienceFor(resolved.Scope, record.OriginOwnerRootFingerprint, fromOwnerFingerprint), record, recordJson);
+            await AddAsync(
+                AudienceFor(resolved.Scope, record.OriginOwnerRootFingerprint, fromOwnerFingerprint),
+                record, recordJson, candidate.Sequence);
 
             if (IsScopeChangingEventType(candidate.EventType))
             {
                 // idea 8c5993c5: this stream just moved to a scope at least this wide — everything
-                // it holds below this scan's own starting position (sinceSequence) never reached
-                // whatever audience it is newly eligible for, and the resend pass below is the one
-                // chance to catch it up. Bounding it to sinceSequence, rather than resending here
-                // too, is what keeps it from re-queuing what THIS scan just queued afresh.
+                // it holds below this scan's own starting position (sinceSequence), OR sitting in
+                // the fast-skip gap between sinceSequence and highestQueuedSequence (a gap that
+                // opens whenever some OTHER stream's held-back private event has kept sinceSequence
+                // from advancing as far as this project's own high-water mark already has), never
+                // reached whatever audience it is newly eligible for, and the resend pass below is
+                // the one chance to catch both regions up (independent pre-PR review, cycle 1,
+                // adversarial lens, medium: bounding the resend to sinceSequence alone left the gap
+                // neither resent nor re-queued, since the ordinary forward scan fast-skips it too).
                 pendingFullResend.Add(candidate.StreamId);
             }
 
@@ -282,7 +347,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
         {
             await ResendStreamHistoryAsync(
                 session, nodeId, projectId, fromOwnerFingerprint, streamId, switchOnSequence, sinceSequence,
-                AddAsync, cancellationToken);
+                highestQueuedSequenceAtScanStart, pendingPrivateAtScanStart, AddAsync, cancellationToken);
             // Handled either way: fully resent at whatever scope it currently reads, or found
             // private again by the time this ran (nothing to send right now) — a future
             // scope-widening event re-adds it if that ever changes.
@@ -338,23 +403,40 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
 
     /// <summary>
     /// idea 8c5993c5: resends <paramref name="streamId"/>'s own history strictly between this node's
-    /// own switch-on point and <paramref name="upperBoundSequence"/> — the ordinary forward scan's
-    /// own starting position for THIS call, never past it, so this never re-queues what that scan
-    /// just queued afresh at the stream's current scope in the same call. Forwards own-or-replicated
-    /// events alike, true origin preserved, the identical technique <see cref="EventCatchUpResponder"/>
-    /// already uses to answer a catch-up request for one stream: a scope change run from a fleet
-    /// sibling that only ever received this stream by replication must still be able to resend its
-    /// full history, not just whatever it produced itself. Sends nothing, and leaves the caller to
-    /// treat the stream as handled regardless, when the stream currently reads
-    /// <see cref="ReplicationScope.Private"/> — it was toggled back before this ran, and a later
-    /// scope-widening event re-marks it if that changes again.
+    /// own switch-on point and the wider of <paramref name="sinceSequence"/> (the ordinary forward
+    /// scan's own starting position for THIS call) and <paramref name="highestQueuedSequenceAtScanStart"/>
+    /// (this project's own high-water mark exactly as loaded, before the forward scan below advances
+    /// it any further this same call). The two diverge exactly when some OTHER stream's own held-back
+    /// private event has kept <paramref name="sinceSequence"/> from advancing as far as the mark
+    /// already had — a gap the ordinary forward scan's own fast skip (candidate.Sequence &lt;=
+    /// highestQueuedSequence) never re-examines, so this stream's own already-sent events sitting in
+    /// that gap would otherwise reach neither the forward scan nor this resend, and a teammate newly
+    /// let in would receive an incomplete history (independent pre-PR review, cycle 1, adversarial
+    /// lens, medium). A candidate at or below <paramref name="sinceSequence"/> is always this resend's
+    /// own to handle; one strictly above it is only this resend's to handle when the forward scan's
+    /// fast skip would also have passed over it, judged by the pre-scan snapshot
+    /// <paramref name="pendingPrivateAtScanStart"/> names the exception: a sequence recorded there
+    /// was NOT fast-skipped and was instead freshly reclassified by the forward scan in this very
+    /// call, which would double-queue it if resent here too — the LIVE, scan-mutated set cannot make
+    /// this call, since every sequence the forward scan itself reprocesses is removed from it as that
+    /// happens, making a sequence the forward scan just queued indistinguishable, by the time this
+    /// resend pass runs, from one the fast skip genuinely never touched. Forwards own-or-replicated
+    /// events alike, true origin preserved, the identical technique
+    /// <see cref="EventCatchUpResponder"/> already uses to answer a catch-up request for one stream: a
+    /// scope change run from a fleet sibling that only ever received this stream by replication must
+    /// still be able to resend its full history, not just whatever it produced itself. Sends nothing,
+    /// and leaves the caller to treat the stream as handled regardless, when the stream currently
+    /// reads <see cref="ReplicationScope.Private"/> — it was toggled back before this ran, and a
+    /// later scope-widening event re-marks it if that changes again.
     /// </summary>
     private async Task ResendStreamHistoryAsync(
         IDocumentSession session, Guid nodeId, Guid projectId, string fromOwnerFingerprint, Guid streamId,
-        long switchOnSequence, long upperBoundSequence,
-        Func<MessageAudience, EventReplicationCodec.ReplicatedEventRecord, string, Task> addAsync,
+        long switchOnSequence, long sinceSequence, long highestQueuedSequenceAtScanStart,
+        HashSet<long> pendingPrivateAtScanStart,
+        Func<MessageAudience, EventReplicationCodec.ReplicatedEventRecord, string, long, Task> addAsync,
         CancellationToken cancellationToken)
     {
+        long upperBoundSequence = Math.Max(sinceSequence, highestQueuedSequenceAtScanStart);
         IReadOnlyList<IEvent> history = await session.Events.QueryAllRawEvents()
             .Where(e => e.StreamId == streamId && e.Sequence > switchOnSequence && e.Sequence <= upperBoundSequence)
             .OrderBy(e => e.Sequence)
@@ -362,6 +444,20 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
 
         foreach (IEvent candidate in history)
         {
+            // Above sinceSequence, this candidate also sat in the forward scan's own candidate list
+            // for THIS call. It is this resend's to handle only when the forward scan's fast skip
+            // would have passed over it too, judged by the SAME inputs the fast skip itself used —
+            // the state exactly as loaded at the top of this call, before the forward scan started
+            // mutating either one. The live, already-mutated pendingPrivate cannot answer this: by
+            // the time this resend pass runs, the forward scan has already removed every sequence it
+            // itself reprocessed, making a sequence THIS SAME CALL just queued indistinguishable
+            // from one the fast skip genuinely never touched — and resending it again here would
+            // double-queue it.
+            if (candidate.Sequence > sinceSequence && pendingPrivateAtScanStart.Contains(candidate.Sequence))
+            {
+                continue;
+            }
+
             EventScope scope;
             try
             {
@@ -396,7 +492,9 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             EventReplicationCodec.ReplicatedEventRecord record =
                 ToRecordPreservingOrigin(candidate, nodeId, fromOwnerFingerprint, projectId);
             string recordJson = System.Text.Json.JsonSerializer.Serialize(record);
-            await addAsync(AudienceFor(resolved.Scope, record.OriginOwnerRootFingerprint, fromOwnerFingerprint), record, recordJson);
+            await addAsync(
+                AudienceFor(resolved.Scope, record.OriginOwnerRootFingerprint, fromOwnerFingerprint),
+                record, recordJson, candidate.Sequence);
         }
     }
 
@@ -481,5 +579,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
     {
         public List<EventReplicationCodec.ReplicatedEventRecord> Records { get; } = [];
         public long Bytes { get; set; }
+        /// <summary>The lowest global sequence added to this batch since it was last flushed — what caps how far a snapshot taken while another audience flushes may safely advance.</summary>
+        public long? FirstSequence { get; set; }
     }
 }
