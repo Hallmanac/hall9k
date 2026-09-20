@@ -27,11 +27,26 @@ public sealed class TaskListItem
     public DateTimeOffset? ClaimedAt { get; set; }
     /// <summary>The h9k task work claim's own tell (<see cref="TaskAggregate.IsInteractiveClaim"/>'s mirror): the sentinel node id an operator's claim records rather than a real node's.</summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
-    /// <summary>Mirrors <see cref="TaskAggregate.Scope"/>.</summary>
-    public ReplicationScope Scope { get; set; } = ReplicationScope.Team;
+    private ReplicationScope? _scope;
+    private bool _legacyIsPrivate;
 
-    /// <summary>Mirrors <see cref="TaskAggregate.IsPrivate"/>.</summary>
-    public bool IsPrivate => Scope == ReplicationScope.Private;
+    /// <summary>
+    /// Mirrors <see cref="TaskAggregate.Scope"/>. Falls back to <see cref="IsPrivate"/>'s own legacy
+    /// value when no 'scope' key was ever recorded — see <see cref="TaskDetails.Scope"/>'s own doc
+    /// for why the fallback lives on the getter rather than relying on the backfill alone.
+    /// </summary>
+    public ReplicationScope Scope
+    {
+        get => _scope ?? (_legacyIsPrivate ? ReplicationScope.Private : ReplicationScope.Team);
+        set => _scope = value;
+    }
+
+    /// <summary>Mirrors <see cref="TaskAggregate.IsPrivate"/>. See <see cref="TaskDetails.IsPrivate"/>'s own doc: no current write sets this, but the setter stays public for legacy deserialization.</summary>
+    public bool IsPrivate
+    {
+        get => Scope == ReplicationScope.Private;
+        set => _legacyIsPrivate = value;
+    }
     public Guid? CurrentRunId { get; set; }
     public string? ExternalReference { get; set; }
     /// <summary>
