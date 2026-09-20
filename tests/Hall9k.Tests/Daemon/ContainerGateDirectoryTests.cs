@@ -167,6 +167,36 @@ public sealed class ContainerGateDirectoryTests
         }
     }
 
+    /// <summary>
+    /// The origin incident found 25 stale wait files in one directory; this method's own doc
+    /// comment promises "a short, human-readable listing" regardless of how many accumulate, so
+    /// the excerpt truncates rather than growing without bound (independent pre-PR review, this
+    /// cycle).
+    /// </summary>
+    [Fact]
+    public void DescribeContents_truncates_a_long_wait_file_listing_with_a_count_of_the_rest()
+    {
+        string directory = Directory.CreateTempSubdirectory("h9k-gate-dir-test-").FullName;
+        try
+        {
+            for (int i = 0; i < 12; i++)
+            {
+                File.WriteAllText(Path.Combine(directory, $"waiting-{1000 + i}-a.txt"), "irrelevant");
+            }
+
+            string? excerpt = ContainerGateDirectory.DescribeContents(directory, (_, _) => true);
+
+            excerpt.Should().NotBeNull();
+            excerpt.Should().Contain("12 wait file(s)");
+            excerpt.Should().Contain("+4 more");
+            excerpt.Should().NotContain("waiting-1011-a.txt");
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [Fact]
     public void DescribeContents_names_both_kinds_at_once()
     {

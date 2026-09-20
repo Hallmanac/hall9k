@@ -68,6 +68,16 @@ public static class ContainerGateDirectory
             // own start time back.
             return false;
         }
+        catch (System.ComponentModel.Win32Exception)
+        {
+            // The OS denied this account access to the process's start time — routine once a
+            // recorded pid is reused by a process this account cannot query (a Windows service
+            // running as SYSTEM, most often). GetProcessById already proved a process with this
+            // pid exists, so this is "can't confirm it's the same one", not "it's gone" — treat
+            // it as alive rather than let this best-effort read crash the timeout diagnostic it
+            // decorates (VerificationRunner's own gate-kill handling has no catch-all above it).
+            return true;
+        }
     }
 
     // A few seconds of slack for ordinary clock-resolution rounding between the moment a holder
@@ -213,15 +223,36 @@ public static class ContainerGateDirectory
         List<string> parts = [];
         if (waiters.Count > 0)
         {
-            parts.Add($"{waiters.Count.ToString(CultureInfo.InvariantCulture)} wait file(s) [{string.Join("; ", waiters)}]");
+            parts.Add($"{waiters.Count.ToString(CultureInfo.InvariantCulture)} wait file(s) [{FormatEntries(waiters)}]");
         }
 
         if (holders.Count > 0)
         {
-            parts.Add($"{holders.Count.ToString(CultureInfo.InvariantCulture)} holder sidecar(s) [{string.Join("; ", holders)}]");
+            parts.Add($"{holders.Count.ToString(CultureInfo.InvariantCulture)} holder sidecar(s) [{FormatEntries(holders)}]");
         }
 
         return $"The shared container gate directory ({gateDirectory}) held {string.Join(" and ", parts)} at the kill.";
+    }
+
+    // A short, human-readable listing, per this method's own doc comment, stays short even when
+    // the directory itself is not: the origin incident found 25 stale wait files in one directory,
+    // each roughly 60 characters once described, and nothing else here bounds how many
+    // accumulate between sweeps. Truncated after the first handful, with a "+N more" tail, so the
+    // evidence a killed gate's failure reason carries (and VerificationRunner persists on the
+    // event) stays proportionate to what a human actually needs to see rather than growing with
+    // however long it has been since some other process last triggered a sweep.
+    private const int MaxDescribedEntries = 8;
+
+    private static string FormatEntries(IReadOnlyList<string> entries)
+    {
+        if (entries.Count <= MaxDescribedEntries)
+        {
+            return string.Join("; ", entries);
+        }
+
+        int omitted = entries.Count - MaxDescribedEntries;
+        return string.Join("; ", entries.Take(MaxDescribedEntries))
+            + $"; +{omitted.ToString(CultureInfo.InvariantCulture)} more";
     }
 
     private static string DescribeHolder(string sidecarName, string? content, LivenessProbe isAlive)
