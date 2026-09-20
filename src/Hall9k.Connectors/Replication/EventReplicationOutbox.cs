@@ -319,10 +319,20 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
                 // it (the fast skip above, and the position cap below, both key off this set) — only
                 // for a native event, since a foreign-origin one never reaches AddAsync below either
                 // way and has nothing to resend-mark while its own resolved scope still reads
-                // Private.
+                // Private. A foreign-origin candidate is never owed in the first place, so it never
+                // joins pendingPrivate, but it still needs the mark advanced past it here: it is
+                // never revisited by a future sweep's resend pass the way a native pendingPrivate
+                // member is, so leaving the mark behind it would make ownership.ResolveAsync
+                // re-resolve this same candidate on every subsequent sweep forever, however far
+                // other project activity has moved on (independent pre-PR review, cycle 5,
+                // adversarial lens, medium).
                 if (!isForeignOrigin)
                 {
                     pendingPrivate.Add(candidate.Sequence);
+                }
+                else
+                {
+                    lastIncludedSequence = candidate.Sequence;
                 }
 
                 continue;

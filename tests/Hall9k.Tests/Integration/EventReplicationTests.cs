@@ -2103,6 +2103,130 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// Independent pre-PR review, cycle 5, adversarial lens (EventReplicationOutbox.cs:313): the
+    /// native case in the <c>resolved.Scope == Private</c> branch records a held-back event in
+    /// <see cref="EventReplicationOutboxPosition.PendingPrivateSequences"/> so a later sweep can find
+    /// it again once scope widens — but a foreign-origin candidate never rides an envelope
+    /// regardless of its own resolved scope (only what a node produces natively ever travels), so it
+    /// never needs that treatment. Before this fix, such a candidate got neither the pendingPrivate
+    /// entry nor an advance of the scan's own position marker, so once it was the highest sequence a
+    /// sweep had ever scanned, the durable position froze behind it and every future sweep
+    /// re-resolved it from scratch for no purpose.
+    /// </summary>
+    [Fact]
+    public async Task A_foreign_origin_candidate_resolving_private_still_advances_the_position()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        const string ownerFingerprint = "owner-a-fingerprint";
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        await SeedNodeFileAsync(ledger, nodeB, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        Guid ideaId = DomainId.New();
+
+        // Node A: the idea's own true origin — captured and revised, fleet-scoped, sent and moved
+        // past by A's own first sweep.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, ownerFingerprint, Now, cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaCaptured captured = IdeaDecider.Capture(
+                ideaId, ownerId, "Fleet-only for now", projectId: projectId, Now.AddSeconds(1), ProjectHome.None);
+            session.Events.StartStream<IdeaAggregate>(ideaId, captured);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+            session.Events.Append(ideaId, IdeaDecider.Revise(idea, "Fleet-only, sharpened", Now.AddSeconds(2), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventReplicationQueueResult aSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeA, projectId, ownerFingerprint, Now.AddSeconds(3), cts.Token);
+            aSweep.EventsQueued.Should().Be(2, "the capture and revision, sent fleet-scoped and moved past");
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(3), cts.Token);
+        }
+
+        // Node B: a fleet sibling of the same owner, switched on and receiving the two native
+        // events by replication before ever sweeping this idea's own stream.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeB, new NodeRegistered(nodeB, ownerId, "node-b", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeB, projectId, ownerFingerprint, Now, cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, nodeB, ownerFingerprint, Now.AddSeconds(4), trustChain: null,
+                cts.Token);
+            read.EventsApplied.Should().Be(2, "B holds the capture and revision only by replication, never natively");
+        }
+
+        // The owner, working from B, sets the idea private — B's own native event, appended on top
+        // of the two events it only holds by replication and has never yet swept.
+        long revisedSequenceOnB;
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            IdeaAggregate idea = (await session.Events.AggregateStreamAsync<IdeaAggregate>(ideaId, token: cts.Token))!;
+            session.Events.Append(ideaId, IdeaDecider.SetPrivate(idea, isPrivate: true, Now.AddSeconds(5), ownerId));
+            await session.SaveChangesAsync(cts.Token);
+
+            IReadOnlyList<IEvent> ideaEventsOnB = await session.Events.QueryAllRawEvents()
+                .Where(e => e.StreamId == ideaId).OrderBy(e => e.Sequence).ToListAsync(cts.Token);
+            revisedSequenceOnB = ideaEventsOnB[1].Sequence;
+        }
+
+        // B's own first-ever sweep over this stream: the capture and revision are both
+        // foreign-origin and, resolved now, read Private — the buggy branch this test exists for.
+        // Nothing is sent (the two replicated facts never travel regardless, and B's own native
+        // privacy-set is genuinely held back) but the position must still move past the two
+        // foreign-origin candidates, never freezing behind them the way it freezes behind a native
+        // held-back one.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationQueueResult bSweep = await replicationOutbox.QueuePendingAsync(
+                session, nodeB, projectId, ownerFingerprint, Now.AddSeconds(6), cts.Token);
+            bSweep.EventsQueued.Should().Be(0, "the two replicated facts never travel, and B's own privacy-set is private");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            EventReplicationOutboxPosition? position =
+                await session.LoadAsync<EventReplicationOutboxPosition>(projectId, cts.Token);
+            position.Should().NotBeNull();
+            position!.LastFlushedGlobalSequence.Should().BeGreaterThanOrEqualTo(
+                revisedSequenceOnB, "the two foreign-origin candidates must never freeze the position behind them "
+                + "the way a native held-back event correctly does — neither ever rides an envelope regardless of "
+                + "scope, so neither needs PendingPrivateSequences to be found again");
+        }
+    }
+
+    /// <summary>
     /// idea 8c5993c5: "the inbox applies owner-addressed events only when addressed to this node's
     /// own owner root" — a fleet item's own events, addressed to owner A's root, never apply on a
     /// genuinely different owner's node even though that node reads the identical outbox.
