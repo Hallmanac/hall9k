@@ -635,7 +635,9 @@ below), the branch-name template (`--branch-template`,
 off|normal|first|now`, [above](#pull-request-review)), the claim gate (`--claim-gate
 off|tracker-assignee`, [above](#the-claim-gate)), the close-linked-issue rule (`--close-linked-issue
 on-closeout|never|when-all-tasks-close`, [below](#closing-a-linked-issue)), the writing conventions
-(`--writing-conventions`, [below](#writing-conventions)), and the home's location live.
+(`--writing-conventions`, [below](#writing-conventions)), the orchestrator-feed band
+(`--orchestrator-feed actionable|transitions|everything`,
+[below](#orchestrator-windows)), and the home's location live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 
@@ -1035,13 +1037,23 @@ the winner and why. See [operations.md](operations.md#who-gets-the-next-free-slo
 `h9k orchestrator node [--cli]` · `h9k orchestrator project [PROJECT] [--cli]` ·
 `h9k orchestrator register --project --session --pid [--cli] [--replace]` ·
 `h9k orchestrator deregister --project --pid` · `h9k orchestrator status [--project]` ·
+`h9k orchestrator feed --project <name> [--drain] [--since <time>]` ·
 `h9k orchestrator launch-text show | set` · `h9k orchestrator measure`
 
 Never launches anything — the design's own explicit refusal to have Hall9k spawn an interactive
 session. `node`/`project` print that window's daemon liveness, its launch text (the exact line to
 paste into a fresh terminal to start one), its recipe and journal paths, and its last-measured
 cost or "not measured"; with no project named and more than one registered, `project` prints one
-block per project rather than guessing. `launch-text show`/`set` reads and replaces the launch
+block per project rather than guessing. `feed` is what a window runs at start-up to learn what
+happened while none was live: everything past that project's own cursor that its
+`--orchestrator-feed` band admits, oldest first, grouped by task, each written as one plain line
+by the feed's own table of event type to wording. `--drain` moves the cursor after printing; without it the same items
+come back, which is what makes a plain read repeatable. `--since` reads history and never moves
+the cursor, so two windows catching up cannot consume each other's news, and the two flags are
+refused together. It is a cursor over this node's own event log plus a filter, never a second
+store — see
+[concepts.md's The orchestrator feed](concepts.md#the-orchestrator-feed) for the three bands and
+what each one carries. `launch-text show`/`set` reads and replaces the launch
 line for a given agent CLI (`--cli`, default `claude-code`) — the node's own in the platform
 config file, a project's own with `--project` — and `measure` runs a
 fixed, cheap-model, non-interactive probe against it so a "lean window" claim is a number, not an
