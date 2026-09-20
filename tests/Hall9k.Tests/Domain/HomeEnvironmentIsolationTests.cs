@@ -44,9 +44,12 @@ namespace Hall9k.Tests.Domain;
 /// <para>
 /// Both facts are per-CLASS, not per-file: xUnit does not inherit <c>[Collection]</c> from a
 /// containing type, so a nested class needs its own attribute even when its enclosing class
-/// already carries one. Both strip comments and string literals before matching (see
-/// <see cref="TestSourceTree.StripCommentsAndStrings"/>), so prose that merely quotes one of these
-/// members is never mistaken for a real call.
+/// already carries one. Both match the call itself against comment/string-stripped code (see
+/// <see cref="TestSourceTree.StripCommentsAndStrings"/>), so prose that merely quotes one of
+/// these members is never mistaken for a real call; rule 1 alone then reads its own argument back
+/// out of the raw, unstripped source, deliberately, since stripping removes a string literal's
+/// content entirely and a stripped argument could never be compared against
+/// <see cref="HomeOrConnectionStringArguments"/> at all.
 /// </para>
 /// </summary>
 public sealed class HomeEnvironmentIsolationTests
@@ -78,10 +81,20 @@ public sealed class HomeEnvironmentIsolationTests
         "Hall9kDatabase.EnvironmentVariableName",
     ];
 
-    private static readonly string[] ScopeConstructionMarkers =
+    // Two shapes construct either scope type, and a class inside InitializeAsync can reach for
+    // either one: the explicitly-typed "new ScopedTestHome(" form, and the target-typed
+    // "ScopedTestHome ident = new(" idiom this project's own README teaches and the large
+    // majority of real call sites actually use ("private readonly ScopedTestHome _scopedHome =
+    // new();", "using ScopedConnectionString scope = new(postgres.ConnectionString);"). Matching
+    // only the first form left this guard blind to the idiom nearly every class in the tree
+    // relies on — see the two positive controls below, one per shape, so neither can go quietly
+    // dark again.
+    private static readonly Regex[] ScopeConstructionPatterns =
     [
-        "new ScopedTestHome(",
-        "new ScopedConnectionString(",
+        new(@"\bnew\s+ScopedTestHome\s*\(", RegexOptions.Compiled),
+        new(@"\bnew\s+ScopedConnectionString\s*\(", RegexOptions.Compiled),
+        new(@"\bScopedTestHome\s+\w+\s*=\s*new\s*\(", RegexOptions.Compiled),
+        new(@"\bScopedConnectionString\s+\w+\s*=\s*new\s*\(", RegexOptions.Compiled),
     ];
 
     private static readonly Regex ClassDeclaration = new(
@@ -210,24 +223,36 @@ public sealed class HomeEnvironmentIsolationTests
     [Fact]
     public void No_scope_is_opened_inside_an_async_lifetime_method()
     {
-        // Positive control on the detection mechanism itself, independent of whatever the tree
-        // currently contains: a synthetic sample the regex/brace-walk below must catch, so this
-        // fact cannot pass green while its own scan has quietly gone dark.
-        const string sample = """
+        // Two positive controls on the detection mechanism itself, independent of whatever the
+        // tree currently contains: synthetic samples, one per construction shape, the regex/
+        // brace-walk below must catch, so this fact cannot pass green while its own scan has
+        // quietly gone dark on either shape — the explicit form, or the target-typed idiom almost
+        // every real call site in this tree actually uses.
+        const string explicitSample = """
             public async Task InitializeAsync()
             {
                 _scope = new ScopedTestHome();
             }
             """;
-        (string sampleCode, _, bool sampleBalanced) = TestSourceTree.StripCommentsAndStrings(sample);
-        sampleBalanced.Should().BeTrue();
-        List<(int Start, int End)> sampleBodies = [.. FindInitializeAsyncBodies(sampleCode)];
-        sampleBodies.Should().ContainSingle();
-        ScopeConstructionMarkers.Any(marker =>
-            sampleCode.IndexOf(marker, sampleBodies[0].Start, StringComparison.Ordinal) is int i
-            && i >= 0 && i < sampleBodies[0].End).Should().BeTrue(
-            "the detection helper below must catch this synthetic sample, or this fact is " +
-            "protecting nothing against the real tree");
+        const string targetTypedSample = """
+            public async Task InitializeAsync()
+            {
+                ScopedConnectionString scope = new(postgres.ConnectionString);
+            }
+            """;
+
+        foreach (string sample in new[] { explicitSample, targetTypedSample })
+        {
+            (string sampleCode, _, bool sampleBalanced) = TestSourceTree.StripCommentsAndStrings(sample);
+            sampleBalanced.Should().BeTrue();
+            List<(int Start, int End)> sampleBodies = [.. FindInitializeAsyncBodies(sampleCode)];
+            sampleBodies.Should().ContainSingle();
+            ScopeConstructionPatterns.Any(pattern =>
+                pattern.Matches(sampleCode, sampleBodies[0].Start).Cast<Match>()
+                    .Any(match => match.Index < sampleBodies[0].End)).Should().BeTrue(
+                "the detection helper below must catch this synthetic sample, or this fact is " +
+                "protecting nothing against the real tree");
+        }
 
         (string testsDirectory, string[] files) = TestSources();
 
@@ -250,12 +275,16 @@ public sealed class HomeEnvironmentIsolationTests
 
             foreach ((int start, int end) in FindInitializeAsyncBodies(code))
             {
-                foreach (string marker in ScopeConstructionMarkers)
+                foreach (Regex pattern in ScopeConstructionPatterns)
                 {
-                    int index = code.IndexOf(marker, start, StringComparison.Ordinal);
-                    if (index >= 0 && index < end)
+                    foreach (Match match in pattern.Matches(code, start))
                     {
-                        ClassFrame? frame = InnermostFrame(frames, index);
+                        if (match.Index >= end)
+                        {
+                            break;
+                        }
+
+                        ClassFrame? frame = InnermostFrame(frames, match.Index);
                         string className = frame?.Name ?? "<unknown class>";
                         offenders.Add($"{Path.GetRelativePath(testsDirectory, file)} -> {className}");
                     }
@@ -341,14 +370,22 @@ public sealed class HomeEnvironmentIsolationTests
     /// </summary>
     private static int? IndexOfMemberBoundary(string source, string member, int start)
     {
-        int index;
-        while ((index = source.IndexOf(member, start, StringComparison.Ordinal)) >= 0)
+        int index = start;
+        while ((index = source.IndexOf(member, index, StringComparison.Ordinal)) >= 0)
         {
-            return index;
+            int afterMatch = index + member.Length;
+            if (afterMatch >= source.Length || !IsIdentifierCharacter(source[afterMatch]))
+            {
+                return index;
+            }
+
+            index = afterMatch;
         }
 
         return null;
     }
+
+    private static bool IsIdentifierCharacter(char c) => char.IsLetterOrDigit(c) || c == '_';
 
     private sealed record ClassFrame(string Name, int BodyStart, int BodyEnd, bool HasAttribute, bool HasTrait);
 
