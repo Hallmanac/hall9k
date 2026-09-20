@@ -68,6 +68,71 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task The_genesis_nodes_own_self_announced_node_file_becomes_the_roots_own_node_id()
+    {
+        // The exact shape idea 202383dc's own join flow produces for a genesis node: root.yaml and
+        // this node's own nodes/<id>/node.yaml both carry the identical key, and there is never an
+        // owners/<root>/nodes/<id>.yaml vouch file for it — a root never vouches itself.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains[owner.Fingerprint].RootNodeId.Should().Be(owner.NodeId.ToString());
+        chain.OwnerChains[owner.Fingerprint].Nodes.Should().BeEmpty("the root never vouches itself");
+        chain.OwnerChains[owner.Fingerprint].FleetNodeIds().Should().Contain(owner.NodeId);
+    }
+
+    [Fact]
+    public async Task A_second_roots_own_self_announced_node_file_never_gets_attached_to_a_different_root()
+    {
+        // A second, unrelated root that also establishes itself and self-announces its own node —
+        // the discovery walk scans every node ref in the project, so this proves it matches each
+        // one against its own root's key rather than the first (or only) chain it finds.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+
+        GeneratedIdentity other = GenerateIdentity();
+        string otherRepo = _repo.CloneNode(hub);
+        await WriteRootFileAsync(otherRepo, other);
+        await WriteNodeFileAsync(otherRepo, other, other);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains[owner.Fingerprint].RootNodeId.Should().Be(owner.NodeId.ToString());
+        chain.OwnerChains[other.Fingerprint].RootNodeId.Should().Be(
+            other.NodeId.ToString(), "each root's own node id resolves against its own key, never the other root's");
+    }
+
+    [Fact]
+    public async Task A_strangers_own_node_file_cannot_impersonate_a_real_roots_own_node_id()
+    {
+        // A node.yaml whose declared public_key field is copy-pasted from the real root's own key,
+        // but committed/signed with a different (the stranger's own) key: self-consistency fails
+        // because the commit was never actually signed by the key it claims to be.
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+
+        GeneratedIdentity stranger = GenerateIdentity();
+        string strangerRepo = _repo.CloneNode(hub);
+        Guid forgedNodeId = Guid.NewGuid();
+        string refName = $"refs/hall9k/ledger/nodes/{forgedNodeId}";
+        string path = $"nodes/{forgedNodeId}/node.yaml";
+        string content = BuildYaml(("node_id", forgedNodeId.ToString()), ("public_key", owner.PublicKeyLine));
+        await WriteAsync(strangerRepo, refName, path, content, stranger);
+
+        string readerRepo = _repo.CloneNode(hub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains[owner.Fingerprint].RootNodeId.Should().BeNull(
+            "the forged node.yaml was never actually signed by the root's own key, only claims to carry it");
+    }
+
+    [Fact]
     public async Task A_strangers_root_and_node_file_are_ignored_everywhere()
     {
         string hub = _repo.CreateHub();

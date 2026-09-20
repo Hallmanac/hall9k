@@ -62,4 +62,26 @@ public sealed class TrustChainTests
 
         chain.IsAllowedSigner("stranger-fingerprint", VouchedNodeId).Should().BeFalse();
     }
+
+    [Fact]
+    public void FleetNodeIds_IncludesTheRootsOwnNodeAlongsideEveryVouchedNode()
+    {
+        Guid rootNodeId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        TrustedOwner owner = new(
+            "root-fingerprint", "ssh-ed25519 AAAAroot root",
+            [new TrustedNode(VouchedNodeId.ToString(), "ssh-ed25519 AAAAnode node", "node-fingerprint", DateTimeOffset.UnixEpoch)],
+            RootNodeId: rootNodeId.ToString());
+
+        owner.FleetNodeIds().Should().BeEquivalentTo([rootNodeId, VouchedNodeId]);
+    }
+
+    [Fact]
+    public void FleetNodeIds_IsOnlyTheVouchedSetWhenTheLedgerNamesNoRootNodeId()
+    {
+        TrustedOwner owner = new(
+            "root-fingerprint", "ssh-ed25519 AAAAroot root",
+            [new TrustedNode(VouchedNodeId.ToString(), "ssh-ed25519 AAAAnode node", "node-fingerprint", DateTimeOffset.UnixEpoch)]);
+
+        owner.FleetNodeIds().Should().BeEquivalentTo([VouchedNodeId]);
+    }
 }

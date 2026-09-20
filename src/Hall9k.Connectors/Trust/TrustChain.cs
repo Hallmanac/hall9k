@@ -20,7 +20,17 @@ public sealed record TrustedNode(string NodeId, string PublicKeyLine, string Fin
 /// independent of whether this root happens to be a project member — that gate is
 /// <see cref="TrustChain.IsAllowedSigner"/>'s, not this type's.
 /// </summary>
-public sealed record TrustedOwner(string RootFingerprint, string RootPublicKeyLine, IReadOnlyList<TrustedNode> Nodes)
+/// <param name="RootNodeId">
+/// The node whose own key established this root (<c>h9k project join</c>'s no-<c>--owner</c>
+/// path), when <see cref="GitLedgerChainReader"/> could name it from the ledger — null when no
+/// node's own self-announced <c>node.yaml</c> currently self-consistently claims this root's key,
+/// or when a caller built this record by hand with no opinion on it (every pre-existing test above
+/// this field). The root has no <c>owners/&lt;root&gt;/nodes/&lt;id&gt;.yaml</c> vouch entry of its
+/// own — a root never vouches itself — so without this, the fleet <see cref="FleetNodeIds"/>
+/// computes would silently exclude the one node an owner is guaranteed to actually have.
+/// </param>
+public sealed record TrustedOwner(
+    string RootFingerprint, string RootPublicKeyLine, IReadOnlyList<TrustedNode> Nodes, string? RootNodeId = null)
 {
     /// <summary>Whether <paramref name="fingerprint"/> is this root's own key or a currently vouched node's.</summary>
     public bool Contains(string fingerprint) =>
@@ -38,6 +48,30 @@ public sealed record TrustedOwner(string RootFingerprint, string RootPublicKeyLi
     /// </summary>
     public bool ContainsForNode(string fingerprint, string nodeId) =>
         RootFingerprint == fingerprint || Nodes.Any(node => node.Fingerprint == fingerprint && node.NodeId == nodeId);
+
+    /// <summary>
+    /// This owner's own fleet, as a set of node ids: <see cref="RootNodeId"/> (the root's own node,
+    /// when the ledger names it) plus every currently vouched node — the one definition every
+    /// enumerator of "which nodes may act for this owner" shares (<c>h9k task assign --node</c>'s
+    /// own placement resolution, <c>h9k project members</c>, replication candidate ranking, the
+    /// voucher-tier lookup), rather than each reading <see cref="Nodes"/> alone and separately
+    /// forgetting the root has no vouch entry of its own.
+    /// </summary>
+    public IEnumerable<Guid> FleetNodeIds()
+    {
+        if (RootNodeId is { } rootNodeId && Guid.TryParse(rootNodeId, out Guid rootId))
+        {
+            yield return rootId;
+        }
+
+        foreach (TrustedNode node in Nodes)
+        {
+            if (Guid.TryParse(node.NodeId, out Guid nodeId))
+            {
+                yield return nodeId;
+            }
+        }
+    }
 }
 
 /// <summary>One project member, chain-validated: the write that established or last changed this
