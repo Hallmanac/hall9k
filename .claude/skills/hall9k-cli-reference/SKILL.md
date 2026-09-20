@@ -529,6 +529,14 @@ revocation rule the owner chain itself already applies. A stranger's own interna
 root and node file count for nothing anywhere in this project, because they were never made a
 member; an unverifiable write is recorded, and named by `h9k project members`, rather than silently
 dropped.
+A root's own node counts as part of its own fleet with no vouch entry of its own (a root never
+vouches itself): `GitLedgerChainReader` additionally scans every `refs/hall9k/ledger/nodes/*` ref
+this project has ever seen, and a node's self-announced `node.yaml` resolves as a given root's own
+node only when the commit currently producing it is actually signed by that root's own key, the
+identical self-consistency check `root.yaml` itself already applies. `TrustedOwner.FleetNodeIds()`
+is the one definition every fleet enumerator now reads: that root node (when found, and not
+currently revoked) plus every vouched node, de-duplicated — never `TrustedOwner.Nodes` alone, which
+holds only the vouched set.
 The same chain now gates node-to-node message reads too: a sender's key still comes from its own
 self-announced node file, but it also has to be currently allowed by the chain, bound to that exact
 sender's own node id, before its commit signature is ever checked (idea 202383dc, M1a's node-level
@@ -537,7 +545,7 @@ check upgraded to chain-level).
 ```bash
 h9k node vouch <node-id>              # vouch a node into this owner's own fleet, across every project this owner already joined; prints the vouched node's own key fingerprint
 h9k node revoke <node-id>             # revoke a node from this owner's own fleet; a later h9k node vouch for the identical id restores it
-h9k project members <name>            # this project's current members: root, login when known locally, role, vouched nodes, verified state
+h9k project members <name>            # this project's current members: root, login when known locally, role, that root's own fleet (its own root node plus every vouched node), verified state
 h9k project member remove <name> <fingerprint>   # remove a root's project membership (deletes the file); refused unless this node's own root holds the owner role here
 ```
 
@@ -624,7 +632,7 @@ h9k task publish <id> --no-existing-item          # required if a tracking backl
 h9k task publish <id> --untracked                 # the same gate's other exit: deliberately skip tracking for this task, attested on the stream
 h9k task publish <id> --pre-approved              # the owner stops being a synchronous gate at the pull request: the daemon rebase-merges once every real gate (CI, review decision, requested reviewers, threads) reads satisfied (Decisions Log #135)
 h9k task publish <id> --pre-approved after-human-review   # the same automatic merge, held until a human reviewer has actually been requested on the pull request AND every requested reviewer has approved the current head (Decisions Log #149)
-h9k task assign <id> [<owner>] [--take] [--node [NODE]]   # the dispatch trigger — Queued, or Blocked on dependencies; --take also takes the linked card/issue for this install when nobody holds it, in a project whose claim gate is on (Decisions Log #143); --node <id-or-fragment> places the task on one of the owner's own vouched nodes so only that node's dispatcher claims it and every other node of the same owner stands down without a forced take, and a bare --node with nothing named clears an existing placement (idea 202383dc: an owner can place a task on one of their own nodes)
+h9k task assign <id> [<owner>] [--take] [--node [NODE]]   # the dispatch trigger — Queued, or Blocked on dependencies; --take also takes the linked card/issue for this install when nobody holds it, in a project whose claim gate is on (Decisions Log #143); --node <id-or-fragment> places the task on one of the owner's own fleet — their own root node (no self-vouch needed) or a node they currently vouch — so only that node's dispatcher claims it and every other node of the same owner stands down without a forced take, and a bare --node with nothing named clears an existing placement (idea 202383dc: an owner can place a task on one of their own nodes)
 h9k task set-session-cap <id> <cap>               # override how many agent sessions this task's run may hold at once; settable any time, even mid-run (Decisions Log #111)
 h9k task set-pre-approved <id> on|off|after-human-review   # set standing pre-approval after publish, without the unassign/draft/revise/publish ceremony — settable on any live task whose pull request has not yet merged, Draft excepted (pre-approval is part of the readiness contract set at publish). after-human-review waits for a requested human reviewer to approve the head; flipping it to on is the emergency path and merges on the next sweep. No reviewer is ever named here — reviewers are added in GitHub (Decisions Log #135, #149)
 h9k task set-private <id> on|off                  # idea 8c5993c5: pre-8c5993c5 alias — on is sugar for scope private, off is sugar for scope fleet, never straight to team on its own; publishing already sets team unconditionally

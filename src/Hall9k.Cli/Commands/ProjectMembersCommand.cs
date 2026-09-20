@@ -13,9 +13,10 @@ namespace Hall9k.Cli.Commands;
 /// <summary>
 /// Lists this project's members as the ledger's own chain read currently sees them (idea 202383dc,
 /// T1) — root fingerprint, this install's own login for that root when it happens to be known
-/// locally, role, the nodes currently vouched under that root, and verified state. Recomputed
-/// fresh every run; nothing here is read from a local cache, so a revocation or a removal another
-/// node made shows up the moment this command runs again.
+/// locally, role, that root's own fleet (<see cref="TrustedOwner.FleetNodeIds"/>: its own root node
+/// plus every currently vouched node), and verified state. Recomputed fresh every run; nothing here
+/// is read from a local cache, so a revocation or a removal another node made shows up the moment
+/// this command runs again.
 /// </summary>
 public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCommand.Settings>
 {

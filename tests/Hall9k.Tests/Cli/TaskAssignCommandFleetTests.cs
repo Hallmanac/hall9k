@@ -1,7 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Trust;
-using Hall9k.Domain.Shared.Exceptions;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -11,16 +10,17 @@ namespace Hall9k.Tests.Cli;
 /// composition, pure and I/O-free: the owner's root node — the one whose key established the
 /// root, carried on <see cref="TrustedOwner.RootNodeId"/> — counts as part of the owner's fleet
 /// even though the root never has an <c>owners/&lt;root&gt;/nodes/&lt;id&gt;.yaml</c> vouch entry
-/// of its own (a root never vouches itself). Paired with <see cref="NodePlacementResolver.Resolve"/>
-/// the same way <see cref="NodePlacementResolverTests"/> already exercises it, so these tests read
-/// as "placement on X succeeds/is refused" without a project document or a real ledger.
+/// of its own (a root never vouches itself). Placement on the vouched node itself and refusal of a
+/// node in neither set are proved once, at the <see cref="NodePlacementResolver.Resolve"/> seam
+/// alone, by <see cref="NodePlacementResolverTests"/> — this class covers only what is specific to
+/// <see cref="TaskAssignCommand.ResolveFleet"/> itself: the root-node and no-ledger-chain-yet
+/// boundaries nothing else reaches.
 /// </summary>
 public sealed class TaskAssignCommandFleetTests
 {
     private const string Root = "root-fingerprint";
     private static readonly Guid RootNodeId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid VouchedNodeId = Guid.Parse("22222222-2222-2222-2222-222222222222");
-    private static readonly Guid StrangerNodeId = Guid.Parse("99999999-9999-9999-9999-999999999999");
 
     private static TrustChain BuildChain(bool includeVouchedNode = true)
     {
@@ -42,28 +42,6 @@ public sealed class TaskAssignCommandFleetTests
         Guid resolved = NodePlacementResolver.Resolve(RootNodeId.ToString(), fleet);
 
         resolved.Should().Be(RootNodeId, "the root's own key established it, so it never needs h9k node vouch on itself");
-    }
-
-    [Fact]
-    public void Placement_on_a_vouched_node_is_unchanged()
-    {
-        TrustChain chain = BuildChain();
-
-        HashSet<Guid> fleet = TaskAssignCommand.ResolveFleet(chain, Root, ownerIsThisInstall: false, thisNodeId: Guid.Empty);
-        Guid resolved = NodePlacementResolver.Resolve(VouchedNodeId.ToString(), fleet);
-
-        resolved.Should().Be(VouchedNodeId);
-    }
-
-    [Fact]
-    public void A_node_in_neither_the_root_nor_the_vouched_set_is_refused()
-    {
-        TrustChain chain = BuildChain();
-
-        HashSet<Guid> fleet = TaskAssignCommand.ResolveFleet(chain, Root, ownerIsThisInstall: false, thisNodeId: Guid.Empty);
-        Action act = () => NodePlacementResolver.Resolve(StrangerNodeId.ToString(), fleet);
-
-        act.Should().Throw<DomainValidationException>().WithMessage("*not vouched*");
     }
 
     [Fact]
