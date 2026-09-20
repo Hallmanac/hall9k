@@ -174,10 +174,12 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// (independent pre-PR review, cycle 1, adversarial lens, medium — this scan's per-call cost
     /// used to scale with the project's total node count, not its root count, and
     /// <c>Hall9k.Daemon.Messaging.MessageSweepEngine</c> calls <see cref="ComputeAsync"/>
-    /// once per project on every sweep tick). The loop itself also stops the moment every owner
-    /// chain already has a <see cref="TrustedOwner.RootNodeId"/> — typically after the first root or
-    /// two, on a project whose owner count is always far smaller than its node count — rather than
-    /// walking every remaining node ref only to learn nothing more.
+    /// once per project on every sweep tick). The loop itself walks every discovered node id rather
+    /// than stopping once every owner chain already has a <see cref="TrustedOwner.RootNodeId"/>:
+    /// <c>ls-remote</c> returns refs in refname order, not discovery order, so a forged
+    /// <c>node.yaml</c> claiming an already-resolved root's own key can sort after the genuine one,
+    /// and stopping early would let that forgery go unrecorded depending on nothing more meaningful
+    /// than node-id sort order (independent pre-PR review, cycle 3, both lenses, medium).
     /// </para>
     /// </summary>
     private async Task<IReadOnlyList<UnverifiedLedgerWrite>> AttachRootNodeIdsAsync(
@@ -199,11 +201,6 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         List<UnverifiedLedgerWrite> unverified = [];
         foreach (string nodeId in nodeIds)
         {
-            if (ownerChains.Values.All(owner => owner.RootNodeId is not null))
-            {
-                break;
-            }
-
             string refName = $"{NodesRefPrefix}{nodeId}";
             string? tip = await ResolveTipAsync(repositoryPath, refName, cancellationToken);
             if (tip is null)
@@ -215,12 +212,9 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             string? content = await ReadAtCommitAsync(repositoryPath, tip, path, cancellationToken);
             string? publicKeyLine = content is null ? null : ExtractQuotedYamlValue(content, "public_key");
             if (publicKeyLine is null || !TryFingerprint(publicKeyLine, out string fingerprint)
-                || !ownerChains.TryGetValue(fingerprint, out TrustedOwner? owner) || owner.RootNodeId is not null)
+                || !ownerChains.TryGetValue(fingerprint, out TrustedOwner? owner))
             {
-                // No key, an unparseable one, a fingerprint that names no root this walk trusts, or
-                // this root's own node id was already found by an earlier ref in this same scan —
-                // fingerprints are unique to one key, so at most one node id can ever legitimately
-                // match a given root either way.
+                // No key, an unparseable one, or a fingerprint that names no root this walk trusts.
                 continue;
             }
 
