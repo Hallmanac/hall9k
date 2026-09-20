@@ -253,9 +253,10 @@ public static class CliCommandTree
                 .WithDescription(
                     "List this project's members as the ledger's own chain read currently sees them (idea "
                     + "202383dc, T1): root fingerprint, this install's own login for that root when it is "
-                    + "known locally, role (owner or member), the nodes currently vouched under that root, "
-                    + "and verified state. Recomputed fresh every run — a revocation or a removal another "
-                    + "node made shows up the moment this runs again, never a local cache.")
+                    + "known locally, role (owner or member), that root's own fleet (its own root node "
+                    + "plus every vouched node), and verified state. Recomputed fresh every run — a "
+                    + "revocation or a removal another node made shows up the moment this runs again, "
+                    + "never a local cache.")
                 .WithExample("project", "members", "hall9k");
             project.AddBranch("member", member =>
             {
