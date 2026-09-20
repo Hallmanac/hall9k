@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Daemon.Purge;
+using Hall9k.Domain.Features.Courier;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Orchestrator;
@@ -57,6 +58,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid purgedEpicId = await SeedEpicAsync(store, purgedProjectId, ownerId, cts.Token);
         await SeedGitHubAccessAsync(store, purgedProjectId, cts.Token);
         await SeedPromptAddendaSyncPositionAsync(store, purgedProjectId, cts.Token);
+        await SeedCourierDocumentsAsync(store, purgedProjectId, cts.Token);
         Guid nodeId = DomainId.New();
         Guid purgedPresenceId = await SeedOrchestratorPresenceAsync(store, nodeId, purgedProjectId, cts.Token);
         await SchedulePastDuePurgeAsync(store, purgedProjectId, ownerId, cts.Token);
@@ -70,6 +72,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid survivingEpicId = await SeedEpicAsync(store, survivingProjectId, ownerId, cts.Token);
         await SeedGitHubAccessAsync(store, survivingProjectId, cts.Token);
         await SeedPromptAddendaSyncPositionAsync(store, survivingProjectId, cts.Token);
+        await SeedCourierDocumentsAsync(store, survivingProjectId, cts.Token);
         Guid survivingPresenceId = await SeedOrchestratorPresenceAsync(store, nodeId, survivingProjectId, cts.Token);
 
         ProjectPurgeEngine engine = new(store, NullLogger<ProjectPurgeEngine>.Instance);
@@ -92,6 +95,11 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<PromptAddendaSyncPosition>(purgedProjectId, cts.Token)).Should().BeNull(
                 "PromptAddendaSyncPosition is the identical shape: project-id-keyed but never a "
                 + "stream of its own");
+            (await query.LoadAsync<OrchestratorFeedDrainLease>(purgedProjectId, cts.Token)).Should().BeNull(
+                "the feed courier's own manual-drain lease (idea 89471598, piece 3) is the identical "
+                + "shape again: project-id-keyed but never a stream of its own");
+            (await query.LoadAsync<CourierDaySpawnCounter>(purgedProjectId, cts.Token)).Should().BeNull(
+                "the feed courier's own per-day spawn counter is the identical shape a third time");
             foreach (Guid taskId in purgedTaskIds)
             {
                 (await query.LoadAsync<TaskDetails>(taskId, cts.Token)).Should().BeNull();
@@ -121,6 +129,8 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<ProjectDetails>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<ProjectGitHubMembers>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<PromptAddendaSyncPosition>(survivingProjectId, cts.Token)).Should().NotBeNull();
+            (await query.LoadAsync<OrchestratorFeedDrainLease>(survivingProjectId, cts.Token)).Should().NotBeNull();
+            (await query.LoadAsync<CourierDaySpawnCounter>(survivingProjectId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<TaskDetails>(survivingTaskIds[0], cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<RunDetails>(survivingRunId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<IdeaDetails>(survivingIdeaId, cts.Token)).Should().NotBeNull();
@@ -408,6 +418,22 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Store(new PromptAddendaSyncPosition { Id = projectId, LastScannedGlobalSequence = 1 });
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Materialises the feed courier's own two project-id-keyed documents (idea 89471598, piece
+    /// 3) — the manual-drain lease <c>h9k orchestrator feed --drain</c> writes and the per-day
+    /// spawn counter the courier's own sweep writes — the identical shape
+    /// <see cref="SeedPromptAddendaSyncPositionAsync"/> is for its own sibling: never a stream, so
+    /// a purge needs its own delete to reach either one.
+    /// </summary>
+    private static async Task SeedCourierDocumentsAsync(
+        IDocumentStore store, Guid projectId, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Store(OrchestratorFeedDrainLease.Held(projectId, Now));
+        session.Store(new CourierDaySpawnCounter { Id = projectId, Day = DateOnly.FromDateTime(Now.UtcDateTime), Count = 1 });
         await session.SaveChangesAsync(cancellationToken);
     }
 

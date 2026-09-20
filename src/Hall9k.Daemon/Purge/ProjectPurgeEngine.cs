@@ -1,3 +1,4 @@
+using Hall9k.Domain.Features.Courier;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Orchestrator;
@@ -319,6 +320,12 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         // drain, holding one sequence number (independent pre-PR review, cycle 1, conformance
         // lens, low).
         session.Delete<OrchestratorFeedCursor>(project.Id);
+        // OrchestratorFeedDrainLease and CourierDaySpawnCounter (idea 89471598, piece 3) are the
+        // identical shape again, twice: project-id-keyed, never a stream, lazily created the
+        // first time a manual drain or a courier spawn touches this project. Left behind by the
+        // events/streams deletes above the same way every sibling on this list would be.
+        session.Delete<OrchestratorFeedDrainLease>(project.Id);
+        session.Delete<CourierDaySpawnCounter>(project.Id);
 
         if (taskIds.Length > 0)
         {
