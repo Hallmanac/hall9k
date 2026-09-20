@@ -59,7 +59,9 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
             + "only that node's own dispatcher claims it, and every other node of the same owner "
             + "stands down without a forced take. Refused for a node this project's own ledger does "
             + "not currently vouch into the owner's fleet (h9k node vouch <id> first) — this "
-            + "install's own node id always qualifies. The bare flag, with nothing named, clears an "
+            + "install's own node id qualifies without a ledger lookup only when the task is this "
+            + "install's own owner's work; placing another owner's task still needs that owner's "
+            + "own vouch. The bare flag, with nothing named, clears an "
             + "existing placement so any of the owner's nodes may claim it again; omit the option "
             + "entirely to leave whatever placement the task already carries untouched. h9k task "
             + "show and h9k status name the placed node. A forced or cooperative take that moves the "
@@ -83,7 +85,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         // Blocked ("already assigned; unassign it first") — so a --node against an already-assigned
         // task, with no owner named alongside it, changes placement in place instead of attempting
         // (and failing) a full reassignment nobody asked for.
-        if (task.AssignedOwnerId is not null && settings.Owner.IsBlank() && settings.Node.IsSet)
+        if (task.AssignedOwnerId is { } assignedOwnerId && settings.Owner.IsBlank() && settings.Node.IsSet)
         {
             // --take assigns a tracker item as part of landing a fresh assignment (TakeBeforeAssigningAsync,
             // below) — this branch never reaches that door, so a --take alongside a placement-only
@@ -98,7 +100,7 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                     + "fresh assignment.");
             }
 
-            return await ChangePlacementOnlyAsync(session, task, context, settings.Node, cancellationToken);
+            return await ChangePlacementOnlyAsync(session, task, assignedOwnerId, context, settings.Node, cancellationToken);
         }
 
         OwnerDetails owner = settings.Owner.IsNotBlank()
@@ -109,8 +111,8 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
                     + "Name them: h9k task assign <id> <owner>");
 
         Optional<Guid?> placement = await ResolvePlacementAsync(
-            session, settings.Node, owner.RootFingerprint, task.ProjectId, context.NodeId, new GitLedgerChainReader(),
-            cancellationToken);
+            session, settings.Node, owner.RootFingerprint, owner.Id == context.OwnerId, task.ProjectId, context.NodeId,
+            new GitLedgerChainReader(), cancellationToken);
         TaskAssigned assigned = await AppendAsync(
             session, task, owner, context.OwnerId, cancellationToken, placement);
 
@@ -333,8 +335,8 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     /// resolves to a node id and pins it.
     /// </summary>
     internal static async Task<Optional<Guid?>> ResolvePlacementAsync(
-        IQuerySession session, FlagValue<string> node, string? ownerRootFingerprint, Guid projectId, Guid thisNodeId,
-        ILedgerChainReader chainReader, CancellationToken cancellationToken)
+        IQuerySession session, FlagValue<string> node, string? ownerRootFingerprint, bool ownerIsThisInstall,
+        Guid projectId, Guid thisNodeId, ILedgerChainReader chainReader, CancellationToken cancellationToken)
     {
         if (!node.IsSet)
         {
@@ -347,25 +349,33 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         }
 
         return Optional<Guid?>.Of(await ResolveNodeIdAsync(
-            session, node.Value, ownerRootFingerprint, projectId, thisNodeId, chainReader, cancellationToken));
+            session, node.Value, ownerRootFingerprint, ownerIsThisInstall, projectId, thisNodeId, chainReader,
+            cancellationToken));
     }
 
     /// <summary>
-    /// The fleet a <c>--node</c> value resolves against: this install's own node id plus every
-    /// node this project's own ledger currently vouches into <paramref name="ownerRootFingerprint"/>'s
-    /// chain (idea 202383dc) — never this node's local <c>NodeDetails</c>, which never replicates a
+    /// The fleet a <c>--node</c> value resolves against: every node this project's own ledger
+    /// currently vouches into <paramref name="ownerRootFingerprint"/>'s chain (idea 202383dc),
+    /// plus this install's own node id — but only when <paramref name="ownerIsThisInstall"/> says
+    /// the task is actually this install's own owner's work, never a different owner's. Without
+    /// that guard, an owner sharing a project with somebody else could place that somebody's task
+    /// onto this node merely by naming this node's own fragment, a node no dispatcher then ever
+    /// claims it from — the ledger is what says who this node may legitimately act for, and this
+    /// install's own id skips that check only for the one case the ledger cannot yet vouch for
+    /// itself: a fresh, still-unvouched single-node project (independent pre-PR review, cycle 1,
+    /// adversarial lens). Never this node's local <c>NodeDetails</c>, which never replicates a
     /// foreign node's own record. Shared by <see cref="ResolvePlacementAsync"/> (a fresh assignment)
     /// and <see cref="ChangePlacementOnlyAsync"/> (changing placement on one already assigned), so
     /// the two doors onto <c>--node</c> can never resolve the identical argument two different ways.
     /// </summary>
     internal static async Task<Guid> ResolveNodeIdAsync(
-        IQuerySession session, string nodeIdOrFragment, string? ownerRootFingerprint, Guid projectId, Guid thisNodeId,
-        ILedgerChainReader chainReader, CancellationToken cancellationToken)
+        IQuerySession session, string nodeIdOrFragment, string? ownerRootFingerprint, bool ownerIsThisInstall,
+        Guid projectId, Guid thisNodeId, ILedgerChainReader chainReader, CancellationToken cancellationToken)
     {
         ProjectDetails project = await session.LoadAsync<ProjectDetails>(projectId, cancellationToken)
             ?? throw new DomainNotFoundException($"No project {projectId}.");
 
-        HashSet<Guid> fleet = [thisNodeId];
+        HashSet<Guid> fleet = ownerIsThisInstall ? [thisNodeId] : [];
         if (ownerRootFingerprint is { } root && project.RepositoryPath.IsNotBlank())
         {
             TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
@@ -390,18 +400,27 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
     /// placement-only change through <see cref="Handlers.TaskDecider.SetPlacement"/>, which moves
     /// nothing else about the task. <paramref name="node"/>'s own value resolves against this
     /// project's own ledger the identical way a fresh assignment's does, using this task's own
-    /// recorded <see cref="TaskAggregate.AssignedOwnerFingerprint"/> when it carries one rather than
-    /// a locally-resolved <c>OwnerDetails</c>, since a task assigned by a peer node's own root may
-    /// never have registered an <c>OwnerDetails</c> record here at all.
+    /// recorded <see cref="TaskAggregate.AssignedOwnerFingerprint"/> when it carries one, falling
+    /// back to <see cref="OwnerRootFingerprintResolver"/> against <paramref name="assignedOwnerId"/>
+    /// when it does not — a forced takeover clears the recorded fingerprint outright
+    /// (<see cref="TaskAggregate.Apply(TaskHolderTakenOver)"/>), and with no fallback the
+    /// ledger read never ran at all, collapsing the fleet to this node alone and refusing every
+    /// sibling node with a "vouch it first" remedy that cannot help, since the node was already
+    /// vouched (independent pre-PR review, cycle 1, both lenses). A task assigned by a peer node's
+    /// own root that never registered an <c>OwnerDetails</c> record here at all still resolves no
+    /// fingerprint either way, and is refused the identical way a fresh cross-owner assignment is.
     /// </summary>
     private static async Task<int> ChangePlacementOnlyAsync(
-        IDocumentSession session, TaskAggregate task, BootstrapContext context, FlagValue<string> node,
-        CancellationToken cancellationToken)
+        IDocumentSession session, TaskAggregate task, Guid assignedOwnerId, BootstrapContext context,
+        FlagValue<string> node, CancellationToken cancellationToken)
     {
         Guid? placedOnNodeId = node.Value.IsNotBlank()
             ? await ResolveNodeIdAsync(
-                session, node.Value, task.AssignedOwnerFingerprint, task.ProjectId, context.NodeId,
-                new GitLedgerChainReader(), cancellationToken)
+                session, node.Value,
+                task.AssignedOwnerFingerprint
+                    ?? await OwnerRootFingerprintResolver.ResolveAsync(session, assignedOwnerId, cancellationToken),
+                assignedOwnerId == context.OwnerId, task.ProjectId, context.NodeId, new GitLedgerChainReader(),
+                cancellationToken)
             : null;
 
         TaskPlacementChanged changed = TaskDecider.SetPlacement(task, placedOnNodeId, DateTimeOffset.UtcNow, context.OwnerId);
