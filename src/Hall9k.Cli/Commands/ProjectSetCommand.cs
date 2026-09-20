@@ -307,6 +307,21 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "(h9k task revise --queue-first, h9k task start).")]
         public string? AutoPrReview { get; init; }
 
+        [CommandOption("--design-review-drive <on|off>")]
+        [Description(
+            "Whether the designer persona's review may stand this project's product up and drive it "
+            + "through browser automation, or reads the diff and the design files alone (idea b9b09779, "
+            + "piece 3). Default 'on': a design review that never looks at the running product is judging "
+            + "markup rather than an experience, so the session launches the app on the worktree on an "
+            + "ephemeral port it reports, walks the changed user-facing flows, screenshots what it "
+            + "found, runs an automated accessibility audit on each screen it walked, and tears the app "
+            + "down when it is done. 'off' makes every design review here code-and-design-file only, and "
+            + "the report says so rather than leaving a reader to assume the product was seen. Driving "
+            + "also needs a run skill on this project's ledger — with no run skill there is nothing that "
+            + "says how to stand the product up, so the review is static whatever this setting says, and "
+            + "the report names which of the two reasons applied.")]
+        public string? DesignReviewDrive { get; init; }
+
         [CommandOption("--claim-gate <off|tracker-assignee>")]
         [Description(
             "What has to be true on this install before a task linked to a Jira card or a GitHub issue "
@@ -681,7 +696,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                 ? Optional<WritingConventions>.Of(DefaultWord(conventions)
                     ? WritingConventions.Default
                     : WritingConventions.Parse(conventions))
-                : Optional<WritingConventions>.None);
+                : Optional<WritingConventions>.None,
+            // No clearing word, deliberately, unlike the settings above it: this one is a plain
+            // two-state switch, so 'off' already IS the way back from 'on' and a third word
+            // meaning "the default, which is on" would be a second spelling of one of the two.
+            // h9k project show still separates the default from a recorded choice, through
+            // ReviewDriveSetting rather than through a value nobody can type.
+            designReviewDrive: settings.DesignReviewDrive is { } designReviewDrive
+                ? Optional<bool>.Of(ReviewDriveSetting.ParseOnOff(designReviewDrive, "--design-review-drive"))
+                : Optional<bool>.None);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
 
@@ -778,6 +801,26 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
         if (settings.AutoPrReview is not null && AutoPrReviewSpeed.Parse(settings.AutoPrReview) is { } speed)
         {
             AnsiConsole.MarkupLine(AutoPrReviewConsequence(speed));
+        }
+
+        // The same discipline, for the other setting that decides how much of the product a
+        // review actually sees. Both directions say their consequence: turning driving off is
+        // the one that costs something a reader of a later report would otherwise have to infer,
+        // and turning it on is a standing consent that a review session may start this project's
+        // app on this machine.
+        if (settings.DesignReviewDrive is not null)
+        {
+            AnsiConsole.MarkupLine(
+                ReviewDriveSetting.ParseOnOff(settings.DesignReviewDrive, "--design-review-drive")
+                    ? "[dim]Design reviews here may now stand the product up: the session launches the app on "
+                      + "the review worktree on an ephemeral port it reports, walks the changed user-facing "
+                      + "flows, screenshots them, audits each walked screen for accessibility, and tears it "
+                      + "down. It still needs a run skill on this project's ledger; with none, the review is "
+                      + "code-and-design-file only and says so.[/]"
+                    : "[yellow]Design reviews here are now code-and-design-file only: no session will start "
+                      + "this project's app, so nothing in a design report will have been seen running. The "
+                      + "report states that plainly rather than leaving it to be assumed. Turn it back on:[/] "
+                      + $"h9k project set {details.Name.EscapeMarkup()} --design-review-drive on");
         }
 
         // Said at the moment of consent and only then, the discipline every standing consequence

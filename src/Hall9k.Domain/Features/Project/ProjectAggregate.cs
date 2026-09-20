@@ -119,6 +119,13 @@ public sealed class ProjectAggregate
     /// </summary>
     public AutoPrReviewSpeed AutoPrReview { get; private set; } = AutoPrReviewSpeed.Off;
     /// <summary>
+    /// The last design-review-drive choice this project's stream recorded (idea b9b09779, piece
+    /// 3) — not the effective setting, on the same terms <see cref="AutoPrReview"/> above states:
+    /// <see cref="ReviewDriveSetting"/> resolves that, and it is the only thing that can tell a
+    /// recorded choice from a replay that recorded nothing.
+    /// </summary>
+    public bool DesignReviewDrive { get; private set; } = ReviewDriveSetting.DefaultFor(ReviewPersona.Designer);
+    /// <summary>
     /// What has to be true on this install before a task linked to a Jira card or a GitHub issue
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
     /// </summary>
@@ -337,6 +344,11 @@ public sealed class ProjectAggregate
             AutoPrReview = @event.AutoPrReview.Value ?? AutoPrReviewSpeed.Off;
         }
 
+        if (@event.DesignReviewDrive.HasValue)
+        {
+            DesignReviewDrive = @event.DesignReviewDrive.Value;
+        }
+
         if (@event.Priority.HasValue)
         {
             Priority = @event.Priority.Value ?? ProjectPriority.Normal;
@@ -463,6 +475,11 @@ public sealed class ProjectAggregate
         if (@event.AutoPrReview.HasValue)
         {
             AutoPrReview = @event.AutoPrReview.Value ?? AutoPrReviewSpeed.Off;
+        }
+
+        if (@event.DesignReviewDrive.HasValue)
+        {
+            DesignReviewDrive = @event.DesignReviewDrive.Value;
         }
 
         if (@event.ClaimGate.HasValue)

@@ -49,7 +49,15 @@ public sealed record ProjectTeamSettingsChanged(
     Optional<IReadOnlyList<string>> NeverCloseLabels = default,
     Optional<AutoPrReviewSpeed> AutoPrReview = default,
     Optional<IReadOnlyList<ContextLink>> ContextLinks = default,
-    Optional<CommitStyle> CommitStyle = default)
+    Optional<CommitStyle> CommitStyle = default,
+    /// <summary>
+    /// Whether the designer persona's review drives this project's running product (idea
+    /// b9b09779, piece 3) — a team field, because the review a teammate's own node dispatches
+    /// has to read this pull request the same way whoever set it intended. See
+    /// <see cref="ProjectSettingsChanged.DesignReviewDrive"/>'s own doc for the default and why
+    /// <see cref="Project.ReviewDriveSetting"/> and not the projection resolves it.
+    /// </summary>
+    Optional<bool> DesignReviewDrive = default)
 {
     /// <summary>
     /// Builds the team companion from whatever <see cref="ProjectDecider.ChangeSettings"/> just
@@ -78,7 +86,8 @@ public sealed record ProjectTeamSettingsChanged(
             || changed.NeverCloseLabels.HasValue
             || changed.AutoPrReview.HasValue
             || changed.ContextLinks.HasValue
-            || changed.CommitStyle.HasValue;
+            || changed.CommitStyle.HasValue
+            || changed.DesignReviewDrive.HasValue;
 
         return anyTeamField
             ? new ProjectTeamSettingsChanged(
@@ -106,7 +115,8 @@ public sealed record ProjectTeamSettingsChanged(
                 changed.NeverCloseLabels,
                 changed.AutoPrReview,
                 changed.ContextLinks,
-                changed.CommitStyle)
+                changed.CommitStyle,
+                changed.DesignReviewDrive)
             : null;
     }
 }
