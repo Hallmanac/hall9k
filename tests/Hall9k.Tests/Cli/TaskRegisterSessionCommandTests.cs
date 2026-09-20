@@ -14,16 +14,15 @@ namespace Hall9k.Tests.Cli;
 /// session's own environment, and the honest refusal when it cannot. The store round trip itself
 /// (the append, the Claimed+interactive and run-state guards) is this command's own
 /// integration-tier concern, the same split <see cref="TaskLogInteractionCommandTests"/> already
-/// draws for its own command. These mutate CLAUDE_PID and CLAUDE_CODE_SESSION_ID, environment
-/// variables, so — per <see cref="Hall9k.Tests.Domain.HomeEnvironmentIsolationTests"/>'s own
-/// blanket rule over every <c>Environment.SetEnvironmentVariable</c>/<c>GetEnvironmentVariable</c>
-/// caller, not only <c>HALL9K_HOME</c> itself — this class carries <c>[Collection("Hall9kHome")]</c>
-/// so it never races a different collection's own env-var test; the scope helper itself,
-/// <see cref="EnvironmentVariableScope"/>, is shared from <c>Hall9k.Tests.Fakes</c> rather than
-/// nested here.
+/// draws for its own command. These mutate CLAUDE_PID and CLAUDE_CODE_SESSION_ID, genuinely
+/// process-wide environment variables with no flow-scoped alternative (Decisions Log
+/// PLACEHOLDER-98484f36), so this class carries <c>[Collection("Environment")]</c>, the one
+/// serial collection left, so it never races a different collection's own env-var test; the
+/// scope helper itself, <see cref="EnvironmentVariableScope"/>, is shared from
+/// <c>Hall9k.Tests.Fakes</c> rather than nested here.
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 public sealed class TaskRegisterSessionCommandTests
 {
     [Fact]

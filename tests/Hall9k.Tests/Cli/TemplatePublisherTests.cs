@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Cli.Prompts;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -12,30 +13,22 @@ namespace Hall9k.Tests.Cli;
 /// scoped to the canonical prompt-template set instead (task: agent prompt prose lives in shipped
 /// markdown templates rather than hard-coded C# strings).
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (the canonical template set hangs off it), so it shares
-// the collection with every other test that does.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Redirects the process-wide HALL9K_HOME (the canonical template set hangs off it).
 public sealed class TemplatePublisherTests : IDisposable
 {
-    private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"h9k-templates-{Guid.NewGuid():N}");
     private readonly string _source = Path.Combine(Path.GetTempPath(), $"h9k-templates-source-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
+
+    private string _platformHome => _scopedHome.Home;
 
     public TemplatePublisherTests()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _platformHome);
         Directory.CreateDirectory(_source);
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_platformHome))
-        {
-            Directory.Delete(_platformHome, recursive: true);
-        }
-
+        _scopedHome.Dispose();
         Directory.Delete(_source, recursive: true);
     }
 

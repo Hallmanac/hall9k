@@ -16,29 +16,27 @@ namespace Hall9k.Tests.Cli;
 /// for docker, and the connection string is left unconfigured so <see cref="DatabaseDoctor"/>
 /// takes the "nothing configured" branch this file is about.
 /// </summary>
-// HALL9K_HOME and HALL9K_CONNECTION_STRING are process-wide state; sharing the collection
-// serializes this against every other test that redirects the same environment.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// This class still clears HALL9K_CONNECTION_STRING directly, needing the environment-variable
+// tier itself suppressed rather than redirected to a specific value — which
+// ScopedConnectionString cannot stand in for (Decisions Log PLACEHOLDER-98484f36) — so it stays
+// in the one serial collection left for a literal environment-variable write.
+// HALL9K_HOME is redirected through ScopedTestHome like everywhere else.
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 public sealed class DatabaseDoctorNotConfiguredTests : IDisposable
 {
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-doctor-not-configured-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome scopedHome = new();
+
     private readonly string? previousConnectionString =
         Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
 
-    public DatabaseDoctorNotConfiguredTests()
-    {
-        Directory.CreateDirectory(home);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+    public DatabaseDoctorNotConfiguredTests() =>
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, null);
-    }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-        Directory.Delete(home, recursive: true);
+        scopedHome.Dispose();
     }
 
     [Fact]

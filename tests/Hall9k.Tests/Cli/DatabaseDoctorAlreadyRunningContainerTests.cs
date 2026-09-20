@@ -19,35 +19,32 @@ namespace Hall9k.Tests.Cli;
 /// <see cref="Hall9kDatabase.DefaultConnectionString"/> names — the same seam
 /// <c>DatabaseDoctorReadinessTests</c> already uses for the readiness poll.
 /// </summary>
-// HALL9K_HOME and HALL9K_CONNECTION_STRING are process-wide state; sharing the collection
-// serializes this against every other test that redirects the same environment. Clearing the
-// connection string matters here specifically: it outranks the platform config file this class
-// writes to and reads back from, so leaving it set to whatever the ambient environment names
-// would let that value, not the code under test, decide what these tests observe.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// This class still clears HALL9K_CONNECTION_STRING directly rather than through
+// ScopedConnectionString: clearing matters here specifically, since it outranks the platform
+// config file this class writes to and reads back from, and ScopedConnectionString can only
+// redirect to a specific value, not force "nothing configured" ahead of whatever the ambient
+// environment names (Decisions Log PLACEHOLDER-98484f36). That literal write is what keeps this
+// class in the one serial collection left; HALL9K_HOME is redirected through ScopedTestHome like
+// everywhere else.
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
 {
     private static readonly TimeSpan ShortTimeout = TimeSpan.FromMilliseconds(200);
     private static readonly TimeSpan ShortPollInterval = TimeSpan.FromMilliseconds(20);
 
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-doctor-already-running-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome scopedHome = new();
+
     private readonly string? previousConnectionString =
         Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
 
-    public DatabaseDoctorAlreadyRunningContainerTests()
-    {
-        Directory.CreateDirectory(home);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+    public DatabaseDoctorAlreadyRunningContainerTests() =>
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, null);
-    }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
         Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-        Directory.Delete(home, recursive: true);
+        scopedHome.Dispose();
     }
 
     [Fact]

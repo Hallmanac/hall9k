@@ -5,6 +5,7 @@ using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -14,19 +15,15 @@ namespace Hall9k.Tests.Cli;
 /// and answerable for every directory it makes. No git here — the repo/ half has its own tests
 /// against a real repository; these cover the shape, the skill seeding and the render.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (the canonical skill set hangs off it), so it shares
-// the collection with the other tests that do.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Redirects the process-wide HALL9K_HOME (the canonical skill set hangs off it).
 public sealed class ProjectHomeRecipeTests : IDisposable
 {
-    private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"hall9k-recipe-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
+
+    private string _platformHome => _scopedHome.Home;
 
     // The recipe shells out to git, so a hung child never becomes a hung suite.
     private readonly CancellationTokenSource _cancellation = new(TimeSpan.FromMinutes(3));
-
-    public ProjectHomeRecipeTests() => Environment.SetEnvironmentVariable("HALL9K_HOME", _platformHome);
 
     [Fact]
     public async Task The_shape_is_created_whole_and_is_the_same_on_a_second_run()
@@ -544,10 +541,6 @@ public sealed class ProjectHomeRecipeTests : IDisposable
     public void Dispose()
     {
         _cancellation.Dispose();
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_platformHome))
-        {
-            Directory.Delete(_platformHome, recursive: true);
-        }
+        _scopedHome.Dispose();
     }
 }

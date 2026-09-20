@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -12,16 +13,13 @@ namespace Hall9k.Tests.Cli;
 /// node or project orchestrator window), through the identical hash-manifest publish/shadow/retire
 /// discipline the ordinary skill set already uses.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME, the same collection every other test touching it joins.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Redirects the process-wide HALL9K_HOME.
 public sealed class RecipeSkillPublisherTests : IDisposable
 {
-    private readonly string _platformHome = Path.Combine(Path.GetTempPath(), $"hall9k-recipe-skill-{Guid.NewGuid():N}");
     private readonly string _source = Path.Combine(Path.GetTempPath(), $"hall9k-recipe-skill-source-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
-    public RecipeSkillPublisherTests() => Environment.SetEnvironmentVariable("HALL9K_HOME", _platformHome);
+    private string _platformHome => _scopedHome.Home;
 
     [Fact]
     public void Publishing_writes_the_skill_and_the_manifest()
@@ -303,11 +301,7 @@ public sealed class RecipeSkillPublisherTests : IDisposable
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_platformHome))
-        {
-            Directory.Delete(_platformHome, recursive: true);
-        }
+        _scopedHome.Dispose();
 
         if (Directory.Exists(_source))
         {

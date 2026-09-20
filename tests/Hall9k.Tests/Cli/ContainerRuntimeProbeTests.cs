@@ -3,6 +3,7 @@ using Hall9k.Cli.Diagnostics;
 using Hall9k.Connectors.Processes;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -14,26 +15,14 @@ namespace Hall9k.Tests.Cli;
 /// ones hardest to arrange for real and the ones a human most needs read correctly.
 /// </summary>
 // ComposeUpAsync writes PostgresRuntime's compose file under HALL9K_HOME; redirecting it
-// to a temp directory here keeps that write off a developer's or CI runner's real home,
-// and sharing the collection serializes this against every other HALL9K_HOME redirect.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// to a temp directory here keeps that write off a developer's or CI runner's real home.
 public sealed class ContainerRuntimeProbeTests : IDisposable
 {
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-runtime-probe-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
-    public ContainerRuntimeProbeTests()
-    {
-        Directory.CreateDirectory(home);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-    }
+    private string home => _scopedHome.Home;
 
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
-        Directory.Delete(home, recursive: true);
-    }
+    public void Dispose() => _scopedHome.Dispose();
 
     [Fact]
     public async Task Docker_info_succeeding_means_the_runtime_is_running()

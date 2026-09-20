@@ -6,8 +6,6 @@ using Xunit;
 
 namespace Hall9k.Tests.Cli;
 
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class WindowsDaemonAutostartTests
 {
     private const string Launcher = @"C:\Users\someone\.hall9k\bin\h9k.exe";

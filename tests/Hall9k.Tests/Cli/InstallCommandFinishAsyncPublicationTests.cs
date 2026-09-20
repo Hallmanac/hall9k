@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Tests.TestSupport;
 using Xunit;
 
 namespace Hall9k.Tests.Cli;
@@ -13,28 +14,21 @@ namespace Hall9k.Tests.Cli;
 /// <c>Path.GetDirectoryName(skillsSource)</c>'s own sibling derivation, or in the
 /// <c>PublishSkills</c>/<c>PublishTemplates</c> call sequence itself, had nothing here to catch it.
 /// </summary>
-// Redirects the process-wide HALL9K_HOME (both canonical directories hang off it), so it shares
-// the collection with every other test that does.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Redirects the process-wide HALL9K_HOME (both canonical directories hang off it).
 public sealed class InstallCommandFinishAsyncPublicationTests : IDisposable
 {
-    private readonly string home = Path.Combine(Path.GetTempPath(), $"h9k-install-finish-{Path.GetRandomFileName()}");
     private readonly string staging = Path.Combine(Path.GetTempPath(), $"h9k-install-finish-staging-{Path.GetRandomFileName()}");
     private readonly string repo = Path.Combine(Path.GetTempPath(), $"h9k-install-finish-repo-{Path.GetRandomFileName()}");
-    private readonly string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
     public InstallCommandFinishAsyncPublicationTests()
     {
-        Directory.CreateDirectory(home);
         Directory.CreateDirectory(staging);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
     }
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
-        InstallCommand.TryDelete(home);
+        _scopedHome.Dispose();
         InstallCommand.TryDelete(staging);
         InstallCommand.TryDelete(repo);
     }

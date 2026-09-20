@@ -16,19 +16,13 @@ namespace Hall9k.Tests.Cli;
 /// racing it. Two independent signals feed it: the legacy env var a direct launch injects into
 /// its own child process, and CLAUDE_PID (Claude Code's own environment variable) matching the
 /// run's recorded process id, which is the only signal available to a self-registered session
-/// h9k never spawned. These mutate process-wide environment variables, so — per
-/// <see cref="Hall9k.Tests.Domain.HomeEnvironmentIsolationTests"/>'s own blanket rule over every
-/// <c>Environment.SetEnvironmentVariable</c>/<c>GetEnvironmentVariable</c> caller, not only
-/// <c>HALL9K_HOME</c> itself — this class carries <c>[Collection("Hall9kHome")]</c> so it never
-/// races a different collection's own env-var test. <see cref="EnvironmentVariableScope"/> itself
-/// is a shared helper in <c>Hall9k.Tests.Fakes</c>, carrying the identical attribute on its own
-/// declaration too — <c>HomeEnvironmentIsolationTests</c>'s own scan flags any class using these
-/// members without it, helper included, even though the attribute has no runtime effect on a type
-/// with no test methods of its own; this class still needs its own copy regardless, since the
-/// helper's attribute does not extend serialization to a caller that omits it.
+/// h9k never spawned. Both are genuinely process-wide environment variables with no flow-scoped
+/// alternative (Decisions Log PLACEHOLDER-98484f36), so this class carries
+/// <c>[Collection("Environment")]</c>, the one serial collection left, so it never races a
+/// different collection's own env-var test.
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 public sealed class InteractiveSessionLivenessTests
 {
     [Fact]
