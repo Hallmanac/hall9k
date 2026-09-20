@@ -116,6 +116,13 @@ public sealed class ProjectAggregate
     /// </summary>
     public ClaimGate ClaimGate { get; private set; } = ClaimGate.Off;
 
+    /// <summary>
+    /// How much of this project's own history the orchestrator feed hands a window (idea
+    /// 89471598, piece 2) — see <see cref="Events.ProjectSettingsChanged.OrchestratorFeed"/>'s
+    /// own doc.
+    /// </summary>
+    public OrchestratorFeedLevel OrchestratorFeed { get; private set; } = OrchestratorFeedLevel.Default;
+
     /// <summary>Who answers a cooperative claim request (idea 202383dc, item 5) — see <see cref="Events.ProjectSettingsChanged.TakePolicy"/>'s own doc.</summary>
     public TakePolicy TakePolicy { get; private set; } = TakePolicy.Auto;
 
@@ -323,6 +330,14 @@ public sealed class ProjectAggregate
         if (@event.ClaimGate.HasValue)
         {
             ClaimGate = @event.ClaimGate.Value ?? ClaimGate.Off;
+        }
+
+        // Only here, never on ProjectTeamSettingsChanged: an orchestrator feed level is this
+        // operator's own reading preference on this machine, so it stays on the node-scoped
+        // event exactly as the models and the local paths beside it do.
+        if (@event.OrchestratorFeed.HasValue)
+        {
+            OrchestratorFeed = @event.OrchestratorFeed.Value ?? OrchestratorFeedLevel.Default;
         }
 
         if (@event.TakePolicy.HasValue)

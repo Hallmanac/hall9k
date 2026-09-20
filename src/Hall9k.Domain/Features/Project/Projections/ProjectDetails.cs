@@ -102,6 +102,12 @@ public sealed class ProjectDetails
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
     /// </summary>
     public ClaimGate ClaimGate { get; set; } = ClaimGate.Off;
+    /// <summary>
+    /// How much of this project's own history the orchestrator feed hands a window (idea
+    /// 89471598, piece 2) — see <see cref="Events.ProjectSettingsChanged.OrchestratorFeed"/>'s
+    /// own doc; Transitions is the default.
+    /// </summary>
+    public OrchestratorFeedLevel OrchestratorFeed { get; set; } = OrchestratorFeedLevel.Default;
     /// <summary>Who answers a cooperative claim request (idea 202383dc, item 5) — see <see cref="Events.ProjectSettingsChanged.TakePolicy"/>'s own doc; Auto is the default.</summary>
     public TakePolicy TakePolicy { get; set; } = TakePolicy.Auto;
     /// <summary>Override of how long a cooperative take request waits for an answer, in minutes; null defers to the platform default (30). See <see cref="Events.ProjectSettingsChanged.TakeTimeoutMinutes"/>'s own doc.</summary>
@@ -307,6 +313,14 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.ClaimGate.HasValue)
         {
             view.ClaimGate = @event.Data.ClaimGate.Value ?? ClaimGate.Off;
+        }
+
+        // Only here, never on ProjectTeamSettingsChanged: an orchestrator feed level is this
+        // operator's own reading preference on this machine, so it stays on the node-scoped
+        // event exactly as the models and the local paths beside it do.
+        if (@event.Data.OrchestratorFeed.HasValue)
+        {
+            view.OrchestratorFeed = @event.Data.OrchestratorFeed.Value ?? OrchestratorFeedLevel.Default;
         }
 
         if (@event.Data.TakePolicy.HasValue)

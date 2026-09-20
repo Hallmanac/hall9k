@@ -225,4 +225,15 @@ public sealed record ProjectSettingsChanged(
     /// needs its own <c>--primary-tracker</c> to say which wins. Trailing and optional so every
     /// stream written before this setting existed replays byte-for-byte unchanged.
     /// </summary>
-    Optional<WorkItemProvider> PrimaryTracker = default);
+    Optional<WorkItemProvider> PrimaryTracker = default,
+    /// <summary>
+    /// How much of this project's own event history the orchestrator feed hands a window
+    /// (idea 89471598, piece 2). <see cref="Orchestrator.OrchestratorFeedLevel.Transitions"/> is
+    /// both the default and an explicit choice, the <see cref="Project.ClaimGate.Off"/> idiom:
+    /// nothing behaves differently for a project that never chose, so the platform has no use for
+    /// telling the two apart. Node-scoped like every other field on this event — a feed level is
+    /// this operator's own reading preference on this machine, never a team decision.
+    /// Trailing and optional so every stream written before this setting existed replays
+    /// byte-for-byte unchanged.
+    /// </summary>
+    Optional<OrchestratorFeedLevel> OrchestratorFeed = default);
