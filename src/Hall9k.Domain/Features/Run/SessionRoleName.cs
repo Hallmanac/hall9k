@@ -60,6 +60,13 @@ public static class SessionRoleName
     public const string Synthesis = "synthesis";
 
     /// <summary>
+    /// Delivers a project's orchestrator feed to its live orchestrator session and exits (idea
+    /// 89471598, piece 3). Composed with the project's own short id rather than a task's — a
+    /// courier runs as a run with no task, so there is no task short id to prefix it with.
+    /// </summary>
+    public const string Courier = "courier";
+
+    /// <summary>
     /// The bounded follow-up lap auto-pr-review's own mention trigger dispatches on an
     /// already-reviewed pull request (idea 2f079bcd): a single, narrowly-scoped session answering
     /// one tagged comment, never a fresh review. Its own role rather than <see cref="ReviewAdversarial"/>

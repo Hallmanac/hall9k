@@ -8,6 +8,7 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
+using Hall9k.Daemon.Courier;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.Invites;
@@ -276,6 +277,7 @@ builder.Services.AddSingleton<InviteSweepEngine>();
 builder.Services.AddSingleton<PromptAddendaSweepEngine>();
 builder.Services.AddSingleton<IOrchestratorProcessProbe, OrchestratorProcessTableProbe>();
 builder.Services.AddSingleton<OrchestratorPresenceSweepEngine>();
+builder.Services.AddSingleton<CourierEngine>();
 
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
     .IntegrateWithWolverine();
@@ -304,6 +306,7 @@ builder.Services.AddHostedService<MessageSweepLoop>();
 builder.Services.AddHostedService<InviteSweepLoop>();
 builder.Services.AddHostedService<PromptAddendaSweepLoop>();
 builder.Services.AddHostedService<OrchestratorPresenceSweepLoop>();
+builder.Services.AddHostedService<CourierSweepLoop>();
 builder.Services.AddHostedService<LogRotationService>();
 
 // Windows has no SIGTERM h9k daemon stop can send to an arbitrary process (Decisions Log

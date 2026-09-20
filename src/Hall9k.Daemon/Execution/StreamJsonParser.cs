@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Hall9k.Domain.Features.Courier;
 using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -47,6 +48,10 @@ public sealed record AgentResult(
     /// </summary>
     public PublicationTokensRecorded ToPublicationTokensRecorded(Guid taskId, DateTimeOffset recordedAt, AgentModel model) =>
         new(taskId, InputTokens, OutputTokens, CostUsd, recordedAt, CacheReadInputTokens, CacheCreationInputTokens, model);
+
+    /// <summary>The courier-run equivalent of <see cref="ToTokensRecorded"/>: same fields, riding a courier's own stream (see <see cref="CourierTokensRecorded"/>'s own doc for why that has to be a distinct type).</summary>
+    public CourierTokensRecorded ToCourierTokensRecorded(Guid runId, DateTimeOffset recordedAt, AgentModel model) =>
+        new(runId, InputTokens, OutputTokens, CostUsd, recordedAt, CacheReadInputTokens, CacheCreationInputTokens, model);
 
     /// <summary>Every input token the session was billed for, whatever the cache did with it.</summary>
     public long TotalInputTokens => InputTokens + CacheReadInputTokens + CacheCreationInputTokens;
