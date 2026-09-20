@@ -252,6 +252,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Auto pr-review", AutoPrReviewRow(project, autoPrReview));
         table.AddRow("Claim gate", ClaimGateRow(project, claimGateRecorded));
         table.AddRow("Orchestrator feed", OrchestratorFeedRow(project));
+        table.AddRow("Courier max wait", CourierMaxWaitRow(
+            project, history.WasRecorded(change => change.CourierMaxWaitSeconds)));
         table.AddRow("Take policy", TakePolicyRow(project, history.WasRecorded(change => change.TakePolicy)));
         table.AddRow("Take timeout", TakeTimeoutRow(project, history.WasRecorded(change => change.TakeTimeoutMinutes)));
         table.AddRow("Close linked issue", CloseLinkedIssueRow(
@@ -431,6 +433,17 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             ? $"{minutes} minute(s)"
             : $"[dim]{TaskTakeCommand.DefaultTakeTimeoutMinutes} minute(s) ({OriginNote(recorded)}) — override: "
               + $"h9k project set {project.Name.EscapeMarkup()} --take-timeout <minutes>[/]";
+
+    /// <summary>
+    /// The feed courier's own batching-wait ceiling for this project (idea 89471598, piece 3), the
+    /// identical "was this ever recorded" distinction <see cref="TakeTimeoutRow"/> carries for its
+    /// own nullable override.
+    /// </summary>
+    internal static string CourierMaxWaitRow(ProjectDetails project, bool recorded) =>
+        project.CourierMaxWaitSeconds is { } seconds
+            ? $"{seconds} second(s)"
+            : $"[dim]{ProjectAggregate.DefaultCourierMaxWaitSeconds} second(s) ({OriginNote(recorded)}) — override: "
+              + $"h9k project set {project.Name.EscapeMarkup()} --courier-max-wait <seconds>[/]";
 
     /// <summary>
     /// The model an orchestrator window for this project actually resolves to right now
