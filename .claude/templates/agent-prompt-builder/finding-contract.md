@@ -80,3 +80,29 @@ Report out-of-scope defects — they are worth knowing about, and the platform r
 smaller ones to their own bug tasks instead of growing this pull request. Do not stretch
 a tag either way: an in-scope defect tagged out-of-scope leaves this branch broken, and
 an out-of-scope one tagged in-scope drags unrelated work into the diff.
+===run-skill-drift-heading===
+**The standing question** — answer it in every review, on its own line, whatever else you find:
+===run-skill-drift===
+Did this change alter how the application runs locally? Anything a person or an agent
+would have to do differently to start it, exercise it, or point it at its dependencies
+counts: a new or renamed environment variable or setting, a new service or container to
+bring up, a changed startup command, port, seed step, migration or build step, a new
+prerequisite tool or version, a changed default that alters what you get when you run it.
+Answer on a line of exactly this shape, as the last thing before your verdict:
+
+    {{DriftMarker}} {{YesWord}}
+    {{DriftMarker}} {{NoWord}}
+
+Answer `{{NoWord}}` when you checked and nothing about running it changed. That is a real
+answer and it is recorded as one, so the report can show the question was asked.
+
+Answer `{{YesWord}}` only alongside a finding of this kind, which carries the ordinary
+header plus a `{{KindTagKey}}=` tag naming what changed about running it:
+
+    {{FindingMarker}} {{SeverityTagKey}}=medium; {{ScopeTagKey}}=in-scope; {{KindTagKey}}={{DriftKind}}; {{AtTagKey}}={{ExampleLocationPlaceholder}}
+    {{DefectLabel}} what now has to be done differently to run this locally, and what still says otherwise.
+    {{ScenarioLabel}} what a person following today's instructions would hit instead.
+
+Grade and scope it against the same anchors as anything else: the tag says what kind of
+finding it is, never how urgent it is, and the platform fixes, routes or carries it on
+exactly the terms its grade and scope already decide.

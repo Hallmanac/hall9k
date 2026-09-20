@@ -37,6 +37,8 @@ internal static class PromptContractTokens
         ReviewResultParser.ThreadDispositionMarker,
         ReviewResultParser.ThreadIdPlaceholder,
         ReviewResultParser.ThreadDispositionSummaryMarker,
+        ReviewResultParser.RunSkillDriftMarker,
+        ReviewResultParser.RunSkillDriftKind,
         "RESOLUTION:",
         "merge-ready",
         "needs-fixes",

@@ -39,10 +39,33 @@ public static class ReviewResultParser
     internal const string VerdictMarker = "VERDICT:";
 
     /// <summary>
+    /// The line every review pass answers the standing run-skill drift question on (idea
+    /// b9b09779, piece 1), read by <see cref="ParseRunSkillDrift"/>. Its own marker rather than a
+    /// finding tag because the answer has to be recordable when it is <em>no</em>, which by
+    /// definition produces no finding to hang a tag off — and a report that cannot show the
+    /// question was asked cannot show it was not.
+    /// </summary>
+    public const string RunSkillDriftMarker = "RUN-SKILL DRIFT:";
+
+    /// <summary>The kind value a run-skill drift finding tags itself with, so builders inject the spelling the parser reads rather than retyping it.</summary>
+    public const string RunSkillDriftKind = "run-skill-drift";
+
+    /// <summary>
     /// The structured findings in a review pass's output, in the order they were written. A
-    /// block runs from its FINDING header to the next header or the verdict line, and its text
-    /// is carried whole so the fix session and any routed draft read exactly what the reviewer
-    /// wrote rather than a reconstruction of it.
+    /// block runs from its FINDING header to the next header, the verdict line, or the
+    /// run-skill drift line, and its text is carried whole so the fix session and any routed
+    /// draft read exactly what the reviewer wrote rather than a reconstruction of it.
+    /// <para>
+    /// The drift line closes a block without ending the parse (independent pre-PR review, cycle
+    /// 1, adversarial finding). It has to close one because the contract tells the reviewer to
+    /// write it as the last thing before the verdict, so a pass that reported any finding would
+    /// otherwise trail <c>RUN-SKILL DRIFT: no</c> inside the last block's <c>Text</c> — text
+    /// <c>ReviewDraftBugTask</c> embeds verbatim as "the finding" and <c>SweepDraftTask</c>
+    /// compares by exact equality across cycles. It must not end the parse the way the verdict
+    /// does, because a pass that quotes its instructions before answering writes the marker
+    /// early — the same observed habit <see cref="ParseRunSkillDrift"/>'s last-marker-wins rule
+    /// tolerates — and a hard terminator would swallow every finding written after it.
+    /// </para>
     /// <para>
     /// Returns empty when the output carries no headers at all. That is not "no findings" — it
     /// is "no findings this parser can read", and the caller is the one that knows whether the
@@ -63,8 +86,9 @@ public static class ReviewResultParser
             string line = rawLine.TrimEnd('\r');
             string trimmed = line.TrimStart();
             bool opensFinding = trimmed.StartsWith(FindingMarker, StringComparison.OrdinalIgnoreCase);
-            bool endsFindings = trimmed.StartsWith(VerdictMarker, StringComparison.OrdinalIgnoreCase);
-            if (opensFinding || endsFindings)
+            bool closesBlock = trimmed.StartsWith(VerdictMarker, StringComparison.OrdinalIgnoreCase)
+                || trimmed.StartsWith(RunSkillDriftMarker, StringComparison.OrdinalIgnoreCase);
+            if (opensFinding || closesBlock)
             {
                 Close(findings, block);
                 block = opensFinding ? [trimmed] : null;
@@ -97,8 +121,20 @@ public static class ReviewResultParser
             ReviewFindingScope.Parse(Tag(header, ScopeTagKey)),
             location,
             string.Join('\n', block).Trim(),
-            ParseTrack(Tag(header, TrackTagKey))));
+            ParseTrack(Tag(header, TrackTagKey)),
+            ReviewFindingKind.Parse(Tag(header, KindTagKey))));
     }
+
+    /// <summary>
+    /// The standing question's own answer (idea b9b09779, piece 1): did this change alter how the
+    /// application runs locally? Last marker wins, exactly as VERDICT does and for the same
+    /// observed reason — a pass that quotes its instructions before answering writes the marker
+    /// twice. An absent or unreadable answer is <see cref="RunSkillDriftAnswer.Unstated"/>, never
+    /// read as a no: "nobody answered" and "answered no" are different facts, and only the second
+    /// is evidence the question was actually considered.
+    /// </summary>
+    public static RunSkillDriftAnswer ParseRunSkillDrift(string? summary) =>
+        RunSkillDriftAnswer.Parse(LastMarkerValue(summary, RunSkillDriftMarker));
 
     /// <summary>
     /// The `track=` tag a <see cref="ReviewMode.Verify"/> pass's finding carries (task: review
