@@ -62,6 +62,15 @@ public sealed class EventScopeRegistryTests
         "Hall9k.Domain.Features.Orchestrator.OrchestratorProcessSighting",
         "Hall9k.Domain.Features.Orchestrator.OrchestratorRegistrationDecision",
         "Hall9k.Domain.Features.Orchestrator.OrchestratorDeregistrationDecision",
+        // The orchestrator feed (idea 89471598, piece 2) is a read over the event log, never a
+        // stream of its own: not one of these is ever appended anywhere, so none of them has a
+        // scope to classify.
+        "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedCandidate",
+        "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedGroup",
+        "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedItem",
+        "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedLevel",
+        "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedRead",
+        "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedScope",
     ];
 
     [Fact]

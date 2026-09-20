@@ -314,6 +314,11 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
         // graded lower only because it holds a single sequence number rather than any content or
         // identity).
         session.Delete<PromptAddendaSyncPosition>(project.Id);
+        // OrchestratorFeedCursor (idea 89471598, piece 2) is that same shape a third time:
+        // project-id-keyed, never a stream, lazily created on this project's first-ever feed
+        // drain, holding one sequence number (independent pre-PR review, cycle 1, conformance
+        // lens, low).
+        session.Delete<OrchestratorFeedCursor>(project.Id);
 
         if (taskIds.Length > 0)
         {
