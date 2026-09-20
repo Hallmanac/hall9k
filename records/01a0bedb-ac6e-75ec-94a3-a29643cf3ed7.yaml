@@ -20,7 +20,3 @@ origin-branch: task/43cf3ed7-verificationrunnertests-daemon
 published: 2026-09-20 14:38:24Z
 context: |-
   Evidence (Windows project window hall9k-56, 2026-09-20 08:45 EDT, run 01a0bd91-e3bb on 37b5ec69): on the mandatory final full pass the host gate started 07:53:10 and at 6m14s this test failed for real: the subprocess sleeps 30s, the test cancels at 1s and asserts ActiveGate is still set, and it came back null. Three runs shared the machine (two build sessions live throughout). After that failure no test completed for the remaining 24 minutes and the gate was killed at the 30-minute limit; xUnit names nothing until it finishes, so the hung test is unknown and is a separate question. The daemon routed the run to its settling-gate repair lap. This is a timing test whose correctness depends on wall-clock ordering under load, the same shape as the flakes the 2026-09-08 runtime analysis and the 09-18 test-hygiene pass called out. Fix the test, not the host: memory never-stress-the-host-to-chase-a-flake applies. Unassigned; feature work outranks sweeps, assign when the lane drains or when Brian says.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-09-20 18:16:07Z
