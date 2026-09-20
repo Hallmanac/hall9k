@@ -4,6 +4,7 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks.Events;
+using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
@@ -316,6 +317,21 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
             if (IsScopeChangingEventType(candidate.EventType))
             {
                 await ResendIfNeededAsync(candidate.StreamId);
+
+                // A task's own scope change also newly authorizes every run it owns —
+                // ReplicationProjectResolver resolves a run's own scope from its owning task's,
+                // never independently — so each run stream needs the same one-time resend, not
+                // just the task's own stream (independent pre-PR review, idea 19489eff, cycle 11,
+                // adversarial lens, medium: without this, a run held back or completed under a
+                // since-widened task never reaches a newly-included teammate at all). Idea streams
+                // have no runs, so this simply finds nothing for an Idea-scoped candidate.
+                if (await session.LoadAsync<TaskDetails>(candidate.StreamId, cancellationToken) is { } scopedTask)
+                {
+                    foreach (Guid runId in scopedTask.RunIds)
+                    {
+                        await ResendIfNeededAsync(runId);
+                    }
+                }
             }
         }
 
