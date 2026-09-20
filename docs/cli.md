@@ -637,7 +637,10 @@ off|tracker-assignee`, [above](#the-claim-gate)), the close-linked-issue rule (`
 on-closeout|never|when-all-tasks-close`, [below](#closing-a-linked-issue)), the writing conventions
 (`--writing-conventions`, [below](#writing-conventions)), the orchestrator-feed band
 (`--orchestrator-feed actionable|transitions|everything`,
-[below](#orchestrator-windows)), and the home's location live.
+[below](#orchestrator-windows)), the feed courier's own per-project batching ceiling
+(`--courier-max-wait <seconds>|default`, idea 89471598, piece 3 — the daemon-level
+`--model-courier` sits on `config set` beside every other model role), and the home's location
+live.
 Settings resolve most-specific-wins, and the exact chain differs per setting;
 [operations.md](operations.md#per-project-and-per-owner) has the two that matter.
 
