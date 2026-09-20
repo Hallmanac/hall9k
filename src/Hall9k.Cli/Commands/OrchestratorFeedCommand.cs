@@ -73,34 +73,57 @@ public sealed class OrchestratorFeedCommand : Hall9kAsyncCommand<OrchestratorFee
         // which events are settled enough to drain, and what the drain itself is stamped with.
         DateTimeOffset now = DateTimeOffset.UtcNow;
 
-        OrchestratorFeedRead read = settings.Since is { } since
-            ? await reader.ReadSinceAsync(
-                session, project.Id, level,
-                OrchestratorFeedSince.Parse(since, now), now, cancellationToken)
-            : await reader.ReadUndrainedAsync(session, project.Id, level, now, cancellationToken);
-
-        await PrintAsync(session, project, level, read, settings, cancellationToken);
-
+        // A short courtesy lease over this project's cursor (idea 89471598, piece 3): held only
+        // for --drain, so the feed courier's own spawn gate never dispatches into the identical
+        // window a human is reading and draining by hand. A plain read never moves the cursor, so
+        // it needs no lease at all.
         if (settings.Drain)
         {
-            bool moved = await OrchestratorFeedReader.DrainAsync(
-                session, project.Id, read.DrainableThroughSequence, now, cancellationToken);
+            session.Store(OrchestratorFeedDrainLease.Held(project.Id, now));
+            await session.SaveChangesAsync(cancellationToken);
+        }
 
-            // Where a drain moved nothing but the reader had reason to expect it to, say so
-            // rather than leaving silence: the way past the scan's cap is to run this again, and
-            // a caller repeating it has to be able to tell a pass that advanced from one that
-            // cannot yet, instead of looping on the same 2000 events. An empty uncapped read is
-            // the one case that needs no line — "Nothing undrained" above already said it.
-            if (moved)
+        try
+        {
+            OrchestratorFeedRead read = settings.Since is { } since
+                ? await reader.ReadSinceAsync(
+                    session, project.Id, level,
+                    OrchestratorFeedSince.Parse(since, now), now, cancellationToken)
+                : await reader.ReadUndrainedAsync(session, project.Id, level, now, cancellationToken);
+
+            await PrintAsync(session, project, level, read, settings, cancellationToken);
+
+            if (settings.Drain)
             {
-                AnsiConsole.MarkupLineInterpolated(
-                    $"[dim]Drained through sequence {read.DrainableThroughSequence}.[/]");
+                bool moved = await OrchestratorFeedReader.DrainAsync(
+                    session, project.Id, read.DrainableThroughSequence, now, cancellationToken);
+
+                // Where a drain moved nothing but the reader had reason to expect it to, say so
+                // rather than leaving silence: the way past the scan's cap is to run this again, and
+                // a caller repeating it has to be able to tell a pass that advanced from one that
+                // cannot yet, instead of looping on the same 2000 events. An empty uncapped read is
+                // the one case that needs no line — "Nothing undrained" above already said it.
+                if (moved)
+                {
+                    AnsiConsole.MarkupLineInterpolated(
+                        $"[dim]Drained through sequence {read.DrainableThroughSequence}.[/]");
+                }
+                else if (read.ScanWasCapped || read.Items.Count > 0)
+                {
+                    AnsiConsole.MarkupLine(
+                        "[dim]Cursor unchanged: nothing this pass inspected has settled past where it "
+                        + "already stood, or another window drained further while this one printed.[/]");
+                }
             }
-            else if (read.ScanWasCapped || read.Items.Count > 0)
+        }
+        finally
+        {
+            // Released as soon as this command is done rather than left to its own expiry, so an
+            // ordinary fast drain does not hold a courier off for the rest of the lease's window.
+            if (settings.Drain)
             {
-                AnsiConsole.MarkupLine(
-                    "[dim]Cursor unchanged: nothing this pass inspected has settled past where it "
-                    + "already stood, or another window drained further while this one printed.[/]");
+                session.Delete<OrchestratorFeedDrainLease>(project.Id);
+                await session.SaveChangesAsync(cancellationToken);
             }
         }
 

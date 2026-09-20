@@ -14,8 +14,13 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// The one-line plain description, already composed by
 /// <see cref="OrchestratorFeedDescription"/>. Never a bare id.
 /// </param>
+/// <param name="IsUrgent">
+/// Whether the feed courier's own spawn gate (idea 89471598, piece 3) dispatches at once for
+/// this item regardless of the batching wait — <see cref="OrchestratorFeedUrgency"/>'s own table.
+/// </param>
 public sealed record OrchestratorFeedItem(
     long Sequence,
     DateTimeOffset At,
     Guid? TaskId,
-    string Description);
+    string Description,
+    bool IsUrgent = false);

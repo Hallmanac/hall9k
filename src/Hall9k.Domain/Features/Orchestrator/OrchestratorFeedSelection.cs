@@ -103,7 +103,9 @@ public static class OrchestratorFeedSelection
                 continue;
             }
 
-            items.Add(new OrchestratorFeedItem(candidate.Sequence, candidate.At, scope.TaskId, description));
+            items.Add(new OrchestratorFeedItem(
+                candidate.Sequence, candidate.At, scope.TaskId, description,
+                OrchestratorFeedUrgency.IsUrgent(candidate.EventType, candidate.Data)));
         }
 
         return new OrchestratorFeedRead(items, drainableThrough, scanWasCapped);
