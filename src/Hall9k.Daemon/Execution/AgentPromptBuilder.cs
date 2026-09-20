@@ -3111,8 +3111,16 @@ public static class AgentPromptBuilder
     /// whatever cycle is already dispatching, or is recorded as a residual when none is (Decisions
     /// Log #63's ride-along contract, untouched by this change).
     /// </para>
+    /// <para>
+    /// Internal rather than private because <see cref="DesignReviewPromptBuilder"/> assembles a
+    /// review prompt of its own (idea b9b09779, piece 3) and has to state the identical contract:
+    /// the designer's session is screened by the same <c>PrReviewEngine.HasUsableVerdict</c> as
+    /// every other, and the standing run-skill-drift question rides inside this section, so a
+    /// design prompt that restated the contract in its own words would be two contracts drifting
+    /// apart rather than one.
+    /// </para>
     /// </summary>
-    private static void AppendFindingContract(
+    internal static void AppendFindingContract(
         StringBuilder prompt, ProjectDetails project, ReviewMode mode,
         ReviewMechanicsOverride? mechanicsOverride = null)
     {
@@ -3404,8 +3412,13 @@ public static class AgentPromptBuilder
     /// Medium was told two opposite things by the same prompt. Every other cycle keeps the
     /// ordinary medium-or-high bar; only <see cref="ReviewMode.FinalFullPass"/> narrows it here.
     /// </para>
+    /// <para>
+    /// Internal for the same reason <see cref="AppendFindingContract"/> is: the design review
+    /// (<see cref="DesignReviewPromptBuilder"/>) ends in the same verdict line the engine parses,
+    /// so it states this contract rather than one of its own.
+    /// </para>
     /// </summary>
-    private static void AppendVerdictContract(
+    internal static void AppendVerdictContract(
         StringBuilder prompt, int cycle, ReviewMode mode, ReviewMechanicsOverride? mechanicsOverride = null)
     {
         const string file = $"{TemplateDirectory}/verdict-contract.md";

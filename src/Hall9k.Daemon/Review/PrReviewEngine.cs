@@ -101,7 +101,7 @@ public sealed class PrReviewEngine(
     /// </summary>
     private static ReviewPersonaPlan PlanOf(RunAggregate? run) => ReviewPersonaRegistry.Recorded(
         run?.PrReviewPersonasRequested, run?.PrReviewPersonasRan, run?.PrReviewPersonasSkipped,
-        run?.PrReviewPersonasFellBackToEngineer ?? false);
+        run?.PrReviewPersonasFellBackToEngineer ?? false, run?.PrReviewDriveDecisions);
 
     private static string PrimarySlugOf(RunAggregate? run) => PlanOf(run).Sessions[0].Slug;
 
@@ -375,10 +375,32 @@ public sealed class PrReviewEngine(
                     continue;
                 }
 
-                string text = await ReadIfExistsAsync(
-                    RunPaths.ReviewLensFindingsFile(runDirectory, 1, session.Slug), cancellationToken);
+                string path = RunPaths.ReviewLensFindingsFile(runDirectory, 1, session.Slug);
+                string? written = File.Exists(path)
+                    ? await File.ReadAllTextAsync(path, cancellationToken)
+                    : null;
                 body.Append(
-                    $"\nRun-skill drift: {ReviewResultParser.ParseRunSkillDrift(text).Describe()}.\n\n{text}\n");
+                    $"\nRun-skill drift: {ReviewResultParser.ParseRunSkillDrift(written ?? string.Empty).Describe()}.\n");
+
+                // No findings file at all. Said in one line and nothing else — never handed to a
+                // composer, which would lay out a full, confident section over a file that does
+                // not exist (idea b9b09779, piece 3: the design review's own composer would
+                // print all seven lenses as "not applicable", which reads as a review that
+                // happened and found nothing).
+                if (written is null)
+                {
+                    body.Append($"\n{NoFindingsRecorded}\n");
+                    continue;
+                }
+
+                // Most sessions' findings go in verbatim, which is what a pr-review report has
+                // always done. A session whose persona registered a composer instead has its
+                // section laid out by the platform — the design review, whose fixed lens order,
+                // stated drive state and closing offer are the platform's to write and not the
+                // reviewing agent's (idea b9b09779, piece 3, DesignReviewSection).
+                body.Append(session.ComposeSection is { } compose
+                    ? $"\n{compose(written, plan.DriveFor(persona))}\n"
+                    : $"\n{written}\n");
             }
         }
 
@@ -1279,8 +1301,13 @@ public sealed class PrReviewEngine(
             ? number
             : null;
 
-    private static async Task<string> ReadIfExistsAsync(string path, CancellationToken cancellationToken) =>
-        File.Exists(path) ? await File.ReadAllTextAsync(path, cancellationToken) : "(no findings recorded)";
+    /// <summary>
+    /// What a persona session's own part of the report says when its findings file is not there
+    /// at all — the exact wording the report has always carried for that case, kept as a
+    /// constant now that the read and the fallback sit at the call site rather than inside one
+    /// helper (<see cref="ComposePersonaSectionsAsync"/>).
+    /// </summary>
+    private const string NoFindingsRecorded = "(no findings recorded)";
 
     /// <summary>
     /// The mentioning comment's own first line, one-lined, relayed-text-defused and bounded to

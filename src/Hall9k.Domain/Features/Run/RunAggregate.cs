@@ -426,6 +426,9 @@ public sealed class RunAggregate
     /// <summary>See <see cref="PrReviewPersonasSelected.FellBackToEngineer"/>.</summary>
     public bool PrReviewPersonasFellBackToEngineer { get; private set; }
 
+    /// <summary>What this run decided about driving the product, per persona (<see cref="PrReviewPersonasSelected.DriveDecisions"/>). Empty for a run whose personas cannot drive, and for one whose stream predates the decision being recorded.</summary>
+    public IReadOnlyList<ReviewDriveDecision> PrReviewDriveDecisions { get; private set; } = [];
+
     /// <summary>The personas whose every session has landed its findings (<see cref="PrReviewPersonaReported"/>), in the order they landed.</summary>
     public IReadOnlyList<ReviewPersona> PrReviewPersonasReported => _prReviewPersonasReported;
 
@@ -1390,6 +1393,7 @@ public sealed class RunAggregate
         PrReviewPersonasRan = ReviewPersona.Declared(@event.Ran);
         PrReviewPersonasSkipped = ReviewPersona.Declared(@event.Skipped);
         PrReviewPersonasFellBackToEngineer = @event.FellBackToEngineer;
+        PrReviewDriveDecisions = @event.DriveDecisions ?? [];
     }
 
     public void Apply(PrReviewPersonaReported @event)

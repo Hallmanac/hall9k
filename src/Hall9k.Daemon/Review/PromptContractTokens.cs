@@ -39,6 +39,12 @@ internal static class PromptContractTokens
         ReviewResultParser.ThreadDispositionSummaryMarker,
         ReviewResultParser.RunSkillDriftMarker,
         ReviewResultParser.RunSkillDriftKind,
+        // The design review's own report grammar (idea b9b09779, piece 3), which
+        // DesignReviewSection parses back out of that session's findings file to lay the report
+        // out. Pulled from the parser's own constants rather than retyped, the same discipline
+        // every ReviewResultParser marker above follows; the design templates inject each one
+        // through a {{...Marker}} placeholder.
+        .. DesignReviewSection.Markers,
         "RESOLUTION:",
         "merge-ready",
         "needs-fixes",

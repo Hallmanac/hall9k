@@ -140,6 +140,16 @@ public static class SessionRoleName
     public static string ReviewVerify(int cycle) => $"review-verify-{cycle}";
 
     /// <summary>
+    /// The designer persona's pass over a pull request (idea b9b09779, piece 3) — user
+    /// experience, conformance to the proposed design, motion, CSS practice, accessibility, look
+    /// and feel, and the design system. Its own role rather than
+    /// <see cref="ReviewConformance"/>'s: this is the one review session that may stand the
+    /// project's product up and drive it, so a reader of a session list, and the interaction
+    /// rules that key on these strings, should be able to tell it apart at a glance.
+    /// </summary>
+    public static string ReviewDesign(int cycle) => $"review-design-{cycle}";
+
+    /// <summary>
     /// <see cref="ReviewConformance"/>, <see cref="ReviewAdversarial"/>, or <see cref="ReviewVerify"/>,
     /// selected by <paramref name="lens"/> — <see cref="ReviewLens.Unknown"/> (a pass recorded before
     /// lenses existed) reads as conformance, the same precedent <see cref="ReviewLens.Covers"/>
