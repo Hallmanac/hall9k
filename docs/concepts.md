@@ -937,4 +937,4 @@ item in any state, a draft included.
 A scope change re-sends the item's whole history at its new, wider scope, so a teammate who was
 never addressed before receives it whole rather than only whatever happens from that point on.
 
-Depth: [PLAN.md §16](../PLAN.md) (idea 202383dc's own replication scaffolding; idea 8c5993c5, this feature's own Decisions Log entry).
+Depth: [PLAN.md §16](../PLAN.md) (idea 202383dc's own replication scaffolding; idea 8c5993c5, Decisions Log #PLACEHOLDER-19489eff).
