@@ -64,6 +64,16 @@ public sealed class IdeaDetails
     }
 
     /// <summary>
+    /// Raises <see cref="Scope"/> to <paramref name="proposed"/> unless it already sits at or
+    /// above that rank — the one-way merge <see cref="ReplicationScope.IsAtLeast"/> encodes,
+    /// used where a value already recorded on this document must never be narrowed back down by
+    /// a later-processed event that happens to carry an older fact (independent pre-PR review,
+    /// idea 19489eff, cycle 11, conformance, high).
+    /// </summary>
+    internal void RaiseScope(ReplicationScope proposed) =>
+        _scope = _scope is null || proposed.IsAtLeast(_scope) ? proposed : _scope;
+
+    /// <summary>
     /// Mirrors <see cref="IdeaAggregate.IsPrivate"/>. No current write ever sets this — every
     /// projection handler sets <see cref="Scope"/> directly — but the setter stays public so a
     /// document written before <see cref="Scope"/> existed still deserializes its own legacy value.
@@ -89,6 +99,30 @@ public sealed class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, 
         WorkspaceHome = ProjectHome.Parse(@event.Data.WorkspaceHomeDirectory),
         Scope = @event.Data.InitialScope ?? ReplicationScope.Team,
     };
+
+    /// <summary>
+    /// Only reached when a document for this stream already exists by the time the capture event
+    /// is processed — never true in normal causal order, since <see cref="Create"/> above always
+    /// claims this event first. It happens when a scope-widening event for this same idea is
+    /// received and applied before the true origin's own history catches up (idea 8c5993c5,
+    /// independent pre-PR review, cycle 11, conformance, high): the out-of-order event still
+    /// materializes a document (Marten always starts one, even with no matching Create), and this
+    /// event then finds it already there. Repopulates every field the capture is authoritative for
+    /// exactly as <see cref="Create"/> would, and raises rather than sets <see cref="Scope"/> so
+    /// the earlier-processed widen is never narrowed back down.
+    /// </summary>
+    public void Apply(IEvent<IdeaCaptured> @event, IdeaDetails view)
+    {
+        view.Id = @event.Data.Id;
+        view.OwnerId = @event.Data.OwnerId;
+        view.Text = @event.Data.Text;
+        view.ProjectId = @event.Data.ProjectId;
+        view.State = IdeaState.Captured;
+        view.History.Insert(0, new IdeaNote { Text = @event.Data.Text, WrittenAt = @event.Data.CapturedAt });
+        view.CapturedAt = @event.Data.CapturedAt;
+        view.WorkspaceHome = ProjectHome.Parse(@event.Data.WorkspaceHomeDirectory);
+        view.RaiseScope(@event.Data.InitialScope ?? ReplicationScope.Team);
+    }
 
     public void Apply(IEvent<IdeaRevised> @event, IdeaDetails view)
     {

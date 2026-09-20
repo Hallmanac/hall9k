@@ -41,6 +41,16 @@ public sealed class TaskListItem
         set => _scope = value;
     }
 
+    /// <summary>
+    /// Raises <see cref="Scope"/> to <paramref name="proposed"/> unless it already sits at or
+    /// above that rank — the one-way merge <see cref="ReplicationScope.IsAtLeast"/> encodes,
+    /// used where a value already recorded on this document must never be narrowed back down by
+    /// a later-processed event that happens to carry an older fact (independent pre-PR review,
+    /// idea 19489eff, cycle 11, conformance, high).
+    /// </summary>
+    internal void RaiseScope(ReplicationScope proposed) =>
+        _scope = _scope is null || proposed.IsAtLeast(_scope) ? proposed : _scope;
+
     /// <summary>Mirrors <see cref="TaskAggregate.IsPrivate"/>. See <see cref="TaskDetails.IsPrivate"/>'s own doc: no current write sets this, but the setter stays public for legacy deserialization.</summary>
     public bool IsPrivate
     {
@@ -377,6 +387,38 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved,
         Scope = @event.Data.InitialScope ?? ReplicationScope.Team,
     };
+
+    /// <summary>
+    /// Only reached when a document for this stream already exists by the time the add event is
+    /// processed — never true in normal causal order, since <see cref="Create"/> above always
+    /// claims this event first. It happens when a scope-widening event for this same task is
+    /// received and applied before the true origin's own history catches up (idea 8c5993c5,
+    /// independent pre-PR review, cycle 11, conformance, high): the out-of-order event still
+    /// materializes a document (Marten always starts one, even with no matching Create), and this
+    /// event then finds it already there. Repopulates every field the add is authoritative for
+    /// exactly as <see cref="Create"/> would, and raises rather than sets <see cref="TaskListItem.Scope"/>
+    /// so the earlier-processed widen is never narrowed back down.
+    /// </summary>
+    public void Apply(IEvent<TaskAdded> @event, TaskListItem view)
+    {
+        view.Id = @event.Data.Id;
+        view.ProjectId = @event.Data.ProjectId;
+        view.EpicId = @event.Data.EpicId;
+        view.Objective = @event.Data.Objective;
+        view.Type = @event.Data.Type;
+        view.State = @event.Data.StartsAsDraft ? TaskState.Draft : TaskState.Queued;
+        view.AssignedOwnerId = @event.Data.StartsAsDraft ? null : @event.Data.AddedByOwnerId;
+        view.AssignedAt = @event.Data.StartsAsDraft ? null : @event.Data.AddedAt;
+        view.BlockedBy = [.. @event.Data.BlockedBy ?? []];
+        view.StackedOnTaskId = @event.Data.StackedOnTaskId;
+        view.StackedOnPullRequestNumber = @event.Data.StackedOnPullRequestNumber;
+        view.ExternalReference = @event.Data.ExternalReference?.ToString();
+        view.SecondaryExternalReference = @event.Data.SecondaryExternalReference?.ToString();
+        view.AddedAt = @event.Data.AddedAt;
+        view.PreApproval = @event.Data.EffectivePreApproval;
+        view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
+        view.RaiseScope(@event.Data.InitialScope ?? ReplicationScope.Team);
+    }
 
     public void Apply(IEvent<TaskPublished> @event, TaskListItem view)
     {

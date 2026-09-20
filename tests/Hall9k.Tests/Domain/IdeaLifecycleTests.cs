@@ -369,6 +369,23 @@ public sealed class IdeaLifecycleTests
         onceMadePrivate.Scope.Should().Be(ReplicationScope.Private);
     }
 
+    [Fact]
+    public void A_scope_widen_applied_before_its_own_capture_is_never_narrowed_back_down()
+    {
+        // independent pre-PR review, idea 19489eff, cycle 11, conformance, high: a replicated
+        // stream can apply IdeaCaptured after IdeaScopeSet for the same idea when the two arrive
+        // at a node through different relays. IdeaCaptured's own InitialScope must never undo a
+        // widen that was already applied — it only ever supplies the starting point.
+        Guid ideaId = DomainId.New();
+        IdeaAggregate idea = new();
+        idea.Apply(new IdeaScopeSet(ideaId, ReplicationScope.Team, Now, Owner));
+
+        idea.Apply(new IdeaCaptured(ideaId, Owner, "out-of-order idea", null, Now.AddSeconds(1), InitialScope: ReplicationScope.Fleet));
+
+        idea.Scope.Should().Be(
+            ReplicationScope.Team, "the earlier-applied widen must survive a later-processed capture that only ever knew about Fleet");
+    }
+
     private static IdeaAggregate Captured(string text, Guid? projectId = null)
     {
         IdeaAggregate idea = new();

@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Xunit;
 
@@ -133,5 +134,32 @@ public sealed class IdeaDetailsProjectionTests
 
         discarded.State.Should().Be(IdeaState.Archived, "a discard always meant nothing came of the idea");
         discarded.ArchiveReason.Should().Be("Superseded by attachments");
+    }
+
+    /// <summary>
+    /// Marten's inline projection always starts a document once it sees any event for a stream,
+    /// even one with no matching <c>Create</c> — so a replicated node can apply
+    /// <see cref="IdeaScopeSet"/> before it ever sees this idea's own <see cref="IdeaCaptured"/>,
+    /// leaving the document already at <see cref="ReplicationScope.Team"/> by the time
+    /// <see cref="IdeaCaptured"/> is processed via <c>Apply</c> rather than <c>Create</c>
+    /// (independent pre-PR review, idea 19489eff, cycle 11, conformance, high). The projection must
+    /// repopulate every other field <see cref="IdeaCaptured"/> is authoritative for while still
+    /// raising, never resetting, the scope already recorded.
+    /// </summary>
+    [Fact]
+    public void A_scope_widen_applied_before_its_own_capture_is_never_narrowed_back_down()
+    {
+        IdeaDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        Guid ownerId = DomainId.New();
+        IdeaCaptured captured = new(id, ownerId, "Out-of-order capture", ProjectId: null, Now.AddSeconds(1), InitialScope: ReplicationScope.Fleet);
+
+        IdeaDetails view = new();
+        projection.Apply(new FakeEvent<IdeaScopeSet>(new IdeaScopeSet(id, ReplicationScope.Team, Now, ownerId)), view);
+        projection.Apply(new FakeEvent<IdeaCaptured>(captured), view);
+
+        view.Scope.Should().Be(ReplicationScope.Team, "the earlier-applied widen must survive a later-processed capture");
+        view.Text.Should().Be("Out-of-order capture", "the capture is still authoritative for every field but scope");
+        view.State.Should().Be(IdeaState.Captured);
     }
 }

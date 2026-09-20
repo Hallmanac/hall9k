@@ -48,7 +48,13 @@ public sealed class IdeaAggregate
     /// fresh capture's own <see cref="IdeaCaptured.InitialScope"/> instead, which every capture from
     /// here on names <see cref="ReplicationScope.Fleet"/>.
     /// </summary>
-    public ReplicationScope Scope { get; private set; } = ReplicationScope.Team;
+    private ReplicationScope? scope;
+
+    public ReplicationScope Scope
+    {
+        get => scope ?? ReplicationScope.Team;
+        private set => scope = value;
+    }
 
     /// <summary>The pre-8c5993c5 two-valued read of <see cref="Scope"/>, kept for callers that only ever asked "private or not".</summary>
     public bool IsPrivate => Scope == ReplicationScope.Private;
@@ -62,7 +68,14 @@ public sealed class IdeaAggregate
         CapturedAt = @event.CapturedAt;
         WorkspaceHome = ProjectHome.Parse(@event.WorkspaceHomeDirectory);
         State = IdeaState.Captured;
-        Scope = @event.InitialScope ?? ReplicationScope.Team;
+
+        // Non-narrowing: a replicated stream can apply this capture after a scope-widening event
+        // for the same idea already landed (independent pre-PR review, idea 19489eff, cycle 11,
+        // conformance, high — the widen and the capture can arrive at a node in either order once
+        // more than one node relays the same stream). InitialScope must never undo a widen that
+        // was already applied, only ever supply the starting point when nothing has raised it yet.
+        ReplicationScope proposedScope = @event.InitialScope ?? ReplicationScope.Team;
+        Scope = scope is null || proposedScope.IsAtLeast(scope) ? proposedScope : Scope;
     }
 
     public void Apply(IdeaRevised @event)
