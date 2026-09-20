@@ -2667,6 +2667,113 @@ public sealed class TaskDeciderTests
         task.SessionCap.Should().Be(3, "each override replaces the last, the same as a task's model override");
     }
 
+    // idea 8c5993c5: replication scope — a fresh draft starts fleet, publishing sets team on its
+    // own, share works on a draft as well as a published task, the pre-8c5993c5 set-private alias,
+    // and the one-way rule once a task has reached team scope.
+
+    [Fact]
+    public void A_freshly_added_draft_starts_at_fleet_scope()
+    {
+        TaskAggregate task = DraftTask();
+
+        task.Scope.Should().Be(ReplicationScope.Fleet, "the owner should be able to work a draft alone or within their fleet");
+        task.IsPrivate.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Publishing_sets_team_scope_unconditionally()
+    {
+        TaskAggregate task = PublishedTask();
+
+        task.Scope.Should().Be(ReplicationScope.Team, "a published task is the door a task reaches team scope through");
+    }
+
+    [Fact]
+    public void Publishing_sets_team_even_over_a_private_draft()
+    {
+        TaskAggregate task = DraftTask();
+        task.Apply(TaskDecider.SetPrivate(task, isPrivate: true, Now, Owner));
+
+        task.Apply(TaskDecider.Publish(task, TaskDependencyGraph.Empty, Now.AddMinutes(1), Owner));
+
+        task.Scope.Should().Be(ReplicationScope.Team);
+    }
+
+    [Fact]
+    public void Share_moves_a_draft_to_team_scope_without_publishing_it()
+    {
+        TaskAggregate task = DraftTask();
+
+        task.Apply(TaskDecider.Share(task, Now, Owner));
+
+        task.Scope.Should().Be(ReplicationScope.Team);
+        task.State.Should().Be(TaskState.Draft, "sharing is not publishing — idea 18464daa's own use is sharing a draft for publish approval");
+    }
+
+    [Fact]
+    public void Share_works_on_an_already_published_task_too_though_it_is_already_team()
+    {
+        TaskAggregate task = PublishedTask();
+
+        Action act = () => TaskDecider.Share(task, Now, Owner);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*already*", "publish already set team, so there is nothing left to change");
+    }
+
+    [Fact]
+    public void Set_private_on_is_sugar_for_private_scope_and_off_is_sugar_for_fleet_scope()
+    {
+        TaskAggregate task = DraftTask();
+
+        task.Apply(TaskDecider.SetPrivate(task, isPrivate: true, Now, Owner));
+        task.Scope.Should().Be(ReplicationScope.Private);
+        task.IsPrivate.Should().BeTrue();
+
+        task.Apply(TaskDecider.SetPrivate(task, isPrivate: false, Now.AddMinutes(1), Owner));
+        task.Scope.Should().Be(ReplicationScope.Fleet, "off never jumps straight to team on its own");
+    }
+
+    [Fact]
+    public void Team_scope_is_one_way_and_refuses_to_narrow_back_to_fleet_or_private()
+    {
+        TaskAggregate task = PublishedTask();
+
+        Action toFleet = () => TaskDecider.SetScope(task, ReplicationScope.Fleet, Now, Owner);
+        Action toPrivate = () => TaskDecider.SetPrivate(task, isPrivate: true, Now, Owner);
+
+        toFleet.Should().Throw<DomainConflictException>().WithMessage("*one-way*");
+        toPrivate.Should().Throw<DomainConflictException>().WithMessage("*one-way*");
+    }
+
+    [Fact]
+    public void Setting_the_same_scope_again_is_refused_as_nothing_to_change()
+    {
+        TaskAggregate task = DraftTask();
+
+        Action act = () => TaskDecider.SetScope(task, ReplicationScope.Fleet, Now, Owner);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*already*");
+    }
+
+    [Fact]
+    public void A_task_added_before_scope_existed_reads_team_when_not_private_and_private_when_it_was()
+    {
+        // idea 8c5993c5: existing items keep their current effective scope — a legacy add, with no
+        // InitialScope recorded, was already fully team-visible under the old private flag alone.
+        TaskAggregate neverPrivate = new();
+        neverPrivate.Apply(new TaskAdded(
+            DomainId.New(), DomainId.New(), "legacy task", ["it ships"], TaskType.Feature,
+            AgentContext: null, Constraints: null, ExternalReference: null, AddedAt: Now, AddedByOwnerId: Owner));
+        neverPrivate.Scope.Should().Be(ReplicationScope.Team);
+
+        TaskAggregate onceMadePrivate = new();
+        onceMadePrivate.Apply(new TaskAdded(
+            DomainId.New(), DomainId.New(), "legacy private task", ["it ships"], TaskType.Feature,
+            AgentContext: null, Constraints: null, ExternalReference: null, AddedAt: Now, AddedByOwnerId: Owner));
+        onceMadePrivate.Apply(new TaskPrivacySet(onceMadePrivate.Id, IsPrivate: true, Now, Owner));
+        onceMadePrivate.Scope.Should().Be(ReplicationScope.Private);
+    }
+
     private static TaskAggregate FailedTask()
     {
         TaskAggregate task = ClaimedTask();

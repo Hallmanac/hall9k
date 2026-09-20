@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten.Events.Aggregation;
 
@@ -45,8 +46,11 @@ public sealed class IdeaDetails
     /// <summary>How many times the note was rewritten after capture.</summary>
     public int Revisions => Math.Max(History.Count - 1, 0);
 
+    /// <summary>Mirrors <see cref="IdeaAggregate.Scope"/>.</summary>
+    public ReplicationScope Scope { get; set; } = ReplicationScope.Team;
+
     /// <summary>Mirrors <see cref="IdeaAggregate.IsPrivate"/>.</summary>
-    public bool IsPrivate { get; set; }
+    public bool IsPrivate => Scope == ReplicationScope.Private;
 }
 
 public sealed class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, Guid>
@@ -61,6 +65,7 @@ public sealed class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, 
         History = [new IdeaNote { Text = @event.Data.Text, WrittenAt = @event.Data.CapturedAt }],
         CapturedAt = @event.Data.CapturedAt,
         WorkspaceHome = ProjectHome.Parse(@event.Data.WorkspaceHomeDirectory),
+        Scope = @event.Data.InitialScope ?? ReplicationScope.Team,
     };
 
     public void Apply(IEvent<IdeaRevised> @event, IdeaDetails view)
@@ -89,7 +94,11 @@ public sealed class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, 
         view.State = IdeaState.Archived;
     }
 
-    public void Apply(IEvent<IdeaPrivacySet> @event, IdeaDetails view) => view.IsPrivate = @event.Data.IsPrivate;
+    /// <summary>Historical replay only — see <see cref="IdeaAggregate.Apply(IdeaPrivacySet)"/>'s own doc.</summary>
+    public void Apply(IEvent<IdeaPrivacySet> @event, IdeaDetails view) =>
+        view.Scope = @event.Data.IsPrivate ? ReplicationScope.Private : ReplicationScope.Team;
+
+    public void Apply(IEvent<IdeaScopeSet> @event, IdeaDetails view) => view.Scope = @event.Data.Scope;
 
     /// <summary>Historical replay only — see <see cref="IdeaPromoted"/>'s own doc comment.</summary>
     public void Apply(IEvent<IdeaPromoted> @event, IdeaDetails view)

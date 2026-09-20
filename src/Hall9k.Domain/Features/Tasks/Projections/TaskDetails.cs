@@ -252,8 +252,11 @@ public sealed class TaskDetails
     public DateTimeOffset? ClaimedAt { get; set; }
     /// <summary>See <see cref="TaskAggregate.IsInteractiveClaim"/>: same discriminator, read off this projection.</summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
-    /// <summary>See <see cref="TaskAggregate.IsPrivate"/>: same recorded flag, read off this projection.</summary>
-    public bool IsPrivate { get; set; }
+    /// <summary>Mirrors <see cref="TaskAggregate.Scope"/>.</summary>
+    public ReplicationScope Scope { get; set; } = ReplicationScope.Team;
+
+    /// <summary>See <see cref="TaskAggregate.IsPrivate"/>: the pre-8c5993c5 two-valued read of <see cref="Scope"/>.</summary>
+    public bool IsPrivate => Scope == ReplicationScope.Private;
     /// <summary>See <see cref="TaskAggregate.InteractiveModeEnabled"/>: same recorded, task-level fact, read off this projection.</summary>
     public bool InteractiveModeEnabled { get; set; }
     /// <summary>
@@ -531,6 +534,7 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         PreApproval = @event.Data.EffectivePreApproval,
         PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved,
         Origin = @event.Data.Origin,
+        Scope = @event.Data.InitialScope ?? ReplicationScope.Team,
     };
 
     public void Apply(IEvent<TaskPublished> @event, TaskDetails view)
@@ -549,6 +553,9 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         {
             view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value;
         }
+
+        // idea 8c5993c5: publishing always sets team, unconditionally — see TaskAggregate.Apply(TaskPublished)'s own doc.
+        view.Scope = ReplicationScope.Team;
     }
 
     public void Apply(IEvent<TaskPreApprovedSet> @event, TaskDetails view)
@@ -557,7 +564,11 @@ public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, 
         view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
     }
 
-    public void Apply(IEvent<TaskPrivacySet> @event, TaskDetails view) => view.IsPrivate = @event.Data.IsPrivate;
+    /// <summary>Historical replay only — see <see cref="TaskAggregate.Apply(TaskPrivacySet)"/>'s own doc.</summary>
+    public void Apply(IEvent<TaskPrivacySet> @event, TaskDetails view) =>
+        view.Scope = @event.Data.IsPrivate ? ReplicationScope.Private : ReplicationScope.Team;
+
+    public void Apply(IEvent<TaskScopeSet> @event, TaskDetails view) => view.Scope = @event.Data.Scope;
 
     // Absent means "left alone": a revision that reworded the objective must not also claim
     // the criteria were retyped identically.

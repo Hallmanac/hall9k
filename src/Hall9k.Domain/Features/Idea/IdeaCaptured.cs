@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Shared.ValueObjects;
 
 namespace Hall9k.Domain.Features.Idea;
 
@@ -24,4 +25,12 @@ public sealed record IdeaCaptured(
     string Text,
     Guid? ProjectId,
     DateTimeOffset CapturedAt,
-    string WorkspaceHomeDirectory = "");
+    string WorkspaceHomeDirectory = "",
+    /// <summary>
+    /// This idea's own replication scope from the moment of capture (idea 8c5993c5): every capture
+    /// from here on names <see cref="ReplicationScope.Fleet"/>, so a fresh idea reaches the owner's
+    /// own other nodes without a separate <see cref="IdeaScopeSet"/> event. Null on every idea
+    /// captured before this field existed — <see cref="IdeaAggregate.Apply(IdeaCaptured)"/> reads
+    /// that as the honest legacy default instead of guessing at a fleet-era intent nobody recorded.
+    /// </summary>
+    ReplicationScope? InitialScope = null);

@@ -41,7 +41,7 @@ public sealed class IdeaSetPrivateCommand : Hall9kAsyncCommand<IdeaSetPrivateCom
 
         bool isPrivate = ParseBool(settings.Value);
         BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
-        IdeaPrivacySet set = IdeaDecider.SetPrivate(idea, isPrivate, DateTimeOffset.UtcNow, context.OwnerId);
+        IdeaScopeSet set = IdeaDecider.SetPrivate(idea, isPrivate, DateTimeOffset.UtcNow, context.OwnerId);
         session.Events.Append(ideaId, set);
         await session.SaveChangesAsync(cancellationToken);
 

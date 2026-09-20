@@ -27,8 +27,11 @@ public sealed class TaskListItem
     public DateTimeOffset? ClaimedAt { get; set; }
     /// <summary>The h9k task work claim's own tell (<see cref="TaskAggregate.IsInteractiveClaim"/>'s mirror): the sentinel node id an operator's claim records rather than a real node's.</summary>
     public bool IsInteractiveClaim => ClaimedByNodeId == Guid.Empty;
+    /// <summary>Mirrors <see cref="TaskAggregate.Scope"/>.</summary>
+    public ReplicationScope Scope { get; set; } = ReplicationScope.Team;
+
     /// <summary>Mirrors <see cref="TaskAggregate.IsPrivate"/>.</summary>
-    public bool IsPrivate { get; set; }
+    public bool IsPrivate => Scope == ReplicationScope.Private;
     public Guid? CurrentRunId { get; set; }
     public string? ExternalReference { get; set; }
     /// <summary>
@@ -357,6 +360,7 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         AddedAt = @event.Data.AddedAt,
         PreApproval = @event.Data.EffectivePreApproval,
         PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved,
+        Scope = @event.Data.InitialScope ?? ReplicationScope.Team,
     };
 
     public void Apply(IEvent<TaskPublished> @event, TaskListItem view)
@@ -368,6 +372,9 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         {
             view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value;
         }
+
+        // idea 8c5993c5: publishing always sets team, unconditionally — see TaskAggregate.Apply(TaskPublished)'s own doc.
+        view.Scope = ReplicationScope.Team;
     }
 
     public void Apply(IEvent<TaskPreApprovedSet> @event, TaskListItem view)
@@ -376,7 +383,11 @@ public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem
         view.PreApproved = @event.Data.EffectivePreApproval.LegacyPreApproved;
     }
 
-    public void Apply(IEvent<TaskPrivacySet> @event, TaskListItem view) => view.IsPrivate = @event.Data.IsPrivate;
+    /// <summary>Historical replay only — see <see cref="TaskAggregate.Apply(TaskPrivacySet)"/>'s own doc.</summary>
+    public void Apply(IEvent<TaskPrivacySet> @event, TaskListItem view) =>
+        view.Scope = @event.Data.IsPrivate ? ReplicationScope.Private : ReplicationScope.Team;
+
+    public void Apply(IEvent<TaskScopeSet> @event, TaskListItem view) => view.Scope = @event.Data.Scope;
 
     public void Apply(IEvent<TaskRevised> @event, TaskListItem view)
     {

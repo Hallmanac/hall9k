@@ -106,7 +106,8 @@ public static class TaskDecider
             StackedOnPullRequestNumber: stackedOn.PullRequestNumber,
             SecondaryExternalReference: secondaryExternalReference,
             SpikeKind: spikeKind,
-            ExitCriterion: exitCriterion.IsNotBlank() ? exitCriterion!.Trim() : null);
+            ExitCriterion: exitCriterion.IsNotBlank() ? exitCriterion!.Trim() : null,
+            InitialScope: ReplicationScope.Fleet);
     }
 
     /// <summary>
@@ -651,12 +652,52 @@ public static class TaskDecider
         return new TaskPreApprovedSet(task.Id, chosen.LegacyPreApproved, setAt, setByOwnerId, chosen);
     }
 
-    /// <summary>idea 202383dc, M2a: gates outbound replication of this task's own stream, not its
-    /// lifecycle — settable on a task in any state, a draft included.</summary>
-    public static TaskPrivacySet SetPrivate(TaskAggregate task, bool isPrivate, DateTimeOffset setAt, Guid setByOwnerId)
+    /// <summary>
+    /// idea 8c5993c5: sets this task's own replication scope — gates outbound replication, not its
+    /// lifecycle, so a task in any state, a draft included, can be scoped. Refused when the task is
+    /// already at <paramref name="scope"/> (nothing to change) or already
+    /// <see cref="ReplicationScope.Team"/> and <paramref name="scope"/> asks for anything narrower:
+    /// team is one-way, because other project members may already hold a copy once a task reaches
+    /// it (a published task always does), and there is no message that un-sends what they already
+    /// have.
+    /// </summary>
+    public static TaskScopeSet SetScope(TaskAggregate task, ReplicationScope scope, DateTimeOffset setAt, Guid setByOwnerId)
     {
-        return new TaskPrivacySet(task.Id, isPrivate, setAt, setByOwnerId);
+        if (task.Scope == scope)
+        {
+            throw new DomainConflictException($"Task {task.Id} is already at {scope.Value} scope — nothing to change.");
+        }
+
+        if (task.Scope.IsAtLeast(ReplicationScope.Team))
+        {
+            throw new DomainConflictException(
+                $"Task {task.Id} is already shared with the team — team scope is one-way, since other members "
+                + "may already hold a copy and there is no message that un-sends what they already have.");
+        }
+
+        return new TaskScopeSet(task.Id, scope, setAt, setByOwnerId);
     }
+
+    /// <summary>
+    /// idea 8c5993c5: <c>h9k task share</c> — sugar for <see cref="SetScope"/> at
+    /// <see cref="ReplicationScope.Team"/>, the door that lets a draft reach the team before it is
+    /// ready to publish (idea 18464daa's own use: sharing a draft for publish approval). Works on a
+    /// draft as well as a published task, exactly as <see cref="SetScope"/> does — publishing already
+    /// sets team on its own (<see cref="TaskAggregate.Apply(TaskPublished)"/>), so this is mostly
+    /// useful before that point.
+    /// </summary>
+    public static TaskScopeSet Share(TaskAggregate task, DateTimeOffset setAt, Guid setByOwnerId) =>
+        SetScope(task, ReplicationScope.Team, setAt, setByOwnerId);
+
+    /// <summary>
+    /// idea 8c5993c5: the pre-8c5993c5 <c>h9k task set-private</c> alias, kept as sugar over
+    /// <see cref="SetScope"/> — <paramref name="isPrivate"/> true means
+    /// <see cref="ReplicationScope.Private"/>, false means <see cref="ReplicationScope.Fleet"/> (the
+    /// ordinary "not private" resting scope for a draft that has not been explicitly shared or
+    /// published).
+    /// </summary>
+    public static TaskScopeSet SetPrivate(TaskAggregate task, bool isPrivate, DateTimeOffset setAt, Guid setByOwnerId) =>
+        SetScope(task, isPrivate ? ReplicationScope.Private : ReplicationScope.Fleet, setAt, setByOwnerId);
 
     /// <summary>
     /// Revision is Draft-only (Decisions Log #34), because every later state carries a promise

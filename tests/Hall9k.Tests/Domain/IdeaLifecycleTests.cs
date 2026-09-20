@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Domain;
@@ -270,6 +271,92 @@ public sealed class IdeaLifecycleTests
         IdeaAggregate captureless = new();
         captureless.Apply(withoutHome);
         captureless.WorkspaceHome.Should().Be(ProjectHome.None);
+    }
+
+    // idea 8c5993c5: replication scope — defaults, share, the pre-8c5993c5 set-private alias, and
+    // the one-way rule once an idea has been shared with the team.
+
+    [Fact]
+    public void A_freshly_captured_idea_starts_at_fleet_scope()
+    {
+        IdeaAggregate idea = Captured("A fresh thought");
+
+        idea.Scope.Should().Be(ReplicationScope.Fleet, "the owner should be able to work an idea alone or within their fleet");
+        idea.IsPrivate.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Share_moves_a_captured_idea_to_team_scope()
+    {
+        IdeaAggregate idea = Captured("An idea worth the team's eyes");
+
+        idea.Apply(IdeaDecider.Share(idea, Now, Owner));
+
+        idea.Scope.Should().Be(ReplicationScope.Team);
+    }
+
+    [Fact]
+    public void Share_works_on_an_idea_regardless_of_its_lifecycle_state()
+    {
+        IdeaAggregate idea = Captured("Discovery finished here");
+        idea.Apply(IdeaDecider.Archive(idea, "Superseded", Now, Owner));
+
+        idea.Apply(IdeaDecider.Share(idea, Now.AddMinutes(1), Owner));
+
+        idea.Scope.Should().Be(ReplicationScope.Team);
+    }
+
+    [Fact]
+    public void Set_private_on_is_sugar_for_private_scope_and_off_is_sugar_for_fleet_scope()
+    {
+        IdeaAggregate idea = Captured("A note kept close for now");
+
+        idea.Apply(IdeaDecider.SetPrivate(idea, isPrivate: true, Now, Owner));
+        idea.Scope.Should().Be(ReplicationScope.Private);
+        idea.IsPrivate.Should().BeTrue();
+
+        idea.Apply(IdeaDecider.SetPrivate(idea, isPrivate: false, Now.AddMinutes(1), Owner));
+        idea.Scope.Should().Be(ReplicationScope.Fleet, "off never jumps straight to team on its own");
+    }
+
+    [Fact]
+    public void Team_scope_is_one_way_and_refuses_to_narrow_back_to_fleet_or_private()
+    {
+        IdeaAggregate idea = Captured("Shared with the team already");
+        idea.Apply(IdeaDecider.Share(idea, Now, Owner));
+
+        Action toFleet = () => IdeaDecider.SetScope(idea, ReplicationScope.Fleet, Now.AddMinutes(1), Owner);
+        Action toPrivate = () => IdeaDecider.SetPrivate(idea, isPrivate: true, Now.AddMinutes(1), Owner);
+        Action shareAgain = () => IdeaDecider.Share(idea, Now.AddMinutes(1), Owner);
+
+        toFleet.Should().Throw<DomainConflictException>().WithMessage("*one-way*");
+        toPrivate.Should().Throw<DomainConflictException>().WithMessage("*one-way*");
+        shareAgain.Should().Throw<DomainConflictException>().WithMessage("*already*");
+    }
+
+    [Fact]
+    public void Setting_the_same_scope_again_is_refused_as_nothing_to_change()
+    {
+        IdeaAggregate idea = Captured("Already fleet");
+
+        Action act = () => IdeaDecider.SetScope(idea, ReplicationScope.Fleet, Now, Owner);
+
+        act.Should().Throw<DomainConflictException>().WithMessage("*already*");
+    }
+
+    [Fact]
+    public void An_idea_captured_before_scope_existed_reads_team_when_not_private_and_private_when_it_was()
+    {
+        // idea 8c5993c5: existing items keep their current effective scope — a legacy capture, with
+        // no InitialScope recorded, was already fully team-visible under the old private flag alone.
+        IdeaAggregate neverPrivate = new();
+        neverPrivate.Apply(new IdeaCaptured(DomainId.New(), Owner, "legacy idea", null, Now));
+        neverPrivate.Scope.Should().Be(ReplicationScope.Team);
+
+        IdeaAggregate onceMadePrivate = new();
+        onceMadePrivate.Apply(new IdeaCaptured(DomainId.New(), Owner, "legacy private idea", null, Now));
+        onceMadePrivate.Apply(new IdeaPrivacySet(onceMadePrivate.Id, IsPrivate: true, Now, Owner));
+        onceMadePrivate.Scope.Should().Be(ReplicationScope.Private);
     }
 
     private static IdeaAggregate Captured(string text, Guid? projectId = null)
