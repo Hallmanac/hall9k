@@ -21,13 +21,15 @@ public sealed class CourierGateTests
         bool courierAlreadyRunning = false,
         bool manualDrainLeaseHeld = false,
         bool hasUrgentItem = false,
+        bool lastCourierFailed = false,
         TimeSpan? elapsedSinceLastCourier = null,
         TimeSpan? quietFor = null,
         int spawnsToday = 0,
         int daySpawnCap = 500) =>
         CourierGate.Decide(
             hasUndrainedItems, orchestratorLive, courierAlreadyRunning, manualDrainLeaseHeld, hasUrgentItem,
-            elapsedSinceLastCourier, quietFor ?? TimeSpan.Zero, QuietThreshold, MaxWait, spawnsToday, daySpawnCap);
+            lastCourierFailed, elapsedSinceLastCourier, quietFor ?? TimeSpan.Zero, QuietThreshold, MaxWait,
+            spawnsToday, daySpawnCap);
 
     [Fact]
     public void No_undrained_items_refuses_regardless_of_everything_else()
@@ -99,6 +101,26 @@ public sealed class CourierGateTests
     public void An_urgent_item_bypasses_a_ceiling_wait_that_has_not_elapsed()
     {
         Decide(hasUrgentItem: true, elapsedSinceLastCourier: TimeSpan.FromSeconds(1), quietFor: TimeSpan.Zero)
+            .Should().Be(CourierSpawnDecision.Spawn);
+    }
+
+    [Fact]
+    public void An_urgent_item_after_a_failed_delivery_waits_out_the_ceiling_like_any_other()
+    {
+        // Without lastCourierFailed's own check, this would spawn at once every sweep tick with
+        // no backoff at all — the exact runaway the day cap alone used to be left to stop.
+        Decide(
+                hasUrgentItem: true, lastCourierFailed: true,
+                elapsedSinceLastCourier: TimeSpan.FromSeconds(1), quietFor: TimeSpan.Zero)
+            .Should().Be(CourierSpawnDecision.Waiting);
+    }
+
+    [Fact]
+    public void An_urgent_item_after_a_failed_delivery_spawns_once_the_wait_elapses()
+    {
+        Decide(
+                hasUrgentItem: true, lastCourierFailed: true,
+                elapsedSinceLastCourier: TimeSpan.FromSeconds(60), quietFor: TimeSpan.Zero)
             .Should().Be(CourierSpawnDecision.Spawn);
     }
 
