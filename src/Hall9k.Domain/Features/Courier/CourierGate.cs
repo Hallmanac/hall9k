@@ -15,6 +15,7 @@ public static class CourierGate
         bool courierAlreadyRunning,
         bool manualDrainLeaseHeld,
         bool hasUrgentItem,
+        bool lastCourierFailed,
         TimeSpan? elapsedSinceLastCourier,
         TimeSpan quietFor,
         TimeSpan quietThreshold,
@@ -53,7 +54,15 @@ public static class CourierGate
             return CourierSpawnDecision.DayCapReached;
         }
 
-        if (hasUrgentItem)
+        // Bypasses the wait outright only while nothing has gone wrong yet: once a delivery for
+        // this project has actually failed, an urgent item is retried on the same batching wait
+        // as an ordinary one rather than every sweep tick with no backoff at all. Without this, a
+        // send that keeps failing (an orchestrator registered under a session name the mesh
+        // cannot resolve, say) respawns as fast as the sweep polls until the per-day cap alone
+        // stops it — burning the whole cap on one broken project in minutes rather than delivering
+        // anything (independent pre-PR review, conformance lens). A fresh urgent item after a
+        // clean delivery, or the project's first one ever, still spawns at once exactly as before.
+        if (hasUrgentItem && !lastCourierFailed)
         {
             return CourierSpawnDecision.Spawn;
         }
