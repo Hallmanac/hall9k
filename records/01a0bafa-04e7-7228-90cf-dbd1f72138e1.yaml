@@ -20,7 +20,3 @@ origin-branch: task/f72138e1-a-task-assigned-on-one-node-is
 published: 2026-09-19 18:46:06Z
 context: |-
   Captured 2026-09-19 14:4x EDT by the Mac project window under the dogfood rule, first two-node day. Evidence: 693ffe5d assigned on the Mac at 14:24 EDT replicated to Windows showing 'Assigned to 01a00d41-5a50-7368-b048-72bcfee948bf' (the Mac's OwnerDetails id); with a free slot for ten minutes the Windows dispatcher logged nothing about it, not even a stays-queued line (Windows project window, mailbox 14:34 and 14:39 EDT). Owner events are OwnerScoped (EventScopeRegistry) and never replicate, so a local owner Guid means nothing on a peer. Same class as PR #491 (cooperative-take grants verify the owner by fingerprint, not a self-declared Guid). Pointers: TaskAssigned event, DispatchEngine's assignment check (about line 951 on main at 2026-09-19), h9k task assign. Workaround used today: unassign on the Mac, assign on Windows. Lineage: a gap in the distributed-team design, not a fix of a fix.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-09-19 22:44:56Z
