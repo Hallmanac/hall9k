@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a0be9a-5d24-722d-a747-67fa7fd5eac1
+project: hall9k
+type: bugfix
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#509
+objective: |-
+  The owner's root node counts as part of the owner's fleet for node placement: h9k task assign --node accepts the genesis node without a self-vouch, and the fleet a placement resolves against is the root plus every vouched node
+criteria:
+  - The fleet that h9k task assign --node resolves a node against includes the owner's root node (the node whose key established the owner's root in this project's ledger) even though the root has no owners/<root>/nodes/<id>.yaml entry of its own; placing a task on the root succeeds without h9k node vouch of the root by itself
+  - Everywhere else the platform enumerates an owner's fleet for a project (h9k project members, the cooperative and forced take's fleet checks, DispatchEngine's placement match) uses the same definition, in one place
+  - |-
+    Unit tests cover: placement on the root node without a self-vouch; placement on a vouched node unchanged; refusal of a node in neither set; no test creates branches or touches GitHub
+  - dotnet build and dotnet test pass; the decision log carries one entry under this task's placeholder
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/7fd5eac1-the-owner-s-root-node-counts-a
+published: 2026-09-20 11:37:55Z
+context: |-
+  Captured 2026-09-20 07:4x EDT by the Mac project window on the node pin's first cross-node re-placement. Evidence: on the Mac (v0.10.8, the genesis node for hall9k, root c8f5c859..., node 01a00d41-5b80-753d-a3f1-070b25e490e4), h9k task assign 504c9c3b --node 01a00d41-5b80-753d-a3f1-070b25e490e4 answered 'Node 01a00d41-5b80-753d-a3f1-070b25e490e4 is not vouched into this owner's fleet for this project — h9k node vouch ... first'. The Mac's own node file is on the ledger (nodes/<mac>/node.yaml) and the root is owners/c8f5.../root.yaml, but only Windows has owners/<root>/nodes/<id>.yaml (vouched 2026-09-19 12:51 by invite); the root never vouches itself, and the placement resolver (TaskAssignCommand's fleet resolution from 693ffe5d, PR #506) only reads the vouched set. Workaround applied: the root vouched itself with h9k node vouch, then the placement succeeded. Pointers: TaskAssignCommand.ResolveNodeIdAsync and the fleet seeding fixed in cycle 1 of 693ffe5d (this install's own node id auto-qualifies only when the task is its own owner's work; the root case is the same gap seen from the fleet side), TrustChain / TrustedOwner (the root is the chain's origin), h9k project members. Lineage: a follow-on to the node pin, not a fix of a fix. Placement: either node.
