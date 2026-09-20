@@ -558,6 +558,38 @@ draft's criteria), spawn a lean session instead of doing it here:
 4. When it ends, read what it wrote into the workspace, report the result to the operator in plain
    language, and mark the row.
 
+**Presence: closing and restarting.** The platform tracks whether an orchestrator window is live
+for this project on this node, and consumers act on that answer: `h9k status` and
+`h9k orchestrator status` both name the live window today, and the feed courier, which is
+designed but not built (idea 89471598, piece 3), is to spawn only while one is up. The launch
+anchor already registers this window as its own first start-up step
+(`h9k orchestrator register --project <name> --session <name> --pid $CLAUDE_PID --cli claude-code`),
+so the recipe never repeats that step. What the recipe owns is the other end, and it owns it in
+two places, both of which the recipe you write must state explicitly:
+
+- **Closing.** Before this window exits for the day, or whenever the operator says they are done
+  here, run `h9k orchestrator deregister --project <name> --pid $CLAUDE_PID` as the last thing
+  after the journal is rewritten. A window that just closes its terminal is found gone by the
+  daemon's own presence sweep instead, which is honest but slower and records a loss rather than
+  a clean exit.
+- **Restarting.** A restart is a deregister and then a fresh launch, in that order: deregister
+  here, tell the operator to start the new window, and let the new window's own anchor register
+  it. Never carry the old registration forward, and never reach for `--replace` to paper over a
+  restart that skipped the deregister.
+
+`--pid` is this window's own process id, always, and that is the point of passing it: a window
+drops its own claim and only its own. If this window has already deregistered and the operator
+has started a replacement, a second close step run here reports that the registration belongs to
+the other window and leaves it alone, which is why the close step is safe to run whatever
+happened earlier in the session.
+
+If a registration is ever refused because another orchestrator is already live for this project
+on this machine, that is a real collision, not a stale record: name the window it reported to the
+operator and let them decide. This window never passes `--replace` on its own judgment.
+
+Leave this whole block out in node mode: `deregister` takes a project, and a node window drives
+none.
+
 **The node seam.** State the one-sentence seam and name the sibling projects sharing this node.
 A node-scope command typed here (an install, a daemon restart, a ceiling change) forwards: look
 for a live node orchestrator with `ListAgents` first; if one is up, send it the command with
@@ -631,6 +663,8 @@ Same shape as the project recipe above, with these differences:
   itself.
 - No "Dispatching headless" section: the node never dispatches a task or merges a pull request,
   so neither fact applies here.
+- No "Presence: closing and restarting" section either: orchestrator presence is tracked per
+  project, and a node window drives none, so there is nothing here to register or deregister.
 - Node-only standing facts are held to the exact same bar as *Never invent a standing rule* above:
   a fresh node's recipe states none of them, because nothing here counts as a rule until the
   operator has actually ruled on it for this node. Do not hardcode a sentence like "the ceiling
