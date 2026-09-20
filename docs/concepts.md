@@ -834,7 +834,7 @@ can only be refused on arrival. The full history stays readable on the node that
 `h9k status` shows every outstanding request while it stands, whichever of the three minted it. A
 broadcast closes when a member answers it, or when one says it holds nothing that matches.
 
-Depth: [scope.md](scope.md), Decisions Log #PLACEHOLDER-a56cf16e.
+Depth: [scope.md](scope.md), Decisions Log #236.
 
 ## Owners, nodes, and connections
 

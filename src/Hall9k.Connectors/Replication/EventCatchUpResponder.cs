@@ -24,7 +24,7 @@ namespace Hall9k.Connectors.Replication;
 /// A third exclusion, this node's own replication switch-on point, applies to a gap-fill and a
 /// bootstrap but NOT to a request a human explicitly made
 /// (<see cref="EventReplicationCodec.EventsRequestRecord.IsExplicitAsk"/>: one named stream, or a
-/// named global sequence bound). Task a56cf16e, Decisions Log #PLACEHOLDER-a56cf16e: history is
+/// named global sequence bound). Task a56cf16e, Decisions Log #236: history is
 /// inert until somebody asks for it, and an explicit ask is the opt-in — the switch-on point
 /// otherwise made every task published on a
 /// node before that node switched replication on permanently unservable to its peers, with the
