@@ -58,21 +58,53 @@ public sealed class OwnerSetCommand : Hall9kAsyncCommand<OwnerSetCommand.Setting
             + "--voice-skill, because every other value that option takes is a real skill name and "
             + "one of them could legitimately be spelled 'default'.")]
         public bool ClearVoiceSkill { get; init; }
+
+        [CommandOption("--persona <engineer|qa|designer>")]
+        [Description(
+            "A review persona this member holds, repeatable — the lens they review somebody else's "
+            + "pull request through (idea b9b09779). A pull request assigned to them mints the same "
+            + "pr-review task it always has, and that task runs one review session per declared "
+            + "persona on its single worktree and branch: 'engineer' is today's pull-request review "
+            + "of code, logic and functionality, unchanged; 'qa' is compliance and functionality "
+            + "through the lens of blast radius; 'designer' is user experience, the proposed design, "
+            + "accessibility and the project's design system. The set is fixed, because each persona "
+            + "maps to its own prompt and criteria in the platform's persona registry — a persona "
+            + "with no prompt registered yet is named in the findings report as skipped rather than "
+            + "silently ignored. Declaring none is the ordinary case and reads as the engineer's "
+            + "review, so nothing changes for anyone who never passes this. Repeating the option "
+            + "replaces the whole declaration rather than adding to it: pass every persona the "
+            + "member holds in one command.")]
+        public string[]? Persona { get; init; }
+
+        [CommandOption("--clear-personas")]
+        [Description(
+            "Declare no review personas, so a pull request assigned to this member gets the "
+            + "engineer's review again — exactly what it gets for a member who never declared one. "
+            + "Its own switch rather than a word passed to --persona, because every value that "
+            + "option takes is a persona the registry can resolve.")]
+        public bool ClearPersonas { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
-        if (settings.RerequestReview is null && settings.VoiceSkill is null && !settings.ClearVoiceSkill)
+        if (settings.RerequestReview is null
+            && settings.VoiceSkill is null
+            && !settings.ClearVoiceSkill
+            && settings.Persona is not { Length: > 0 }
+            && !settings.ClearPersonas)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass --rerequest-review on|off|default, --voice-skill <NAME>, "
-                + "or --clear-voice-skill. h9k owner show prints the current preferences.");
+                + "--clear-voice-skill, --persona engineer|qa|designer, or --clear-personas. "
+                + "h9k owner show prints the current preferences.");
         }
 
         // Refused before the database is opened at all: an option pair that contradicts itself is
         // not a fact about any owner.
         Optional<VoiceSkillName> voiceSkill =
             VoiceSkillOption.Resolve(settings.VoiceSkill, settings.ClearVoiceSkill);
+        Optional<IReadOnlyList<ReviewPersona>> reviewPersonas =
+            ReviewPersonaOption.Resolve(settings.Persona, settings.ClearPersonas);
 
         using var store = CliStore.Open();
         await using IDocumentSession session = store.LightweightSession();
@@ -110,7 +142,8 @@ public sealed class OwnerSetCommand : Hall9kAsyncCommand<OwnerSetCommand.Setting
                 ? Optional<ReviewRerequestPolicy>.None
                 : Optional<ReviewRerequestPolicy>.Of(ReviewRerequestOption.Parse(settings.RerequestReview)),
             DateTimeOffset.UtcNow,
-            voiceSkill);
+            voiceSkill,
+            reviewPersonas);
 
         session.Events.Append(details.Id, changed);
         await session.SaveChangesAsync(cancellationToken);

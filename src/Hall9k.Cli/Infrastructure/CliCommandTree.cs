@@ -308,14 +308,17 @@ public static class CliCommandTree
             owner.AddCommand<OwnerSetCommand>("set")
                 .WithDescription(
                     "Change an owner's standing preferences: whether closeout asks a pull request's reviewers "
-                    + "to look again once a fix follow-up has pushed (Decisions Log #62), and the skill this "
+                    + "to look again once a fix follow-up has pushed (Decisions Log #62), the skill this "
                     + "owner writes in (--voice-skill), which every prompt seam that composes text a human "
-                    + "reads as theirs tells the session to load first. A project setting outranks the "
-                    + "re-request policy; the node default sits under both.")
+                    + "reads as theirs tells the session to load first, and the review personas they hold "
+                    + "(--persona), which decide how a pull request assigned to them is reviewed. A project "
+                    + "setting outranks the re-request policy; the node default sits under both.")
                 .WithExample("owner", "set", "--rerequest-review", "on")
                 .WithExample("owner", "set", "brian", "--rerequest-review", "default")
                 .WithExample("owner", "set", "--voice-skill", "my-voice")
-                .WithExample("owner", "set", "brian", "--clear-voice-skill");
+                .WithExample("owner", "set", "brian", "--clear-voice-skill")
+                .WithExample("owner", "set", "--persona", "engineer", "--persona", "qa")
+                .WithExample("owner", "set", "brian", "--clear-personas");
         });
 
         config.AddBranch("node", node =>

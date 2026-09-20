@@ -20,6 +20,10 @@ public sealed class OwnerDetails
     /// builder's caller reads the owner's voice preference from.</summary>
     public VoiceSkillName VoiceSkill { get; set; } = VoiceSkillName.None;
 
+    /// <summary>Mirrors <see cref="OwnerAggregate.ReviewPersonas"/> — the read side the pr-review
+    /// dispatch and <c>h9k owner show</c> both read this owner's declared personas from.</summary>
+    public List<ReviewPersona> ReviewPersonas { get; set; } = [];
+
     public DateTimeOffset RegisteredAt { get; set; }
     public DateTimeOffset? SettingsChangedAt { get; set; }
 
@@ -55,6 +59,11 @@ public sealed class OwnerDetailsProjection : SingleStreamProjection<OwnerDetails
         if (@event.Data.VoiceSkill.HasValue)
         {
             view.VoiceSkill = @event.Data.VoiceSkill.Value ?? VoiceSkillName.None;
+        }
+
+        if (@event.Data.ReviewPersonas.HasValue)
+        {
+            view.ReviewPersonas = [.. ReviewPersona.Declared(@event.Data.ReviewPersonas.Value)];
         }
 
         view.SettingsChangedAt = @event.Data.ChangedAt;
