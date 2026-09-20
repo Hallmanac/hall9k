@@ -588,8 +588,8 @@ public static class TaskPassageQuery
                     reviewDispatchedAt.TryAdd(dispatched.Cycle, dispatched.DispatchedAt);
                     break;
                 case PrReviewConformanceDispatched conformanceDispatched:
-                    // The pr-review run's own second lens: this run's initial RunDispatched
-                    // already named the first, adversarial one (folded as this run's ordinary
+                    // The pr-review run's own follow-on session: this run's initial RunDispatched
+                    // already named the primary one (folded as this run's ordinary
                     // build work, the same as any other run), and this dispatch is where the
                     // actual review work starts — the same role ReviewDispatched plays for an
                     // ordinary run's own BuildEnd just above. Closing BuildEnd here keeps the

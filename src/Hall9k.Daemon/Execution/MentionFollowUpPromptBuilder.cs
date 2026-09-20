@@ -23,7 +23,7 @@ namespace Hall9k.Daemon.Execution;
 /// <para>
 /// The session's own FINAL answer, not a file it writes, becomes the addendum verbatim
 /// (<c>PrReviewEngine.DriveMentionFollowUpAsync</c> reads it off the completed session's own
-/// result the same way <c>RecordAdversarialResultAsync</c> already does for the ordinary review's
+/// result the same way <c>RecordPrimarySessionResultAsync</c> already does for the ordinary review's
 /// primary session) — the template's own closing instructions say so, and are the one thing here
 /// that must never drift from that reader.
 /// </para>

@@ -46,6 +46,18 @@ public sealed class RunDetails : IJsonOnDeserialized
     public string? PrReviewBaseRefName { get; set; }
     /// <summary>Mirrors <see cref="RunAggregate.PrReviewMentionCommentId"/> — non-null marks this run as a bounded mention follow-up lap rather than an ordinary pr-review run.</summary>
     public string? PrReviewMentionCommentId { get; set; }
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewPersonasRequested"/>.</summary>
+    public List<ReviewPersona> PrReviewPersonasRequested { get; set; } = [];
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewPersonasRan"/>.</summary>
+    public List<ReviewPersona> PrReviewPersonasRan { get; set; } = [];
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewPersonasSkipped"/>.</summary>
+    public List<ReviewPersona> PrReviewPersonasSkipped { get; set; } = [];
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewPersonasFellBackToEngineer"/>.</summary>
+    public bool PrReviewPersonasFellBackToEngineer { get; set; }
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewPersonasReported"/> — which personas' findings are in.</summary>
+    public List<ReviewPersona> PrReviewPersonasReported { get; set; } = [];
+    /// <summary>Mirrors <see cref="RunAggregate.PrReviewPersonaSessionFailures"/>, keyed by session slug.</summary>
+    public Dictionary<string, ReviewPersonaSessionFailure> PrReviewPersonaSessionFailures { get; set; } = [];
     /// <summary>
     /// The branch this run's work sits on top of — its worktree's start point, its diff and review
     /// range, and the base its pull request targets. Blank for every run based on the project's own
@@ -1330,12 +1342,50 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
     {
         view.ReviewModel = @event.Data.Model ?? AgentModel.Unknown;
         StartSession(
-            view, AgentRole.Review, ReviewLens.Conformance, @event.Data.ProcessId, @event.Data.ProcessStartedAt,
+            view, AgentRole.Review, TrackOf(@event.Data.Slug), @event.Data.ProcessId, @event.Data.ProcessStartedAt,
             name: @event.Data.SessionName);
         view.State = RunState.UnderReview;
     }
 
     public void Apply(IEvent<PrReviewConformanceCompleted> @event, RunDetails view) => EndSessions(view);
+
+    /// <summary>Normalized on the way in, exactly as <see cref="RunAggregate.Apply(PrReviewPersonasSelected)"/> does and for the same reason.</summary>
+    public void Apply(IEvent<PrReviewPersonasSelected> @event, RunDetails view)
+    {
+        view.PrReviewPersonasRequested = [.. ReviewPersona.Declared(@event.Data.Requested)];
+        view.PrReviewPersonasRan = [.. ReviewPersona.Declared(@event.Data.Ran)];
+        view.PrReviewPersonasSkipped = [.. ReviewPersona.Declared(@event.Data.Skipped)];
+        view.PrReviewPersonasFellBackToEngineer = @event.Data.FellBackToEngineer;
+    }
+
+    public void Apply(IEvent<PrReviewPersonaReported> @event, RunDetails view)
+    {
+        if (!view.PrReviewPersonasReported.Contains(@event.Data.Persona))
+        {
+            view.PrReviewPersonasReported.Add(@event.Data.Persona);
+        }
+    }
+
+    public void Apply(IEvent<PrReviewPersonaSessionFailed> @event, RunDetails view)
+    {
+        view.PrReviewPersonaSessionFailures[@event.Data.Slug] =
+            new ReviewPersonaSessionFailure(@event.Data.Persona, @event.Data.Reason, @event.Data.FailedAt);
+        EndSessions(view);
+    }
+
+    /// <summary>
+    /// Which review track an active follow-on pr-review session shows under. Only the engineer's
+    /// two sessions are lenses at all; a persona whose review is not a lens shows as
+    /// <see cref="ReviewLens.Unknown"/> rather than being labelled with a lens it never ran, which
+    /// is safe because follow-on sessions run one after another over the single shared worktree
+    /// and so never collide on the track key. A blank slug is the engineer's conformance lens —
+    /// the only follow-on session a stream written before review personas ever recorded.
+    /// </summary>
+    private static ReviewLens TrackOf(string? slug) => slug.IsBlank() || slug == ReviewLens.Conformance.Slug
+        ? ReviewLens.Conformance
+        : slug == ReviewLens.Adversarial.Slug
+            ? ReviewLens.Adversarial
+            : ReviewLens.Unknown;
 
     public void Apply(IEvent<PrReviewDelivered> @event, RunDetails view)
     {
