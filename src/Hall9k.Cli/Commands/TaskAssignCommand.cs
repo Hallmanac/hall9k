@@ -378,7 +378,18 @@ public sealed class TaskAssignCommand : Hall9kAsyncCommand<TaskAssignCommand.Set
         HashSet<Guid> fleet = ownerIsThisInstall ? [thisNodeId] : [];
         if (ownerRootFingerprint is { } root && project.RepositoryPath.IsNotBlank())
         {
-            TrustChain chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+            TrustChain chain;
+            try
+            {
+                chain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+            }
+            catch (InvalidOperationException exception)
+            {
+                throw new DomainValidationException(
+                    $"Could not read '{project.Name}'s own ledger chain: {exception.Message} Re-run "
+                    + $"h9k task assign ... --node {nodeIdOrFragment} once the remote is reachable again.");
+            }
+
             if (chain.OwnerChains.TryGetValue(root, out TrustedOwner? trustedOwner))
             {
                 foreach (TrustedNode trustedNode in trustedOwner.Nodes)
