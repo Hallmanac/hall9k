@@ -563,10 +563,12 @@ public sealed class TaskAggregate
     /// owner can place a task on one of their own nodes rather than leaving it to whichever of
     /// their nodes' dispatchers gets there first). Null means unplaced — every node of the granted
     /// owner may claim it, exactly as dispatch behaved before this feature existed. Set by
-    /// <see cref="Apply(TaskAssigned)"/> from <see cref="TaskAssigned.PlacedOnNodeId"/>; rewritten
+    /// <see cref="Apply(TaskAssigned)"/> from <see cref="TaskAssigned.PlacedOnNodeId"/>; retargeted
     /// to the taker's own node by <see cref="Apply(Events.TaskHolderTakenOver)"/> and a cooperative
-    /// grant's own <see cref="Apply(TaskHolderReleased)"/>, so a takeover or a grant that moves the
-    /// task to another node retires the old placement without a second command; cleared by
+    /// grant's own <see cref="Apply(TaskHolderReleased)"/>, but only when a placement already
+    /// named some node — so a takeover or a grant retires an existing placement without a second
+    /// command, while a task nobody ever placed stays unplaced and keeps every node of the granted
+    /// owner able to claim it; cleared by
     /// <see cref="Apply(TaskUnassigned)"/> and <see cref="Apply(TaskInteractiveClaimUnassigned)"/>,
     /// the same two doors that clear <see cref="AssignedOwnerFingerprint"/>. Never itself the
     /// security decision: <see cref="AssignedOwnerFingerprint"/> (or, absent one,
@@ -1529,11 +1531,17 @@ public sealed class TaskAggregate
 
             AssignedOwnerId = @event.GrantedToOwnerId;
             AssignedOwnerFingerprint = @event.GrantedToOwnerFingerprint;
-            // The grant moves the task to the requester's own node, so that node's own placement
-            // (if any named a third node entirely) is retired the same way a takeover retires one
-            // below — the old placement would otherwise strand the very requester this grant just
-            // released the task for.
-            PlacedOnNodeId = @event.GrantedToNodeId;
+            // Only when a placement already named some node: retargets it to the grant's own
+            // destination, the same way a takeover retargets one below — the old placement would
+            // otherwise strand the very requester this grant just released the task for. A task
+            // nobody ever placed stays unplaced, so any of the granted owner's nodes may still
+            // claim it through the ordinary dispatch sweep (independent pre-PR review, cycle 1,
+            // conformance lens: an unconditional write here pinned even a never-placed task to
+            // the granting node, narrowing dispatch it never had before this feature existed).
+            if (PlacedOnNodeId is not null)
+            {
+                PlacedOnNodeId = @event.GrantedToNodeId;
+            }
             ClaimedByNodeId = null;
             CurrentRunId = null;
             PendingQuestionId = null;
@@ -1635,10 +1643,17 @@ public sealed class TaskAggregate
         // aggregate has any reason to distrust — it carries no fingerprint of its own, and clears
         // whatever a prior cooperative grant recorded here (idea 20723ef8).
         AssignedOwnerFingerprint = null;
-        // The takeover itself names the new node, so any placement naming a different node (or
-        // none at all) is retired the same way — the old node stands down without a second
-        // command, since the taker's own dispatch sweep now reads a placement naming itself.
-        PlacedOnNodeId = @event.NewHolderNodeId;
+        // Only when a placement already named some node: retargets it to the taker's own node,
+        // the same way a cooperative grant retargets one above — the old node stands down without
+        // a second command, since its own dispatch sweep now reads a placement naming somebody
+        // else. A task nobody ever placed stays unplaced rather than becoming pinned to the taking
+        // node, so it keeps the automatic cross-node recovery it had before this feature existed:
+        // any of the owner's live nodes may still pick it up through the ordinary requeue-and-claim
+        // sweep (independent pre-PR review, cycle 1, conformance lens).
+        if (PlacedOnNodeId is not null)
+        {
+            PlacedOnNodeId = @event.NewHolderNodeId;
+        }
 
         ClaimedByNodeId = null;
         CurrentRunId = null;
