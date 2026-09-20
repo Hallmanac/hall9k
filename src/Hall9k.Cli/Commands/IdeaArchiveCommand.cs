@@ -66,13 +66,30 @@ public sealed class IdeaArchiveCommand : Hall9kAsyncCommand<IdeaArchiveCommand.S
         }
 
         string shortId = TaskListCommand.ShortId(idea.Id);
-        string ideaDirectory = IdeaPaths.ResolveDirectory(
-            idea.WorkspaceHome, ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text), idea.Id);
         AnsiConsole.MarkupLine($"[dim]Idea {shortId} archived:[/] {archived.Reason.EscapeMarkup()}");
         AnsiConsole.MarkupLine(
-            "[dim]Kept on the record, workspace and all:[/] "
-            + $"{IdeaPaths.WorkspaceDirectory(ideaDirectory).EscapeMarkup()}");
+            "[dim]Kept on the record, workspace and all:[/] " + $"{WorkspaceDescription(idea).EscapeMarkup()}");
         AnsiConsole.MarkupLine($"[dim]Read it back any time:[/] h9k idea show {shortId}");
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// The discovery workspace as a path on this machine, or — for a home replicated from a node
+    /// on a different operating system (<c>ProjectHome.IsNativeForm</c>'s own doc) — the recorded
+    /// value said plainly rather than a directory <see cref="IdeaPaths.ResolveDirectory"/> would
+    /// otherwise fabricate by misreading a foreign path's own syntax as this host's
+    /// (independent pre-PR review, cycle 1, both lenses, medium; AGENTS.md, never guess at
+    /// unobserved facts).
+    /// </summary>
+    internal static string WorkspaceDescription(IdeaAggregate idea)
+    {
+        if (idea.WorkspaceHome is { HasValue: true, IsNativeForm: false } foreign)
+        {
+            return $"{foreign.Value} (recorded on another node's own operating system — not a directory here)";
+        }
+
+        string ideaDirectory = IdeaPaths.ResolveDirectory(
+            idea.WorkspaceHome, ProjectHomePaths.EntryDirectoryName(idea.Id, idea.Text), idea.Id);
+        return IdeaPaths.WorkspaceDirectory(ideaDirectory);
     }
 }
