@@ -3045,6 +3045,37 @@ public static class AgentPromptBuilder
         {
             AppendFragment(prompt, file, "scope-report-ordinary");
         }
+
+        AppendRunSkillDriftQuestion(prompt, file);
+    }
+
+    /// <summary>
+    /// The one standing question every review pass carries (idea b9b09779, piece 1): did this
+    /// change alter how the application runs locally? Appended to the finding contract rather
+    /// than to any one lens's own prose, because the contract is the single section every review
+    /// prompt this builder makes already shares — the two pre-PR lenses, the Verify pass, the
+    /// verdict reprompt, and the pr-review lens that delegates through all of them — so the
+    /// question cannot be present in some reviews and absent from others.
+    /// </summary>
+    private static void AppendRunSkillDriftQuestion(StringBuilder prompt, string file)
+    {
+        prompt.AppendLine();
+        prompt.AppendLine(Fragment(file, "run-skill-drift-heading"));
+        prompt.AppendLine();
+        AppendFragment(
+            prompt, file, "run-skill-drift",
+            ("DriftMarker", ReviewResultParser.RunSkillDriftMarker),
+            ("DriftKind", ReviewResultParser.RunSkillDriftKind),
+            ("YesWord", RunSkillDriftAnswer.Yes.Value),
+            ("NoWord", RunSkillDriftAnswer.No.Value),
+            ("FindingMarker", ReviewResultParser.FindingMarker),
+            ("ExampleLocationPlaceholder", ReviewResultParser.ExampleLocationPlaceholder),
+            ("SeverityTagKey", ReviewResultParser.SeverityTagKey),
+            ("ScopeTagKey", ReviewResultParser.ScopeTagKey),
+            ("KindTagKey", ReviewResultParser.KindTagKey),
+            ("AtTagKey", ReviewResultParser.AtTagKey),
+            ("DefectLabel", "Defect:"),
+            ("ScenarioLabel", "Scenario:"));
     }
 
     /// <summary>

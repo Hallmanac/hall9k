@@ -22,9 +22,17 @@ namespace Hall9k.Domain.Features.Run;
 /// that named no track or an unrecognized one — read there the same conservative way an
 /// ungraded severity already is, never guessed at.
 /// </param>
+/// <param name="Kind">
+/// What kind of finding this is where the kind changes how it reads rather than how it routes
+/// (idea b9b09779, piece 1) — today only <see cref="ReviewFindingKind.RunSkillDrift"/>, the
+/// standing question's own answer. <see cref="ReviewFindingKind.Unknown"/> for the ordinary
+/// finding, which is nearly all of them and every one recorded before kinds existed. Trailing and
+/// defaulted so an old stream deserializes unchanged.
+/// </param>
 public sealed record ReviewFindingRecord(
     ReviewSeverity Severity,
     ReviewFindingScope Scope,
     string Location,
     ReviewFindingDisposition Disposition,
-    ReviewLens? Track = null);
+    ReviewLens? Track = null,
+    ReviewFindingKind? Kind = null);

@@ -230,6 +230,48 @@ public sealed class AgentPromptBuilderGoldenTests : IDisposable
         AssertMatchesGolden("build-review-verdict-reprompt", prompt);
     }
 
+    /// <summary>
+    /// The standing run-skill drift question reaches every review prompt this builder makes (idea
+    /// b9b09779, piece 1) — the two pre-PR lenses, the Verify pass, the verdict reprompt, and the
+    /// pr-review lens the engineer's persona dispatches. Asserted over the captured fixtures
+    /// themselves rather than over freshly built prompts, so it holds against exactly the bytes
+    /// every other test in this class compares: a future edit that drops the question from one
+    /// prompt has to regenerate that fixture, and regenerating it is what this test catches.
+    /// <para>
+    /// The non-review prompts are checked for its absence in the same pass. A build, fix or
+    /// rebase session is not a reviewer and is never asked to answer it, so a marker appearing in
+    /// one of those would mean the question had been appended somewhere far too general.
+    /// </para>
+    /// </summary>
+    [Fact]
+    public void Every_review_prompts_golden_carries_the_standing_run_skill_drift_question()
+    {
+        string[] reviewPrompts =
+        [
+            "build-review-conformance", "build-review-adversarial", "build-review-verify",
+            "build-review-verdict-reprompt", "build-pr-review-lens",
+        ];
+
+        foreach (string name in reviewPrompts)
+        {
+            File.ReadAllText(GoldenPath(name)).Should().Contain(
+                ReviewResultParser.RunSkillDriftMarker,
+                $"{name} is a review prompt, and the standing question is asked of every review");
+        }
+
+        foreach (string path in Directory.EnumerateFiles(Path.GetDirectoryName(GoldenPath("any"))!, "*.golden.txt"))
+        {
+            if (reviewPrompts.Contains(Path.GetFileName(path).Replace(".golden.txt", string.Empty, StringComparison.Ordinal)))
+            {
+                continue;
+            }
+
+            File.ReadAllText(path).Should().NotContain(
+                ReviewResultParser.RunSkillDriftMarker,
+                $"{Path.GetFileName(path)} is not a review prompt and is never asked to answer the question");
+        }
+    }
+
     [Fact]
     public void BuildBudgetRetry_matches_its_golden() =>
         AssertMatchesGolden("build-budget-retry", AgentPromptBuilder.BuildBudgetRetry(SomeTask()));

@@ -7407,6 +7407,14 @@ public sealed class ReviewEngine(
                     ["VerdictLabel"] = VerdictLabel(pass.Verdict, text, mode),
                 }));
             merged.AppendLine();
+            // The standing question's own answer, printed above the pass's words whether it was
+            // yes, no, or never given (idea b9b09779, piece 1): a no is the evidence the question
+            // was actually asked, which is the whole reason it is recorded rather than only the
+            // yes that produces a finding.
+            merged.AppendLine(PromptTemplates.Load(
+                file, "run-skill-drift-line",
+                new Dictionary<string, string> { ["Answer"] = ReviewResultParser.ParseRunSkillDrift(text).Describe() }));
+            merged.AppendLine();
             merged.AppendLine(text.IsBlank() ? PromptTemplates.Load(file, "no-output") : text.Trim());
         }
 
@@ -7543,7 +7551,12 @@ public sealed class ReviewEngine(
     {
         string location = finding.Location.IsBlank() ? "(no location stated)" : $"`{finding.Location}`";
         string severity = finding.Severity == ReviewSeverity.Unknown ? "ungraded" : finding.Severity.Value.ToLowerInvariant();
-        return $"{location} — {LensLabel(lens)}, {severity}";
+        // The kind rides on the label, not on the disposition: a run-skill drift finding is fixed,
+        // routed, or carried exactly as its grade and scope already decide (idea b9b09779,
+        // piece 1), and naming it here is what tells the fix session the change it is being asked
+        // for is to how the application is run rather than to what it does.
+        string kind = finding.IsRunSkillDrift ? ", run-skill drift" : string.Empty;
+        return $"{location} — {LensLabel(lens)}, {severity}{kind}";
     }
 
     /// <summary>

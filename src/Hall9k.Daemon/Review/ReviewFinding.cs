@@ -25,12 +25,22 @@ namespace Hall9k.Daemon.Review;
 /// treating the tag as unattributable rather than as a claim nobody will read is what keeps the
 /// finding from vanishing.
 /// </param>
+/// <param name="Kind">
+/// What kind of finding this is, read from the finding's own `kind=` tag (idea b9b09779, piece 1)
+/// — today only <see cref="ReviewFindingKind.RunSkillDrift"/>, the standing question's own
+/// answer. The kind never changes <see cref="Disposition"/>: a run-skill drift finding is fixed,
+/// routed, or carried as a ride-along on exactly the terms its grade and scope already decide,
+/// which is what "routed like any finding" means. It changes only how the finding reads —
+/// the merged findings document names it, so the fix session knows the change it is being asked
+/// to make is to how the application is run, not to what it does.
+/// </param>
 public sealed record ReviewFinding(
     ReviewSeverity Severity,
     ReviewFindingScope Scope,
     string Location,
     string Text,
-    ReviewLens? Track = null)
+    ReviewLens? Track = null,
+    ReviewFindingKind? Kind = null)
 {
     /// <summary>
     /// How the loop records what it decided to do with this finding (Decisions Log #63, #87, and
@@ -97,6 +107,10 @@ public sealed record ReviewFinding(
             : ReviewFindingDisposition.Fix;
     }
 
+    /// <summary>True for the standing question's own finding — see <see cref="Kind"/>.</summary>
+    public bool IsRunSkillDrift => Kind == ReviewFindingKind.RunSkillDrift;
+
     /// <summary>The stream's record of this finding: its classification, never its text (log #6).</summary>
-    public ReviewFindingRecord ToRecord(ReviewMode mode) => new(Severity, Scope, Location, Disposition(mode), Track);
+    public ReviewFindingRecord ToRecord(ReviewMode mode) =>
+        new(Severity, Scope, Location, Disposition(mode), Track, Kind);
 }
