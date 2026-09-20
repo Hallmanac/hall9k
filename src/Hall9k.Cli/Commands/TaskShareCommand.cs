@@ -42,8 +42,14 @@ public sealed class TaskShareCommand : Hall9kAsyncCommand<TaskShareCommand.Setti
         if (set is not null)
         {
             session.Events.Append(taskId, set);
-            await session.SaveChangesAsync(cancellationToken);
         }
+
+        // Saved unconditionally, not just on the widening branch: NodeBootstrap.EnsureAsync may
+        // have staged a genesis OwnerRegistered/NodeRegistered/ConnectionRegistered on this same
+        // session two lines above, and it never saves them itself — every other caller commits
+        // (independent pre-PR review, idea 19489eff, cycle 11, adversarial, low). Skipping the save
+        // on the idempotent no-op path silently dropped that staged write.
+        await session.SaveChangesAsync(cancellationToken);
 
         string shortId = TaskListCommand.ShortId(taskId);
         AnsiConsole.MarkupLine($"[green]Task {shortId} is now shared with the team.[/]");
