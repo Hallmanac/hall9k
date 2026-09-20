@@ -27,10 +27,11 @@ using Xunit;
 
 namespace Hall9k.Tests.Integration;
 
-// Both classes redirect the process-wide HALL9K_HOME; sharing a collection serializes
-// them so one test's home is never yanked out from under the other's tail loop.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// MSBUILDDISABLENODEREUSE has no flow-scoped alternative (Decisions Log PLACEHOLDER-98484f36),
+// so the one test that sets it directly keeps this class in the one serial collection left for
+// that. HALL9K_HOME is redirected through ScopedTestHome like everywhere else.
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 [Trait("Category", "RequiresDocker")]
 public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
@@ -46,15 +47,10 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     private const string PassedSummaryLine =
         "Passed!  - Failed: 0, Passed: 3, Skipped: 0, Total: 3, Duration: 1 s";
 
-    private readonly string _home = SetTempHome();
+    private readonly ScopedTestHome _scopedHome = new();
     private readonly string _worktree = Path.Combine(Path.GetTempPath(), $"hall9k-vt-{Guid.NewGuid():N}");
 
-    private static string SetTempHome()
-    {
-        string home = Path.Combine(Path.GetTempPath(), $"hall9k-vhome-{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-        return home;
-    }
+    private string _home => _scopedHome.Home;
 
     [Fact]
     public async Task All_gates_passing_records_verification_passed_with_logs()
@@ -2589,10 +2585,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-        foreach (string dir in new[] { _home, _worktree })
-        {
-            TemporaryTree.TryDelete(dir);
-        }
+        _scopedHome.Dispose();
+        TemporaryTree.TryDelete(_worktree);
     }
 }

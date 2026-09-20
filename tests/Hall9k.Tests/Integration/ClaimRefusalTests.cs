@@ -44,32 +44,25 @@ namespace Hall9k.Tests.Integration;
 /// </para>
 /// </summary>
 // The success-path tests drive ClaimAndCutAsync all the way through, which rings the doorbell
-// (Hall9k.Cli.Infrastructure.Doorbell). That resolves its connection off the ambient
-// HALL9K_CONNECTION_STRING rather than this fixture, so it is pointed at the fixture for the
-// duration of each such call. That is process-wide state, same as DatabaseDoctorTests, so this
-// joins the Hall9kHome collection to serialize against every other test that redirects it
-// (independent pre-PR review, cycle 3). One test also asks OperatingSettingsResolver to resolve
-// the node's own configured model default, which reads PlatformPaths.Home's config.json — this
-// class redirects process-wide HALL9K_HOME too, for the same reason DispatchCeilingTests and
-// VerificationRunnerTests do, so that read is isolated from whatever is actually installed on the
-// machine running the suite rather than asserting against it by accident (adversarial review,
-// cycle 4: a developer's own ~/.hall9k/config.json setting modelByRole.build made the test pass
-// for the wrong reason, and would fail outright on a machine configuring a different model there).
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// (Hall9k.Cli.Infrastructure.Doorbell); that resolves its connection off Hall9kDatabase.Resolve
+// rather than this fixture, so it is pointed at the fixture for the duration of each such call
+// through ScopedConnectionString, and HALL9K_HOME is redirected through this class's own
+// ScopedTestHome for the same reason DispatchCeilingTests and VerificationRunnerTests redirect
+// it (adversarial review, cycle 4: a developer's own ~/.hall9k/config.json setting
+// modelByRole.build made a test pass for the wrong reason). Two tests also each redirect one
+// Hall9k__* setting directly (DefaultModel, ReviewStageComposition), which has no flow-scoped
+// alternative (Decisions Log PLACEHOLDER-98484f36) — that is what keeps this class in
+// [Collection("Environment")], the one serial collection left.
+[Collection("Environment")]
+[Trait("Category", "Environment")]
 [Trait("Category", "RequiresDocker")]
 public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 3, 12, 0, 0, TimeSpan.Zero);
     private readonly List<string> _repositoryRoots = [];
-    private readonly string _home = SetTempHome();
+    private readonly ScopedTestHome _scopedHome = new();
 
-    private static string SetTempHome()
-    {
-        string home = Path.Combine(Path.GetTempPath(), $"hall9k-claim-refusal-home-{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-        return home;
-    }
+    private string _home => _scopedHome.Home;
 
     [Fact]
     public async Task A_draft_task_is_refused_and_told_to_publish_first_by_task_start()
@@ -769,17 +762,7 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-        try
-        {
-            if (Directory.Exists(_home))
-            {
-                Directory.Delete(_home, recursive: true);
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-        }
+        _scopedHome.Dispose();
 
         // Through TemporaryTree: these roots hold real git repositories, whose loose objects git
         // leaves read-only, and a bare Directory.Delete refuses one outright on Windows.
@@ -799,24 +782,15 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
         // ClaimAndCutAsync's success path ends in Doorbell.RingAsync, which resolves its
-        // connection off HALL9K_CONNECTION_STRING rather than this fixture (see the class-level
+        // connection off Hall9kDatabase.Resolve rather than this fixture (see the class-level
         // comment above), so it has to be pointed at the fixture for the one call that reaches it.
-        string? previousConnectionString =
-            Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-        try
-        {
-            (Guid runId, _, _, _, _, _, _, _) = await TaskStartCommand.ClaimAndCutAsync(
-                store, session, task, fence, context, DomainId.New(),
-                SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build),
-                acknowledgeUnmetDependencies, interactiveMode: false, trackerClaimGate: null,
-                cancellationToken);
-            return runId;
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-        }
+        using ScopedConnectionString scope = new(postgres.ConnectionString);
+        (Guid runId, _, _, _, _, _, _, _) = await TaskStartCommand.ClaimAndCutAsync(
+            store, session, task, fence, context, DomainId.New(),
+            SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build),
+            acknowledgeUnmetDependencies, interactiveMode: false, trackerClaimGate: null,
+            cancellationToken);
+        return runId;
     }
 
 
@@ -872,23 +846,14 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
                 taskId, version: fence.Version, token: cts.Token))!;
             BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
-            string? previousConnectionString =
-                Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-            try
-            {
-                (_, _, string branch, _, bool resumesPreviousWork, _, _, _) = await TaskStartCommand.ClaimAndCutAsync(
-                    store, session, task, fence, context, DomainId.New(),
-                    SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build),
-                    acknowledgeUnmetDependencies: false, interactiveMode: false, trackerClaimGate: null, cts.Token);
+            using ScopedConnectionString scope = new(postgres.ConnectionString);
+            (_, _, string branch, _, bool resumesPreviousWork, _, _, _) = await TaskStartCommand.ClaimAndCutAsync(
+                store, session, task, fence, context, DomainId.New(),
+                SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.Build),
+                acknowledgeUnmetDependencies: false, interactiveMode: false, trackerClaimGate: null, cts.Token);
 
-                branch.Should().Be(foreignBranch, "the resolver's own latest-run branch, not a fresh cut off main");
-                resumesPreviousWork.Should().BeTrue();
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-            }
+            branch.Should().Be(foreignBranch, "the resolver's own latest-run branch, not a fresh cut off main");
+            resumesPreviousWork.Should().BeTrue();
         }
 
         await using IQuerySession verify = store.QuerySession();
@@ -1302,22 +1267,13 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
             BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
             // ClaimAndCutAsync's success path ends in Doorbell.RingAsync, which resolves its
-            // connection off HALL9K_CONNECTION_STRING rather than this fixture (see the class-level
+            // connection off Hall9kDatabase.Resolve rather than this fixture (see the class-level
             // comment above), so it has to be pointed at the fixture for the one call that reaches it.
-            string? previousConnectionString =
-                Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-            try
-            {
-                await TaskWorkCommand.ClaimAndCutAsync(
-                    store, session, task, fence, context, DomainId.New(),
-                    SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
-                    acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-            }
+            using ScopedConnectionString scope = new(postgres.ConnectionString);
+            await TaskWorkCommand.ClaimAndCutAsync(
+                store, session, task, fence, context, DomainId.New(),
+                SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
+                acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
         }
 
         await using IQuerySession verify = store.QuerySession();
@@ -1387,23 +1343,14 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
                 taskId, version: fence.Version, token: cts.Token))!;
             BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
-            string? previousConnectionString =
-                Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-            try
-            {
-                (_, _, string branch, _, bool resumesPreviousWork, _, _) = await TaskWorkCommand.ClaimAndCutAsync(
-                    store, session, task, fence, context, DomainId.New(),
-                    SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
-                    acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
+            using ScopedConnectionString scope = new(postgres.ConnectionString);
+            (_, _, string branch, _, bool resumesPreviousWork, _, _) = await TaskWorkCommand.ClaimAndCutAsync(
+                store, session, task, fence, context, DomainId.New(),
+                SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
+                acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
 
-                branch.Should().Be(foreignBranch, "the resolver's own latest-run branch, not a fresh cut off main");
-                resumesPreviousWork.Should().BeTrue();
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-            }
+            branch.Should().Be(foreignBranch, "the resolver's own latest-run branch, not a fresh cut off main");
+            resumesPreviousWork.Should().BeTrue();
         }
 
         await using IQuerySession verify = store.QuerySession();
@@ -1418,10 +1365,10 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
     /// config file, ignoring the Hall9k__ReviewStageComposition environment variable
     /// OperatingSettingsResolver ranks above it (independent pre-PR review, cycle 1, adversarial
     /// lens) — the same env-over-file precedence h9k config show and a headless dispatch on this
-    /// node already honor. Redirects HALL9K_HOME for the duration of this one test (unlike the rest
-    /// of this class, which never touches the config file) so the file write below lands in a
-    /// throwaway directory rather than whatever is actually installed on the machine running the
-    /// suite.
+    /// node already honor. Opens a second, nested ScopedTestHome for the duration of this one test
+    /// (unlike the rest of this class, which never touches the config file) so the file write
+    /// below lands in a throwaway directory of its own rather than the class-wide one, and is
+    /// restored back to the class-wide home the moment this test's scope disposes.
     /// </summary>
     [Fact]
     public async Task A_queued_tasks_interactive_claim_resolves_the_composition_from_the_environment_over_the_file()
@@ -1449,11 +1396,9 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
             await seed.SaveChangesAsync(cts.Token);
         }
 
-        string home = Path.Combine(Path.GetTempPath(), $"hall9k-work-claim-composition-home-{Guid.NewGuid():N}");
-        string? previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
         string? previousComposition =
             Environment.GetEnvironmentVariable($"{OperatingSettingsResolver.EnvironmentPrefix}ReviewStageComposition");
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
+        using ScopedTestHome innerHome = new();
         try
         {
             // The file says None; the environment variable, which OperatingSettingsResolver ranks
@@ -1468,20 +1413,13 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
                 taskId, version: fence.Version, token: cts.Token))!;
             BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
-            string? previousConnectionString =
-                Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
             Guid runId;
-            try
+            using (new ScopedConnectionString(postgres.ConnectionString))
             {
                 (runId, _, _, _, _, _, _) = await TaskWorkCommand.ClaimAndCutAsync(
                     store, session, task, fence, context, DomainId.New(),
                     SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
                     acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
             }
 
             await using IQuerySession verify = store.QuerySession();
@@ -1491,19 +1429,8 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         }
         finally
         {
-            Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
             Environment.SetEnvironmentVariable(
                 $"{OperatingSettingsResolver.EnvironmentPrefix}ReviewStageComposition", previousComposition);
-            try
-            {
-                if (Directory.Exists(home))
-                {
-                    Directory.Delete(home, recursive: true);
-                }
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-            }
         }
     }
 
@@ -1559,22 +1486,13 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
             BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
             // See the class-level comment on the Queued-entry twin above: ClaimAndCutAsync's
-            // success path rings the doorbell, which resolves off HALL9K_CONNECTION_STRING
+            // success path rings the doorbell, which resolves off Hall9kDatabase.Resolve
             // rather than this fixture.
-            string? previousConnectionString =
-                Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-            try
-            {
-                await TaskWorkCommand.ClaimAndCutAsync(
-                    store, session, task, fence, context, DomainId.New(),
-                    SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
-                    acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
-            }
-            finally
-            {
-                Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-            }
+            using ScopedConnectionString scope = new(postgres.ConnectionString);
+            await TaskWorkCommand.ClaimAndCutAsync(
+                store, session, task, fence, context, DomainId.New(),
+                SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
+                acknowledgeUnmetDependencies: false, trackerClaimGate: null, cts.Token);
         }
 
         await using IQuerySession verify = store.QuerySession();
@@ -1670,24 +1588,15 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
         // ClaimAndCutAsync's success path (a task that ends up claimed rather than refused) rings
-        // the doorbell, which resolves off HALL9K_CONNECTION_STRING rather than this fixture (see
+        // the doorbell, which resolves off Hall9kDatabase.Resolve rather than this fixture (see
         // the class-level comment above) — pointed at the fixture for the duration of this call so
         // the acknowledged-claim tests, which do reach that path, do not need their own copy of
         // this dance.
-        string? previousConnectionString =
-            Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-        try
-        {
-            await TaskWorkCommand.ClaimAndCutAsync(
-                store, session, task, fence, context, DomainId.New(),
-                SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
-                acknowledgeUnmetDependencies, trackerClaimGate: null, cancellationToken);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-        }
+        using ScopedConnectionString scope = new(postgres.ConnectionString);
+        await TaskWorkCommand.ClaimAndCutAsync(
+            store, session, task, fence, context, DomainId.New(),
+            SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
+            acknowledgeUnmetDependencies, trackerClaimGate: null, cancellationToken);
     }
 
     // ── h9k task delegate ──
@@ -2088,24 +1997,15 @@ public sealed class ClaimRefusalTests(PostgresFixture postgres) : IClassFixture<
         BootstrapContext context = new(ownerId, DomainId.New(), DomainId.New());
 
         // ClaimAndCutAsync's success path ends in Doorbell.RingAsync, which resolves its
-        // connection off HALL9K_CONNECTION_STRING rather than this fixture, so it has to be
-        // pointed at the fixture for the one call that reaches it (mirrors ClaimRefusalTests).
-        string? previousConnectionString =
-            Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-        try
-        {
-            (Guid runId, _, _, _, _, _, _, _) = await TaskStartCommand.ClaimAndCutAsync(
-                store, seed, task, fence, context, DomainId.New(),
-                SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
-                acknowledgeUnmetDependencies: false, interactiveMode: true, trackerClaimGate: null,
-                cancellationToken);
-            return runId;
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-        }
+        // connection off Hall9kDatabase.Resolve rather than this fixture, so it has to be
+        // pointed at the fixture for the one call that reaches it.
+        using ScopedConnectionString scope = new(postgres.ConnectionString);
+        (Guid runId, _, _, _, _, _, _, _) = await TaskStartCommand.ClaimAndCutAsync(
+            store, seed, task, fence, context, DomainId.New(),
+            SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.InteractiveClaim),
+            acknowledgeUnmetDependencies: false, interactiveMode: true, trackerClaimGate: null,
+            cancellationToken);
+        return runId;
     }
 
     private static async Task<TaskDelegateCommand.DelegationPlan> PrepareAsync(

@@ -27,10 +27,14 @@ namespace Hall9k.Tests.Integration;
 /// own foreground suite, and an operator's own run all draw from the same
 /// <see cref="MaxConcurrentContainers"/> permits rather than each getting an independent set.
 /// The gate lives here rather than on any xUnit collection attribute because xUnit collections
-/// only bound concurrency among classes an author remembered to annotate — the
-/// <c>Hall9kHome</c> collection already happens to serialize the Postgres-backed classes that
-/// need it for an unrelated reason (HALL9K_HOME isolation), but the rest sit in their own
-/// implicit, parallel collection by default, one container each. Gating inside the one fixture
+/// only bound concurrency among classes an author remembered to annotate — almost every
+/// Postgres-backed class sits in its own implicit, parallel collection by default, one container
+/// each, now that HALL9K_HOME/HALL9K_CONNECTION_STRING redirect through the flow-scoped
+/// <c>ScopedTestHome</c>/<c>ScopedConnectionString</c> seam rather than a shared serial collection
+/// (Decisions Log PLACEHOLDER-98484f36); a small handful still sit in
+/// <c>[Collection("Environment")]</c> for an unrelated reason (a genuinely process-wide variable
+/// with no flow-scoped alternative — the claude path, a <c>Hall9k__*</c> setting, the MSBuild
+/// node-reuse flag). Gating inside the one fixture
 /// every container-backed test already depends on bounds the total regardless of collection
 /// membership, and bounds it for a class added next month with no extra annotation to remember —
 /// the corresponding guard, <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>, fails
@@ -40,15 +44,14 @@ namespace Hall9k.Tests.Integration;
 /// the measured wall-clock cost of the bound.
 /// </para>
 /// <para>
-/// The counts, re-observed on 2026-09-08 by the test-suite runtime task and not to be carried
-/// forward unre-observed (#108's own "29" and its successor "37" both went stale that way): 25
-/// test classes take this fixture. Twelve of them carry <c>[Collection("Hall9kHome")]</c> and so
-/// run one at a time, inside a collection of 45 classes in total; the other thirteen sit in
-/// xUnit's implicit per-class collections and run in parallel up to
-/// <see cref="MaxConcurrentContainers"/>. That is 25 permit acquisitions and 25 container starts
-/// per full run — one per class, since the fixture's lifetime is the class's — against the 50
-/// the same suite started before its small per-seam classes were merged into shared-container
-/// ones (PLAN.md §16 #157).
+/// Counts drift with the suite and are not to be carried forward unre-observed (#108's own "29"
+/// and its successor "37" both went stale that way, and so did the "25... twelve of them" count
+/// this paragraph once read before the flow-scoped seam retired the shared serial collection
+/// those twelve sat in): what matters structurally is that one permit acquisition and one
+/// container start happens per Postgres-backed class per full run — the fixture's lifetime is the
+/// class's — and, since the seam, nearly every one of them now runs in xUnit's implicit per-class
+/// collections, contending for <see cref="MaxConcurrentContainers"/> permits in parallel rather
+/// than queuing one at a time behind a shared collection.
 /// </para>
 /// <para>
 /// Every class that takes this fixture carries <c>[Trait("Category", "RequiresDocker")]</c>, which

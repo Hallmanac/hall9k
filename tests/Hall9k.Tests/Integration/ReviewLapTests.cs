@@ -25,6 +25,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using JasperFx.Events;
 using Marten;
 using Marten.Events;
@@ -50,21 +51,20 @@ namespace Hall9k.Tests.Integration;
 /// </summary>
 // The lap, the verdict, and the resolve command's merge-ready path all ring the doorbell
 // (Hall9k.Cli.Infrastructure.Doorbell), which resolves its connection off
-// HALL9K_CONNECTION_STRING rather than this fixture, and the lap and verdict write artifacts
-// under HALL9K_HOME. All of it is process-wide, so this joins the Hall9kHome collection every
-// other test that redirects them does.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// Hall9kDatabase.Resolve rather than this fixture, and the lap and verdict write artifacts
+// under PlatformPaths.Home. Both are redirected for this class's own async flow through
+// ScopedTestHome (Decisions Log PLACEHOLDER-98484f36) rather than the retired Hall9kHome serial
+// collection.
 [Trait("Category", "RequiresDocker")]
 public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 7, 10, 0, 0, TimeSpan.Zero);
 
     private readonly PostgresFixture postgres;
-    private readonly string home;
-    private readonly string? previousHome;
-    private readonly string? previousConnectionString;
+    private readonly ScopedTestHome scopedHome;
     private readonly List<string> scratchDirectories = [];
+
+    private string home => scopedHome.Home;
 
     /// <summary>
     /// A repository of this test's own. The one-live-task-per-item rule the lap's attach path
@@ -80,12 +80,7 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     public ReviewLapTests(PostgresFixture postgres)
     {
         this.postgres = postgres;
-        home = Path.Combine(Path.GetTempPath(), $"hall9k-lap-home-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(home);
-        previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
-        previousConnectionString = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
+        scopedHome = new ScopedTestHome(postgres.ConnectionString);
     }
 
     /// <summary>
@@ -1693,9 +1688,8 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", previousHome);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
-        foreach (string directory in scratchDirectories.Append(home))
+        scopedHome.Dispose();
+        foreach (string directory in scratchDirectories)
         {
             try
             {
@@ -1756,14 +1750,10 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
         (Guid taskId, Guid runId) = await SeedParkedPrReviewRunAsync(store, node, cts.Token);
 
         // Resolving merge-ready rings the doorbell, which resolves its connection off
-        // HALL9K_CONNECTION_STRING rather than this fixture, so it has to be pointed at the
-        // fixture for the duration of the call.
-        string? previousConnectionString =
-            Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-        try
+        // Hall9kDatabase.Resolve rather than this fixture — already pointed at it for this
+        // class's whole lifetime by the constructor's own ScopedTestHome.
+        await using (IDocumentSession session = store.LightweightSession())
         {
-            await using IDocumentSession session = store.LightweightSession();
             StreamState fence = (await session.Events.FetchStreamStateAsync(runId, cts.Token))!;
             int result = await ReviewResolveCommand.ResolvePrReviewAsync(
                 session, runId, taskId, fence,
@@ -1771,10 +1761,6 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
                 cts.Token);
 
             result.Should().Be(0);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previousConnectionString);
         }
 
         await using IQuerySession query = store.QuerySession();
@@ -2556,27 +2542,19 @@ public sealed class ReviewLapTests : IClassFixture<PostgresFixture>, IDisposable
     /// <summary>
     /// Runs the resolve with the doorbell pointed at this fixture, the same way the pr-review
     /// merge-ready test does: <c>Hall9k.Cli.Infrastructure.Doorbell</c> resolves its connection off
-    /// the environment rather than off the store handed in here.
+    /// Hall9kDatabase.Resolve rather than off the store handed in here — already pointed at it
+    /// for this class's whole lifetime by the constructor's own ScopedTestHome.
     /// </summary>
     private async Task ResolveWithDoorbellAsync(
         DocumentStore store, Guid taskId, ReviewResolveCommand.Settings settings,
         RecordingProcessRunner gh, CancellationToken cancellationToken)
     {
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-        try
-        {
-            await using IDocumentSession session = store.LightweightSession();
-            int result = await ReviewResolveCommand.ResolveAsync(
-                session, taskId,
-                settings,
-                new GitHubReviewReplies(gh.Runner), cancellationToken);
-            result.Should().Be(0);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
-        }
+        await using IDocumentSession session = store.LightweightSession();
+        int result = await ReviewResolveCommand.ResolveAsync(
+            session, taskId,
+            settings,
+            new GitHubReviewReplies(gh.Runner), cancellationToken);
+        result.Should().Be(0);
     }
 
     /// <summary>

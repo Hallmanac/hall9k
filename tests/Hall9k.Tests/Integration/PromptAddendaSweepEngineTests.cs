@@ -14,6 +14,7 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -29,8 +30,6 @@ namespace Hall9k.Tests.Integration;
 /// <see cref="ProjectPromptAddendaLoader"/> is what a prompt builder actually reads.
 /// </summary>
 [Trait("Category", "RequiresDocker")]
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 17, 12, 0, 0, TimeSpan.Zero);
@@ -38,25 +37,17 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
     private const string ProjectName = "hall9k";
 
     private readonly PostgresFixture _postgres;
-    private readonly string _home = Path.Combine(Path.GetTempPath(), $"hall9k-prompt-addenda-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
+
+    private string _home => _scopedHome.Home;
 
     public PromptAddendaSweepEngineTests(PostgresFixture postgres) => _postgres = postgres;
 
-    public async Task InitializeAsync()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _home);
-        await _postgres.Store.Advanced.Clean.CompletelyRemoveAllAsync();
-    }
+    public async Task InitializeAsync() => await _postgres.Store.Advanced.Clean.CompletelyRemoveAllAsync();
 
     public Task DisposeAsync()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_home))
-        {
-            Directory.Delete(_home, recursive: true);
-        }
-
+        _scopedHome.Dispose();
         return Task.CompletedTask;
     }
 

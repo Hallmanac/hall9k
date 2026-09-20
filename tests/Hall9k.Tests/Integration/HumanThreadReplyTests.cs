@@ -13,9 +13,9 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
-using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Tests.Fakes;
+using Hall9k.Tests.TestSupport;
 using Marten;
 using Xunit;
 
@@ -33,10 +33,8 @@ namespace Hall9k.Tests.Integration;
 /// </para>
 /// </summary>
 // ReviewResolveCommand's merge-ready path rings the doorbell (Hall9k.Cli.Infrastructure.Doorbell),
-// which resolves its connection off HALL9K_CONNECTION_STRING rather than this fixture, so this
-// joins the collection every other test that redirects a process-wide variable does.
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
+// which resolves its connection off HALL9K_CONNECTION_STRING rather than this fixture, so
+// ResolveAsync below redirects it for this flow only, through ScopedConnectionString.
 [Trait("Category", "RequiresDocker")]
 public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>
 {
@@ -495,18 +493,10 @@ public sealed class HumanThreadReplyTests(PostgresFixture postgres) : IClassFixt
         Guid taskId, ReviewResolveCommand.Settings settings, RecordingProcessRunner gh,
         CancellationToken cancellationToken)
     {
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-        try
-        {
-            await using IDocumentSession session = postgres.Store.LightweightSession();
-            int result = await ReviewResolveCommand.ResolveAsync(
-                session, taskId, settings, new GitHubReviewReplies(gh.Runner), cancellationToken);
-            result.Should().Be(0);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
-        }
+        using ScopedConnectionString scope = new(postgres.ConnectionString);
+        await using IDocumentSession session = postgres.Store.LightweightSession();
+        int result = await ReviewResolveCommand.ResolveAsync(
+            session, taskId, settings, new GitHubReviewReplies(gh.Runner), cancellationToken);
+        result.Should().Be(0);
     }
 }

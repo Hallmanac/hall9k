@@ -80,8 +80,6 @@ namespace Hall9k.Tests.Integration;
 /// round-trip, or which write id an outcome gets recorded against could ship green.
 /// </para>
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDisposable
 {
@@ -95,11 +93,14 @@ public sealed class TrackerAssignmentTests : IClassFixture<PostgresFixture>, IDi
     /// a per-seam name would only mean the connection recorded whichever seam's test happened to
     /// run first — which credential a real <c>CredentialVault</c> then resolves would depend on
     /// xUnit's name-derived ordering (independent pre-PR review, cycle 1, conformance lens). The
-    /// production name is the one kept, because the write-retry seam's own
-    /// <see cref="JiraWriteRetryEngine"/> resolves this reference for real before it can build
-    /// the executor a sweep retries with.
+    /// production name would have been kept for that reason, but the flow-scoped home/connection
+    /// seam (Decisions Log PLACEHOLDER-98484f36) retired the shared <c>Hall9kHome</c> serial
+    /// collection this class no longer needs, so the name is class-unique instead — the same
+    /// <c>HALL9K_TEST_*</c> shape <see cref="Hall9k.Tests.Connectors.JiraWorkItemProviderTests"/>
+    /// and its siblings already use — which is what lets this class run outside any serialized
+    /// collection at all.
     /// </summary>
-    private const string JiraTokenVariable = "JIRA_TOKEN";
+    private const string JiraTokenVariable = "HALL9K_TEST_TRACKER_ASSIGNMENT_JIRA_TOKEN";
 
     private const string JiraAccountId = "5b10a2844c20165700ede21g";
     private const string JiraDisplayName = "Brian Hall";

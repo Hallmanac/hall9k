@@ -22,22 +22,15 @@ using Xunit;
 
 namespace Hall9k.Tests.Integration;
 
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFixture<PostgresFixture>, IDisposable
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 16, 12, 0, 0, TimeSpan.Zero);
 
-    private readonly string _home = SetTempHome();
+    private readonly ScopedTestHome _scopedHome = new();
     private readonly string _root = Path.Combine(Path.GetTempPath(), $"hall9k-pr-{Guid.NewGuid():N}");
 
-    private static string SetTempHome()
-    {
-        string home = Path.Combine(Path.GetTempPath(), $"hall9k-prhome-{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-        return home;
-    }
+    private string _home => _scopedHome.Home;
 
     [Fact]
     public async Task Local_origin_flow_pushes_branch_completes_task_and_removes_worktree()
@@ -1352,11 +1345,8 @@ public sealed class PullRequestOpenerTests(PostgresFixture postgres) : IClassFix
 
     public void Dispose()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-        foreach (string dir in new[] { _home, _root })
-        {
-            TemporaryTree.TryDelete(dir);
-        }
+        _scopedHome.Dispose();
+        TemporaryTree.TryDelete(_root);
     }
 
     /// <summary>

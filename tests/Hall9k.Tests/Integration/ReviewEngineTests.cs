@@ -41,22 +41,15 @@ namespace Hall9k.Tests.Integration;
 /// a dispute or a missing verdict parks for the human, and a dead session fails the run
 /// honestly.
 /// </summary>
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 [Trait("Category", "RequiresDocker")]
 public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginFixture origins)
     : IClassFixture<PostgresFixture>, IClassFixture<SeededGitOriginFixture>, IDisposable, IAsyncLifetime
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 17, 12, 0, 0, TimeSpan.Zero);
 
-    private readonly string _home = SetTempHome();
+    private readonly ScopedTestHome _scopedHome = new();
 
-    private static string SetTempHome()
-    {
-        string home = Path.Combine(Path.GetTempPath(), $"hall9k-home-{Guid.NewGuid():N}");
-        Environment.SetEnvironmentVariable("HALL9K_HOME", home);
-        return home;
-    }
+    private string _home => _scopedHome.Home;
 
     /// <summary>
     /// Scripted stand-in for claude sessions: each spawn writes the next scripted summary
@@ -1685,26 +1678,18 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// <c>h9k review fixed</c> through the command's own rule set rather than by appending the
     /// event directly, so every refusal and every git read this task added is what the test
     /// actually exercises. The command rings the doorbell, which resolves its connection off
-    /// <c>HALL9K_CONNECTION_STRING</c> rather than this fixture, so it is pointed at the fixture
-    /// for the duration of the call and put back afterwards — the same process-wide dance
-    /// <c>ReviewLapTests</c> does, which is why both live in the serialized
-    /// <c>Hall9kHome</c> collection.
+    /// <see cref="Hall9kDatabase.Resolve"/> rather than this fixture, so it is pointed at the
+    /// fixture for the duration of the call through <c>ScopedConnectionString</c> — never a
+    /// second <c>ScopedTestHome</c>, which would also swap <c>PlatformPaths.Home</c> out
+    /// from under this class's own class-wide scope for the call's duration.
     /// </summary>
     private async Task<int> RunReviewFixedAsync(
         DocumentStore store, Guid taskId, string? noChange, CancellationToken cancellationToken)
     {
-        string? previous = Environment.GetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName);
-        Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, postgres.ConnectionString);
-        try
-        {
-            await using IDocumentSession session = store.LightweightSession();
-            return await ReviewFixedCommand.RecordAsync(
-                session, taskId, new ReviewFixedCommand.Settings { NoChange = noChange }, cancellationToken);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(Hall9kDatabase.EnvironmentVariableName, previous);
-        }
+        using ScopedConnectionString scope = new(postgres.ConnectionString);
+        await using IDocumentSession session = store.LightweightSession();
+        return await ReviewFixedCommand.RecordAsync(
+            session, taskId, new ReviewFixedCommand.Settings { NoChange = noChange }, cancellationToken);
     }
 
     /// <summary>
@@ -10891,16 +10876,13 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             .ClearIfActiveAsync(node.NodeId, CancellationToken.None);
     }
 
-    public void Dispose()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", null);
-
-        // Through TemporaryTree rather than a bare delete: the seeds that build a real bare
-        // "origin" repository under this home leave git's own loose object files marked read-only,
-        // which Directory.Delete refuses on Windows. Every test in this class that seeds an origin
-        // failed on that alone, with its own assertions all passing, before this was caught.
-        TemporaryTree.TryDelete(_home);
-    }
+    public void Dispose() =>
+        // ScopedTestHome's own Dispose already goes through TemporaryTree rather than a bare
+        // delete: the seeds that build a real bare "origin" repository under this home leave
+        // git's own loose object files marked read-only, which Directory.Delete refuses on
+        // Windows. Every test in this class that seeds an origin failed on that alone, with its
+        // own assertions all passing, before this was caught.
+        _scopedHome.Dispose();
 
     // --- Stack assessment feature tests (task: a stacked checkpoint that would park
     // for a human on a git shape first dispatches a read-only assessment run) ---

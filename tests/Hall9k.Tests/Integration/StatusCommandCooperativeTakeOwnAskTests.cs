@@ -25,33 +25,21 @@ namespace Hall9k.Tests.Integration;
 /// now falls back to <see cref="PendingOwnAskLookup"/>, which reads only this node's own outbox.
 /// </summary>
 [Trait("Category", "RequiresDocker")]
-[Collection("Hall9kHome")]
-[Trait("Category", "Hall9kHome")]
 public sealed class StatusCommandCooperativeTakeOwnAskTests : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
     private static readonly DateTimeOffset Now = new(2026, 9, 19, 12, 0, 0, TimeSpan.Zero);
     private const string RepositoryPath = "/does/not/matter/on/a/fake/ledger";
 
     private readonly PostgresFixture _postgres;
-    private readonly string _home = Path.Combine(Path.GetTempPath(), $"hall9k-status-own-ask-{Guid.NewGuid():N}");
-    private readonly string? _previousHome = Environment.GetEnvironmentVariable("HALL9K_HOME");
+    private readonly ScopedTestHome _scopedHome = new();
 
     public StatusCommandCooperativeTakeOwnAskTests(PostgresFixture postgres) => _postgres = postgres;
 
-    public async Task InitializeAsync()
-    {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _home);
-        await _postgres.Store.Advanced.Clean.CompletelyRemoveAllAsync();
-    }
+    public async Task InitializeAsync() => await _postgres.Store.Advanced.Clean.CompletelyRemoveAllAsync();
 
     public Task DisposeAsync()
     {
-        Environment.SetEnvironmentVariable("HALL9K_HOME", _previousHome);
-        if (Directory.Exists(_home))
-        {
-            Directory.Delete(_home, recursive: true);
-        }
-
+        _scopedHome.Dispose();
         return Task.CompletedTask;
     }
 
