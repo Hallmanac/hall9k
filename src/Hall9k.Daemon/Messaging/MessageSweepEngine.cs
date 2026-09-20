@@ -602,12 +602,9 @@ public sealed class MessageSweepEngine(
             return null;
         }
 
-        foreach (TrustedNode candidate in inviter.Nodes)
+        foreach (Guid candidate in inviter.FleetNodeIds())
         {
-            if (Guid.TryParse(candidate.NodeId, out Guid parsed))
-            {
-                return parsed;
-            }
+            return candidate;
         }
 
         return null;

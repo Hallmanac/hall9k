@@ -68,16 +68,16 @@ public sealed class EventCatchUpCoordinator
     }
 
     /// <summary>Which project member (if any) <paramref name="candidateNodeId"/> belongs to, read
-    /// from <see cref="TrustChain.OwnerChains"/>'s own vouched-node lists — the only local source of
-    /// "whose node is this" a receiver has, since node identity is node-scoped and never itself
-    /// travels (idea 202383dc: "node- and owner-scoped events stay home"). Null when no chain this
-    /// project currently trusts names this node id at all.</summary>
+    /// from <see cref="TrustChain.OwnerChains"/>'s own fleets (<see cref="TrustedOwner.FleetNodeIds"/>
+    /// — the root's own node, when the ledger names it, plus every vouched node) — the only local
+    /// source of "whose node is this" a receiver has, since node identity is node-scoped and never
+    /// itself travels (idea 202383dc: "node- and owner-scoped events stay home"). Null when no
+    /// chain this project currently trusts names this node id at all.</summary>
     private static MembershipRole? ResolveMemberRole(Guid candidateNodeId, TrustChain trustChain)
     {
-        string candidateIdText = candidateNodeId.ToString();
         foreach ((string ownerFingerprint, TrustedOwner owner) in trustChain.OwnerChains)
         {
-            if (owner.Nodes.Any(node => node.NodeId == candidateIdText))
+            if (owner.FleetNodeIds().Contains(candidateNodeId))
             {
                 return trustChain.RoleOf(ownerFingerprint);
             }

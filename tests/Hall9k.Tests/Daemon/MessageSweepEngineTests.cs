@@ -194,4 +194,25 @@ public sealed class MessageSweepEngineTests
 
         voucherNodeId.Should().BeNull("a revoked owner's chain no longer appears in the live trust chain at all");
     }
+
+    [Fact]
+    public void The_inviting_owners_root_node_resolves_as_the_voucher_when_it_has_vouched_no_one_else()
+    {
+        Guid inviterRootNodeId = Guid.Parse("66666666-6666-6666-6666-666666666666");
+        NodeDetails nodeDetails = new() { InviterOwnerRootFingerprint = "inviter-root" };
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                // No vouched nodes — the inviting owner is a fresh, single-node install whose own
+                // genesis node has never self-vouched, so RootNodeId is the only source of a
+                // voucher tier here.
+                ["inviter-root"] = new TrustedOwner(
+                    "inviter-root", "ssh-ed25519 AAAAFAKE inviter-root", [], RootNodeId: inviterRootNodeId.ToString()),
+            },
+            []);
+
+        Guid? voucherNodeId = MessageSweepEngine.ResolveVoucherNodeId(nodeDetails, trustChain);
+
+        voucherNodeId.Should().Be(inviterRootNodeId);
+    }
 }

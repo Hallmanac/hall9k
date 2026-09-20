@@ -71,12 +71,12 @@ public sealed class ProjectMembersCommand : Hall9kAsyncCommand<ProjectMembersCom
                 .Where(owner => owner.RootFingerprint == member.RootFingerprint)
                 .FirstOrDefaultAsync(cancellationToken);
             string login = localOwner is not null ? localOwner.Name.EscapeMarkup() : "[dim]unknown[/]";
-            IReadOnlyList<TrustedNode> nodes = chain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
-                ? owner.Nodes
+            IReadOnlyList<Guid> nodes = chain.OwnerChains.TryGetValue(member.RootFingerprint, out TrustedOwner? owner)
+                ? [.. owner.FleetNodeIds()]
                 : [];
             string nodesCell = nodes.Count == 0
-                ? "[dim]none vouched yet[/]"
-                : string.Join("\n", nodes.Select(node => node.NodeId.EscapeMarkup()));
+                ? "[dim]none yet[/]"
+                : string.Join("\n", nodes.Select(nodeId => nodeId.ToString().EscapeMarkup()));
 
             table.AddRow(
                 member.RootFingerprint.EscapeMarkup(),

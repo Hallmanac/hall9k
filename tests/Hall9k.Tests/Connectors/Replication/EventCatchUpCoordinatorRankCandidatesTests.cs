@@ -119,4 +119,28 @@ public sealed class EventCatchUpCoordinatorRankCandidatesTests
         // never inserted first anyway.
         ranked.Should().Equal(memberNodeId);
     }
+
+    [Fact]
+    public void An_owners_root_node_is_a_candidate_even_with_no_vouched_node_at_all()
+    {
+        Guid myNodeId = DomainId.New();
+        Guid ownerRootNodeId = DomainId.New();
+        const string ownerRoot = "owner-root-fingerprint";
+
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                // No vouched nodes here at all — the root never vouches itself
+                // (owners/<root>/nodes/<id>.yaml), so RootNodeId is the only source of this owner's
+                // own node id.
+                [ownerRoot] = new TrustedOwner(ownerRoot, "ssh-ed25519 AAAAFAKEOWNER owner", [], RootNodeId: ownerRootNodeId.ToString()),
+            },
+            [new ProjectMember(ownerRoot, MembershipRole.Owner, DateTimeOffset.UtcNow)]);
+
+        IReadOnlyList<Guid> knownNodeIds = [ownerRootNodeId];
+
+        IReadOnlyList<Guid> ranked = EventCatchUpCoordinator.RankCandidates(knownNodeIds, myNodeId, voucherNodeId: null, trustChain);
+
+        ranked.Should().Equal(ownerRootNodeId);
+    }
 }
