@@ -873,7 +873,7 @@ An event type the table does not name is not in the feed at all. That is deliber
 what an orchestrator would want to know, not a mirror of the log, so a new event type ships
 silent and adding it is a decision somebody makes.
 
-Depth: [PLAN.md §16](../PLAN.md), Decisions Log #PLACEHOLDER-37b5ec69.
+Depth: [PLAN.md §16](../PLAN.md), Decisions Log #241.
 
 ## Owners, nodes, and connections
 
