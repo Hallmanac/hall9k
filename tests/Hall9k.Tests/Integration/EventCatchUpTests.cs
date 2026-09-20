@@ -561,7 +561,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             int envelopesQueued = await responder.AnswerAsync(
                 session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
-                Now.AddSeconds(3), cts.Token);
+                Now.AddSeconds(3), trustChain: null, cts.Token);
             envelopesQueued.Should().BeGreaterThan(0, "the public task's own events still answer");
             await session.SaveChangesAsync(cts.Token);
         }
@@ -661,10 +661,10 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             await responder.AnswerAsync(
                 session, nodeA, "owner-a-fingerprint", projectId, requesterSameOwner, bootstrapRequest, Now.AddSeconds(3),
-                cts.Token, trustChain);
+                trustChain, cts.Token);
             await responder.AnswerAsync(
                 session, nodeA, "owner-a-fingerprint", projectId, requesterDifferentOwner, bootstrapRequest, Now.AddSeconds(3),
-                cts.Token, trustChain);
+                trustChain, cts.Token);
             await session.SaveChangesAsync(cts.Token);
         }
 
@@ -755,7 +755,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             int envelopesQueued = await responder.AnswerAsync(
                 session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
-                Now.AddSeconds(2), cts.Token);
+                Now.AddSeconds(2), trustChain: null, cts.Token);
             envelopesQueued.Should().BeGreaterThan(0, "the other task's own events still answer");
             await session.SaveChangesAsync(cts.Token);
         }
@@ -1156,13 +1156,13 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             int gapFillEnvelopes = await responder.AnswerAsync(
                 session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), nodeA, SinceOriginSequence: 0, ForStreamId: null),
-                Now.AddSeconds(4), cts.Token);
+                Now.AddSeconds(4), trustChain: null, cts.Token);
             gapFillEnvelopes.Should().Be(0, "a gap-fill keeps the switch-on exclusion");
 
             int bootstrapEnvelopes = await responder.AnswerAsync(
                 session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, ForStreamId: null),
-                Now.AddSeconds(5), cts.Token);
+                Now.AddSeconds(5), trustChain: null, cts.Token);
             bootstrapEnvelopes.Should().Be(0, "a brand-new node's own bootstrap keeps it too");
 
             // The one named stream, explicitly asked for — served in full, switch-on point and all.
@@ -1170,14 +1170,14 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(
                     DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, preSwitchOnTaskId),
-                Now.AddSeconds(6), cts.Token);
+                Now.AddSeconds(6), trustChain: null, cts.Token);
             explicitEnvelopes.Should().Be(1, "an explicit stream request lifts the switch-on exclusion");
 
             int privateEnvelopes = await responder.AnswerAsync(
                 session, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
                 new EventReplicationCodec.EventsRequestRecord(
                     DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, preSwitchOnPrivateTaskId),
-                Now.AddSeconds(7), cts.Token);
+                Now.AddSeconds(7), trustChain: null, cts.Token);
             privateEnvelopes.Should().Be(0, "a private task is never served, however explicit the ask");
 
             await session.SaveChangesAsync(cts.Token);
