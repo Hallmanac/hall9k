@@ -1,5 +1,6 @@
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
+using Spectre.Console;
 
 namespace Hall9k.Cli.Commands;
 
@@ -18,12 +19,22 @@ internal static class ScopeInput
         _ => throw new DomainValidationException($"'{value}' is not a scope Hall9k recognizes (private, fleet, or team)."),
     };
 
-    /// <summary>How a scope reads on <c>h9k idea show</c>/<c>h9k task show</c>, colored by how far it travels.</summary>
+    /// <summary>
+    /// How a scope reads on <c>h9k idea show</c>/<c>h9k task show</c>, colored by how far it
+    /// travels. The fallback branch escapes: <see cref="ReplicationScope"/>'s implicit string
+    /// conversion accepts any value a peer sends (<c>_ =&gt; new ReplicationScope(value, -1)</c>), so
+    /// an unrecognized scope replicated onto this document is untrusted input by the time it reaches
+    /// here, not merely a display label — rendered raw, an unbalanced or styled value throws
+    /// <c>InvalidOperationException</c> out of Spectre's own markup parser or injects arbitrary
+    /// styling, the same class of defect <see cref="IdeaShowCommand"/>'s <c>idea.Text.EscapeMarkup()</c>
+    /// a few lines above already guards against for idea text (independent pre-PR review, cycle 7,
+    /// adversarial lens, medium).
+    /// </summary>
     public static string Markup(ReplicationScope scope) => scope.Value switch
     {
         "Private" => "[red]Private[/] [dim](this node only)[/]",
         "Fleet" => "[yellow]Fleet[/] [dim](every node this owner runs)[/]",
         "Team" => "[green]Team[/] [dim](every project member's own fleet)[/]",
-        _ => scope.Value.Length == 0 ? "[dim]Unknown[/]" : scope.Value,
+        _ => scope.Value.Length == 0 ? "[dim]Unknown[/]" : scope.Value.EscapeMarkup(),
     };
 }

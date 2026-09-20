@@ -10,12 +10,19 @@ namespace Hall9k.Connectors.Replication;
 /// itself a fact this node received by replication (never this node's own local event id or
 /// sequence, which would silently overwrite the real origin the moment this node forwards it a
 /// second hop), falling back to this node's own stamped identity
-/// (<see cref="EventOriginStampingListener"/>) for an event this node genuinely produced. Shared by
-/// <see cref="EventCatchUpResponder"/> (forwarding any project-scoped event this node holds, own or
-/// already-replicated, to a catch-up requester) and <see cref="EventReplicationOutbox"/>'s own
-/// scope-change resend pass (idea 8c5993c5), which needs the identical own-or-replicated origin
-/// preservation: a resend run from a fleet sibling that only ever received a stream by replication
-/// must still be able to resend its full history under that stream's own true origin.
+/// (<see cref="EventOriginStampingListener"/>) for an event this node genuinely produced. Used by
+/// <see cref="EventCatchUpResponder"/> alone, which answers ONE requester by name and can safely
+/// forward an already-replicated fact under its own true origin (skipping that exact requester when
+/// it IS the origin). <see cref="EventReplicationOutbox"/> — both its ordinary forward scan and its
+/// scope-change resend pass (idea 8c5993c5) — never calls this: a resend queues a BROADCAST envelope
+/// that always reaches the candidate's own true origin node too, so it forwards only what THIS node
+/// produced natively (<see cref="ReplicationEventHeaders.OriginEventId"/> present means skip, full
+/// stop) rather than resolving and preserving a foreign origin the way this helper does. A fleet
+/// sibling that only ever holds a stream by replication cannot back-fill that stream's earlier
+/// history for the same reason; the gap closes only when the stream's own true origin node next runs
+/// its own forward scan (PLAN.md's Decisions Log, corrected by commit 4de02189d/2cb006c27; independent
+/// pre-PR review, cycle 7, conformance lens, low — this doc previously claimed the opposite, the one
+/// copy of that retired claim left behind).
 /// </summary>
 public static class ReplicationEventOriginResolver
 {
