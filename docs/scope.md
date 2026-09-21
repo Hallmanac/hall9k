@@ -500,7 +500,10 @@ found in the ledger always names a task that either already exists here or is on
 to be seeded from a stale snapshot — and starts a broadcast events-request for that exact stream
 (idea 202383dc, M2b, task 9408d525), addressed to the whole project since the CLI has no live trust
 chain or transport of its own to rank one candidate peer from, and says so in its own refusal rather
-than only telling the human to re-run the command later. An item with no record anywhere and no
+than only telling the human to re-run the command later. A request an earlier run made and a peer
+has since declined or answered is closed rather than in flight, so a re-run of the command asks
+again and says that it did, instead of reporting an ask that already came back. An item with no
+record anywhere and no
 local task adopts exactly as it always did: title to objective, body to context, criteria typed by
 hand.
 

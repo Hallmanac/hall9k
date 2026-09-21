@@ -117,18 +117,37 @@ happened: the request went out now, one from an earlier run is still on its way,
 queued at all because this node has no owner root fingerprint yet and so has no identity to send
 from, in which case it names `h9k project join` instead of promising the task will turn up.
 
-`h9k task pull <task-id> [--project <PROJECT>]` makes the same ask directly, with no tracker item
-involved. Pass the task's full id: a fragment can only ever match a task this node already holds,
-which is the case where there is nothing to pull. Like the adoption path it queues one project-wide
-events-request and returns, touching no git and no network; the daemon's next message sweep sends
-it, `h9k status` shows it while it stands, and a second run reports the one already outstanding
-rather than queueing another. A peer answers an explicit request like this one from below its own
-replication switch-on point, which an ordinary flush and an automatic gap-fill are still held above
-— so a task published before that peer ever switched replication on is reachable this way and no
-other. A private task is never served, however explicit the ask. A stream this node holds only the
-*tail* of is refused up front instead: a replicated event is appended to the local stream and the
-older half cannot be put in front of the newer half already here, so there is nothing to ask for.
-Which node states catch up automatically and which need a pull is in
+`h9k task pull <task-id> [--project <PROJECT>] [--again]` makes the same ask directly, with no
+tracker item involved. The full id works, and so does the short id off a board row, a pull request
+title or a branch name: a fragment is matched against this node's own tasks first and then against
+this project's ledger records, which is the one local source that names a task whose stream is not
+here — and the project whose ledger carries that record is the project asked, so `--project` is
+only needed when no record names the task. That ledger read is the one time this command touches
+git; everything else it does is local. It queues one project-wide events-request and returns; the
+daemon's next message sweep sends it, and `h9k status` shows it while it stands.
+
+A request a peer has already declined, or answered, is closed rather than in flight, so a re-run
+asks again and says that it did. One genuinely still outstanding is reported as outstanding and
+nothing new is queued; `--again` closes that one out as superseded and asks afresh, which is also
+the only way to clear a request minted before v0.10.5, when a decline did not yet close a
+broadcast.
+
+A peer answers an explicit request like this one from below its own replication switch-on point,
+which an ordinary flush and an automatic gap-fill are still held above — so a task published before
+that peer ever switched replication on is reachable this way and no other. It answers with the
+task's own run streams as well, so a pulled task whose runs finished reads Done rather than
+Delivered with no laps and no sessions. A run's own stream id is accepted here too, for a run
+missing from a task already held. A private task is never served, however explicit the ask. A
+stream this node holds only the *tail* of is refused up front instead: a replicated event is
+appended to the local stream and the older half cannot be put in front of the newer half already
+here, so there is nothing to ask for.
+
+A task that arrives naming blocked-by or stacked-on ids whose own streams are not here has those
+asked for automatically, one request per missing dependency, walking the graph as each one lands —
+that is what keeps `h9k task assign` from refusing the task for a dependency the platform could
+have fetched itself. `h9k status` names each of those asks and whose dependency it is, and running
+`h9k task pull` on a task already here makes the same asks for anything it is still missing. Which
+node states catch up automatically and which need a pull is in
 [concepts.md](concepts.md#catching-a-node-up).
 
 `--file task.md` reads a whole task from a markdown file: a minimal `---` frontmatter block
