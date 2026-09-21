@@ -522,7 +522,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
             OperatingSettingsReport operatingSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
             ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
                 taskDetails.ReviewStageComposition, project.ReviewStageComposition,
-                operatingSettings.ReviewStageComposition.Value);
+                operatingSettings.ReviewStageComposition.Value, taskDetails.Type);
 
             // Where this branch already sits, when the checkout resumed this task's existing retry
             // branch instead of cutting one — read off the run before it through the same domain

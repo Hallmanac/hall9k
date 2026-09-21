@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Shared.Exceptions;
 using Xunit;
 
@@ -120,6 +121,53 @@ public sealed class ReviewStageCompositionTests
         public void An_unrecognized_value_at_a_level_is_skipped_rather_than_crashing_the_resolver() =>
             ReviewStageCompositionResolver.Resolve(null, "not-a-real-composition", "none")
                 .Should().Be(ReviewStageComposition.None, "an unrecognized project value reads as unset, falling through to the node");
+
+        /// <summary>Task: a content task runs a lighter pipeline by default — its own compiled default.</summary>
+        [Fact]
+        public void A_content_task_with_nothing_set_anywhere_resolves_to_conformance_only() =>
+            ReviewStageCompositionResolver.Resolve(null, null, null, TaskType.Content)
+                .Should().Be(ReviewStageComposition.ConformanceOnly);
+
+        [Fact]
+        public void An_explicit_task_value_still_outranks_a_content_tasks_own_default() =>
+            ReviewStageCompositionResolver.Resolve("full-pipeline", null, null, TaskType.Content)
+                .Should().Be(ReviewStageComposition.FullPipeline, "the existing composition flags still override it per task");
+
+        [Fact]
+        public void An_explicit_project_value_still_outranks_a_content_tasks_own_default() =>
+            ReviewStageCompositionResolver.Resolve(null, "adversarial-only", null, TaskType.Content)
+                .Should().Be(ReviewStageComposition.AdversarialOnly);
+
+        /// <summary>
+        /// The node level, deliberately, does NOT outrank a content task's own default — the
+        /// inverse of every other level. Both real node-value sources
+        /// (<c>DaemonOptions.ReviewStageComposition</c> and <c>OperatingSettingsResolver</c>'s own
+        /// node-level resolution) default to the literal string "FullPipeline" rather than a
+        /// genuinely blank one, so a content default checked below the node level (the way task and
+        /// project values are) would never actually fire in a real dispatch — it would always lose
+        /// to the node's own ambient "FullPipeline". "none" here stands in for that same shape: some
+        /// value the node always supplies whether or not an operator ever configured it.
+        /// </summary>
+        [Fact]
+        public void A_node_value_never_outranks_a_content_tasks_own_default() =>
+            ReviewStageCompositionResolver.Resolve(null, null, "none", TaskType.Content)
+                .Should().Be(ReviewStageComposition.ConformanceOnly);
+
+        [Theory]
+        [MemberData(nameof(EveryTypeOtherThanContent))]
+        public void Every_other_type_still_resolves_to_full_pipeline_with_nothing_set_anywhere(TaskType type) =>
+            ReviewStageCompositionResolver.Resolve(null, null, null, type)
+                .Should().Be(ReviewStageComposition.FullPipeline, "content is the only type this resolver's own default treats differently");
+
+        public static IEnumerable<object[]> EveryTypeOtherThanContent()
+        {
+            yield return [TaskType.Feature];
+            yield return [TaskType.Bugfix];
+            yield return [TaskType.Refactor];
+            yield return [TaskType.Chore];
+            yield return [TaskType.Research];
+            yield return [TaskType.Spike];
+        }
     }
 
     public sealed class ValidationTests

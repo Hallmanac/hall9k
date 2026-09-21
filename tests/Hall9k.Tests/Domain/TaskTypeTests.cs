@@ -46,9 +46,26 @@ public sealed class TaskTypeTests
     [InlineData("bug", "Bugfix")]
     [InlineData("Research", "Research")]
     [InlineData("PR-REVIEW", "PrReview")]
+    [InlineData("content", "Content")]
+    [InlineData("CONTENT", "Content")]
     public void TryParse_reads_every_word_Parse_reads(string spelling, string expected)
     {
         TaskType.TryParse(spelling, out TaskType? parsed).Should().BeTrue();
         parsed!.Value.Should().Be(expected);
+    }
+
+    [Fact]
+    public void Content_parses_and_serializes_as_its_own_word()
+    {
+        TaskType.Parse("content").Should().Be(TaskType.Content);
+        ((string)TaskType.Content).Should().Be("Content");
+    }
+
+    [Fact]
+    public void An_unknown_type_names_content_among_the_choices()
+    {
+        Action parse = () => TaskType.Parse("bogus");
+
+        parse.Should().Throw<DomainValidationException>().Which.Message.Should().Contain("content");
     }
 }

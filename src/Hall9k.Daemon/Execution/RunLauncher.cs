@@ -265,7 +265,8 @@ public sealed class RunLauncher(
                 : isStackReplay
                     ? ReviewStageComposition.None
                     : ReviewStageCompositionResolver.Resolve(
-                        task.ReviewStageComposition, project.ReviewStageComposition, options.Value.ReviewStageComposition);
+                        task.ReviewStageComposition, project.ReviewStageComposition, options.Value.ReviewStageComposition,
+                        task.Type);
 
             // Resolved once, here, exactly like the worktree above: this run's directory is
             // under the task's own directory when the project has a home (backlog 49), and

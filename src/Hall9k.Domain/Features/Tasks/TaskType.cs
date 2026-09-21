@@ -15,6 +15,21 @@ public sealed record TaskType
     public static readonly TaskType Chore = new("Chore");
     public static readonly TaskType Research = new("Research");
     /// <summary>
+    /// Documentation, skill markdown, prompt templates, or other non-compiled content (task: a
+    /// content task runs a lighter pipeline by default). Dispatches with
+    /// <see cref="Hall9k.Domain.Features.Run.ReviewStageComposition.ConformanceOnly"/> unless an
+    /// explicit composition override says otherwise
+    /// (<see cref="Hall9k.Domain.Features.Run.ReviewStageCompositionResolver"/>) — the type itself
+    /// is the acknowledgment, so setting it needs no <c>--accept-reduced-review</c>. The build and
+    /// test gates are not this type's own concern: a project's non-executable-path set already
+    /// skips them on evidence (Decisions Log #252) whenever every changed path matches it, which a
+    /// content task's own pre-gate check (<c>Hall9k.Daemon.Execution.VerificationRunner</c>) makes
+    /// unconditional for this type by failing outright, naming every offending path, the moment the
+    /// diff touches anything else — so the reduced review can never actually reach compiled or
+    /// tested code.
+    /// </summary>
+    public static readonly TaskType Content = new("Content");
+    /// <summary>
     /// Reviews another contributor's pull request on the owner's behalf: read-only, no fix
     /// loop, no merge to watch for — the deliverable is a findings report the owner directs
     /// (dismiss, comment themselves, or have the session post on their behalf), never a diff.
@@ -50,7 +65,7 @@ public sealed record TaskType
             ? parsed
             : throw new DomainValidationException(
                 $"Unknown task type '{value}'. Use feature, bugfix, refactor, chore, research, "
-                + "pr-review, or spike.");
+                + "content, pr-review, or spike.");
 
     /// <summary>
     /// The same vocabulary as <see cref="Parse"/>, answering false instead of refusing. For a
@@ -70,6 +85,7 @@ public sealed record TaskType
             "refactor" => Refactor,
             "chore" => Chore,
             "research" => Research,
+            "content" => Content,
             "pr-review" or "pr_review" or "prreview" => PrReview,
             "spike" => Spike,
             _ => null,

@@ -864,7 +864,7 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
             OperatingSettingsReport nodeSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
             ReviewStageComposition reviewStageComposition = ReviewStageCompositionResolver.Resolve(
                 taskDetails.ReviewStageComposition, project.ReviewStageComposition,
-                nodeSettings.ReviewStageComposition.Value);
+                nodeSettings.ReviewStageComposition.Value, taskDetails.Type);
 
             // Where this branch already sits, when the checkout resumed this task's existing retry
             // branch instead of cutting one — read off the run before it through the same domain
