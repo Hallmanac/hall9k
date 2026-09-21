@@ -97,7 +97,14 @@ lease(s); closeout sweep inspected 0 pull request(s) and observed 0 merge(s)
 ```
 
 **Stopping the daemon does not stop the agents.** They are detached processes by design, so they
-keep working and the next start adopts them. `h9k daemon stop` says so.
+keep working and the next start adopts them. `h9k daemon stop` says so. A live verification gate
+is the exception: adoption ends its orphaned process tree and re-runs the gate from the start
+rather than reattaching to it, so `h9k daemon stop` also warns by name (run, task, gate, pid)
+whenever something it is about to stop would orphan one this way, still stopping regardless — a
+human running `stop` has already made that call. `h9k update --restart` and
+`h9k install --restart` make the opposite call by default: they wait for a live gate to finish
+on its own, up to thirty minutes, printing what they are waiting on, before stopping the daemon;
+`--now` restarts at once instead, the same as a plain `h9k daemon stop` would.
 
 On Windows, `stop` has no SIGTERM to send an arbitrary process, so it asks gracefully instead: it
 writes a small stop-request file the running `h9kd` polls for and honors itself

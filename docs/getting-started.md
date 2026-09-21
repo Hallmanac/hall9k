@@ -98,16 +98,19 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   budget with every other container on the machine; two runs' test suites sharing that budget is
   what produces Postgres readiness failures, not a bug in the tests themselves. Cap the affected
   project to 1 first, and raise it only once the VM's own memory ceiling has headroom to spare.
-- **Never restart the daemon under a live build or fix session.** Agents are detached processes by
-  design, so `h9k daemon stop` does not stop them and the next `h9k daemon start` adopts whatever
-  it finds still running ([operations.md](operations.md#the-daemon-lifecycle) has the full
-  catch-up story), but a verify gate the stop interrupted is not one of the things adopted: a
-  Testcontainer-backed `dotnet test` the daemon started as its own child process keeps running
-  after the stop, uncancelled, and the resumed pipeline runs the gate again from scratch after the
-  restart. Two suites then share one `obj/`/`bin/` and one Docker memory budget, producing the
-  same file-in-use and Postgres-readiness failures covered below under "Problems you will hit
-  first", except this time on an agent's otherwise-clean work. Wait for `h9k status` to show no
-  session alive on the run before stopping the daemon.
+- **Prefer letting a live verification gate finish before you restart the daemon.** Agents are
+  detached processes by design, so `h9k daemon stop` does not stop them and the next
+  `h9k daemon start` adopts whatever it finds still running
+  ([operations.md](operations.md#the-daemon-lifecycle) has the full catch-up story). A gate is the
+  one exception: it is not reattached, it is ended and re-run from the start, so `h9k daemon stop`
+  now warns by name (run, task, gate, pid) whenever stopping would orphan one, and
+  `h9k update --restart` / `h9k install --restart` wait for it to finish on its own — up to thirty
+  minutes — before stopping the daemon, printing what they are waiting on and that `--now` skips
+  the wait. That wait is what keeps two suites from ever sharing one `obj/`/`bin/` and one Docker
+  memory budget, the same file-in-use and Postgres-readiness failures covered below under
+  "Problems you will hit first"; `--now`, or a plain `h9k daemon stop`, still trades that
+  protection for restarting sooner. Wait for `h9k status` to show no session alive on the run
+  first if you want to restart without either wait.
 
   ```bash
   h9k status
