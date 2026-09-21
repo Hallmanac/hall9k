@@ -14,9 +14,12 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// commit without a conflict is itself the evidence that no judgment was exercised, so this
 /// event alone never triggers an extra Discovery cycle, lens, or fix session — the mandatory
 /// final gate and pass that were already about to run simply read the tree this event just
-/// produced. A conflicting attempt never reaches this event at all: it is followed by
+/// produced. A conflicting attempt ordinarily never reaches this event at all: it is followed by
 /// <see cref="PreFinalPassRebaseRecoveryDispatched"/> instead, and this event is appended only
 /// once that recovery session (or a later resolved retry of it) actually resolves the conflict.
+/// The one exception is <see cref="ConflictResolvedMechanically"/>, the single conflict shape that
+/// carries no judgment to exercise and so is resolved in place, without a session, and recorded
+/// here directly.
 /// </para>
 /// </summary>
 /// <param name="RebasedFromCommit">
@@ -37,7 +40,11 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// </param>
 /// <param name="RecoveredByAgentSession">
 /// True when a plain <c>git rebase</c> conflicted and a narrow recovery session resolved it with
-/// judgment; false for a no-op or a rebase git applied cleanly on its own.
+/// judgment; false for a no-op, for a rebase git applied cleanly on its own, and for one whose
+/// only conflict was resolved mechanically (<see cref="ConflictResolvedMechanically"/>) — three
+/// outcomes this field and that one tell apart, because "a session exercised judgment here" is
+/// what earns <see cref="RunAggregate.PreFinalPassRebaseAwaitingReview"/> and neither of the
+/// other two did.
 /// </param>
 /// <param name="Detail">What actually happened, readable from <c>h9k task show</c>.</param>
 /// <param name="DecisionsLogRenumbered">
@@ -65,6 +72,23 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// it would be re-verifying work already proven (independent pre-PR review, cycle 1, both lenses).
 /// Defaults to false so every call site that never observes this shape is unaffected.
 /// </param>
+/// <param name="ConflictResolvedMechanically">
+/// True when the rebase recorded here did conflict, and the only thing it conflicted on was the
+/// Decisions Log tail-append shape — the base and this branch each appended an entry at the end of
+/// PLAN.md §16 — which <c>DecisionsLogTailConflictResolver</c> resolved in place, keeping the
+/// base's entries first and this branch's placeholder after them, so the rebase continued without
+/// a recovery session. A third outcome, distinct from a clean apply (this false,
+/// <paramref name="RecoveredByAgentSession"/> false) and from recovery by an agent session (this
+/// false, that true): the conflict happened and was not left to judgment, which is a fact neither
+/// of the other two records and an audit trail must not have to infer. It is the single documented
+/// exception to Brian's 2026-09-04 ruling that a git conflict is itself the evidence judgment is
+/// required — the placeholder-numbering convention (Decisions Log #162) already decided this
+/// conflict's answer, so there is nothing left to exercise. Earns no
+/// <see cref="RunAggregate.PreFinalPassRebaseAwaitingReview"/> for exactly that reason, and needs
+/// no help raising <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/>, which the real
+/// (non-no-op) rebase it belongs to already raises. Defaults to false so every call site that
+/// never sees this shape is unaffected.
+/// </param>
 public sealed record RunRebasedOntoBase(
     Guid Id,
     string RebasedFromCommit,
@@ -74,7 +98,8 @@ public sealed record RunRebasedOntoBase(
     string Detail,
     DateTimeOffset RebasedAt,
     bool DecisionsLogRenumbered = false,
-    bool ForkPointAdvanced = false)
+    bool ForkPointAdvanced = false,
+    bool ConflictResolvedMechanically = false)
 {
     /// <summary>
     /// What <see cref="RebasedFromCommit"/> and <see cref="RebasedOntoCommit"/> carry when the read
