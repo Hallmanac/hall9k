@@ -322,23 +322,113 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 + "does not fingerprint back to this root")]);
         }
 
-        if (rootCommits.Count == 0 || !await IsSignedByAsync(repositoryPath, rootCommits[0], publicKeyLine, cancellationToken))
-        {
-            return (null, [new UnverifiedLedgerWrite(
-                "root", root, root, $"commit {culpritCommit} for {rootPath} is not signed by that root's own key")]);
-        }
+        bool rootSelfSigned = rootCommits.Count > 0 && await IsSignedByAsync(repositoryPath, rootCommits[0], publicKeyLine, cancellationToken);
 
+        // A root.yaml that self-certifies (its own declared key fingerprints to `root`, just
+        // checked above) but whose commit is NOT signed by that key is exactly the shape a carried
+        // bundle produces (task f53fecfd): h9k project join's cross-project root-carry path writes
+        // a verbatim copy of the source ledger's own root.yaml here, signed on THIS ledger by the
+        // carrying node's own key — nobody on this ledger ever holds the root's own private key at
+        // all. Whether that copy is trustworthy is never decided by this commit's own signature (it
+        // structurally cannot be); it is decided entirely by whether at least one
+        // owners/<root>/carried/*.yaml bundle in this same ref verifies offline against its own
+        // embedded, source-signed evidence — replayed below in its own correct chronological
+        // position by the identical loop that already replays every ordinary vouch and revocation,
+        // rather than pre-checked and discarded: whichever commits it rejects along the way are
+        // exactly the diagnostics this root's own final "nothing here is trusted" verdict, when it
+        // comes to that, needs to name.
         Dictionary<string, TrustedNode> nodes = [];
         HashSet<string> revokedNodeIds = [];
         List<UnverifiedLedgerWrite> unverified = [];
         string nodesPrefix = $"owners/{root}/nodes/";
         string revokedPrefix = $"owners/{root}/revoked/";
+        string carriedPrefix = $"owners/{root}/carried/";
+        // Set the moment any carried bundle ever verifies, in its own correct chronological slot —
+        // never reset by a later revocation of that same node, the identical reasoning an ordinary
+        // self-established root's own key always keeps "existing" as a root even once every node it
+        // ever vouched is revoked. A carried root that later revokes its only carried node still
+        // returns an established (non-null) chain here, with an empty Nodes list, rather than
+        // retroactively un-establishing the root itself.
+        bool establishedByCarry = false;
+        // Every carried node id this replay has already SUCCESSFULLY established (never merely
+        // touched — see the gate below) — a revoked node still legitimately holds its own private
+        // key and its embedded evidence never changes, so without this a revoked carried node
+        // could simply push a fresh commit re-touching its own
+        // owners/<root>/carried/<node-id>.yaml (content unchanged or not) and have
+        // VerifyCarriedRecordAsync re-verify and reinstate it, self-signed by the very key the
+        // revocation was supposed to revoke — the identical resurrection an ordinary vouch cannot
+        // pull off, because a revoked node is removed from `nodes` and so can no longer satisfy
+        // the "signed by root or an already-enrolled node" gate below (independent pre-PR review,
+        // adversarial lens, high). The carried record's own embedded evidence is still what
+        // authorizes the FIRST successful establishment of a given node id — nothing local is
+        // enrolled yet to sign it — but every commit after that first success needs the identical
+        // live-chain authorization an ordinary re-vouch already needs.
+        HashSet<string> carriedPathsEstablished = [];
 
         IReadOnlyList<string> allCommits = await CommitsOldestFirstAsync(repositoryPath, tip, cancellationToken);
         foreach (string commit in allCommits)
         {
             foreach (string path in await ChangedPathsAsync(repositoryPath, commit, cancellationToken))
             {
+                if (path.StartsWith(carriedPrefix, StringComparison.Ordinal) && path.EndsWith(".yaml", StringComparison.Ordinal))
+                {
+                    string carriedNodeId = path[carriedPrefix.Length..^".yaml".Length];
+                    if (carriedNodeId.IsBlank())
+                    {
+                        continue;
+                    }
+
+                    // Gated on a PRIOR SUCCESSFUL establishment of this exact node id, never merely
+                    // a prior touch of the path: an earlier commit that failed verification (a
+                    // stranger's garbage, or this same carrying node's own malformed retry) must
+                    // never block a later, genuinely valid carry for the identical node id from
+                    // still self-authorizing on its own embedded evidence — nothing was ever
+                    // actually established for this node yet, so there is nothing to require
+                    // re-authorization from (independent review finding, round two: the first draft
+                    // of this fix gated on "already touched," which let one bad early commit at a
+                    // node id's own path permanently lock out every later, legitimate one).
+                    if (carriedPathsEstablished.Contains(carriedNodeId))
+                    {
+                        List<string> reAuthorizeCandidates = [publicKeyLine, .. nodes.Values.Select(node => node.PublicKeyLine)];
+                        bool reAuthorized = false;
+                        foreach (string candidate in reAuthorizeCandidates)
+                        {
+                            if (await IsSignedByAsync(repositoryPath, commit, candidate, cancellationToken))
+                            {
+                                reAuthorized = true;
+                                break;
+                            }
+                        }
+
+                        if (!reAuthorized)
+                        {
+                            unverified.Add(new UnverifiedLedgerWrite(
+                                "carried", carriedNodeId, root,
+                                $"commit {commit} for {path} rewrites an already-established carried record but is not "
+                                + $"signed by root {root} or any node currently enrolled in it"));
+                            continue;
+                        }
+                    }
+
+                    (TrustedNode? carriedNode, UnverifiedLedgerWrite? failure) = await VerifyCarriedRecordAsync(
+                        repositoryPath, commit, path, carriedNodeId, root, publicKeyLine, cancellationToken);
+                    if (failure is not null)
+                    {
+                        unverified.Add(failure);
+                        continue;
+                    }
+
+                    if (carriedNode is not null)
+                    {
+                        nodes[carriedNodeId] = carriedNode;
+                        revokedNodeIds.Remove(carriedNodeId);
+                        establishedByCarry = true;
+                        carriedPathsEstablished.Add(carriedNodeId);
+                    }
+
+                    continue;
+                }
+
                 bool isRevoke;
                 string nodeId;
                 if (path.StartsWith(nodesPrefix, StringComparison.Ordinal) && path.EndsWith(".yaml", StringComparison.Ordinal))
@@ -412,7 +502,194 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
+        // Nothing here is trusted when root.yaml's own commit is not signed by the root's own key
+        // AND no carried bundle in the loop above ever verified either — the identical "nothing
+        // established" verdict the pre-carry code gave whenever the plain signature check alone
+        // failed, just reached after the one replay loop both paths now share instead of a second,
+        // discarded pre-check.
+        if (!rootSelfSigned && !establishedByCarry)
+        {
+            return (null, [new UnverifiedLedgerWrite(
+                "root", root, root,
+                $"commit {culpritCommit} for {rootPath} is not signed by that root's own key, and no "
+                + $"owners/{root}/carried/*.yaml bundle verifies it either"), .. unverified]);
+        }
+
         return (new TrustedOwner(root, publicKeyLine, [.. nodes.Values], RevokedNodeIds: revokedNodeIds), unverified);
+    }
+
+    /// <summary>
+    /// Verifies one <c>owners/&lt;root&gt;/carried/&lt;node-id&gt;.yaml</c> bundle entirely offline
+    /// (task f53fecfd, criterion 2), against exactly four checks — every one has to hold, or the
+    /// bundle establishes nothing and is recorded rather than silently dropped:
+    /// <list type="number">
+    /// <item>the embedded <c>root.yaml</c>'s own declared public key fingerprints to <paramref name="root"/>;</item>
+    /// <item>the embedded root commit is SSH-signed by that key;</item>
+    /// <item>the embedded vouch commit is signed by the root key — the only key a single carried
+    /// bundle could ever transitively enrol before the vouch itself is checked, since nothing else
+    /// this bundle carries is trusted yet at that point;</item>
+    /// <item>the carried node's own declared public key equals THIS ledger's own current
+    /// <c>nodes/&lt;node-id&gt;/node.yaml</c>, and that file's own commit is self-signed by that
+    /// same key — the binding that ties this bundle to whoever is actually running the join on
+    /// <em>this</em> machine: only the holder of that node's own private key can have produced a
+    /// self-signed <c>node.yaml</c> declaring it here (idea's own origin note: "the bundle binds to
+    /// the carrying node because only the holder of that node private key can self-announce with
+    /// the same public key on B").
+    /// </item>
+    /// </list>
+    /// Deliberately does not walk either embedded commit's own tree to confirm it produced the
+    /// embedded <c>root.yaml</c>/vouch text byte-for-byte (that would need this method to also
+    /// inject and resolve every intermediate tree object down to the blob, not just the commit
+    /// object) — check 3's own commit-message binding, below, is the cheaper bar this bundle
+    /// actually has to clear instead. The known, accepted limit that leaves ("a carried root is
+    /// established by a vouched node, not by the root key") is recorded in the Decisions Log rather
+    /// than engineered around here.
+    /// </summary>
+    private async Task<(TrustedNode? Node, UnverifiedLedgerWrite? Failure)> VerifyCarriedRecordAsync(
+        string repositoryPath, string commit, string path, string nodeId, string root, string rootPublicKeyLine,
+        CancellationToken cancellationToken)
+    {
+        string? content = await ReadAtCommitAsync(repositoryPath, commit, path, cancellationToken);
+        if (content is null)
+        {
+            // A deletion (or, on the pre-check's own replay, simply not the content this commit
+            // happens to hold) — nothing to verify or complain about.
+            return (null, null);
+        }
+
+        string? nodePublicKey = ExtractQuotedYamlValue(content, "node_public_key");
+        string? rootYamlBase64 = ExtractQuotedYamlValue(content, "root_yaml_base64");
+        string? rootCommitBase64 = ExtractQuotedYamlValue(content, "root_commit_base64");
+        string? vouchCommitBase64 = ExtractQuotedYamlValue(content, "vouch_commit_base64");
+        if (nodePublicKey is null || rootYamlBase64 is null || rootCommitBase64 is null || vouchCommitBase64 is null)
+        {
+            return (null, Unverified("is missing a required field"));
+        }
+
+        // Check 1: the embedded root.yaml's own declared public key fingerprints to `root`.
+        if (!TryDecodeBase64(rootYamlBase64, out string embeddedRootYaml))
+        {
+            return (null, Unverified("carries an embedded root.yaml that is not valid base64"));
+        }
+
+        string? embeddedRootPublicKey = ExtractQuotedYamlValue(embeddedRootYaml, "public_key");
+        if (embeddedRootPublicKey is null || !TryFingerprint(embeddedRootPublicKey, out string embeddedFingerprint)
+            || embeddedFingerprint != root)
+        {
+            return (null, Unverified("carries an embedded root.yaml that does not self-certify to this root"));
+        }
+
+        // Check 2: the embedded root commit is SSH-signed by that key.
+        if (!TryDecodeBase64(rootCommitBase64, out string rootCommitBytes)
+            || !await IsSignedByRawBytesAsync(repositoryPath, rootCommitBytes, embeddedRootPublicKey, cancellationToken))
+        {
+            return (null, Unverified("carries an embedded root commit that is not signed by the root's own key"));
+        }
+
+        // Check 3: the embedded vouch commit is signed by the root key (single-hop, see the doc
+        // above), AND its own raw bytes — the exact payload that signature covers, never something
+        // this method trusts on faith — name this specific node id. Every vouch this platform ever
+        // writes carries the node id in its own commit message (NodeVouchCommand: "Vouch node
+        // {id}"; InviteSweepEngine: "Vouch node {id} (invite)"), so a genuine vouch commit for a
+        // DIFFERENT node — or any other commit root ever happened to sign, root.yaml's own
+        // establishing commit included — can never satisfy this. Without it, any commit root ever
+        // signed for any reason at all (root.yaml's own commit is already embedded and proven
+        // signed by check 2, and is trivially reusable here too) would satisfy "signed by root",
+        // letting a bundle claim root vouched a node it never vouched at all (independent pre-PR
+        // review, adversarial lens, critical).
+        if (!TryDecodeBase64(vouchCommitBase64, out string vouchCommitBytes)
+            || !await IsSignedByRawBytesAsync(repositoryPath, vouchCommitBytes, embeddedRootPublicKey, cancellationToken)
+            || !vouchCommitBytes.Contains(nodeId, StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, Unverified(
+                "carries an embedded vouch commit that is not signed by the root's own key, or is signed but never names this node"));
+        }
+
+        // Check 4: the carried node's own declared public key equals this ledger's own current
+        // node.yaml for the same node id, and that file's own commit is self-signed by that key.
+        if (!TryFingerprint(nodePublicKey, out string nodeFingerprint))
+        {
+            return (null, Unverified("declares a node public key that is malformed"));
+        }
+
+        string nodeRefName = $"{NodesRefPrefix}{nodeId}";
+        string nodePath = $"nodes/{nodeId}/node.yaml";
+        await FetchRefAsync(repositoryPath, nodeRefName, cancellationToken);
+        string? localTip = await ResolveTipAsync(repositoryPath, nodeRefName, cancellationToken);
+        string? localNodeContent = localTip is null ? null : await ReadAtCommitAsync(repositoryPath, localTip, nodePath, cancellationToken);
+        string? localPublicKey = localNodeContent is null ? null : ExtractQuotedYamlValue(localNodeContent, "public_key");
+        if (localPublicKey is null || localPublicKey != nodePublicKey)
+        {
+            return (null, Unverified($"declares a node public key that does not match this ledger's own {nodePath}"));
+        }
+
+        IReadOnlyList<string> localNodeCommits = await CommitsTouchingPathAsync(repositoryPath, localTip!, nodePath, cancellationToken);
+        if (localNodeCommits.Count == 0 || !await IsSignedByAsync(repositoryPath, localNodeCommits[0], localPublicKey, cancellationToken))
+        {
+            return (null, Unverified($"this ledger's own {nodePath} is not self-signed by the key it declares"));
+        }
+
+        return (new TrustedNode(nodeId, nodePublicKey, nodeFingerprint, ParseIssuedAt(content)), null);
+
+        UnverifiedLedgerWrite Unverified(string reason) => new("carried", nodeId, root, $"commit {commit} for {path} {reason}");
+    }
+
+    /// <summary>
+    /// Verifies raw commit bytes an offline bundle embedded, without ever fetching from wherever
+    /// they came from: injects them as a loose object into THIS repository
+    /// (<c>git hash-object -w -t commit</c>) and runs the identical <see cref="IsSignedByAsync"/>
+    /// check against the sha that injection computes — a git object is content-addressed, so the
+    /// injected object's own sha is identical to whatever it was in the repository it was read from,
+    /// and <c>git verify-commit</c> needs nothing beyond the commit object itself (never its tree or
+    /// parents) to check a signature over it.
+    /// </summary>
+    private async Task<bool> IsSignedByRawBytesAsync(
+        string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken)
+    {
+        if (!HasSshSignatureHeader(rawCommitBytes))
+        {
+            return false;
+        }
+
+        string tempCommitFile = Path.Combine(Path.GetTempPath(), $"h9k-carried-commit-{Guid.NewGuid():N}");
+        try
+        {
+            await File.WriteAllTextAsync(tempCommitFile, rawCommitBytes, cancellationToken);
+            ProcessResult hashResult = await runner(
+                "git", ["hash-object", "-w", "-t", "commit", tempCommitFile], repositoryPath, cancellationToken);
+            if (hashResult.ExitCode != 0)
+            {
+                return false;
+            }
+
+            string injectedSha = hashResult.StandardOutput.Trim();
+            return await IsSignedByAsync(repositoryPath, injectedSha, publicKeyLine, cancellationToken);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(tempCommitFile);
+            }
+            catch (IOException)
+            {
+                // Best-effort cleanup of a temp file; nothing downstream reads it again.
+            }
+        }
+    }
+
+    private static bool TryDecodeBase64(string base64, out string decoded)
+    {
+        try
+        {
+            decoded = System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(base64));
+            return true;
+        }
+        catch (FormatException)
+        {
+            decoded = string.Empty;
+            return false;
+        }
     }
 
     /// <summary>
@@ -496,9 +773,17 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                     // every node fetching the identical ref lands on the identical value (TrustChain's
                     // own doc: "the project's own key, derived from the ledger").
                     genesisRootFingerprint = fingerprint;
+                    // Signed by the root's own key OR by any node this same root's chain currently
+                    // enrols — never merely "self-signed by the root's own key" alone (task f53fecfd,
+                    // criterion 3): a carried record establishes root R with no local node ever
+                    // holding R's own private key, so the genesis member commit for R can only ever
+                    // be signed by the carried node itself. IsAuthorizedByOwnerChainAsync is the
+                    // identical rule every later membership write already uses; genesis differs only
+                    // in being unconditionally accepted once authorized, no existing owner-role
+                    // member required first.
                     if (content is not null
                         && ownerChains.TryGetValue(fingerprint, out TrustedOwner? selfOwner)
-                        && await IsSignedByAsync(repositoryPath, commit, selfOwner.RootPublicKeyLine, cancellationToken))
+                        && await IsAuthorizedByOwnerChainAsync(repositoryPath, commit, selfOwner, cancellationToken))
                     {
                         current[fingerprint] = new ProjectMember(fingerprint, MembershipRole.Owner, ParseIssuedAt(content));
                         projectKey ??= ExtractQuotedYamlValue(content, "project_key");
@@ -507,7 +792,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                     {
                         unverified.Add(new UnverifiedLedgerWrite(
                             "membership", fingerprint, fingerprint,
-                            $"genesis commit {commit} for {fingerprint} is not self-signed by that root's own key"));
+                            $"genesis commit {commit} for {fingerprint} is not signed by that root's own key or a node it enrols"));
                     }
 
                     // Whether genesis succeeded or not, the bootstrap exception is spent: only

@@ -652,6 +652,362 @@ public sealed class GitLedgerChainReaderTests : IDisposable
             "the forged rewrite is named rather than silently discarded");
     }
 
+    // ---- carried-record verification (task f53fecfd) --------------------------------------
+
+    [Fact]
+    public async Task A_valid_carried_bundle_establishes_the_root_and_enrols_the_carrying_node()
+    {
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().ContainKey(root.Fingerprint, "the carried bundle establishes the root even though nobody here holds its own private key");
+        chain.OwnerChains[root.Fingerprint].Nodes.Should().Contain(node => node.NodeId == carrier.NodeId.ToString() && node.Fingerprint == carrier.Fingerprint);
+        chain.IsEnrolledInOwner(carrier.Fingerprint, root.Fingerprint).Should().BeTrue();
+        chain.UnverifiedWrites.Should().BeEmpty("a bundle that verifies on every check is never recorded as unverifiable");
+    }
+
+    [Fact]
+    public async Task A_carried_bundle_whose_embedded_root_yaml_does_not_self_certify_is_rejected_and_recorded()
+    {
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        // Check 1's own failure: the embedded root.yaml declares a key that does not fingerprint
+        // back to `root` at all — a different identity's own public key, syntactically well-formed.
+        GeneratedIdentity impostor = GenerateIdentity();
+        string tamperedRootYaml = BuildYaml(("public_key", impostor.PublicKeyLine), ("created_at", Now()));
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            tamperedRootYaml, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().NotContainKey(root.Fingerprint, "root.yaml's own commit is not signed by the root, and the only bundle present fails to self-certify");
+        chain.UnverifiedWrites.Should().Contain(write => write.Kind == "carried" && write.Identifier == carrier.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task A_carried_bundle_whose_embedded_root_commit_is_not_signed_by_the_root_is_rejected_and_recorded()
+    {
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        // Check 2's own failure: the embedded root commit's own raw bytes are genuine (a real, validly
+        // signed commit) but signed by someone other than the root — the vouch commit's own bytes,
+        // which is signed by `root` too, would actually pass check 2 by coincidence, so this uses a
+        // commit from a THIRD identity that never touched this root's own chain at all.
+        GeneratedIdentity stranger = GenerateIdentity();
+        string strangerRepo = _repo.CloneNode(_repo.CreateHub());
+        await WriteRootFileAsync(strangerRepo, stranger);
+        var strangerRootSigned = await ReadSignedCommitAsync(
+            strangerRepo, $"refs/hall9k/ledger/owners/{stranger.Fingerprint}", $"owners/{stranger.Fingerprint}/root.yaml");
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, strangerRootSigned.Sha, strangerRootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().NotContainKey(root.Fingerprint);
+        chain.UnverifiedWrites.Should().Contain(write => write.Kind == "carried" && write.Identifier == carrier.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task A_carried_bundle_whose_embedded_vouch_commit_is_not_signed_by_the_root_is_rejected_and_recorded()
+    {
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        // Check 3's own failure: the embedded vouch commit is a real, validly signed commit, but
+        // signed by the carrier itself rather than the root — self-vouching is never authoritative.
+        var selfSignedVouch = await ReadSignedCommitAsync(
+            sourceRepo, $"refs/hall9k/ledger/nodes/{carrier.NodeId}", $"nodes/{carrier.NodeId}/node.yaml");
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, selfSignedVouch.Sha, selfSignedVouch.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().NotContainKey(root.Fingerprint);
+        chain.UnverifiedWrites.Should().Contain(write => write.Kind == "carried" && write.Identifier == carrier.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task A_bundle_presented_by_a_node_with_a_different_key_establishes_nothing()
+    {
+        // A bundle copied verbatim from a readable source ledger (every field genuinely valid, every
+        // signature genuine), but presented on the target by a node that does NOT hold the carried
+        // node's own private key: its own self-announced node.yaml on the target names a different
+        // key entirely, so check 4 fails even though checks 1 through 3 all pass.
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+        GeneratedIdentity presenter = GenerateIdentity();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        // The presenter self-announces under its OWN key at the carried node's own id — it never
+        // held `carrier`'s own private key, so it cannot produce a node.yaml declaring that key.
+        await WriteNodeFileAsync(targetRepo, new GeneratedIdentity(presenter.PrivateKeyPath, presenter.PublicKeyLine, presenter.Fingerprint, carrier.NodeId), presenter, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, presenter);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, presenter);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().NotContainKey(root.Fingerprint, "the presenter never held the carried node's own private key");
+        chain.IsEnrolledInOwner(carrier.Fingerprint, root.Fingerprint).Should().BeFalse();
+        chain.UnverifiedWrites.Should().Contain(write => write.Kind == "carried" && write.Identifier == carrier.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task An_on_ledger_revocation_overrides_a_carried_vouch()
+    {
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        // The carried node revokes itself — the ordinary revoke shape, signed by a key this same
+        // chain already treats as enrolled (this node's own carried establishment above).
+        await RevokeAsync(targetRepo, root.Fingerprint, carrier.NodeId, carrier);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().ContainKey(root.Fingerprint, "the root itself is still established by the carried bundle");
+        chain.OwnerChains[root.Fingerprint].Nodes.Should().NotContain(node => node.NodeId == carrier.NodeId.ToString());
+        chain.IsEnrolledInOwner(carrier.Fingerprint, root.Fingerprint).Should().BeFalse("the revocation lands after the carried vouch in ref order, so it wins");
+    }
+
+    [Fact]
+    public async Task An_earlier_failed_carry_attempt_never_blocks_a_later_genuinely_valid_one_for_the_same_node()
+    {
+        // The re-authorization gate above only ever kicks in once a node id's own carried path has
+        // SUCCEEDED once — never merely been touched. A first, garbage commit at that exact path
+        // (a stranger's own attempt, or this same node's own earlier malformed retry) must not
+        // permanently lock the real, valid carry out for lack of anyone yet enrolled to
+        // "re-authorize" it (independent review finding, self-review round two): nothing was ever
+        // actually established, so there is nothing for a second attempt to need authorization from.
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carriedPath = $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml";
+
+        // A garbage first commit at this exact node id's own carried path — missing every
+        // required field, so VerifyCarriedRecordAsync fails it outright.
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", carriedPath, "node_id: \"garbage\"\n", carrier);
+
+        // The genuine, fully valid bundle, a later commit at the identical path.
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", carriedPath, carried, carrier);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.IsEnrolledInOwner(carrier.Fingerprint, root.Fingerprint).Should().BeTrue(
+            "the valid second commit still self-authorizes on its own embedded evidence — nothing was ever actually established by the first, failed one");
+    }
+
+    [Fact]
+    public async Task A_revoked_carried_node_cannot_resurrect_itself_by_re_pushing_its_own_carried_record()
+    {
+        // The revoked node still holds its own private key and its embedded evidence never
+        // changes, so the only thing standing between it and simply reinstating itself is that a
+        // SECOND touch of its own carried path needs authorization from the live chain, not merely
+        // a bundle that verifies offline on its own terms again (independent pre-PR review,
+        // adversarial lens, high).
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        string carriedPath = $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml";
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", carriedPath, carried, carrier);
+        await RevokeAsync(targetRepo, root.Fingerprint, carrier.NodeId, carrier);
+
+        // The revoked node re-pushes its own bundle again, signed with its own (still held)
+        // private key — nobody else's. A distinct commit (a different source_project_id this
+        // time, so the tree genuinely changes and this re-touch is not a content-identical no-op
+        // git would never even report as a changed path) rather than the byte-identical original.
+        string recarried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", carriedPath, recarried, carrier);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().ContainKey(root.Fingerprint, "the root itself was already established by the first, legitimate carry");
+        chain.IsEnrolledInOwner(carrier.Fingerprint, root.Fingerprint).Should().BeFalse(
+            "a revoked carried node cannot re-authorize its own return by presenting its own evidence again");
+        chain.UnverifiedWrites.Should().Contain(
+            write => write.Kind == "carried" && write.Identifier == carrier.NodeId.ToString(),
+            "the unauthorized re-touch is named rather than silently accepted");
+    }
+
+    [Fact]
+    public async Task A_carried_bundle_reusing_an_unrelated_root_signed_commit_as_its_vouch_establishes_nothing()
+    {
+        // A genuinely root-signed commit exists and is reused as "the vouch" — root.yaml's own
+        // establishing commit, already proven signed by root via check 2 — but its own message
+        // never names this node, so it must never satisfy check 3 on its own merits alone
+        // (independent pre-PR review, adversarial lens, critical: without binding the vouch
+        // commit's own signed bytes to a specific node, any commit root ever signed for any
+        // reason vouches every node an attacker cares to name).
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, _) = await EstablishSourceVouchAsync();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes /* the root commit reused as "the vouch" */);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().NotContainKey(root.Fingerprint, "a commit that never names this node can never stand in as its vouch");
+        chain.IsEnrolledInOwner(carrier.Fingerprint, root.Fingerprint).Should().BeFalse();
+        chain.UnverifiedWrites.Should().Contain(write => write.Kind == "carried" && write.Identifier == carrier.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task A_genesis_members_commit_signed_by_a_carried_node_is_accepted()
+    {
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        // Genesis members commit for this target project, signed by the CARRIED node — never the
+        // root's own key, which nobody here holds — the exact shape h9k project join's own carry
+        // path produces (EnsureGenesisMemberFileAsync, signed with the carrying node's own key).
+        const string mintedProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FBB";
+        await WriteMemberFileAsync(targetRepo, root.Fingerprint, "owner", carrier, mintedProjectKey);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.Members.Should().Contain(member => member.RootFingerprint == root.Fingerprint && member.Role == MembershipRole.Owner);
+        chain.ProjectKey.Should().Be(mintedProjectKey);
+        chain.UnverifiedWrites.Should().NotContain(write => write.Kind == "membership");
+    }
+
+    [Fact]
+    public async Task A_genesis_members_commit_signed_by_an_unenrolled_node_is_refused()
+    {
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+        GeneratedIdentity stranger = GenerateIdentity();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        // A genesis members commit for the identical root, but signed by a stranger this chain
+        // never enrolled at all — neither the root's own key nor the carried node's.
+        await WriteMemberFileAsync(targetRepo, root.Fingerprint, "owner", stranger, "01ARZ3NDEKTSV4RRFFQ69G5FCC");
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.Members.Should().BeEmpty("genesis is spent by this refused commit either way, but it never grants membership");
+        chain.ProjectKey.Should().BeNull();
+        chain.UnverifiedWrites.Should().Contain(write => write.Kind == "membership" && write.RootFingerprint == root.Fingerprint);
+    }
+
+    /// <summary>Shared setup every carried-record test above needs: a genesis root on its own
+    /// source project ledger, and a node genuinely vouched into it there — the source half of the
+    /// evidence a carrying join reads and embeds. Each test builds its own separate TARGET ledger
+    /// (a second, unrelated hub) and writes the carried bundle there itself, since that is exactly
+    /// what varies from test to test.</summary>
+    private async Task<(string SourceRepo, GeneratedIdentity Root, GeneratedIdentity Carrier,
+        (string Content, string Sha, string RawBytes) RootSigned, (string Content, string Sha, string RawBytes) VouchSigned)>
+        EstablishSourceVouchAsync()
+    {
+        string sourceHub = _repo.CreateHub();
+        (string sourceRepo, GeneratedIdentity root) = await EstablishGenesisRootAsync(sourceHub);
+        GeneratedIdentity carrier = GenerateIdentity();
+        await WriteNodeFileAsync(sourceRepo, carrier, carrier);
+        await VouchAsync(sourceRepo, root.Fingerprint, carrier, root);
+
+        (string Content, string Sha, string RawBytes) rootSigned = await ReadSignedCommitAsync(
+            sourceRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml");
+        (string Content, string Sha, string RawBytes) vouchSigned = await ReadSignedCommitAsync(
+            sourceRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/nodes/{carrier.NodeId}.yaml");
+
+        return (sourceRepo, root, carrier, rootSigned, vouchSigned);
+    }
+
     // ---- test scaffolding -------------------------------------------------------------------
 
     private sealed record GeneratedIdentity(string PrivateKeyPath, string PublicKeyLine, string Fingerprint, Guid NodeId);
@@ -709,7 +1065,11 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         string path = $"owners/{ownerRoot}/nodes/{target.NodeId}.yaml";
         string content = BuildYaml(
             ("node_id", target.NodeId.ToString()), ("public_key", target.PublicKeyLine), ("issued_at", Now()));
-        await WriteAsync(repositoryPath, refName, path, content, signer);
+        // Mirrors NodeVouchCommand's own real commit message exactly ("Vouch node {id}") — a
+        // carried bundle's own check 3 binds its embedded vouch commit to a specific node id by
+        // requiring that id appear in the commit's own signed message text, so a vouch this
+        // scaffolding writes for a carried-record test has to carry it the same way production does.
+        await WriteAsync(repositoryPath, refName, path, content, signer, $"Vouch node {target.NodeId}");
     }
 
     private async Task DeleteMemberFileAsync(string repositoryPath, string rootFingerprint, GeneratedIdentity signer)
@@ -733,16 +1093,94 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         await WriteAsync(repositoryPath, refName, path, content, signer);
     }
 
+    /// <summary>
+    /// Reads a signed commit off a SOURCE ledger the same way <c>GitLedgerCommitReader</c> would —
+    /// the whole point of the carried-record path being offline: this reads a repository that is
+    /// merely local to this test (never a network remote), mirroring what a real carrying node's own
+    /// local clone of a source project would answer.
+    /// </summary>
+    private static async Task<(string Content, string Sha, string RawBytes)> ReadSignedCommitAsync(
+        string repositoryPath, string refName, string path)
+    {
+        string tip = await RunGitCaptureAsync(repositoryPath, ["rev-parse", "--verify", "--quiet", $"{refName}^{{commit}}"]);
+        string content = await RunGitCaptureAsync(repositoryPath, ["show", $"{tip}:{path}"]);
+        string log = await RunGitCaptureAsync(repositoryPath, ["log", "--format=%H", "--first-parent", tip, "--", path]);
+        string sha = log.Split('\n', StringSplitOptions.RemoveEmptyEntries)[0].Trim();
+        // Never RunGitCaptureAsync's own trimmed output for this one: an SSH signature covers the
+        // commit object's exact bytes, so trimming so much as a trailing newline off the raw commit
+        // here would make GitLedgerChainReader's own offline re-verification (which re-signs nothing,
+        // only reinjects these exact bytes and checks the signature already on them) see different
+        // bytes than the ones the source root's own key actually signed, and fail every legitimate
+        // bundle this scaffolding builds.
+        string raw = await RunGitCaptureRawAsync(repositoryPath, ["cat-file", "commit", sha]);
+        return (content, sha, raw);
+    }
+
+    /// <summary>The untrimmed twin of <see cref="RunGitCaptureAsync"/> — for the one caller
+    /// (<see cref="ReadSignedCommitAsync"/>) that needs the exact bytes a signature was computed
+    /// over, not a hash or a tree id where a trailing newline never matters.</summary>
+    private static async Task<string> RunGitCaptureRawAsync(string repositoryPath, IReadOnlyList<string> arguments)
+    {
+        using Process process = new();
+        process.StartInfo = new ProcessStartInfo
+        {
+            FileName = "git",
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+        };
+        process.StartInfo.ArgumentList.Add("-C");
+        process.StartInfo.ArgumentList.Add(repositoryPath);
+        foreach (string argument in arguments)
+        {
+            process.StartInfo.ArgumentList.Add(argument);
+        }
+
+        process.Start();
+        string output = await process.StandardOutput.ReadToEndAsync();
+        string error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"git {string.Join(' ', arguments)} failed in {repositoryPath}: {error}");
+        }
+
+        return output;
+    }
+
+    /// <summary>Mirrors <c>ProjectJoinCommand.BuildCarriedRecordYaml</c> exactly — this test file's
+    /// own writer for the bundle <see cref="GitLedgerChainReader"/>'s carried-record verification
+    /// reads.</summary>
+    private static string BuildCarriedRecordYaml(
+        Guid carriedNodeId, string carriedNodePublicKeyLine, Guid sourceProjectId, string sourceOriginUrl,
+        string rootContent, string rootSha, string rootRawBytes, string vouchContent, string vouchSha, string vouchRawBytes) =>
+        BuildYaml(
+            ("node_id", carriedNodeId.ToString()),
+            ("node_public_key", carriedNodePublicKeyLine),
+            ("source_project_id", sourceProjectId.ToString()),
+            ("source_project_key", "01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+            ("source_origin_url", sourceOriginUrl),
+            ("root_yaml_base64", EncodeBase64(rootContent)),
+            ("root_commit_sha", rootSha),
+            ("root_commit_base64", EncodeBase64(rootRawBytes)),
+            ("vouch_yaml_base64", EncodeBase64(vouchContent)),
+            ("vouch_commit_sha", vouchSha),
+            ("vouch_commit_base64", EncodeBase64(vouchRawBytes)),
+            ("carried_at", Now()));
+
+    private static string EncodeBase64(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
+
     /// <summary>Always a fresh commit — read-then-write against whatever blob id is currently
     /// there, never write-if-absent, so a re-vouch after a revocation lands as a new commit even
     /// when its content is unchanged from before.</summary>
     private async Task WriteAsync(
-        string repositoryPath, string refName, string path, string content, GeneratedIdentity signer)
+        string repositoryPath, string refName, string path, string content, GeneratedIdentity signer, string message = "test write")
     {
         LedgerFile current = await _ledger.ReadAsync(repositoryPath, refName, path, CancellationToken.None);
         LedgerWriteOutcome outcome = await _ledger.WriteAsync(
             new LedgerWriteRequest(
-                repositoryPath, refName, path, content, current.BlobId, "test write", Committer,
+                repositoryPath, refName, path, content, current.BlobId, message, Committer,
                 new LedgerSigningKey(signer.PrivateKeyPath)),
             CancellationToken.None);
         outcome.Verdict.Should().Be(LedgerWriteVerdict.Written, $"test setup write to {path} must land");
