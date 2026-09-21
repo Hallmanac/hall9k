@@ -2328,7 +2328,7 @@ public sealed class CloseoutEngine(
             return;
         }
 
-        await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
+        await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run, cancellationToken);
 
         // Blank on a reconstructed run (ReconstructAndCompleteAsync): it never actually
         // dispatched, so there is no branch this run itself ever checked out to delete.
@@ -3183,7 +3183,7 @@ public sealed class CloseoutEngine(
             "Run {RunId}: pull request {Url} was closed without merge — worktree removed, branch kept (it holds unmerged work)",
             run.Id, run.PullRequestUrl);
 
-        await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
+        await RemoveWorktreeBestEffortAsync(project.RepositoryPath, run, cancellationToken);
     }
 
     /// <summary>
@@ -4373,8 +4373,25 @@ public sealed class CloseoutEngine(
     }
 
     private async Task RemoveWorktreeBestEffortAsync(
-        string repositoryPath, string worktreePath, CancellationToken cancellationToken)
+        string repositoryPath, RunDetails run, CancellationToken cancellationToken)
     {
+        string worktreePath = run.WorktreePath;
+
+        // A reviewer's local launch, if one is still up, comes down before the checkout it is
+        // standing in goes away (idea b9b09779, piece 5). The launch's own sweep would catch this
+        // on its next tick, but not before this removal runs: on Windows a process's current
+        // directory cannot be deleted at all, so the removal below would fail outright and leave
+        // the worktree stranded for a later prune. The stop event is the sweep's to record — it
+        // reads the task as closed out, which is the true reason — and this only has to make the
+        // directory releasable.
+        IReadOnlyList<int> ended = LocalLaunchProcesses.EndAll(run.LocalLaunch);
+        if (ended.Count > 0)
+        {
+            logger.LogInformation(
+                "Run {RunId}: ended {Count} local-launch process tree(s) before releasing the worktree",
+                run.Id, ended.Count);
+        }
+
         try
         {
             if (Directory.Exists(worktreePath))
