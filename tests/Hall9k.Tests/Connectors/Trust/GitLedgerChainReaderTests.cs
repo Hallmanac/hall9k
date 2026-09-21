@@ -689,6 +689,40 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_carried_bundle_still_verifies_after_the_carrying_nodes_own_key_later_rotates()
+    {
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        // The original carry: node.yaml self-announces under the carried key, and the root and
+        // carried bundle land signed by that same key — an ordinary, successful carry.
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        // Later, unrelated to the carry itself: this exact node loses its private key (a reinstall,
+        // a move to a new disk), NodeKeyStore mints a fresh one, and the next h9k project join
+        // rewrites node.yaml at the identical node id, self-signed by the new key — no relation at
+        // all to the key the root actually vouched.
+        GeneratedIdentity rotated = GenerateIdentity();
+        GeneratedIdentity rotatedAtSameNode = new(rotated.PrivateKeyPath, rotated.PublicKeyLine, rotated.Fingerprint, carrier.NodeId);
+        await WriteNodeFileAsync(targetRepo, rotatedAtSameNode, rotatedAtSameNode, root.Fingerprint);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.OwnerChains.Should().ContainKey(root.Fingerprint,
+            "check 4 accepts any commit in node.yaml's own history that self-signs the carried key, not only the current tip");
+        chain.IsEnrolledInOwner(carrier.Fingerprint, root.Fingerprint).Should().BeTrue();
+        chain.UnverifiedWrites.Should().BeEmpty("a later, unrelated key rotation on the same node must never retroactively cancel a carry that was genuine when it happened");
+    }
+
+    [Fact]
     public async Task A_carried_bundle_whose_embedded_root_yaml_does_not_self_certify_is_rejected_and_recorded()
     {
         (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,

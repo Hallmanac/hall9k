@@ -550,13 +550,18 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// both the node id and the fingerprint of the exact key this bundle declares, so the key this
     /// bundle enrols is the key the root actually vouched, not merely a field the bundle's own
     /// writer set;</item>
-    /// <item>the carried node's own declared public key equals THIS ledger's own current
-    /// <c>nodes/&lt;node-id&gt;/node.yaml</c>, and that file's own commit is self-signed by that
-    /// same key — the binding that ties this bundle to whoever is actually running the join on
-    /// <em>this</em> machine: only the holder of that node's own private key can have produced a
-    /// self-signed <c>node.yaml</c> declaring it here (idea's own origin note: "the bundle binds to
-    /// the carrying node because only the holder of that node private key can self-announce with
-    /// the same public key on B").
+    /// <item>the carried node's own declared public key equals SOME commit in THIS ledger's own
+    /// <c>nodes/&lt;node-id&gt;/node.yaml</c> history — not necessarily the current one — and that
+    /// commit is self-signed by that same key — the binding that ties this bundle to whoever was
+    /// actually running the join on <em>this</em> machine at the time: only the holder of that
+    /// node's own private key can have produced a self-signed <c>node.yaml</c> declaring it here
+    /// (idea's own origin note: "the bundle binds to the carrying node because only the holder of
+    /// that node private key can self-announce with the same public key on B"). Checked against the
+    /// whole history rather than pinned to the current tip because a carried root, unlike an
+    /// ordinary one, has no self-signed <c>root.yaml</c> fallback on this ledger: pinning to the
+    /// current commit would let an unrelated later key rotation on this exact node retroactively
+    /// cancel a carry that was genuine when it happened (independent pre-PR review, cycle 1,
+    /// conformance lens, medium).
     /// </item>
     /// </list>
     /// Deliberately does not walk either embedded commit's own tree to confirm it produced the
@@ -637,25 +642,41 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 "carries an embedded vouch commit that is not signed by the root's own key, or is signed but never names both this node and this exact key"));
         }
 
-        // Check 4: the carried node's own declared public key equals this ledger's own current
-        // node.yaml for the same node id, and that file's own commit is self-signed by that key —
-        // now a belt-and-suspenders binding to whoever is actually running the join on this exact
-        // machine, on top of check 3's own binding to what the root actually vouched.
+        // Check 4: some commit in this ledger's own nodes/<id>/node.yaml HISTORY — never only its
+        // current tip — declared the carried key and is self-signed by that same key: a
+        // belt-and-suspenders binding to whoever actually ran the join on this exact machine, on top
+        // of check 3's own binding to what the root actually vouched. Walking the whole history
+        // rather than pinning to the current commit matters because, unlike an ordinary root, a
+        // carried root has no self-signed root.yaml fallback on this ledger to fall back to: a later,
+        // unrelated key rotation on this exact node (a lost private key after a reinstall, say) would
+        // otherwise retroactively cancel every reader's view of a carry that was genuine at the time
+        // it happened, with no path back (independent pre-PR review, cycle 1, conformance lens,
+        // medium — origin: the previous check compared only against node.yaml's current content).
         string nodeRefName = $"{NodesRefPrefix}{nodeId}";
         string nodePath = $"nodes/{nodeId}/node.yaml";
         await FetchRefAsync(repositoryPath, nodeRefName, cancellationToken);
         string? localTip = await ResolveTipAsync(repositoryPath, nodeRefName, cancellationToken);
-        string? localNodeContent = localTip is null ? null : await ReadAtCommitAsync(repositoryPath, localTip, nodePath, cancellationToken);
-        string? localPublicKey = localNodeContent is null ? null : ExtractQuotedYamlValue(localNodeContent, "public_key");
-        if (localPublicKey is null || localPublicKey != nodePublicKey)
+        IReadOnlyList<string> localNodeCommits = localTip is null
+            ? []
+            : await CommitsTouchingPathAsync(repositoryPath, localTip, nodePath, cancellationToken);
+
+        bool matchedAnyHistoricalCommit = false;
+        foreach (string candidateCommit in localNodeCommits)
         {
-            return (null, Unverified($"declares a node public key that does not match this ledger's own {nodePath}"));
+            string? candidateContent = await ReadAtCommitAsync(repositoryPath, candidateCommit, nodePath, cancellationToken);
+            string? candidatePublicKey = candidateContent is null ? null : ExtractQuotedYamlValue(candidateContent, "public_key");
+            if (candidatePublicKey == nodePublicKey
+                && await IsSignedByAsync(repositoryPath, candidateCommit, candidatePublicKey, cancellationToken))
+            {
+                matchedAnyHistoricalCommit = true;
+                break;
+            }
         }
 
-        IReadOnlyList<string> localNodeCommits = await CommitsTouchingPathAsync(repositoryPath, localTip!, nodePath, cancellationToken);
-        if (localNodeCommits.Count == 0 || !await IsSignedByAsync(repositoryPath, localNodeCommits[0], localPublicKey, cancellationToken))
+        if (!matchedAnyHistoricalCommit)
         {
-            return (null, Unverified($"this ledger's own {nodePath} is not self-signed by the key it declares"));
+            return (null, Unverified(
+                $"declares a node public key that no commit in this ledger's own {nodePath} history self-signs"));
         }
 
         return (new TrustedNode(nodeId, nodePublicKey, nodeFingerprint, ParseIssuedAt(content)), null);
