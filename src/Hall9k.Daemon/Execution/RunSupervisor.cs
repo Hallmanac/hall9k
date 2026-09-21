@@ -367,6 +367,30 @@ public sealed class RunSupervisor(
 
             if (run.State == RunState.Verifying || run.State == RunState.UnderReview)
             {
+                // A gate the previous daemon lifetime left mid-flight is ended here, never
+                // raced with a freshly re-run one: adopting this run and letting the resumed
+                // pipeline re-run the SAME gate from the start while the old daemon's own
+                // process tree is still out there is exactly the Windows incident this closes
+                // (2026-09-19: an orphaned `dotnet test` tree still held verify-test.log
+                // locked, and the resumed pipeline crash-looped reopening it every dispatch
+                // cycle until an operator killed the orphan by hand). A stale ActiveGate whose
+                // process is already gone is left alone — GateStarted's own Apply overwrites
+                // it unconditionally the moment the resumed pipeline starts the gate fresh, so
+                // there is nothing here to clean up.
+                if (run.ActiveGate is { } activeGate
+                    && processManager.IsAlive(activeGate.ProcessId, activeGate.StartedAt))
+                {
+                    IReadOnlyList<int> endedPids = processManager.TerminateTree(activeGate.ProcessId, activeGate.StartedAt);
+                    logger.LogWarning(
+                        "Adopting run {RunId}: ended the orphaned '{Gate}' gate process tree the previous " +
+                        "daemon left running (pid(s) {Pids}) before resuming the pipeline",
+                        run.Id, activeGate.GateName, endedPids.Count == 0 ? "none" : string.Join(", ", endedPids));
+
+                    await using IDocumentSession gateEndedSession = store.LightweightSession();
+                    gateEndedSession.Events.Append(run.Id, new GateEnded(run.Id, DateTimeOffset.UtcNow));
+                    await gateEndedSession.SaveChangesAsync(cancellationToken);
+                }
+
                 // Daemon died between the agent's result and the PR: the work is done,
                 // re-enter the pipeline where the run stream left off (gates from
                 // Verifying; the review loop resumes its own phase from UnderReview).
