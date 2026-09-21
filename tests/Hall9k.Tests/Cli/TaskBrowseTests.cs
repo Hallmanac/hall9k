@@ -217,7 +217,8 @@ public sealed class TaskBrowseTests
     public void A_bounded_list_says_how_many_it_held_back_and_the_flag_that_shows_them()
     {
         string footer = TaskListCommand.Footer(
-            137, TaskListCommand.DefaultLimit, hiddenArchived: 0, new TaskListCommand.Settings(), project: null);
+            137, TaskListCommand.DefaultLimit, hiddenArchived: 0, hiddenPartialHistory: 0,
+            new TaskListCommand.Settings(), project: null);
 
         footer.Should().Contain("20 of 137").And.Contain("newest first");
         footer.Should().Contain("117 held back").And.Contain("h9k task list --all");
@@ -229,7 +230,7 @@ public sealed class TaskBrowseTests
         ProjectDetails project = new() { Id = DomainId.New(), Name = "hall9k" };
         TaskListCommand.Settings settings = new() { Project = "hall", State = ["needs-you"] };
 
-        string footer = TaskListCommand.Footer(30, 20, hiddenArchived: 0, settings, project);
+        string footer = TaskListCommand.Footer(30, 20, hiddenArchived: 0, hiddenPartialHistory: 0, settings, project);
 
         footer.Should().Contain("in hall9k").And.Contain("matching --state needs-you");
         footer.Should().Contain("--all --project hall9k --state needs-you");
@@ -238,7 +239,8 @@ public sealed class TaskBrowseTests
     [Fact]
     public void An_unbounded_view_teaches_the_filters_instead_of_claiming_rows_were_held_back()
     {
-        string footer = TaskListCommand.Footer(4, 4, hiddenArchived: 0, new TaskListCommand.Settings(), project: null);
+        string footer = TaskListCommand.Footer(
+            4, 4, hiddenArchived: 0, hiddenPartialHistory: 0, new TaskListCommand.Settings(), project: null);
 
         footer.Should().Contain("4 of 4").And.NotContain("held back");
         footer.Should().Contain("--project <name>").And.Contain("--state <state>");
@@ -247,7 +249,8 @@ public sealed class TaskBrowseTests
     [Fact]
     public void The_footer_says_how_many_archived_rows_the_default_view_hid_and_the_flag_that_shows_them()
     {
-        string footer = TaskListCommand.Footer(4, 4, hiddenArchived: 26, new TaskListCommand.Settings(), project: null);
+        string footer = TaskListCommand.Footer(
+            4, 4, hiddenArchived: 26, hiddenPartialHistory: 0, new TaskListCommand.Settings(), project: null);
 
         footer.Should().Contain("26 archived hidden").And.Contain("h9k task list --include-archived");
     }
@@ -262,7 +265,8 @@ public sealed class TaskBrowseTests
     {
         ProjectDetails project = new() { Id = DomainId.New(), Name = "hall9k" };
 
-        string footer = TaskListCommand.Footer(20, 20, hiddenArchived: 12, new TaskListCommand.Settings(), project);
+        string footer = TaskListCommand.Footer(
+            20, 20, hiddenArchived: 12, hiddenPartialHistory: 0, new TaskListCommand.Settings(), project);
 
         footer.Should().Contain("h9k task list --include-archived --project hall9k");
     }
@@ -384,5 +388,64 @@ public sealed class TaskBrowseTests
 
         visible.Should().BeEquivalentTo(candidates);
         hiddenArchived.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The board's own row filter: a headless TaskListItem — its own genesis event never arrived,
+    /// so Marten auto-vivified it from a tail event with no project and a default added time — is
+    /// hidden by default rather than surfacing as a needs-you row with no project, no objective,
+    /// and a default added time (a replicated stream whose genesis this node has never seen).
+    /// </summary>
+    [Fact]
+    public void A_headless_row_with_no_project_is_hidden_by_default_and_counted()
+    {
+        TaskStatusRow[] candidates =
+        [
+            StatusFixtures.Compose(StatusFixtures.Task(TaskState.Claimed, projectId: Guid.Empty)),
+            StatusFixtures.Compose(StatusFixtures.Task(TaskState.Published)),
+        ];
+
+        (IReadOnlyList<TaskStatusRow> visible, int hiddenPartialHistory) =
+            TaskListCommand.ApplyPartialHistoryDefault(candidates, all: false);
+
+        visible.Should().ContainSingle().Which.State.Should().Be(LifecycleState.Published);
+        hiddenPartialHistory.Should().Be(1);
+    }
+
+    /// <summary>The other independent tell: a default added time with a real project is headless too.</summary>
+    [Fact]
+    public void A_headless_row_with_a_default_added_time_is_hidden_by_default()
+    {
+        TaskStatusRow[] candidates =
+            [StatusFixtures.Compose(StatusFixtures.Task(TaskState.Claimed, addedAt: default(DateTimeOffset)))];
+
+        (IReadOnlyList<TaskStatusRow> visible, int hiddenPartialHistory) =
+            TaskListCommand.ApplyPartialHistoryDefault(candidates, all: false);
+
+        visible.Should().BeEmpty();
+        hiddenPartialHistory.Should().Be(1);
+    }
+
+    /// <summary>--all is the only door back to a headless row, and it comes back marked rather than blank.</summary>
+    [Fact]
+    public void All_shows_a_headless_row_back_marked_as_partial_history_held()
+    {
+        TaskStatusRow[] candidates = [StatusFixtures.Compose(StatusFixtures.Task(TaskState.Claimed, projectId: Guid.Empty))];
+
+        (IReadOnlyList<TaskStatusRow> visible, int hiddenPartialHistory) =
+            TaskListCommand.ApplyPartialHistoryDefault(candidates, all: true);
+
+        visible.Should().BeEquivalentTo(candidates);
+        hiddenPartialHistory.Should().Be(0);
+        visible.Single().DetailMarkup.Should().ContainSingle(line => line.Contains("partial history held"));
+    }
+
+    /// <summary>An ordinary row never carries the mark — it is reachable only through the two headless tells.</summary>
+    [Fact]
+    public void An_ordinary_row_is_never_marked_as_partial_history_held()
+    {
+        TaskStatusRow row = StatusFixtures.Compose(StatusFixtures.Task(TaskState.Published));
+
+        row.PartialHistoryHeld.Should().BeFalse();
     }
 }

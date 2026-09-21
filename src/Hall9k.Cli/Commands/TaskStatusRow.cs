@@ -83,7 +83,18 @@ internal sealed record TaskStatusRow(
     /// to (task: a task may link to both a GitHub issue and a Jira card); empty when the task
     /// carries none.
     /// </summary>
-    string SecondaryExternalReference = "")
+    string SecondaryExternalReference = "",
+    /// <summary>
+    /// Whether this row's own <c>TaskListItem</c> is headless: <see cref="ProjectId"/> is
+    /// <see cref="Guid.Empty"/> or <see cref="AddedAt"/> is <c>default</c> — the shape Marten
+    /// leaves behind when a replicated tail event auto-vivified a document with no matching
+    /// <c>TaskAdded</c> ever applied (a task whose genesis predates the sender's outbox). Never
+    /// true for a task this install actually created: <c>TaskAddCommand</c> always supplies a real
+    /// project and a real timestamp in the same transaction that starts the stream. The board
+    /// hides a row carrying this rather than show a needs-you row with no project, no objective,
+    /// and a default added time.
+    /// </summary>
+    bool PartialHistoryHeld = false)
 {
     /// <summary>
     /// A truncated objective still has to say something; below this the column is noise. A
@@ -133,6 +144,9 @@ internal sealed record TaskStatusRow(
     /// </summary>
     public IReadOnlyList<string> DetailMarkup =>
     [
+        .. PartialHistoryHeld
+            ? (string[])["[red]partial history held[/] — its own genesis event never arrived; it will complete once replication catches it up"]
+            : [],
         .. Phase.HasPhase ? (string[])[Phase.Markup] : [],
         .. Facts.Count > 0 ? (string[])[string.Join(" [dim]·[/] ", Facts.Select(fact => $"[dim]{fact.EscapeMarkup()}[/]"))] : [],
         .. Attention.HasCause ? (string[])[Attention.Markup] : [],

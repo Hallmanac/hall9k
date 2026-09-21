@@ -14,7 +14,17 @@ internal sealed record IdeaRow(
     Guid? ProjectId,
     string? ProjectName,
     IdeaState State,
-    DateTimeOffset CapturedAt)
+    DateTimeOffset CapturedAt,
+    /// <summary>
+    /// Whether this row's own <c>IdeaDetails</c> is headless: <see cref="State"/> is
+    /// <see cref="IdeaState.Unknown"/> or <see cref="CapturedAt"/> is <c>default</c> — the shape
+    /// Marten leaves behind when a replicated tail event auto-vivified a document with no matching
+    /// <c>IdeaCaptured</c> ever applied (an idea whose genesis predates the sender's outbox). Never
+    /// true for an idea this install actually captured: <c>IdeaAddCommand</c> always supplies a
+    /// real timestamp in the same transaction that starts the stream, and <c>Create</c> always sets
+    /// <see cref="IdeaState.Captured"/>.
+    /// </summary>
+    bool PartialHistoryHeld = false)
 {
     public static IdeaRow Compose(IdeaDetails idea, IReadOnlyDictionary<Guid, ProjectDetails> projects) =>
         new(idea.Id,
@@ -24,7 +34,12 @@ internal sealed record IdeaRow(
                 ? project.Name
                 : null,
             idea.State,
-            idea.CapturedAt);
+            idea.CapturedAt,
+            IsPartialHistoryHeld(idea));
+
+    /// <summary>See <see cref="PartialHistoryHeld"/>'s own doc for why either tell alone is authoritative.</summary>
+    internal static bool IsPartialHistoryHeld(IdeaDetails idea) =>
+        idea.State == IdeaState.Unknown || idea.CapturedAt == default;
 
     public string IdMarkup => $"[dim]{TaskListCommand.ShortId(Id)}[/]";
 
@@ -46,9 +61,15 @@ internal sealed record IdeaRow(
             ? "[dim]none[/]"
             : $"[dim]{TaskListCommand.ShortId(ProjectId.Value)}[/]";
 
-    /// <summary>The note on one line, truncated to the width the fixed columns leave it.</summary>
+    /// <summary>
+    /// The note on one line, truncated to the width the fixed columns leave it — or, for a
+    /// headless row shown only because <c>--all</c> asked for it back, what it actually is rather
+    /// than the blank note Marten's auto-vivified document carries.
+    /// </summary>
     public string TextMarkup(int width) =>
-        TaskListCommand.Truncate(Text.ReplaceLineEndings(" ").Trim(), width).EscapeMarkup();
+        PartialHistoryHeld
+            ? "[red]partial history held[/] — its own genesis event never arrived"
+            : TaskListCommand.Truncate(Text.ReplaceLineEndings(" ").Trim(), width).EscapeMarkup();
 
     public string AgeMarkup(DateTimeOffset now) => TaskStatusComposer.RelativeAge(now - CapturedAt);
 }

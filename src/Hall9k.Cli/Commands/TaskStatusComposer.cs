@@ -365,8 +365,19 @@ internal static class TaskStatusComposer
             task.Rank,
             heldByTracker is not null,
             ExternalReference: task.ExternalReference ?? string.Empty,
-            SecondaryExternalReference: task.SecondaryExternalReference ?? string.Empty);
+            SecondaryExternalReference: task.SecondaryExternalReference ?? string.Empty,
+            PartialHistoryHeld: IsPartialHistoryHeld(task));
     }
+
+    /// <summary>
+    /// Whether <paramref name="task"/>'s own <c>TaskListItem</c> is headless — see
+    /// <see cref="TaskStatusRow.PartialHistoryHeld"/>'s own doc. Two independent tells rather than
+    /// one, because either field alone is authoritative: a stream that ever ran <c>TaskAdded</c>
+    /// through <c>Create</c> has a real project and a real added time together, always, so either
+    /// one reading as its own type's default already proves neither ever did.
+    /// </summary>
+    private static bool IsPartialHistoryHeld(TaskListItem task) =>
+        task.ProjectId == Guid.Empty || task.AddedAt == default;
 
     /// <summary>
     /// The assignee's own name, resolved by fingerprint first (idea f72138e1) when the assignment

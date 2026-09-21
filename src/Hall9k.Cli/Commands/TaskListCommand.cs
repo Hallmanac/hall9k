@@ -108,8 +108,10 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
 
         (IReadOnlyList<TaskStatusRow> visible, int hiddenArchived) =
             ApplyArchivedDefault(candidates, states, settings.IncludeArchived);
+        (IReadOnlyList<TaskStatusRow> visiblePastPartialHistory, int hiddenPartialHistory) =
+            ApplyPartialHistoryDefault(visible, settings.All);
 
-        List<TaskStatusRow> matched = [.. visible.OrderByDescending(row => row.AddedAt)];
+        List<TaskStatusRow> matched = [.. visiblePastPartialHistory.OrderByDescending(row => row.AddedAt)];
         if (matched.Count == 0)
         {
             AnsiConsole.MarkupLine(EmptyResultMessage(hiddenArchived, settings, project));
@@ -120,8 +122,28 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         List<TaskStatusRow> shown = [.. matched.Take(limit)];
 
         AnsiConsole.Write(Rows(shown, scoped: project is not null, AnsiConsole.Profile.Width, DateTimeOffset.UtcNow));
-        AnsiConsole.MarkupLine(Footer(matched.Count, shown.Count, hiddenArchived, settings, project));
+        AnsiConsole.MarkupLine(Footer(matched.Count, shown.Count, hiddenArchived, hiddenPartialHistory, settings, project));
         return ExitCodes.Ok;
+    }
+
+    /// <summary>
+    /// A row whose own <c>TaskListItem</c> is headless (<see cref="TaskStatusRow.PartialHistoryHeld"/>)
+    /// is hidden from an otherwise-unfiltered view by default, the identical reasoning
+    /// <see cref="ApplyArchivedDefault"/> already gives Archived rows — a needs-you row with no
+    /// project and no objective helps nobody — except there is no word to ask for it back by
+    /// (a partial stream is not a lifecycle state), so <c>--all</c> is the only door: it already
+    /// means "show me everything", and this is one more thing that default view was hiding.
+    /// </summary>
+    internal static (IReadOnlyList<TaskStatusRow> Visible, int HiddenPartialHistory) ApplyPartialHistoryDefault(
+        IReadOnlyList<TaskStatusRow> candidates, bool all)
+    {
+        if (all)
+        {
+            return (candidates, 0);
+        }
+
+        List<TaskStatusRow> visible = [.. candidates.Where(row => !row.PartialHistoryHeld)];
+        return (visible, candidates.Count - visible.Count);
     }
 
     /// <summary>
@@ -213,9 +235,11 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
     /// what was held back and the exact flag that shows it — including, when the default view
     /// hid Archived rows, how many and the flag that shows those too.
     /// </summary>
-    internal static string Footer(int matched, int shown, int hiddenArchived, Settings settings, ProjectDetails? project)
+    internal static string Footer(
+        int matched, int shown, int hiddenArchived, int hiddenPartialHistory, Settings settings, ProjectDetails? project)
     {
-        string scope = $"{shown} of {matched}{Scope(settings, project)}, newest first{ArchivedNote(hiddenArchived)}";
+        string scope = $"{shown} of {matched}{Scope(settings, project)}, newest first"
+            + $"{ArchivedNote(hiddenArchived)}{PartialHistoryNote(hiddenPartialHistory)}";
         int held = matched - shown;
         return held > 0
             ? $"[dim]{scope} · {held} held back — see them with:[/] h9k task list --all"
@@ -234,6 +258,12 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
 
     private static string ArchivedNote(int hiddenArchived) =>
         hiddenArchived > 0 ? $" · {hiddenArchived} archived hidden" : string.Empty;
+
+    /// <summary>What --all's footer note says was hidden — see <see cref="ApplyPartialHistoryDefault"/>.</summary>
+    private static string PartialHistoryNote(int hiddenPartialHistory) =>
+        hiddenPartialHistory > 0
+            ? $" · {hiddenPartialHistory} partial history hidden — see with --all"
+            : string.Empty;
 
     private static string ArchivedHint(int hiddenArchived, Settings settings, ProjectDetails? project) =>
         hiddenArchived > 0
