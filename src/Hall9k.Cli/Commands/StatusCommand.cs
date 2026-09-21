@@ -79,8 +79,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await WriteUnverifiedLedgerWritesAsync(session, cancellationToken);
         await WriteMergedWithoutCopilotReviewAsync(session, cancellationToken);
 
-        IReadOnlyList<TaskStatusRow> rows = await TaskStatusComposer.ComposeAllAsync(
-            session, DateTimeOffset.UtcNow, cancellationToken);
+        // A headless TaskListItem — its own genesis event never arrived, so Marten auto-vivified
+        // it from a tail event with no project, no objective, and a default added time — is never
+        // shown here: h9k status carries no --all to ask for it back (TaskListCommand's own
+        // ApplyPartialHistoryDefault is where that ask lives), so this pane simply never has one.
+        IReadOnlyList<TaskStatusRow> rows = (await TaskStatusComposer.ComposeAllAsync(
+                session, DateTimeOffset.UtcNow, cancellationToken))
+            .Where(row => !row.PartialHistoryHeld)
+            .ToList();
         if (rows.Count == 0)
         {
             // Printed before the "nothing tracked" line rather than after the header below,

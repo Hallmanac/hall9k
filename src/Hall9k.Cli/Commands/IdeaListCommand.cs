@@ -79,9 +79,17 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
         Dictionary<Guid, ProjectDetails> projects = (await session.Query<ProjectDetails>()
             .ToListAsync(cancellationToken)).ToDictionary(p => p.Id);
 
+        // A headless IdeaDetails — its own genesis event never arrived, so Marten auto-vivified
+        // it from a tail event with no note and no recorded state — is hidden even from
+        // --state all, the one state filter that would otherwise let its Unknown state through:
+        // only --all asks for it back, and IdeaRow.TextMarkup then names what it actually is
+        // rather than the blank note the auto-vivified document carries.
+        List<IdeaDetails> ideasPastPartialHistory = [.. ideas
+            .Where(idea => settings.All || !IdeaRow.IsPartialHistoryHeld(idea))];
+
         // The scope the reader asked for, before the state filter: the footer speaks for what
         // the state filter hides, so it has to count within this and not across every idea.
-        List<IdeaDetails> scoped = [.. ideas
+        List<IdeaDetails> scoped = [.. ideasPastPartialHistory
             .Where(idea => project is null || idea.ProjectId == project.Id)
             .Where(idea => !settings.Unassigned || idea.ProjectId is null)];
         List<IdeaRow> matched = [.. scoped
