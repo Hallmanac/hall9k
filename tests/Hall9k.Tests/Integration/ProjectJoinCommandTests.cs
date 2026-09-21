@@ -841,6 +841,105 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
             "the unreachable project's own retirement never lands, but does not fail the join either");
     }
 
+    /// <summary>
+    /// The join-side counterpart to <c>GitLedgerChainReaderTests</c>' own carried-record coverage
+    /// (task f53fecfd): every vouch <c>NodeVouchCommand</c>/<c>InviteSweepEngine</c> wrote before
+    /// this branch names only <c>Vouch node {id}</c> in its own commit message, never the key
+    /// fingerprint <see cref="GitLedgerChainReader.ComputeAsync"/>'s own carried-record check now
+    /// requires. Carrying one in anyway would write a bundle no later read can ever verify,
+    /// permanently burning this project's own root.yaml slot — the join's own pre-check must refuse
+    /// it before writing anything, the same way it already refuses a vouch signed by a delegate
+    /// rather than the root itself (independent pre-PR review, cycle 3, both lenses, high). Driven
+    /// through <see cref="FakeLedgerChainReader"/> and <see cref="FakeLedgerCommitReader"/>, never a
+    /// real repository (Brian's 2026-09-13 testing rule).
+    /// </summary>
+    [Fact]
+    public async Task An_old_format_vouch_predating_key_bound_vouches_is_refused_without_writing_anything()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid connectionId = await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+
+        await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, cts.Token);
+        await bootstrapSession.SaveChangesAsync(cts.Token);
+
+        NodeKeyStore keyStore = new();
+        NodeSigningKey key = await keyStore.EnsureAsync(context.NodeId, cts.Token);
+        string root = new string('c', 64);
+
+        await using (IDocumentSession claimSession = _postgres.Store.LightweightSession())
+        {
+            OwnerAggregate ownerAggregate = await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token)
+                ?? throw new InvalidOperationException($"No owner {context.OwnerId}.");
+            claimSession.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(ownerAggregate, root, verified: false, Now));
+            await claimSession.SaveChangesAsync(cts.Token);
+        }
+
+        Guid sourceId = DomainId.New();
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            seed.Events.StartStream<ProjectAggregate>(
+                sourceId,
+                ProjectDecider.Register(
+                    sourceId, context.OwnerId, connectionId, "carry-source",
+                    "/does/not/matter/on/a/fake/ledger/source", null, null, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        Guid targetId = DomainId.New();
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            seed.Events.StartStream<ProjectAggregate>(
+                targetId,
+                ProjectDecider.Register(
+                    targetId, context.OwnerId, connectionId, "carry-target",
+                    "/does/not/matter/on/a/fake/ledger/target", null, null, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession loadSession = _postgres.Store.LightweightSession();
+        ProjectDetails source = (await loadSession.LoadAsync<ProjectDetails>(sourceId, cts.Token))!;
+        ProjectDetails target = (await loadSession.LoadAsync<ProjectDetails>(targetId, cts.Token))!;
+
+        TrustedOwner sourceOwner = new(
+            root, "ssh-ed25519 AAAAsourceRootKey root@test",
+            [new TrustedNode(context.NodeId.ToString(), key.PublicKeyLine, key.Fingerprint, Now)]);
+        FakeLedgerChainReader chainReader = new(new Dictionary<string, TrustChain>
+        {
+            [source.RepositoryPath] = new TrustChain(
+                new Dictionary<string, TrustedOwner> { [root] = sourceOwner }, []),
+        });
+
+        string ownersRefName = $"refs/hall9k/ledger/owners/{root}";
+        FakeLedgerCommitReader commitReader = new(new Dictionary<string, LedgerSignedCommit>
+        {
+            [$"owners/{root}/root.yaml"] = new LedgerSignedCommit(
+                "public_key: \"ssh-ed25519 AAAAsourceRootKey root@test\"\n", "root-sha", "tree deadbeef\n\nEstablish root"),
+            // The exact pre-change shape: names the node id, never the key fingerprint the reader's
+            // own carried-record check now requires.
+            [$"owners/{root}/nodes/{context.NodeId}.yaml"] = new LedgerSignedCommit(
+                $"node_id: \"{context.NodeId}\"\npublic_key: \"{key.PublicKeyLine}\"\n", "vouch-sha",
+                $"tree cafebabe\n\nVouch node {context.NodeId}"),
+        });
+
+        FakeLedger ledger = new();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await ProjectJoinCommand.RunAsync(
+            session, target, claimedOwnerOverride: null, invite: null, source.Name, ledger, keyStore,
+            GitHubAccessFakes.GrantingPush(), chainReader, commitReader, promptForInviteToken: null, cts.Token);
+
+        ledger.ManyWrites.Should().BeEmpty(
+            "an old-format vouch must never be carried in — it would write a bundle no later read can ever verify");
+        ledger.Writes.Should().NotContain(
+            w => w.RefName == ownersRefName,
+            "nothing under this root's own ref is written when the only available vouch predates key-bound vouches");
+
+        await using IDocumentSession query = _postgres.Store.LightweightSession();
+        OwnerDetails owner = (await query.LoadAsync<OwnerDetails>(context.OwnerId, cts.Token))!;
+        owner.RootFingerprintVerified.Should().BeFalse("the refused carry leaves the owner's claim exactly as unverified as it was before this join");
+    }
+
     [Fact]
     public async Task No_written_tree_ever_contains_the_private_key()
     {
