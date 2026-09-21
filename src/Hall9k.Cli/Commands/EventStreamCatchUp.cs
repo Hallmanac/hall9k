@@ -72,7 +72,8 @@ internal static class EventStreamCatchUp
 
         /// <summary>A task stream missing its own <c>TaskAdded</c> — the post-switch-on tail an
         /// ordinary flush shipped, with the head that created the task still only on the node that
-        /// produced it. See <see cref="PartiallyHeldRefusal"/> for why no ask can fix it.</summary>
+        /// produced it. See <see cref="PartiallyHeldRefusal"/> for why no ask can fix it while the
+        /// tail is still applied, and what frees it.</summary>
         Partial,
 
         /// <summary>A run stream whose own genesis (<see cref="RunDispatched"/>, or the
@@ -83,7 +84,9 @@ internal static class EventStreamCatchUp
         RunWhole,
 
         /// <summary>A run stream missing its own genesis — the same tail-only shape
-        /// <see cref="Partial"/> describes, and just as unfillable.</summary>
+        /// <see cref="Partial"/> describes, unfillable the same way while the tail is applied, and
+        /// freed by the same startup repair (<c>PartialReplicatedStreamRules</c> reads a run's
+        /// genesis exactly as it reads a task's).</summary>
         RunPartial,
     }
 
@@ -173,10 +176,10 @@ internal static class EventStreamCatchUp
 
     /// <summary>
     /// The refusal both stream-asking commands print for a stream this node holds only part of,
-    /// which no events-request can repair (independent pre-PR review, cycle 4, adversarial lens).
-    /// <paramref name="subject"/> names what is partly held, capitalised and ready to open the
-    /// sentence ("Task ec35ceca", "Run 3727884f"), since the same dead end applies to a run stream
-    /// a task pull may now be handed directly.
+    /// which no events-request can repair WHILE IT IS STILL APPLIED (independent pre-PR review,
+    /// cycle 4, adversarial lens). <paramref name="subject"/> names what is partly held,
+    /// capitalised and ready to open the sentence ("Task ec35ceca", "Run 3727884f"), since the same
+    /// shape — and the same repair — reaches a run stream a task pull may now be handed directly.
     /// A replicated event is APPENDED to the local stream — Marten cannot put one in front
     /// of what is already there — so the pre-switch-on head an explicit pull would fetch would land
     /// behind the tail already here, and the stream would replay backwards:
@@ -184,13 +187,39 @@ internal static class EventStreamCatchUp
     /// acceptance criteria, leaving a published or finished task reading as newly queued.
     /// <c>EventReplicationInbox</c> refuses such a record rather than applying it, so saying so
     /// here is what keeps a human from queueing an ask that can only ever be refused on arrival.
+    /// <para>
+    /// What this says next is the part that changed: the daemon's own startup repair
+    /// (<c>HeadlessReplicatedStreamRepair</c>) frees exactly this shape: it holds every replicated
+    /// event already here, removes the partially-applied documents, and releases the stream id, so
+    /// the honest answer is "not yet, and here is what makes it possible" rather than "nothing can
+    /// ever fill this in". The earlier wording was right about the append-only guard and wrong about
+    /// the outcome, and pointing a human at a wait that genuinely ends is not the 2026-09-19 lie
+    /// this type's own doc warns about: that one promised a stream would arrive with nothing
+    /// queued and nothing coming.
+    /// </para>
+    /// <para>
+    /// What it stops short of is promising the repair always succeeds, because it does not:
+    /// <c>PartialReplicatedStreamRepairPlanner</c> leaves a stream it cannot reconstruct faithfully
+    /// exactly as it is (a native event it cannot reason about dropping, a replicated event missing
+    /// an origin header, a dedupe row already gone), and for those three the wait does NOT end at
+    /// the next start. Promising unconditionally would hand a human the identical refusal after
+    /// every restart with nothing in it pointing at the one place that explains the silence, the
+    /// daemon's own warning naming that stream and the reason (independent pre-PR review, cycle 1,
+    /// both lenses, low). So the sentence is conditional and it names that log.
+    /// </para>
     /// </summary>
     public static string PartiallyHeldRefusal(string subject, string closing) =>
         $"{subject}'s event stream is only partly on this node: what happened after this node "
         + "began replicating is here, but not the events that created it. Nothing was queued, because "
-        + "catch-up cannot fill that in — a replicated event is appended to the end of the local stream, and "
-        + "history older than what is already here cannot be put in front of it without replaying the stream "
-        + $"backwards. {closing}";
+        + "catch-up cannot fill that in while the tail is applied: a replicated event is appended to the end "
+        + "of the local stream, and history older than what is already here cannot be put in front of it "
+        + "without replaying the stream backwards. The daemon's own repair frees this stream at its next "
+        + "start whenever it can reconstruct what is here faithfully: it holds every replicated event already "
+        + "on the stream, removes the partially-applied documents, and releases the stream id, after which this "
+        + "ask goes through and the held tail completes the moment the genesis lands. A stream it cannot "
+        + "reconstruct that way is left exactly as it is instead, and the daemon's own log names that stream "
+        + "and the reason, so if this same refusal comes back after a restart, that warning is the answer. "
+        + $"{closing}";
 
     /// <summary>The fix, and the command to type once it is done.</summary>
     public static string JoinFirst(string projectName, string retryCommand) =>
