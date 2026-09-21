@@ -153,7 +153,9 @@ public sealed class RunAggregate
     /// conflict) — or by a no-op one whose <see cref="Events.RunRebasedOntoBase.DecisionsLogRenumbered"/>
     /// is true, since that renumbering commit also moves this branch's tip past whatever was last
     /// gated even though origin's base itself never moved — and cleared by the very next
-    /// full-scope <see cref="Events.VerificationPassed"/>, whichever event lands later on the
+    /// full-scope <see cref="Events.VerificationPassed"/>, or by a
+    /// <see cref="Events.VerificationSkipped"/> (see <see cref="Apply(Events.VerificationSkipped)"/>'s
+    /// own doc for why a skip discharges the same obligation), whichever event lands later on the
     /// stream.
     /// </summary>
     public bool PreFinalPassRebaseAwaitingGate { get; private set; }
@@ -1080,14 +1082,34 @@ public sealed class RunAggregate
     /// A skip is never a pass for scoping (task: a delivered diff that touches no buildable or
     /// testable source skips the build and test gates): unlike <see cref="Apply(VerificationPassed)"/>,
     /// this deliberately touches none of <see cref="LastGateRanFullScope"/>,
-    /// <see cref="LastGateHeadSha"/>, <see cref="LastGateVerifyCommandsFingerprint"/>,
-    /// <see cref="PreFinalPassRebaseAwaitingGate"/>, or <see cref="SettlingGateRepairRounds"/> — the
-    /// next gate that actually runs always scopes off the last real <see cref="VerificationPassed"/>
-    /// still on the stream, never off this fact, and this fact can never satisfy the "already ran
-    /// full over this HEAD" waiver either, for the identical reason. Failed-gate state still clears,
-    /// the same as a real pass: a skip means nothing is currently failing.
+    /// <see cref="LastGateHeadSha"/>, <see cref="LastGateVerifyCommandsFingerprint"/>, or
+    /// <see cref="SettlingGateRepairRounds"/> — the next gate that actually runs always scopes off
+    /// the last real <see cref="VerificationPassed"/> still on the stream, never off this fact, and
+    /// this fact can never satisfy the "already ran full over this HEAD" waiver either, for the
+    /// identical reason. Failed-gate state still clears, the same as a real pass: a skip means
+    /// nothing is currently failing.
+    /// <para>
+    /// <see cref="PreFinalPassRebaseAwaitingGate"/> and
+    /// <see cref="PreFinalPassRebaseAwaitingGateFromRealRebase"/> are the one exception, and DO
+    /// clear here (independent pre-PR review, cycle 1, adversarial lens, medium): a classification
+    /// of every changed path as non-executable means this branch's own diff carries no code at
+    /// all, rebased or not, so the rebased tree's code is entirely the base's own — exactly the
+    /// fact that already earns a skip in place of a real gate. Leaving the pair set after a skip
+    /// left <see cref="Hall9k.Daemon.Review.ReviewEngine.EligibleForSettlingGateRepair"/> reading
+    /// true for the rest of the run: a later, unrelated mandatory-gate failure — one the rebase
+    /// never caused — was then routed to the settling-gate repair lap instead of failing hard, and
+    /// <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s own leg picker kept charging recovery
+    /// attempts against <see cref="RunSessionLeg.RebaseRecovery"/> for the same stale reason. Only
+    /// a full-scope <see cref="VerificationPassed"/> can otherwise clear the pair; this is the
+    /// second, narrower way a rebase's own gate obligation gets discharged without one.
+    /// </para>
     /// </summary>
-    public void Apply(VerificationSkipped @event) => _failedGates.Clear();
+    public void Apply(VerificationSkipped @event)
+    {
+        _failedGates.Clear();
+        PreFinalPassRebaseAwaitingGate = false;
+        PreFinalPassRebaseAwaitingGateFromRealRebase = false;
+    }
 
     public void Apply(GateRetried @event) => GateRetries++;
 
