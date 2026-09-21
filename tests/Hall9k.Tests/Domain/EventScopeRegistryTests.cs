@@ -71,6 +71,11 @@ public sealed class EventScopeRegistryTests
         "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedLevel",
         "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedRead",
         "Hall9k.Domain.Features.Orchestrator.OrchestratorFeedScope",
+        // One peer's decline, carried in a list on the EventCatchUpRequest document. The whole
+        // Replication slice is local bookkeeping about what this node is waiting on rather than
+        // event-sourced state (that type's own doc says so), so nothing here is ever appended to a
+        // stream and none of it has a scope to classify.
+        "Hall9k.Domain.Features.Replication.EventCatchUpDecline",
     ];
 
     [Fact]
