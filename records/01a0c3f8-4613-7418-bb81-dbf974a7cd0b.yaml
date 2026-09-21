@@ -1,0 +1,32 @@
+hall9k-task-record: 1
+task-id: 01a0c3f8-4613-7418-bb81-dbf974a7cd0b
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#536
+objective: A brand-new node's first sync of a project it joins brings every team-scoped stream whole from its genesis, so a new member never sees, or has hidden from them, a headless tail for work that predates any peer's replication switch-on point
+criteria:
+  - |-
+    EventCatchUpResponder answers a bootstrap request (ForOriginNodeId, ForStreamId, and SinceGlobalSequence all null) the way it answers an explicit ask: the switch-on bound is not applied (the one branch at EventCatchUpResponder.cs about line 105 widens from IsExplicitAsk to include the bootstrap shape), and every project-scoped, non-private, fleet-eligible event the answering node holds is served from the start of its own log, own-origin and already-replicated alike, with true origin preserved; a gap-fill request keeps the switch-on bound it has today, and the private, own-history, and foreign-fleet exclusions are unchanged
+  - The bootstrap answer covers every project-scoped aggregate the node holds (tasks, runs, ideas, epics, and any newer type the classification registry names), which the responder's scope filter already gives (about line 127 filters on EventScope.ProjectScoped, not on stream kind); a test proves a requester with no local history that receives a task and its run projects a task reading Done
+  - The answer rides the existing 200-event / 250 KB envelopes with no cap on envelope count, ordered by the answering node's own global sequence so each native genesis lands before its tail; a test proves a record that still arrives tail-first in the same answer is held by the v0.10.20 path and replays when its genesis lands later in that answer, so a whole-project bootstrap leaves no partial stream behind
+  - |-
+    The Decisions Log entry under this task's placeholder states that a brand-new node's bootstrap is now served from below the switch-on point, superseding entry #236's "history is inert until somebody asks" for that one automatic shape, and names what still keeps the bound (a gap-fill)
+  - |-
+    Unit tests through the seams: a responder given a bootstrap request serves events below its switch-on sequence while a gap-fill request still does not; a private idea is not served; a requester with no local history receives genesis-first history for a task and its run and projects a whole task reading Done. No test touches a repository or remote. dotnet build and dotnet test pass
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a04de3-7a23-75c0-8a06-9314ef6ab27d
+origin-node-name: HALL-AGELESSRX
+origin-branch: task/74a7cd0b-a-brand-new-node-s-first-sync
+published: 2026-09-21 14:10:41Z
+context: |-
+  Origin: Brian, 2026-09-21 morning, Windows project window, after a two-direction pull test showed a brand-new node only ever receives history from each peer's replication switch-on point; challenged and re-evidenced by the challenge session the same morning against origin/main at v0.10.24 (b4002efe). Team members join arx-platform this week.
+
+  What the code says today: EventCatchUpResponder.AnswerAsync (src/Hall9k.Connectors/Replication/EventCatchUpResponder.cs) applies the switch-on bound unless EventsRequestRecord.IsExplicitAsk (ForStreamId or SinceGlobalSequence set, EventReplicationCodec.cs line 127), so a bootstrap, which sets neither, is bounded (lines 105 to 115); everything else this task needs is already there: the scope filter serves every ProjectScoped type (line 127), private items and the requester's own history are excluded (lines 144 to 165), fleet-scoped items go only to a same-owner requester (lines 173 to 180), and the answer is ordered by the answering node's global sequence (line 88), which is why a genesis precedes its tail. The bootstrap shape is built by EventCatchUpCoordinator.RequestBootstrapAsync (about line 143) and minted by MessageSweepEngine.AdvanceCatchUpAsync when HasAnyLocalHistoryAsync was false at the start of the tick (about lines 252 and 426 to 442); it is sent to one ranked candidate at a time (voucher first) and EventReplicationInbox closes it on the first envelope from that candidate that applies anything (about lines 361 to 365), so the answering candidate's own completeness is what 252bc5cf guarantees, not this task. Receiver side: EventReplicationInbox.ApplyAsync with the held-record path (about lines 563 to 588) and ApplyHeldTailAsync (about 786 to 830).
+
+  Sizes measured on the Windows node's store (2026-09-21 morning): arx-platform 2,612 task, run, and idea events, about 2.7 MB, about 14 envelopes, so a member invited from Windows gets it in one small push; hall9k 32,923 events, about 35 MB, about 165 envelopes, one time per new node. The Mac holds three arx-platform replicated records, so a member invited from the Mac gets nothing useful for arx-platform until 252bc5cf has run or the invite comes from Windows. Every member's sweep downloads a node-addressed answer and drops it on the audience check, so a bootstrap costs each existing member one read of that size too.
+
+  Status counts (a bootstrap in progress with envelopes applied so far, and complete) are deliberately not this task's: an answer has no completion signal today, and 252bc5cf adds the terminal envelope and the status wording for both shapes, so the two drafts do not both edit StatusCommand. Two things "whole" cannot mean: an event whose type the answering build no longer knows is skipped silently by the responder (about line 122), and a stream the answering node itself holds only the tail of is served as a tail, which the v0.10.20 path holds on the new node; see 9eb5b245's context for the 14 run streams observed this morning.
+
+  Related: 805f6986 (repair frees partial streams that still carry a document), 9eb5b245 (pull completeness and the held-tail ask), 252bc5cf (fleet reconcile; independent of this task in code, shares only the Decisions Log, whose tail-append conflict the mechanical rebase resolves per entry #250). Writing conventions: no em dashes, full sentences. Testing rule (Brian, 2026-09-13): no test touches a repository or remote.
