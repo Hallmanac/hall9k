@@ -1272,7 +1272,13 @@ the minting node's own local store), `h9k project join --invite <secret>` proves
 writing `HMAC(secret, this node's own key fingerprint)` into its own node file, and the minting
 node's own daemon sweep matches the proof against its outstanding invites and vouches the node or
 member in with no further prompt: a second human's node joining an owner's root no longer needs a
-hand-run `h9k node vouch` at all. **Still not built**: no node discovery, no gossip, no event
+hand-run `h9k node vouch` at all. A node already vouched under an owner's root on one project ledger
+can carry that vouch into a brand-new project ledger as evidence (task f53fecfd, PLAN.md §16
+Decisions Log): `h9k project join [--from-project <name>]` writes a verbatim copy of the source
+root file plus a bundle embedding the source vouch and the raw bytes of both signed commits, and
+`GitLedgerChainReader` verifies the bundle entirely offline against the embedded evidence, with no
+fetch of the source project ever reaching the target — the root-holding node never has to touch
+the new project at all. **Still not built**: no node discovery, no gossip, no event
 replication (M2a, the one thing a message is deliberately never trusted with) — M2's own
 project-scoped outbox streams (above) are what M2a builds replication on, rather than retrofitting
 project scoping into it later. **Two known, accepted
