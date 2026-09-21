@@ -120,7 +120,13 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// is deliberately the one integration test covering the runner for this feature; every other
     /// scenario (a mixed diff, a path outside the set, a project-added glob, the default rules,
     /// the templates exclusion) is covered as a pure function over a path list in
-    /// <c>NonExecutablePathClassifierTests</c>.
+    /// <c>NonExecutablePathClassifierTests</c>. The first-delivery phase also seeds a second,
+    /// content-typed task against the same project and worktree state (task: a content task runs
+    /// a lighter pipeline by default) and proves it skips through the identical classification —
+    /// folded in here as a task-type variation rather than its own separate integration test
+    /// (independent pre-PR review, cycle 1, adversarial lens, low: a standalone test proved nothing
+    /// beyond this phase's own coverage except the task type itself, at the cost of its own full
+    /// Docker/git/Postgres lap).
     /// </summary>
     [Fact]
     public async Task Content_only_diff_skips_the_gates_a_later_content_only_entry_skips_again_and_a_mixed_diff_runs_them()
@@ -131,7 +137,9 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         await InitGitWorktreeAsync(withTaskCommit: false, cts.Token);
         await CommitAsync("docs/notes.md", "first content-only change\n", "docs: notes", cts.Token);
 
-        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
+        Guid projectId = DomainId.New();
+        (Guid taskId, Guid runId) = await SeedAsync(
+            store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token, projectId: projectId);
 
         bool firstDeliveryPassed = await NewRunner(store).VerifyAsync(
             runId, taskId, scopeSinceSha: null, "first delivery", RunSessionLeg.Build, cts.Token);
@@ -152,6 +160,29 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
 
             RunListItem listItem = (await query.LoadAsync<RunListItem>(runId, cts.Token))!;
             listItem.LastVerificationSkippedPaths.Should().ContainSingle(path => path.Path == "docs/notes.md");
+        }
+
+        // Task: a content task runs a lighter pipeline by default. The identical content-only diff
+        // also skips for a content task, through the same classifier and the same VerifyAsync seam
+        // just proven above — a second task/run against the same already-registered project
+        // (registerProject: false) and the same worktree state, rather than a fresh git/Postgres
+        // environment of its own.
+        (Guid contentTaskId, Guid contentRunId) = await SeedAsync(
+            store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token, TaskType.Content,
+            projectId: projectId, registerProject: false);
+
+        bool contentTaskPassed = await NewRunner(store).VerifyAsync(
+            contentRunId, contentTaskId, scopeSinceSha: null, "content task first delivery", RunSessionLeg.Build,
+            cts.Token);
+        contentTaskPassed.Should().BeTrue("a content-only diff is a passing verification for a content task too");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            var events = await query.Events.FetchStreamAsync(contentRunId, token: cts.Token);
+            events.Select(e => e.Data).OfType<VerificationSkipped>().Should().ContainSingle();
+            events.Select(e => e.Data).OfType<RunFailed>().Should().BeEmpty("nothing here should ever fail a content task");
+            events.Select(e => e.Data).OfType<GateStarted>().Should().BeEmpty(
+                "the configured gate must never actually spawn for a content-only diff");
         }
 
         // A "fix lap": another commit that only ever touches non-executable content. Every entry
@@ -225,6 +256,109 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 "the newest gate entry actually ran, so the Gates column falls back to the ordinary gate list");
             listItem.GateDurations.Should().NotBeNull().And.ContainSingle();
         }
+    }
+
+    /// <summary>
+    /// Task: a content task runs a lighter pipeline by default — criterion 2's own pre-gate check.
+    /// A content task's reduced, conformance-only review depends entirely on its diff never
+    /// carrying compiled or tested code, so a diff that touches even one path outside the
+    /// project's non-executable set fails before any gate runs, naming the offending path, rather
+    /// than running the gates as an ordinary task's mixed diff would.
+    /// </summary>
+    [Fact]
+    public async Task A_content_task_whose_diff_touches_a_path_outside_the_non_executable_set_fails_before_the_gates_naming_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        await InitGitWorktreeAsync(withTaskCommit: false, cts.Token);
+        await CommitAsync("docs/notes.md", "a content-only change\n", "docs: notes", cts.Token);
+        await CommitAsync(
+            "src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n}\n", "feat: widget", cts.Token);
+
+        (Guid taskId, Guid runId) = await SeedAsync(
+            store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token, TaskType.Content);
+
+        bool passed = await NewRunner(store).VerifyAsync(
+            runId, taskId, scopeSinceSha: null, "first delivery", RunSessionLeg.Build, cts.Token);
+        passed.Should().BeFalse("a content task can never carry compiled or tested code past its reduced review");
+
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<RunFailed>().Should().ContainSingle()
+            .Which.Reason.Should().Contain("src/Hall9k.Domain/Widget.cs");
+        events.Select(e => e.Data).OfType<VerificationSkipped>().Should().BeEmpty(
+            "a mixed diff on a content task is a failure, never a skip");
+        events.Select(e => e.Data).OfType<GateStarted>().Should().BeEmpty(
+            "the type refuses before any gate runs, the same outcome a failed gate has today");
+    }
+
+    /// <summary>
+    /// Task: a content task runs a lighter pipeline by default — criterion 2's own pre-gate check
+    /// must fire whether or not the project has any gates configured at all (independent pre-PR
+    /// review, cycle 1, both lenses, medium): a project with zero verify commands used to return a
+    /// bare "no gates configured" pass before the classification above was ever computed, which let
+    /// a content task's mixed diff through purely because there was nothing to run it against.
+    /// </summary>
+    [Fact]
+    public async Task A_content_task_whose_project_has_no_gates_still_refuses_a_diff_outside_the_non_executable_set()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        await InitGitWorktreeAsync(withTaskCommit: false, cts.Token);
+        await CommitAsync("docs/notes.md", "a content-only change\n", "docs: notes", cts.Token);
+        await CommitAsync(
+            "src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n}\n", "feat: widget", cts.Token);
+
+        (Guid taskId, Guid runId) = await SeedAsync(store, [], cts.Token, TaskType.Content);
+
+        bool passed = await NewRunner(store).VerifyAsync(
+            runId, taskId, scopeSinceSha: null, "first delivery", RunSessionLeg.Build, cts.Token);
+        passed.Should().BeFalse(
+            "a project with zero configured gates must never let a content task's mixed diff through " +
+            "on the strength of having nothing to run");
+
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<RunFailed>().Should().ContainSingle()
+            .Which.Reason.Should().Contain("src/Hall9k.Domain/Widget.cs");
+        events.Select(e => e.Data).OfType<VerificationPassed>().Should().BeEmpty(
+            "the old 'no gates configured' pass must never win over the content task's own refusal");
+    }
+
+    /// <summary>
+    /// Task: a content task runs a lighter pipeline by default — criterion 2's own pre-gate check
+    /// cannot take the ordinary "unobservable git runs the gates" fallback (independent pre-PR
+    /// review, cycle 1, both lenses, medium): running the gates does nothing to restore the
+    /// adversarial lens a content task's reduced review already dropped, so a diff that could not
+    /// even be classified must fail before the gates rather than being guessed content-only. No
+    /// <see cref="InitGitWorktreeAsync"/> here: <see cref="SeedAsync"/> still creates the worktree
+    /// directory, but it is never a git repository, so every git read this path depends on —
+    /// the branch boundary, the diff itself — comes back unobservable (a non-zero exit), the same
+    /// shape a force-pushed-away base ref or fork point would leave behind.
+    /// </summary>
+    [Fact]
+    public async Task A_content_task_whose_diff_cannot_be_observed_fails_before_the_gates_rather_than_guessing_it_content_only()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        (Guid taskId, Guid runId) = await SeedAsync(
+            store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token, TaskType.Content);
+
+        bool passed = await NewRunner(store).VerifyAsync(
+            runId, taskId, scopeSinceSha: null, "first delivery", RunSessionLeg.Build, cts.Token);
+        passed.Should().BeFalse(
+            "an unobservable diff can never be proven content-only, so a content task refuses rather " +
+            "than running the gates as an ordinary task's own unobservable-diff fallback would");
+
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<RunFailed>().Should().ContainSingle()
+            .Which.Reason.Should().Contain("could not be classified");
+        events.Select(e => e.Data).OfType<GateStarted>().Should().BeEmpty(
+            "the type refuses before any gate runs rather than guessing the diff content-only");
     }
 
     /// <summary>
