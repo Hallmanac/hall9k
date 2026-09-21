@@ -115,6 +115,24 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "gate itself, not the agent's work, was broken).")]
         public bool AcceptBrokenGate { get; init; }
 
+        [CommandOption("--non-executable-path <GLOB>")]
+        [Description(
+            "Adds a glob to this project's OWN additions to the non-executable-path set (task: a "
+            + "delivered diff that touches no buildable or testable source skips the build and test "
+            + "gates). Before any gate runs, VerificationRunner classifies every path the run's "
+            + "branch changed against its base — deletions and renames included — and when every one "
+            + "matches this set, the build and test gates are skipped outright and a fact is recorded "
+            + "naming every path and the rule it matched, in place of paying a full build-and-test "
+            + "cycle to prove a diff with no code in it cannot break the build. Repeat for more; "
+            + "replaces the whole list of this project's own additions, which are always layered ON "
+            + "TOP OF the compiled default set — *.md anywhere, docs/, .claude/skills/, and "
+            + ".claude/commands/ — those four are never removable, by this or any other command. A "
+            + "glob ending in '/' matches a whole directory at any depth (docs/ style); one with no "
+            + "'/' at all matches by file name alone at any depth (*.md style); anything else matches "
+            + "against the full path (assets/**/*.png style). 'default' clears this project's own "
+            + "additions, leaving only the compiled four.")]
+        public string[] NonExecutablePaths { get; init; } = [];
+
         [CommandOption("--link <NAME=URL>")]
         [Description("Context link injected into agent prompts; repeat for more. Replaces the whole list.")]
         public string[] Links { get; init; } = [];
@@ -530,6 +548,17 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             ? Optional<IReadOnlyList<VerifyCommand>>.Of([.. settings.Verify.Select(ParseVerify)])
             : Optional<IReadOnlyList<VerifyCommand>>.None;
 
+        // A bare '--non-executable-path default' clears this project's own additions back to just
+        // the compiled four (--verify's own "replaces the whole list" idiom, with the --priority
+        // idiom's 'default' clearing word layered on top of it); any other set of values replaces
+        // the whole list of additions; nothing passed leaves it untouched.
+        Optional<IReadOnlyList<string>> nonExecutablePaths = settings.NonExecutablePaths.Length switch
+        {
+            0 => Optional<IReadOnlyList<string>>.None,
+            1 when DefaultWord(settings.NonExecutablePaths[0]) => Optional<IReadOnlyList<string>>.Of([]),
+            _ => Optional<IReadOnlyList<string>>.Of([.. settings.NonExecutablePaths]),
+        };
+
         // --verify replaces the whole list (its own --help text says so), and ParseVerify always
         // builds a fresh VerifyCommand with a null HostCoupledFilter, so a bare --verify silently
         // un-marks whichever gate was host-coupled before — every other standing consequence this
@@ -726,7 +755,12 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             // ReviewDriveSetting rather than through a value nobody can type.
             designReviewDrive: settings.DesignReviewDrive is { } designReviewDrive
                 ? Optional<bool>.Of(ReviewDriveSetting.ParseOnOff(designReviewDrive, "--design-review-drive"))
-                : Optional<bool>.None);
+                : Optional<bool>.None,
+            // 'default' is mapped here beside the option that documents it, the --priority idiom:
+            // a project could genuinely want a glob that reads "default" as one of its own
+            // additions, so the word can only mean "clear this project's own additions" at the
+            // level that says so — never at the level that matches a changed path against it.
+            nonExecutablePaths: nonExecutablePaths);
 
         ProjectSettingsChanged changed = BuildChangedEvent(acceptedBrokenGateValue: false);
 
