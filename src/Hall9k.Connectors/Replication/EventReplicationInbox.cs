@@ -7,6 +7,7 @@ using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Persistence;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using JasperFx.Events.Daemon;
 using Marten;
@@ -1095,17 +1096,46 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// when the payload carries one — a Task, Idea, or Epic event's own project reference. Leaves
     /// every other field alone, including an "Id" that happens to equal the sender's own project id
     /// on a Project-aggregate event (<see cref="ProjectStreamReplicationRules.IsProjectAggregateStreamEvent"/>
-    /// already rewrites that event's own STREAM id instead, and nothing reads that field back).</summary>
+    /// already rewrites that event's own STREAM id instead, and nothing reads that field back).
+    /// <para>
+    /// A <c>scopeId</c> under a <c>scope</c> of <c>Project</c> is the same per-install coordinate
+    /// wearing a different name, and is rewritten too: <c>DecisionRecorded</c> and
+    /// <c>LearningRecorded</c> (idea d805fd8b, piece 1) carry the project there rather than in a
+    /// <c>projectId</c> field. Without this a replicated decision landed on the receiver holding
+    /// the SENDER's project id, which made it unreachable through every project-keyed surface
+    /// there is — <c>h9k decide list --project</c>, <c>ReplicationProjectResolver</c> (so the
+    /// receiver never forwarded it on to a third member), and <c>ProjectPurgeEngine</c>'s own
+    /// scope-id sweep (independent pre-PR review, cycle 1, adversarial lens). Keyed on the
+    /// sibling <c>scope</c> value rather than on the field name alone, because <c>Owner</c> is
+    /// the other scope that field carries and an owner id must never be overwritten with a
+    /// project's.
+    /// </para></summary>
     private static void RewriteProjectIdField(JsonObject dataObject, Guid localProjectId)
     {
-        string? matchingKey = dataObject
-            .FirstOrDefault(property => string.Equals(property.Key, "projectId", StringComparison.OrdinalIgnoreCase))
-            .Key;
-        if (matchingKey is not null)
+        RewriteField(dataObject, "projectId", localProjectId);
+
+        if (Property(dataObject, "scope") is string scopeKey
+            && dataObject[scopeKey] is JsonValue scope
+            && scope.TryGetValue(out string? scopeValue)
+            && scopeValue == KnowledgeScope.Project.Value)
+        {
+            RewriteField(dataObject, "scopeId", localProjectId);
+        }
+    }
+
+    private static void RewriteField(JsonObject dataObject, string name, Guid localProjectId)
+    {
+        if (Property(dataObject, name) is string matchingKey)
         {
             dataObject[matchingKey] = JsonValue.Create(localProjectId);
         }
     }
+
+    /// <summary>The payload's own key for <paramref name="name"/>, whatever casing this build's
+    /// JSON options produced, or null when it carries no such property.</summary>
+    private static string? Property(JsonObject dataObject, string name) => dataObject
+        .FirstOrDefault(property => string.Equals(property.Key, name, StringComparison.OrdinalIgnoreCase))
+        .Key;
 
     /// <summary>This project's own ledger-derived key: the live trust chain's own value when a
     /// caller actually computed one this tick (every production sweep does, via

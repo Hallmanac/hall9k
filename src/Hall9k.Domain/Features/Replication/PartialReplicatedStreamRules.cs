@@ -34,6 +34,15 @@ public static class PartialReplicatedStreamRules
     /// deliberately: a list of every non-genesis event type across four aggregates would silently
     /// stop covering a new one the moment it shipped, which is the exact class of miss this whole
     /// repair exists to clean up after.
+    /// <para>
+    /// Decision and Learning (idea d805fd8b, piece 1) are absent on purpose rather than by
+    /// oversight. This repair cleans up history written before <c>EventReplicationInbox</c>'s own
+    /// genesis guard existed; those two slices ship after it, and their genesis events are named
+    /// in <see cref="AggregateGenesisEventTypes"/>, so the inbox holds a tail whose head has not
+    /// arrived rather than applying it. A partial Decision or Learning stream therefore cannot be
+    /// created in the first place, and repair support for one would be code for a state no build
+    /// can reach.
+    /// </para>
     /// </summary>
     private static readonly IReadOnlyDictionary<string, ReplicatedAggregate> AggregatesByEventNamespace =
         new Dictionary<string, ReplicatedAggregate>
