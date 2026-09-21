@@ -442,7 +442,9 @@ public static class DesignReviewSection
         body.Append(
             "\nWould you like this branch run locally so you can walk it yourself? This project has a run "
             + "skill, so the app can be stood up on this pull request's own checkout and handed to you on "
-            + "a port. Say the word and it happens; nothing starts on its own.\n");
+            + "a port. Say the word in your orchestrator window and it happens, with the command and the "
+            + "identity it needs at the end of this report (Running this branch locally); nothing starts "
+            + "on its own.\n");
     }
 
     private static string? Value(string line, string marker)
