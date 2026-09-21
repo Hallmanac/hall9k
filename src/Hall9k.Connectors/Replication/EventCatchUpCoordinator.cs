@@ -147,7 +147,24 @@ public sealed class EventCatchUpCoordinator
     /// the one chance a new member has to receive the work that predates any peer's switch-on. The
     /// held-tail ask (<see cref="RequestHeldTailStreamsAsync"/>, task c3bdb62e) reaches below the
     /// same point automatically too, but only ever for one named stream this node already holds
-    /// part of, which is why naming and asking-once are two separate grounds for lifting it.
+    /// part of, which is why naming and asking-once are two separate grounds for lifting it. A
+    /// fleet reconcile (task 252bc5cf) reaches just as far and is minted automatically too, but it
+    /// is not a shape of its own: it goes out as the explicit ask at bound 0, so the answering node
+    /// never has to tell it apart from a hand-typed <c>h9k project pull --since all</c>.
+    /// </para>
+    /// <para>
+    /// A fleet sibling this node already has a reconcile in flight with is not a candidate at all
+    /// (task 252bc5cf). That reconcile asks the same peer for the whole project from genesis and
+    /// settles the pair in both directions, where a bootstrap addressed to it is one ranked
+    /// candidate's answer that closes on the first envelope from that candidate which applies
+    /// anything, so bootstrapping off it too puts the whole project in flight from one peer twice,
+    /// exactly the double fetch <see cref="FleetReconcileRules.PeersToAsk"/>'s own bootstrap wait
+    /// exists to avoid. That wait covers only the opposite order, and could not cover this one: a
+    /// first sweep that probed no outbox tips yet queues the reconcile (which reads the ledger, not
+    /// tips) while the bootstrap has no candidates to be outstanding on at all, so the next tick's
+    /// bootstrap saw nothing to wait for (independent pre-PR review, cycle 1, adversarial lens,
+    /// low). Every other candidate is untouched and the cascade is unchanged; once the reconcile
+    /// closes, the peer ranks like any other.
     /// </para>
     /// </summary>
     public async Task<bool> RequestBootstrapAsync(
@@ -170,11 +187,22 @@ public sealed class EventCatchUpCoordinator
             return false;
         }
 
+        IReadOnlyList<Guid> reconcilingPeers = await session.Query<FleetProjectReconcile>()
+            .Where(record => record.ProjectId == projectId && record.CompletedAt == null
+                && record.PeerLeftFleetAt == null)
+            .Select(record => record.PeerNodeId)
+            .ToListAsync(cancellationToken);
+        IReadOnlyList<Guid> eligible = [.. candidates.Where(candidate => !reconcilingPeers.Contains(candidate))];
+        if (eligible.Count == 0)
+        {
+            return false;
+        }
+
         EventCatchUpRequest request = new()
         {
             Id = DomainId.New(),
             ProjectId = projectId,
-            Candidates = [.. candidates],
+            Candidates = [.. eligible],
             CandidateIndex = 0,
             SentAt = now,
         };
@@ -354,7 +382,11 @@ public sealed class EventCatchUpCoordinator
     /// queueing a second identical ask, while a genuinely deeper pull (a lower bound) is a
     /// different question and gets asked. A bootstrap request is never matched here: it carries a
     /// null <see cref="EventCatchUpRequest.SinceGlobalSequence"/>, and the two are deliberately
-    /// distinct shapes.
+    /// distinct shapes. Neither is a fleet reconcile (task 252bc5cf), which carries the identical
+    /// bound 0 this command's own <c>--since all</c> does but goes to one peer by node id: a
+    /// standing reconcile would otherwise suppress every hand pull for as long as it stood, and a
+    /// pull broadcast to the whole project is a genuinely different ask, so
+    /// <see cref="EventCatchUpRequest.ToNodeId"/> is excluded here rather than matched.
     /// </para>
     /// </summary>
     public async Task<bool> RequestProjectHistoryBroadcastAsync(
@@ -364,6 +396,7 @@ public sealed class EventCatchUpCoordinator
         bool alreadyOutstanding = await session.Query<EventCatchUpRequest>()
             .Where(request => request.ProjectId == projectId && request.SinceGlobalSequence != null
                 && request.SinceGlobalSequence <= sinceGlobalSequence
+                && request.ToNodeId == null
                 && request.AnsweredAt == null && request.SupersededAt == null && !request.Exhausted)
             .AnyAsync(cancellationToken);
         if (alreadyOutstanding)
@@ -528,6 +561,326 @@ public sealed class EventCatchUpCoordinator
         }
 
         return new HeldTailSweepResult(minted, givenUp, toReplay);
+    }
+
+    /// <summary>
+    /// One sweep's whole fleet-reconcile pass for one project (task 252bc5cf): one ask per fleet
+    /// sibling this node has no reconcile record for yet, the one automatic re-ask for a record that
+    /// went unanswered past <paramref name="messageRetention"/>, and the stall mark for a record
+    /// whose re-ask went unanswered too. One rule at one place in the tick, which is what lets it
+    /// cover all three arrivals a fleet reconcile actually has — a node newly vouched in, a project
+    /// registered on a fleet node later, and a project's very first switch-on — none of which has an
+    /// event of its own to hang a trigger off: a switch-on record is per node
+    /// (<c>NodeAggregate.ReplicationSwitchOnSequence</c>), not per project.
+    /// <para>
+    /// A peer this node currently has an outstanding bootstrap addressed to is skipped this tick
+    /// (<see cref="FleetReconcileRules.PeersToAsk"/>): a brand-new node must not have the whole
+    /// project in flight from one peer twice at once. The skip resolves rather than persisting —
+    /// once that bootstrap closes the next sweep asks that peer, and it must, because a bootstrap's
+    /// own answer stops at the answering node's replication switch-on point
+    /// (<see cref="EventCatchUpResponder"/>) and the reconcile is what fetches everything below it.
+    /// </para>
+    /// <para>
+    /// A record whose peer this project's ledger no longer names as a fleet node is retired here
+    /// instead of being re-asked and then reported (<see cref="FleetReconcileRules.NeedsRetiring"/>):
+    /// an exchange with a node that is not a sibling any more can never finish, and
+    /// <c>h9k project reconcile</c> walks the CURRENT fleet, so a stall line pointing a human at
+    /// that command could never be cleared by it (independent pre-PR review, cycle 1, adversarial
+    /// lens, medium). A peer vouched back in has its exchange restarted from the top by the same
+    /// pass, since the record's own existence is what otherwise keeps it from ever being asked
+    /// again. Both of those need this project's own owner chain to have actually been read: an
+    /// unseen chain reports no peers either, and reading that as "every sibling left" would retire
+    /// every record on one failed ledger read.
+    /// </para>
+    /// <para>
+    /// Static because <see cref="EventCatchUpInbox"/> queues the reverse ask through the same core
+    /// and must not take a dependency on an instance of this class to do it — the identical reason
+    /// <see cref="AdvanceToNextCandidateAsync"/> is static. Nothing on this class holds state.
+    /// </para>
+    /// </summary>
+    public static async Task<int> RequestFleetReconcilesAsync(
+        IDocumentSession session, Guid projectId, Guid myNodeId, string myOwnerFingerprint, TrustChain trustChain,
+        TimeSpan messageRetention, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        if (!FleetReconcileRules.FleetIsKnown(trustChain, myOwnerFingerprint))
+        {
+            return 0;
+        }
+
+        IReadOnlyList<Guid> fleetPeers = FleetReconcileRules.FleetPeers(trustChain, myOwnerFingerprint, myNodeId);
+        HashSet<Guid> currentFleet = [.. fleetPeers];
+
+        IReadOnlyList<FleetProjectReconcile> existing = await session.Query<FleetProjectReconcile>()
+            .Where(record => record.ProjectId == projectId)
+            .ToListAsync(cancellationToken);
+        if (fleetPeers.Count == 0 && existing.Count == 0)
+        {
+            return 0;
+        }
+
+        HashSet<Guid> peersWithRecord = [.. existing.Select(record => record.PeerNodeId)];
+
+        HashSet<Guid> peersWithOutstandingBootstrap =
+            await PeersWithOutstandingBootstrapAsync(session, projectId, cancellationToken);
+
+        int asked = 0;
+        foreach (Guid peer in FleetReconcileRules.PeersToAsk(fleetPeers, peersWithRecord, peersWithOutstandingBootstrap))
+        {
+            await AskFleetPeerAsync(
+                session, projectId, peer, myNodeId, myOwnerFingerprint, record: null, automatic: true, now,
+                cancellationToken);
+            asked++;
+        }
+
+        bool recordChanged = false;
+        foreach (FleetProjectReconcile record in existing)
+        {
+            if (FleetReconcileRules.NeedsRetiring(record, currentFleet))
+            {
+                // Retired, not re-asked and not reported: this peer is not a sibling any more, so
+                // nothing it is sent will be answered, and the stall line naming
+                // h9k project reconcile would send a human to a command that walks the current
+                // fleet and therefore cannot reach this record at all. The ask it was waiting on is
+                // closed in the same pass for the reason every other superseded reconcile ask is —
+                // a node-addressed ask carries no candidates, so nothing else would ever clear it.
+                FleetReconcileRules.NotePeerLeftFleet(record, now);
+                session.Store(record);
+                await CloseSupersededAskAsync(
+                    session, record.RequestId, supersededByRequestId: null, now, cancellationToken);
+                recordChanged = true;
+                continue;
+            }
+
+            if (FleetReconcileRules.PeerIsBackInFleet(record, currentFleet))
+            {
+                // A node vouched back in. The record's own existence is what keeps PeersToAsk from
+                // ever asking this pair again, so this pass is the only thing that can restart the
+                // exchange — and it must, because what this peer held or answered while it was
+                // outside the fleet is unknown. Not automatic: a peer's return is a new exchange,
+                // not a second strike against the one that died with the revoke. It still waits on
+                // an outstanding bootstrap to that same peer, the identical wait PeersToAsk applies.
+                if (!peersWithOutstandingBootstrap.Contains(record.PeerNodeId))
+                {
+                    await AskFleetPeerAsync(
+                        session, projectId, record.PeerNodeId, myNodeId, myOwnerFingerprint, record,
+                        automatic: false, now, cancellationToken);
+                    asked++;
+                }
+
+                continue;
+            }
+
+            if (record.PeerLeftFleetAt is not null)
+            {
+                // Retired on an earlier sweep and still outside the fleet: nothing to ask, nothing
+                // to re-mark. NeedsReAsk and IsStalled both refuse such a record on their own too,
+                // so this is the loop saying the same thing out loud rather than a second rule.
+                continue;
+            }
+
+            if (FleetReconcileRules.NeedsReAsk(record, messageRetention, now))
+            {
+                await AskFleetPeerAsync(
+                    session, projectId, record.PeerNodeId, myNodeId, myOwnerFingerprint, record, automatic: true, now,
+                    cancellationToken);
+                asked++;
+            }
+            else if (FleetReconcileRules.IsStalled(record, messageRetention, now) && record.StalledAt is null)
+            {
+                record.StalledAt = now;
+                session.Store(record);
+                recordChanged = true;
+            }
+        }
+
+        if (recordChanged)
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
+        return asked;
+    }
+
+    /// <summary>
+    /// One fleet sibling asked again by hand — <c>h9k project reconcile</c>, and the reverse ask
+    /// <see cref="EventCatchUpInbox"/> queues back at a sibling that asked first. Unlike the sweep's
+    /// own pass this never declines to ask: a human typing the command means the exchange starts
+    /// over, and the record is pointed at the fresh ask with its counts cleared rather than carrying
+    /// a previous exchange's figures against an ask still in flight.
+    /// <para>
+    /// The reverse ask is what makes a reconcile finish in both directions with nobody typing
+    /// anything: the record is written BEFORE the envelope is queued, and since the record's own
+    /// existence is the sweep's guard, the sibling reading this ask already holds a record for this
+    /// node and queues nothing back. Two nodes settle into one exchange each way; a third ask is
+    /// structurally impossible.
+    /// </para>
+    /// </summary>
+    public static async Task RequestFleetReconcileByHandAsync(
+        IDocumentSession session, Guid projectId, Guid peerNodeId, Guid myNodeId, string myOwnerFingerprint,
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        FleetProjectReconcile? existing = await session.LoadAsync<FleetProjectReconcile>(
+            EventReplicationStreamId.ForFleetReconcile(peerNodeId, projectId), cancellationToken);
+        await AskFleetPeerAsync(
+            session, projectId, peerNodeId, myNodeId, myOwnerFingerprint, existing, automatic: false, now,
+            cancellationToken);
+    }
+
+    /// <summary>
+    /// One fleet sibling asked, unless this node already holds a live reconcile record for the pair
+    /// — the reverse ask <see cref="EventCatchUpInbox"/> queues back at a sibling whose own
+    /// project-history request arrived first. False means such a record already existed, which is
+    /// the whole reason two nodes cannot loop here: the record written before the first ask's
+    /// envelope is what the sibling's own reply finds and declines to answer with a third ask.
+    /// <para>
+    /// False too while a bootstrap addressed to that same sibling is still outstanding — the
+    /// identical wait <see cref="RequestFleetReconcilesAsync"/>'s own sweep applies, and for the
+    /// identical reason: a brand-new node must not have the whole project in flight from one peer
+    /// twice at once. Guarding only the sweep left this path to hand a brand-new node exactly that,
+    /// since a sibling's own first ask arrives while the new node's bootstrap is still unanswered
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium). The wait resolves rather than
+    /// persisting: once the bootstrap closes, this node's own next sweep asks that peer.
+    /// </para>
+    /// <para>
+    /// A record already reported STALLED is the one existing record this path treats as no record at
+    /// all: its exchange is over, its one automatic re-ask is spent, and the sibling's own ask
+    /// arriving is proof that sibling came back, which is the only new information the stall was
+    /// waiting on. Without this, a pair whose asks both died inside one outbox squash window stayed
+    /// stalled in this direction for good — the returning sibling asks and is answered in full,
+    /// while this node's own half never restarts until a human runs <c>h9k project reconcile</c>
+    /// (independent pre-PR review, cycle 1, conformance lens, low). The restart is a new exchange
+    /// rather than a second strike, so it clears the stall and restarts the re-ask ladder instead of
+    /// spending a re-ask that is already spent. It cannot ping-pong: the sibling reading this ask
+    /// finds its own record live rather than stalled (it just asked) and queues nothing back.
+    /// </para>
+    /// </summary>
+    public static async Task<bool> RequestFleetReconcileIfUnrecordedAsync(
+        IDocumentSession session, Guid projectId, Guid peerNodeId, Guid myNodeId, string myOwnerFingerprint,
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        FleetProjectReconcile? existing = await session.LoadAsync<FleetProjectReconcile>(
+            EventReplicationStreamId.ForFleetReconcile(peerNodeId, projectId), cancellationToken);
+        FleetProjectReconcile? stalled = existing is { CompletedAt: null, StalledAt: not null } ? existing : null;
+        if (existing is not null && stalled is null)
+        {
+            return false;
+        }
+
+        if ((await PeersWithOutstandingBootstrapAsync(session, projectId, cancellationToken)).Contains(peerNodeId))
+        {
+            return false;
+        }
+
+        await AskFleetPeerAsync(
+            session, projectId, peerNodeId, myNodeId, myOwnerFingerprint, stalled, automatic: stalled is null, now,
+            cancellationToken);
+        return true;
+    }
+
+    /// <summary>Every peer this node currently has an unanswered bootstrap addressed to for this
+    /// project — the "everything" shape, which <see cref="EventCatchUpRequest"/>'s own doc tells
+    /// apart from the others by all three of its bounds being null. Read by both paths that queue a
+    /// fleet reconcile, so the wait a bootstrap earns is one rule rather than two.</summary>
+    private static async Task<HashSet<Guid>> PeersWithOutstandingBootstrapAsync(
+        IDocumentSession session, Guid projectId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<EventCatchUpRequest> outstandingBootstraps = await session.Query<EventCatchUpRequest>()
+            .Where(request => request.ProjectId == projectId && request.ForOriginNodeId == null
+                && request.ForStreamId == null && request.SinceGlobalSequence == null && request.SupersededAt == null
+                && request.AnsweredAt == null && !request.Exhausted)
+            .ToListAsync(cancellationToken);
+        return [.. outstandingBootstraps.Select(request => request.CurrentCandidateNodeId).OfType<Guid>()];
+    }
+
+    /// <summary>
+    /// Closes the reconcile ask a record is no longer waiting on — superseded by a fresh ask, or
+    /// abandoned because its peer left the fleet — rather than leaving it standing (independent
+    /// pre-PR review, cycle 1, both lenses, medium/low). A reconcile ask carries no candidates, so
+    /// <see cref="AdvanceOverdueRequestsAsync"/>'s own cascade passes over it for good and nothing
+    /// else ever clears it: each one would otherwise add one more permanent "catch-up outstanding"
+    /// line to <c>h9k status</c> for a pair whose record correctly says exactly one exchange is live,
+    /// or none at all. Never answered, because no answer was ever observed and an audit field never
+    /// guesses at one; which of the other two it was is recorded rather than flattened, the same
+    /// distinction <see cref="RequestStreamBroadcastAsync"/> draws. A fresh ask took its place, so
+    /// <see cref="EventCatchUpRequest.SupersededAt"/> and
+    /// <see cref="EventCatchUpRequest.SupersededByRequestId"/> name the replacement (Decisions Log
+    /// #258); nothing took the place of an ask whose peer left the fleet, so that one is exhausted.
+    /// </summary>
+    private static async Task CloseSupersededAskAsync(
+        IDocumentSession session, Guid requestId, Guid? supersededByRequestId, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (await session.LoadAsync<EventCatchUpRequest>(requestId, cancellationToken)
+            is { IsOutstanding: true } superseded)
+        {
+            if (supersededByRequestId is Guid replacementId)
+            {
+                superseded.SupersededAt = now;
+                superseded.SupersededByRequestId = replacementId;
+            }
+            else
+            {
+                superseded.Exhausted = true;
+            }
+
+            session.Store(superseded);
+        }
+    }
+
+    /// <summary>Mints the reconcile's own request, writes or re-points its record, and queues the
+    /// node-addressed envelope — all three in one commit, since <c>MessageOutbox.QueueAsync</c>
+    /// saves the session it is handed, so a record that exists is always one an envelope actually
+    /// went out for.</summary>
+    private static async Task AskFleetPeerAsync(
+        IDocumentSession session, Guid projectId, Guid peerNodeId, Guid myNodeId, string myOwnerFingerprint,
+        FleetProjectReconcile? record, bool automatic, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        EventCatchUpRequest request = new()
+        {
+            Id = DomainId.New(),
+            ProjectId = projectId,
+            // The existing explicit shape, unchanged: bound 0 is what lifts EventCatchUpResponder's
+            // own switch-on exclusion (EventsRequestRecord.IsExplicitAsk), so a sibling answers from
+            // the start of its own log with no responder change of any kind.
+            SinceGlobalSequence = 0,
+            ToNodeId = peerNodeId,
+            Candidates = [],
+            SentAt = now,
+        };
+
+        if (record is null)
+        {
+            session.Store(FleetReconcileRules.NewRecord(peerNodeId, projectId, request.Id, now));
+        }
+        else
+        {
+            await CloseSupersededAskAsync(session, record.RequestId, request.Id, now, cancellationToken);
+            FleetReconcileRules.PointAtFreshAsk(record, request.Id, automatic, now);
+            session.Store(record);
+        }
+
+        await SendToNodeAsync(session, myNodeId, myOwnerFingerprint, request, peerNodeId, now, cancellationToken);
+    }
+
+    /// <summary>Persists <paramref name="request"/> and queues its one node-addressed
+    /// <see cref="MessageKind.EventsRequest"/> envelope — <see cref="BroadcastAsync"/>'s own
+    /// counterpart for an ask meant for exactly one peer. Addressed rather than broadcast because
+    /// every project member's own sweep reads every seq above its cursor on an outbox ref and checks
+    /// the audience only after decoding, so a broadcast reconcile would have every member download a
+    /// whole project's history that only one of them can apply.</summary>
+    private static async Task SendToNodeAsync(
+        IDocumentSession session, Guid myNodeId, string myOwnerFingerprint, EventCatchUpRequest request,
+        Guid peerNodeId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        session.Store(request);
+        await MessageOutbox.QueueAsync(
+            session, myNodeId, request.ProjectId, myOwnerFingerprint, MessageAudience.Node(peerNodeId),
+            about: request.ForStreamId?.ToString(),
+            MessageKind.EventsRequest,
+            EventReplicationCodec.EncodeRequest(new EventReplicationCodec.EventsRequestRecord(
+                request.Id, ForOriginNodeId: null, SinceOriginSequence: 0, request.ForStreamId,
+                request.SinceGlobalSequence)),
+            now, cancellationToken);
     }
 
     /// <summary>Persists <paramref name="request"/> and queues its one project-wide

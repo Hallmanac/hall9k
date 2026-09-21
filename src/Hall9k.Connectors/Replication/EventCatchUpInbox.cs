@@ -8,22 +8,35 @@ using Microsoft.Extensions.Logging;
 
 namespace Hall9k.Connectors.Replication;
 
-/// <summary>One sweep's own outcome reading one sender's <c>events-request</c>/<c>events-unavailable</c>
-/// envelopes for one project.</summary>
-public sealed record EventCatchUpInboxReadResult(int RequestsAnswered, int DeclinesObserved);
+/// <summary>One sweep's own outcome reading one sender's <c>events-request</c>/<c>events-unavailable</c>/
+/// <c>events-answer-complete</c> envelopes for one project. <paramref name="ReverseAsksQueued"/> and
+/// <paramref name="ReconcilesCompleted"/> are the fleet-reconcile halves (task 252bc5cf): a sibling's
+/// own project-history ask reciprocated, and a reconcile closed by the peer's own terminal
+/// envelope.</summary>
+public sealed record EventCatchUpInboxReadResult(
+    int RequestsAnswered, int DeclinesObserved, int ReverseAsksQueued = 0, int ReconcilesCompleted = 0);
 
 /// <summary>
 /// The receiving half of the catch-up protocol (idea 202383dc, M2b, task 9408d525): reads
 /// <paramref name="senderNodeId"/>'s outbox the same way <c>EventReplicationInbox</c> does — same
 /// transport, same chain verification, same per-sender gap-stop rule — but keeps its own cursor
 /// (<see cref="EventCatchUpInboxCursor"/>) and looks only at
-/// <see cref="MessageKind.EventsRequest"/>/<see cref="MessageKind.EventsUnavailable"/> envelopes,
+/// <see cref="MessageKind.EventsRequest"/>/<see cref="MessageKind.EventsUnavailable"/>/
+/// <see cref="MessageKind.EventsAnswerComplete"/> envelopes,
 /// answering a request addressed to this node via <see cref="EventCatchUpResponder"/> and marking an
 /// outstanding request declined when its current candidate says it cannot answer. Kept independent
 /// of <c>EventReplicationInbox</c> and <c>MessageInbox</c> for the identical reason those two are
 /// independent of each other: a second, narrower reader of the identical outbox ref, at the cost of
 /// one extra transport read per moved sender per tick, in exchange for never touching either
 /// class's own delicate, heavily-tested flow.
+/// <para>
+/// Two fleet-reconcile duties ride here too (task 252bc5cf), both of them about the same outbox
+/// content this reader already decodes. A project-history request from a fleet sibling earns a
+/// reverse ask back, so the pair reconciles in both directions with nobody typing anything; and a
+/// peer's own terminal <see cref="MessageKind.EventsAnswerComplete"/> envelope is what marks a
+/// reconcile record complete, which is why completion is a fact rather than an inference from
+/// whatever happened to apply.
+/// </para>
 /// </summary>
 public sealed class EventCatchUpInbox(
     IMessageTransport transport, EventCatchUpResponder responder, ILogger<EventCatchUpInbox>? logger = null)
@@ -63,6 +76,8 @@ public sealed class EventCatchUpInbox(
 
         int answered = 0;
         int declined = 0;
+        int reverseAsks = 0;
+        int reconcilesCompleted = 0;
         long highestSeqConsidered = sinceSeq;
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
@@ -105,6 +120,27 @@ public sealed class EventCatchUpInbox(
                         "Events-request envelope {Seq} from sender {SenderNodeId} had a malformed body — skipped",
                         raw.Seq, senderNodeId);
                     continue;
+                }
+
+                // The reverse ask (task 252bc5cf), queued BEFORE the answer below rather than after
+                // it: the answer can be megabytes of batches, and the reciprocal ask is the cheap
+                // half that must not be lost to a mid-answer failure. A sibling's project-history
+                // request means that sibling is reconciling this project, and reconciling is
+                // symmetric — each side holds history the other does not — so this node asks back
+                // instead of waiting for its own sweep to reach the same conclusion a tick later.
+                // Guarded by the record alone, which is what makes a loop impossible: the record
+                // written here means this node's own sweep will not ask again, and the sibling
+                // reading this ask already holds a record for this node from its own first ask.
+                // Never for a request from outside this owner's own fleet — a teammate's node gets
+                // its answer and nothing more, since it is not this owner's business to hold
+                // everything a teammate holds.
+                if (trustChain is not null
+                    && request is { ForStreamId: null, ForOriginNodeId: null, SinceGlobalSequence: not null }
+                    && FleetReconcileRules.IsFleetPeer(trustChain, myOwnerFingerprint, senderNodeId, myNodeId)
+                    && await EventCatchUpCoordinator.RequestFleetReconcileIfUnrecordedAsync(
+                        session, projectId, senderNodeId, myNodeId, myOwnerFingerprint, now, cancellationToken))
+                {
+                    reverseAsks++;
                 }
 
                 await responder.AnswerAsync(
@@ -197,6 +233,51 @@ public sealed class EventCatchUpInbox(
                     // "nobody could".
                     session.Store(outstanding);
                 }
+
+                // task 252bc5cf: a fleet reconcile's own record says so too, in the peer's own
+                // words. A peer holding nothing for the project has given its final answer rather
+                // than gone quiet, so the record closes on it — otherwise the retention clock would
+                // re-ask a peer that already told this node it has nothing, every two days,
+                // forever. Matched on the request id AND on this sender being the record's own
+                // peer, so neither a decline against a superseded request (a re-ask already
+                // replaced it) nor some other member's envelope can close the live exchange.
+                FleetProjectReconcile? declining = await LoadReconcileForRequestAsync(
+                    session, projectId, senderNodeId, unavailable.RequestId, cancellationToken);
+                if (declining is { CompletedAt: null })
+                {
+                    FleetReconcileRules.NoteUnavailable(declining, unavailable.Reason, now);
+                    session.Store(declining);
+                }
+            }
+            else if (envelope.Kind == MessageKind.EventsAnswerComplete)
+            {
+                EventReplicationCodec.EventsAnswerCompleteRecord? complete =
+                    EventReplicationCodec.DecodeAnswerComplete(envelope.Body);
+                if (complete is null)
+                {
+                    logger?.LogWarning(
+                        "Events-answer-complete envelope {Seq} from sender {SenderNodeId} had a malformed body — skipped",
+                        raw.Seq, senderNodeId);
+                    continue;
+                }
+
+                // The one thing that completes a reconcile (task 252bc5cf). Nothing else can: a
+                // whole-project answer over history this node already holds applies nothing at all,
+                // so counts and silence are indistinguishable from this side. The envelope count is
+                // kept beside this node's own count of envelopes read rather than replacing it —
+                // the two disagreeing is how an answer partly lost to an outbox squash reads, and
+                // that is worth seeing. This reader and the events reader keep independent cursors,
+                // so a tick whose events read failed can complete a record before its batches
+                // applied; the counts catch up on the retry, because reading an answering envelope
+                // still tallies after completion.
+                FleetProjectReconcile? completing = await LoadReconcileForRequestAsync(
+                    session, projectId, senderNodeId, complete.RequestId, cancellationToken);
+                if (completing is { CompletedAt: null })
+                {
+                    FleetReconcileRules.NoteComplete(completing, complete.EnvelopeCount, now);
+                    session.Store(completing);
+                    reconcilesCompleted++;
+                }
             }
         }
 
@@ -213,8 +294,32 @@ public sealed class EventCatchUpInbox(
         }
 
         await session.SaveChangesAsync(cancellationToken);
-        return new EventCatchUpInboxReadResult(answered, declined);
+        return new EventCatchUpInboxReadResult(answered, declined, reverseAsks, reconcilesCompleted);
     }
+
+    /// <summary>The fleet reconcile <paramref name="requestId"/> is the live ask of, with
+    /// <paramref name="senderNodeId"/> as its own peer — or null when none is, which is the ordinary
+    /// case for every catch-up shape that is not a reconcile (a gap-fill, a bootstrap, a stream
+    /// request, a hand pull), and also for a reconcile already re-asked under a newer request id.
+    /// <para>
+    /// Both halves of the match carry weight. The request id is what keeps an answer to a superseded
+    /// ask from closing or declining the exchange currently in flight. The peer is what keeps
+    /// SOMEBODY ELSE from closing it: every project member's own sweep reads every seq above its
+    /// cursor on a shared outbox ref and decodes each envelope before checking the audience, so a
+    /// teammate's node under a different owner learns this reconcile's request id simply by reading
+    /// the ask go past, and could otherwise address this node an <c>events-unavailable</c> or an
+    /// <c>events-answer-complete</c> carrying that id and close a reconcile the real peer never
+    /// answered — and an unavailable reason also spends the record's one automatic re-ask, so the
+    /// exchange would end on a sentence its peer never said (independent pre-PR review, cycle 1,
+    /// adversarial lens, medium). The record already names the one node entitled to answer it.
+    /// </para></summary>
+    private static async Task<FleetProjectReconcile?> LoadReconcileForRequestAsync(
+        IDocumentSession session, Guid projectId, Guid senderNodeId, Guid requestId,
+        CancellationToken cancellationToken) =>
+        await session.Query<FleetProjectReconcile>()
+            .Where(record => record.ProjectId == projectId && record.RequestId == requestId
+                && record.PeerNodeId == senderNodeId)
+            .FirstOrDefaultAsync(cancellationToken);
 
     /// <summary>This project's own ledger-derived key: the live trust chain's own value when a
     /// caller actually computed one this tick, falling back to this install's own local mirror

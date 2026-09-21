@@ -175,6 +175,13 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // an events envelope carrying no about at all. Closing on that is still better than
         // standing forever, and it is the only case left that a sibling answer can close early.
         bool unattributedCatchUpAnswerThisRead = false;
+        // How much of a fleet reconcile's own answer actually arrived and applied this read, per
+        // request id (task 252bc5cf): one entry per answering envelope read, and the records each
+        // one applied. Kept per envelope rather than as one total because the two numbers answer
+        // different questions — "did the answer reach me" and "did it teach me anything" — and an
+        // envelope whose every record this node already held is the ordinary shape of the second
+        // being zero while the first is not.
+        Dictionary<Guid, (int Envelopes, int RecordsApplied)> reconcileTallyThisRead = [];
         // Per stream, the highest origin sequence this node already holds from each origin node —
         // read once per stream per read, before anything is appended to it, and kept current as
         // records land. See ApplyAsync's own doc for the invariant it enforces.
@@ -266,11 +273,16 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 continue;
             }
 
+            // Which catch-up request, if any, this envelope answers — resolved once here and read
+            // again by the fleet-reconcile tally below, which needs the identical verdict against
+            // the identical envelope and must not re-derive it (task 252bc5cf).
+            Guid? answeredRequestId = null;
             if (batch.Count > 0 && envelope.To == MessageAudience.Node(myNodeId))
             {
-                if (Guid.TryParse(envelope.About, out Guid answeredRequestId))
+                if (Guid.TryParse(envelope.About, out Guid parsedRequestId))
                 {
-                    catchUpRequestIdsAnsweredThisRead.Add(answeredRequestId);
+                    answeredRequestId = parsedRequestId;
+                    catchUpRequestIdsAnsweredThisRead.Add(parsedRequestId);
                 }
                 else
                 {
@@ -278,6 +290,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 }
             }
 
+            int appliedBeforeThisEnvelope = applied;
             foreach (EventReplicationCodec.ReplicatedEventRecord record in batch)
             {
                 streamIdsAnsweredThisRead.Add(record.StreamId);
@@ -285,6 +298,16 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
                     streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead, originProgressThisRead,
                     originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, now, cancellationToken);
+            }
+
+            // task 252bc5cf: tallied per envelope, after its own batch has applied, and only for an
+            // answer stamped with a request id — the held-tail replay below adds to `applied` too
+            // and belongs to no single envelope, so attributing it to one would overcount.
+            if (answeredRequestId is { } tallyRequestId)
+            {
+                (int envelopes, int recordsApplied) = reconcileTallyThisRead.GetValueOrDefault(tallyRequestId);
+                reconcileTallyThisRead[tallyRequestId] =
+                    (envelopes + 1, recordsApplied + (applied - appliedBeforeThisEnvelope));
             }
         }
 
@@ -396,7 +419,22 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             }
         }
 
+        // Folded in BEFORE the commit, so the counts land in the very transaction that advances the
+        // cursor past the envelopes they describe (independent pre-PR review, cycle 1, adversarial
+        // lens, low: a tally committed afterwards is lost for good when that second commit fails,
+        // leaving EnvelopesRead permanently short of AnswerEnvelopeCount, which h9k status reads as
+        // an answer partly lost to an outbox squash — a failure invented out of a failed write).
+        IReadOnlyList<FleetProjectReconcile> tallied = await FoldAnswerTallyAsync(
+            session, projectId, senderNodeId, reconcileTallyThisRead, now, cancellationToken);
+
         await session.SaveChangesAsync(cancellationToken);
+
+        // The held-tail snapshot, and only it, stays after the commit above rather than inside it
+        // (task 252bc5cf): it is a query over HeldReplicatedEventRecord, and the replay above
+        // DELETES the rows whose genesis finally arrived, which a same-session query would not yet
+        // see. A second commit costs nothing a reader can observe, and a failure in it now loses
+        // only a count the next answer recomputes from scratch, never the answer tally above.
+        await SnapshotHeldTailAsync(session, projectId, tallied, cancellationToken);
 
         // A task that just landed here may name blocked-by or stacked-on ids whose own streams this
         // node does not hold, and nothing asked for those — TaskDecider.Assign then refuses the
@@ -419,6 +457,98 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         }
 
         return new EventReplicationReadResult(SenderIgnored: senderIgnored, applied, read.StalledAtSeq ?? read.PrunedBelowSeq);
+    }
+
+    /// <summary>
+    /// Folds this read's own answering envelopes into the reconcile records they belong to (task
+    /// 252bc5cf), and returns the records it touched so the held-tail snapshot below can revisit
+    /// exactly those without re-deriving which they were. Nothing is folded into a record whose own
+    /// <see cref="FleetProjectReconcile.RequestId"/> no answer in this read names: every other
+    /// catch-up shape (a gap-fill, a bootstrap, a stream request, a hand pull) answers no reconcile
+    /// at all, and a reconcile already re-asked under a newer request id is no longer the live
+    /// exchange.
+    /// <para>
+    /// Nor into a record whose own peer is not <paramref name="senderNodeId"/>. A reconcile's own
+    /// request id travels in the clear past every project member — each one's sweep decodes every
+    /// envelope on the shared outbox ref before it checks the audience — so a teammate's node under
+    /// a different owner could otherwise address this node a node-audienced events envelope stamped
+    /// with that id and have its own batches tallied against a sibling's exchange, the same shape
+    /// <c>EventCatchUpInbox.LoadReconcileForRequestAsync</c>'s own peer match refuses for the
+    /// terminal and declining envelopes (independent pre-PR review, cycle 1, adversarial lens,
+    /// medium; this is that finding's sibling site, found by its own class sweep).
+    /// </para>
+    /// </summary>
+    private static async Task<IReadOnlyList<FleetProjectReconcile>> FoldAnswerTallyAsync(
+        IDocumentSession session, Guid projectId, Guid senderNodeId,
+        Dictionary<Guid, (int Envelopes, int RecordsApplied)> tally, DateTimeOffset now,
+        CancellationToken cancellationToken)
+    {
+        if (tally.Count == 0)
+        {
+            return [];
+        }
+
+        IReadOnlyList<FleetProjectReconcile> records = await session.Query<FleetProjectReconcile>()
+            .Where(record => record.ProjectId == projectId && record.PeerNodeId == senderNodeId)
+            .ToListAsync(cancellationToken);
+        Dictionary<Guid, FleetProjectReconcile> byRequestId = [];
+        foreach (FleetProjectReconcile record in records)
+        {
+            byRequestId[record.RequestId] = record;
+        }
+
+        List<FleetProjectReconcile> touched = [];
+        foreach ((Guid requestId, (int envelopes, int recordsApplied)) in tally)
+        {
+            if (!byRequestId.TryGetValue(requestId, out FleetProjectReconcile? record))
+            {
+                continue;
+            }
+
+            FleetReconcileRules.NoteAnswerEnvelopes(record, envelopes, recordsApplied, now);
+            session.Store(record);
+            touched.Add(record);
+        }
+
+        return touched;
+    }
+
+    /// <summary>
+    /// Snapshots onto each record this read just tallied how many streams this node now holds ONLY
+    /// as <see cref="HeldReplicatedEventRecord"/>s (task 252bc5cf) — a tail whose genesis no answer
+    /// carried, which is the one shape a whole-project answer genuinely cannot repair: a replicated
+    /// event is appended, and the head cannot be put in front of a tail already here. Counted and
+    /// reported by <c>h9k status</c> rather than silently skipped, because that count is what tells
+    /// a human the reconcile landed AND that some streams still need the held-tail ask.
+    /// <para>
+    /// The count is project-wide as of right now rather than attributed to this one answer, which is
+    /// the honest reading: a held record exists precisely because its stream has no genesis here,
+    /// and the replay this read performed already deleted every one whose genesis it supplied, so
+    /// whatever is left is exactly what this reconcile did not fix.
+    /// </para>
+    /// </summary>
+    private static async Task SnapshotHeldTailAsync(
+        IDocumentSession session, Guid projectId, IReadOnlyList<FleetProjectReconcile> tallied,
+        CancellationToken cancellationToken)
+    {
+        if (tallied.Count == 0)
+        {
+            return;
+        }
+
+        IReadOnlyList<Guid> heldStreamIds = await session.Query<HeldReplicatedEventRecord>()
+            .Where(held => held.ProjectId == projectId)
+            .Select(held => held.StreamId)
+            .ToListAsync(cancellationToken);
+        int heldTailOnlyStreams = heldStreamIds.Distinct().Count();
+
+        foreach (FleetProjectReconcile record in tallied)
+        {
+            record.HeldTailOnlyStreams = heldTailOnlyStreams;
+            session.Store(record);
+        }
+
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     /// <summary>Returns 0, applying nothing, when this origin event id is already stored — the

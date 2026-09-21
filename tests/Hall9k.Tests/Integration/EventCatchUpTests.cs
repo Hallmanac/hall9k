@@ -578,19 +578,28 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         }
 
         TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        int batchesInspected = 0;
         foreach (TransportEnvelope raw in read.Envelopes)
         {
             MessageEnvelopeCodec.DecodeResult decoded = MessageEnvelopeCodec.Decode(raw.Content);
-            decoded.Envelope!.Kind.Should().Be(MessageKind.Events);
+            // An answer ends with its own terminal events-answer-complete envelope (task 252bc5cf),
+            // which carries no batch at all; every OTHER envelope here is an events batch.
+            decoded.Envelope!.Kind.Should().BeOneOf(MessageKind.Events, MessageKind.EventsAnswerComplete);
+            if (decoded.Envelope.Kind != MessageKind.Events)
+            {
+                continue;
+            }
+
             IReadOnlyList<EventReplicationCodec.ReplicatedEventRecord>? batch =
                 EventReplicationCodec.DecodeBatch(decoded.Envelope.Body);
             batch.Should().NotBeNull();
             batch!.Should().OnlyContain(
                 record => record.StreamId == publicTaskId,
                 "the private task's own stream must never ride a catch-up answer");
+            batchesInspected++;
         }
 
-        read.Envelopes.Should().NotBeEmpty("an assertion loop over nothing proves nothing");
+        batchesInspected.Should().BeGreaterThan(0, "an assertion loop over nothing proves nothing");
     }
 
     /// <summary>
@@ -692,12 +701,16 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
         List<MessageEnvelopeV1> envelopes = [.. read.Envelopes.Select(raw => MessageEnvelopeCodec.Decode(raw.Content).Envelope!)];
 
-        MessageEnvelopeV1 sameOwnerAnswer = envelopes.Single(envelope => envelope.To == MessageAudience.Node(requesterSameOwner));
+        // Kind-scoped because an answer now ends with its own terminal events-answer-complete
+        // envelope, addressed to the same requester (task 252bc5cf).
+        MessageEnvelopeV1 sameOwnerAnswer = envelopes.Single(
+            envelope => envelope.To == MessageAudience.Node(requesterSameOwner) && envelope.Kind == MessageKind.Events);
         EventReplicationCodec.DecodeBatch(sameOwnerAnswer.Body)!.Select(record => record.StreamId).Should()
             .Contain(fleetTaskId, "the same-owner requester is exactly who a fleet item's own fleet reaches")
             .And.Contain(teamTaskId);
 
-        MessageEnvelopeV1 differentOwnerAnswer = envelopes.Single(envelope => envelope.To == MessageAudience.Node(requesterDifferentOwner));
+        MessageEnvelopeV1 differentOwnerAnswer = envelopes.Single(
+            envelope => envelope.To == MessageAudience.Node(requesterDifferentOwner) && envelope.Kind == MessageKind.Events);
         differentOwnerAnswer.Kind.Should().Be(MessageKind.Events, "the team task still answers this requester");
         EventReplicationCodec.DecodeBatch(differentOwnerAnswer.Body)!.Select(record => record.StreamId).Should()
             .NotContain(fleetTaskId, "a fleet item never answers a requester outside the item's own owner")
@@ -779,7 +792,8 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
         List<MessageEnvelopeV1> envelopes = [.. read.Envelopes.Select(raw => MessageEnvelopeCodec.Decode(raw.Content).Envelope!)];
 
-        MessageEnvelopeV1 rootAnswer = envelopes.Single(envelope => envelope.To == MessageAudience.Node(requesterRoot));
+        MessageEnvelopeV1 rootAnswer = envelopes.Single(
+            envelope => envelope.To == MessageAudience.Node(requesterRoot) && envelope.Kind == MessageKind.Events);
         rootAnswer.Kind.Should().Be(MessageKind.Events, "the owner's own root device is exactly who its own fleet reaches");
         EventReplicationCodec.DecodeBatch(rootAnswer.Body)!.Select(record => record.StreamId).Should()
             .Contain(fleetTaskId, "the root device is a member of its own owner's fleet even with no vouched-node entry of its own");
@@ -863,18 +877,27 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         }
 
         TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
+        int batchesInspected = 0;
         foreach (TransportEnvelope raw in read.Envelopes)
         {
             MessageEnvelopeCodec.DecodeResult decoded = MessageEnvelopeCodec.Decode(raw.Content);
+            // The answer's own terminal envelope (task 252bc5cf) carries no batch — skipped rather
+            // than decoded, which is also how an older build treats a kind it does not know.
+            if (decoded.Envelope!.Kind != MessageKind.Events)
+            {
+                continue;
+            }
+
             IReadOnlyList<EventReplicationCodec.ReplicatedEventRecord>? batch =
-                EventReplicationCodec.DecodeBatch(decoded.Envelope!.Body);
+                EventReplicationCodec.DecodeBatch(decoded.Envelope.Body);
             batch.Should().NotBeNull();
             batch!.Should().OnlyContain(
                 record => record.StreamId == otherTaskId,
                 "the requester's own originated task must never be handed back to it");
+            batchesInspected++;
         }
 
-        read.Envelopes.Should().NotBeEmpty("an assertion loop over nothing proves nothing");
+        batchesInspected.Should().BeGreaterThan(0, "an assertion loop over nothing proves nothing");
     }
 
     /// <summary>
@@ -1293,6 +1316,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         TransportReadResult read = await transport.ReadSinceAsync(RepositoryPath, nodeA, sinceSeq: 0, cts.Token);
         List<EventReplicationCodec.ReplicatedEventRecord> served = [];
         int declines = 0;
+        int answersFinished = 0;
         foreach (TransportEnvelope raw in read.Envelopes)
         {
             MessageEnvelopeV1 envelope = MessageEnvelopeCodec.Decode(raw.Content).Envelope!;
@@ -1302,11 +1326,21 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 continue;
             }
 
+            // An answer that served something ends with its own terminal envelope (task 252bc5cf);
+            // a decline is already final on its own and gets none.
+            if (envelope.Kind == MessageKind.EventsAnswerComplete)
+            {
+                answersFinished++;
+                continue;
+            }
+
             envelope.Kind.Should().Be(MessageKind.Events);
             served.AddRange(EventReplicationCodec.DecodeBatch(envelope.Body)!);
         }
 
         declines.Should().Be(2, "the gap-fill and the private stream both say so rather than going silent");
+        answersFinished.Should().Be(
+            2, "each of the two answers that actually served something says it is finished, and neither decline does");
         served.Should().NotBeEmpty();
         served.Should().OnlyContain(
             record => record.StreamId == preSwitchOnTaskId,
