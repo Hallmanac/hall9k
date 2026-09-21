@@ -114,7 +114,9 @@ This is `h9k install --from-release`'s download half, wired to the same idempote
 it fetches the latest release for your platform via `gh`, verifies the checksum, republishes
 the binaries and the canonical skill set, and offers to restart a running daemon onto the
 fresh binaries — no repo checkout, no .NET SDK, on the machine that runs it. `h9k update
---restart` skips the restart prompt.
+--restart` skips the restart prompt; if a verification gate is live on the node it still waits
+for that gate to finish, up to thirty minutes, printing what it is waiting on, before it stops
+the daemon — pass `--now` too if you want the restart to proceed at once regardless.
 
 ## Connecting a database
 
