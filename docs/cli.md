@@ -140,7 +140,13 @@ Delivered with no laps and no sessions. A run's own stream id is accepted here t
 missing from a task already held. A private task is never served, however explicit the ask. A
 stream this node holds only the *tail* of is refused up front instead: a replicated event is
 appended to the local stream and the older half cannot be put in front of the newer half already
-here, so there is nothing to ask for.
+here, so there is nothing to ask for while that tail is applied. The daemon's own startup repair
+frees exactly that shape whenever it can reconstruct the stream faithfully, holding every
+replicated event already on the stream, removing the partially-applied documents and releasing the
+stream id, after which this same command goes through and the held tail completes the moment the
+genesis lands. The refusal says so rather than calling the stream unreachable, and says the other
+half too: a stream the repair cannot reconstruct is left exactly as it is, named with its reason in
+the daemon log, which is where to look if the same refusal comes back after a restart.
 
 A task that arrives naming blocked-by or stacked-on ids whose own streams are not here has those
 asked for automatically, one request per missing dependency, walking the graph as each one lands —
