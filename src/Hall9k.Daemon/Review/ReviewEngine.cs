@@ -3092,7 +3092,7 @@ public sealed class ReviewEngine(
                 // branch's placeholder follows them to be assigned the next free number by the
                 // renumbering step a few lines down. Brian's 2026-09-04 ruling still stands over
                 // every other conflict, and this is its single documented exception
-                // (Decisions Log #PLACEHOLDER-64ba195a); DecisionsLogTailConflictResolver's own
+                // (Decisions Log #250); DecisionsLogTailConflictResolver's own
                 // doc has the shape and every near miss that is not it.
                 MechanicalTailConflictOutcome mechanical = await TryResolveDecisionsLogTailConflictsAsync(
                     context, git, worktreePath, mechanicalProgress, cancellationToken);
