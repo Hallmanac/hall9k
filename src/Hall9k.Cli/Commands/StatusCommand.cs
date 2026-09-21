@@ -344,10 +344,14 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// <summary>
     /// One line per registered, non-archived project this install has no recognized membership on
     /// yet (task: "a newcomer who registers a project whose ledger already has an owner is told so
-    /// and asked for their invite token") — the join deferred to an existing owner, an explicit
-    /// --owner claim is still unverified, or an --invite already pasted is still waiting on its own
-    /// vouch. Silent when every project reads joined, the same "a quiet pane says nothing" posture
-    /// the rest of this command holds.
+    /// and asked for their invite token") — the join deferred to an existing owner, never ran
+    /// because the repository was not reachable yet, an explicit --owner claim is still unverified,
+    /// or an --invite already pasted is still waiting on its own vouch. This local mirror cannot
+    /// tell an invite is actually needed from "this install owns this project and simply has not
+    /// joined it yet" (independent pre-PR review, cycle 1, conformance and adversarial lenses,
+    /// ProjectJoinStatus's own doc), so this names the plain join command rather than presupposing
+    /// --invite <token>. Silent when every project reads joined, the same "a quiet pane says
+    /// nothing" posture the rest of this command holds.
     /// </summary>
     private static async Task WriteProjectsNeedingInviteAsync(IQuerySession session, CancellationToken cancellationToken)
     {
@@ -358,13 +362,13 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
                 .ToListAsync(cancellationToken);
             foreach (ProjectDetails project in projects.OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase))
             {
-                if (!await ProjectJoinStatus.NeedsInviteAsync(session, project, cancellationToken))
+                if (!await ProjectJoinStatus.NotJoinedAsync(session, project, cancellationToken))
                 {
                     continue;
                 }
 
                 AnsiConsole.MarkupLineInterpolated(
-                    $"[yellow]{project.Name}[/] [dim]not joined, invite needed — h9k project join {project.Name} --invite <token>[/]");
+                    $"[yellow]{project.Name}[/] [dim]not joined yet — h9k project join {project.Name}[/]");
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
