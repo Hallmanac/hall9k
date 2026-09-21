@@ -276,13 +276,10 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             foreach (EventReplicationCodec.ReplicatedEventRecord record in batch)
             {
                 streamIdsAnsweredThisRead.Add(record.StreamId);
-                if (await ApplyAsync(
+                applied += await ApplyAsync(
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
                     streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead, originProgressThisRead,
-                    originHighWaterByStream, now, cancellationToken))
-                {
-                    applied++;
-                }
+                    originHighWaterByStream, now, cancellationToken);
             }
         }
 
@@ -383,14 +380,18 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         return new EventReplicationReadResult(SenderIgnored: senderIgnored, applied, read.StalledAtSeq ?? read.PrunedBelowSeq);
     }
 
-    /// <summary>Returns false, applying nothing, when this origin event id is already stored — the
+    /// <summary>Returns 0, applying nothing, when this origin event id is already stored — the
     /// idempotency a re-delivered batch relies on — or already applied earlier in this identical
     /// read, uncommitted (<paramref name="originEventIdsAppliedThisRead"/>): the stored-row check
     /// alone only ever sees committed rows, so a second copy of the same origin event later in the
-    /// same read would otherwise find nothing yet and apply a duplicate. Also false, with a
+    /// same read would otherwise find nothing yet and apply a duplicate. Also 0, with a
     /// warning, when appending this record would put it BEHIND an event the local stream already
-    /// holds from the same origin — see <paramref name="originHighWaterByStream"/>.</summary>
-    private async Task<bool> ApplyAsync(
+    /// holds from the same origin — see <paramref name="originHighWaterByStream"/>. Otherwise 1 for
+    /// this record alone, PLUS however many <see cref="HeldReplicatedEventRecord"/> rows this call's
+    /// own genesis just unblocked and replayed (<see cref="ApplyHeldTailAsync"/>) — the count
+    /// <see cref="ReadFromAsync"/> sums into its own <c>EventsApplied</c>, so a sweep that completes
+    /// a long-held tail reports every fact that actually landed, not only the genesis itself.</summary>
+    private async Task<int> ApplyAsync(
         IDocumentSession session, EventReplicationCodec.ReplicatedEventRecord record, Guid senderNodeId, Guid projectId,
         string? originProjectKey, HashSet<Guid> streamsStartedThisRead, HashSet<Guid> streamsThatFailedToStartThisRead,
         HashSet<Guid> originEventIdsAppliedThisRead, Dictionary<Guid, long> originProgressThisRead,
@@ -399,12 +400,12 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     {
         if (!originEventIdsAppliedThisRead.Add(record.OriginEventId))
         {
-            return false;
+            return 0;
         }
 
         if (await session.LoadAsync<ReplicatedEventRecord>(record.OriginEventId, cancellationToken) is not null)
         {
-            return false;
+            return 0;
         }
 
         Type? eventType = ReplicationEventTypeCatalog.Resolve(record.EventTypeName);
@@ -413,7 +414,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             logger?.LogWarning(
                 "Replicated event of type {EventType} (origin {OriginEventId}) is not a type this build "
                 + "knows — skipped", record.EventTypeName, record.OriginEventId);
-            return false;
+            return 0;
         }
 
         // A well-behaved sender's own outbox already filters to ProjectScoped, never-the-identity-
@@ -432,7 +433,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             logger?.LogWarning(
                 "Replicated event of type {EventType} (origin {OriginEventId}) is never eligible to travel — skipped",
                 record.EventTypeName, record.OriginEventId);
-            return false;
+            return 0;
         }
 
         JsonNode? dataNode;
@@ -445,7 +446,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             logger?.LogWarning(
                 exception, "Replicated event {OriginEventId} of type {EventType} failed to deserialize — skipped",
                 record.OriginEventId, record.EventTypeName);
-            return false;
+            return 0;
         }
 
         // The project id is a per-install coordinate, never this event's shared identity (the
@@ -466,12 +467,12 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             logger?.LogWarning(
                 exception, "Replicated event {OriginEventId} of type {EventType} failed to deserialize — skipped",
                 record.OriginEventId, record.EventTypeName);
-            return false;
+            return 0;
         }
 
         if (data is null)
         {
-            return false;
+            return 0;
         }
 
         // The Project aggregate's own team-facing events (ProjectTeamSettingsChanged, the
@@ -524,7 +525,46 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                     Applied = false,
                 });
                 await session.SaveChangesAsync(cancellationToken);
-                return false;
+                return 0;
+            }
+
+            // A stream this node has never started can only legally start from that aggregate's
+            // own genesis (AggregateGenesisEventTypes) — never from a Project aggregate stream
+            // event, whose effective stream id is deliberately either the receiver's own local
+            // Project stream (already started long before any team-facing event replicates) or a
+            // foreign per-install lifecycle stream that never carries a genesis at all
+            // (ProjectStreamReplicationRules.IsProjectLifecycleEvent's own doc — a teammate's own
+            // ProjectArchived is meant to phantom-stream there, deliberately). Anything else —
+            // a task whose TaskAdded predates the sender's outbox (the switch-on truncation task
+            // a56cf16e already names), or a run whose parent task never arrived — is held rather
+            // than started: this is the recoverable twin of the permanently-failed guard just
+            // above, since a genesis that simply has not arrived YET, unlike one that already
+            // failed, may still show up in a later envelope and complete the story.
+            bool genesisRequired = !ProjectStreamReplicationRules.IsProjectAggregateStreamEvent(eventType)
+                && !ProjectStreamReplicationRules.IsProjectLifecycleEvent(eventType);
+            if (genesisRequired && !AggregateGenesisEventTypes.IsGenesis(eventType))
+            {
+                logger?.LogWarning(
+                    "Replicated event {OriginEventId} (origin {OriginNodeId} sequence {OriginSequence}) of type "
+                    + "{EventType} from sender {SenderNodeId} targets stream {StreamId}, whose own genesis this "
+                    + "node has never received — held rather than starting a headless document; applied, in "
+                    + "order, the moment a later envelope carries the genesis",
+                    record.OriginEventId, record.OriginNodeId, record.OriginSequence, record.EventTypeName,
+                    senderNodeId, effectiveStreamId);
+                session.Store(new HeldReplicatedEventRecord
+                {
+                    Id = record.OriginEventId,
+                    StreamId = effectiveStreamId,
+                    ProjectId = projectId,
+                    SenderNodeId = senderNodeId,
+                    OriginProjectKey = originProjectKey,
+                    RecordJson = EventReplicationCodec.EncodeRecord(record),
+                    OriginSequence = record.OriginSequence,
+                    OriginNodeId = record.OriginNodeId,
+                    HeldAt = now,
+                });
+                await session.SaveChangesAsync(cancellationToken);
+                return 0;
             }
         }
 
@@ -550,7 +590,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 + "origin sequence {HighestHeld}, which stream {StreamId} already holds — refused rather than "
                 + "appended out of order",
                 record.OriginEventId, record.OriginNodeId, record.OriginSequence, highestHeld, effectiveStreamId);
-            return false;
+            return 0;
         }
 
         StreamAction action = streamExists
@@ -669,7 +709,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 Applied = false,
             });
             await session.SaveChangesAsync(cancellationToken);
-            return false;
+            return 0;
         }
 
         streamsStartedThisRead.Add(effectiveStreamId);
@@ -683,7 +723,78 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             originProgressThisRead[record.OriginNodeId] = originProgressAdvancedTo ?? knownHighestValue;
         }
 
-        return true;
+        // This call just started the stream fresh — the one moment a tail this node held earlier
+        // (this record's own genesis simply had not arrived yet) can finally complete: every held
+        // record for this exact stream, oldest first, applied through the ordinary path above
+        // (streamsStartedThisRead already names this stream as existing, so each one appends
+        // rather than tries to start it again).
+        int heldTailApplied = streamExists
+            ? 0
+            : await ApplyHeldTailAsync(
+                session, effectiveStreamId, streamsStartedThisRead, streamsThatFailedToStartThisRead,
+                originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream, now,
+                cancellationToken);
+
+        return 1 + heldTailApplied;
+    }
+
+    /// <summary>
+    /// Replays every <see cref="HeldReplicatedEventRecord"/> waiting on <paramref name="streamId"/>'s
+    /// own genesis, oldest first, now that <see cref="ApplyAsync"/> has just started that stream
+    /// from it. Reapplies each one through <see cref="ApplyAsync"/> itself — by the time this runs,
+    /// <paramref name="streamsStartedThisRead"/> already names the stream as existing, so every held
+    /// record simply appends — rather than duplicating its append/header/dedupe logic here, and
+    /// deletes each held document only once its own replay attempt has actually landed (or
+    /// permanently failed, the ordinary poison-event outcome <see cref="ApplyAsync"/> already
+    /// handles), so a crash between two held records loses nothing: whichever ones already
+    /// committed are gone from this table, and whichever did not are found here again next time.
+    /// <paramref name="originEventIdsAppliedThisRead"/> has this record's own origin id from when it
+    /// was first held — removed before replay, since that set means "already resolved this read",
+    /// which was never true for a record that only ever got as far as being held.
+    /// </summary>
+    private async Task<int> ApplyHeldTailAsync(
+        IDocumentSession session, Guid streamId, HashSet<Guid> streamsStartedThisRead,
+        HashSet<Guid> streamsThatFailedToStartThisRead, HashSet<Guid> originEventIdsAppliedThisRead,
+        Dictionary<Guid, long> originProgressThisRead, Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
+        DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<HeldReplicatedEventRecord> held = await session.Query<HeldReplicatedEventRecord>()
+            .Where(candidate => candidate.StreamId == streamId)
+            .ToListAsync(cancellationToken);
+        if (held.Count == 0)
+        {
+            return 0;
+        }
+
+        int applied = 0;
+        foreach (HeldReplicatedEventRecord heldRecord in held
+            .OrderBy(candidate => candidate.OriginSequence)
+            .ThenBy(candidate => candidate.HeldAt))
+        {
+            EventReplicationCodec.ReplicatedEventRecord? decoded = EventReplicationCodec.DecodeRecord(heldRecord.RecordJson);
+            if (decoded is not null)
+            {
+                originEventIdsAppliedThisRead.Remove(decoded.OriginEventId);
+                applied += await ApplyAsync(
+                    session, decoded, heldRecord.SenderNodeId, heldRecord.ProjectId, heldRecord.OriginProjectKey,
+                    streamsStartedThisRead, streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead,
+                    originProgressThisRead, originHighWaterByStream, now, cancellationToken);
+            }
+            else
+            {
+                logger?.LogError(
+                    "Held replicated record {HeldRecordId} for stream {StreamId} would not decode — dropped "
+                    + "rather than retried forever", heldRecord.Id, streamId);
+            }
+
+            // Deleted only after ApplyAsync's own save(s) above have already landed, whatever their
+            // outcome: staging the delete BEFORE calling ApplyAsync would lose it to
+            // EjectAllPendingChanges on the poison-event path, leaving this row orphaned forever.
+            session.Delete<HeldReplicatedEventRecord>(heldRecord.Id);
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
+        return applied;
     }
 
     /// <summary>
