@@ -25,10 +25,11 @@ namespace Hall9k.Connectors.Replication;
 /// natively, so an echo of its own history would apply as an un-deduped second copy.
 /// <para>
 /// A third exclusion, this node's own replication switch-on point, applies to a gap-fill and a
-/// bootstrap but NOT to a request a human explicitly made
+/// bootstrap but NOT to a request that names what it wants
 /// (<see cref="EventReplicationCodec.EventsRequestRecord.IsExplicitAsk"/>: one named stream, or a
-/// named global sequence bound). Task a56cf16e, Decisions Log #236: history is
-/// inert until somebody asks for it, and an explicit ask is the opt-in — the switch-on point
+/// named global sequence bound) — whoever minted it, a human through <c>h9k task pull</c> or the
+/// daemon's own held-tail sweep (task c3bdb62e). Task a56cf16e, Decisions Log #236: history is
+/// inert until something asks for it by name, and naming is the opt-in — the switch-on point
 /// otherwise made every task published on a
 /// node before that node switched replication on permanently unservable to its peers, with the
 /// asking side told only "nothing held here matches this request". The two private exclusions above
@@ -103,14 +104,20 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, 
         // node's entire pre-switch-on back catalogue, which idea 202383dc's migration ruling keeps
         // out of scope for now.
         //
-        // An explicit ask (EventsRequestRecord.IsExplicitAsk: one named stream, or a named global
-        // sequence bound) is the opt-in that lifts it, and only for that one request — task
-        // a56cf16e's own origin incident, 2026-09-19: the Mac's ReplicationSwitchedOn landed at
-        // global sequence 30084 while the task the Windows node was asking for sat at 28273-30020,
-        // so every explicit stream request for it answered "nothing held here matches this request"
-        // and no re-run could ever have changed that. History stays inert until somebody actually
-        // asks for it; a human asking IS somebody. Never lifted for the two shapes a daemon sweep
-        // mints on its own, an ordinary flush and a gap-fill, which is where the inertness matters.
+        // A request that NAMES what it wants (EventsRequestRecord.IsExplicitAsk: one named stream,
+        // or a named global sequence bound) is the opt-in that lifts it, and only for that one
+        // request — task a56cf16e's own origin incident, 2026-09-19: the Mac's ReplicationSwitchedOn
+        // landed at global sequence 30084 while the task the Windows node was asking for sat at
+        // 28273-30020, so every stream request for it answered "nothing held here matches this
+        // request" and no re-run could ever have changed that. History stays inert until something
+        // asks for it by name. Never lifted for the two open-ended shapes, an ordinary flush and a
+        // gap-fill, which is where the inertness matters.
+        //
+        // Naming, not a human's hand, is the rule: the held-tail ask (task c3bdb62e) is minted by a
+        // daemon sweep and does lift it, because it names one stream this node already holds part
+        // of and is asking the peer to complete history that already partly travelled — see
+        // IsExplicitAsk's own doc for why that is the same case the exclusion was never meant to
+        // strand, rather than a hole in it.
         long? switchOnSequence = request.IsExplicitAsk
             ? null
             : await EventReplicationOutbox.EnsureSwitchedOnAsync(session, myNodeId, now, cancellationToken);

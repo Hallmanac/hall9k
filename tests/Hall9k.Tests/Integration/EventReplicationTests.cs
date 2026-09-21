@@ -3104,6 +3104,178 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         }
     }
 
+    /// <summary>
+    /// What the held-tail ask (task c3bdb62e) actually gets answered with, and the reason a held
+    /// record's own ask bookkeeping has to survive it: a peer that holds the same tail and not the
+    /// genesis answers by serving that tail again, so every held record arrives a second time. The
+    /// document already here is left exactly as it is — storing over it reset
+    /// <see cref="HeldReplicatedEventRecord.CatchUpAttempts"/> to zero and refreshed
+    /// <see cref="HeldReplicatedEventRecord.HeldAt"/> on every answer, so the three-attempt stop
+    /// never engaged for the one shape it exists for and the stream was asked about again every
+    /// cooldown for as long as the node ran (independent pre-PR review, cycle 1, both lenses).
+    /// </summary>
+    [Fact]
+    public async Task A_tail_re_served_without_its_genesis_keeps_the_ask_bookkeeping_already_on_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport, new ListLogger<EventReplicationInbox>());
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        Guid taskId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        TaskCompleted completed = new(taskId, runId, "https://github.com/x/y/pull/9", Now.AddSeconds(2));
+        EventReplicationCodec.ReplicatedEventRecord completedRecord = new(
+            taskId, typeof(TaskCompleted).FullName!, JsonSerializer.Serialize(completed, jsonOptions),
+            DomainId.New(), OriginSequence: 3, nodeA, "owner-a-fingerprint", Now.AddSeconds(2), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([completedRecord]), Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: null, cts.Token);
+        }
+
+        // Two sweeps' worth of held-tail asks, recorded the way EventCatchUpCoordinator records
+        // them: on the held record itself.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            HeldReplicatedEventRecord held = (await session.Query<HeldReplicatedEventRecord>()
+                .FirstOrDefaultAsync(cts.Token))!;
+            held.CatchUpAttempts = 2;
+            held.LastCatchUpAskedAt = Now.AddSeconds(5);
+            session.Store(held);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The answer: the same tail event over again, from a peer that cannot serve the genesis.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([completedRecord]), Now.AddSeconds(6), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(6), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult secondRead = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(7),
+                trustChain: null, cts.Token);
+            secondRead.EventsApplied.Should().Be(0, "the genesis is still missing, so the tail is still held");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            HeldReplicatedEventRecord held = (await session.Query<HeldReplicatedEventRecord>()
+                .ToListAsync(cts.Token)).Should().ContainSingle().Subject;
+            held.CatchUpAttempts.Should().Be(2, "the asks this node already made are what the stop counts");
+            held.LastCatchUpAskedAt.Should().Be(Now.AddSeconds(5));
+            held.CatchUpGivenUp.Should().BeFalse();
+            held.HeldAt.Should().Be(Now.AddSeconds(4), "the hold is as old as it always was, not as old as the answer");
+        }
+    }
+
+    /// <summary>
+    /// The residue this node's own sweep has to clear: a read that STARTED a stream and then threw
+    /// before draining that stream's held tail leaves records behind that no later read will ever
+    /// replay, because the genesis dedupes on the retry and the deferred replay is driven by an
+    /// in-memory set of what this read started. The held-tail sweep finds them
+    /// (<c>HeldTailSweepResult.StreamsToReplay</c>) and hands each one back here
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium).
+    /// </summary>
+    [Fact]
+    public async Task A_held_tail_whose_stream_already_exists_replays_when_it_is_handed_back()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport, new ListLogger<EventReplicationInbox>());
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        Guid taskId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        TaskCompleted completed = new(taskId, runId, "https://github.com/x/y/pull/9", Now.AddSeconds(2));
+        EventReplicationCodec.ReplicatedEventRecord completedRecord = new(
+            taskId, typeof(TaskCompleted).FullName!, JsonSerializer.Serialize(completed, jsonOptions),
+            DomainId.New(), OriginSequence: 3, nodeA, "owner-a-fingerprint", Now.AddSeconds(2), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([completedRecord]), Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: null, cts.Token);
+        }
+
+        // The genesis lands and starts the stream, and then the read that carried it fails before
+        // the held tail is drained — written here directly, since the failure itself is another
+        // test's subject and what matters is the state it leaves: a stream that exists, and a held
+        // record for it that nothing is ever coming back for.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<TaskAggregate>(taskId, new TaskAdded(
+                taskId, projectId, "Ship the tail-only task", ["it ships"], TaskType.Feature, null, null, null,
+                Now, ownerId));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            (await replicationInbox.ReplayHeldTailAsync(session, taskId, Now.AddSeconds(8), cts.Token))
+                .Should().Be(1, "the tail was waiting on a replay, not on the fleet");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            TaskDetails task = (await session.LoadAsync<TaskDetails>(taskId, cts.Token))!;
+            task.State.Should().Be(TaskState.Done, "the held completed event finally applied");
+            task.PullRequestUrl.Should().Be("https://github.com/x/y/pull/9");
+            (await session.Query<HeldReplicatedEventRecord>().ToListAsync(cts.Token)).Should().BeEmpty(
+                "a replayed record is deleted, so it never spends a slot of the next sweep's own cap again");
+        }
+    }
+
     private static async Task<Guid> SeedQueuedTaskAsync(
         IDocumentStore store, Guid projectId, Guid ownerId, DateTimeOffset now, CancellationToken cancellationToken)
     {
