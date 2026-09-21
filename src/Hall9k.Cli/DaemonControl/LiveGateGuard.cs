@@ -66,13 +66,20 @@ public static class LiveGateGuard
             IReadOnlyList<RunDetails> candidates = await session.Query<RunDetails>()
                 .Where(run => run.NodeId == nodeId)
                 .Where(run => run.MatchesSql(
-                    "d.data ->> 'state' not in (?, ?, ?, ?) and d.data -> 'activeGate' is not null",
+                    "d.data ->> 'state' not in (?, ?, ?, ?) and jsonb_typeof(d.data -> 'activeGate') = 'object'",
                     TerminalRunStates[0], TerminalRunStates[1], TerminalRunStates[2], TerminalRunStates[3]))
                 .ToListAsync(cancellationToken);
 
-            return [.. candidates
-                .Where(run => DaemonProcess.IsAlive(run.ActiveGate!.ProcessId, run.ActiveGate.StartedAt))
-                .Select(run => new LiveGate(run.Id, run.TaskId, run.ActiveGate!.GateName, run.ActiveGate.ProcessId))];
+            List<LiveGate> live = [];
+            foreach (RunDetails run in candidates)
+            {
+                if (run.ActiveGate is { } activeGate && DaemonProcess.IsAlive(activeGate.ProcessId, activeGate.StartedAt))
+                {
+                    live.Add(new LiveGate(run.Id, run.TaskId, activeGate.GateName, activeGate.ProcessId));
+                }
+            }
+
+            return live;
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
