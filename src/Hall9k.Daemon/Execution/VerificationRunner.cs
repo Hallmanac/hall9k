@@ -86,12 +86,30 @@ public sealed partial class VerificationRunner(
     /// in the background), so a leg's own dirty worktree is never turned away just because a
     /// different, earlier leg on the same run already spent ITS one automatic recovery.
     /// </summary>
+    public Task<bool> VerifyAsync(
+        Guid runId, Guid taskId, string? scopeSinceSha, string scopeContext, RunSessionLeg leg,
+        CancellationToken cancellationToken) =>
+        VerifyAsync(runId, taskId, scopeSinceSha, scopeContext, leg, recentlyEndedGate: null, cancellationToken);
+
+    /// <summary>
+    /// <see cref="VerifyAsync(Guid,Guid,string?,string,RunSessionLeg,CancellationToken)"/>'s own
+    /// overload for the one caller that knows something this call's own fresh
+    /// <see cref="RunDetails"/> load cannot: <c>RunSupervisor.AdoptOrphansAsync</c>, resuming a run
+    /// whose orphaned gate it just killed and recorded <see cref="GateEnded"/> for. That
+    /// append clears <see cref="RunDetails.ActiveGate"/> before this method's own load ever runs,
+    /// so without <paramref name="recentlyEndedGate"/> the log-open <see cref="IOException"/>
+    /// branch in <c>RunGateAsync</c> could never name the process most likely still holding the
+    /// handle — the one adoption itself just terminated (independent pre-PR review, cycle 3,
+    /// adversarial lens, low). Every other caller passes null through the parameterless overload
+    /// above, unchanged.
+    /// </summary>
     public async Task<bool> VerifyAsync(
         Guid runId, Guid taskId, string? scopeSinceSha, string scopeContext, RunSessionLeg leg,
-        CancellationToken cancellationToken)
+        ActiveGate? recentlyEndedGate, CancellationToken cancellationToken)
     {
         SettlingVerificationResult result = await VerifyCoreAsync(
-            runId, taskId, scopeSinceSha, scopeContext, leg, allowRepairInsteadOfFail: false, cancellationToken);
+            runId, taskId, scopeSinceSha, scopeContext, leg, allowRepairInsteadOfFail: false, recentlyEndedGate,
+            cancellationToken);
         return result.Passed;
     }
 
@@ -110,11 +128,13 @@ public sealed partial class VerificationRunner(
     public Task<SettlingVerificationResult> VerifyForSettlingAsync(
         Guid runId, Guid taskId, string? scopeSinceSha, string scopeContext, RunSessionLeg leg,
         bool allowRepairInsteadOfFail, CancellationToken cancellationToken) =>
-        VerifyCoreAsync(runId, taskId, scopeSinceSha, scopeContext, leg, allowRepairInsteadOfFail, cancellationToken);
+        VerifyCoreAsync(
+            runId, taskId, scopeSinceSha, scopeContext, leg, allowRepairInsteadOfFail, recentlyEndedGate: null,
+            cancellationToken);
 
     private async Task<SettlingVerificationResult> VerifyCoreAsync(
         Guid runId, Guid taskId, string? scopeSinceSha, string scopeContext, RunSessionLeg leg,
-        bool allowRepairInsteadOfFail, CancellationToken cancellationToken)
+        bool allowRepairInsteadOfFail, ActiveGate? recentlyEndedGate, CancellationToken cancellationToken)
     {
         await using IQuerySession query = store.QuerySession();
         RunDetails? run = await query.LoadAsync<RunDetails>(runId, cancellationToken);
@@ -295,6 +315,13 @@ public sealed partial class VerificationRunner(
             return new SettlingVerificationResult(false, failedGate.Name, recordedReason);
         }
 
+        // Consumed by the first gate this pass actually attempts (a host-coupled gate this pass
+        // skips outright never attempts anything, so it never consumes it) — recentlyEndedGate
+        // describes the one process adoption just killed before this pass began, and naming it
+        // against a second, unrelated gate later in the same pass would misattribute a lock
+        // that process was never holding.
+        ActiveGate? pendingRecentlyEndedGate = recentlyEndedGate;
+
         foreach (VerifyCommand gate in gates)
         {
             bool gateIsDotnetTest = IsDotnetTestGate(gate.Command);
@@ -321,9 +348,12 @@ public sealed partial class VerificationRunner(
                 continue;
             }
 
+            ActiveGate? recordedActiveGate = run.ActiveGate ?? pendingRecentlyEndedGate;
+            pendingRecentlyEndedGate = null;
+
             Stopwatch gateStopwatch = Stopwatch.StartNew();
             (bool passed, string summary, bool isInfrastructureFailure, string? excerpt, bool fellBackToFull, TimeSpan permitWaitElapsed) =
-                await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, run.ActiveGate, cancellationToken);
+                await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, recordedActiveGate, cancellationToken);
             TimeSpan gateElapsed = gateStopwatch.Elapsed - permitWaitElapsed;
             bool gateFellBackToFull = fellBackToFull;
             if (passed)
@@ -392,7 +422,7 @@ public sealed partial class VerificationRunner(
 
             Stopwatch retryStopwatch = Stopwatch.StartNew();
             (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _, bool retryFellBackToFull, TimeSpan retryPermitWaitElapsed) =
-                await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, run.ActiveGate, cancellationToken);
+                await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, recordedActiveGate, cancellationToken);
             TimeSpan totalGateElapsed = gateElapsed + retryStopwatch.Elapsed - retryPermitWaitElapsed;
 
             // The retry's own outcome replaces the first attempt's, not OR's with it (adversarial
