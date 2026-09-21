@@ -72,6 +72,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await using IQuerySession session = store.QuerySession();
 
         await WriteIdentityLineAsync(session, cancellationToken);
+        await WriteProjectsNeedingInviteAsync(session, cancellationToken);
         await WriteOrchestratorLineAsync(session, cancellationToken);
         await WriteMessagesLineAsync(session, cancellationToken);
         await WriteReplicatedEventsIgnoredSendersAsync(session, cancellationToken);
@@ -337,6 +338,38 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]identity: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>
+    /// One line per registered, non-archived project this install has no recognized membership on
+    /// yet (task: "a newcomer who registers a project whose ledger already has an owner is told so
+    /// and asked for their invite token") — the join deferred to an existing owner, an explicit
+    /// --owner claim is still unverified, or an --invite already pasted is still waiting on its own
+    /// vouch. Silent when every project reads joined, the same "a quiet pane says nothing" posture
+    /// the rest of this command holds.
+    /// </summary>
+    private static async Task WriteProjectsNeedingInviteAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>()
+                .Where(project => !project.IsArchived)
+                .ToListAsync(cancellationToken);
+            foreach (ProjectDetails project in projects.OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                if (!await ProjectJoinStatus.NeedsInviteAsync(session, project, cancellationToken))
+                {
+                    continue;
+                }
+
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[yellow]{project.Name}[/] [dim]not joined, invite needed — h9k project join {project.Name} --invite <token>[/]");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]join status: unavailable ({exception.Message})[/]");
         }
     }
 
