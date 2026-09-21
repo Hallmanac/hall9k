@@ -651,6 +651,9 @@ public sealed class TaskHolderClaimTests(PostgresFixture postgres) : IClassFixtu
         public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("Simulated push failure — the remote refused every attempt.");
 
+        public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("Simulated push failure — the remote refused every attempt.");
+
         public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
             inner.DeleteAsync(request, cancellationToken);
 
@@ -676,6 +679,9 @@ public sealed class TaskHolderClaimTests(PostgresFixture postgres) : IClassFixtu
             Task.FromResult(LedgerFile.Absent with { FetchFailed = true });
 
         public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken) =>
+            throw new InvalidOperationException("This claim must never reach a write — the existence read's own fetch failure should hold it first.");
+
+        public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("This claim must never reach a write — the existence read's own fetch failure should hold it first.");
 
         public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>

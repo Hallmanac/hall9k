@@ -112,6 +112,58 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         throw new LedgerPushRejectedException(request.RefName, MaxPushAttempts, lastError);
     }
 
+    public async Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken)
+    {
+        RequireRegistered(request.RefName);
+        RequireSigningKey(request.SigningKey);
+        await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
+
+        string lastError = string.Empty;
+        for (int attempt = 1; attempt <= MaxPushAttempts; attempt++)
+        {
+            string? tip = await ResolveTipAsync(request.RepositoryPath, request.RefName, cancellationToken);
+
+            LedgerFile? conflicting = null;
+            foreach (LedgerFileWrite file in request.Files)
+            {
+                LedgerFile current = await ReadAtTipAsync(request.RepositoryPath, tip, file.Path, cancellationToken);
+                if (current.BlobId != file.ExpectedBlobId)
+                {
+                    conflicting = current;
+                    break;
+                }
+            }
+
+            if (conflicting is { } current2)
+            {
+                return LedgerWriteOutcome.Conflict(current2);
+            }
+
+            string commitId = await BuildManyCommitAsync(request, tip, cancellationToken);
+
+            (int pushExit, _, string pushError) = await RunGitAsync(
+                request.RepositoryPath,
+                ["push", "origin", $"{commitId}:{request.RefName}"],
+                environment: null,
+                standardInput: null,
+                cancellationToken);
+            if (pushExit == 0)
+            {
+                await SetLocalRefAsync(request.RepositoryPath, request.RefName, commitId, cancellationToken);
+                return LedgerWriteOutcome.Written(commitId);
+            }
+
+            lastError = pushError;
+            logger.LogInformation(
+                "Push to {RefName} was rejected on attempt {Attempt}/{MaxAttempts} ({Error}); re-fetching to retry",
+                request.RefName, attempt, MaxPushAttempts, pushError.Trim());
+
+            await FetchRefAsync(request.RepositoryPath, request.RefName, cancellationToken);
+        }
+
+        throw new LedgerPushRejectedException(request.RefName, MaxPushAttempts, lastError);
+    }
+
     public async Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken)
     {
         RequireRegistered(request.RefName);
@@ -344,10 +396,61 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
     /// one command line rather than written anywhere, so it never touches this repository's or
     /// this machine's git config and never outlives this single process.
     /// </summary>
+    /// <summary>
+    /// Mirrors <see cref="BuildCommitAsync"/> for <see cref="WriteManyAsync"/>: the new tree carries
+    /// every one of <see cref="LedgerManyWriteRequest.Files"/> rather than a single path, built by
+    /// <see cref="BuildTreeAsync"/>'s own multi-file overload; everything else (parent, signing,
+    /// config isolation) is identical.
+    /// </summary>
+    private static async Task<string> BuildManyCommitAsync(
+        LedgerManyWriteRequest request, string? parentTip, CancellationToken cancellationToken)
+    {
+        string treeId = await BuildTreeAsync(
+            request.RepositoryPath, [.. request.Files.Select(file => (file.Path, file.Content))], parentTip, cancellationToken);
+
+        List<string> arguments =
+        [
+            "-c", $"user.name={request.Committer.Name}",
+            "-c", $"user.email={request.Committer.Email}",
+        ];
+        if (request.SigningKey is { } signingKey)
+        {
+            arguments.Add("-c");
+            arguments.Add("gpg.format=ssh");
+            arguments.Add("-c");
+            arguments.Add($"user.signingkey={signingKey.PrivateKeyPath}");
+        }
+
+        arguments.Add("commit-tree");
+        arguments.Add(treeId);
+        if (parentTip is not null)
+        {
+            arguments.Add("-p");
+            arguments.Add(parentTip);
+        }
+
+        if (request.SigningKey is not null)
+        {
+            arguments.Add("-S");
+        }
+
+        arguments.Add("-m");
+        arguments.Add(request.CommitMessage);
+
+        (int exitCode, string output, string error) = await RunGitAsync(
+            request.RepositoryPath, arguments, null, null, cancellationToken);
+        if (exitCode != 0)
+        {
+            throw new InvalidOperationException($"git commit-tree failed in {request.RepositoryPath}: {error.Trim()}");
+        }
+
+        return output.Trim();
+    }
+
     private static async Task<string> BuildCommitAsync(
         LedgerWriteRequest request, string? parentTip, CancellationToken cancellationToken)
     {
-        string treeId = await BuildTreeAsync(request.RepositoryPath, request.Path, request.Content, parentTip, cancellationToken);
+        string treeId = await BuildTreeAsync(request.RepositoryPath, [(request.Path, request.Content)], parentTip, cancellationToken);
 
         List<string> arguments =
         [
@@ -393,11 +496,17 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
     /// repository's own (a bare repository has none) and never shared with any other concurrent
     /// call, so two writers building trees for the same ref at once never see each other's
     /// half-built state. <paramref name="parentTip"/>'s own tree is loaded first when it exists, so
-    /// every path other than <paramref name="path"/> survives into the new tree unchanged — what
-    /// lets two writers on two different paths both land without either clobbering the other.
+    /// every path other than <paramref name="files"/>' own survives into the new tree unchanged —
+    /// what lets two writers on two different paths both land without either clobbering the other.
+    /// A single-file write (<see cref="WriteAsync"/>) and a multi-file one
+    /// (<see cref="WriteManyAsync"/>) share this one builder: every file in <paramref name="files"/>
+    /// is staged into the same private index before <c>write-tree</c> runs once, so a multi-file
+    /// caller gets exactly one tree — and, once <see cref="BuildManyCommitAsync"/> commits it, one
+    /// commit — for every path it named, not one tree per path.
     /// </summary>
     private static async Task<string> BuildTreeAsync(
-        string repositoryPath, string path, string content, string? parentTip, CancellationToken cancellationToken)
+        string repositoryPath, IReadOnlyList<(string Path, string Content)> files, string? parentTip,
+        CancellationToken cancellationToken)
     {
         string tempIndex = System.IO.Path.Combine(System.IO.Path.GetTempPath(), $"h9k-ledger-index-{Guid.NewGuid():N}");
         Dictionary<string, string> indexEnvironment = new() { ["GIT_INDEX_FILE"] = tempIndex };
@@ -413,21 +522,24 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
                 }
             }
 
-            (int hashExit, string blobOutput, string hashError) = await RunGitAsync(
-                repositoryPath, ["hash-object", "-w", "--stdin"], null, content, cancellationToken);
-            if (hashExit != 0)
+            foreach ((string path, string content) in files)
             {
-                throw new InvalidOperationException($"git hash-object failed in {repositoryPath}: {hashError.Trim()}");
-            }
+                (int hashExit, string blobOutput, string hashError) = await RunGitAsync(
+                    repositoryPath, ["hash-object", "-w", "--stdin"], null, content, cancellationToken);
+                if (hashExit != 0)
+                {
+                    throw new InvalidOperationException($"git hash-object failed in {repositoryPath}: {hashError.Trim()}");
+                }
 
-            string blobId = blobOutput.Trim();
-            (int addExit, _, string addError) = await RunGitAsync(
-                repositoryPath,
-                ["update-index", "--add", "--cacheinfo", $"100644,{blobId},{path}"],
-                indexEnvironment, null, cancellationToken);
-            if (addExit != 0)
-            {
-                throw new InvalidOperationException($"git update-index failed in {repositoryPath}: {addError.Trim()}");
+                string blobId = blobOutput.Trim();
+                (int addExit, _, string addError) = await RunGitAsync(
+                    repositoryPath,
+                    ["update-index", "--add", "--cacheinfo", $"100644,{blobId},{path}"],
+                    indexEnvironment, null, cancellationToken);
+                if (addExit != 0)
+                {
+                    throw new InvalidOperationException($"git update-index failed in {repositoryPath}: {addError.Trim()}");
+                }
             }
 
             (int writeExit, string treeOutput, string writeError) = await RunGitAsync(

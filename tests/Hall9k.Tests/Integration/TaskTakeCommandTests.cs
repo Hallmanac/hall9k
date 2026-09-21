@@ -461,6 +461,9 @@ public sealed class TaskTakeCommandTests : IClassFixture<PostgresFixture>, IAsyn
             return await inner.WriteAsync(request, cancellationToken);
         }
 
+        public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken) =>
+            inner.WriteManyAsync(request, cancellationToken);
+
         public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
             inner.DeleteAsync(request, cancellationToken);
 

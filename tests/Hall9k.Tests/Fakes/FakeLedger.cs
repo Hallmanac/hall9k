@@ -26,6 +26,10 @@ internal sealed class FakeLedger : ILedger
     /// (content, committer, signing key) rather than re-deriving from <see cref="ReadAsync"/>.</summary>
     public List<LedgerWriteRequest> Writes { get; } = [];
 
+    /// <summary>Every multi-file write this fake actually accepted, in order — the
+    /// <see cref="WriteManyAsync"/> counterpart to <see cref="Writes"/>.</summary>
+    public List<LedgerManyWriteRequest> ManyWrites { get; } = [];
+
     /// <summary>Every delete this fake actually accepted, in order — the same reason <see cref="Writes"/> exists.</summary>
     public List<LedgerDeleteRequest> Deletes { get; } = [];
 
@@ -67,6 +71,34 @@ internal sealed class FakeLedger : ILedger
         _files[key] = new StoredFile(request.Content, blobId);
         _refTips[(request.RepositoryPath, request.RefName)] = blobId;
         return Task.FromResult(LedgerWriteOutcome.Written(blobId));
+    }
+
+    public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken)
+    {
+        RequireRegistered(request.RefName);
+        RequireSigningKey(request.SigningKey);
+
+        foreach (LedgerFileWrite file in request.Files)
+        {
+            (string RepositoryPath, string RefName, string Path) fileKey = (request.RepositoryPath, request.RefName, file.Path);
+            string? currentBlobId = _files.TryGetValue(fileKey, out StoredFile? existing) ? existing.BlobId : null;
+            if (currentBlobId != file.ExpectedBlobId)
+            {
+                return Task.FromResult(LedgerWriteOutcome.Conflict(
+                    existing is null ? LedgerFile.Absent : new LedgerFile(existing.Content, existing.BlobId)));
+            }
+        }
+
+        ManyWrites.Add(request);
+        string commitId = Guid.NewGuid().ToString("N");
+        foreach (LedgerFileWrite file in request.Files)
+        {
+            (string RepositoryPath, string RefName, string Path) fileKey = (request.RepositoryPath, request.RefName, file.Path);
+            _files[fileKey] = new StoredFile(file.Content, Guid.NewGuid().ToString("N"));
+        }
+
+        _refTips[(request.RepositoryPath, request.RefName)] = commitId;
+        return Task.FromResult(LedgerWriteOutcome.Written(commitId));
     }
 
     public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken)
