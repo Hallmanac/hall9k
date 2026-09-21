@@ -23,7 +23,3 @@ origin-branch: task/503a7acf-a-project-s-prompt-addenda-liv
 published: 2026-09-17 15:22:13Z
 context: |-
   Idea b9b09779 (review personas), piece 6: project prompt addenda. Independent of the persona pieces. Redrafted 2026-09-17 from a fragment-override design to additive addenda on Brian's caution about over-engineering; the precedent is the project's writing-conventions setting pasted into every prompt that composes as the owner. Walked with Brian 2026-09-17 late morning (criterion 1 singly, 2 to 5 in a batch, approved; two clarifications at his ask: the file is freely replaceable, and the cap has an --over-cap escape hatch with a recorded reason). Code seams: PromptTemplates (Hall9k.Domain/Infrastructure/Storage), each prompt builder's rules section, the ledger component (A1), the daemon's fetch loop, the writing-conventions plumbing as the model.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a04de3-7a23-75c0-8a06-9314ef6ab27d
-holder-node-name: HALL-AGELESSRX
-holder-since: 2026-09-21 12:45:07Z
