@@ -1,10 +1,9 @@
 using FluentAssertions;
-using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Xunit;
 
-namespace Hall9k.Tests.Daemon;
+namespace Hall9k.Tests.Domain;
 
 /// <summary>
 /// The one read that decides whether a review may drive (idea b9b09779): what the project's own
