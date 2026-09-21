@@ -844,13 +844,24 @@ travels on its own. That keeps a node's pre-replication back catalogue inert rat
 project the day it adopts replication — but it also means a task published before its node switched
 on is unreachable by any open-ended mechanism, forever. So an ask that names what it wants, and only
 such an ask, is served from below the answering node's switch-on point: one named stream, or a named
-sequence bound. An ordinary flush, a gap-fill, and a bootstrap name nothing and all still stop there.
+sequence bound. An ordinary flush and a gap-fill name nothing and both still stop there.
 Naming is the rule rather than a human's hand being on it, which matters because the held-tail ask
 above names one stream and comes from the sweep: it asks a peer to complete history that already
 partly arrived here, which is the case the switch-on point was never meant to strand, and it can
 reach exactly that one stream and nothing else. What never bends, however specific the ask: a currently-private task
 or idea is never served, and no node is ever handed its own history back. Answers apply by origin
 event id, so a pull over streams a node already holds changes nothing.
+
+**The other automatic ask that reaches just as far: a brand-new node's bootstrap.** A node joining a
+project holds nothing of it, asks every peer once, and has nobody to type an explicit pull on its
+behalf, so the bootstrap is answered from the start of the answering node's own log too, rather
+than from its switch-on point. Where the held-tail ask gets there by naming one stream, the
+bootstrap gets there by being asked only once. Without it, a member who joins today receives only
+what each peer appended after it switched replication on: the tail of everything older, or nothing
+at all. It is one answer per new node rather than a recurring cost, which is what tells it apart
+from the gap-fill: that one is minted whenever a hole is noticed, on a node that already holds the
+project's recent history, and it keeps the bound. The private and own-history exclusions apply to a
+bootstrap exactly as they do to everything else.
 
 **What a pull cannot reach: a stream a node holds only the tail of.** A replicated event is
 appended to the local stream, never inserted in front of what is already there. A task that was
@@ -859,7 +870,11 @@ ordinary flush shipped what happened after the switch-on point and nothing befor
 holds the tail with no `TaskAdded` under it. Applying the older half now would replay that stream
 backwards and leave the task reading as it did the moment it was created, so the receiving node
 refuses those events instead, and `h9k task pull` says so up front rather than queueing an ask that
-can only be refused on arrival. The full history stays readable on the node that produced it.
+can only be refused on arrival. The full history stays readable on the node that produced it. A
+node holding one of those partial streams cannot pass it on either, in a bootstrap answer or any
+other: nothing says which project a stream with no genesis under it belongs to, and the platform
+forwards nothing on a guess, so a member joining this week receives the whole streams and none of
+the partial ones.
 
 **A pull brings the whole story, not just the stream you named.** An ask for a task's stream is
 answered with that task's own run streams too, each whole — a run's stream id is not derivable from
@@ -882,7 +897,7 @@ asking about. Every decline is recorded on the request by node and time, includi
 members that answered after the first decline had already closed it: one peer saying it holds
 nothing reads very differently from all of them saying it.
 
-Depth: [scope.md](scope.md), Decisions Log #236.
+Depth: [scope.md](scope.md), Decisions Log #236 and #PLACEHOLDER-74a7cd0b.
 
 ## The orchestrator's presence
 
