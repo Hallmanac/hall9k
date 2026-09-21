@@ -284,8 +284,10 @@ public sealed record ProjectSettingsChanged(
     /// gates), set by <c>h9k project set --non-executable-path &lt;glob&gt;</c>. Present replaces
     /// the whole list of additions, the <see cref="VerifyCommands"/>/<see cref="ContextLinks"/>
     /// idiom — present-with-empty is how the CLI's own 'default' sentinel clears every addition
-    /// back to just <see cref="Project.NonExecutablePathDefaults"/>'s five rules, which this list
-    /// is always layered on top of and never replaces. Trailing and optional so every stream
-    /// written before this setting existed replays byte-for-byte unchanged.
+    /// back to just <see cref="Project.NonExecutablePathDefaults"/>'s own compiled rules, which
+    /// this list is always layered on top of and never replaces; a leading '!' is refused here,
+    /// since exclusion syntax stays reserved for that compiled set (<c>ProjectDecider</c> is the
+    /// one place that enforces it). Trailing and optional so every stream written before this
+    /// setting existed replays byte-for-byte unchanged.
     /// </summary>
     Optional<IReadOnlyList<string>> NonExecutablePaths = default);

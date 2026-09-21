@@ -406,9 +406,22 @@ public static class ProjectDecider
         // Trimmed and emptied of blanks, the identical NeverCloseLabels idiom just above: this is
         // always this project's own ADDITIONS to NonExecutablePathDefaults.Rules, never a
         // replacement of them — there is no parameter here that could remove one of the compiled
-        // five, which is what makes "a project can only add to the set" hold by construction
-        // rather than by a check (task: a delivered diff that touches no buildable or testable
-        // source skips the build and test gates).
+        // defaults, which is what makes "a project can only add to the set" hold by construction.
+        // A leading '!' is refused outright rather than merely trusted to stay well-behaved
+        // (independent pre-PR review, cycle 1, conformance lens, medium): NonExecutablePathClassifier
+        // honors an exclusion from ANY rule in the effective list, project additions included, so
+        // an unchecked '--non-executable-path "!docs/"' would silently narrow a compiled default
+        // despite "by construction" describing only the list shape, never what a rule inside it can
+        // do. Exclusion syntax stays reserved for the compiled set, where NonExecutablePathDefaults
+        // itself is the only writer.
+        if (nonExecutablePaths.HasValue
+            && (nonExecutablePaths.Value ?? []).Any(glob => glob.Trim().StartsWith('!')))
+        {
+            throw new DomainValidationException(
+                "A non-executable-path addition cannot start with '!': exclusion syntax is reserved "
+                + "for the compiled default set, so a project may only add to it, never narrow it.");
+        }
+
         Optional<IReadOnlyList<string>> normalizedNonExecutablePaths = nonExecutablePaths.HasValue
             ? Optional<IReadOnlyList<string>>.Of(
                 [.. (nonExecutablePaths.Value ?? []).Select(glob => glob.Trim()).Where(glob => glob.Length > 0)])

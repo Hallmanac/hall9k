@@ -1374,4 +1374,47 @@ public sealed class ProjectDeciderTests
         project.Apply(ProjectDecider.RemovePromptAddendum(project.Id, PromptBuilderKey.Work, ownerId, Now.AddMinutes(10)));
         project.PromptAddenda.Should().NotContainKey(PromptBuilderKey.Work.Value);
     }
+
+    // ── Non-executable-path additions (task: a delivered diff that touches no buildable or
+    // testable source skips the build and test gates) ──────────────────────────────────────────
+
+    /// <summary>
+    /// Exclusion syntax (a leading <c>!</c>) is reserved for <see cref="NonExecutablePathDefaults"/>'s
+    /// own compiled rules — <see cref="NonExecutablePathClassifier"/> honors an exclusion from ANY
+    /// rule in the effective list, project additions included, so an unchecked addition could
+    /// silently narrow a compiled default despite "a project can only add to the set, never remove
+    /// or narrow it" (independent pre-PR review, cycle 1, conformance lens, medium). Refused here,
+    /// the one place that writes <see cref="Events.ProjectSettingsChanged.NonExecutablePaths"/>.
+    /// </summary>
+    [Fact]
+    public void ChangeSettings_refuses_a_non_executable_path_addition_that_starts_with_an_exclamation_mark()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        Action act = () => ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            nonExecutablePaths: Optional<IReadOnlyList<string>>.Of(["!docs/"]));
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*cannot start with '!'*");
+    }
+
+    [Fact]
+    public void ChangeSettings_records_an_ordinary_non_executable_path_addition()
+    {
+        ProjectAggregate project = RegisteredProject();
+
+        project.Apply(ProjectDecider.ChangeSettings(
+            project,
+            verifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            skipPermissions: Optional<bool>.None,
+            contextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            changedAt: Now, changedByOwnerId: DomainId.New(),
+            nonExecutablePaths: Optional<IReadOnlyList<string>>.Of(["assets/**/*.png"])));
+
+        project.NonExecutablePaths.Should().ContainSingle().Which.Should().Be("assets/**/*.png");
+    }
 }

@@ -142,7 +142,7 @@ public sealed class ProjectDetails
     public CloseLinkedIssueRule CloseLinkedIssue { get; set; } = CloseLinkedIssueRule.WhenAllTasksClose;
     /// <summary>A label list that forces <see cref="CloseLinkedIssueRule.Never"/> for an issue carrying any of them at closeout time.</summary>
     public List<string> NeverCloseLabels { get; set; } = [];
-    /// <summary>This project's own additions to <see cref="NonExecutablePathDefaults"/>'s compiled five rules — see <see cref="Events.ProjectSettingsChanged.NonExecutablePaths"/>'s own doc.</summary>
+    /// <summary>This project's own additions to <see cref="NonExecutablePathDefaults"/>'s compiled rules — see <see cref="Events.ProjectSettingsChanged.NonExecutablePaths"/>'s own doc.</summary>
     public List<string> NonExecutablePaths { get; set; } = [];
     /// <summary>The compiled default rule set plus this project's own additions — the whole non-executable-path set <c>VerificationRunner</c> classifies a changed path against.</summary>
     public IReadOnlyList<string> EffectiveNonExecutablePaths => [.. NonExecutablePathDefaults.Rules, .. NonExecutablePaths];
