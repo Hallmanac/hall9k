@@ -833,6 +833,95 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
     }
 
     /// <summary>
+    /// Startup adoption finding a run mid-gate: the previous daemon lifetime's own GateStarted
+    /// is still on the stream, and the process it named is still alive by this test's own
+    /// <see cref="FakeProcessManager"/> — adoption must end that tree with
+    /// <see cref="ProcessManagerBase.TerminateTree"/> (never race it with a freshly re-run
+    /// gate), log the pids, and append GateEnded before the pipeline resumes (task: a daemon
+    /// restart that adopts a run mid-gate ends that gate's orphaned process tree instead of
+    /// racing it). <see cref="SeedClaimedTaskAsync"/>'s unregistered project keeps the resumed
+    /// pipeline inert (no gates configured, no real agent spawn) — this test only cares what
+    /// <see cref="RunSupervisor.AdoptOrphansAsync"/> itself does before that pipeline ever runs.
+    /// </summary>
+    [Fact]
+    public async Task AdoptOrphansAsync_ends_a_recorded_live_gate_process_tree_before_resuming()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid _, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        const int gateProcessId = 424242;
+        const int gateDescendantId = 424243;
+        DateTimeOffset gateStartedAt = Now;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunProcessStarted(runId, 111111, Now));
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            session.Events.Append(runId, new GateStarted(runId, "test", gateProcessId, gateStartedAt, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        FakeProcessManager processManager = new();
+        processManager.MarkAlive(gateProcessId);
+        processManager.MarkDescendant(gateProcessId, gateDescendantId);
+
+        RunSupervisor supervisor = NewSupervisor(store, node, processManager: processManager);
+        await supervisor.AdoptOrphansAsync(cts.Token);
+
+        processManager.TreeTerminations.Should().ContainSingle(termination =>
+            termination.ProcessId == gateProcessId && termination.StartedAt == gateStartedAt
+            && termination.Lingering.Contains(gateDescendantId));
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails? details = await query.LoadAsync<RunDetails>(runId, cts.Token);
+        details.Should().NotBeNull();
+        details!.ActiveGate.Should().BeNull(
+            "GateEnded must be appended before the resumed pipeline re-runs the gate from the start");
+    }
+
+    /// <summary>
+    /// The other half: a recorded ActiveGate whose process this test's own
+    /// <see cref="FakeProcessManager"/> reports dead is left exactly as the stream has it —
+    /// nothing to end, and the resumed pipeline's own fresh GateStarted overwrites it the
+    /// moment it starts the gate again.
+    /// </summary>
+    [Fact]
+    public async Task AdoptOrphansAsync_leaves_a_stale_gate_record_for_the_resumed_pipeline()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        DocumentStore store = postgres.Store;
+        (NodeContext node, Guid _, Guid runId) = await SeedClaimedTaskAsync(store, cts.Token);
+
+        const int gateProcessId = 434343;
+        DateTimeOffset gateStartedAt = Now;
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new RunProcessStarted(runId, 111112, Now));
+            session.Events.Append(runId, new AgentSessionCompleted(runId, Now));
+            session.Events.Append(runId, new GateStarted(runId, "test", gateProcessId, gateStartedAt, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Never marked alive: this fake's default is "nothing is alive".
+        FakeProcessManager processManager = new();
+
+        RunSupervisor supervisor = NewSupervisor(store, node, processManager: processManager);
+        await supervisor.AdoptOrphansAsync(cts.Token);
+
+        processManager.TreeTerminations.Should().BeEmpty(
+            "a stale ActiveGate whose process is already gone is left alone, not raced with a kill that has nothing to find");
+        processManager.LivenessQueries.Should().Contain((gateProcessId, gateStartedAt));
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails? details = await query.LoadAsync<RunDetails>(runId, cts.Token);
+        details.Should().NotBeNull();
+        details!.ActiveGate.Should().NotBeNull(
+            "a stale record is left for the resumed pipeline's own fresh GateStarted to overwrite, not cleared here");
+    }
+
+    /// <summary>
     /// The regression an independent pre-PR review (cycle 3, adversarial lens) caught: the
     /// process's own death, not the result line, is what confirms a session's completion (task:
     /// a leg's recorded token usage), so the tail's cursor can advance past that line — and get
