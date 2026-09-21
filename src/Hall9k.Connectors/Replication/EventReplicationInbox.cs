@@ -354,7 +354,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             // genuinely still-incomplete gap surfaces again the next time this sender's outbox
             // stalls or the receiver notices the stream still absent.
             IReadOnlyList<EventCatchUpRequest> outstanding = await session.Query<EventCatchUpRequest>()
-                .Where(request => request.ProjectId == projectId && request.AnsweredAt == null && !request.Exhausted)
+                .Where(request => request.ProjectId == projectId && request.AnsweredAt == null
+                    && request.SupersededAt == null && !request.Exhausted)
                 .ToListAsync(cancellationToken);
             foreach (EventCatchUpRequest request in outstanding)
             {

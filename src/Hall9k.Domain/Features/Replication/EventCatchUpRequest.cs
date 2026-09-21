@@ -71,6 +71,29 @@ public sealed class EventCatchUpRequest
     /// broadcast request, which has no candidate cascade to exhaust.</summary>
     public bool Exhausted { get; set; }
 
+    /// <summary>
+    /// Set when a later ask for the identical stream deliberately closed this one out
+    /// (<c>h9k task pull --again</c>): this request is no longer outstanding, and
+    /// <see cref="SupersededByRequestId"/> names the one that took its place. Deliberately not
+    /// <see cref="AnsweredAt"/>: nothing answered it, and recording a supersede as an answer would
+    /// claim an observation nobody made. This is also the only lever that clears a request minted
+    /// before v0.10.5, whose decline was read by an inbox that closed a candidate cascade alone and
+    /// left a broadcast standing outstanding for good (request 01a0bac1 of 2026-09-19 is that shape).
+    /// </summary>
+    public DateTimeOffset? SupersededAt { get; set; }
+
+    /// <summary>The fresh request that closed this one out, written with <see cref="SupersededAt"/> and never alone.</summary>
+    public Guid? SupersededByRequestId { get; set; }
+
+    /// <summary>
+    /// Set when the platform minted this request on its own because a task that had just landed
+    /// here names it as a blocked-by or stacked-on dependency whose stream this node does not hold
+    /// (<c>TaskDependencyCatchUp</c>): the task that named it, so <c>h9k status</c> can say whose
+    /// dependency is being fetched rather than print a bare stream id nobody typed. Null on every
+    /// request a human's own command queued.
+    /// </summary>
+    public Guid? ForDependencyOfTaskId { get; set; }
+
     /// <summary>The most recent reason a candidate explicitly declined (idea 202383dc: "a peer that
     /// cannot answer says so") — informational only; a decline moves this request to the next
     /// candidate immediately rather than waiting out the timeout, and on a broadcast request,
@@ -83,5 +106,5 @@ public sealed class EventCatchUpRequest
     public Guid? CurrentCandidateNodeId => CandidateIndex >= 0 && CandidateIndex < Candidates.Count ? Candidates[CandidateIndex] : null;
 
     /// <summary>Still waiting on an answer — the set <c>h9k status</c> shows.</summary>
-    public bool IsOutstanding => AnsweredAt is null && !Exhausted;
+    public bool IsOutstanding => AnsweredAt is null && SupersededAt is null && !Exhausted;
 }

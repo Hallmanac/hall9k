@@ -175,22 +175,33 @@ public sealed class EventCatchUpCoordinator
     /// <summary>
     /// Starts a broadcast request for one specific stream, addressed to the whole project rather
     /// than one ranked peer — the ledger-record adoption path (<c>h9k task add --from-issue</c>/
-    /// <c>--from-jira</c> of a record whose stream is absent locally), which runs from a CLI command
-    /// with no live trust chain or transport to rank candidates from (never touches git or a network
-    /// on its own). Every project member's own daemon sweep answers if it can; double answers are
-    /// harmless by dedupe. Skipped when an outstanding request for this exact stream already exists.
+    /// <c>--from-jira</c> of a record whose stream is absent locally), <c>h9k task pull</c>, and the
+    /// dependency asks <see cref="TaskDependencyCatchUp"/> mints when a landed task names a
+    /// dependency this node does not hold. The CLI shapes run with no live trust chain or transport
+    /// to rank candidates from (they never touch git or a network of their own). Every project
+    /// member's own daemon sweep answers if it can; double answers are harmless by dedupe.
+    /// <para>
+    /// What it does about an earlier request for the same stream is <see cref="StreamRequestDecision"/>'s
+    /// own rule, not this method's: an outstanding one suppresses this ask (or, with
+    /// <paramref name="again"/>, is closed out as superseded and replaced), and a CLOSED one — answered,
+    /// declined, or itself superseded — is not an ask in flight and is asked again. <paramref name="reMintCooldown"/>
+    /// is null for a human's own ask and a real span for an automatic one, so a dependency nobody in
+    /// the project holds is not asked for afresh every time any task lands.
+    /// </para>
     /// </summary>
-    public async Task<bool> RequestStreamBroadcastAsync(
+    public async Task<StreamRequestOutcome> RequestStreamBroadcastAsync(
         IDocumentSession session, Guid projectId, Guid forStreamId, Guid myNodeId, string myOwnerFingerprint,
-        DateTimeOffset now, CancellationToken cancellationToken)
+        DateTimeOffset now, CancellationToken cancellationToken, bool again = false, TimeSpan? reMintCooldown = null,
+        Guid? forDependencyOfTaskId = null)
     {
-        bool alreadyOutstanding = await session.Query<EventCatchUpRequest>()
-            .Where(request => request.ProjectId == projectId && request.ForStreamId == forStreamId
-                && request.AnsweredAt == null && !request.Exhausted)
-            .AnyAsync(cancellationToken);
-        if (alreadyOutstanding)
+        IReadOnlyList<EventCatchUpRequest> prior = await session.Query<EventCatchUpRequest>()
+            .Where(request => request.ProjectId == projectId && request.ForStreamId == forStreamId)
+            .ToListAsync(cancellationToken);
+
+        StreamRequestOutcome outcome = StreamRequestDecision.Decide(prior, again, reMintCooldown, now);
+        if (!outcome.Queues())
         {
-            return false;
+            return outcome;
         }
 
         EventCatchUpRequest request = new()
@@ -200,9 +211,21 @@ public sealed class EventCatchUpCoordinator
             ForStreamId = forStreamId,
             Candidates = [],
             SentAt = now,
+            ForDependencyOfTaskId = forDependencyOfTaskId,
         };
+
+        // Closed out before the replacement is broadcast, and by supersede rather than by answer:
+        // the old request was never answered, and the audit trail has to say which of the two
+        // actually happened to it (AGENTS.md: never guess at unobserved facts).
+        foreach (EventCatchUpRequest stale in prior.Where(candidate => candidate.IsOutstanding))
+        {
+            stale.SupersededAt = now;
+            stale.SupersededByRequestId = request.Id;
+            session.Store(stale);
+        }
+
         await BroadcastAsync(session, myNodeId, myOwnerFingerprint, request, now, cancellationToken);
-        return true;
+        return outcome;
     }
 
     /// <summary>
@@ -231,7 +254,7 @@ public sealed class EventCatchUpCoordinator
         bool alreadyOutstanding = await session.Query<EventCatchUpRequest>()
             .Where(request => request.ProjectId == projectId && request.SinceGlobalSequence != null
                 && request.SinceGlobalSequence <= sinceGlobalSequence
-                && request.AnsweredAt == null && !request.Exhausted)
+                && request.AnsweredAt == null && request.SupersededAt == null && !request.Exhausted)
             .AnyAsync(cancellationToken);
         if (alreadyOutstanding)
         {
@@ -284,7 +307,8 @@ public sealed class EventCatchUpCoordinator
         DateTimeOffset now, CancellationToken cancellationToken)
     {
         IReadOnlyList<EventCatchUpRequest> overdue = await session.Query<EventCatchUpRequest>()
-            .Where(request => request.ProjectId == projectId && request.AnsweredAt == null && !request.Exhausted)
+            .Where(request => request.ProjectId == projectId && request.AnsweredAt == null
+                && request.SupersededAt == null && !request.Exhausted)
             .ToListAsync(cancellationToken);
 
         int advanced = 0;

@@ -1123,14 +1123,14 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         // Node B adopted a ledger record for this exact stream and broadcasts for it — the
         // TaskAddCommand.RefuseIfRecordedElsewhereAsync path, addressed to the whole project rather
         // than one ranked peer.
-        bool started;
+        StreamRequestOutcome started;
         await using (IDocumentSession session = storeB.LightweightSession())
         {
             started = await coordinator.RequestStreamBroadcastAsync(
                 session, projectId, taskId, nodeB, "owner-b-fingerprint", Now.AddSeconds(4), cts.Token);
         }
 
-        started.Should().BeTrue();
+        started.Should().Be(StreamRequestOutcome.Queued);
 
         await using (IDocumentSession session = storeB.LightweightSession())
         {
@@ -1372,7 +1372,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             (await coordinator.RequestStreamBroadcastAsync(
                 session, projectId, alreadyHeldTaskId, nodeB, "owner-b-fingerprint", Now.AddSeconds(3), cts.Token))
-                .Should().BeTrue();
+                .Should().Be(StreamRequestOutcome.Queued);
         }
 
         await using (IDocumentSession session = storeB.LightweightSession())
@@ -1700,7 +1700,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             (await coordinator.RequestStreamBroadcastAsync(
                 session, projectId, streamNobodyHolds, nodeB, "owner-b-fingerprint", Now, cts.Token))
-                .Should().BeTrue();
+                .Should().Be(StreamRequestOutcome.Queued);
         }
 
         await using (IDocumentSession session = storeC.LightweightSession())
@@ -1741,11 +1741,69 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             request.Exhausted.Should().BeFalse("a broadcast has no candidate cascade to exhaust");
         }
 
+        Guid reAskedRequestId;
         await using (IDocumentSession session = storeC.LightweightSession())
         {
             (await coordinator.RequestStreamBroadcastAsync(
                 session, projectId, streamNobodyHolds, nodeB, "owner-b-fingerprint", Now.AddSeconds(4), cts.Token))
-                .Should().BeTrue("a closed request blocks nothing, so the human can ask again");
+                .Should().Be(
+                    StreamRequestOutcome.ReAsked,
+                    "a closed request blocks nothing, so the human can ask again — and the outcome says it was a "
+                    + "re-ask rather than a first ask (task 9eb5b245)");
+            reAskedRequestId = (await session.Query<EventCatchUpRequest>()
+                .Where(r => r.ProjectId == projectId && r.ForStreamId == streamNobodyHolds)
+                .ToListAsync(cts.Token)).Single(r => r.IsOutstanding).Id;
+        }
+
+        // h9k task pull --again over the one now outstanding: it is closed out as superseded, and
+        // the decline that was already travelling for it must not land on it as an answer (task
+        // 9eb5b245 — nothing answered it, and an audit field never guesses).
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            (await coordinator.RequestStreamBroadcastAsync(
+                session, projectId, streamNobodyHolds, nodeB, "owner-b-fingerprint", Now.AddSeconds(5), cts.Token,
+                again: true))
+                .Should().Be(StreamRequestOutcome.Superseded);
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeB, projectId, "shared-project-key", adoptUnassigned: false, committerB,
+                signingKeyB, Now.AddSeconds(6), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            (await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeB, projectId, nodeC, "owner-c-fingerprint", Now.AddSeconds(7),
+                trustChain: null, cts.Token)).RequestsAnswered.Should().Be(2, "node C declines both asks it just read");
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeC, projectId, "shared-project-key", adoptUnassigned: false, committerC,
+                signingKeyC, Now.AddSeconds(8), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeC.LightweightSession())
+        {
+            await catchUpInbox.ReadFromAsync(
+                session, RepositoryPath, nodeC, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9),
+                trustChain: null, cts.Token);
+        }
+
+        await using (IQuerySession session = storeC.QuerySession())
+        {
+            EventCatchUpRequest superseded = (await session.LoadAsync<EventCatchUpRequest>(reAskedRequestId, cts.Token))!;
+            superseded.SupersededAt.Should().NotBeNull();
+            superseded.AnsweredAt.Should().BeNull(
+                "a decline arriving for a request --again already closed out must not record it as answered");
+            (await session.Query<EventCatchUpRequest>()
+                .Where(r => r.ProjectId == projectId && r.ForStreamId == streamNobodyHolds)
+                .ToListAsync(cts.Token))
+                .Should().NotContain(r => r.IsOutstanding, "the replacement was declined in the same read");
         }
     }
 
@@ -1839,7 +1897,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         {
             (await coordinator.RequestStreamBroadcastAsync(
                 session, projectId, taskId, nodeB, "owner-b-fingerprint", Now.AddSeconds(1), cts.Token))
-                .Should().BeTrue();
+                .Should().Be(StreamRequestOutcome.Queued);
         }
 
         await using (IDocumentSession session = storeB.LightweightSession())

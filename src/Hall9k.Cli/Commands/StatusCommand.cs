@@ -527,7 +527,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         try
         {
             IReadOnlyList<EventCatchUpRequest> outstanding = await session.Query<EventCatchUpRequest>()
-                .Where(request => request.AnsweredAt == null && !request.Exhausted)
+                .Where(request => request.AnsweredAt == null && request.SupersededAt == null && !request.Exhausted)
                 .ToListAsync(cancellationToken);
             if (outstanding.Count == 0)
             {
@@ -538,6 +538,12 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             {
                 string what = request switch
                 {
+                    // A dependency ask nobody typed says whose dependency it is: the platform mints
+                    // it on its own when a pulled or adopted task names a blocked-by or stacked-on
+                    // id whose stream is not here (TaskDependencyCatchUp), and a bare stream id
+                    // would read as an ask this node cannot account for.
+                    { ForStreamId: { } streamId, ForDependencyOfTaskId: { } dependentTaskId } =>
+                        $"stream {DomainId.Short(streamId)}, a dependency of task {DomainId.Short(dependentTaskId)}",
                     { ForStreamId: { } streamId } => $"stream {DomainId.Short(streamId)}",
                     { ForOriginNodeId: { } originNodeId } => $"a gap from {DomainId.Short(originNodeId)} (since {request.SinceOriginSequence})",
                     { SinceGlobalSequence: 0 } => "this project's whole history (h9k project pull --since all)",
