@@ -398,6 +398,29 @@ also cuts a spike, the same as any other type; its findings are then copied into
 workspace under `spikes/<task-id>/findings.md` alongside its own `IdeaSpikeConcluded` provenance
 record on the idea's stream.
 
+### Content tasks
+
+`h9k task add --type content` (or `h9k task revise <id> --type content`) is for documentation,
+skill markdown, prompt templates, or other non-compiled work — a README or getting-started update
+that should clear the pipeline in minutes rather than hours. It dispatches with a reduced,
+conformance-only review by default (the adversarial lens never opens, on any cycle including the
+mandatory final pass) with no `--accept-reduced-review` needed: the type itself is the
+acknowledgment, recorded on the run's stream at dispatch the same way the composition already is.
+An explicit `--review-stage-composition` still overrides that default at the task or project
+level, exactly as it does for every other type — the node level's own value never does, since both
+of its real sources default to `full-pipeline` rather than to nothing, and a content default
+checked below that would never actually take effect. The build and test gates are not this type's
+own concern — they skip on the non-executable-path evidence described above, whenever every
+changed path matches the project's set — but a content task turns that into a hard guarantee
+rather than a mere default: at every entry into the gates, if its diff touches even one path
+outside the set, the run fails before any gate runs, naming every offending path, the same outcome
+a failed gate has today, so the type can never carry compiled or tested code past its own reduced
+review. For example, `h9k task add --project hall9k --type content --objective "Update the
+getting-started README" --criteria "docs/getting-started.md covers the new install flow"` dispatches
+normally and skips the gates once it lands, but a follow-up commit that also touched
+`src/Hall9k.Cli/Program.cs` would fail outright at the next gate entry, naming that path, rather
+than quietly running the gates with only a conformance review watching it.
+
 ### External work items
 
 `h9k task add --from-issue` adopts a GitHub issue; `--from-jira` adopts a Jira card. Both are
