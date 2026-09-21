@@ -337,6 +337,13 @@ public static class DaemonLifecycle
             return ExitCodes.Ok;
         }
 
+        // A live verification gate is the daemon's own action, not an agent session — this
+        // node's next start ends whatever this stop orphans and re-runs the gate from the
+        // start rather than racing it, but that is a recovery, not a reason to refuse an
+        // operator's own explicit stop (Brian, 2026-09-20: warn, never block). --restart's
+        // own shared path waits for this instead of just warning (OfferRestartAsync).
+        await LiveGateGuard.WarnAboutLiveGatesAsync(LiveGateGuard.FindOnThisNodeAsync, cancellationToken);
+
         bool stoppedThroughAutostart = false;
         if (autostart.IsSupported && await autostart.IsLoadedAsync(cancellationToken))
         {
