@@ -277,4 +277,15 @@ public sealed record ProjectSettingsChanged(
     /// which is where that distinction stops being cosmetic. Trailing and optional so every
     /// stream written before this setting existed replays byte-for-byte unchanged.
     /// </summary>
-    Optional<bool> QaReviewDrive = default);
+    Optional<bool> QaReviewDrive = default,
+    /// <summary>
+    /// This project's own additions to the compiled non-executable-path rule set (task: a
+    /// delivered diff that touches no buildable or testable source skips the build and test
+    /// gates), set by <c>h9k project set --non-executable-path &lt;glob&gt;</c>. Present replaces
+    /// the whole list of additions, the <see cref="VerifyCommands"/>/<see cref="ContextLinks"/>
+    /// idiom — present-with-empty is how the CLI's own 'default' sentinel clears every addition
+    /// back to just <see cref="Project.NonExecutablePathDefaults"/>'s four rules, which this list
+    /// is always layered on top of and never replaces. Trailing and optional so every stream
+    /// written before this setting existed replays byte-for-byte unchanged.
+    /// </summary>
+    Optional<IReadOnlyList<string>> NonExecutablePaths = default);

@@ -142,6 +142,10 @@ public sealed class ProjectDetails
     public CloseLinkedIssueRule CloseLinkedIssue { get; set; } = CloseLinkedIssueRule.WhenAllTasksClose;
     /// <summary>A label list that forces <see cref="CloseLinkedIssueRule.Never"/> for an issue carrying any of them at closeout time.</summary>
     public List<string> NeverCloseLabels { get; set; } = [];
+    /// <summary>This project's own additions to <see cref="NonExecutablePathDefaults"/>'s compiled four rules — see <see cref="Events.ProjectSettingsChanged.NonExecutablePaths"/>'s own doc.</summary>
+    public List<string> NonExecutablePaths { get; set; } = [];
+    /// <summary>The compiled default rule set plus this project's own additions — the whole non-executable-path set <c>VerificationRunner</c> classifies a changed path against.</summary>
+    public IReadOnlyList<string> EffectiveNonExecutablePaths => [.. NonExecutablePathDefaults.Rules, .. NonExecutablePaths];
     /// <summary>
     /// How prose an agent composes for people has to read on this project (task: every piece of
     /// prose the daemon posts to GitHub under the owner's login obeys the project's writing
@@ -416,6 +420,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
             view.WritingConventions = @event.Data.WritingConventions.Value ?? WritingConventions.Default;
         }
 
+        if (@event.Data.NonExecutablePaths.HasValue)
+        {
+            view.NonExecutablePaths = [.. @event.Data.NonExecutablePaths.Value ?? []];
+        }
+
         view.SettingsChangedAt = @event.Data.ChangedAt;
     }
 
@@ -532,6 +541,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.CommitStyle.HasValue)
         {
             view.CommitStyle = @event.Data.CommitStyle.Value ?? CommitStyle.Unknown;
+        }
+
+        if (@event.Data.NonExecutablePaths.HasValue)
+        {
+            view.NonExecutablePaths = [.. @event.Data.NonExecutablePaths.Value ?? []];
         }
     }
 

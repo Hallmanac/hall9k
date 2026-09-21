@@ -260,4 +260,41 @@ public sealed class ProjectDetailsProjectionTests
             new ProjectPurgeCancelled(id, Now.AddHours(1), DomainId.New())), view);
         view.PurgeAt.Should().BeNull();
     }
+
+    /// <summary>
+    /// Task: a delivered diff that touches no buildable or testable source skips the build and
+    /// test gates. A project's own additions land on <see cref="ProjectDetails.NonExecutablePaths"/>
+    /// exactly as recorded, and <see cref="ProjectDetails.EffectiveNonExecutablePaths"/> always
+    /// layers the compiled four defaults ahead of them — there is no event field, and so no
+    /// command, that can ever remove one of the four, which is what makes "a project can only add
+    /// to the set" hold by construction.
+    /// </summary>
+    [Fact]
+    public void Non_executable_path_additions_are_always_layered_on_top_of_the_compiled_defaults()
+    {
+        ProjectDetailsProjection projection = new();
+        Guid id = DomainId.New();
+
+        ProjectDetails view = projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            id, DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+
+        view.NonExecutablePaths.Should().BeEmpty("an untouched project has made no additions");
+        view.EffectiveNonExecutablePaths.Should().BeEquivalentTo(NonExecutablePathDefaults.Rules,
+            options => options.WithStrictOrdering(),
+            "the compiled four apply even with no project additions at all");
+
+        projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
+            id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: Optional<bool>.None,
+            MaxParallelAgents: Optional<int>.None,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now.AddMinutes(5), ChangedByOwnerId: DomainId.New(),
+            NonExecutablePaths: new List<string> { "assets/**/*.png" })), view);
+
+        view.NonExecutablePaths.Should().ContainSingle().Which.Should().Be("assets/**/*.png");
+        view.EffectiveNonExecutablePaths.Should().Equal(
+            [.. NonExecutablePathDefaults.Rules, "assets/**/*.png"],
+            "the project's own addition rides on top of the compiled four, never in place of them");
+    }
 }
