@@ -3,6 +3,7 @@ using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Marten;
+using Marten.Linq.MatchesSql;
 using Spectre.Console;
 
 namespace Hall9k.Cli.DaemonControl;
@@ -36,6 +37,16 @@ public static class LiveGateGuard
 
     private static readonly TimeSpan PollInterval = TimeSpan.FromSeconds(5);
 
+    // Filtered server-side, the same reason RunSupervisor.AdoptOrphansAsync and
+    // ResumeStrandedPipelinesAsync do (independent pre-PR review, cycle 1, both lenses): a
+    // --restart wait re-issues this query every five seconds for up to VerifyGateLimit, and a
+    // node with a long run history would otherwise load and deserialize every run ever recorded
+    // for it, on every poll, only to discard all but the handful still live with a gate.
+    private static readonly string[] TerminalRunStates =
+    [
+        RunState.Completed.Value, RunState.Failed.Value, RunState.Killed.Value, RunState.Superseded.Value,
+    ];
+
     /// <summary>
     /// Every live gate this node's own store currently records, or null when the store itself
     /// could not be reached — never guessed at as "none found" (AGENTS.md's never-guess rule):
@@ -54,10 +65,12 @@ public static class LiveGateGuard
             Guid nodeId = context.NodeId;
             IReadOnlyList<RunDetails> candidates = await session.Query<RunDetails>()
                 .Where(run => run.NodeId == nodeId)
+                .Where(run => run.MatchesSql(
+                    "d.data ->> 'state' not in (?, ?, ?, ?) and d.data -> 'activeGate' is not null",
+                    TerminalRunStates[0], TerminalRunStates[1], TerminalRunStates[2], TerminalRunStates[3]))
                 .ToListAsync(cancellationToken);
 
             return [.. candidates
-                .Where(run => !run.State.IsTerminal && run.ActiveGate is not null)
                 .Where(run => DaemonProcess.IsAlive(run.ActiveGate!.ProcessId, run.ActiveGate.StartedAt))
                 .Select(run => new LiveGate(run.Id, run.TaskId, run.ActiveGate!.GateName, run.ActiveGate.ProcessId))];
         }
@@ -98,6 +111,13 @@ public static class LiveGateGuard
     /// without ever polling, when the very first check already finds nothing — including when the
     /// check itself could not be performed at all, since there is nothing left to wait on in either
     /// case), false when the deadline passed with something still running.
+    /// <para>
+    /// Announces, once, the moment the wait actually finds something to wait on (independent
+    /// pre-PR review, cycle 1, both lenses): without it, this whole wait — up to
+    /// <paramref name="deadline"/>, thirty minutes by <see cref="VerifyGateLimit"/> — prints
+    /// nothing at all, and an operator or an agent-run invocation watching the command has no way
+    /// to tell a deliberate wait from a hung CLI, or that <c>--now</c> exists to skip it.
+    /// </para>
     /// </summary>
     public static async Task<bool> WaitForClearAsync(
         Func<CancellationToken, Task<IReadOnlyList<LiveGate>?>> findLiveGates,
@@ -106,12 +126,19 @@ public static class LiveGateGuard
         CancellationToken cancellationToken)
     {
         DateTimeOffset deadlineAt = DateTimeOffset.UtcNow + deadline;
+        bool announced = false;
         while (true)
         {
             IReadOnlyList<LiveGate>? live = await findLiveGates(cancellationToken);
             if (live is null || live.Count == 0)
             {
                 return true;
+            }
+
+            if (!announced)
+            {
+                AnnounceWait(live, deadline);
+                announced = true;
             }
 
             if (DateTimeOffset.UtcNow >= deadlineAt)
@@ -121,6 +148,18 @@ public static class LiveGateGuard
 
             await delay(PollInterval, cancellationToken);
         }
+    }
+
+    private static void AnnounceWait(IReadOnlyList<LiveGate> live, TimeSpan deadline)
+    {
+        foreach (LiveGate gate in live)
+        {
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]Waiting for run {gate.RunId} (task {gate.TaskId})'s '{gate.GateName}' verification gate (pid {gate.ProcessId}) to finish before restarting.[/]");
+        }
+
+        AnsiConsole.MarkupLineInterpolated(
+            $"[dim]Waiting up to {deadline.TotalMinutes:0} minutes — pass --now to restart immediately instead.[/]");
     }
 
     /// <summary>

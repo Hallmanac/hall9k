@@ -178,4 +178,50 @@ public sealed class LiveGateGuardTests
 
         text.Should().BeEmpty();
     }
+
+    /// <summary>
+    /// Independent pre-PR review, cycle 1, both lenses: the wait used to print nothing at all
+    /// while it polled, so a thirty-minute wait looked identical to a hung CLI. The first live
+    /// check must name the gate (run, task, gate name, pid) and mention --now, the same
+    /// information <see cref="WarnAboutLiveGatesAsync"/> already prints on the stop path.
+    /// </summary>
+    [Fact]
+    public async Task WaitForClearAsync_announces_the_gate_it_is_waiting_on_and_mentions_now()
+    {
+        string text = await ScopedAnsiConsoleCapture.CaptureAsync(() =>
+            LiveGateGuard.WaitForClearAsync(
+                _ => Task.FromResult<IReadOnlyList<LiveGate>?>([SomeGate]),
+                (_, _) => Task.CompletedTask,
+                TimeSpan.Zero,
+                CancellationToken.None));
+
+        text.Should().Contain(SomeGate.RunId.ToString()).And.Contain(SomeGate.TaskId.ToString())
+            .And.Contain("'test'").And.Contain("4242");
+        text.Should().Contain("--now");
+    }
+
+    /// <summary>
+    /// The announcement fires once, on the first live check, not on every poll — a thirty-minute
+    /// wait polling every five seconds would otherwise print the same lines well over three
+    /// hundred times.
+    /// </summary>
+    [Fact]
+    public async Task WaitForClearAsync_announces_only_once_across_repeated_polls()
+    {
+        List<IReadOnlyList<LiveGate>?> responses = [[SomeGate], [SomeGate], []];
+        int findCalls = 0;
+
+        Task<IReadOnlyList<LiveGate>?> Find(CancellationToken _)
+        {
+            IReadOnlyList<LiveGate>? response = responses[findCalls];
+            findCalls++;
+            return Task.FromResult(response);
+        }
+
+        string text = await ScopedAnsiConsoleCapture.CaptureAsync(() =>
+            LiveGateGuard.WaitForClearAsync(Find, (_, _) => Task.CompletedTask, TimeSpan.FromSeconds(30), CancellationToken.None));
+
+        int occurrences = text.Split(SomeGate.RunId.ToString()).Length - 1;
+        occurrences.Should().Be(1, "the announcement names the gate once, not on every poll");
+    }
 }
