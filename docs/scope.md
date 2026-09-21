@@ -121,13 +121,15 @@ every one matches, the build and test gates are skipped outright and a `Verifica
 is recorded naming every changed path and the rule it matched, shown by `h9k task show` in the
 Gates column exactly where a pass shows today (a skip is never used as the scope base for the next
 gate that actually runs — that always scopes off the last real pass). The compiled default set is
-four rules — any `*.md` file, `docs/`, `.claude/skills/`, and `.claude/commands/` — and a project
-may only add to it, never remove one of the four, with `h9k project set --non-executable-path
-<glob>` (repeatable, `default` clears the project's own additions) and `h9k project show` listing
-the effective set; any path outside the set, or a diff that mixes code with content, runs the
-gates in full exactly as before, and the classification is re-run afresh at every entry into the
-gates — first delivery, an intermediate review-cycle pass, and every follow-up lap alike — so a fix
-lap on a content-only branch never pays for the gates either.
+five rules — any `*.md` file, `docs/`, `.claude/skills/`, `.claude/commands/`, and an exclusion
+carving `.claude/templates/` back out of `*.md` (it's rendered prompt source with its own golden
+tests, not docs) — and a project may only add to it, never remove or narrow one of the five, with
+`h9k project set --non-executable-path <glob>` (repeatable, `default` clears the project's own
+additions) and `h9k project show` listing the effective set; any path outside the set, or a diff
+that mixes code with content, runs the gates in full exactly as before, and the classification is
+re-run afresh at every entry into the gates — first delivery, an intermediate review-cycle pass,
+and every follow-up lap alike — so a fix lap on a content-only branch never pays for the gates
+either.
 
 `h9k task show` also renders a task's own passage in time, computed fresh on every read from the
 task's own stream and every run it has dispatched, never a persisted projection: how long it sat
