@@ -1181,7 +1181,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
     /// kept asking for sat at 28273 to 30020, so every explicit request for that stream was
     /// answered "nothing held here matches this request" and no re-run could ever have changed it.
     /// An explicit ask — one named stream — lifts the switch-on exclusion, and so does a brand-new
-    /// node's own bootstrap (task 74a7cd0b, Decisions Log #PLACEHOLDER-74a7cd0b): a member joining
+    /// node's own bootstrap (task 74a7cd0b, Decisions Log #260): a member joining
     /// the project today has nobody to make the explicit ask for them. A gap-fill is the one shape
     /// left that keeps the exclusion. A private task is refused however the ask arrived, which is
     /// the one exclusion that never bends.

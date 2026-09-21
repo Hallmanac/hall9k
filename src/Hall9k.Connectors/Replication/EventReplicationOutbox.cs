@@ -703,7 +703,7 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
     /// must honor the exclusion exactly as an ordinary outbox flush already does (independent
     /// pre-PR review, cycle 1, conformance lens, high). The three shapes that do reach below it —
     /// the two explicit asks and a brand-new node's own bootstrap — never call this at all, since
-    /// its value is unused there (Decisions Log #236, #PLACEHOLDER-74a7cd0b).</summary>
+    /// its value is unused there (Decisions Log #236, #260).</summary>
     internal static async Task<long> EnsureSwitchedOnAsync(
         IDocumentSession session, Guid nodeId, DateTimeOffset now, CancellationToken cancellationToken)
     {

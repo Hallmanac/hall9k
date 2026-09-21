@@ -143,7 +143,7 @@ public sealed class EventCatchUpCoordinator
     /// This is the one automatic shape an answering node serves WHOLE from the start of its own log
     /// rather than from its replication switch-on point
     /// (<see cref="EventReplicationCodec.EventsRequestRecord.IsBootstrap"/>, Decisions Log
-    /// #PLACEHOLDER-74a7cd0b): a node asks it once, holding nothing of the project, so it is also
+    /// #260): a node asks it once, holding nothing of the project, so it is also
     /// the one chance a new member has to receive the work that predates any peer's switch-on. The
     /// held-tail ask (<see cref="RequestHeldTailStreamsAsync"/>, task c3bdb62e) reaches below the
     /// same point automatically too, but only ever for one named stream this node already holds

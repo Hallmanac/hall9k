@@ -9,7 +9,7 @@ namespace Hall9k.Tests.Domain;
 /// The four catch-up request shapes, and which of them an answering node serves from below its own
 /// replication switch-on point (<c>EventCatchUpResponder.AnswerAsync</c>). Three do: the two a
 /// human typed, and a brand-new node's own bootstrap (task 74a7cd0b, Decisions Log
-/// #PLACEHOLDER-74a7cd0b). The gap-fill is the one that keeps the bound, so the two properties
+/// #260). The gap-fill is the one that keeps the bound, so the two properties
 /// have to keep telling it apart from the bootstrap it shares two null fields with.
 /// </summary>
 public sealed class EventsRequestShapeTests
