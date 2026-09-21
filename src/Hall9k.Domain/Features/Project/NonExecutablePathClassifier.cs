@@ -74,7 +74,9 @@ public static class NonExecutablePathClassifier
 
     /// <summary>
     /// A rule ending in <c>/</c> is a whole-directory match (<c>docs/</c>, <c>.claude/skills/</c>):
-    /// any path starting with it, at any depth, matches. A rule with no <c>/</c> at all
+    /// any path starting with it matches, anchored at the repository root — unlike a .gitignore
+    /// directory pattern, this does not also match the same directory name nested somewhere else in
+    /// the tree. A rule with no <c>/</c> at all
     /// (<c>*.md</c>) is a filename glob — the .gitignore convention of matching a bare pattern
     /// against the file's own name at any depth, not just the repository root, which is what lets
     /// one default rule cover a markdown file anywhere in the tree. A rule that carries a
