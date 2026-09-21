@@ -162,8 +162,10 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
     /// <summary>The real, interactive prompt <see cref="RunAsync(IDocumentSession,ProjectDetails,string?,string?,CancellationToken)"/>
     /// hands down when this process is actually attached to a terminal — never called on a
-    /// non-interactive one, which passes no prompt at all rather than this.</summary>
-    private static string PromptForInviteTokenFromConsole() =>
+    /// non-interactive one, which passes no prompt at all rather than this. Internal rather than
+    /// private so h9k project add's own join (<see cref="ProjectAddCommand.TryJoinAsync(IDocumentSession,Guid,string,string,string?,CancellationToken)"/>)
+    /// can wire the identical prompt through its own call, rather than a second, private copy.</summary>
+    internal static string PromptForInviteTokenFromConsole() =>
         AnsiConsole.Prompt(new TextPrompt<string>(
             "[bold]Invite token[/] [dim](paste it, or press enter to skip for now)[/]:").AllowEmpty());
 
@@ -268,17 +270,32 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         // The no-owner, no-invite path's own gate (task: "a newcomer who registers a project whose
         // ledger already has an owner is told so and asked for their invite token instead of being
         // minted as a second owner root"). Checked here, before any key is generated or any ledger
-        // byte is written: this install has no root claim of its own (owner.RootFingerprint is
-        // still null — the exact fallback that used to hand claimedFingerprint this node's own key
-        // below, unconditionally) and neither --owner nor --invite says who this node belongs to,
-        // so the only question left is whether the project's own ledger already answered it before
-        // this join ever ran. An explicit --owner or --invite always skips this: both already name
-        // (or, for a member-of-project invite, deliberately leave open) whose root this join
-        // claims, so there is nothing here for this gate to defer.
-        if (claimedOwnerOverride.IsBlank() && invite.IsBlank() && owner.RootFingerprint is null)
+        // byte is written. Neither --owner nor --invite says who this node belongs to, so the only
+        // question left is whether this join's own eventual fallback — claimedFingerprint below
+        // ending up equal to this node's own key — would self-establish a root in a project whose
+        // ledger already answered that question before this join ever ran.
+        //
+        // That fallback fires in two cases, not only the first: owner.RootFingerprint is still
+        // null (a genuinely fresh install, never claimed any root at all), or it already equals
+        // this node's own key because an earlier join of a *different* project already established
+        // it there (independent pre-PR review, cycle 1, adversarial lens, medium — a gate that only
+        // checked the first case let a node that already owns one project self-write a second
+        // owner's root.yaml and node.yaml into a project it was only ever meant to be invited
+        // into). This node's own fingerprint is read from the already-loaded node aggregate with
+        // no I/O — NodeKeyStore.Fingerprint is a pure hash over node.PublicKey — rather than minted
+        // or read from disk here, preserving the "no key touched before this gate decides" promise
+        // for the still-fresh-install case, where node.PublicKey is null and this comparison can
+        // never match.
+        //
+        // An explicit --owner or --invite always skips this: both already name (or, for a
+        // member-of-project invite, deliberately leave open) whose root this join claims, so there
+        // is nothing here for this gate to defer.
+        string? thisNodesOwnFingerprint = node.PublicKey is not null ? NodeKeyStore.Fingerprint(node.PublicKey) : null;
+        bool wouldSelfEstablish = owner.RootFingerprint is null || owner.RootFingerprint == thisNodesOwnFingerprint;
+        if (claimedOwnerOverride.IsBlank() && invite.IsBlank() && wouldSelfEstablish)
         {
             GenesisDeferralOutcome deferral = await CheckGenesisDeferralAsync(
-                session, project, ledger, promptForInviteToken, cancellationToken);
+                session, project, ledger, owner.RootFingerprint, promptForInviteToken, cancellationToken);
             if (deferral.Defer)
             {
                 return DeferredOutcome(context.NodeId);
@@ -559,12 +576,16 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
     /// against the ledger's own <c>members/</c> folder — <see cref="ILedger.HasAnyAsync"/>, the
     /// identical existence check <see cref="EnsureGenesisMemberFileAsync"/> already trusts for
     /// "has this project's genesis already been spent" — never against <c>owner.RootFingerprint</c>
-    /// alone, which the caller has already confirmed is null but which says nothing about whether
-    /// the ledger itself still has genesis up for grabs.
+    /// alone, which says nothing about whether the ledger itself still has genesis up for grabs.
+    /// <paramref name="selfFingerprint"/> is the fingerprint this join would self-establish under
+    /// (null on a genuinely fresh install with no root of its own yet); when the ledger's own
+    /// genesis already names that exact fingerprint, this is a re-join of a project this same
+    /// identity already owns — not a newcomer meeting someone else's project — so this defers to
+    /// nobody and lets the ordinary establishing-root path below run unchanged.
     /// </summary>
     private static async Task<GenesisDeferralOutcome> CheckGenesisDeferralAsync(
-        IDocumentSession session, ProjectDetails project, ILedger ledger, Func<string?>? promptForInviteToken,
-        CancellationToken cancellationToken)
+        IDocumentSession session, ProjectDetails project, ILedger ledger, string? selfFingerprint,
+        Func<string?>? promptForInviteToken, CancellationToken cancellationToken)
     {
         bool alreadyHasGenesis = await ledger.HasAnyAsync(project.RepositoryPath, MembersRefName, "members/", cancellationToken);
         if (!alreadyHasGenesis)
@@ -575,6 +596,16 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         }
 
         string? genesisOwnerFingerprint = await FindGenesisOwnerFingerprintAsync(ledger, project.RepositoryPath, cancellationToken);
+        if (genesisOwnerFingerprint is not null && genesisOwnerFingerprint == selfFingerprint)
+        {
+            // This project's own genesis already belongs to this exact identity — a re-join
+            // (a fresh checkout, a second registration of a repository this node already owns),
+            // never the second-owner hazard this gate exists to catch. EnsureGenesisMemberFileAsync
+            // below is already a no-op against an entry that is already there under this same
+            // fingerprint.
+            return new GenesisDeferralOutcome(Defer: false, InviteToken: null);
+        }
+
         string ownerDisplay = genesisOwnerFingerprint is not null
             ? await ResolveOwnerDisplayAsync(session, genesisOwnerFingerprint, cancellationToken)
             : "another owner this install does not recognize";

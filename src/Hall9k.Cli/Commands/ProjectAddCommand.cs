@@ -4,6 +4,7 @@ using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Features.Connection;
@@ -320,20 +321,38 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         TryJoinAsync(
             session, projectId, name, repositoryPath, invite,
             new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(), new ProjectGitHubAccessMirror(),
+            new GitLedgerChainReader(),
+            AnsiConsole.Profile.Capabilities.Interactive ? ProjectJoinCommand.PromptForInviteTokenFromConsole : null,
             cancellationToken);
 
     /// <summary>The ledger-seamed overload, so a test can prove --invite actually reaches
     /// ProjectJoinCommand.RunAsync without touching git or a network (Brian's 2026-09-13 testing
-    /// rule) — the identical seam ProjectJoinCommand.RunAsync's own overloads already use.</summary>
+    /// rule) — the identical seam ProjectJoinCommand.RunAsync's own overloads already use. Opts out
+    /// of the chain reader and the console prompt, the same way ProjectJoinCommand.RunAsync's own
+    /// ledger-seamed overload does for every pre-existing test above it.</summary>
+    internal static Task TryJoinAsync(
+        IDocumentSession session, Guid projectId, string name, string repositoryPath, string? invite,
+        ILedger ledger, NodeKeyStore keyStore, ProjectGitHubAccessMirror githubAccess, CancellationToken cancellationToken) =>
+        TryJoinAsync(
+            session, projectId, name, repositoryPath, invite, ledger, keyStore, githubAccess,
+            chainReader: null, promptForInviteToken: null, cancellationToken);
+
+    /// <summary>The full overload, wiring a real <see cref="ILedgerChainReader"/> and the console
+    /// prompt through to <see cref="ProjectJoinCommand.RunAsync(IDocumentSession,ProjectDetails,string?,string?,ILedger,NodeKeyStore,ProjectGitHubAccessMirror,ILedgerChainReader?,Func{string?}?,CancellationToken)"/>
+    /// so h9k project add's own join asks for the invite token on the spot exactly as a standalone
+    /// h9k project join does, and records the project key the same way too (independent pre-PR
+    /// review, cycle 1, conformance and adversarial lenses, both medium).</summary>
     internal static async Task TryJoinAsync(
         IDocumentSession session, Guid projectId, string name, string repositoryPath, string? invite,
-        ILedger ledger, NodeKeyStore keyStore, ProjectGitHubAccessMirror githubAccess, CancellationToken cancellationToken)
+        ILedger ledger, NodeKeyStore keyStore, ProjectGitHubAccessMirror githubAccess,
+        ILedgerChainReader? chainReader, Func<string?>? promptForInviteToken, CancellationToken cancellationToken)
     {
         if (!Directory.Exists(repositoryPath))
         {
             AnsiConsole.MarkupLine(
                 $"[dim]Not joined yet — {repositoryPath.EscapeMarkup()} is not reachable. Once it is: "
-                + $"h9k project join {name.EscapeMarkup()}[/]");
+                + $"h9k project join {name.EscapeMarkup()}"
+                + (invite.IsNotBlank() ? $" --invite {invite.EscapeMarkup()}" : string.Empty) + "[/]");
             return;
         }
 
@@ -341,14 +360,16 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         {
             ProjectDetails project = (await session.LoadAsync<ProjectDetails>(projectId, cancellationToken))!;
             ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
-                session, project, claimedOwnerOverride: null, invite, ledger, keyStore, githubAccess, cancellationToken);
+                session, project, claimedOwnerOverride: null, invite, ledger, keyStore, githubAccess,
+                chainReader, promptForInviteToken, cancellationToken);
             ProjectJoinCommand.Report(project, outcome);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             AnsiConsole.MarkupLine(
                 $"[yellow]Registered, but could not join yet:[/] {exception.Message.EscapeMarkup()} Retry with: "
-                + $"h9k project join {name.EscapeMarkup()}");
+                + $"h9k project join {name.EscapeMarkup()}"
+                + (invite.IsNotBlank() ? $" --invite {invite.EscapeMarkup()}" : string.Empty));
         }
     }
 
