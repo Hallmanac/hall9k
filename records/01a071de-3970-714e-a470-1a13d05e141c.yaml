@@ -25,3 +25,7 @@ origin-branch: task/d05e141c-a-delivered-diff-that-touches
 published: 2026-09-17 21:18:51Z
 context: |-
   Origin: Brian, 2026-09-05, from the ef2fefe5 case study: a two-file skill markdown fix paid full build-and-test gates on every pipeline entry - about 12 minutes each time, at least twice on one task - while the actual work took four minutes. Gates exist to prove code still builds and tests still pass; a change with no code in it cannot alter either, so the gate run is deterministic ceremony. Design intent, per the doctrine seam (prescriptive lifecycle, permissive judgment): the lifecycle still runs verification on every delivery, but verification is allowed to conclude 'nothing here can break the build' by evidence rather than by running the build. Constraint: never guess - a path the project has not declared non-executable runs the gates. Seams: VerificationRunner (gate orchestration, already records scope facts such as test-gate scope and RanFullScope), the run stream (VerificationPassed and its scope facts), h9k task show's gate rendering. Related: the stage-composition feature (978ffa03, merged 2026-09-04) covers review stages; this task is the gates-side sibling. Smallest fix wins.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-09-21 01:44:28Z
