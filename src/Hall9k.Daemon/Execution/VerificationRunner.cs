@@ -1699,8 +1699,16 @@ public sealed partial class VerificationRunner(
             return null;
         }
 
+        // Three dots, not two (independent pre-PR review, cycle 1, both lenses): unlike
+        // `rev-list --count`, `git diff` on a two-dot range compares the two trees directly rather
+        // than diffing from the merge base, so every path the boundary itself changed since the
+        // fork — routine while the daemon fetches `origin/<base>` into this shared repository —
+        // would show up as a change on THIS branch too and defeat the skip. Three dots diffs
+        // against the merge base, the same "what did this branch actually change" question
+        // CountBranchCommitsAsync's own two-dot rev-list already answers correctly (a commit count
+        // is inherently merge-base-relative; a tree diff is not).
         (int exitCode, string output) = await RunGitAsync(
-            worktreePath, ["diff", "--name-status", "-z", $"{boundary}..HEAD"], cancellationToken);
+            worktreePath, ["diff", "--name-status", "-z", $"{boundary}...HEAD"], cancellationToken);
         return exitCode == 0 ? ParseChangedPaths(output) : null;
     }
 
