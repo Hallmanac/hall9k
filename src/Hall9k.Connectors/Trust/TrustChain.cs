@@ -45,12 +45,21 @@ public sealed record TrustedNode(string NodeId, string PublicKeyLine, string Fin
 /// </param>
 public sealed record TrustedOwner(
     string RootFingerprint, string RootPublicKeyLine, IReadOnlyList<TrustedNode> Nodes, string? RootNodeId = null,
-    IReadOnlySet<string>? RevokedNodeIds = null)
+    IReadOnlySet<string>? RevokedNodeIds = null, IReadOnlyList<TrustedNode>? EverEnrolledNodes = null)
 {
     /// <summary>Never null, whatever a caller passed the primary constructor: a pre-existing
     /// four-argument construction (every call site that predates this field) gets an empty set
     /// rather than a null every reader would otherwise have to guard against.</summary>
     public IReadOnlySet<string> RevokedNodeIds { get; init; } = RevokedNodeIds ?? new HashSet<string>();
+
+    /// <summary>
+    /// Every node this root's chain has ever successfully enrolled — by an ordinary vouch or by a
+    /// carried bundle's own first establishment — current or since revoked, never shrinking once a
+    /// node lands here (task f53fecfd: <see cref="GitLedgerChainReader"/>'s own genesis check
+    /// alone reads this, never any later membership write). Never null, on the same terms
+    /// <see cref="RevokedNodeIds"/> already is: a pre-existing construction gets an empty list.
+    /// </summary>
+    public IReadOnlyList<TrustedNode> EverEnrolledNodes { get; init; } = EverEnrolledNodes ?? [];
 
     /// <summary>Whether <paramref name="fingerprint"/> is this root's own key or a currently vouched node's.</summary>
     public bool Contains(string fingerprint) =>

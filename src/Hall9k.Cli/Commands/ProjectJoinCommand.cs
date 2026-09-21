@@ -452,8 +452,18 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             owner.Email.IsNotBlank() ? owner.Email : $"{context.NodeId}@hall9k.local");
         LedgerSigningKey signingKey = new(key.PrivateKeyPath);
 
+        // Captured once, before the ClaimRoot append below can change what this call means by
+        // "the owner's root": the in-memory owner aggregate loaded above is never re-aggregated
+        // from this session's own pending events, so every later read of owner.RootFingerprint in
+        // this method still sees whichever root was claimed BEFORE this join ran, even after a
+        // ClaimRoot for a different one has already been appended into this same session
+        // (independent pre-PR review, adversarial lens, medium — the root-verification
+        // reconciliation below must never reason about "the owner's current root" using that stale
+        // value once this is true).
+        bool claimedRootChanged = owner.RootFingerprint != claimedFingerprint;
+
         bool retiredPreviousRoot = false;
-        if (owner.RootFingerprint != claimedFingerprint)
+        if (claimedRootChanged)
         {
             if (owner.RootFingerprintVerified && owner.RootFingerprint == key.Fingerprint)
             {
@@ -595,8 +605,18 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         // already reads the identical live chain and shows it verified. Best-effort and never fatal
         // to the join: a transient chain-read failure here simply leaves nothing to reconcile this
         // tick, same as RecordProjectKeyAsync's own failure handling just above.
+        //
+        // Never run when this same call just changed which root the owner claims (claimedRootChanged):
+        // OwnerRootVerificationReconciler.Reconcile reasons entirely from the in-memory owner
+        // aggregate above, which still holds the PREVIOUS root's own fingerprint (this method never
+        // re-aggregates it after the ClaimRoot append). Reconciling against that stale value here
+        // would check enrollment under the wrong root and — because OwnerRootVerified carries no
+        // fingerprint of its own — mark whatever root this call just claimed as verified even though
+        // nothing under it was ever actually vouched (independent pre-PR review, adversarial lens,
+        // medium). Skipping costs nothing but a tick: the daemon's own message sweep reconciles the
+        // freshly claimed root correctly on its next pass, once a fresh aggregate load sees it.
         bool rootVerifiedByReconciliation = false;
-        if (!establishingRoot && !carriedRoot && chainReader is not null)
+        if (!establishingRoot && !carriedRoot && !claimedRootChanged && chainReader is not null)
         {
             try
             {
@@ -645,11 +665,21 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             }
         }
 
+        // The same staleness claimedRootChanged already guards the reconciliation call against
+        // applies here too: owner.RootFingerprintVerified is only trustworthy for THIS report when
+        // this call never changed which root is claimed. When it did, that flag still describes the
+        // PREVIOUS claim (a self-established or already-vouched root can easily have been verified
+        // before this join ever ran), and reporting it here would tell the operator the brand-new
+        // claim is "verified" when nothing under it has ever actually been vouched (independent
+        // pre-PR review sweep, same shape as the adversarial lens's own finding on the reconciliation
+        // call above).
+        bool rootVerified = establishingRoot || carriedRoot || rootVerifiedByReconciliation
+            || (!claimedRootChanged && owner.RootFingerprintVerified);
         return new JoinOutcome(
             context.NodeId, key.Fingerprint, key.PrivateKeyPath, claimedFingerprint,
             establishingRoot, retiredPreviousRoot, wroteNodeFile, ownerClaimChanged,
             carriedRoot, carriedFromProjectName,
-            RootVerified: establishingRoot || carriedRoot || rootVerifiedByReconciliation || owner.RootFingerprintVerified);
+            RootVerified: rootVerified);
     }
 
     internal static void Report(ProjectDetails project, JoinOutcome outcome)
@@ -1088,6 +1118,8 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         }
 
         bool revokedFound = false;
+        bool sourceRootNotRootSignedFound = false;
+        bool delegateSignedVouchFound = false;
         bool oldFormatVouchFound = false;
         foreach (ProjectDetails source in candidates)
         {
@@ -1139,6 +1171,26 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
                 continue;
             }
 
+            // Mirrors GitLedgerChainReader.VerifyCarriedRecordAsync's own check 2: the embedded root
+            // commit has to be signed by the root's own key. A source project whose own root.yaml
+            // was itself established by an earlier carry (never self-signed by root R, only by
+            // whichever node carried it there) fails this — carrying that commit's own bytes verbatim
+            // into the target would write owners/R/root.yaml there with no signature this or any
+            // later reader can ever trust, since a carried record's own embedded root commit is the
+            // one thing check 2 always demands be root-signed regardless of how the source itself
+            // came to hold root R. That would permanently burn the target's own root.yaml slot —
+            // nothing can overwrite it once it exists, established or not — for exactly the same
+            // reason a delegate-signed or pre-key-binding vouch is skipped just below (independent
+            // pre-PR review, adversarial lens, medium). Skipped rather than failed outright: another
+            // candidate project, or a source whose own root.yaml really is root-signed, may still
+            // carry cleanly.
+            if (!await commitReader.IsSignedByAsync(
+                source.RepositoryPath, rootSigned.RawCommitBytes, sourceOwner.RootPublicKeyLine, cancellationToken))
+            {
+                sourceRootNotRootSignedFound = true;
+                continue;
+            }
+
             // Pre-verified against the identical single-hop rule GitLedgerChainReader's own
             // VerifyCarriedRecordAsync will apply on every later read (signed directly by the
             // root's own key — never merely by some other node the source ledger's own, more
@@ -1153,6 +1205,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             if (!await commitReader.IsSignedByAsync(
                 source.RepositoryPath, vouchSigned.RawCommitBytes, sourceOwner.RootPublicKeyLine, cancellationToken))
             {
+                delegateSignedVouchFound = true;
                 continue;
             }
 
@@ -1202,14 +1255,24 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             false, null,
             revokedFound
                 ? $"This node's key is revoked under owner {root} on the source ledger — nothing carried in."
-                : oldFormatVouchFound
-                    ? $"This node's vouch under owner {root} predates key-bound vouches and cannot be carried "
-                        + "in safely — re-run h9k node vouch for this node on the source project first, then "
-                        + "retry h9k project join."
-                    : "No source vouch was found for this node's key under owner "
-                        + $"{root} on any registered project ledger"
-                        + (fromProjectName.IsNotBlank() ? $" named '{fromProjectName}'" : string.Empty)
-                        + " — nothing carried in.");
+                : sourceRootNotRootSignedFound
+                    ? $"The source project's own root {root} was not established directly by the root's own "
+                        + "key (it was itself carried in from elsewhere) and cannot be carried again from "
+                        + "there — join that source project's own ledger first with the root-holding node, "
+                        + "then retry h9k project join."
+                    : delegateSignedVouchFound
+                        ? $"This node's vouch under owner {root} on the source ledger was written by a "
+                            + "delegate node rather than the root's own key and cannot be carried — ask the "
+                            + "root-holding node to run h9k node vouch for this node directly, then retry "
+                            + "h9k project join."
+                        : oldFormatVouchFound
+                            ? $"This node's vouch under owner {root} predates key-bound vouches and cannot be carried "
+                                + "in safely — re-run h9k node vouch for this node on the source project first, then "
+                                + "retry h9k project join."
+                            : "No source vouch was found for this node's key under owner "
+                                + $"{root} on any registered project ledger"
+                                + (fromProjectName.IsNotBlank() ? $" named '{fromProjectName}'" : string.Empty)
+                                + " — nothing carried in.");
     }
 
     /// <summary>

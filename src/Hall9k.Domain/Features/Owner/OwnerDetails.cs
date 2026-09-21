@@ -76,7 +76,15 @@ public sealed class OwnerDetailsProjection : SingleStreamProjection<OwnerDetails
         view.RootClaimedAt = @event.Data.ClaimedAt;
     }
 
-    public void Apply(IEvent<OwnerRootVerified> @event, OwnerDetails view) => view.RootFingerprintVerified = true;
+    /// <summary>Mirrors <see cref="OwnerAggregate.Apply(OwnerRootVerified)"/>'s own guard: ignores a
+    /// verification computed against a root that is no longer this view's current claim.</summary>
+    public void Apply(IEvent<OwnerRootVerified> @event, OwnerDetails view)
+    {
+        if (@event.Data.RootFingerprint == view.RootFingerprint)
+        {
+            view.RootFingerprintVerified = true;
+        }
+    }
 
     public void Apply(IEvent<NodeVouched> @event, OwnerDetails view) =>
         view.VouchedNodes[@event.Data.NodeId] = @event.Data.IssuedAt;

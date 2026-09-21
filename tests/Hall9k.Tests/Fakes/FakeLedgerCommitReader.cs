@@ -14,16 +14,28 @@ namespace Hall9k.Tests.Fakes;
 internal sealed class FakeLedgerCommitReader : ILedgerCommitReader
 {
     private readonly IReadOnlyDictionary<string, LedgerSignedCommit> commitsByPath;
-    private readonly bool signed;
+    private readonly Func<string, string, bool> isSignedBy;
 
     /// <param name="commitsByPath">Keyed by the ledger path (never repository or ref), since every
     /// scenario this fake drives reads at most one repository's own ref at a time.</param>
     /// <param name="signed">What every <see cref="IsSignedByAsync"/> call answers — a single flag is
-    /// enough for every scenario this fake drives today, none of which need a per-key signature.</param>
+    /// enough for a scenario where every commit this fake hands back is equally (un)signed.</param>
     public FakeLedgerCommitReader(IReadOnlyDictionary<string, LedgerSignedCommit> commitsByPath, bool signed = true)
+        : this(commitsByPath, (_, _) => signed)
+    {
+    }
+
+    /// <param name="commitsByPath">Keyed by the ledger path (never repository or ref), since every
+    /// scenario this fake drives reads at most one repository's own ref at a time.</param>
+    /// <param name="isSignedBy">Answers <see cref="IsSignedByAsync"/> per (rawCommitBytes,
+    /// publicKeyLine) pair — the seam a scenario that needs to distinguish which of several
+    /// candidate commits actually verifies (the source's own root commit vs. its vouch commit) drives
+    /// directly, rather than the single blanket flag the other constructor shares across every call.</param>
+    public FakeLedgerCommitReader(
+        IReadOnlyDictionary<string, LedgerSignedCommit> commitsByPath, Func<string, string, bool> isSignedBy)
     {
         this.commitsByPath = commitsByPath;
-        this.signed = signed;
+        this.isSignedBy = isSignedBy;
     }
 
     public Task<LedgerSignedCommit?> ReadSignedCommitAsync(
@@ -32,5 +44,5 @@ internal sealed class FakeLedgerCommitReader : ILedgerCommitReader
 
     public Task<bool> IsSignedByAsync(
         string repositoryPath, string rawCommitBytes, string publicKeyLine, CancellationToken cancellationToken) =>
-        Task.FromResult(signed);
+        Task.FromResult(isSignedBy(rawCommitBytes, publicKeyLine));
 }
