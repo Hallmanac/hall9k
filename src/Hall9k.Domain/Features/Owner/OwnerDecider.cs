@@ -107,7 +107,7 @@ public static class OwnerDecider
             throw new DomainValidationException("An owner's root cannot be verified before it has claimed one.");
         }
 
-        return new OwnerRootVerified(owner.Id, verifiedAt);
+        return new OwnerRootVerified(owner.Id, owner.RootFingerprint, verifiedAt);
     }
 
     public static NodeVouched VouchNode(OwnerAggregate owner, Guid nodeId, string nodeFingerprint, DateTimeOffset issuedAt)

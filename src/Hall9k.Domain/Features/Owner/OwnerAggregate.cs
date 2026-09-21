@@ -91,7 +91,16 @@ public sealed class OwnerAggregate
         RootClaimedAt = @event.ClaimedAt;
     }
 
-    public void Apply(OwnerRootVerified @event) => RootFingerprintVerified = true;
+    /// <summary>Ignores a verification computed against a root that is no longer this owner's
+    /// current claim — <see cref="OwnerRootVerified.RootFingerprint"/>'s own doc explains the race
+    /// this closes.</summary>
+    public void Apply(OwnerRootVerified @event)
+    {
+        if (@event.RootFingerprint == RootFingerprint)
+        {
+            RootFingerprintVerified = true;
+        }
+    }
 
     public void Apply(NodeVouched @event) => _vouchedNodes[@event.NodeId] = @event.IssuedAt;
 

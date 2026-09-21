@@ -967,6 +967,51 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         chain.UnverifiedWrites.Should().NotContain(write => write.Kind == "membership");
     }
 
+    /// <summary>
+    /// Independent pre-PR review, conformance lens, medium: on a carried ledger, the genesis
+    /// members commit can only ever be signed by the carrying node itself (nobody locally holds the
+    /// root's own private key). If genesis were authorized the identical way every later membership
+    /// write is — against the owner chain's own CURRENT enrollment — then the routine
+    /// <c>h9k node revoke</c> the root-holding node runs once it later joins this same project would
+    /// permanently wipe this project's own genesis member and project key, since the one-time
+    /// bootstrap exception is already spent and nothing can ever re-earn it. Genesis must stay
+    /// authorized once it is, exactly like a self-established root's own <c>root.yaml</c> stays
+    /// established even after every node it ever vouched is revoked.
+    /// </summary>
+    [Fact]
+    public async Task A_genesis_members_commit_signed_by_a_carried_node_stays_authorized_after_that_node_is_revoked()
+    {
+        (string sourceRepo, GeneratedIdentity root, GeneratedIdentity carrier,
+            var rootSigned, var vouchSigned) = await EstablishSourceVouchAsync();
+
+        string targetHub = _repo.CreateHub();
+        string targetRepo = _repo.CloneNode(targetHub);
+        await WriteNodeFileAsync(targetRepo, carrier, carrier, root.Fingerprint);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/root.yaml", rootSigned.Content, carrier);
+        string carried = BuildCarriedRecordYaml(
+            carrier.NodeId, carrier.PublicKeyLine, Guid.NewGuid(), sourceRepo,
+            rootSigned.Content, rootSigned.Sha, rootSigned.RawBytes, vouchSigned.Content, vouchSigned.Sha, vouchSigned.RawBytes);
+        await WriteAsync(targetRepo, $"refs/hall9k/ledger/owners/{root.Fingerprint}", $"owners/{root.Fingerprint}/carried/{carrier.NodeId}.yaml", carried, carrier);
+
+        const string mintedProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FDD";
+        await WriteMemberFileAsync(targetRepo, root.Fingerprint, "owner", carrier, mintedProjectKey);
+
+        // The root-holding node later joins this same project (root.yaml already carried in) and
+        // revokes the carrying node — signed with the root's own real key, which only that node
+        // ever holds, the identical authority h9k node revoke's own fan-out relies on.
+        await RevokeAsync(targetRepo, root.Fingerprint, carrier.NodeId, root);
+
+        string readerRepo = _repo.CloneNode(targetHub);
+        TrustChain chain = await _chainReader.ComputeAsync(readerRepo, CancellationToken.None);
+
+        chain.Members.Should().Contain(
+            member => member.RootFingerprint == root.Fingerprint && member.Role == MembershipRole.Owner,
+            "genesis is a one-time, immutable fact — revoking its only ever signer must never undo it");
+        chain.ProjectKey.Should().Be(mintedProjectKey, "the project key was minted at genesis and never depends on the carrying node staying enrolled");
+        chain.UnverifiedWrites.Should().NotContain(write => write.Kind == "membership");
+        chain.IsEnrolledInOwner(carrier.Fingerprint, root.Fingerprint).Should().BeFalse("the carrying node is revoked as of this read");
+    }
+
     [Fact]
     public async Task A_genesis_members_commit_signed_by_an_unenrolled_node_is_refused()
     {

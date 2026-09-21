@@ -940,6 +940,111 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         owner.RootFingerprintVerified.Should().BeFalse("the refused carry leaves the owner's claim exactly as unverified as it was before this join");
     }
 
+    /// <summary>
+    /// Adversarial pre-PR review, medium: the pre-check also has to confirm the SOURCE's own
+    /// root.yaml commit is itself signed by the root's own key — <see cref="GitLedgerChainReader"/>'s
+    /// own <c>VerifyCarriedRecordAsync</c> check 2 — before carrying that commit's own bytes into
+    /// the target verbatim. A source whose own root was itself established by an earlier carry never
+    /// clears that: its root.yaml is signed by whichever node carried it there, never by the root's
+    /// own key. Carrying it anyway would write <c>owners/&lt;root&gt;/root.yaml</c> into the target
+    /// that no later chain read can ever verify, permanently burning the target's own root.yaml slot
+    /// (nothing can overwrite it once it exists, established or not) — the same failure mode the
+    /// neighbouring old-format-vouch and delegate-signed-vouch pre-checks already exist to prevent.
+    /// </summary>
+    [Fact]
+    public async Task A_source_whose_own_root_was_established_by_an_earlier_carry_is_refused_as_a_carry_source()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid connectionId = await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+
+        await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, cts.Token);
+        await bootstrapSession.SaveChangesAsync(cts.Token);
+
+        NodeKeyStore keyStore = new();
+        NodeSigningKey key = await keyStore.EnsureAsync(context.NodeId, cts.Token);
+        string root = new string('d', 64);
+
+        await using (IDocumentSession claimSession = _postgres.Store.LightweightSession())
+        {
+            OwnerAggregate ownerAggregate = await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token)
+                ?? throw new InvalidOperationException($"No owner {context.OwnerId}.");
+            claimSession.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(ownerAggregate, root, verified: false, Now));
+            await claimSession.SaveChangesAsync(cts.Token);
+        }
+
+        Guid sourceId = DomainId.New();
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            seed.Events.StartStream<ProjectAggregate>(
+                sourceId,
+                ProjectDecider.Register(
+                    sourceId, context.OwnerId, connectionId, "carry-source-not-root-signed",
+                    "/does/not/matter/on/a/fake/ledger/source", null, null, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        Guid targetId = DomainId.New();
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            seed.Events.StartStream<ProjectAggregate>(
+                targetId,
+                ProjectDecider.Register(
+                    targetId, context.OwnerId, connectionId, "carry-target-not-root-signed",
+                    "/does/not/matter/on/a/fake/ledger/target", null, null, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession loadSession = _postgres.Store.LightweightSession();
+        ProjectDetails source = (await loadSession.LoadAsync<ProjectDetails>(sourceId, cts.Token))!;
+        ProjectDetails target = (await loadSession.LoadAsync<ProjectDetails>(targetId, cts.Token))!;
+
+        TrustedOwner sourceOwner = new(
+            root, "ssh-ed25519 AAAAsourceRootKey root@test",
+            [new TrustedNode(context.NodeId.ToString(), key.PublicKeyLine, key.Fingerprint, Now)]);
+        FakeLedgerChainReader chainReader = new(new Dictionary<string, TrustChain>
+        {
+            [source.RepositoryPath] = new TrustChain(
+                new Dictionary<string, TrustedOwner> { [root] = sourceOwner }, []),
+        });
+
+        string ownersRefName = $"refs/hall9k/ledger/owners/{root}";
+        FakeLedgerCommitReader commitReader = new(
+            new Dictionary<string, LedgerSignedCommit>
+            {
+                // The source's own root.yaml commit — signed by whichever node carried root R into
+                // the source, never by root's own key, the exact shape a source that was itself
+                // established by an earlier carry always has.
+                [$"owners/{root}/root.yaml"] = new LedgerSignedCommit(
+                    "public_key: \"ssh-ed25519 AAAAsourceRootKey root@test\"\n", "root-sha",
+                    "tree deadbeef\n\nCarry node some-other-node's own vouch under root in from 'origin'"),
+                // A genuine, key-bound, root-signed vouch for the node joining right now — the
+                // vouch pre-check alone would happily accept this.
+                [$"owners/{root}/nodes/{context.NodeId}.yaml"] = new LedgerSignedCommit(
+                    $"node_id: \"{context.NodeId}\"\npublic_key: \"{key.PublicKeyLine}\"\n", "vouch-sha",
+                    $"tree cafebabe\n\nVouch node {context.NodeId} key {key.Fingerprint}"),
+            },
+            isSignedBy: (rawCommitBytes, _) => rawCommitBytes.Contains("Vouch node", StringComparison.Ordinal));
+
+        FakeLedger ledger = new();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await ProjectJoinCommand.RunAsync(
+            session, target, claimedOwnerOverride: null, invite: null, source.Name, ledger, keyStore,
+            GitHubAccessFakes.GrantingPush(), chainReader, commitReader, promptForInviteToken: null, cts.Token);
+
+        ledger.ManyWrites.Should().BeEmpty(
+            "a source whose own root.yaml is not root-signed must never be carried in verbatim — no later "
+            + "read could ever verify it, permanently burning the target's own root.yaml slot");
+        ledger.Writes.Should().NotContain(
+            w => w.RefName == ownersRefName,
+            "nothing under this root's own ref is written when the source's own root commit is not root-signed");
+
+        await using IDocumentSession query = _postgres.Store.LightweightSession();
+        OwnerDetails owner = (await query.LoadAsync<OwnerDetails>(context.OwnerId, cts.Token))!;
+        owner.RootFingerprintVerified.Should().BeFalse("the refused carry leaves the owner's claim exactly as unverified as it was before this join");
+    }
+
     [Fact]
     public async Task No_written_tree_ever_contains_the_private_key()
     {

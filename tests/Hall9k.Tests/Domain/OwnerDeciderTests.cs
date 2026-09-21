@@ -67,6 +67,7 @@ public sealed class OwnerDeciderTests
         owner.Apply(verified);
 
         verified.Id.Should().Be(owner.Id);
+        verified.RootFingerprint.Should().Be("claimed-root");
         verified.VerifiedAt.Should().Be(Now.AddMinutes(10));
         owner.RootFingerprint.Should().Be("claimed-root", "reconciliation never changes which root was claimed");
         owner.RootFingerprintVerified.Should().BeTrue();
@@ -81,6 +82,24 @@ public sealed class OwnerDeciderTests
         Action act = () => OwnerDecider.VerifyRoot(owner, Now);
 
         act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
+    public void A_verification_computed_against_a_root_that_is_no_longer_the_current_claim_is_ignored()
+    {
+        // The race independent pre-PR review (adversarial lens, medium) found: a stale in-memory
+        // aggregate or a racing concurrent append can each produce a VerifyRoot event for a root
+        // the owner has already moved on from by the time it is applied. Apply must never let that
+        // stamp verified: true onto whatever root happens to be current now.
+        OwnerAggregate owner = Registered();
+        owner.Apply(OwnerDecider.ClaimRoot(owner, "old-root", verified: false, Now));
+        OwnerRootVerified staleVerification = OwnerDecider.VerifyRoot(owner, Now.AddMinutes(5));
+
+        owner.Apply(OwnerDecider.ClaimRoot(owner, "new-root", verified: false, Now.AddMinutes(10)));
+        owner.Apply(staleVerification);
+
+        owner.RootFingerprint.Should().Be("new-root");
+        owner.RootFingerprintVerified.Should().BeFalse("the stale event verified old-root, not the owner's current claim");
     }
 
     [Fact]
@@ -182,9 +201,23 @@ public sealed class OwnerDeciderTests
         projection.Apply(new FakeEvent<OwnerRootClaimed>(new OwnerRootClaimed(id, "claimed-root", false, Now)), view);
         view.RootFingerprintVerified.Should().BeFalse();
 
-        projection.Apply(new FakeEvent<OwnerRootVerified>(new OwnerRootVerified(id, Now.AddMinutes(10))), view);
+        projection.Apply(new FakeEvent<OwnerRootVerified>(new OwnerRootVerified(id, "claimed-root", Now.AddMinutes(10))), view);
         view.RootFingerprintVerified.Should().BeTrue();
         view.RootFingerprint.Should().Be("claimed-root", "reconciliation never changes which root was claimed");
+    }
+
+    [Fact]
+    public void The_projection_ignores_a_verification_for_a_root_that_is_no_longer_current()
+    {
+        Guid id = DomainId.New();
+        OwnerDetailsProjection projection = new();
+        OwnerDetails view = projection.Create(new FakeEvent<OwnerRegistered>(
+            new OwnerRegistered(id, "Test Owner", "owner@test.local", Now)));
+
+        projection.Apply(new FakeEvent<OwnerRootClaimed>(new OwnerRootClaimed(id, "new-root", false, Now)), view);
+        projection.Apply(new FakeEvent<OwnerRootVerified>(new OwnerRootVerified(id, "old-root", Now.AddMinutes(10))), view);
+
+        view.RootFingerprintVerified.Should().BeFalse("the event verified old-root, not the view's current claim");
     }
 
     [Fact]

@@ -338,6 +338,10 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         // exactly the diagnostics this root's own final "nothing here is trusted" verdict, when it
         // comes to that, needs to name.
         Dictionary<string, TrustedNode> nodes = [];
+        // Every node ever successfully enrolled, current or since revoked — <see
+        // cref="TrustedOwner.EverEnrolledNodes"/>'s own doc explains why this never shrinks the way
+        // `nodes` does on revocation.
+        Dictionary<string, TrustedNode> everEnrolledNodes = [];
         HashSet<string> revokedNodeIds = [];
         List<UnverifiedLedgerWrite> unverified = [];
         string nodesPrefix = $"owners/{root}/nodes/";
@@ -429,6 +433,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                     if (carriedNode is not null)
                     {
                         nodes[carriedNodeId] = carriedNode;
+                        everEnrolledNodes[carriedNodeId] = carriedNode;
                         revokedNodeIds.Remove(carriedNodeId);
                         establishedByCarry = true;
                         carriedPathsEstablished.Add(carriedNodeId);
@@ -505,7 +510,9 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 // processes commits oldest to newest and simply overwrites whichever state a
                 // node-id last held, so a surviving node vouching again after a bad revocation
                 // restores it here exactly as idea 202383dc's own model describes.
-                nodes[nodeId] = new TrustedNode(nodeId, nodePublicKey, nodeFingerprint, issuedAt);
+                TrustedNode trustedNode = new(nodeId, nodePublicKey, nodeFingerprint, issuedAt);
+                nodes[nodeId] = trustedNode;
+                everEnrolledNodes[nodeId] = trustedNode;
                 revokedNodeIds.Remove(nodeId);
             }
         }
@@ -523,7 +530,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                 + $"owners/{root}/carried/*.yaml bundle verifies it either"), .. unverified]);
         }
 
-        return (new TrustedOwner(root, publicKeyLine, [.. nodes.Values], RevokedNodeIds: revokedNodeIds), unverified);
+        return (
+            new TrustedOwner(
+                root, publicKeyLine, [.. nodes.Values], RevokedNodeIds: revokedNodeIds,
+                EverEnrolledNodes: [.. everEnrolledNodes.Values]),
+            unverified);
     }
 
     /// <summary>
@@ -713,9 +724,11 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// <summary>
     /// Replays <c>refs/hall9k/ledger/members</c> oldest to newest. The very first commit the ref's
     /// own history ever holds that touches a <c>members/*.yaml</c> path is genesis: accepted only
-    /// when self-written (the writer's key traces to the very root fingerprint the file names),
-    /// unconditionally the project's first owner-role member either way — win or lose, that slot is
-    /// spent once. Every later write needs its signer to belong, right now, to a currently
+    /// when signed by that root's own key or any node its chain has EVER enrolled, current or since
+    /// revoked (<see cref="IsAuthorizedForGenesisAsync"/> — a carried ledger's genesis commit can
+    /// only ever be signed by the carrying node itself, and genesis has no later re-vouch that could
+    /// ever restore it once lost), unconditionally the project's first owner-role member either way
+    /// — win or lose, that slot is spent once. Every later write needs its signer to belong, right now, to a currently
     /// Owner-role member's own chain (<see cref="IsAuthorizedByOwnerChainAsync"/>) — the chain's
     /// live state at read time, the one <paramref name="ownerChains"/> already holds, never a
     /// snapshot pinned to this commit's own claimed committer date. That date is a field its writer
@@ -791,17 +804,25 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                     // every node fetching the identical ref lands on the identical value (TrustChain's
                     // own doc: "the project's own key, derived from the ledger").
                     genesisRootFingerprint = fingerprint;
-                    // Signed by the root's own key OR by any node this same root's chain currently
-                    // enrols — never merely "self-signed by the root's own key" alone (task f53fecfd,
-                    // criterion 3): a carried record establishes root R with no local node ever
-                    // holding R's own private key, so the genesis member commit for R can only ever
-                    // be signed by the carried node itself. IsAuthorizedByOwnerChainAsync is the
-                    // identical rule every later membership write already uses; genesis differs only
-                    // in being unconditionally accepted once authorized, no existing owner-role
-                    // member required first.
+                    // Signed by the root's own key OR by any node this same root's chain has EVER
+                    // enrolled, current or since revoked — never merely "self-signed by the root's
+                    // own key" alone (task f53fecfd, criterion 3): a carried record establishes root
+                    // R with no local node ever holding R's own private key, so the genesis member
+                    // commit for R can only ever be signed by the carried node itself.
+                    // IsAuthorizedForGenesisAsync is deliberately NOT IsAuthorizedByOwnerChainAsync,
+                    // the identical-looking rule every later membership write uses: that rule checks
+                    // only currently-enrolled nodes, which is the correct, accepted trade-off for an
+                    // ordinary write (a later re-vouch can always restore it) but not for genesis on
+                    // a carried ledger, where the carrying node is the ONLY signer genesis can ever
+                    // have. Revoking that one node — an otherwise routine h9k node revoke — would
+                    // otherwise permanently wipe this project's own genesis member and, with it, the
+                    // project key nothing else can ever remint (independent pre-PR review, cycle 1,
+                    // conformance lens, medium). Genesis differs from every later write only in being
+                    // unconditionally accepted once authorized, no existing owner-role member
+                    // required first.
                     if (content is not null
                         && ownerChains.TryGetValue(fingerprint, out TrustedOwner? selfOwner)
-                        && await IsAuthorizedByOwnerChainAsync(repositoryPath, commit, selfOwner, cancellationToken))
+                        && await IsAuthorizedForGenesisAsync(repositoryPath, commit, selfOwner, cancellationToken))
                     {
                         current[fingerprint] = new ProjectMember(fingerprint, MembershipRole.Owner, ParseIssuedAt(content));
                         projectKey ??= ExtractQuotedYamlValue(content, "project_key");
@@ -906,6 +927,36 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
         }
 
         foreach (TrustedNode node in owner.Nodes)
+        {
+            if (await IsSignedByAsync(repositoryPath, commit, node.PublicKeyLine, cancellationToken))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Genesis's own authorization check, never used for any later membership write: identical to
+    /// <see cref="IsAuthorizedByOwnerChainAsync"/>'s root-key check, but accepts a signature from
+    /// EVERY node <paramref name="owner"/>'s chain has ever enrolled
+    /// (<see cref="TrustedOwner.EverEnrolledNodes"/>), current or since revoked — never merely the
+    /// ones live right now. Genesis is a one-time, immutable fact about who established this
+    /// project (idea 202383dc, M2): unlike an ordinary write, there is no later re-vouch that could
+    /// ever restore a lost genesis, so the accepted "revocation voids this signer's earlier writes"
+    /// consequence <see cref="ComputeMembersAsync"/>'s own doc names for ordinary writes must never
+    /// reach genesis itself.
+    /// </summary>
+    private async Task<bool> IsAuthorizedForGenesisAsync(
+        string repositoryPath, string commit, TrustedOwner owner, CancellationToken cancellationToken)
+    {
+        if (await IsSignedByAsync(repositoryPath, commit, owner.RootPublicKeyLine, cancellationToken))
+        {
+            return true;
+        }
+
+        foreach (TrustedNode node in owner.EverEnrolledNodes)
         {
             if (await IsSignedByAsync(repositoryPath, commit, node.PublicKeyLine, cancellationToken))
             {
