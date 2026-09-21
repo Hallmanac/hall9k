@@ -45,6 +45,12 @@ internal static class PromptContractTokens
         // every ReviewResultParser marker above follows; the design templates inject each one
         // through a {{...Marker}} placeholder.
         .. DesignReviewSection.Markers,
+        // The QA review's own report grammar (idea b9b09779, piece 2), read back out of that
+        // session's findings file the same way: the blast-radius map, the end-to-end outcome, and
+        // the flows the session actually drove.
+        ReviewResultParser.BlastRadiusMarker,
+        ReviewResultParser.EndToEndMarker,
+        ReviewResultParser.DrivenMarker,
         "RESOLUTION:",
         "merge-ready",
         "needs-fixes",
@@ -64,6 +70,8 @@ internal static class PromptContractTokens
         ReviewResultParser.KindTagKey + "=",
         ReviewResultParser.AuthorTagKey + "=",
         ReviewResultParser.ReviewTagKey + "=",
+        ReviewResultParser.MapEntryTagKey + "=",
+        ReviewResultParser.CoverageTagKey + "=",
         // The finding contract's own structural labels (same review, same finding): distinct from
         // ReviewVerdictValidation's private FindingContractExampleBody, kept in sync by hand across
         // the Execution/Review boundary per that constant's own doc comment, rather than shared.

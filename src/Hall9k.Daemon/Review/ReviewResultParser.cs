@@ -51,6 +51,55 @@ public static class ReviewResultParser
     public const string RunSkillDriftKind = "run-skill-drift";
 
     /// <summary>
+    /// The header line that opens one entry on a QA review's blast-radius map (idea b9b09779,
+    /// piece 2), read by <see cref="ParseBlastRadiusMap"/>. Its own marker rather than a finding
+    /// header because a map entry is not a defect: most of them are behaviours that are fine and
+    /// covered, and the point of the map is that every one of them is graded, including the ones
+    /// with nothing wrong.
+    /// </summary>
+    public const string BlastRadiusMarker = "MAP:";
+
+    /// <summary>
+    /// The exact <c>entry=</c> label in the blast-radius contract's own worked example
+    /// (<c>QaReviewPromptBuilder</c>'s blast-radius section). A session that quotes its
+    /// instructions before answering — the same observed habit <see cref="LastMarkerValue"/>
+    /// already tolerates for the verdict — echoes that example header back verbatim, and unlike a
+    /// verdict line a map entry has no "last one wins" rule, so the echo would otherwise stand as
+    /// a fabricated fourth entry with a verdict nobody assigned. <see cref="CloseMapEntry"/> drops
+    /// any block carrying this label, the same guard
+    /// <see cref="ExampleLocationPlaceholder"/> gives the finding parser. Deliberately a label no
+    /// reviewer would pick for a real behaviour, so dropping it can never lose a real entry.
+    /// </summary>
+    public const string ExampleMapEntryPlaceholder = "map-entry-example";
+
+    /// <summary>
+    /// The line a QA review reports its end-to-end run on (idea b9b09779, piece 2), read by
+    /// <see cref="ParseEndToEndOutcome"/>. Last marker wins, the same habit
+    /// <see cref="VerdictMarker"/> tolerates for the same observed reason.
+    /// </summary>
+    public const string EndToEndMarker = "END-TO-END TESTS:";
+
+    /// <summary>
+    /// The line a QA review that actually drove the running product names the flows it walked on
+    /// (idea b9b09779, piece 2), read by <see cref="ParseDrivenFlows"/>. Absent is the ordinary
+    /// case and means nothing was driven — which is what the default <c>qa-review-drive off</c>
+    /// produces, and what a project with no run skill produces whatever the setting says.
+    /// </summary>
+    public const string DrivenMarker = "DRIVEN:";
+
+    /// <summary>
+    /// The exact flow named in the driven contract's own worked example. Same echo hazard
+    /// <see cref="ExampleMapEntryPlaceholder"/> guards the map against, and a worse consequence
+    /// here: a session that quoted the contract and then never drove anything would otherwise
+    /// have the platform report flows it walked through a product it never started.
+    /// <see cref="ParseDrivenFlows"/> reads a value carrying this as the echo it is, not as an
+    /// answer. The end-to-end line needs no equivalent because its own worked example renders as
+    /// a choice placeholder rather than as any of the three real words, so an echo of it already
+    /// parses to <see cref="QaEndToEndOutcome.Unstated"/>.
+    /// </summary>
+    public const string ExampleDrivenFlowPlaceholder = "the-flow-you-actually-walked";
+
+    /// <summary>
     /// The structured findings in a review pass's output, in the order they were written. A
     /// block runs from its FINDING header to the next header, the verdict line, or the
     /// run-skill drift line, and its text is carried whole so the fix session and any routed
@@ -137,6 +186,120 @@ public static class ReviewResultParser
         RunSkillDriftAnswer.Parse(LastMarkerValue(summary, RunSkillDriftMarker));
 
     /// <summary>
+    /// A QA review's blast-radius map, in the order it was written (idea b9b09779, piece 2). A
+    /// block runs from its <see cref="BlastRadiusMarker"/> header to the next header or to the
+    /// first line that opens something else entirely — a finding, the end-to-end line, the driven
+    /// line, the standing question, or the verdict — so an entry's own prose is carried whole and
+    /// the report that follows the map is never swallowed into the last entry.
+    /// <para>
+    /// Every read here is tolerant in the same way <see cref="ParseFindings"/> is: an entry with
+    /// no <c>coverage=</c> tag, or one nobody can read, is
+    /// <see cref="QaCoverageVerdict.Unstated"/> rather than the nearest plausible verdict. An
+    /// ungraded entry is precisely the gap the map exists to expose, so guessing at it would
+    /// defeat the whole section.
+    /// </para>
+    /// </summary>
+    public static IReadOnlyList<QaBlastRadiusEntry> ParseBlastRadiusMap(string? summary)
+    {
+        if (summary.IsBlank())
+        {
+            return [];
+        }
+
+        List<QaBlastRadiusEntry> entries = [];
+        List<string>? block = null;
+        foreach (string rawLine in summary.Split('\n'))
+        {
+            string line = rawLine.TrimEnd('\r');
+            string trimmed = line.TrimStart();
+            if (trimmed.StartsWith(BlastRadiusMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                CloseMapEntry(entries, block);
+                block = [trimmed];
+                continue;
+            }
+
+            if (ClosesMapEntry(trimmed))
+            {
+                CloseMapEntry(entries, block);
+                block = null;
+                continue;
+            }
+
+            block?.Add(line);
+        }
+
+        CloseMapEntry(entries, block);
+        return entries;
+    }
+
+    /// <summary>
+    /// Whether <paramref name="trimmed"/> begins a section that is no longer part of the map.
+    /// Only the markers this file already owns count: an ordinary prose heading between map
+    /// entries is part of the map (it is how the three groups the map is made of are labelled),
+    /// and treating a heading as a terminator would drop every entry under the second group.
+    /// </summary>
+    private static bool ClosesMapEntry(string trimmed) =>
+        trimmed.StartsWith(FindingMarker, StringComparison.OrdinalIgnoreCase)
+        || trimmed.StartsWith(EndToEndMarker, StringComparison.OrdinalIgnoreCase)
+        || trimmed.StartsWith(DrivenMarker, StringComparison.OrdinalIgnoreCase)
+        || trimmed.StartsWith(RunSkillDriftMarker, StringComparison.OrdinalIgnoreCase)
+        || trimmed.StartsWith(VerdictMarker, StringComparison.OrdinalIgnoreCase);
+
+    private static void CloseMapEntry(List<QaBlastRadiusEntry> entries, List<string>? block)
+    {
+        if (block is null)
+        {
+            return;
+        }
+
+        Dictionary<string, string> header = HeaderTags(block[0][BlastRadiusMarker.Length..]);
+        string id = Tag(header, MapEntryTagKey) ?? string.Empty;
+        if (id.Equals(ExampleMapEntryPlaceholder, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        entries.Add(new QaBlastRadiusEntry(
+            id, QaCoverageVerdict.Parse(Tag(header, CoverageTagKey)), string.Join('\n', block).Trim()));
+    }
+
+    /// <summary>
+    /// What a QA review's own end-to-end run did (idea b9b09779, piece 2). Last marker wins, and
+    /// an absent or unreadable answer is <see cref="QaEndToEndOutcome.Unstated"/> — never read as
+    /// a pass, and never as "this project has none", both of which would be observations nobody
+    /// made.
+    /// </summary>
+    public static QaEndToEndOutcome ParseEndToEndOutcome(string? summary) =>
+        QaEndToEndOutcome.Parse(LastMarkerValue(summary, EndToEndMarker));
+
+    /// <summary>
+    /// The user-facing flows a QA review actually drove through the running product (idea
+    /// b9b09779, piece 2), split on the semicolons the contract asks for. Empty when nothing was
+    /// driven, which is the default and the ordinary case: the report says "driven: nothing"
+    /// rather than omitting the question, so a reader can tell a review that drove nothing from
+    /// one that drove something and did not say.
+    /// </summary>
+    public static IReadOnlyList<string> ParseDrivenFlows(string? summary)
+    {
+        if (LastMarkerValue(summary, DrivenMarker) is not { } value || value.IsBlank())
+        {
+            return [];
+        }
+
+        IReadOnlyList<string> flows =
+            [.. value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+
+        // The last marker in the output is the contract's own example, which means the session
+        // quoted its instructions and then never answered: nothing was driven, and saying so is
+        // the honest read. Checked on the whole line rather than flow by flow, because an echo is
+        // an echo in full — a real answer would have come after it and won the last-marker rule.
+        return flows.Any(flow => flow.Equals(ExampleDrivenFlowPlaceholder, StringComparison.OrdinalIgnoreCase))
+            ? []
+            : flows;
+    }
+
+    /// <summary>
     /// The `track=` tag a <see cref="ReviewMode.Verify"/> pass's finding carries (task: review
     /// cycles after the first) — absent from a Discovery or FinalFullPass pass's findings, since
     /// those already know their own lens from the pass itself. Anything other than the two real
@@ -207,6 +370,12 @@ public static class ReviewResultParser
     internal const string AuthorTagKey = "author";
 
     internal const string ReviewTagKey = "review";
+
+    /// <summary>The blast-radius header's own label tag — the short id every later finding cites its map entry by.</summary>
+    internal const string MapEntryTagKey = "entry";
+
+    /// <summary>The blast-radius header's own verdict tag: covered, a new automated test, or a human walk-through.</summary>
+    internal const string CoverageTagKey = "coverage";
 
     /// <summary>The header line that opens one parked-disagreement block (task: a changes-requested pull-request review from a human becomes a fix lap).</summary>
     public const string DisagreementMarker = "DISAGREEMENT:";
