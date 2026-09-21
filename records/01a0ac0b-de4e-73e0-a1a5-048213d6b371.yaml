@@ -1,0 +1,29 @@
+hall9k-task-record: 1
+task-id: 01a0ac0b-de4e-73e0-a1a5-048213d6b371
+project: hall9k
+type: feature
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#430
+objective: |-
+  Decisions and lessons are event-sourced platform data: Decision and Learning aggregates with their own streams, stable ids that serve as citation keys, recorded provenance, and one CLI path for humans and agents to record, list, show, supersede, and retire them
+criteria:
+  - |-
+    Two aggregates with their own streams, Decision and Learning, each with a stable id that is the citation key, a scope (project, or owner for cross-project habits), the statement, and recorded provenance: who recorded it, from which run and task if any, whether a human was attending, and for a decision the origin incident and what it supersedes; provenance is observed, never inferred, and a lesson typed from a shell carries explicit nulls for run and task
+  - |-
+    One CLI path for both callers: h9k decide "<statement>" and h9k learn "<statement>" record the event and print the id; each has list, show, and a terminal verb (supersede for a decision, retire for a lesson), both appending with a required reason and never deleting; the bare positional form always writes and never reads
+  - A decision or lesson scoped to a project is a project-scoped event in the stamping classification registry so M2a replication carries it; an owner-scoped lesson stays home; a decision recorded from inside a run is refused unless the run is human-attended (agents record lessons, humans record decisions)
+  - Listing is a cheap indexed query over a projection row per record (scope, scope id, status, recorded-at); show renders provenance and, for a decision, what it superseded and what superseded it
+  - Tests through the seams cover record, list, show, supersede, retire, the refused agent decision, and the provenance nulls; dotnet build and dotnet test pass; the help tree teaches what a good statement looks like (one claim, imperative, self-contained) with an example
+dependencies: [01a0c00a-b7d7-751e-b253-70da64ba195a]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/13d6b371-decisions-and-lessons-are-even
+published: 2026-09-21 00:00:39Z
+context: |-
+  Decisions, decision-log entries, and run-earned lessons are recorded as event-store events through the daemon or the CLI, under an aggregate discovery decides, and PLAN.md section 16, AGENTS.md, and any similar markdown become projections of those events rather than hand-edited sources. Brian's ruling 2026-09-16 during the Decisions Log discussion: the log is carrying binding decisions, lessons, and a per-task change diary in one 1 MB file whose sequential numbers (cited 1,283 times across 421 files) force a renumberer, a placeholder value object, a guard test, and a tail conflict on every stacked replay; backlog 55 (the learnings loop) already designs lessons as a Learning stream with prompt injection, retirement, and distillation, and IDEA-learning-capture is its canonical shape; this idea extends the same rule to decisions and makes the markdown a projection. Supersedes the freeze-and-per-file proposal, 7af7204a (#418, unassigned), and 2fa45efc, which fold into its discovery. Walk after the distributed-team chain drains.
+
+  Piece 1 of 5, the store. Idea d805fd8b (decisions and lessons as events, markdown as projections), walked with Brian 2026-09-16 15:4x to 16:2x; the walk journal in the idea's workspace holds his statements and rulings. Build after the distributed-team chain (idea 202383dc) is solidified: these events must ride M2a's replication. Inputs: backlog/55-learnings-loop.md and backlog/IDEA-learning-capture.md (the Learning stream design; reconcile their quarantine disagreement in favour of live-at-once with provenance marks), PLAN.md section 16 (234 entries, sequential numbers cited 1,283 times across 421 files), ProjectHomeRenderLoop (the existing projection pattern), the event classification registry from the stamping task. Writing conventions: no em dashes, full sentences. Testing rule (Brian, 2026-09-13): no test touches a repository or remote.
+
+  Discovery workspace (research notes, gathered files, and prototypes from before this was a task; may be empty):
+  /Users/brianhallmanac/.hall9k/projects/hall9k/ideas/d805fd8b-decisions-decision-log-entries-and-run-earned-lessons-are-re/workspace
