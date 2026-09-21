@@ -222,6 +222,10 @@ public sealed class ProjectAggregate
     /// <summary>A label list that forces <see cref="CloseLinkedIssueRule.Never"/> for an issue carrying any of them at closeout time.</summary>
     public IReadOnlyList<string> NeverCloseLabels => _neverCloseLabels;
 
+    private readonly List<string> _nonExecutablePaths = [];
+    /// <summary>This project's own additions to <see cref="Project.NonExecutablePathDefaults"/>'s compiled four rules — see <see cref="Events.ProjectSettingsChanged.NonExecutablePaths"/>'s own doc.</summary>
+    public IReadOnlyList<string> NonExecutablePaths => _nonExecutablePaths;
+
     public void Apply(ProjectRegistered @event)
     {
         Id = @event.Id;
@@ -416,6 +420,12 @@ public sealed class ProjectAggregate
         {
             WritingConventions = @event.WritingConventions.Value ?? WritingConventions.Default;
         }
+
+        if (@event.NonExecutablePaths.HasValue)
+        {
+            _nonExecutablePaths.Clear();
+            _nonExecutablePaths.AddRange(@event.NonExecutablePaths.Value ?? []);
+        }
     }
 
     /// <summary>
@@ -538,6 +548,12 @@ public sealed class ProjectAggregate
         if (@event.CommitStyle.HasValue)
         {
             CommitStyle = @event.CommitStyle.Value ?? CommitStyle.Unknown;
+        }
+
+        if (@event.NonExecutablePaths.HasValue)
+        {
+            _nonExecutablePaths.Clear();
+            _nonExecutablePaths.AddRange(@event.NonExecutablePaths.Value ?? []);
         }
     }
 

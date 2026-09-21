@@ -66,7 +66,15 @@ public sealed record ProjectTeamSettingsChanged(
     /// default (off, the opposite of the designer's) and why <see cref="Project.ReviewDriveSetting"/>
     /// and not the projection resolves it.
     /// </summary>
-    Optional<bool> QaReviewDrive = default)
+    Optional<bool> QaReviewDrive = default,
+    /// <summary>
+    /// This project's own additions to the compiled non-executable-path rule set (task: a
+    /// delivered diff that touches no buildable or testable source skips the build and test
+    /// gates) — a team field, because every node running this project's tasks must classify a
+    /// changed path the identical way. See <see cref="ProjectSettingsChanged.NonExecutablePaths"/>'s
+    /// own doc.
+    /// </summary>
+    Optional<IReadOnlyList<string>> NonExecutablePaths = default)
 {
     /// <summary>
     /// Builds the team companion from whatever <see cref="ProjectDecider.ChangeSettings"/> just
@@ -97,7 +105,8 @@ public sealed record ProjectTeamSettingsChanged(
             || changed.ContextLinks.HasValue
             || changed.CommitStyle.HasValue
             || changed.DesignReviewDrive.HasValue
-            || changed.QaReviewDrive.HasValue;
+            || changed.QaReviewDrive.HasValue
+            || changed.NonExecutablePaths.HasValue;
 
         return anyTeamField
             ? new ProjectTeamSettingsChanged(
@@ -127,7 +136,8 @@ public sealed record ProjectTeamSettingsChanged(
                 changed.ContextLinks,
                 changed.CommitStyle,
                 changed.DesignReviewDrive,
-                changed.QaReviewDrive)
+                changed.QaReviewDrive,
+                changed.NonExecutablePaths)
             : null;
     }
 }

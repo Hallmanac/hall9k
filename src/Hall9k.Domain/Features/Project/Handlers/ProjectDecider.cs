@@ -88,7 +88,8 @@ public static class ProjectDecider
         Optional<OrchestratorFeedLevel> orchestratorFeed = default,
         Optional<int?> courierMaxWaitSeconds = default,
         Optional<bool> designReviewDrive = default,
-        Optional<bool> qaReviewDrive = default)
+        Optional<bool> qaReviewDrive = default,
+        Optional<IReadOnlyList<string>> nonExecutablePaths = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -402,6 +403,17 @@ public static class ProjectDecider
                 [.. (neverCloseLabels.Value ?? []).Select(label => label.Trim()).Where(label => label.Length > 0)])
             : Optional<IReadOnlyList<string>>.None;
 
+        // Trimmed and emptied of blanks, the identical NeverCloseLabels idiom just above: this is
+        // always this project's own ADDITIONS to NonExecutablePathDefaults.Rules, never a
+        // replacement of them — there is no parameter here that could remove one of the compiled
+        // four, which is what makes "a project can only add to the set" hold by construction
+        // rather than by a check (task: a delivered diff that touches no buildable or testable
+        // source skips the build and test gates).
+        Optional<IReadOnlyList<string>> normalizedNonExecutablePaths = nonExecutablePaths.HasValue
+            ? Optional<IReadOnlyList<string>>.Of(
+                [.. (nonExecutablePaths.Value ?? []).Select(glob => glob.Trim()).Where(glob => glob.Length > 0)])
+            : Optional<IReadOnlyList<string>>.None;
+
         return new ProjectSettingsChanged(
             project.Id,
             verifyCommands,
@@ -450,7 +462,8 @@ public static class ProjectDecider
             OrchestratorFeed: orchestratorFeed,
             CourierMaxWaitSeconds: courierMaxWaitSeconds,
             DesignReviewDrive: designReviewDrive,
-            QaReviewDrive: qaReviewDrive);
+            QaReviewDrive: qaReviewDrive,
+            NonExecutablePaths: normalizedNonExecutablePaths);
     }
 
     /// <summary>
