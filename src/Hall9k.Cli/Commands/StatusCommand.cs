@@ -1,6 +1,7 @@
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
+using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Courier;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
@@ -526,36 +527,35 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     {
         try
         {
+            DateTimeOffset now = DateTimeOffset.UtcNow;
             IReadOnlyList<EventCatchUpRequest> outstanding = await session.Query<EventCatchUpRequest>()
                 .Where(request => request.AnsweredAt == null && request.SupersededAt == null && !request.Exhausted)
                 .ToListAsync(cancellationToken);
-            if (outstanding.Count == 0)
-            {
-                return;
-            }
 
-            foreach (EventCatchUpRequest request in outstanding.OrderBy(request => request.SentAt))
+            // Coarsely narrowed here and finely judged in the pane: this query asks only for
+            // requests that ended recently enough to be worth a line, and EventCatchUpPane decides
+            // which of those a DECLINE ended. A pre-v0.10.5 request that closed some other way
+            // comes back here and prints nothing, which is the honest outcome — its own document
+            // records no declining node, and this pane never fills one in.
+            //
+            // Both ways a request can END, not just the one: a broadcast closed by a decline
+            // carries AnsweredAt, and a candidate cascade whose LAST candidate declined carries
+            // Exhausted with AnsweredAt still null. Querying only the first left the cascade's own
+            // decline recorded on the document and never printed anywhere (self-review, round one).
+            // Exhausted is bounded by SentAt rather than left open because AdvanceToNextCandidateAsync
+            // moves SentAt on every advance, so for an exhausted request it IS the time of the
+            // decline that exhausted it.
+            DateTimeOffset closedSince = now - EventCatchUpPane.DeclineWindow;
+            IReadOnlyList<EventCatchUpRequest> closed = await session.Query<EventCatchUpRequest>()
+                .Where(request => (request.AnsweredAt != null && request.AnsweredAt >= closedSince)
+                    || (request.Exhausted && request.SentAt >= closedSince))
+                .ToListAsync(cancellationToken);
+
+            HeldTailSummary heldTail = await HeldTailStreams.SummarizeAsync(session, cancellationToken);
+
+            foreach (string line in EventCatchUpPane.ComposeLines(outstanding, closed, heldTail, now))
             {
-                string what = request switch
-                {
-                    // A dependency ask nobody typed says whose dependency it is: the platform mints
-                    // it on its own when a pulled or adopted task names a blocked-by or stacked-on
-                    // id whose stream is not here (TaskDependencyCatchUp), and a bare stream id
-                    // would read as an ask this node cannot account for.
-                    { ForStreamId: { } streamId, ForDependencyOfTaskId: { } dependentTaskId } =>
-                        $"stream {DomainId.Short(streamId)}, a dependency of task {DomainId.Short(dependentTaskId)}",
-                    { ForStreamId: { } streamId } => $"stream {DomainId.Short(streamId)}",
-                    { ForOriginNodeId: { } originNodeId } => $"a gap from {DomainId.Short(originNodeId)} (since {request.SinceOriginSequence})",
-                    { SinceGlobalSequence: 0 } => "this project's whole history (h9k project pull --since all)",
-                    { SinceGlobalSequence: { } sinceGlobalSequence } =>
-                        $"this project's history from global sequence {sinceGlobalSequence} (h9k project pull --since)",
-                    _ => "a brand-new node's own bootstrap",
-                };
-                string candidate = request.CurrentCandidateNodeId is { } current
-                    ? $"asking {DomainId.Short(current)}"
-                    : "broadcast to the whole project";
-                AnsiConsole.MarkupLineInterpolated(
-                    $"[yellow]catch-up outstanding[/] for {what.EscapeMarkup()} — {candidate.EscapeMarkup()} [dim](sent {request.SentAt:u})[/]");
+                AnsiConsole.MarkupLineInterpolated($"[yellow]{line}[/]");
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
