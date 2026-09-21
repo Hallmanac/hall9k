@@ -377,6 +377,7 @@ public sealed class RunSupervisor(
                 // process is already gone is left alone — GateStarted's own Apply overwrites
                 // it unconditionally the moment the resumed pipeline starts the gate fresh, so
                 // there is nothing here to clean up.
+                ActiveGate? killedGate = null;
                 if (run.ActiveGate is { } activeGate
                     && processManager.IsAlive(activeGate.ProcessId, activeGate.StartedAt))
                 {
@@ -389,6 +390,7 @@ public sealed class RunSupervisor(
                     await using IDocumentSession gateEndedSession = store.LightweightSession();
                     gateEndedSession.Events.Append(run.Id, new GateEnded(run.Id, DateTimeOffset.UtcNow));
                     await gateEndedSession.SaveChangesAsync(cancellationToken);
+                    killedGate = activeGate;
                 }
 
                 // Daemon died between the agent's result and the PR: the work is done,
@@ -398,7 +400,7 @@ public sealed class RunSupervisor(
                 // must not wait on them.
                 logger.LogInformation(
                     "Adopting run {RunId} stranded in {State} — resuming the pre-PR pipeline", run.Id, run.State.Value);
-                ResumePipeline(run, cancellationToken);
+                ResumePipeline(run, cancellationToken, killedGate);
                 await RefreshAdoptedLeaseAsync(run, cancellationToken);
                 adopted++;
                 continue;
@@ -2453,7 +2455,16 @@ public sealed class RunSupervisor(
     /// Adoption re-entry for the post-agent pipeline, tracked in the monitor set so
     /// ActiveCount stays honest while gates and review sessions run.
     /// </summary>
-    private void ResumePipeline(RunDetails run, CancellationToken cancellationToken)
+    /// <param name="recentlyEndedGate">
+    /// The orphaned gate process <see cref="AdoptOrphansAsync"/> itself just killed and recorded
+    /// <see cref="GateEnded"/> for, immediately before this call — null from every other caller
+    /// (<see cref="ResumeReviewLoop"/>, <see cref="ResumeStrandedPipelinesAsync"/>), which never
+    /// kill anything on the way in. Passed through to <see cref="VerificationRunner.VerifyAsync(Guid,Guid,string?,string,RunSessionLeg,ActiveGate?,CancellationToken)"/>
+    /// so a residual-lock <see cref="IOException"/> on this resumed pass's own first gate can
+    /// still name the process most likely still holding it, even though the GateEnded append
+    /// already cleared <see cref="RunDetails.ActiveGate"/> before this method's fresh load runs.
+    /// </param>
+    private void ResumePipeline(RunDetails run, CancellationToken cancellationToken, ActiveGate? recentlyEndedGate = null)
     {
         _monitors.TryAdd(run.Id, Task.Run(async () =>
         {
@@ -2484,7 +2495,7 @@ public sealed class RunSupervisor(
                     bool spikeGatesOk = run.State != RunState.Verifying || !spikeTask.SpikeKind.RunsGates
                         || await verification.VerifyAsync(
                             run.Id, run.TaskId, scopeSinceSha: null, InitialVerificationScopeReason,
-                            RunSessionLeg.Build, cancellationToken);
+                            RunSessionLeg.Build, recentlyEndedGate, cancellationToken);
                     if (spikeGatesOk)
                     {
                         await spike.ReviewAsync(run.Id, run.TaskId, cancellationToken);
@@ -2494,7 +2505,7 @@ public sealed class RunSupervisor(
                 }
 
                 bool mergeReady = run.State == RunState.Verifying
-                    ? await verification.VerifyAsync(run.Id, run.TaskId, scopeSinceSha: null, InitialVerificationScopeReason, RunSessionLeg.Build, cancellationToken)
+                    ? await verification.VerifyAsync(run.Id, run.TaskId, scopeSinceSha: null, InitialVerificationScopeReason, RunSessionLeg.Build, recentlyEndedGate, cancellationToken)
                         && await review.ReviewAsync(run.Id, run.TaskId, cancellationToken)
                     : await review.ReviewAsync(run.Id, run.TaskId, cancellationToken);
                 if (mergeReady)
