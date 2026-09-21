@@ -432,6 +432,20 @@ public static class RunPaths
     public static string HandoffFile(string runDirectory) => Path.Combine(runDirectory, "handoff.md");
 
     /// <summary>
+    /// Where a local launch's own processes write (idea b9b09779, piece 5). In the run directory
+    /// beside every other artifact of this review rather than somewhere under the worktree,
+    /// because the worktree is a checkout the platform releases at closeout and a reviewer asking
+    /// why their launch died wants the log to have outlived it.
+    /// <para>
+    /// One file for every process the launch starts, appended to by each: the run skill's own
+    /// launch section describes one product coming up, and interleaved output from its parts is
+    /// how a reader of a terminal would have seen it anyway.
+    /// </para>
+    /// </summary>
+    public static string LocalLaunchLogFile(string runDirectory) =>
+        Path.Combine(runDirectory, "local-launch.log");
+
+    /// <summary>
     /// The pull request the session composed for itself: the title and the body it wrote under
     /// its own <c>PR SUMMARY:</c> marker, captured at session end beside the handoff. The opener
     /// reads it back when it composes the real pull request, so the run directory holds both what
