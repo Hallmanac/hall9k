@@ -275,6 +275,28 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, 
             envelopesQueued++;
         }
 
+        // The terminal envelope (task 252bc5cf), after the last batch and never instead of one: an
+        // answer's own last word, carrying the request it closes and how many batches it was split
+        // into. It exists because "this answer is finished" is not something a requester can ever
+        // infer from what arrived — a whole-project answer over history the requester already holds
+        // dedupes every record and applies nothing, so applied counts, envelope counts and silence
+        // all look identical from that side. A build that predates the kind does not recognize it,
+        // so under MessageKind's own "an unknown kind is stored and skipped, never refused" rule it
+        // lands there as an ordinary received message — one raw note per answer in that node's
+        // h9k messages, which is a wart rather than a fault (independent pre-PR review, cycle 1,
+        // adversarial lens, low: an earlier comment here claimed such a build skipped it, and
+        // nothing on either side ever did). What matters is that it completes no reconcile there,
+        // leaving the exchange incomplete and re-asked once rather than wrongly closed.
+        // Queued for every answer, not only a reconcile's: the requester decides what to do
+        // with it, and an answer that ends the same way whoever asked is one shape rather than two.
+        await MessageOutbox.QueueAsync(
+            session, myNodeId, projectId, myOwnerFingerprint, MessageAudience.Node(requesterNodeId),
+            about: request.RequestId.ToString(),
+            MessageKind.EventsAnswerComplete,
+            EventReplicationCodec.EncodeAnswerComplete(new EventReplicationCodec.EventsAnswerCompleteRecord(
+                request.RequestId, envelopesQueued)),
+            now, cancellationToken);
+
         return envelopesQueued;
     }
 

@@ -418,6 +418,18 @@ public sealed class MessageSweepEngine(
     /// <see cref="HasAnyLocalHistoryAsync"/>'s own snapshot) — no replicated event ever landed, and
     /// this node has produced no Task of its own either — and cascades every outstanding catch-up
     /// request past its per-candidate timeout to the next ranked candidate.
+    /// <para>
+    /// Also where this node's own fleet reconcile is triggered (task 252bc5cf): one ask per fleet
+    /// sibling with no reconcile record for this project yet, plus the one automatic re-ask and the
+    /// stall mark, all through <see cref="EventCatchUpCoordinator.RequestFleetReconcilesAsync"/>.
+    /// One sweep-time rule rather than three triggers, because none of the three arrivals it has to
+    /// cover has an event of its own to fire off: a node newly vouched into the fleet, a project
+    /// registered on a fleet node later, and a project's very first replication switch-on, which is
+    /// recorded per node (<c>NodeAggregate.ReplicationSwitchOnSequence</c>) rather than per project.
+    /// Unlike the bootstrap above it does not read probed tips at all — the fleet comes from this
+    /// project's own ledger, and a sibling that has never pushed an outbox here is exactly the one
+    /// most likely to be missing history.
+    /// </para>
     /// </summary>
     private async Task AdvanceCatchUpAsync(
         ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, TrustChain trustChain,
@@ -449,6 +461,20 @@ public sealed class MessageSweepEngine(
                     exception, "Checking for a brand-new bootstrap failed for project {ProjectId}; will retry next sweep",
                     project.Id);
             }
+        }
+
+        try
+        {
+            await using IDocumentSession reconcileSession = store.LightweightSession();
+            await EventCatchUpCoordinator.RequestFleetReconcilesAsync(
+                reconcileSession, project.Id, nodeId, identity.OwnerRootFingerprint, trustChain,
+                options.Value.MessageRetention, now, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Reconciling this owner's fleet failed for project {ProjectId}; will retry next sweep",
+                project.Id);
         }
 
         try
