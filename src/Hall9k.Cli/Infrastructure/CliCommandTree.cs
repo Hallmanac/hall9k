@@ -82,22 +82,37 @@ public static class CliCommandTree
                     + "registration; revert it after with h9k project set <name> --skip-permissions false. "
                     + "A name that collides with an archived project (h9k project remove) offers to "
                     + "reactivate it instead, or asks to rename the archive to free the name — "
-                    + "--reactivate-archived and --rename-archived-to <NAME> answer that non-interactively.")
+                    + "--reactivate-archived and --rename-archived-to <NAME> answer that non-interactively. "
+                    + "Once registered, this command runs h9k project join right behind it: the project's "
+                    + "own first owner gets their root established the same call; a newcomer joining a "
+                    + "project someone else already owns instead gets told who that owner is and is asked "
+                    + "for an invite — paste one now with --invite <token> (or right there if this is a "
+                    + "real terminal) and this same call finishes the join, or skip it and run h9k project "
+                    + "join <name> --invite <token> once you have one, then wait a minute or so for the "
+                    + "minting node's own daemon sweep to vouch it in.")
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url", "https://github.com/Hallmanac/hall9k")
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url", "https://github.com/Hallmanac/hall9k",
                     "--home", "~/work/hall9k", "--base-branch", "main")
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url",
                     "https://github.com/Hallmanac/hall9k", "--reactivate-archived")
                 .WithExample("project", "add", "--name", "hall9k", "--repo-url",
-                    "https://github.com/Hallmanac/hall9k", "--rename-archived-to", "hall9k-old");
+                    "https://github.com/Hallmanac/hall9k", "--rename-archived-to", "hall9k-old")
+                .WithExample("project", "add", "--name", "hall9k", "--repo-url",
+                    "https://github.com/Hallmanac/hall9k", "--invite", "3f9c2a7e...d1908f7e.9a41c6...");
             project.AddCommand<ProjectJoinCommand>("join")
                 .WithDescription(
                     "Establish or confirm this node's identity in a project's ledger (idea 202383dc, "
                     + "A2a): generates this node's ed25519 signing key under ~/.hall9k/keys/<node-id> "
                     + "the first time it runs anywhere, then writes its node file (nodes/<node-id>/"
                     + "node.yaml) into this project's own ledger, signed with that key. A join naming no "
-                    + "--owner establishes this owner's root (owners/<fingerprint>/root.yaml) using this "
-                    + "node's own key, and that fingerprint becomes the owner id everywhere in Hall9k. "
+                    + "--owner and no --invite establishes this owner's root (owners/<fingerprint>/root.yaml) "
+                    + "using this node's own key, and that fingerprint becomes the owner id everywhere in "
+                    + "Hall9k — but only on a project whose ledger has no owner yet. Joining a project "
+                    + "someone else already owns instead writes nothing: it names that owner and says an "
+                    + "invite is needed from them, asking for one on the spot when this is a real terminal "
+                    + "(paste it and this same call finishes the join) or naming the exact command to run "
+                    + "once you have one otherwise — either way the registration stays, and the invite's "
+                    + "own vouch lands in a minute or so on the minting node's next daemon sweep. "
                     + "Re-runnable to change the claimed owner — h9k project add runs this automatically "
                     + "once a project's repository is reachable. --invite <secret> (idea 202383dc, T2) proves "
                     + "possession of a secret from h9k node invite/h9k project invite by writing "

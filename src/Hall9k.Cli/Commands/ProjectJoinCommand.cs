@@ -106,7 +106,15 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         return ExitCodes.Ok;
     }
 
-    /// <summary>What one join produced, for both the command's own report and h9k project add's condensed one.</summary>
+    /// <summary>
+    /// What one join produced, for both the command's own report and h9k project add's condensed
+    /// one. <see cref="Deferred"/> is the one case where every other field is meaningless
+    /// (<see cref="KeyFingerprint"/>, <see cref="PrivateKeyPath"/>, and
+    /// <see cref="ClaimedOwnerFingerprint"/> are left blank rather than guessed at): the ledger
+    /// already had a real owner and this install had no root claim of its own to bring to it, so
+    /// nothing was written at all and <see cref="Report"/> has already said so and named the invite
+    /// path by the time this comes back.
+    /// </summary>
     internal sealed record JoinOutcome(
         Guid NodeId,
         string KeyFingerprint,
@@ -115,21 +123,49 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         bool EstablishedRoot,
         bool RetiredPreviousRoot,
         bool WroteNodeFile,
-        bool OwnerClaimChanged);
+        bool OwnerClaimChanged,
+        bool Deferred = false);
+
+    /// <summary>Builds the one <see cref="JoinOutcome"/> a deferred join ever returns — every field
+    /// but <see cref="JoinOutcome.NodeId"/> and <see cref="JoinOutcome.Deferred"/> left at its blank
+    /// or false default rather than guessed at, since nothing was actually written.</summary>
+    private static JoinOutcome DeferredOutcome(Guid nodeId) => new(
+        NodeId: nodeId,
+        KeyFingerprint: string.Empty,
+        PrivateKeyPath: string.Empty,
+        ClaimedOwnerFingerprint: string.Empty,
+        EstablishedRoot: false,
+        RetiredPreviousRoot: false,
+        WroteNodeFile: false,
+        OwnerClaimChanged: false,
+        Deferred: true);
 
     internal static Task<JoinOutcome> RunAsync(
         IDocumentSession session, ProjectDetails project, string? claimedOwnerOverride, CancellationToken cancellationToken) =>
         RunAsync(session, project, claimedOwnerOverride, invite: null, cancellationToken);
 
     /// <summary>The invite-aware overload (idea 202383dc, T2) — everything <see cref="RunAsync(IDocumentSession,ProjectDetails,string?,CancellationToken)"/>
-    /// already does, plus proving possession of a minted secret when one is given.</summary>
+    /// already does, plus proving possession of a minted secret when one is given. The one overload
+    /// that also wires a real console prompt (task: "a newcomer who registers a project whose
+    /// ledger already has an owner..."): when this process is genuinely interactive, an owner-exists
+    /// deferral asks for an invite token right here rather than only naming the command to run
+    /// later.</summary>
     internal static Task<JoinOutcome> RunAsync(
         IDocumentSession session, ProjectDetails project, string? claimedOwnerOverride, string? invite,
         CancellationToken cancellationToken) =>
         RunAsync(
             session, project, claimedOwnerOverride, invite,
             new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(),
-            new ProjectGitHubAccessMirror(), new GitLedgerChainReader(), cancellationToken);
+            new ProjectGitHubAccessMirror(), new GitLedgerChainReader(),
+            AnsiConsole.Profile.Capabilities.Interactive ? PromptForInviteTokenFromConsole : null,
+            cancellationToken);
+
+    /// <summary>The real, interactive prompt <see cref="RunAsync(IDocumentSession,ProjectDetails,string?,string?,CancellationToken)"/>
+    /// hands down when this process is actually attached to a terminal — never called on a
+    /// non-interactive one, which passes no prompt at all rather than this.</summary>
+    private static string PromptForInviteTokenFromConsole() =>
+        AnsiConsole.Prompt(new TextPrompt<string>(
+            "[bold]Invite token[/] [dim](paste it, or press enter to skip for now)[/]:").AllowEmpty());
 
     internal static Task<JoinOutcome> RunAsync(
         IDocumentSession session,
@@ -139,22 +175,32 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         NodeKeyStore keyStore,
         ProjectGitHubAccessMirror githubAccess,
         CancellationToken cancellationToken) =>
-        RunAsync(session, project, claimedOwnerOverride, invite: null, ledger, keyStore, githubAccess, chainReader: null, cancellationToken);
+        RunAsync(
+            session, project, claimedOwnerOverride, invite: null, ledger, keyStore, githubAccess, chainReader: null,
+            promptForInviteToken: null, cancellationToken);
 
-    /// <summary>The invite-aware, ledger-seamed overload with no chain reader — every pre-existing
-    /// test above this piece opts out of recording the project key this way (Brian's 2026-09-13
-    /// testing rule: this command never touches git or a network on its own).</summary>
+    /// <summary>The invite-aware, ledger-seamed overload with no chain reader and no interactive
+    /// prompt — every pre-existing test above this piece opts out of recording the project key and
+    /// of prompting this way (Brian's 2026-09-13 testing rule: this command never touches git, a
+    /// network, or a real console on its own).</summary>
     internal static Task<JoinOutcome> RunAsync(
         IDocumentSession session, ProjectDetails project, string? claimedOwnerOverride, string? invite,
         ILedger ledger, NodeKeyStore keyStore, ProjectGitHubAccessMirror githubAccess,
         CancellationToken cancellationToken) =>
-        RunAsync(session, project, claimedOwnerOverride, invite, ledger, keyStore, githubAccess, chainReader: null, cancellationToken);
+        RunAsync(
+            session, project, claimedOwnerOverride, invite, ledger, keyStore, githubAccess, chainReader: null,
+            promptForInviteToken: null, cancellationToken);
 
     /// <summary>
     /// The whole join flow, seamed on <see cref="ILedger"/>, <see cref="NodeKeyStore"/>, and
     /// <see cref="ProjectGitHubAccessMirror"/> so a test drives it against the in-memory ledger
     /// fake, a stubbed key generator, and a fake gh transport rather than a real repository, a real
     /// ssh-keygen invocation, or a real gh/network call (Brian's 2026-09-13 testing rule).
+    /// <paramref name="promptForInviteToken"/> is the identical seam for the one interactive prompt
+    /// this flow can make: null means never ask (a script, an agent, or any other non-interactive
+    /// caller), and a real delegate is called at most once, when this install has no root claim of
+    /// its own and the project's ledger already has a real owner — its return value is the token
+    /// pasted, or blank/null for "pressed enter, skip for now".
     /// </summary>
     internal static async Task<JoinOutcome> RunAsync(
         IDocumentSession session,
@@ -165,6 +211,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         NodeKeyStore keyStore,
         ProjectGitHubAccessMirror githubAccess,
         ILedgerChainReader? chainReader,
+        Func<string?>? promptForInviteToken,
         CancellationToken cancellationToken)
     {
         if (claimedOwnerOverride.IsNotBlank() && invite.IsNotBlank())
@@ -217,6 +264,34 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             ?? throw new DomainNotFoundException($"No node {context.NodeId}.");
         OwnerAggregate owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cancellationToken)
             ?? throw new DomainNotFoundException($"No owner {context.OwnerId}.");
+
+        // The no-owner, no-invite path's own gate (task: "a newcomer who registers a project whose
+        // ledger already has an owner is told so and asked for their invite token instead of being
+        // minted as a second owner root"). Checked here, before any key is generated or any ledger
+        // byte is written: this install has no root claim of its own (owner.RootFingerprint is
+        // still null — the exact fallback that used to hand claimedFingerprint this node's own key
+        // below, unconditionally) and neither --owner nor --invite says who this node belongs to,
+        // so the only question left is whether the project's own ledger already answered it before
+        // this join ever ran. An explicit --owner or --invite always skips this: both already name
+        // (or, for a member-of-project invite, deliberately leave open) whose root this join
+        // claims, so there is nothing here for this gate to defer.
+        if (claimedOwnerOverride.IsBlank() && invite.IsBlank() && owner.RootFingerprint is null)
+        {
+            GenesisDeferralOutcome deferral = await CheckGenesisDeferralAsync(
+                session, project, ledger, promptForInviteToken, cancellationToken);
+            if (deferral.Defer)
+            {
+                return DeferredOutcome(context.NodeId);
+            }
+
+            if (deferral.InviteToken is not null)
+            {
+                // A token was pasted on the spot — falls through into the ordinary --invite path
+                // below in this same call, exactly as h9k project join <project> --invite <token>
+                // run by hand would.
+                invite = deferral.InviteToken;
+            }
+        }
 
         // Signing is mandatory from here on: nothing below ever calls ILedger.WriteAsync without
         // this key, and a node that cannot produce one is refused right here, naming the command
@@ -442,6 +517,15 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
     internal static void Report(ProjectDetails project, JoinOutcome outcome)
     {
+        if (outcome.Deferred)
+        {
+            // CheckGenesisDeferralAsync already said everything there is to say, at the moment the
+            // decision was made: who the existing owner is, and either the invite path this same
+            // call then ran, or the exact command to run once a token is in hand. Nothing further
+            // to report against a join that wrote nothing.
+            return;
+        }
+
         AnsiConsole.MarkupLine(
             $"[green]Joined '{project.Name.EscapeMarkup()}'.[/] Node [dim]{outcome.NodeId}[/], "
             + $"key [dim]{outcome.KeyFingerprint}[/] at [dim]{outcome.PrivateKeyPath.EscapeMarkup()}[/].");
@@ -459,6 +543,115 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
                 "[yellow]This node's claimed owner changed. Any other project this node already joined still "
                 + "has the old claim in its own node.yaml until h9k project join <project> runs there too.[/]");
         }
+    }
+
+    /// <summary>What <see cref="CheckGenesisDeferralAsync"/> decided: <see cref="Defer"/> means the
+    /// caller writes nothing and returns <see cref="DeferredOutcome"/> — nothing was pasted, whether
+    /// because this process never asked (non-interactive) or because the operator pressed enter.
+    /// <see cref="InviteToken"/> is the one case that is neither: a real token was pasted on the
+    /// spot, for the caller to fall through into the ordinary --invite path with.</summary>
+    private readonly record struct GenesisDeferralOutcome(bool Defer, string? InviteToken);
+
+    /// <summary>
+    /// The no-owner, no-invite gate's own decision (task: "a newcomer who registers a project whose
+    /// ledger already has an owner..."), split out of <see cref="RunAsync(IDocumentSession,ProjectDetails,string?,string?,ILedger,NodeKeyStore,ProjectGitHubAccessMirror,ILedgerChainReader?,Func{string?}?,CancellationToken)"/>
+    /// so its own early returns read as one decision rather than a nest of them inline. Checked
+    /// against the ledger's own <c>members/</c> folder — <see cref="ILedger.HasAnyAsync"/>, the
+    /// identical existence check <see cref="EnsureGenesisMemberFileAsync"/> already trusts for
+    /// "has this project's genesis already been spent" — never against <c>owner.RootFingerprint</c>
+    /// alone, which the caller has already confirmed is null but which says nothing about whether
+    /// the ledger itself still has genesis up for grabs.
+    /// </summary>
+    private static async Task<GenesisDeferralOutcome> CheckGenesisDeferralAsync(
+        IDocumentSession session, ProjectDetails project, ILedger ledger, Func<string?>? promptForInviteToken,
+        CancellationToken cancellationToken)
+    {
+        bool alreadyHasGenesis = await ledger.HasAnyAsync(project.RepositoryPath, MembersRefName, "members/", cancellationToken);
+        if (!alreadyHasGenesis)
+        {
+            // An empty ledger — this is genuinely this project's first join, and the ordinary
+            // establishing-root path below is exactly right for it, unchanged.
+            return new GenesisDeferralOutcome(Defer: false, InviteToken: null);
+        }
+
+        string? genesisOwnerFingerprint = await FindGenesisOwnerFingerprintAsync(ledger, project.RepositoryPath, cancellationToken);
+        string ownerDisplay = genesisOwnerFingerprint is not null
+            ? await ResolveOwnerDisplayAsync(session, genesisOwnerFingerprint, cancellationToken)
+            : "another owner this install does not recognize";
+
+        AnsiConsole.MarkupLine(
+            $"[yellow]'{project.Name.EscapeMarkup()}' already has an owner ({ownerDisplay.EscapeMarkup()}), and "
+            + "joining needs an invite from them rather than a fresh root of your own.[/]");
+
+        string? token = promptForInviteToken?.Invoke();
+        if (token.IsNotBlank())
+        {
+            return new GenesisDeferralOutcome(Defer: false, InviteToken: token);
+        }
+
+        AnsiConsole.MarkupLine(
+            $"[dim]Skipped for now — the registration stays. Once you have a token: h9k project join "
+            + $"{project.Name.EscapeMarkup()} --invite <token>[/]");
+        return new GenesisDeferralOutcome(Defer: true, InviteToken: null);
+    }
+
+    /// <summary>
+    /// The root fingerprint behind whichever <c>members/*.yaml</c> entry actually carries the owner
+    /// role — genesis's own rule (idea 202383dc, T1) says there is at most one, the project's first
+    /// member — falling back to the first entry found at all when none is role owner (a members
+    /// folder this reader cannot make full sense of still names someone rather than no one). This is
+    /// deliberately unverified, raw ledger content: the decision this feeds
+    /// (<see cref="CheckGenesisDeferralAsync"/>'s own write-nothing gate) is already made from
+    /// <see cref="ILedger.HasAnyAsync"/> alone, so a forged or malformed entry here can only ever
+    /// affect which name shows up in a friendly heads-up message, never whether this join writes
+    /// anything.
+    /// </summary>
+    private static async Task<string?> FindGenesisOwnerFingerprintAsync(
+        ILedger ledger, string repositoryPath, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<LedgerEntry> entries = await ledger.ReadAllAsync(repositoryPath, MembersRefName, "members/", cancellationToken);
+        foreach (LedgerEntry entry in entries)
+        {
+            if (ExtractQuotedYamlValue(entry.Content, "role") == ProjectMemberRole.Owner.Value)
+            {
+                return ExtractQuotedYamlValue(entry.Content, "root_fingerprint");
+            }
+        }
+
+        return entries.Count > 0 ? ExtractQuotedYamlValue(entries[0].Content, "root_fingerprint") : null;
+    }
+
+    /// <summary>The existing owner's own login when this install's local Owner documents happen to
+    /// know one for that fingerprint (the same local lookup <c>h9k project members</c>'s own table
+    /// already does for its Login column), else the bare fingerprint — never guessed at.</summary>
+    private static async Task<string> ResolveOwnerDisplayAsync(
+        IDocumentSession session, string genesisOwnerFingerprint, CancellationToken cancellationToken)
+    {
+        OwnerDetails? localOwner = await session.Query<OwnerDetails>()
+            .Where(candidate => candidate.RootFingerprint == genesisOwnerFingerprint)
+            .FirstOrDefaultAsync(cancellationToken);
+        return localOwner is not null && localOwner.Name.IsNotBlank() ? localOwner.Name : genesisOwnerFingerprint;
+    }
+
+    /// <summary>Mirrors <c>GitLedgerChainReader.ExtractQuotedYamlValue</c>'s own small, flat reader —
+    /// duplicated here rather than shared across the seam, the same choice <c>InviteSweepEngine</c>'s
+    /// own identical copy already made.</summary>
+    private static string? ExtractQuotedYamlValue(string yaml, string key)
+    {
+        foreach (string rawLine in yaml.Split('\n'))
+        {
+            string line = rawLine.TrimEnd('\r');
+            string prefix = $"{key}: \"";
+            if (!line.StartsWith(prefix, StringComparison.Ordinal) || !line.EndsWith('"'))
+            {
+                continue;
+            }
+
+            string inner = line[prefix.Length..^1];
+            return inner.Replace("\\\"", "\"").Replace("\\\\", "\\");
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -622,11 +815,10 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         ILedger ledger, string repositoryPath, string fingerprint, DateTimeOffset issuedAt,
         LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
     {
-        const string refName = "refs/hall9k/ledger/members";
         string path = $"members/{fingerprint}.yaml";
         string projectKey = Ulid.NewUlid().ToString();
 
-        if (await ledger.HasAnyAsync(repositoryPath, refName, "members/", cancellationToken))
+        if (await ledger.HasAnyAsync(repositoryPath, MembersRefName, "members/", cancellationToken))
         {
             // Genesis was already spent — by this fingerprint's own earlier join, or by someone
             // else's — so this join is not this project's first member and must not self-claim
@@ -650,7 +842,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         // can win (independent review finding).
         LedgerWriteOutcome outcome = await ledger.WriteAsync(
             new LedgerWriteRequest(
-                repositoryPath, refName, path, content, ExpectedBlobId: null,
+                repositoryPath, MembersRefName, path, content, ExpectedBlobId: null,
                 $"Establish {fingerprint} as this project's first owner-role member", committer, signingKey,
                 RequireEmptyPrefix: "members/"),
             cancellationToken);
@@ -713,6 +905,11 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
     /// <summary>How many times a conflicting ledger write retries against a fresh read before giving up.</summary>
     private const int MaxConflictRetries = 5;
+
+    /// <summary>The one members ref every project's genesis and membership live under — shared so
+    /// the no-owner deferral gate (<see cref="CheckGenesisDeferralAsync"/>) and the genesis write
+    /// itself (<see cref="EnsureGenesisMemberFileAsync"/>) can never name it two different ways.</summary>
+    private const string MembersRefName = "refs/hall9k/ledger/members";
 
     private static async Task<bool> WriteNodeFileAsync(
         ILedger ledger, string repositoryPath, Guid nodeId, NodeSigningKey key, string claimedOwnerFingerprint,
