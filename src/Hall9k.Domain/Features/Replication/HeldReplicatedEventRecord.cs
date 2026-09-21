@@ -13,8 +13,10 @@ namespace Hall9k.Domain.Features.Replication;
 /// nothing held is ever lost.
 /// <para>
 /// Keyed by <see cref="Id"/> = the origin event id, the same identity <see cref="ReplicatedEventRecord"/>
-/// dedupes on, so a re-delivered copy of an already-held record only ever overwrites its own row
-/// rather than piling up a duplicate.
+/// dedupes on, so a re-delivered copy of an already-held record can never pile up a duplicate. That
+/// inbox leaves the existing row untouched rather than storing over it: the ask bookkeeping below
+/// and the original <see cref="HeldAt"/> both live here, and an upsert would clear them every time
+/// a peer answered a held-tail ask by serving the same tail again.
 /// </para>
 /// <para>
 /// Carries the wire-format record verbatim (<see cref="RecordJson"/>), plus the sender and project
@@ -49,4 +51,33 @@ public sealed class HeldReplicatedEventRecord
     public Guid OriginNodeId { get; set; }
 
     public DateTimeOffset HeldAt { get; set; }
+
+    /// <summary>
+    /// How many broadcast stream requests this node has minted for <see cref="StreamId"/> while
+    /// this record sat held — the count the daemon's own held-tail sweep stops at
+    /// (<c>EventCatchUpCoordinator.MaxHeldTailAttempts</c>). Counted on the held records rather
+    /// than on the request documents because the records are what the sweep already reads and what
+    /// disappear the moment the genesis lands: a stream whose tail completed leaves no count
+    /// behind to keep re-reading, and a stream nobody in the fleet can complete stops being asked
+    /// about after three tries instead of being asked forever.
+    /// </summary>
+    public int CatchUpAttempts { get; set; }
+
+    /// <summary>When the most recent of those asks was minted, or null while none has been —
+    /// an observation, never a substitute for <see cref="HeldAt"/>.</summary>
+    public DateTimeOffset? LastCatchUpAskedAt { get; set; }
+
+    /// <summary>
+    /// Set once <see cref="CatchUpAttempts"/> reached the stop AND that last ask has since gone
+    /// unanswered past its own cooldown, which is the sweep that would have minted a fourth: no
+    /// further ask is minted for this stream, and <c>h9k status</c> counts it among the streams
+    /// given up on rather than among the ones still being chased. Never at the moment the last ask
+    /// went out, since the fleet may still answer it and the pane would be calling a stream
+    /// abandoned while its own request was in flight. Not a terminal verdict on the record itself — the held tail is
+    /// still kept, and still replays the instant some later envelope happens to carry the genesis;
+    /// what has stopped is only this node asking for it. The shape this exists for is a stream
+    /// whose genesis event carries an event type name the answering build no longer knows, which
+    /// no number of asks will ever produce.
+    /// </summary>
+    public bool CatchUpGivenUp { get; set; }
 }
