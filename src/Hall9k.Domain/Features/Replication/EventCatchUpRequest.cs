@@ -58,6 +58,25 @@ public sealed class EventCatchUpRequest
     /// <summary>When the currently-outstanding candidate was asked — the per-candidate timeout clock starts here.</summary>
     public DateTimeOffset SentAt { get; set; }
 
+    /// <summary>
+    /// Set for a fleet reconcile (task 252bc5cf): the one fleet sibling this ask was addressed to by
+    /// node id, with <see cref="Candidates"/> deliberately empty. A fifth shape beside the four
+    /// <see cref="EventReplicationCodec.EventsRequestRecord"/> names, and the only one that is
+    /// neither a ranked cascade nor a project-wide broadcast — it carries
+    /// <see cref="SinceGlobalSequence"/> 0, exactly as <c>h9k project pull --since all</c> does, so
+    /// the answering responder lifts its own switch-on bound with no change of its own, but it goes
+    /// to that peer alone because every other project member would otherwise download a whole
+    /// project's history it has no use for.
+    /// <para>
+    /// Also what keeps a reconcile out of <c>h9k project pull</c>'s own already-outstanding guard:
+    /// that guard suppresses a pull whose bound an outstanding request already reaches, and a
+    /// standing reconcile at bound 0 would otherwise suppress every hand pull a human types for as
+    /// long as it stands, even though the reconcile is addressed to a single peer and answers a
+    /// different question.
+    /// </para>
+    /// </summary>
+    public Guid? ToNodeId { get; set; }
+
     /// <summary>Set once a candidate's own answer (an events batch this request's own coordinator
     /// observed arriving from the current candidate) is seen — never re-cleared. A BROADCAST
     /// request (<see cref="Candidates"/> empty: either shape) also closes on a peer's explicit
@@ -68,7 +87,14 @@ public sealed class EventCatchUpRequest
     public DateTimeOffset? AnsweredAt { get; set; }
 
     /// <summary>Set once every ranked candidate has timed out with no answer — never true for a
-    /// broadcast request, which has no candidate cascade to exhaust.</summary>
+    /// broadcast request, which has no candidate cascade to exhaust. Also set on a fleet reconcile's
+    /// own ask (<see cref="ToNodeId"/>) when that ask is closed with nothing taking its place, which
+    /// is a record whose peer has left the fleet: that shape has no candidates either, so no cascade
+    /// would ever close it, and an ask left standing is reported outstanding by <c>h9k status</c>
+    /// for good. A re-ask for the same pair is a supersede rather than an exhaustion and is recorded
+    /// as one, on <see cref="SupersededAt"/> and <see cref="SupersededByRequestId"/>. Never
+    /// <see cref="AnsweredAt"/> in either case — no answer was observed, and this bookkeeping never
+    /// guesses at one.</summary>
     public bool Exhausted { get; set; }
 
     /// <summary>

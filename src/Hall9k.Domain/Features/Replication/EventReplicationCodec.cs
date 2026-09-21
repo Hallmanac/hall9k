@@ -195,4 +195,29 @@ public static class EventReplicationCodec
             return null;
         }
     }
+
+    /// <summary>
+    /// The terminal envelope one answer ends with (task 252bc5cf) — the body of a
+    /// <see cref="Hall9k.Domain.Features.Message.MessageKind.EventsAnswerComplete"/> envelope,
+    /// naming the request it closes and how many <see cref="Hall9k.Domain.Features.Message.MessageKind.Events"/>
+    /// envelopes the answer was batched into. <see cref="EnvelopeCount"/> is what the requester
+    /// keeps beside its own count of envelopes actually read, so an answer partly lost to an outbox
+    /// squash reads as the two numbers disagreeing rather than as a completed reconcile.
+    /// </summary>
+    public sealed record EventsAnswerCompleteRecord(Guid RequestId, int EnvelopeCount);
+
+    public static string EncodeAnswerComplete(EventsAnswerCompleteRecord complete) =>
+        JsonSerializer.Serialize(complete, Options);
+
+    public static EventsAnswerCompleteRecord? DecodeAnswerComplete(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<EventsAnswerCompleteRecord>(json, Options);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
 }
