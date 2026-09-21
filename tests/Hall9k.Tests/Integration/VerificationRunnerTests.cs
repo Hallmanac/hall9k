@@ -111,11 +111,15 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     /// classifier's own pure-function tests cannot: a content-only first delivery skips outright
     /// (the configured gate never spawns at all — no <c>GateStarted</c>), a later entry classifies
     /// the whole branch diff afresh rather than reusing the first entry's verdict (a second
-    /// content-only commit still skips, a "fix lap" in shape), and once the branch's own diff
-    /// against base genuinely mixes in real source, the identical gate configuration runs for
-    /// real. This is deliberately the one integration test covering the runner for this feature;
-    /// every other scenario (a mixed diff, a path outside the set, a project-added glob, the
-    /// default rules) is covered as a pure function over a path list in
+    /// content-only commit still skips, a "fix lap" in shape), a third content-only commit still
+    /// skips even after the base branch itself gains an unrelated commit of its own in the
+    /// meantime (independent pre-PR review, cycle 1, both lenses, medium — this is the one seam
+    /// that actually exercises <c>GetChangedPathsAsync</c>'s own two-dot-vs-three-dot boundary
+    /// diff, which a pure path-list test can never reach), and once the branch's own diff against
+    /// base genuinely mixes in real source, the identical gate configuration runs for real. This
+    /// is deliberately the one integration test covering the runner for this feature; every other
+    /// scenario (a mixed diff, a path outside the set, a project-added glob, the default rules,
+    /// the templates exclusion) is covered as a pure function over a path list in
     /// <c>NonExecutablePathClassifierTests</c>.
     /// </summary>
     [Fact]
@@ -172,6 +176,33 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
                 2, "the whole branch-vs-base diff now carries both content-only commits");
         }
 
+        // The base branch moves while this run sits in the pipeline — routine, since other
+        // dispatches and the pre-final-pass rebase fetch into the repository every worktree
+        // shares (independent pre-PR review, cycle 1, both lenses, medium: a two-dot diff against
+        // the boundary compares trees directly rather than from the merge base, so it would leak
+        // this unrelated commit's own .cs path into the branch's list and force the gates to run).
+        await TestGit.RunAsync(_worktree, ["checkout", "-q", "main"], cts.Token);
+        await CommitAsync(
+            "src/Hall9k.Domain/UnrelatedOnMain.cs", "public sealed class UnrelatedOnMain\n{\n}\n",
+            "feat: unrelated work landed on main while this run was in flight", cts.Token);
+        await TestGit.RunAsync(_worktree, ["checkout", "-q", "task/verify"], cts.Token);
+
+        await CommitAsync(".claude/commands/baz.md", "third content-only change\n", "commands: baz", cts.Token);
+        string thirdCycleHeadSha = (await TestGit.CaptureAsync(_worktree, ["rev-parse", "HEAD~1"], cts.Token)).Trim();
+
+        bool thirdFixLapPassed = await NewRunner(store).VerifyAsync(
+            runId, taskId, thirdCycleHeadSha, "fix lap after base moved", RunSessionLeg.Fix, cts.Token);
+        thirdFixLapPassed.Should().BeTrue();
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+            events.Select(e => e.Data).OfType<VerificationSkipped>().Should().HaveCount(
+                3, "the base moving must never force the gates to run for a diff that is still content-only");
+            events.Select(e => e.Data).OfType<GateStarted>().Should().BeEmpty(
+                "the base's own unrelated commit is not this branch's diff and must never leak into it");
+        }
+
         // Now the branch's own diff against base genuinely mixes in real source: the identical
         // gate configuration must run for real rather than skip.
         await CommitAsync("src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n}\n", "feat: widget", cts.Token);
@@ -184,7 +215,7 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
         {
             var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
             events.Select(e => e.Data).OfType<VerificationSkipped>().Should().HaveCount(
-                2, "a mixed diff never adds a third skip");
+                3, "a mixed diff never adds a fourth skip");
             events.Select(e => e.Data).OfType<VerificationPassed>().Should().ContainSingle(
                 "a mixed diff runs the gates in full, recording an ordinary pass");
             events.Select(e => e.Data).OfType<GateStarted>().Should().ContainSingle(gate => gate.GateName == "truth");
