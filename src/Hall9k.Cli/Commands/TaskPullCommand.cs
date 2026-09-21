@@ -178,11 +178,18 @@ public sealed class TaskPullCommand : Hall9kAsyncCommand<TaskPullCommand.Setting
         string standing = Standing(disposition, shortId, project.IsEligibleForMessaging());
         AnsiConsole.MarkupLineInterpolated(
             $"[blue]Asked[/] {project.Name}'s other members for task [bold]{shortId}[/]'s event stream [dim]({standing})[/].");
+        // "Never times out" is still true and "never closes" never was, since v0.10.5: a broadcast
+        // has no candidate cascade to exhaust and no per-candidate clock behind it, but a member
+        // answering events-unavailable closes it on the spot, because that is the only answer a
+        // member holding nothing will ever send and the ask would otherwise stand forever. Saying
+        // only the first half sent a human back to re-run this command against a request that had
+        // already been refused hours earlier (2026-09-19 23:36).
         AnsiConsole.MarkupLine(
             "[dim]A member that holds the stream answers with the task's own events and its runs'; one that "
-            + "holds nothing declines, which closes the request. h9k status shows it while it stands, the task "
-            + "appears on this node's board once an answer lands, and any dependency it names whose stream is "
-            + "not here is asked for the same way, on its own.[/]");
+            + "holds nothing declines, which closes the request. h9k status shows it while it stands and, once "
+            + "it is closed, which node declined it and when. The task appears on this node's board once an "
+            + "answer lands, and any dependency it names whose stream is not here is asked for the same way, "
+            + "on its own.[/]");
         return ExitCodes.Ok;
     }
 

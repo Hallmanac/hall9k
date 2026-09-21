@@ -816,9 +816,22 @@ across — a squash on the sender's side, a lost push — the node asks other me
 own missing history, cascading to the next ranked candidate when one declines or goes quiet. Also
 automatic, and it recurs whenever the hole is noticed again.
 
-**An established node pulls, or nothing happens.** A node that is neither brand-new nor looking at
-a hole never asks for anything older on its own, and there is no state it can reach that changes
-that. `h9k task pull <task-id>` asks every member for one stream by id; `h9k project pull <project>
+**Any node asks for a held tail's own genesis.** A replicated event whose stream has never started
+here and which is not that stream's first event is held rather than applied, and replays the moment
+some later envelope happens to carry the genesis. "Happens to" was the gap: nothing asked for it,
+so a tail served without its head sat held until a human noticed the task missing from the board.
+Now the sweep asks. A stream whose held records have outlived one sweep interval, and which has no
+local stream behind them, gets one broadcast request for itself: at most ten new asks a sweep, one
+ask per stream, with a cooldown after each so a decline or an answer that arrives still missing the
+genesis does not re-arm the ask on the next tick. After three tries the node stops asking and says
+so; the tail is still held and still replays if the genesis ever turns up, but a genesis nobody in
+the fleet can serve does not become servable by being asked for a fourth time. This is the mechanism
+that lets a freed or truncated stream finish on its own.
+
+**An established node pulls, or nothing happens.** A node that is none of the three above (not
+brand-new, not looking at a hole, holding no stream's tail without its head) never asks for
+anything older on its own, and there is no state it can reach that changes that. `h9k task pull
+<task-id>` asks every member for one stream by id; `h9k project pull <project>
 --since <global-sequence|all>` asks for a whole project's history from a bound. `h9k task add
 --from-issue` queues the first of those two by itself when the project's ledger names a task this
 node does not hold. All three are broadcasts to the whole project rather than ranked cascades,
@@ -829,9 +842,13 @@ envelope and stop, and the daemon's next sweep is what sends it.
 switch-on point when it first replicates anything, and nothing it appended before that point
 travels on its own. That keeps a node's pre-replication back catalogue inert rather than flooding a
 project the day it adopts replication — but it also means a task published before its node switched
-on is unreachable by any automatic mechanism, forever. So an explicit ask, and only an explicit ask,
-is served from below the answering node's switch-on point. An ordinary flush, a gap-fill, and a
-bootstrap all still stop there. What never bends, however explicit the ask: a currently-private task
+on is unreachable by any open-ended mechanism, forever. So an ask that names what it wants, and only
+such an ask, is served from below the answering node's switch-on point: one named stream, or a named
+sequence bound. An ordinary flush, a gap-fill, and a bootstrap name nothing and all still stop there.
+Naming is the rule rather than a human's hand being on it, which matters because the held-tail ask
+above names one stream and comes from the sweep: it asks a peer to complete history that already
+partly arrived here, which is the case the switch-on point was never meant to strand, and it can
+reach exactly that one stream and nothing else. What never bends, however specific the ask: a currently-private task
 or idea is never served, and no node is ever handed its own history back. Answers apply by origin
 event id, so a pull over streams a node already holds changes nothing.
 
@@ -857,6 +874,13 @@ names whose dependency an automatic one is fetching. A broadcast closes when a m
 or when one says it holds nothing that matches — which means a re-run of the same pull asks again
 rather than reporting an ask that already came back. A request genuinely still in flight is
 reported as such, and `h9k task pull --again` is what closes it out and replaces it.
+
+A request a decline closed inside the last day is listed too, naming the node that declined it and
+when, so an ask that was refused reads differently from one still in flight. Under both, the pane
+counts how many streams this node is holding the tail of and how many of those it has stopped
+asking about. Every decline is recorded on the request by node and time, including the ones from
+members that answered after the first decline had already closed it: one peer saying it holds
+nothing reads very differently from all of them saying it.
 
 Depth: [scope.md](scope.md), Decisions Log #236.
 

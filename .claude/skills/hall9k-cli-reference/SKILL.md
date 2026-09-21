@@ -58,8 +58,8 @@ h9k owner set [<owner>] --rerequest-review on|off|default   # whether closeout a
 h9k owner set [<owner>] --voice-skill <NAME> | --clear-voice-skill   # the skill this owner WRITES IN, by name. Every prompt seam where a session composes text a human reads as the owner's (a pull request description, a review-thread reply, a commit message, a posted review finding, a drafted reply to a GitHub mention) then tells that session to load the skill and its matching context first: contexts/code-review.md for prose the session posts, contexts/explainer.md for a draft the owner reads and decides on. The skill is the owner's own — referenced by name, never copied into a project, a prompt template, or the platform — so the name must already be a skill directory in the owner's user skills (~/.claude/skills/<NAME>) or in a project home's skills/; a name in neither is refused naming both paths. Structure authority does not move: the repository's own PR-description rule and the project's --writing-conventions still decide the shape, the voice skill decides only the prose. --clear-voice-skill forgets it, and every seam then renders as it does for an owner who never named one
 h9k owner set [<owner>] --persona engineer|qa|designer [--persona ...] | --clear-personas   # the review personas this member holds — the lens they review somebody else's pull request through (idea b9b09779, Decisions Log #239). A pull request assigned to them mints the same pr-review task it always has, and that task runs one review session per declared persona on its single worktree and branch, each with its own transcript and findings file, reported in one findings report sectioned engineer, QA, designer. The set is FIXED — each persona maps to its own prompt and criteria in the platform's persona registry, so there is no free-text persona and an unrecognized word is refused naming the set. --persona is repeatable and REPLACES the whole declaration rather than adding to it: pass every persona the member holds in one command. Declaring none is the ordinary case and reads as the engineer's review (code, logic, functionality: today's pull-request review, unchanged), so nothing changes for anyone who never passes this; --clear-personas goes back to that. All three prompts are registered, so a declaration always runs the review it asked for; a persona added to the set before its own prompt exists is named in the findings report and in h9k task show as skipped rather than silently ignored, and a member who declared ONLY unregistered personas gets the engineer’s review in their place (recorded, and said plainly in the report) rather than an unreviewed pull request. h9k owner show prints the declaration; h9k task show on the pr-review task prints which personas ran, which reports are in, and which session failed
 h9k task list --project <name> --state <state>   # browse live and done tasks, newest first (--all, --limit, --include-archived, --epic)
-h9k task pull <task-id> [--project <PROJECT>] [--again]   # ask this project's other members for one task's whole event stream by id, with no linked tracker item needed — the deliberate twin of the broadcast h9k task add --from-issue already queues when the ledger names a task this node does not hold. Takes the full id, the short id off a board row or a branch name (resolved against this project's ledger records, which is also what defaults --project to the project naming the task), or a run's own stream id; an id naming some other kind of stream is refused, and so is a task or run stream this node holds only the tail of, which no ask can repair. Queues one project-wide events-request and returns, touching git only for that ledger read; the answer carries the task's run streams as well, so a pulled task whose runs finished reads Done rather than Delivered, and any blocked-by or stacked-on dependency whose stream is not here is asked for automatically as the task lands. A request a peer has declined or answered is closed rather than in flight, so a re-run asks again and says so; one genuinely still outstanding is reported as such and cleared only by --again, which is also the only way to clear a request minted before v0.10.5. Served from below the answering node's replication switch-on point, since an explicit ask lifts it; a private task is never served (task a56cf16e, Decisions Log #236, #258)
-h9k status                   # the attention pane: state, phase, and attention on every row; also this node's own identity, unread message count, and any ignored message sender
+h9k task pull <task-id> [--project <PROJECT>] [--again]   # ask this project's other members for one task's whole event stream by id, with no linked tracker item needed — the deliberate twin of the broadcast h9k task add --from-issue already queues when the ledger names a task this node does not hold. Takes the full id, the short id off a board row or a branch name (resolved against this project's ledger records, which is also what defaults --project to the project naming the task), or a run's own stream id; an id naming some other kind of stream is refused, and so is a task or run stream this node holds only the tail of, which no ask can repair. Queues one project-wide events-request and returns, touching git only for that ledger read; the answer carries the task's run streams as well, so a pulled task whose runs finished reads Done rather than Delivered, and any blocked-by or stacked-on dependency whose stream is not here is asked for automatically as the task lands. A request a peer has declined or answered is closed rather than in flight, so a re-run asks again and says so, and h9k status names which node declined it and when; one genuinely still outstanding is reported as such and cleared only by --again, which is also the only way to clear a request minted before v0.10.5. Served from below the answering node's replication switch-on point, since an explicit ask lifts it; a private task is never served (task a56cf16e, Decisions Log #236, #258)
+h9k status                   # the attention pane: state, phase, and attention on every row; also this node's own identity, unread message count, and any ignored message sender, every outstanding event catch-up request, every one a decline closed in the last 24 hours (naming the node and time), and how many streams this node holds the tail of
 h9k idea add "<text>"        # capture an idea; discovery starts, a project is optional
 h9k epic add --project <name> --title "<name>"    # name a first-class grouping of tasks (Decisions Log #100)
 h9k connection list          # every external account this install can reach, and where its credential lives
@@ -474,11 +474,33 @@ then any other member, most recently moved outbox first within a rank — and a 
 whatever it holds, own or already-replicated alike, forwarding it with its true origin (owner root,
 node, event id, sequence) intact rather than overwriting it with the answering peer's own identity;
 a peer with nothing matching says so instead (`events-unavailable`), which moves the ask to the next
-candidate immediately. A request left unanswered past `DaemonOptions.EventCatchUpRequestTimeout`
+candidate immediately, and on a broadcast, which has no next candidate, closes the ask outright,
+since that decline is the only answer a member holding nothing will ever send. A request left
+unanswered past `DaemonOptions.EventCatchUpRequestTimeout`
 (five minutes by default, a setting) also moves to the next ranked candidate, leaving the earlier ask
 standing rather than retracting it — a late answer still lands and applies harmlessly, deduped by
-origin event id exactly like an ordinary events envelope. `h9k status` names every outstanding
-catch-up request and which candidate it is currently asking, silent when nothing is outstanding.
+origin event id exactly like an ordinary events envelope. Every decline is recorded on the request
+by declining node, time, and reason, including declines that arrive after the first one already
+closed a broadcast: one peer holding nothing is a different fact from every peer holding nothing.
+`h9k status` names every outstanding
+catch-up request and which candidate it is currently asking; under those it names every request a
+decline closed within the last 24 hours, as `declined by <node> at <time>`, and counts how many
+streams this node holds the tail of and how many of those it has given up asking about. Silent when
+there is nothing in any of the three.
+
+**The held-tail ask** (Decisions Log #PLACEHOLDER-c3bdb62e): a replicated event whose stream has never started here and
+which is not that stream's own genesis is held rather than applied, and replays the instant a later
+envelope carries the genesis, which nothing was asking for. The daemon's sweep now does. Each
+sweep, a stream whose held records have outlived one sweep interval (the idle cadence's own ceiling)
+and which has no local stream gets one broadcast request for itself: deduplicated against an
+outstanding one, at most ten new asks per sweep so a bootstrap briefly holding hundreds of tails
+never mints hundreds of asks, with the same re-mint cooldown a gap-fill uses so a decline or an
+answer that lands still missing the genesis does not re-arm the ask on the next tick. Three attempts
+and it stops, marked on the held records themselves once that third ask has gone unanswered past its
+cooldown (never while it is still in flight) and counted in `h9k status`: the tail stays held
+and still replays if the genesis ever arrives, but a genesis no member can serve (a genesis event
+whose type name the answering build no longer knows is the real shape of that) is not made servable
+by a fourth ask.
 `h9k task add --from-issue`/`--from-jira` adopting a ledger record whose stream has not reached this
 node yet starts a broadcast events-request for that exact stream (addressed to the whole project,
 since the CLI has no live trust chain or transport of its own to rank a candidate from) and says so
@@ -509,7 +531,10 @@ automatically, so `h9k task assign` is never refused for a dependency the platfo
 fetched. A peer serves an **explicit** ask — one named stream, or a named
 sequence bound — from below its own replication switch-on point, which an ordinary flush, a
 gap-fill, and a bootstrap are all still held above: a task published before its node ever switched
-replication on is reachable this way and no other. What never bends however explicit the ask: a
+replication on is reachable this way and no other. Naming what it wants is the rule, not a human's
+hand being on it: the held-tail ask above is minted by the sweep, names one stream, and lifts the
+exclusion for that stream alone, which is how a genesis sitting below a peer's switch-on point ever
+becomes reachable at all. What never bends however specific the ask: a
 currently-private task or idea is never served, and no node is handed its own history back. Answers
 apply by origin event id, so pulling over streams a node already holds changes nothing. And what no
 pull reaches: a stream a node holds only the *tail* of, which is how every task that was open when

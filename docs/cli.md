@@ -127,8 +127,8 @@ git; everything else it does is local. It queues one project-wide events-request
 daemon's next message sweep sends it, and `h9k status` shows it while it stands.
 
 A request a peer has already declined, or answered, is closed rather than in flight, so a re-run
-asks again and says that it did. One genuinely still outstanding is reported as outstanding and
-nothing new is queued; `--again` closes that one out as superseded and asks afresh, which is also
+asks again and says that it did, and `h9k status` names which node declined it and when for the
+next day. One genuinely still outstanding is reported as outstanding and nothing new is queued; `--again` closes that one out as superseded and asks afresh, which is also
 the only way to clear a request minted before v0.10.5, when a decline did not yet close a
 broadcast.
 
@@ -768,8 +768,9 @@ permanently out of reach of both, which is what this command is for. `--since` i
 read on the *answering* node, not this one (from that node's own diagnosis, or from a sequence in a
 log — no `h9k` command prints a node's own global sequence today), or the word `all` for everything
 it holds; it is required, because the two are very different
-asks. A peer serves an explicit pull from below its own replication switch-on point, which the two
-automatic shapes are still held above; answers apply by origin event id, so pulling over streams
+asks. A peer serves a pull that names what it wants from below its own replication switch-on
+point, which an ordinary flush and a gap-fill are both still held above; answers apply by origin
+event id, so pulling over streams
 this node already holds changes nothing, and a private task or idea is never served however far
 back the pull reaches. A stream this node holds only the tail of stays as it is, for the reason
 `task pull` names above. Like `task pull` it queues one project-wide events-request and returns,
