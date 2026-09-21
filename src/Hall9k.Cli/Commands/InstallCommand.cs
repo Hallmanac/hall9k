@@ -54,6 +54,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         [CommandOption("--no-restart")]
         [Description("Leave a running daemon on its current binaries (it picks up the new ones at its next start)")]
         public bool NoRestart { get; init; }
+
+        [CommandOption("--now")]
+        [Description("With --restart, skip waiting for a live verification gate on this node to finish and restart at once — h9k daemon stop's own warning still prints, it just no longer holds the restart back")]
+        public bool Now { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -144,6 +148,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             version,
             settings.Restart,
             settings.NoRestart,
+            settings.Now,
             writeDefaultConnectionStringIfUnconfigured: true,
             connectionStringStartDirectory: connectionStringStartDirectory,
             cancellationToken: cancellationToken);
@@ -162,6 +167,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         string version,
         bool restart,
         bool noRestart,
+        bool now = false,
         bool linkOntoPath = true,
         bool writeDefaultConnectionStringIfUnconfigured = false,
         string? connectionStringStartDirectory = null,
@@ -366,7 +372,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         return runningBefore is null
             ? ExitCodes.Ok
-            : await OfferRestartAsync(restart, noRestart, runningBefore, cancellationToken);
+            : await OfferRestartAsync(restart, noRestart, now, runningBefore, cancellationToken);
     }
 
     /// <summary>
@@ -2035,7 +2041,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     }
 
     private static async Task<int> OfferRestartAsync(
-        bool restartRequested, bool noRestartRequested, DaemonProcessDescriptor runningBefore, CancellationToken cancellationToken)
+        bool restartRequested, bool noRestartRequested, bool now, DaemonProcessDescriptor runningBefore,
+        CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLineInterpolated(
             $"[yellow]h9kd is running (pid {runningBefore.ProcessId}) on the previous binaries.[/]");
@@ -2054,6 +2061,14 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
                 + "(h9k daemon stop && h9k daemon start, or re-run install with --restart).[/]");
             return ExitCodes.Ok;
         }
+
+        // A live verification gate is the daemon's own action, not an agent session, so a
+        // restart the OPERATOR did not explicitly rush waits for it rather than orphaning it
+        // outright — --now is the explicit override for whoever wants the restart at once
+        // regardless (Brian, 2026-09-20: wait, flag as override). h9k daemon stop's own
+        // warning still fires right below, whichever way this goes.
+        await LiveGateGuard.WaitUnlessNowAsync(
+            now, LiveGateGuard.FindOnThisNodeAsync, Task.Delay, LiveGateGuard.VerifyGateLimit, cancellationToken);
 
         IDaemonAutostart autostart = DaemonAutostart.ForCurrentPlatform();
         int stopped = await DaemonLifecycle.StopAsync(autostart, cancellationToken);

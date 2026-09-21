@@ -34,6 +34,10 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         [CommandOption("--no-restart")]
         [Description("Leave a running daemon on its current binaries (it picks up the new ones at its next start)")]
         public bool NoRestart { get; init; }
+
+        [CommandOption("--now")]
+        [Description("With --restart, skip waiting for a live verification gate on this node to finish and restart at once — h9k daemon stop's own warning still prints, it just no longer holds the restart back")]
+        public bool Now { get; init; }
     }
 
     /// <summary>The release archive is a self-contained, untrimmed publish of two apps —
@@ -56,6 +60,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
             settings.Repository ?? ReleasePlatform.DefaultRepository,
             settings.Restart,
             settings.NoRestart,
+            settings.Now,
             cancellationToken: cancellationToken);
 
     /// <summary>The whole command, independent of Spectre: the thin wrapper above unpacks
@@ -68,6 +73,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         string repository,
         bool restart,
         bool noRestart,
+        bool now = false,
         bool linkOntoPath = true,
         CancellationToken cancellationToken = default)
     {
@@ -183,6 +189,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
                 version,
                 restart,
                 noRestart,
+                now,
                 linkOntoPath,
                 cancellationToken: cancellationToken);
         }
