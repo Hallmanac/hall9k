@@ -48,11 +48,18 @@ arrival. A no-op rebase and a clean rebase both still run one mechanical step fi
 the log's own tail placeholder (PLAN.md §16, Decisions Log #162) its real number
 and rewriting every citation of it, committed on its own before the mandatory gate reruns. Beyond
 that step, neither costs anything extra; a conflict dispatches straight to the narrow recovery
-session inside the same run (never a task reopen). This run's own one read-only stack assessment
-(PLAN.md §16, Decisions Log #205) gets its say only at that session's own two park points: a
-dispute it cannot honestly resolve, or the exhaustion of its own round cap, never on the first
-conflict the session is about to attempt. It reaches a structured verdict, aligned, replay from a
-boundary onto a commit, or undecidable, that the run acts on rather than a human ever seeing. An
+session inside the same run (never a task reopen) — with exactly one exception. When the only thing
+the rebase conflicts on is that the base and this branch each appended an entry at the end of §16's
+Decisions Log, the rebase resolves it on the spot, keeping the base's entries first and this
+branch's placeholder after them, and carries on: the numbering convention already decided that
+answer, so there is nothing left to judge (PLAN.md §16, Decisions Log #PLACEHOLDER-64ba195a). The
+shape is read narrowly — one conflicted file, one hunk, whole numbered entries on the base's side
+sitting at the log's tail, this task's own placeholder with its placement note on the branch's —
+and every near miss of it, along with every other conflict, parks exactly as before. This run's own
+one read-only stack assessment (PLAN.md §16, Decisions Log #205) gets its say only at that
+session's own two park points: a dispute it cannot honestly resolve, or the exhaustion of its own
+round cap, never on the first conflict the session is about to attempt. It reaches a structured
+verdict, aligned, replay from a boundary onto a commit, or undecidable, that the run acts on rather than a human ever seeing. An
 aligned verdict, or a replay whose own one mechanical retry lands, overrides the session's outcome
 as resolved; only a genuinely undecidable verdict, or a replay whose retry also fails, still parks
 for a human (PLAN.md Decisions Log #138). A rebase that applies cleanly but
@@ -297,13 +304,14 @@ The parent's post-delivery churn is absorbed at **two checkpoints** rather than 
 (#146): a child still in flight catches up to its parent's current head immediately before its own
 first review cycle and immediately before the mandatory final full pass, and nowhere in between.
 Each catch-up is mechanical — the same replay, plus the gates, no review cycle — spending the same
-rebase budget and parking past the same cap. A conflict at a checkpoint first dispatches that same
-one read-only stack assessment; the branch is restored, and only an undecidable verdict parks for a
-human outright. A replay verdict whose own mechanical retry also conflicts earns a guided fix
-session instead, one whose own completion still routes the run through the review cycles a
-checkpoint before cycle one exists to precede (PLAN.md §16, Decisions Log #205,
-#212). A parent that has died terminally (abandoned, `Failed`, or Done having
-never delivered a pull request that can merge) does the same for a child still mid-run, assessed
+rebase budget and parking past the same cap. A conflict at a checkpoint runs the same Decisions Log
+tail-append resolver the before-push rebase does, and if that is all it was, the replay simply
+continues; anything else first dispatches that same one read-only stack assessment, the branch is
+restored, and only an undecidable verdict parks for a human outright. A replay verdict whose own
+mechanical retry also conflicts earns a guided fix session instead, one whose own completion still
+routes the run through the review cycles a checkpoint before cycle one exists to precede
+(PLAN.md §16, Decisions Log #205, #212). A parent that has died terminally (abandoned, `Failed`,
+or Done having never delivered a pull request that can merge) does the same for a child still mid-run, assessed
 first on the identical terms, while a child whose pull request is already open parks directly,
 under the closeout watcher's own separate sweep.
 
