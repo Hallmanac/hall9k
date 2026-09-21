@@ -1,8 +1,10 @@
 using FluentAssertions;
 using Hall9k.Daemon.Purge;
 using Hall9k.Domain.Features.Courier;
+using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
@@ -56,6 +58,13 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid purgedRunId = await SeedRunAsync(store, purgedTaskIds[0], ownerId, cts.Token);
         Guid purgedIdeaId = await SeedIdeaAsync(store, purgedProjectId, ownerId, cts.Token);
         Guid purgedEpicId = await SeedEpicAsync(store, purgedProjectId, ownerId, cts.Token);
+        Guid purgedDecisionId = await SeedDecisionAsync(
+            store, KnowledgeScope.Project, purgedProjectId, ownerId, cts.Token);
+        Guid purgedLearningId = await SeedLearningAsync(
+            store, KnowledgeScope.Project, purgedProjectId, ownerId, cts.Token);
+        // The control for the other half of the scope rule: an owner-scoped lesson belongs to
+        // nobody's project, so no project's purge may ever reach it.
+        Guid ownerLearningId = await SeedLearningAsync(store, KnowledgeScope.Owner, ownerId, ownerId, cts.Token);
         await SeedGitHubAccessAsync(store, purgedProjectId, cts.Token);
         await SeedPromptAddendaSyncPositionAsync(store, purgedProjectId, cts.Token);
         await SeedCourierDocumentsAsync(store, purgedProjectId, cts.Token);
@@ -71,6 +80,8 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         Guid survivingRunId = await SeedRunAsync(store, survivingTaskIds[0], ownerId, cts.Token);
         Guid survivingIdeaId = await SeedIdeaAsync(store, survivingProjectId, ownerId, cts.Token);
         Guid survivingEpicId = await SeedEpicAsync(store, survivingProjectId, ownerId, cts.Token);
+        Guid survivingDecisionId = await SeedDecisionAsync(
+            store, KnowledgeScope.Project, survivingProjectId, ownerId, cts.Token);
         await SeedGitHubAccessAsync(store, survivingProjectId, cts.Token);
         await SeedPromptAddendaSyncPositionAsync(store, survivingProjectId, cts.Token);
         await SeedCourierDocumentsAsync(store, survivingProjectId, cts.Token);
@@ -112,6 +123,13 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<RunListItem>(purgedRunId, cts.Token)).Should().BeNull();
             (await query.LoadAsync<IdeaDetails>(purgedIdeaId, cts.Token)).Should().BeNull();
             (await query.LoadAsync<EpicDetails>(purgedEpicId, cts.Token)).Should().BeNull();
+            (await query.LoadAsync<DecisionDetails>(purgedDecisionId, cts.Token)).Should().BeNull(
+                "a project-scoped decision (idea d805fd8b, piece 1) is a stream of this project's, "
+                + "reached only through its scope coordinate rather than a ProjectId field, so a "
+                + "purge has to find it by query or leave h9k decide list printing a ruling under a "
+                + "project it can no longer name");
+            (await query.LoadAsync<LearningDetails>(purgedLearningId, cts.Token)).Should().BeNull(
+                "a project-scoped lesson is the identical shape");
 
             (await query.LoadAsync<OrchestratorPresenceDetails>(purgedPresenceId, cts.Token)).Should().BeNull(
                 "an orchestrator presence stream is keyed by (node, project) rather than by the "
@@ -124,7 +142,7 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
 
             Guid[] purgedStreamIds =
                 [purgedProjectId, .. purgedTaskIds, purgedRunId, purgedIdeaId, purgedEpicId, purgedPresenceId,
-                 purgedCourierRunId];
+                 purgedCourierRunId, purgedDecisionId, purgedLearningId];
             long eventRows = (await query.QueryAsync<long>(
                 "select count(*) from mt_events where stream_id = ANY(?)", cts.Token, purgedStreamIds)).Single();
             eventRows.Should().Be(0, "no event for the purged project or anything it owned should remain");
@@ -142,6 +160,9 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
             (await query.LoadAsync<RunDetails>(survivingRunId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<IdeaDetails>(survivingIdeaId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<EpicDetails>(survivingEpicId, cts.Token)).Should().NotBeNull();
+            (await query.LoadAsync<DecisionDetails>(survivingDecisionId, cts.Token)).Should().NotBeNull();
+            (await query.LoadAsync<LearningDetails>(ownerLearningId, cts.Token)).Should().NotBeNull(
+                "an owner-scoped lesson belongs to no project, so no project's purge reaches it");
             (await query.LoadAsync<OrchestratorPresenceDetails>(survivingPresenceId, cts.Token)).Should().NotBeNull();
             (await query.LoadAsync<CourierRunDetails>(survivingCourierRunId, cts.Token)).Should().NotBeNull();
             Guid[] survivingStreamIds =
@@ -527,6 +548,35 @@ public sealed class ProjectPurgeSweepTests(PostgresFixture postgres) : IClassFix
         session.Events.StartStream<IdeaAggregate>(ideaId, captured);
         await session.SaveChangesAsync(cancellationToken);
         return ideaId;
+    }
+
+    /// <summary>A decision bound to this project (idea d805fd8b, piece 1): its own stream, reached only through its scope coordinate.</summary>
+    private static async Task<Guid> SeedDecisionAsync(
+        IDocumentStore store, KnowledgeScope scope, Guid scopeId, Guid ownerId, CancellationToken cancellationToken)
+    {
+        Guid decisionId = DomainId.New();
+        DecisionRecorded recorded = DecisionDecider.Record(
+            decisionId, scope, scopeId, "a ruling worth destroying", originIncident: null, [],
+            RecordedProvenance.FromShell(ownerId), Now);
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<DecisionAggregate>(decisionId, recorded);
+        await session.SaveChangesAsync(cancellationToken);
+        return decisionId;
+    }
+
+    /// <summary>The same for a lesson, so an owner-scoped one can stand as the control that a project's purge never reaches it.</summary>
+    private static async Task<Guid> SeedLearningAsync(
+        IDocumentStore store, KnowledgeScope scope, Guid scopeId, Guid ownerId, CancellationToken cancellationToken)
+    {
+        Guid learningId = DomainId.New();
+        LearningRecorded recorded = LearningDecider.Record(
+            learningId, scope, scopeId, "a lesson worth destroying", RecordedProvenance.FromShell(ownerId), Now);
+
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.StartStream<LearningAggregate>(learningId, recorded);
+        await session.SaveChangesAsync(cancellationToken);
+        return learningId;
     }
 
     private static async Task<Guid> SeedEpicAsync(

@@ -1,6 +1,8 @@
 using Hall9k.Domain.Features.Courier;
+using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -30,8 +32,13 @@ public sealed record ProjectPurgeSweepResult(
 /// <c>PurgeAt</c> still set — the state <c>ProjectDecider.Reactivate</c>'s own purge-pending
 /// refusal exists to prevent.
 /// </summary>
+/// <param name="Knowledge">
+/// The project-scoped decisions and lessons destroyed alongside everything else (idea d805fd8b,
+/// piece 1). Counted together rather than split in two because the number exists to be said out
+/// loud in the log line below, not to be read by anything.
+/// </param>
 internal sealed record PurgeOneResult(
-    bool Purged, bool LiveWithPurgeDeadlineSet, int Tasks, int Runs, int Ideas, int Epics);
+    bool Purged, bool LiveWithPurgeDeadlineSet, int Tasks, int Runs, int Ideas, int Epics, int Knowledge = 0);
 
 /// <summary>
 /// Carries out a due <c>ProjectPurgeScheduled</c> deadline (task: an archived project can be
@@ -149,11 +156,12 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
 
                 logger.LogWarning(
                     "Purged project '{Name}' ({Id}): destroyed {Tasks} task(s), {Runs} run(s), {Ideas} "
-                    + "idea(s), and {Epics} epic(s) — every stream, event, and projection row for the "
+                    + "idea(s), {Epics} epic(s), and {Knowledge} recorded decision(s) and lesson(s) — "
+                    + "every stream, event, and projection row for the "
                     + "project and everything it owned. This is this install's own database only; the "
                     + "repository, linked tracker items, and the home directory ({Home}) were never "
                     + "touched and remain exactly as they were.",
-                    project.Name, project.Id, tasks, runs, ideas, epics,
+                    project.Name, project.Id, tasks, runs, ideas, epics, result.Knowledge,
                     project.HomeDirectory.HasValue ? project.HomeDirectory.Value : "none recorded");
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -262,8 +270,35 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
             .Select(run => run.Id)
             .ToListAsync(cancellationToken))];
 
+        // A project-scoped decision or lesson (idea d805fd8b, piece 1) is a stream of this
+        // project's too, keyed by its own record id and reached through its scope coordinate
+        // rather than a ProjectId field, so neither delete below would find it on its own. Left
+        // behind it is the same orphan shape as every sibling above: mt_events and mt_streams
+        // still carrying DecisionRecorded and LearningRecorded for a project id that no longer
+        // resolves, and h9k decide list still printing the statement under a scope it can no
+        // longer name. An owner-scoped record is excluded on purpose and by construction — it
+        // carries the OWNER's id as its scope, so no project's purge ever reaches it, which is
+        // the same "stays home" rule ReplicationProjectResolver reads. The scope is re-checked in
+        // memory rather than left to the id match alone: a match on a project id is already
+        // decisive, and stating the rule at the read site is what keeps it true if either id
+        // space ever stops being disjoint.
+        string projectScope = KnowledgeScope.Project;
+        Guid[] decisionIds = [.. (await session.Query<DecisionDetails>()
+                .Where(decision => decision.ScopeId == project.Id)
+                .ToListAsync(cancellationToken))
+            .Where(decision => decision.Scope == projectScope)
+            .Select(decision => decision.Id)];
+        Guid[] learningIds = [.. (await session.Query<LearningDetails>()
+                .Where(learning => learning.ScopeId == project.Id)
+                .ToListAsync(cancellationToken))
+            .Where(learning => learning.Scope == projectScope)
+            .Select(learning => learning.Id)];
+
         Guid[] everyStreamId =
-            [project.Id, .. taskIds, .. runIds, .. ideaIds, .. epicIds, .. orchestratorPresenceIds, .. courierRunIds];
+        [
+            project.Id, .. taskIds, .. runIds, .. ideaIds, .. epicIds, .. orchestratorPresenceIds,
+            .. courierRunIds, .. decisionIds, .. learningIds,
+        ];
 
         // The spend governor's own undercount (independent pre-PR review, cycle 1, adversarial
         // lens, medium): PeriodSpend.ReadAsync sums TokensRecorded (on a run's own stream),
@@ -391,9 +426,24 @@ public sealed class ProjectPurgeEngine(IDocumentStore store, ILogger<ProjectPurg
                 "delete from mt_doc_courierrundetails where id = ANY(?)", courierRunIds);
         }
 
+        // The identical lazy-table guard once more: mt_doc_decisiondetails and
+        // mt_doc_learningdetails are created on this install's first-ever h9k decide or h9k learn,
+        // so a raw DELETE naming either one outright would fail on an install that has recorded
+        // neither. A non-empty id list is itself proof the table exists.
+        if (decisionIds.Length > 0)
+        {
+            session.QueueSqlCommand("delete from mt_doc_decisiondetails where id = ANY(?)", decisionIds);
+        }
+
+        if (learningIds.Length > 0)
+        {
+            session.QueueSqlCommand("delete from mt_doc_learningdetails where id = ANY(?)", learningIds);
+        }
+
         await session.SaveChangesAsync(cancellationToken);
         return new PurgeOneResult(
             Purged: true, LiveWithPurgeDeadlineSet: false,
-            taskIds.Length, runIds.Length, ideaIds.Length, epicIds.Length);
+            taskIds.Length, runIds.Length, ideaIds.Length, epicIds.Length,
+            decisionIds.Length + learningIds.Length);
     }
 }
