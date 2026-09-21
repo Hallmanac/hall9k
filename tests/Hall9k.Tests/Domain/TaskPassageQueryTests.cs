@@ -364,6 +364,53 @@ public sealed class TaskPassageQueryTests
         passage.Building.Elapsed.Should().Be(TimeSpan.FromHours(1));
     }
 
+    /// <summary>
+    /// Task: a delivered diff that touches no buildable or testable source skips the build and
+    /// test gates. A content-only run's only verification entry is <c>VerificationSkipped</c>,
+    /// never a <c>VerificationPassed</c>/<c>VerificationFailed</c> — it must close the build phase
+    /// exactly like either of those would, or a content-only task's "building" phase would run all
+    /// the way to whatever event happens to close it next instead of the moment verification
+    /// actually resolved.
+    /// </summary>
+    [Fact]
+    public void Building_closes_on_a_verification_skip_the_same_as_a_pass_or_failure()
+    {
+        Guid runId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddHours(-2);
+        DateTimeOffset skippedAt = Now.AddHours(-1);
+
+        RunEventSet run = new(runId, dispatchedAt, Now.AddMinutes(-5),
+            [Ev(new VerificationSkipped(runId, skippedAt, [new VerificationSkippedPath("docs/notes.md", "docs/")]))]);
+
+        TaskPassage passage = Compute([], [run]);
+
+        passage.Building.Applicable.Should().BeTrue();
+        passage.Building.StillOpen.Should().BeFalse();
+        passage.Building.Elapsed.Should().Be(TimeSpan.FromHours(1));
+    }
+
+    /// <summary>
+    /// A skip is still an observed verification — the gates were deliberately not run, not never
+    /// recorded — so a content-only task's own gate wall-clock figure reads a real, honest zero
+    /// rather than <see cref="PassagePhase.NotApplicable"/>, which would read as "this task never
+    /// went through the gates" when it plainly did.
+    /// </summary>
+    [Fact]
+    public void Gates_reads_a_closed_zero_for_a_run_whose_only_verification_was_a_skip()
+    {
+        Guid runId = DomainId.New();
+        DateTimeOffset dispatchedAt = Now.AddHours(-2);
+
+        RunEventSet run = new(runId, dispatchedAt, Now.AddMinutes(-5),
+            [Ev(new VerificationSkipped(runId, Now.AddHours(-1), [new VerificationSkippedPath("docs/notes.md", "docs/")]))]);
+
+        TaskPassage passage = Compute([], [run]);
+
+        passage.Gates.Applicable.Should().BeTrue("the run WAS verified — the gates were skipped by evidence, not never observed");
+        passage.Gates.IsUnknown.Should().BeFalse();
+        passage.Gates.Elapsed.Should().Be(TimeSpan.Zero, "no gate ran, which is a known fact rather than an unobserved duration");
+    }
+
     [Fact]
     public void Building_still_open_on_the_newest_run_with_no_verification_yet()
     {

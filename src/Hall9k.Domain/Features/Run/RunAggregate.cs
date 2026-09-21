@@ -1076,6 +1076,19 @@ public sealed class RunAggregate
         }
     }
 
+    /// <summary>
+    /// A skip is never a pass for scoping (task: a delivered diff that touches no buildable or
+    /// testable source skips the build and test gates): unlike <see cref="Apply(VerificationPassed)"/>,
+    /// this deliberately touches none of <see cref="LastGateRanFullScope"/>,
+    /// <see cref="LastGateHeadSha"/>, <see cref="LastGateVerifyCommandsFingerprint"/>,
+    /// <see cref="PreFinalPassRebaseAwaitingGate"/>, or <see cref="SettlingGateRepairRounds"/> — the
+    /// next gate that actually runs always scopes off the last real <see cref="VerificationPassed"/>
+    /// still on the stream, never off this fact, and this fact can never satisfy the "already ran
+    /// full over this HEAD" waiver either, for the identical reason. Failed-gate state still clears,
+    /// the same as a real pass: a skip means nothing is currently failing.
+    /// </summary>
+    public void Apply(VerificationSkipped @event) => _failedGates.Clear();
+
     public void Apply(GateRetried @event) => GateRetries++;
 
     public void Apply(ReviewDispatched @event)

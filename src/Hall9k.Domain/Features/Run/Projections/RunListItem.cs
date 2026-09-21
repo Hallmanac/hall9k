@@ -47,6 +47,17 @@ public sealed class RunListItem
     /// </summary>
     public List<GateDuration>? GateDurations { get; set; }
     /// <summary>
+    /// The changed-path-and-rule list from this run's most recently recorded
+    /// <see cref="VerificationSkipped"/> (task: a delivered diff that touches no buildable or
+    /// testable source skips the build and test gates), replaced whole on each new skip — the
+    /// same "last recorded" shape <see cref="GateDurations"/> already takes — and cleared by the
+    /// next <see cref="VerificationPassed"/>/<see cref="VerificationFailed"/>, since either one
+    /// means this run's most recent gate entry actually ran rather than skipped. Null when the run
+    /// has never skipped, or its most recent gate entry actually ran: <c>h9k task show</c>'s own
+    /// Gates column reads this ahead of <see cref="GateDurations"/> and falls back to it here.
+    /// </summary>
+    public List<VerificationSkippedPath>? LastVerificationSkippedPaths { get; set; }
+    /// <summary>
     /// True only for a run that CloseoutEngine's missing-run sweep reconstructed rather than one
     /// that actually dispatched — it never ran a build session, so it never wrote a transcript
     /// (independent pre-PR review, cycle 1, conformance: <c>h9k logs</c>'s own newest-run pick must
@@ -133,6 +144,8 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
         {
             view.GateDurations = [.. durations];
         }
+
+        view.LastVerificationSkippedPaths = null;
     }
 
     public void Apply(IEvent<VerificationPassed> @event, RunListItem view)
@@ -141,7 +154,12 @@ public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, 
         {
             view.GateDurations = [.. durations];
         }
+
+        view.LastVerificationSkippedPaths = null;
     }
+
+    public void Apply(IEvent<VerificationSkipped> @event, RunListItem view) =>
+        view.LastVerificationSkippedPaths = [.. @event.Data.ChangedPaths];
 
     public void Apply(IEvent<ReviewDispatched> @event, RunListItem view) => view.State = RunState.UnderReview;
 
