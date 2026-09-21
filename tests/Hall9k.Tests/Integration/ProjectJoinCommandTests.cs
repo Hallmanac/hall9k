@@ -1045,6 +1045,100 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         owner.RootFingerprintVerified.Should().BeFalse("the refused carry leaves the owner's claim exactly as unverified as it was before this join");
     }
 
+    /// <summary>
+    /// Adversarial pre-PR review, medium: a carry whose own <c>owners/&lt;root&gt;/root.yaml</c> and
+    /// <c>owners/&lt;root&gt;/carried/&lt;node-id&gt;.yaml</c> push landed, but whose own
+    /// <see cref="ProjectJoinCommand.EnsureGenesisMemberFileAsync"/> call never got the chance to run
+    /// (a rejected push after <c>MaxPushAttempts</c>, a network drop, Ctrl-C, a crash), previously left
+    /// the project with no genesis and no owner-role member forever: <c>TryCarryVouchAsync</c> refuses
+    /// to write <c>root.yaml</c> a second time once it already exists, and the
+    /// <c>establishingRoot</c> branch — the only other caller of
+    /// <c>EnsureGenesisMemberFileAsync</c> — is never reached on a carried root. A re-run must retry
+    /// the genesis write on its own, gated on a live chain read showing this exact node already
+    /// enrolled under this root on THIS project's own ledger, so recovery never depends on the carry
+    /// write and the genesis write landing in the identical call. Driven entirely through
+    /// <see cref="FakeLedger"/> and <see cref="FakeLedgerChainReader"/> — no real repository (Brian's
+    /// 2026-09-13 testing rule), and no source project is registered at all, since the recovery path
+    /// never reaches <c>TryCarryVouchAsync</c>'s own candidate search once <c>root.yaml</c> already
+    /// exists on the target.
+    /// </summary>
+    [Fact]
+    public async Task A_rejoin_after_the_carried_root_already_exists_retries_the_genesis_write()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        Guid connectionId = await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+
+        await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, cts.Token);
+        await bootstrapSession.SaveChangesAsync(cts.Token);
+
+        NodeKeyStore keyStore = new();
+        NodeSigningKey key = await keyStore.EnsureAsync(context.NodeId, cts.Token);
+        string root = new string('e', 64);
+
+        // The owner's own claim already landed, and was already verified — the state a first,
+        // interrupted carry attempt leaves behind (task f53fecfd's own ClaimRoot(verified: true)
+        // append fires the moment TryCarryVouchAsync's own write lands, independent of whether the
+        // genesis write that follows it in the same call ever got the chance to run).
+        await using (IDocumentSession claimSession = _postgres.Store.LightweightSession())
+        {
+            OwnerAggregate ownerAggregate = await claimSession.Events.AggregateStreamAsync<OwnerAggregate>(context.OwnerId, token: cts.Token)
+                ?? throw new InvalidOperationException($"No owner {context.OwnerId}.");
+            claimSession.Events.Append(context.OwnerId, OwnerDecider.ClaimRoot(ownerAggregate, root, verified: true, Now));
+            await claimSession.SaveChangesAsync(cts.Token);
+        }
+
+        Guid targetId = DomainId.New();
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            seed.Events.StartStream<ProjectAggregate>(
+                targetId,
+                ProjectDecider.Register(
+                    targetId, context.OwnerId, connectionId, "carry-recovery-target",
+                    "/does/not/matter/on/a/fake/ledger/target", null, null, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession loadSession = _postgres.Store.LightweightSession();
+        ProjectDetails target = (await loadSession.LoadAsync<ProjectDetails>(targetId, cts.Token))!;
+
+        FakeLedger ledger = new();
+        // The earlier, interrupted carry's own first write: root.yaml already sits on the target,
+        // signed by this same node (the same shape a genuine carry leaves behind), with members/
+        // still empty because the second write never ran.
+        LedgerWriteOutcome seedRootOutcome = await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                target.RepositoryPath, $"refs/hall9k/ledger/owners/{root}", $"owners/{root}/root.yaml",
+                "public_key: \"ssh-ed25519 AAAArootKey root@test\"\n", ExpectedBlobId: null,
+                "seed the earlier, interrupted carry's own root.yaml", new LedgerCommitter("Seed", "seed@hall9k.local"),
+                new LedgerSigningKey(key.PrivateKeyPath)),
+            cts.Token);
+        seedRootOutcome.Verdict.Should().Be(LedgerWriteVerdict.Written, "test setup: the earlier carry's own root.yaml must land");
+
+        // The live chain read of THIS project's own ledger already shows this node enrolled under
+        // the carried root — exactly what the earlier, interrupted carry's own carried/<node-id>.yaml
+        // write already established, which this recovery path leans on rather than re-verifying.
+        TrustedOwner carriedOwner = new(
+            root, "ssh-ed25519 AAAArootKey root@test",
+            [new TrustedNode(context.NodeId.ToString(), key.PublicKeyLine, key.Fingerprint, Now)]);
+        FakeLedgerChainReader chainReader = new(new TrustChain(
+            new Dictionary<string, TrustedOwner> { [root] = carriedOwner }, []));
+        FakeLedgerCommitReader commitReader = new(new Dictionary<string, LedgerSignedCommit>());
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, target, claimedOwnerOverride: null, invite: null, fromProject: null, ledger, keyStore,
+            GitHubAccessFakes.GrantingPush(), chainReader, commitReader, promptForInviteToken: null, cts.Token);
+
+        ledger.Writes.Should().Contain(
+            w => w.RefName == "refs/hall9k/ledger/members" && w.Path == $"members/{root}.yaml",
+            "the retry writes the genesis member this project was left without, now that a live chain read confirms this node is actually enrolled");
+
+        ProjectDetails updatedTarget = (await session.LoadAsync<ProjectDetails>(target.Id, cts.Token))!;
+        updatedTarget.ProjectKey.Should().NotBeNull("the recovered genesis write mints this project's own key, same as an ordinary genesis join");
+        outcome.RootVerified.Should().BeTrue();
+    }
+
     [Fact]
     public async Task No_written_tree_ever_contains_the_private_key()
     {

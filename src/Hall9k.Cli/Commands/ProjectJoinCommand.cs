@@ -564,6 +564,49 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             {
                 AnsiConsole.MarkupLine($"[yellow]{carryOutcome.RefusalMessage.EscapeMarkup()}[/]");
             }
+            else
+            {
+                // NotApplicable, silently: the target already has a root for claimedFingerprint,
+                // so TryCarryVouchAsync above never touched owners/<root>/root.yaml this run. That
+                // silence covers two shapes the same way — an ordinary re-join of a project this
+                // node already fully carried into, where the block below is a costless no-op, and
+                // the one this branch exists to recover: an earlier carry whose root/carried push
+                // landed but whose own EnsureGenesisMemberFileAsync call never got the chance to
+                // (LedgerPushRejectedException after MaxPushAttempts, a network drop, Ctrl-C, a
+                // crash) — the carried record is genuine and durable, but the project was left
+                // with no genesis and no owner-role member forever, since TryCarryVouchAsync
+                // refuses to write root.yaml a second time and this method's own establishingRoot
+                // branch above is the only other caller of EnsureGenesisMemberFileAsync, never
+                // reached on a carried root (independent pre-PR review, adversarial lens, medium).
+                // Gated on a live chain read showing this exact node already enrolled under this
+                // root on THIS project's own ledger — never attempted on the strength of the claim
+                // alone — so a node that was never actually carried in here cannot burn the one
+                // genesis slot on a write no later reader could ever trust; EnsureGenesisMemberFileAsync
+                // itself is idempotent (a no-op once members/ is no longer empty), so retrying it
+                // costs nothing on the everyday already-genesis-written steady state.
+                try
+                {
+                    TrustChain targetChain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+                    if (targetChain.IsEnrolledInOwner(key.Fingerprint, claimedFingerprint))
+                    {
+                        (bool wroteGenesisMember, string genesisProjectKey) = await EnsureGenesisMemberFileAsync(
+                            ledger, project.RepositoryPath, claimedFingerprint, now, committer, signingKey, cancellationToken);
+                        if (wroteGenesisMember)
+                        {
+                            session.Events.Append(
+                                project.Id, ProjectDecider.VouchMember(project.Id, claimedFingerprint, ProjectMemberRole.Owner, now));
+                            justWrittenProjectKey = genesisProjectKey;
+                        }
+                    }
+                }
+                catch (Exception exception) when (exception is not OperationCanceledException)
+                {
+                    // Best-effort, the same as RecordProjectKeyAsync's and the reconciliation
+                    // block's own failure handling below: a transient chain-read failure here
+                    // simply leaves this tick's genesis recovery for a later join or the daemon's
+                    // own message sweep.
+                }
+            }
         }
 
         bool wroteNodeFile = await WriteNodeFileAsync(
