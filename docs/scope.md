@@ -121,11 +121,14 @@ every one matches, the build and test gates are skipped outright and a `Verifica
 is recorded naming every changed path and the rule it matched, shown by `h9k task show` in the
 Gates column exactly where a pass shows today (a skip is never used as the scope base for the next
 gate that actually runs — that always scopes off the last real pass). The compiled default set is
-five rules — any `*.md` file, `docs/`, `.claude/skills/`, `.claude/commands/`, and an exclusion
-carving `.claude/templates/` back out of `*.md` (it's rendered prompt source with its own golden
-tests, not docs) — and a project may only add to it, never remove or narrow one of the five, with
-`h9k project set --non-executable-path <glob>` (repeatable, `default` clears the project's own
-additions) and `h9k project show` listing the effective set; any path outside the set, or a diff
+any `*.md` file, `docs/`, `.claude/skills/`, `.claude/commands/`, and exclusions carving
+`.claude/templates/`, `AGENTS.md`, and `PLAN.md` back out of `*.md` (rendered prompt source with
+its own golden tests, and the two doctrine files this platform's own tests check, none of them
+plain docs) — and a project may only add to it, never remove or narrow one of the compiled rules
+(a project's own addition is refused outright if it starts with `!`, since exclusion syntax stays
+reserved for the compiled set), with `h9k project set --non-executable-path <glob>` (repeatable,
+`default` clears the project's own additions) and `h9k project show` listing the effective set;
+any path outside the set, or a diff
 that mixes code with content, runs the gates in full exactly as before, and the classification is
 re-run afresh at every entry into the gates — first delivery, an intermediate review-cycle pass,
 and every follow-up lap alike — so a fix lap on a content-only branch never pays for the gates

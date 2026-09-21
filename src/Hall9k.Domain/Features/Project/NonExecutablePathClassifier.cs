@@ -45,7 +45,7 @@ public static class NonExecutablePathClassifier
 
     /// <summary>
     /// A rule prefixed with <c>!</c> (<see cref="NonExecutablePathDefaults.Rules"/>'s own
-    /// <c>!.claude/templates/</c>) is an exclusion, not a fifth kind of match: it names a path that
+    /// <c>!.claude/templates/</c>) is an exclusion, not another kind of match: it names a path that
     /// LOOKS non-executable under some other rule here but is actually tested content, and it wins
     /// over every ordinary rule regardless of which one comes first in the list (independent pre-PR
     /// review, cycle 1, adversarial lens, high — the bare <c>*.md</c> default used to swallow
@@ -108,7 +108,7 @@ public static class NonExecutablePathClassifier
     /// <c>**</c> matches any run of characters including path separators, a single <c>*</c> stops
     /// at a <c>/</c>, and <c>?</c> matches exactly one non-separator character — the same three
     /// wildcards every shell glob supports, translated to an anchored regex. Compiled fresh per
-    /// call rather than cached: the rule lists this classifier ever sees are the compiled five
+    /// call rather than cached: the rule lists this classifier ever sees are the compiled
     /// defaults plus a handful of project additions, called once per gate entry, not a hot path.
     /// </summary>
     private static Regex CompileGlob(string glob)

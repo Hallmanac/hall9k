@@ -265,8 +265,8 @@ public sealed class ProjectDetailsProjectionTests
     /// Task: a delivered diff that touches no buildable or testable source skips the build and
     /// test gates. A project's own additions land on <see cref="ProjectDetails.NonExecutablePaths"/>
     /// exactly as recorded, and <see cref="ProjectDetails.EffectiveNonExecutablePaths"/> always
-    /// layers the compiled five defaults ahead of them — there is no event field, and so no
-    /// command, that can ever remove one of the five, which is what makes "a project can only add
+    /// layers the compiled defaults ahead of them — there is no event field, and so no
+    /// command, that can ever remove one of them, which is what makes "a project can only add
     /// to the set" hold by construction.
     /// </summary>
     [Fact]
@@ -281,7 +281,7 @@ public sealed class ProjectDetailsProjectionTests
         view.NonExecutablePaths.Should().BeEmpty("an untouched project has made no additions");
         view.EffectiveNonExecutablePaths.Should().BeEquivalentTo(NonExecutablePathDefaults.Rules,
             options => options.WithStrictOrdering(),
-            "the compiled five apply even with no project additions at all");
+            "the compiled defaults apply even with no project additions at all");
 
         projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
             id,
@@ -295,6 +295,6 @@ public sealed class ProjectDetailsProjectionTests
         view.NonExecutablePaths.Should().ContainSingle().Which.Should().Be("assets/**/*.png");
         view.EffectiveNonExecutablePaths.Should().Equal(
             [.. NonExecutablePathDefaults.Rules, "assets/**/*.png"],
-            "the project's own addition rides on top of the compiled five, never in place of them");
+            "the project's own addition rides on top of the compiled defaults, never in place of them");
     }
 }

@@ -97,16 +97,37 @@ public sealed class NonExecutablePathClassifierTests
         result.Paths.Single().MatchedRule.Should().BeNull();
     }
 
+    /// <summary>
+    /// The sibling case with the exclusion listed AFTER the positive rule is already proved by
+    /// <c>The_templates_exclusion_wins_over_the_markdown_default_even_though_markdown_is_checked_first</c>
+    /// against the real compiled order — this one only adds the reverse ordering (independent
+    /// pre-PR review, cycle 1, conformance lens, low: the two cases used to duplicate each other).
+    /// </summary>
     [Fact]
-    public void An_exclusion_rule_wins_regardless_of_where_it_sits_in_the_rule_list()
+    public void An_exclusion_rule_wins_even_when_it_sits_ahead_of_the_rule_it_excludes()
     {
         NonExecutablePathClassifier.ClassificationResult exclusionFirst = NonExecutablePathClassifier.Classify(
             [".claude/templates/foo.md"], ["!.claude/templates/", "*.md"]);
-        NonExecutablePathClassifier.ClassificationResult exclusionLast = NonExecutablePathClassifier.Classify(
-            [".claude/templates/foo.md"], ["*.md", "!.claude/templates/"]);
 
         exclusionFirst.Paths.Single().MatchedRule.Should().BeNull();
-        exclusionLast.Paths.Single().MatchedRule.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The compiled defaults treat <c>AGENTS.md</c> and <c>PLAN.md</c> as doctrine this platform's
+    /// own tooling checks, not plain docs — this repository's own <c>AgentsMarkdownLineCountTests</c>
+    /// and <c>DecisionsLogNumberingGuardTests</c> read them, so a diff that only edits one of them
+    /// must still run the gates (independent pre-PR review, cycle 1, adversarial lens, high).
+    /// </summary>
+    [Theory]
+    [InlineData("AGENTS.md")]
+    [InlineData("PLAN.md")]
+    public void The_doctrine_file_exclusions_win_over_the_markdown_default(string path)
+    {
+        NonExecutablePathClassifier.ClassificationResult result = NonExecutablePathClassifier.Classify(
+            [path], CompiledDefaults);
+
+        result.AllMatched.Should().BeFalse($"{path} is doctrine this platform's own tests check, not plain docs");
+        result.Paths.Single().MatchedRule.Should().BeNull();
     }
 
     [Theory]
