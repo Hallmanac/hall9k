@@ -378,6 +378,18 @@ public sealed partial class VerificationRunner(
                 "Run {RunId} gate '{Gate}' failed with an infrastructure-classified signature; retrying once: {Summary}",
                 runId, gate.Name, summary);
 
+            // A gate that failed within milliseconds of starting (the log-open IOException this
+            // task's own incident classifies) can still be racing a residual OS teardown delay
+            // right after adoption's own TerminateTree kill — Process.Kill(entireProcessTree:
+            // true) is a request, not a confirmation of death, so the handle it held can outlive
+            // the kill call by a short window. An immediate retry lands inside that window and
+            // fails the same way, spending the run's one retry on a lock that would have cleared
+            // moments later. Every other infrastructure classification (container startup,
+            // MSB4166) is reached only after the gate has already run for minutes, so this delay
+            // costs those retries nothing worth naming (independent pre-PR review, cycle 1,
+            // adversarial lens).
+            await Task.Delay(InfrastructureRetryDelay, cancellationToken);
+
             Stopwatch retryStopwatch = Stopwatch.StartNew();
             (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _, bool retryFellBackToFull, TimeSpan retryPermitWaitElapsed) =
                 await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, run.ActiveGate, cancellationToken);
@@ -1524,6 +1536,15 @@ public sealed partial class VerificationRunner(
     /// budget exists only so a tree that never dies cannot wedge the gate loop.
     /// </summary>
     private static readonly TimeSpan KilledGateReapBudget = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// How long the gate loop waits before its one infrastructure-classified retry (independent
+    /// pre-PR review, cycle 1, adversarial lens): long enough to outlast the residual OS teardown
+    /// delay right after a kill that a log-open <see cref="IOException"/> can race, short enough
+    /// to cost nothing worth naming against every other infrastructure classification, which is
+    /// reached only after the gate has already run for minutes.
+    /// </summary>
+    private static readonly TimeSpan InfrastructureRetryDelay = TimeSpan.FromSeconds(3);
 
     /// <summary>
     /// Names the log that could not be read, as a clause each caller finishes with what that
