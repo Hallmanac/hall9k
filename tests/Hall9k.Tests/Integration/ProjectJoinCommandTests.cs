@@ -387,6 +387,150 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         }
     }
 
+    /// <summary>
+    /// h9k project add's own join now wires the console prompt through to
+    /// <see cref="ProjectJoinCommand.RunAsync(IDocumentSession,ProjectDetails,string?,string?,ILedger,NodeKeyStore,ProjectGitHubAccessMirror,ILedgerChainReader?,Func{string?}?,CancellationToken)"/>,
+    /// exactly like a standalone h9k project join, rather than the earlier cut of this call, which
+    /// hard-wired <c>promptForInviteToken: null</c> unconditionally — so a newcomer running h9k
+    /// project add in a real terminal against an already-owned project was told the owner but never
+    /// actually asked for a token (independent pre-PR review, cycle 1, conformance and adversarial
+    /// lenses, both medium). Proven through the full, chain-reader-and-prompt overload rather than
+    /// a real console (Brian's 2026-09-13 testing rule).
+    /// </summary>
+    [Fact]
+    public async Task ProjectAdds_own_join_asks_for_the_invite_token_on_the_spot()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        DirectoryInfo tempRepository = Directory.CreateTempSubdirectory("h9k-project-add-prompt-test-");
+        try
+        {
+            await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+
+            await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
+            BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, cts.Token);
+            await bootstrapSession.SaveChangesAsync(cts.Token);
+
+            Guid projectId = DomainId.New();
+            await using IDocumentSession projectSession = _postgres.Store.LightweightSession();
+            projectSession.Events.StartStream<ProjectAggregate>(
+                projectId,
+                ProjectDecider.Register(
+                    projectId, context.OwnerId, context.ConnectionId, "smoke-add-prompt",
+                    tempRepository.FullName, null, null, Now));
+            await projectSession.SaveChangesAsync(cts.Token);
+
+            FakeLedger ledger = new();
+            string realOwnerFingerprint = new string('f', 64);
+            await SeedGenesisOwnerMemberAsync(ledger, tempRepository.FullName, realOwnerFingerprint, cts.Token);
+
+            Guid inviteId = DomainId.New();
+            string secret = InviteSecret.Generate(realOwnerFingerprint, inviteId);
+            string secretHash = InviteSecret.Hash(secret);
+            InviteLedgerRecord record = new(
+                secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
+            await ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    tempRepository.FullName, InviteLedgerRecord.RefName(realOwnerFingerprint), InviteLedgerRecord.PathFor(realOwnerFingerprint, inviteId),
+                    record.ToYaml(), ExpectedBlobId: null, "seed a member-of-project invite", new LedgerCommitter("Test", "t@test.local"),
+                    new LedgerSigningKey("/does/not/matter")),
+                cts.Token);
+
+            int prompted = 0;
+            string? PromptOnce()
+            {
+                prompted++;
+                return secret;
+            }
+
+            await using IDocumentSession session = _postgres.Store.LightweightSession();
+            await ProjectAddCommand.TryJoinAsync(
+                session, projectId, "smoke-add-prompt", tempRepository.FullName, invite: null, ledger, new NodeKeyStore(),
+                GitHubAccessFakes.GrantingPush(), chainReader: null, promptForInviteToken: PromptOnce, cts.Token);
+
+            prompted.Should().Be(1,
+                "h9k project add's own join now asks for the invite token on the spot exactly like a standalone "
+                + "h9k project join, rather than only naming the command to run later");
+            ledger.Writes.Should().Contain(
+                w => w.RefName.StartsWith("refs/hall9k/ledger/nodes/"),
+                "the token pasted at the prompt reached the ordinary --invite path and the node file landed");
+        }
+        finally
+        {
+            tempRepository.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// h9k project add's own join now wires a real <see cref="ILedgerChainReader"/> through too,
+    /// exactly like a standalone h9k project join, rather than the earlier cut of this call, which
+    /// hard-wired <c>chainReader: null</c> unconditionally — so a join that did not self-write this
+    /// project's own genesis (every invite join, and every join into a project someone else already
+    /// established) never recorded the project's own key (independent pre-PR review, cycle 1,
+    /// adversarial lens, medium). Otherwise the identical shape as
+    /// <see cref="Joining_an_established_project_records_the_key_read_back_from_the_ledger"/>, just
+    /// driven through <see cref="ProjectAddCommand.TryJoinAsync"/> instead of
+    /// <see cref="ProjectJoinCommand.RunAsync"/> directly — a node-of-owner invite is the one shape
+    /// available at this seam that leaves <c>establishingRoot</c> false, since
+    /// <see cref="ProjectAddCommand.TryJoinAsync"/> has no <c>--owner</c> parameter of its own.
+    /// </summary>
+    [Fact]
+    public async Task ProjectAdds_own_join_records_the_project_key_read_back_from_the_ledger()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        DirectoryInfo tempRepository = Directory.CreateTempSubdirectory("h9k-project-add-key-test-");
+        try
+        {
+            await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+
+            await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
+            BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, cts.Token);
+            await bootstrapSession.SaveChangesAsync(cts.Token);
+
+            Guid projectId = DomainId.New();
+            await using IDocumentSession projectSession = _postgres.Store.LightweightSession();
+            projectSession.Events.StartStream<ProjectAggregate>(
+                projectId,
+                ProjectDecider.Register(
+                    projectId, context.OwnerId, context.ConnectionId, "smoke-add-key",
+                    tempRepository.FullName, null, null, Now));
+            await projectSession.SaveChangesAsync(cts.Token);
+
+            FakeLedger ledger = new();
+            string realOwnerFingerprint = new string('a', 64);
+            Guid inviteId = DomainId.New();
+            string secret = InviteSecret.Generate(realOwnerFingerprint, inviteId);
+            string secretHash = InviteSecret.Hash(secret);
+            InviteLedgerRecord record = new(
+                secretHash, InviteClaimKind.NodeOfOwner, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
+            await ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    tempRepository.FullName, InviteLedgerRecord.RefName(realOwnerFingerprint), InviteLedgerRecord.PathFor(realOwnerFingerprint, inviteId),
+                    record.ToYaml(), ExpectedBlobId: null, "seed a node-of-owner invite", new LedgerCommitter("Test", "t@test.local"),
+                    new LedgerSigningKey("/does/not/matter")),
+                cts.Token);
+
+            const string existingProjectKey = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+            FakeLedgerChainReader chainReader = new(new TrustChain(
+                new Dictionary<string, TrustedOwner>(), [], GenesisRootFingerprint: realOwnerFingerprint,
+                ProjectKey: existingProjectKey));
+
+            await using IDocumentSession session = _postgres.Store.LightweightSession();
+            await ProjectAddCommand.TryJoinAsync(
+                session, projectId, "smoke-add-key", tempRepository.FullName, secret, ledger, new NodeKeyStore(),
+                GitHubAccessFakes.GrantingPush(), chainReader, promptForInviteToken: null, cts.Token);
+
+            ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(projectId, cts.Token))!;
+            updatedProject.ProjectKey.Should().Be(
+                existingProjectKey,
+                "h9k project add's own join now wires a real chain reader through, exactly like a standalone "
+                + "h9k project join, so it records the project's own key too");
+        }
+        finally
+        {
+            tempRepository.Delete(recursive: true);
+        }
+    }
+
     /// <summary>Seeds this project's own first (owner-role) genesis member file directly through the
     /// fake ledger, standing in for a genuinely earlier join by the real owner this test never has
     /// to actually run.</summary>
@@ -419,13 +563,83 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         int writesAfterFirstJoin = ledger.Writes.Count;
 
-        await using (IDocumentSession second = _postgres.Store.LightweightSession())
+        ProjectJoinCommand.JoinOutcome second;
+        await using (IDocumentSession secondSession = _postgres.Store.LightweightSession())
         {
-            await ProjectJoinCommand.RunAsync(
-                second, project, claimedOwnerOverride: null, ledger, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
+            second = await ProjectJoinCommand.RunAsync(
+                secondSession, project, claimedOwnerOverride: null, ledger, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
         }
 
         ledger.Writes.Should().HaveCount(writesAfterFirstJoin, "nothing about this node's facts changed the second time");
+
+        // The re-join must land here exactly the ordinary way, not defer to an invite: the widened
+        // no-owner, no-invite gate (independent pre-PR review, cycle 1, adversarial lens) now also
+        // fires when this owner's own root already equals this node's own key — the identical state
+        // a re-join is in — so it must recognize the ledger's own genesis already names this exact
+        // fingerprint and let the ordinary establishing-root path run rather than deferring. The
+        // write-count assertion above alone cannot tell an idempotent re-join apart from an
+        // incorrect defer, since both leave the write count unchanged.
+        second.Deferred.Should().BeFalse("this project's own genesis already belongs to this same identity — a re-join, not a newcomer meeting someone else's project");
+        second.EstablishedRoot.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// The widened half of the no-owner, no-invite gate (independent pre-PR review, cycle 1,
+    /// adversarial lens, medium): before this fix, the gate only checked
+    /// <c>owner.RootFingerprint is null</c>, so a node that already self-established its own root
+    /// on one project kept falling back to that same fingerprint on every later join — silently
+    /// self-writing a root.yaml and an unvouched node.yaml into a second project's own ledger even
+    /// when that project's own genesis already belonged to someone else entirely, exactly the
+    /// arx-platform incident this task's own Decisions Log entry describes.
+    /// </summary>
+    [Fact]
+    public async Task An_install_that_already_self_established_a_root_on_one_project_defers_rather_than_writing_into_a_second_owners_project()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails projectA = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+        NodeKeyStore keyStore = new();
+
+        await using (IDocumentSession first = _postgres.Store.LightweightSession())
+        {
+            await ProjectJoinCommand.RunAsync(
+                first, projectA, claimedOwnerOverride: null, ledger, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
+        }
+
+        Guid connectionId = await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+        Guid projectBId = DomainId.New();
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            seed.Events.StartStream<ProjectAggregate>(
+                projectBId,
+                ProjectDecider.Register(
+                    projectBId, projectA.OwnerId, connectionId, "smoke-b",
+                    "/does/not/matter/on/a/fake/ledger/second-owner", null, null, Now));
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession loadSession = _postgres.Store.LightweightSession();
+        ProjectDetails projectB = (await loadSession.LoadAsync<ProjectDetails>(projectBId, cts.Token))!;
+
+        string realOwnerFingerprint = new string('e', 64);
+        await SeedGenesisOwnerMemberAsync(ledger, projectB.RepositoryPath, realOwnerFingerprint, cts.Token);
+
+        int writesBeforeSecondJoin = ledger.Writes.Count;
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        using ScopedAnsiConsoleCapture capture = ScopedAnsiConsoleCapture.Begin();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, projectB, claimedOwnerOverride: null, ledger, keyStore, GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        outcome.Deferred.Should().BeTrue(
+            "this node already self-established its own root on projectA, and projectB's own ledger already belongs "
+            + "to a different, unrelated owner — this must defer to their invite rather than writing a second, "
+            + "unvouched node.yaml under this node's own key");
+        ledger.Writes.Should().HaveCount(
+            writesBeforeSecondJoin, "no root.yaml, no node.yaml land in projectB's own ledger when this join defers");
+        capture.Text.Should().Contain("invite");
+
+        ProjectDetails updatedProjectB = (await session.LoadAsync<ProjectDetails>(projectB.Id, cts.Token))!;
+        updatedProjectB.Members.Should().BeEmpty("nothing about this node's own membership in projectB was ever written");
     }
 
     [Fact]
