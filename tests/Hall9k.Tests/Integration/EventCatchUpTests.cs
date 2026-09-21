@@ -1807,6 +1807,13 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             request.IsOutstanding.Should().BeFalse("the only peer said it holds nothing, and nothing else is coming");
             request.DeclinedReason.Should().NotBeNullOrWhiteSpace();
             request.Exhausted.Should().BeFalse("a broadcast has no candidate cascade to exhaust");
+
+            // Task c3bdb62e: the decline is an observation, so which node said it and when survive
+            // the round trip rather than only the reason text h9k status could never attribute.
+            request.Declines.Should().ContainSingle().Which.DeclinedByNodeId.Should().Be(nodeC);
+            request.Declines[0].DeclinedAt.Should().Be(Now.AddSeconds(3));
+            request.ClosedByDecline.Should().NotBeNull()
+                .And.BeEquivalentTo(request.Declines[0], "a decline is what ended this one");
         }
 
         Guid reAskedRequestId;

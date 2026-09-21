@@ -121,16 +121,45 @@ public sealed class EventCatchUpInbox(
                 }
 
                 EventCatchUpRequest? outstanding = await session.LoadAsync<EventCatchUpRequest>(unavailable.RequestId, cancellationToken);
+                if (outstanding is null)
+                {
+                    continue;
+                }
+
+                // Recorded before any of the three arms below decide what to DO about it, and
+                // recorded whatever they decide — including on a request that already closed. A
+                // decline is an observation about which node in the fleet holds nothing for this
+                // ask, and that stays worth knowing after the ask ended: on a broadcast every
+                // member answers, the first answer closes the request, and dropping the rest would
+                // leave h9k status able to name one declining node out of however many actually
+                // said so.
+                bool newlyRecorded = EventCatchUpDeclineLog.Record(
+                    outstanding, senderNodeId, now, unavailable.Reason);
+
                 // IsOutstanding rather than the two fields it used to read: a request a later ask
                 // closed out as superseded (h9k task pull --again, task 9eb5b245) is no longer an
                 // ask at all, and a decline arriving for it must neither advance its cascade nor
                 // stamp AnsweredAt onto it — nothing answered it, and the audit trail already
-                // records what actually happened to it.
+                // records what actually happened to it. The decline itself is still recorded, above;
+                // it is the newlyRecorded arm below that stores it without touching the request.
                 if (outstanding is { IsOutstanding: true } && outstanding.CurrentCandidateNodeId == senderNodeId)
                 {
-                    outstanding.DeclinedReason = unavailable.Reason;
                     await EventCatchUpCoordinator.AdvanceToNextCandidateAsync(
                         session, myNodeId, myOwnerFingerprint, outstanding, now, cancellationToken);
+                    if (outstanding.Exhausted)
+                    {
+                        // The last ranked candidate declined, so the cascade ran out on a decline
+                        // rather than on a timeout. Recorded here rather than inside
+                        // AdvanceToNextCandidateAsync, which a silent timeout also calls and which
+                        // would have to guess which of the two ended the request. Looked up by
+                        // sender rather than taken off the end of the list, so a re-read of a
+                        // decline this request already holds names the decline that node actually
+                        // sent rather than whichever entry happens to be last.
+                        outstanding.ClosedByDecline = outstanding.Declines
+                            .Last(decline => decline.DeclinedByNodeId == senderNodeId);
+                        session.Store(outstanding);
+                    }
+
                     declined++;
                 }
                 else if (outstanding is { IsOutstanding: true, Candidates.Count: 0 })
@@ -151,10 +180,22 @@ public sealed class EventCatchUpInbox(
                     // member's own answer still applies when it lands, since an events batch is
                     // applied on arrival and never gated on a request document, and a re-run of
                     // the command simply asks again.
-                    outstanding.DeclinedReason = unavailable.Reason;
                     outstanding.AnsweredAt = now;
+                    outstanding.ClosedByDecline = outstanding.Declines
+                        .Last(decline => decline.DeclinedByNodeId == senderNodeId);
                     session.Store(outstanding);
                     declined++;
+                }
+                else if (newlyRecorded)
+                {
+                    // A decline for a request that already ended — the second and later members of
+                    // a project answering a broadcast the first one's decline already closed, or a
+                    // peer answering a cascade that has since moved on or been answered for real.
+                    // Nothing about the request's own state changes; the decline is stored because
+                    // it is a fact about the fleet, and h9k status naming one declining node when
+                    // three actually declined would read as "one peer could not help" rather than
+                    // "nobody could".
+                    session.Store(outstanding);
                 }
             }
         }
