@@ -114,6 +114,11 @@ public sealed class DispatchLoop(
         // an idea's document carries, and a finished idea never gets another event to trigger an
         // ordinary Inline rewrite.
         await BackfillIdeaProjectionsAsync(stoppingToken);
+        // A different repair than the two above, run right beside them for the identical reason:
+        // a headless task or idea document an earlier build's own genesis-skip gap already
+        // produced needs its own one-time fix the moment this build (carrying the guard that
+        // refuses the shape going forward) actually starts running.
+        await RepairHeadlessReplicatedStreamsAsync(stoppingToken);
 
         // Startup order matters: reattach before declaring anything dead, requeue the
         // genuinely abandoned, and only then take new work.
@@ -387,6 +392,37 @@ public sealed class DispatchLoop(
                 "Re-projecting out-of-date idea documents failed. Ideas last projected before the "
                 + "fan-out redesign will misread their ending until this succeeds; the next daemon "
                 + "start retries it");
+        }
+    }
+
+    /// <summary>
+    /// The one-time fix for a task or idea whose own genesis event never arrived before this
+    /// build's replication guard existed — <see cref="HeadlessReplicatedStreamRepair"/>'s own doc.
+    /// Run at startup, right beside the two backfills above, for the identical reason: h9k status
+    /// and h9k task list already hide a document this shape describes, but nothing removes the
+    /// document itself, or frees its stream to receive a genuine genesis later, until this runs. A
+    /// failure is logged rather than fatal, and the next daemon start retries it.
+    /// </summary>
+    private async Task RepairHeadlessReplicatedStreamsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<Guid> repaired = await HeadlessReplicatedStreamRepair.RunAsync(store, cancellationToken);
+            if (repaired.Count > 0)
+            {
+                logger.LogInformation(
+                    "Repaired {Count} task/idea stream(s) whose own genesis event never arrived: the "
+                    + "headless document is gone and every record already received is held, ready to "
+                    + "complete the moment a future pull or catch-up finally delivers the genesis",
+                    repaired.Count);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception,
+                "Repairing a headless task/idea stream failed. It stays hidden from h9k status and "
+                + "h9k task list either way, but its stream is not yet freed for a future genesis to "
+                + "start; the next daemon start retries it");
         }
     }
 
