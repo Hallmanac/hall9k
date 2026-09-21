@@ -671,6 +671,14 @@ review starts a real process on this machine on every pull request, not just the
 watching. With it off, anything the review would have needed the running product for comes back as
 a walk-through for a person. A project with no run skill drives nothing whatever the setting says.
 
+Both the QA and the design review end by offering to run the branch locally so you can walk it
+yourself, whenever the project has a run skill. The review never acts on that offer. You answer it
+in your orchestrator window, and the window runs `h9k task run-local <task>` — the report's own
+closing block carries the task, run and worktree, so you name nothing. It follows the run skill on
+that review's own checkout, stops and tells you whenever a step needs you (`--continue` resumes),
+takes an ephemeral port where the launch command has somewhere to put one, and prints the address.
+`--stop` ends it, and it comes down on its own when the task closes out or the worktree is removed.
+
 `h9k project show <name>` prints every setting a project runs by, alongside how it is registered.
 Ask `h9k project set --help` for the current list and what each value means.
 

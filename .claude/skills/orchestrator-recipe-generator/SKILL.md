@@ -442,6 +442,13 @@ for a live node orchestrator with `ListAgents` first; if one is up, send it the 
 say in the journal that this window did it. Never refuse or block a node-scope command; that
 boundary was tried and dropped.
 
+**Running a review's branch locally.** One sentence, written into the recipe as a fact about what
+this window does: when a QA or design review report has offered to run the branch locally and the
+reviewer says yes here, run `h9k task run-local <task>` with the task id the report's own *Running
+this branch locally* block names, and relay what it prints — the address and every step only a
+person can do — the way this recipe relays anything else, following it with
+`h9k task run-local <task> --continue` when the reviewer says they have done a step it stopped at.
+
 **Dispatching headless.** `h9k task start` turns the task's interactive-mode flag on for that run
 (a human-triggered start is treated as the human staying at the wheel, per its own `--help`), so
 it parks at every review boundary for a proceed. A dispatch meant to run straight through,

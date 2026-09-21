@@ -711,6 +711,23 @@ was seen. Either way the report ends with the offer to run the branch locally so
 walk it in person, present whenever the project has a run skill — a question in the report, never
 an action. The QA review ends with the same offer on the same terms.
 
+The reviewer answers it in their orchestrator window, and the window runs
+`h9k task run-local <task>`. The report's own closing block carries the identity the command needs
+— the task, the run, the branch, the worktree — so a yes resolves to exactly one checkout without
+the reviewer naming anything. A review opened with `--no-worktree` has no checkout at all, and that
+block says the offer cannot be taken up here rather than printing a command it already knows would
+refuse. The command follows the project's run skill as an ordered plan on
+that worktree: the steps only a person can do first, then prerequisites, one-time setup and launch.
+A step carrying a command runs; a step carrying none stops the launch and prints exactly what the
+skill says to do, with `h9k task run-local <task> --continue` picking up at the next one. A launch
+command with somewhere to put a port takes an ephemeral one, so a review launch never seizes a port
+the reviewer was already using; one with nowhere to put one runs as written and no port is claimed.
+When the product is up it prints the address, the skill's own signal that it came up, and every
+human step in order. It refuses with a sentence when the worktree is gone, when the project has no
+run skill (nothing records how it is started, and it will not guess), or when a launch of the same
+task is already up. `--stop` ends it, and so does the daemon on its own when the task closes out or
+the worktree is removed: a launch is never left running.
+
 Which pre-PR review stages a run gets is itself a project-, task-, and node-level setting
 (`--review-stage-composition <full-pipeline|adversarial-only|conformance-only|skip-final-pass|none>`
 at `h9k config set`, `h9k project set`, and `h9k task add`/`revise`, Decisions Log #129): the full
