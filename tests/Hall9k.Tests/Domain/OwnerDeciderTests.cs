@@ -58,6 +58,32 @@ public sealed class OwnerDeciderTests
     }
 
     [Fact]
+    public void VerifyRoot_produces_an_event_that_flips_the_aggregate_verified_without_touching_the_fingerprint_or_claimed_at()
+    {
+        OwnerAggregate owner = Registered();
+        owner.Apply(OwnerDecider.ClaimRoot(owner, "claimed-root", verified: false, Now));
+
+        OwnerRootVerified verified = OwnerDecider.VerifyRoot(owner, Now.AddMinutes(10));
+        owner.Apply(verified);
+
+        verified.Id.Should().Be(owner.Id);
+        verified.VerifiedAt.Should().Be(Now.AddMinutes(10));
+        owner.RootFingerprint.Should().Be("claimed-root", "reconciliation never changes which root was claimed");
+        owner.RootFingerprintVerified.Should().BeTrue();
+        owner.RootClaimedAt.Should().Be(Now, "reconciliation is not a re-claim — the original claim time is untouched");
+    }
+
+    [Fact]
+    public void VerifyRoot_refuses_an_owner_with_no_root_claimed_yet()
+    {
+        OwnerAggregate owner = Registered();
+
+        Action act = () => OwnerDecider.VerifyRoot(owner, Now);
+
+        act.Should().Throw<DomainValidationException>();
+    }
+
+    [Fact]
     public void A_named_voice_skill_round_trips_through_the_event_onto_the_aggregate()
     {
         OwnerAggregate owner = Registered();
@@ -143,6 +169,22 @@ public sealed class OwnerDeciderTests
                 Optional<VoiceSkillName>.Of(VoiceSkillName.None))),
             view);
         view.VoiceSkill.Should().Be(VoiceSkillName.None, "--clear-voice-skill forgets it");
+    }
+
+    [Fact]
+    public void The_projection_flips_verified_the_same_way_the_aggregate_does()
+    {
+        Guid id = DomainId.New();
+        OwnerDetailsProjection projection = new();
+        OwnerDetails view = projection.Create(new FakeEvent<OwnerRegistered>(
+            new OwnerRegistered(id, "Test Owner", "owner@test.local", Now)));
+
+        projection.Apply(new FakeEvent<OwnerRootClaimed>(new OwnerRootClaimed(id, "claimed-root", false, Now)), view);
+        view.RootFingerprintVerified.Should().BeFalse();
+
+        projection.Apply(new FakeEvent<OwnerRootVerified>(new OwnerRootVerified(id, Now.AddMinutes(10))), view);
+        view.RootFingerprintVerified.Should().BeTrue();
+        view.RootFingerprint.Should().Be("claimed-root", "reconciliation never changes which root was claimed");
     }
 
     [Fact]

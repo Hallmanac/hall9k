@@ -91,6 +91,8 @@ public sealed class OwnerAggregate
         RootClaimedAt = @event.ClaimedAt;
     }
 
+    public void Apply(OwnerRootVerified @event) => RootFingerprintVerified = true;
+
     public void Apply(NodeVouched @event) => _vouchedNodes[@event.NodeId] = @event.IssuedAt;
 
     public void Apply(NodeRevoked @event) => _vouchedNodes.Remove(@event.NodeId);

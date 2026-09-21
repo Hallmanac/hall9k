@@ -279,6 +279,9 @@ public static class EventScopeRegistry
         // Hall9k.Domain.Features.Owner — an owner's own cross-node identity.
         [typeof(OwnerRegistered)] = EventScope.OwnerScoped,
         [typeof(OwnerRootClaimed)] = EventScope.OwnerScoped,
+        // task f53fecfd, criterion 4: reconciled locally from a live chain read, never from another
+        // node's own event — the identical reasoning OwnerRootClaimed's own scope already carries.
+        [typeof(OwnerRootVerified)] = EventScope.OwnerScoped,
         [typeof(OwnerSettingsChanged)] = EventScope.OwnerScoped,
         // idea 202383dc, T1: node vouches are owner-scoped — "other nodes learn them from the
         // files" (the ruling's own words), never from this event.

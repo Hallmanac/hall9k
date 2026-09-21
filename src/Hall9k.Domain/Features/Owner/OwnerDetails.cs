@@ -76,6 +76,8 @@ public sealed class OwnerDetailsProjection : SingleStreamProjection<OwnerDetails
         view.RootClaimedAt = @event.Data.ClaimedAt;
     }
 
+    public void Apply(IEvent<OwnerRootVerified> @event, OwnerDetails view) => view.RootFingerprintVerified = true;
+
     public void Apply(IEvent<NodeVouched> @event, OwnerDetails view) =>
         view.VouchedNodes[@event.Data.NodeId] = @event.Data.IssuedAt;
 
