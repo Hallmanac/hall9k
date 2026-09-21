@@ -7,6 +7,8 @@ using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Run;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -1302,7 +1304,73 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         served.Should().NotBeEmpty();
         served.Should().OnlyContain(
             record => record.StreamId == preSwitchOnTaskId,
-            "only the one explicitly requested, non-private stream travels");
+            "only the one explicitly requested, non-private stream travels — and this node holds no run of that task");
+    }
+
+    /// <summary>
+    /// Task 9eb5b245, observed 2026-09-21: the Mac pulled task 3727884f and it landed Delivered
+    /// with laps 0 and sessions 0, because the answer carried the task stream and not the run
+    /// streams hanging off it — while the answering node had that same task Done. A run's own
+    /// stream id is not derivable from its task's (the join is <c>RunListItem.TaskId</c>), so the
+    /// answer has to widen to the runs this node holds for the task it was asked about, each whole
+    /// and in this node's own sequence order.
+    /// </summary>
+    [Fact]
+    public async Task A_stream_answer_carries_the_tasks_own_run_streams_too()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid requesterNodeId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now, cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<RunAggregate>(
+                runId,
+                new RunDispatched(
+                    runId, taskId, nodeA, ownerId, 1, DomainId.New(), "/worktrees/task-run", "task/run",
+                    ExecutorMode.Subscription, Now.AddSeconds(1), DispatchingNodeId: nodeA));
+            session.Events.Append(runId, new RunCompleted(runId, Now.AddSeconds(2)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            int envelopes = await responder.AnswerAsync(
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                new EventReplicationCodec.EventsRequestRecord(
+                    DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, taskId),
+                Now.AddSeconds(3), trustChain: null, cts.Token);
+            envelopes.Should().Be(1);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using IQuerySession read = _postgres.Store.QuerySession();
+        MessageDetails queued = (await read.Query<MessageDetails>()
+            .Where(message => message.ProjectId == projectId && message.Kind == MessageKind.Events.Value)
+            .FirstOrDefaultAsync(cts.Token))!;
+        IReadOnlyList<EventReplicationCodec.ReplicatedEventRecord> served =
+            EventReplicationCodec.DecodeBatch(queued.Body!)!;
+
+        served.Should().Contain(record => record.StreamId == taskId, "the task itself is what was asked for");
+        served.Where(record => record.StreamId == runId).Should().HaveCount(
+            2, "the run travels whole: its genesis and everything after it");
+        served.First(record => record.StreamId == runId).EventTypeName.Should().Be(
+            typeof(RunDispatched).FullName, "a run's genesis leads its own stream, which the sequence order gives free");
     }
 
     /// <summary>

@@ -3,6 +3,7 @@ using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
@@ -42,6 +43,11 @@ namespace Hall9k.Connectors.Replication;
 /// harmless. Queues one <see cref="MessageKind.EventsUnavailable"/> envelope instead when nothing
 /// this node holds matches at all (idea 202383dc: "a peer that cannot answer says so").
 /// </para>
+/// <para>
+/// An ask for one named stream is answered with that stream AND, when it is a task's, every run
+/// stream this node holds for that task — see <see cref="ResolveRequestedStreamIdsAsync"/> for why a
+/// task pull answered with the task stream alone lands a task that reads as though it never ran.
+/// </para>
 /// </summary>
 public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, ILedger ledger)
 {
@@ -63,14 +69,17 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, 
         // (nothing to compare) rather than guessing at a fleet membership nobody has proven.
         string? requesterOwnerRootFingerprint = await ResolveRequesterOwnerRootFingerprintAsync(
             ledger, repositoryPath, trustChain, requesterNodeId, cancellationToken);
-        // Bounded to the one requested stream when the request names one (the gap-fill and
-        // bootstrap shapes still need the full scan, since neither names a stream up front) —
-        // independent pre-PR review, cycle 1, both lenses, low: an unbounded scan of this node's
-        // entire event log, on every answered request, was the worst case named there.
+        // Bounded to the requested stream and its own run streams when the request names one (the
+        // gap-fill and bootstrap shapes still need the full scan, since neither names a stream up
+        // front) — independent pre-PR review, cycle 1, both lenses, low: an unbounded scan of this
+        // node's entire event log, on every answered request, was the worst case named there.
+        List<Guid> requestedStreamIds = request.ForStreamId is { } forStreamId
+            ? await ResolveRequestedStreamIdsAsync(session, forStreamId, cancellationToken)
+            : [];
         IQueryable<IEvent> query = session.Events.QueryAllRawEvents();
-        if (request.ForStreamId is { } queryStreamId)
+        if (request.ForStreamId is not null)
         {
-            query = query.Where(e => e.StreamId == queryStreamId);
+            query = query.Where(e => requestedStreamIds.Contains(e.StreamId));
         }
         else if (request.SinceGlobalSequence is { } sinceGlobalSequence)
         {
@@ -181,7 +190,7 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, 
 
             bool isMatch = request switch
             {
-                { ForStreamId: { } forStreamId } => candidate.StreamId == forStreamId,
+                { ForStreamId: not null } => requestedStreamIds.Contains(candidate.StreamId),
                 { ForOriginNodeId: { } forOriginNodeId } => originNodeId == forOriginNodeId && originSequence > request.SinceOriginSequence,
                 _ => true,
             };
@@ -244,6 +253,41 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, 
 
         return envelopesQueued;
     }
+
+    /// <summary>
+    /// Which streams an ask for one named stream actually serves: that stream, plus every run
+    /// stream this node holds for it when the stream is a task's (task 9eb5b245). A run's own
+    /// stream id is not derivable from the task's — the join is
+    /// <see cref="RunListItem.TaskId"/> — so a task pull answered with the task stream alone lands
+    /// a task whose runs are nowhere: observed 2026-09-21, when the Mac pulled 3727884f and it
+    /// landed Delivered with laps 0 and sessions 0 because the answer carried the task stream and
+    /// nothing else, while the answering node had it Done.
+    /// <para>
+    /// Each run is served WHOLE and genesis first, which needs no work of its own here: the caller's
+    /// single scan is ordered by this node's own global sequence, and a run's genesis
+    /// (<c>RunDispatched</c>, or <c>RunRecordReconstructed</c>) is by construction the lowest
+    /// sequence on its stream.
+    /// </para>
+    /// <para>
+    /// A run stream id asked for directly answers as itself: the join finds no run whose TaskId is a
+    /// run id, so the list is the one stream, which is exactly what <c>h9k task pull &lt;run-id&gt;</c>
+    /// means.
+    /// </para>
+    /// </summary>
+    private static async Task<List<Guid>> ResolveRequestedStreamIdsAsync(
+        IQuerySession session, Guid forStreamId, CancellationToken cancellationToken)
+    {
+        IReadOnlyList<RunListItem> runs = await session.Query<RunListItem>()
+            .Where(run => run.TaskId == forStreamId)
+            .ToListAsync(cancellationToken);
+        return StreamIdsToServe(forStreamId, runs.Select(run => run.Id));
+    }
+
+    /// <summary>The composition <see cref="ResolveRequestedStreamIdsAsync"/> applies to what it
+    /// read, kept separate from the read so the rule itself is checkable without a database: the
+    /// asked-for stream first, then each of its runs once.</summary>
+    internal static List<Guid> StreamIdsToServe(Guid forStreamId, IEnumerable<Guid> runStreamIds) =>
+        [forStreamId, .. runStreamIds.Where(runId => runId != forStreamId).Distinct()];
 
     /// <summary>
     /// One answering envelope, addressed to the requester alone and stamped with the id of the
