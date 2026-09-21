@@ -74,7 +74,14 @@ public static class DecisionsLogRenumberer
     private const string SectionEndHeadingPrefix = "## 17.";
     private const string SectionDivider = "---";
 
-    private static readonly Regex RealEntryHeadingPattern = new(@"^(\d+)\. \*\*", RegexOptions.Compiled);
+    /// <summary>
+    /// A real (already-numbered) Decisions Log entry's own heading, e.g. <c>247. **Title.**</c> —
+    /// the same <c>N. **</c> shape <see cref="DecisionsLogPlaceholder.EntryHeadingPattern"/> matches
+    /// with a placeholder token standing in for the number. Shared with
+    /// <see cref="DecisionsLogTailConflictResolver"/> so the mechanical rebase's own conflict
+    /// resolver and this renumbering step cannot drift over what counts as an entry heading.
+    /// </summary>
+    internal static readonly Regex RealEntryHeadingPattern = new(@"^(\d+)\. \*\*", RegexOptions.Compiled);
 
     /// <summary>
     /// The span of a genuine Decisions Log citation to a real (non-placeholder) entry number, in
@@ -145,8 +152,12 @@ public static class DecisionsLogRenumberer
         }
 
         TailScan scan = ScanTail(lines, sectionStart, sectionEnd);
-        if (scan.TailLine < 0)
+        if (scan.TailLine < 0 || scan.UnreadableEntryNumber)
         {
+            // An entry number this step cannot read is a PLAN.md it has no business rewriting: the
+            // next free number and the duplicate check are both read off numbers it would then be
+            // missing one of. Doing nothing leaves the log exactly as authored, which is what every
+            // other thing this step cannot make sense of already gets.
             return NoAction();
         }
 
@@ -290,7 +301,22 @@ public static class DecisionsLogRenumberer
         }
 
         string planText = await File.ReadAllTextAsync(planPath, cancellationToken);
-        (string[] lines, _, _) = SplitPreservingLineEnding(planText);
+        return TailEntryIsThisTasksUnresolvedPlaceholder(planText, taskShortId);
+    }
+
+    /// <summary>
+    /// The text-level half of <see cref="TailEntryIsThisTasksUnresolvedPlaceholderAsync"/>, over
+    /// a PLAN.md that is not (or not yet) a file on disk: whether
+    /// <paramref name="planMarkdown"/>'s own Decisions Log tail entry is
+    /// <paramref name="taskShortId"/>'s unresolved placeholder. Its async sibling is a file read
+    /// and this call; <see cref="DecisionsLogTailConflictResolver"/> asks the identical question
+    /// of a conflict hunk's branch side, resolved in memory, so the mechanical rebase's own
+    /// conflict resolver and this renumbering step can never disagree about whose placeholder
+    /// sits at the tail.
+    /// </summary>
+    public static bool TailEntryIsThisTasksUnresolvedPlaceholder(string planMarkdown, string taskShortId)
+    {
+        (string[] lines, _, _) = SplitPreservingLineEnding(planMarkdown);
         (int sectionStart, int sectionEnd) = FindSection(lines);
         if (sectionStart < 0 || sectionEnd < 0)
         {
@@ -298,18 +324,87 @@ public static class DecisionsLogRenumberer
         }
 
         TailScan scan = ScanTail(lines, sectionStart, sectionEnd);
-        return scan.TailLine >= 0 && scan.TailIsPlaceholder && scan.TailToken == taskShortId;
+        return scan.TailLine >= 0
+            && !scan.UnreadableEntryNumber
+            && scan.TailIsPlaceholder
+            && scan.TailToken == taskShortId;
     }
 
+    /// <summary>
+    /// Whether the Decisions Log's tail entry in <paramref name="planMarkdown"/> carries a
+    /// placement note naming <paramref name="taskShortId"/>'s own placeholder — the note a branch
+    /// writes beside its placeholder entry while it is still in flight, and the note
+    /// <see cref="InsertPlacementNote"/> leaves once this step has assigned the real number.
+    /// Deliberately looser than <see cref="TailEntryCarriesOwnPlacementNote"/>, which matches only
+    /// the <b>assigned</b> wording this step itself generates: the in-flight note is authored by
+    /// hand, so only its marker and the block it sits in can be relied on. A note block is
+    /// whatever <see cref="FindPlacementNoteLines"/> already recognises, shared so the two readings
+    /// of "a placement note" cannot drift.
+    /// </summary>
+    internal static bool TailEntryCarriesPlacementNoteFor(string planMarkdown, string taskShortId)
+    {
+        // A predicate, so a short id this convention could never have produced answers false rather
+        // than throwing out of TokenFor below — the same thing every other malformed input here
+        // gets, and the shape of answer a caller asking "does it carry one" can actually use.
+        if (!DecisionsLogPlaceholder.ShortIdPattern.IsMatch(taskShortId))
+        {
+            return false;
+        }
+
+        (string[] lines, _, _) = SplitPreservingLineEnding(planMarkdown);
+        (int sectionStart, int sectionEnd) = FindSection(lines);
+        if (sectionStart < 0 || sectionEnd < 0)
+        {
+            return false;
+        }
+
+        TailScan scan = ScanTail(lines, sectionStart, sectionEnd);
+        if (scan.TailLine < 0)
+        {
+            return false;
+        }
+
+        int boundaryLine = scan.DividerLine >= 0 ? scan.DividerLine : sectionEnd;
+        string marker = $"`{DecisionsLogPlaceholder.TokenFor(taskShortId)}`";
+        HashSet<int> noteLines = FindPlacementNoteLines(lines);
+        for (int i = scan.TailLine + 1; i < boundaryLine; i++)
+        {
+            if (noteLines.Contains(i) && lines[i].Contains(marker, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <param name="UnreadableEntryNumber">
+    /// Whether some heading in the section matched the entry shape but carried digits that will not
+    /// fit an <c>int</c>. Recorded rather than thrown: every caller here answers a question about a
+    /// file it did not write, and <see cref="DecisionsLogTailConflictResolver"/> — which reaches
+    /// this scan through <see cref="TailEntryIsThisTasksUnresolvedPlaceholder"/> — is the one step
+    /// that must never throw on what it reads, since an exception out of it escapes its caller's
+    /// own catches (a stuck git pipe and a deadline, not a malformed file) and would leave a
+    /// worktree mid-rebase with nothing recorded. Refusing to answer parks the run instead, which
+    /// is the answer for anything this step cannot read (independent pre-PR review, cycle 1,
+    /// adversarial lens).
+    /// </param>
     private readonly record struct TailScan(
         int TailLine,
         string TailToken,
         bool TailIsPlaceholder,
         int MaxRealNumber,
         int DividerLine,
-        Dictionary<int, List<int>> RealEntryLinesByNumber);
+        Dictionary<int, List<int>> RealEntryLinesByNumber,
+        bool UnreadableEntryNumber);
 
-    private static (int Start, int End) FindSection(string[] lines)
+    /// <summary>
+    /// The line span of PLAN.md's own Decisions Log section — its <c>## 16.</c> heading line and
+    /// the <c>## 17.</c> heading that closes it — or <c>(-1, -1)</c> when either boundary is
+    /// missing. Shared with <see cref="DecisionsLogTailConflictResolver"/> for the same no-drift
+    /// reason <see cref="RealEntryHeadingPattern"/>'s own doc gives.
+    /// </summary>
+    internal static (int Start, int End) FindSection(string[] lines)
     {
         int sectionStart = Array.FindIndex(lines, line => line.StartsWith(SectionStartHeading, StringComparison.Ordinal));
         if (sectionStart < 0)
@@ -328,6 +423,7 @@ public static class DecisionsLogRenumberer
         string tailToken = "";
         bool tailIsPlaceholder = false;
         int maxRealNumber = 0;
+        bool unreadableEntryNumber = false;
         Dictionary<int, List<int>> realEntryLinesByNumber = [];
 
         for (int i = sectionStart + 1; i < sectionEnd; i++)
@@ -347,7 +443,12 @@ public static class DecisionsLogRenumberer
                 continue;
             }
 
-            int number = int.Parse(realMatch.Groups[1].Value);
+            if (!int.TryParse(realMatch.Groups[1].Value, out int number))
+            {
+                unreadableEntryNumber = true;
+                continue;
+            }
+
             maxRealNumber = Math.Max(maxRealNumber, number);
             if (!realEntryLinesByNumber.TryGetValue(number, out List<int>? entryLines))
             {
@@ -374,7 +475,9 @@ public static class DecisionsLogRenumberer
             }
         }
 
-        return new TailScan(tailLine, tailToken, tailIsPlaceholder, maxRealNumber, dividerLine, realEntryLinesByNumber);
+        return new TailScan(
+            tailLine, tailToken, tailIsPlaceholder, maxRealNumber, dividerLine, realEntryLinesByNumber,
+            unreadableEntryNumber);
     }
 
     /// <summary>
@@ -707,7 +810,7 @@ public static class DecisionsLogRenumberer
     private static string NormalizeLineEndings(string text) => text.Replace("\r\n", "\n");
 
     /// <summary>Splits text into lines without losing what its own line ending or trailing newline were, so a rewrite can restore them rather than forcing every file to LF.</summary>
-    private static (string[] Lines, string Newline, bool TrailingNewline) SplitPreservingLineEnding(string text)
+    internal static (string[] Lines, string Newline, bool TrailingNewline) SplitPreservingLineEnding(string text)
     {
         string newline = text.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
         string normalized = NormalizeLineEndings(text);
@@ -717,7 +820,7 @@ public static class DecisionsLogRenumberer
         return (lines, newline, trailingNewline);
     }
 
-    private static string JoinPreservingLineEnding(IReadOnlyList<string> lines, string newline, bool trailingNewline)
+    internal static string JoinPreservingLineEnding(IReadOnlyList<string> lines, string newline, bool trailingNewline)
     {
         string content = string.Join(newline, lines);
         return trailingNewline ? content + newline : content;
