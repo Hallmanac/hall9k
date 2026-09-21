@@ -227,6 +227,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
                 + (gate.HostCoupledFilter is { } filter
                     ? $" [dim](host-coupled, filter: {filter.EscapeMarkup()})[/]"
                     : string.Empty))));
+        table.AddRow("Non-executable paths", NonExecutablePathsRow(project));
         table.AddRow("Jira board", project.JiraProjectKey.HasValue
             ? $"{project.JiraProjectKey.Value.EscapeMarkup()} [dim]— new cards are filed here; a reported "
               + "card key is checked against it[/]"
@@ -302,6 +303,22 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
               + $"{project.Name.EscapeMarkup()} --writing-conventions default[/]"
             : $"[dim]{text} ({OriginNote(recorded)}); state your own: h9k project set "
               + $"{project.Name.EscapeMarkup()} --writing-conventions \"<how prose has to read>\"[/]";
+    }
+
+    /// <summary>
+    /// The compiled default four (never removable, so always shown, dimmed) plus this project's
+    /// own additions (task: a delivered diff that touches no buildable or testable source skips
+    /// the build and test gates) — together the whole set <c>VerificationRunner</c> classifies a
+    /// changed path against before any gate runs.
+    /// </summary>
+    internal static string NonExecutablePathsRow(ProjectDetails project)
+    {
+        string defaults = string.Join(", ", NonExecutablePathDefaults.Rules.Select(rule => rule.EscapeMarkup()));
+        string additions = project.NonExecutablePaths.Count == 0
+            ? $"[dim]no additions — add one: h9k project set {project.Name.EscapeMarkup()} "
+              + "--non-executable-path \"assets/**\"[/]"
+            : string.Join(", ", project.NonExecutablePaths.Select(rule => rule.EscapeMarkup()));
+        return $"[dim]{defaults} (compiled default, never removable)[/]\n{additions}";
     }
 
     /// <summary>
