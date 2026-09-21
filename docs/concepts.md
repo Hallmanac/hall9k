@@ -897,7 +897,7 @@ asking about. Every decline is recorded on the request by node and time, includi
 members that answered after the first decline had already closed it: one peer saying it holds
 nothing reads very differently from all of them saying it.
 
-Depth: [scope.md](scope.md), Decisions Log #236 and #PLACEHOLDER-74a7cd0b.
+Depth: [scope.md](scope.md), Decisions Log #236 and #260.
 
 ## The orchestrator's presence
 

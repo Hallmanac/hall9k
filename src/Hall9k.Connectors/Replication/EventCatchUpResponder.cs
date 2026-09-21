@@ -35,7 +35,7 @@ namespace Hall9k.Connectors.Replication;
 /// asking side told only "nothing held here matches this request". Nor does it apply to a
 /// brand-new node's own bootstrap
 /// (<see cref="EventReplicationCodec.EventsRequestRecord.IsBootstrap"/>), which is served whole
-/// from the start of this node's log (task 74a7cd0b, Decisions Log #PLACEHOLDER-74a7cd0b,
+/// from the start of this node's log (task 74a7cd0b, Decisions Log #260,
 /// superseding #236 for that one automatic shape). The two private exclusions above hold
 /// regardless of which shape asked.
 /// </para>
@@ -124,7 +124,7 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, 
         //
         // A brand-new node's own bootstrap (EventsRequestRecord.IsBootstrap: no origin node, no
         // stream, no global sequence bound) lifts it as well, though it names nothing — task
-        // 74a7cd0b, Decisions Log #PLACEHOLDER-74a7cd0b, which supersedes #236 for that one
+        // 74a7cd0b, Decisions Log #260, which supersedes #236 for that one
         // automatic shape. Naming is one way to be bounded and it is not the only one: a
         // two-direction pull test on 2026-09-21 showed a node joining a project receives, from
         // every peer, only what that peer appended after its own switch-on point, so the tail of

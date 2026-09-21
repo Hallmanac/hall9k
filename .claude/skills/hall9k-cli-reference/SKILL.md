@@ -537,7 +537,7 @@ that stream alone, which is how a genesis sitting below a peer's switch-on point
 reachable at all. A brand-new node's own bootstrap reaches just as far on the other ground that
 bounds an ask, which is that it happens once in that node's life, because a member joining a
 project today has nobody to type an explicit ask on their behalf (task 74a7cd0b, Decisions Log
-#PLACEHOLDER-74a7cd0b, superseding #236 for that one shape). What never bends however specific
+#260, superseding #236 for that one shape). What never bends however specific
 the ask: a
 currently-private task or idea is never served, and no node is handed its own history back. Answers
 apply by origin event id, so pulling over streams a node already holds changes nothing. And what no

@@ -152,7 +152,7 @@ public static class EventReplicationCodec
         /// global sequence bound, the shape <c>MessageSweepEngine.AdvanceCatchUpAsync</c> mints
         /// once, for a node whose own sweep found no applied history for this project at all. It
         /// lifts the answering node's switch-on exclusion too (task 74a7cd0b, Decisions Log
-        /// #PLACEHOLDER-74a7cd0b, which supersedes #236 for this one automatic shape): a member
+        /// #260, which supersedes #236 for this one automatic shape): a member
         /// joining a project today has nobody to make an explicit ask on their behalf and no way
         /// to know what sits below each peer's switch-on point, so bounding their one and only
         /// bootstrap hands them a headless tail of the work that predates it.
