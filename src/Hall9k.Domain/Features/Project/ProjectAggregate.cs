@@ -223,7 +223,7 @@ public sealed class ProjectAggregate
     public IReadOnlyList<string> NeverCloseLabels => _neverCloseLabels;
 
     private readonly List<string> _nonExecutablePaths = [];
-    /// <summary>This project's own additions to <see cref="Project.NonExecutablePathDefaults"/>'s compiled four rules — see <see cref="Events.ProjectSettingsChanged.NonExecutablePaths"/>'s own doc.</summary>
+    /// <summary>This project's own additions to <see cref="Project.NonExecutablePathDefaults"/>'s compiled five rules — see <see cref="Events.ProjectSettingsChanged.NonExecutablePaths"/>'s own doc.</summary>
     public IReadOnlyList<string> NonExecutablePaths => _nonExecutablePaths;
 
     public void Apply(ProjectRegistered @event)

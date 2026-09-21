@@ -125,12 +125,15 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "naming every path and the rule it matched, in place of paying a full build-and-test "
             + "cycle to prove a diff with no code in it cannot break the build. Repeat for more; "
             + "replaces the whole list of this project's own additions, which are always layered ON "
-            + "TOP OF the compiled default set — *.md anywhere, docs/, .claude/skills/, and "
-            + ".claude/commands/ — those four are never removable, by this or any other command. A "
-            + "glob ending in '/' matches a whole directory at any depth (docs/ style); one with no "
-            + "'/' at all matches by file name alone at any depth (*.md style); anything else matches "
-            + "against the full path (assets/**/*.png style). 'default' clears this project's own "
-            + "additions, leaving only the compiled four.")]
+            + "TOP OF the compiled default set — *.md anywhere, docs/, .claude/skills/, "
+            + ".claude/commands/, and an exclusion carving .claude/templates/ back out of *.md (it's "
+            + "rendered prompt source with its own golden tests, not docs) — those five are never "
+            + "removable, by this or any other command. A glob ending in '/' matches a whole "
+            + "directory at any depth (docs/ style); one with no '/' at all matches by file name "
+            + "alone at any depth (*.md style); anything else matches against the full path "
+            + "(assets/**/*.png style); a glob prefixed with '!' is an exclusion, and always wins over "
+            + "an ordinary rule that would otherwise have matched the same path. 'default' clears this "
+            + "project's own additions, leaving only the compiled five.")]
         public string[] NonExecutablePaths { get; init; } = [];
 
         [CommandOption("--link <NAME=URL>")]
@@ -549,7 +552,7 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             : Optional<IReadOnlyList<VerifyCommand>>.None;
 
         // A bare '--non-executable-path default' clears this project's own additions back to just
-        // the compiled four (--verify's own "replaces the whole list" idiom, with the --priority
+        // the compiled five (--verify's own "replaces the whole list" idiom, with the --priority
         // idiom's 'default' clearing word layered on top of it); any other set of values replaces
         // the whole list of additions; nothing passed leaves it untouched.
         Optional<IReadOnlyList<string>> nonExecutablePaths = settings.NonExecutablePaths.Length switch

@@ -306,7 +306,7 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
     }
 
     /// <summary>
-    /// The compiled default four (never removable, so always shown, dimmed) plus this project's
+    /// The compiled default five (never removable, so always shown, dimmed) plus this project's
     /// own additions (task: a delivered diff that touches no buildable or testable source skips
     /// the build and test gates) — together the whole set <c>VerificationRunner</c> classifies a
     /// changed path against before any gate runs.

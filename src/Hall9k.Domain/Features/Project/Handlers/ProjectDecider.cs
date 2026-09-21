@@ -406,7 +406,7 @@ public static class ProjectDecider
         // Trimmed and emptied of blanks, the identical NeverCloseLabels idiom just above: this is
         // always this project's own ADDITIONS to NonExecutablePathDefaults.Rules, never a
         // replacement of them — there is no parameter here that could remove one of the compiled
-        // four, which is what makes "a project can only add to the set" hold by construction
+        // five, which is what makes "a project can only add to the set" hold by construction
         // rather than by a check (task: a delivered diff that touches no buildable or testable
         // source skips the build and test gates).
         Optional<IReadOnlyList<string>> normalizedNonExecutablePaths = nonExecutablePaths.HasValue

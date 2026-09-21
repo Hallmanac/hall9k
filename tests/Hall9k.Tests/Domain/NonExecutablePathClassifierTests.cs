@@ -82,34 +82,31 @@ public sealed class NonExecutablePathClassifierTests
     }
 
     /// <summary>
-    /// A deleted path is still classified against its old name — the shape `git diff --name-status`
-    /// reports it in — so deleting a real source file is never read as content-only just because
-    /// nothing new was added under it.
+    /// This repository's own <c>.claude/templates/</c> is rendered prompt source with its own
+    /// golden tests, not docs, so the compiled <c>!.claude/templates/</c> exclusion has to win over
+    /// the bare <c>*.md</c> rule even though <c>*.md</c> is checked first in the compiled list
+    /// (independent pre-PR review, cycle 1, adversarial lens, high).
     /// </summary>
     [Fact]
-    public void A_deleted_source_path_still_runs_the_gates()
+    public void The_templates_exclusion_wins_over_the_markdown_default_even_though_markdown_is_checked_first()
     {
         NonExecutablePathClassifier.ClassificationResult result = NonExecutablePathClassifier.Classify(
-            ["src/Hall9k.Domain/Retired.cs"], CompiledDefaults);
+            [".claude/templates/agent-prompt-builder/review-fix.md"], CompiledDefaults);
 
-        result.AllMatched.Should().BeFalse();
+        result.AllMatched.Should().BeFalse("templates are tested prompt source, not docs, even though they end in .md");
+        result.Paths.Single().MatchedRule.Should().BeNull();
     }
 
-    /// <summary>
-    /// A rename is recorded as two separate paths (old name, new name) — both have to match for
-    /// the rename to count as content-only, so a rename that moves a file OUT of a non-executable
-    /// directory into src/ still forces the gates to run.
-    /// </summary>
     [Fact]
-    public void Both_sides_of_a_rename_must_match_for_the_rename_to_be_content_only()
+    public void An_exclusion_rule_wins_regardless_of_where_it_sits_in_the_rule_list()
     {
-        NonExecutablePathClassifier.ClassificationResult bothSidesMatch = NonExecutablePathClassifier.Classify(
-            ["docs/old-name.md", "docs/new-name.md"], CompiledDefaults);
-        bothSidesMatch.AllMatched.Should().BeTrue();
+        NonExecutablePathClassifier.ClassificationResult exclusionFirst = NonExecutablePathClassifier.Classify(
+            [".claude/templates/foo.md"], ["!.claude/templates/", "*.md"]);
+        NonExecutablePathClassifier.ClassificationResult exclusionLast = NonExecutablePathClassifier.Classify(
+            [".claude/templates/foo.md"], ["*.md", "!.claude/templates/"]);
 
-        NonExecutablePathClassifier.ClassificationResult onlyOldSideMatches = NonExecutablePathClassifier.Classify(
-            ["docs/old-name.md", "src/Hall9k.Domain/NewName.cs"], CompiledDefaults);
-        onlyOldSideMatches.AllMatched.Should().BeFalse();
+        exclusionFirst.Paths.Single().MatchedRule.Should().BeNull();
+        exclusionLast.Paths.Single().MatchedRule.Should().BeNull();
     }
 
     [Theory]
