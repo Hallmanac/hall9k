@@ -151,6 +151,9 @@ public static class OrchestratorFeedDescription
         GateStarted started => $"the gate {Field(started.GateName, 60)} started",
         GateEnded => "the gate finished",
         VerificationPassed => "the verification gates passed",
+        VerificationSkipped skipped =>
+            $"the verification gates were skipped: every changed path "
+            + $"({Count(skipped.ChangedPaths.Count, "path")}) matched the non-executable-path set",
         ReviewDispatched review => $"review cycle {review.Cycle} dispatched ({LensWord(review.Lens)})",
         ReviewPassCompleted pass =>
             $"review cycle {pass.Cycle}'s {LensWord(pass.Lens)} pass returned {VerdictWord(pass.Verdict)}",
