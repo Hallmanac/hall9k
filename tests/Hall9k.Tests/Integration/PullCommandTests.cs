@@ -152,9 +152,10 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
     /// Independent pre-PR review, cycle 4, adversarial lens, medium: a task open on its own node
     /// when that node switched replication on arrives here as a TAIL — the ordinary flush ships
     /// nothing from before the switch-on point — and that stream used to report back as already
-    /// held, pointing at an <c>h9k task show</c> with no objective on it. Nor can an ask fix it: a
-    /// replicated event is appended, so the older half would land behind the newer half and
-    /// <c>EventReplicationInbox</c> refuses it on arrival.
+    /// held, pointing at an <c>h9k task show</c> with no objective on it. Nor can an ask fix it
+    /// while the tail is applied: a replicated event is appended, so the older half would land
+    /// behind the newer half and <c>EventReplicationInbox</c> refuses it on arrival. The refusal
+    /// names what does free it, which is the daemon's own startup repair.
     /// </summary>
     [Fact]
     public async Task Task_pull_refuses_a_task_stream_this_node_holds_only_the_tail_of()
@@ -178,6 +179,13 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         var thrown = await pull.Should().ThrowAsync<DomainValidationException>();
         thrown.Which.Message.Should().Contain("only partly on this node");
         thrown.Which.Message.Should().Contain("cannot be put in front of it");
+        thrown.Which.Message.Should().Contain(
+            "daemon's own repair frees this stream at its next start",
+            "the refusal names what ends the wait rather than calling the stream unrepairable");
+        thrown.Which.Message.Should().Contain(
+            "read the daemon's log for this stream",
+            "the repair can leave a stream alone, and this command's own closing is what sends a human "
+            + "who keeps seeing this refusal to the warning that says why");
 
         await using IQuerySession read = _postgres.Store.QuerySession();
         (await read.Query<EventCatchUpRequest>().Where(request => request.ProjectId == projectId).ToListAsync(cts.Token))

@@ -92,11 +92,17 @@ public sealed class EventStreamCatchUpRefusalTests
         refusal.Should().Contain("nothing was queued");
     }
 
-    /// <summary>Independent pre-PR review, cycle 4, adversarial lens, medium: the shared refusal
-    /// for a stream this node holds only the tail of has to say that nothing was queued and why no
-    /// ask would help, rather than pointing at a re-run that can never change the answer.</summary>
+    /// <summary>
+    /// Independent pre-PR review, cycle 4, adversarial lens, medium: the shared refusal for a
+    /// stream this node holds only the tail of has to say that nothing was queued and why an ask
+    /// cannot land while the tail is applied. What it now also has to say is what ends the wait,
+    /// because something does: the daemon's own startup repair holds that tail and frees the stream
+    /// id, so "nothing can ever fill this in" would be its own inaccuracy in the other direction.
+    /// What it says after that is the condition on the same promise, since the repair leaves a
+    /// stream it cannot reconstruct faithfully exactly as it is.
+    /// </summary>
     [Fact]
-    public void The_partially_held_refusal_says_nothing_was_queued_and_why_an_ask_cannot_help()
+    public void The_partially_held_refusal_says_nothing_was_queued_why_what_frees_the_stream_and_when_it_does_not()
     {
         // The subject opens the sentence, so callers pass it capitalised and named: a run stream is
         // refused by the identical function now that h9k task pull accepts a run id (task 9eb5b245).
@@ -106,8 +112,23 @@ public sealed class EventStreamCatchUpRefusalTests
         refusal.Should().Contain("only partly on this node");
         refusal.Should().Contain("Nothing was queued");
         refusal.Should().Contain("cannot be put in front of it");
-        refusal.Should().NotContain(
-            "re-run", "no re-run of anything changes what a node can be sent; saying so would be the old lie again");
+        refusal.Should().Contain(
+            "daemon's own repair frees this stream at its next start",
+            "a human who reads this has to know the wait ends, and on what");
+        refusal.Should().Contain("held tail completes the moment");
+
+        // Independent pre-PR review, cycle 1, both lenses, low: the repair frees this shape only
+        // when it can reconstruct the stream faithfully, and leaves the three it cannot (an
+        // unexpected native event, a missing origin header, a dedupe row already gone) exactly as
+        // they are. Promising unconditionally hands a human the identical refusal after every
+        // restart with nothing in it naming the one place that explains the silence.
+        refusal.Should().Contain(
+            "whenever it can reconstruct what is here faithfully",
+            "the repair skips a stream it cannot explain, so the sentence cannot promise unconditionally");
+        refusal.Should().Contain("left exactly as it is instead");
+        refusal.Should().Contain(
+            "the daemon's own log names that stream and the reason",
+            "a refusal that repeats after a restart has to say where the answer is");
     }
 
     [Theory]

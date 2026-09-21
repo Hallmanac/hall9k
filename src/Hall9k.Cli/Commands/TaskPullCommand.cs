@@ -36,7 +36,13 @@ namespace Hall9k.Cli.Commands;
 /// the post-switch-on half an ordinary flush shipped, with no <c>TaskAdded</c> on it — is refused
 /// up front instead (<c>EventStreamCatchUp.PartiallyHeldRefusal</c>): an answer's older events
 /// would land behind the newer ones already here, which <c>EventReplicationInbox</c> refuses on
-/// arrival rather than replay a stream backwards.
+/// arrival rather than replay a stream backwards. The refusal names the way out rather than calling
+/// it hopeless: the daemon's own startup repair
+/// (<c>Hall9k.Domain.Infrastructure.Persistence.HeadlessReplicatedStreamRepair</c>) holds that tail
+/// and frees the stream id, after which this same command reads the stream as absent and asks. It
+/// names the way out conditionally, because a stream that repair cannot reconstruct faithfully is
+/// left alone and reported only in the daemon's log: see
+/// <c>EventStreamCatchUp.PartiallyHeldRefusal</c>.
 /// </para>
 /// <para>
 /// A task already here is not a dead end either: its own blocked-by and stacked-on dependencies are
@@ -130,14 +136,20 @@ public sealed class TaskPullCommand : Hall9kAsyncCommand<TaskPullCommand.Setting
                 throw new DomainValidationException(
                     EventStreamCatchUp.PartiallyHeldRefusal(
                         $"Task {heldShortId}",
-                        $"h9k task show {heldShortId} shows the part that did arrive; the whole history is still "
-                        + "on the node that produced it."));
+                        $"h9k task show {heldShortId} shows the part that did arrive; re-run this command after "
+                        + "the daemon's next start, and if it refuses this way again, read the daemon's log for "
+                        + "this stream before re-running a third time."));
 
+            // The same shape and the same way out: the startup repair reads a run's genesis exactly
+            // as it reads a task's (PartialReplicatedStreamRules), so a partly-held run ends the
+            // same wait at the daemon's next start rather than being the one kind this cannot free.
             case EventStreamCatchUp.LocalStreamHold.RunPartial:
                 throw new DomainValidationException(
                     EventStreamCatchUp.PartiallyHeldRefusal(
                         $"Run {heldShortId}",
-                        "The whole run is still on the node that produced it."));
+                        "The whole run is still on the node that produced it; re-run this command after the "
+                        + "daemon's next start, and if it refuses this way again, read the daemon's log for "
+                        + "this stream before re-running a third time."));
 
             case EventStreamCatchUp.LocalStreamHold.RunWhole:
                 AnsiConsole.MarkupLineInterpolated(
