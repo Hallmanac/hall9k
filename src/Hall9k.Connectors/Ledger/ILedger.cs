@@ -54,6 +54,33 @@ public sealed record LedgerWriteOutcome(LedgerWriteVerdict Verdict, string? Comm
 }
 
 /// <summary>
+/// One file inside a <see cref="LedgerManyWriteRequest"/>: its own path, content, and the blob the
+/// caller last read there (null for a path the caller expects to be absent) — the per-file half of
+/// <see cref="ILedger.WriteManyAsync"/>'s own optimistic concurrency, the same guarantee
+/// <see cref="LedgerWriteRequest.ExpectedBlobId"/> gives a single-file write.
+/// </summary>
+public sealed record LedgerFileWrite(string Path, string Content, string? ExpectedBlobId);
+
+/// <summary>
+/// Several files landing as one commit on one ref's tip — what a carried-vouch bundle
+/// (<c>h9k project join</c>'s cross-project root-carry path) needs and <see cref="LedgerWriteRequest"/>
+/// cannot give it: <c>owners/&lt;root&gt;/root.yaml</c> and <c>owners/&lt;root&gt;/carried/&lt;node-id&gt;.yaml</c>
+/// have to land together, in one push, or a reader that only ever sees one of the two mid-flight
+/// could misjudge the root as either established with no evidence or evidenced with no copy to
+/// read. Every file's own <see cref="LedgerFileWrite.ExpectedBlobId"/> is checked against the same
+/// freshly-fetched tip, in the same retry attempt, before any of them is written — the identical
+/// "checked together, right before the commit that will be pushed" timing
+/// <see cref="LedgerWriteRequest.RequireEmptyPrefix"/> already uses for a genesis-style write.
+/// </summary>
+public sealed record LedgerManyWriteRequest(
+    string RepositoryPath,
+    string RefName,
+    IReadOnlyList<LedgerFileWrite> Files,
+    string CommitMessage,
+    LedgerCommitter Committer,
+    LedgerSigningKey? SigningKey = null);
+
+/// <summary>
 /// One ref <see cref="ILedger.ListRefsAsync"/> found on origin, paired with its current tip commit
 /// SHA — <c>git ls-remote</c> already returns this alongside the ref name, so a caller scanning
 /// many refs on a cadence (idea 202383dc, T2's own invite sweep) can tell an unmoved ref apart from
@@ -120,6 +147,17 @@ public interface ILedger
     /// throws <see cref="LedgerPushRejectedException"/>.
     /// </summary>
     Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// <see cref="WriteAsync"/>'s multi-file counterpart: every <see cref="LedgerManyWriteRequest.Files"/>
+    /// entry lands in a single new commit on <see cref="LedgerManyWriteRequest.RefName"/>'s tip, or
+    /// none of them do. Same optimistic concurrency and push-retry behavior as <see cref="WriteAsync"/> —
+    /// a conflict on any one file's own <see cref="LedgerFileWrite.ExpectedBlobId"/> refuses the
+    /// whole commit with <see cref="LedgerWriteVerdict.Conflict"/> (naming whichever file it found
+    /// first), and a push that keeps losing for any other reason throws
+    /// <see cref="LedgerPushRejectedException"/> the same way.
+    /// </summary>
+    Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken);
 
     /// <summary>
     /// Removes <see cref="LedgerDeleteRequest.Path"/> from a new commit on

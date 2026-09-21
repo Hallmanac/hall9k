@@ -1023,6 +1023,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
             return inner.WriteAsync(request, cancellationToken);
         }
 
+        public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken) =>
+            inner.WriteManyAsync(request, cancellationToken);
+
         public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
             inner.DeleteAsync(request, cancellationToken);
 
@@ -1055,6 +1058,9 @@ public sealed class InviteCommandsTests : IClassFixture<PostgresFixture>, IAsync
 
             return inner.WriteAsync(request, cancellationToken);
         }
+
+        public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken) =>
+            inner.WriteManyAsync(request, cancellationToken);
 
         public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
             inner.DeleteAsync(request, cancellationToken);

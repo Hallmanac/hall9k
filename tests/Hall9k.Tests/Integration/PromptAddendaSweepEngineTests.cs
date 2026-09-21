@@ -335,6 +335,9 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
         public Task<LedgerWriteOutcome> WriteAsync(LedgerWriteRequest request, CancellationToken cancellationToken) =>
             inner.WriteAsync(request, cancellationToken);
 
+        public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken) =>
+            inner.WriteManyAsync(request, cancellationToken);
+
         public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
             inner.DeleteAsync(request, cancellationToken);
 
@@ -368,6 +371,11 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
             FailWrites
                 ? throw new LedgerPushRejectedException(request.RefName, 5, "simulated push rejection")
                 : inner.WriteAsync(request, cancellationToken);
+
+        public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken) =>
+            FailWrites
+                ? throw new LedgerPushRejectedException(request.RefName, 5, "simulated push rejection")
+                : inner.WriteManyAsync(request, cancellationToken);
 
         public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
             FailWrites

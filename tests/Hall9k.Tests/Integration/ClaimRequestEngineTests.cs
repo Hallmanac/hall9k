@@ -387,6 +387,9 @@ public sealed class ClaimRequestEngineTests : IClassFixture<PostgresFixture>, IA
             return await inner.WriteAsync(request, cancellationToken);
         }
 
+        public Task<LedgerWriteOutcome> WriteManyAsync(LedgerManyWriteRequest request, CancellationToken cancellationToken) =>
+            inner.WriteManyAsync(request, cancellationToken);
+
         public Task<LedgerWriteOutcome> DeleteAsync(LedgerDeleteRequest request, CancellationToken cancellationToken) =>
             inner.DeleteAsync(request, cancellationToken);
 
