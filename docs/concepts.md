@@ -899,6 +899,18 @@ other: nothing says which project a stream with no genesis under it belongs to, 
 forwards nothing on a guess, so a member joining this week receives the whole streams and none of
 the partial ones.
 
+What ends that wait is the daemon's own startup repair. It finds every local stream whose first
+event is a replicated copy that is not its aggregate's genesis, across tasks, ideas, epics and
+runs, reading the events rather than the documents they projected. Each such stream is put back the
+way it would have been had this node never received anything for it: every replicated event is
+held, the partially-applied documents and the dedupe rows go, and the stream id itself is released
+so a real genesis can start it. A native event this node's own dispatcher appended onto the
+phantom, along with the task lease a claim of it left behind, is dropped rather than held: replaying
+a claim of a run that never started would only leave the task stuck again with nothing alive to
+conclude it. Once the repair has run, `h9k task pull` reads the stream as absent and asks, and the
+held tail replays in origin order behind the answer. A stream the repair cannot explain safely is
+left exactly as it is and named in the daemon log with the reason.
+
 **A pull brings the whole story, not just the stream you named.** An ask for a task's stream is
 answered with that task's own run streams too, each whole — a run's stream id is not derivable from
 its task's, so an answer carrying the task alone lands a finished task reading as Delivered with no
