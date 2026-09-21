@@ -2641,6 +2641,12 @@ PLACEHOLDER-f53fecfd. **A node already vouched under an owner's root on one proj
 > rebased onto its base. Every citation of the placeholder elsewhere in this
 > repository will be rewritten to that number in the same commit.
 
+> Renumbering placement note: this entry was appended under placeholder
+> `PLACEHOLDER-f53fecfd` and assigned **#257** by the mechanical pre-final-pass
+> rebase step — the log's next free number once this branch was rebased onto its base.
+> Every citation of the placeholder elsewhere in this repository was rewritten to
+> `#257` in the same commit.
+
 ---
 
 ## 17. Reference Materials
