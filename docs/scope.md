@@ -52,7 +52,7 @@ session inside the same run (never a task reopen) — with exactly one exception
 the rebase conflicts on is that the base and this branch each appended an entry at the end of §16's
 Decisions Log, the rebase resolves it on the spot, keeping the base's entries first and this
 branch's placeholder after them, and carries on: the numbering convention already decided that
-answer, so there is nothing left to judge (PLAN.md §16, Decisions Log #PLACEHOLDER-64ba195a). The
+answer, so there is nothing left to judge (PLAN.md §16, Decisions Log #250). The
 shape is read narrowly — one conflicted file, one hunk, whole numbered entries on the base's side
 sitting at the log's tail, this task's own placeholder with its placement note on the branch's —
 and every near miss of it, along with every other conflict, parks exactly as before. This run's own
