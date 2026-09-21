@@ -115,6 +115,20 @@ its final full pass, skips outright on every intermediate review-cycle pass in b
 own host-coupled gate on the same node — a run waiting its turn reports the wait as its own phase,
 never a failure.
 
+Before any gate runs, `VerificationRunner` classifies every path the run's branch changed against
+its base — deletions and renames included — against the project's non-executable-path set; when
+every one matches, the build and test gates are skipped outright and a `VerificationSkipped` fact
+is recorded naming every changed path and the rule it matched, shown by `h9k task show` in the
+Gates column exactly where a pass shows today (a skip is never used as the scope base for the next
+gate that actually runs — that always scopes off the last real pass). The compiled default set is
+four rules — any `*.md` file, `docs/`, `.claude/skills/`, and `.claude/commands/` — and a project
+may only add to it, never remove one of the four, with `h9k project set --non-executable-path
+<glob>` (repeatable, `default` clears the project's own additions) and `h9k project show` listing
+the effective set; any path outside the set, or a diff that mixes code with content, runs the
+gates in full exactly as before, and the classification is re-run afresh at every entry into the
+gates — first delivery, an intermediate review-cycle pass, and every follow-up lap alike — so a fix
+lap on a content-only branch never pays for the gates either.
+
 `h9k task show` also renders a task's own passage in time, computed fresh on every read from the
 task's own stream and every run it has dispatched, never a persisted projection: how long it sat
 queued, how long each run spent building before its first verification, gate wall-clock time
