@@ -488,7 +488,7 @@ decline closed within the last 24 hours, as `declined by <node> at <time>`, and 
 streams this node holds the tail of and how many of those it has given up asking about. Silent when
 there is nothing in any of the three.
 
-**The held-tail ask** (Decisions Log #PLACEHOLDER-c3bdb62e): a replicated event whose stream has never started here and
+**The held-tail ask** (Decisions Log #259): a replicated event whose stream has never started here and
 which is not that stream's own genesis is held rather than applied, and replays the instant a later
 envelope carries the genesis, which nothing was asking for. The daemon's sweep now does. Each
 sweep, a stream whose held records have outlived one sweep interval (the idle cadence's own ceiling)
