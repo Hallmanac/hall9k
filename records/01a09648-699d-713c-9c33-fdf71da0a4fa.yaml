@@ -22,3 +22,7 @@ origin-branch: task/1da0a4fa-a-content-task-documentation-s
 published: 2026-09-17 21:18:57Z
 context: |-
   From idea 9178c408 (value review, gap 1). Brian's case on 2026-09-12: README and getting-started updates took hours through the full pipeline and would take 15 to 30 minutes attended. Walked 2026-09-16 with Brian: the build and test gates are d05e141c's job (evidence-based skip, the classifier and the project's non-executable set live there); this task is the type on top of it, stacked on d05e141c, and adds only the conformance-only default without the acknowledgment ceremony and the refusal that keeps code off the reduced-review lane. Both fold-in, sequenced after the distributed-teams slice and before the documentation wave it will produce. Precedents: TaskType.Research already exempts the no-commit pre-gate check (src/Hall9k.Daemon/Execution/VerificationRunner.cs near line 527), which is the shape of a type-conditional check; ReviewStageComposition (src/Hall9k.Domain/Features/Run/ReviewStageComposition.cs) is settable per task and frozen at dispatch, and ConformanceOnly already exists; TaskType (src/Hall9k.Domain/Features/Tasks/TaskType.cs) gains the seventh value. Reference case detail in ideas/fc85f609-*/workspace/final-stage-optimization-2026-09-03.md under Reference case (ef2fefe5).
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-09-21 04:02:20Z
