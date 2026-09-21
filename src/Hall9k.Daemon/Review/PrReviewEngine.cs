@@ -394,6 +394,14 @@ public sealed class PrReviewEngine(
                     continue;
                 }
 
+                // The QA review's own three recorded facts, pulled out of its findings file and
+                // stated above it (idea b9b09779, piece 2): the blast-radius map, the end-to-end
+                // outcome, and the flows this session actually drove.
+                if (session.Persona == ReviewPersona.Qa)
+                {
+                    body.Append(QaSummaryLines(written, plan.DriveFor(persona)));
+                }
+
                 // Most sessions' findings go in verbatim, which is what a pr-review report has
                 // always done. A session whose persona registered a composer instead has its
                 // section laid out by the platform — the design review, whose fixed lens order,
@@ -406,6 +414,63 @@ public sealed class PrReviewEngine(
         }
 
         return body.ToString();
+    }
+
+    /// <summary>
+    /// The three facts a QA review's own report answers that a reader should not have to go
+    /// hunting through it for (idea b9b09779, piece 2): how its blast-radius map came out, what
+    /// its end-to-end run did, and what it drove. Read back off the session's own text rather
+    /// than recorded separately, the same call the run-skill drift line above already makes and
+    /// for the same reason — the report on disk is the record, and a second copy on the stream
+    /// would be one restart away from disagreeing with it.
+    /// <para>
+    /// Every one of the three names the unanswered case out loud rather than omitting the line.
+    /// A map with an ungraded entry on it is the specific failure the map exists to surface, and
+    /// a summary that silently dropped it would hide exactly what it is for.
+    /// </para>
+    /// <para>Internal for the report-shape unit tests — a pure function of its two inputs.</para>
+    /// </summary>
+    /// <param name="text">The session's own findings file, as it was written.</param>
+    /// <param name="drive">
+    /// What this run decided at dispatch about the QA session driving. Needed for the driven line
+    /// alone, and needed there because the flows are the one of the three facts whose absence has
+    /// two readings: a session that was never allowed to launch the product, and one that was and
+    /// reported no flows. Asserting the first over both would be an observation nobody made.
+    /// </param>
+    internal static string QaSummaryLines(string text, ReviewDriveDecision drive)
+    {
+        IReadOnlyList<QaBlastRadiusEntry> map = ReviewResultParser.ParseBlastRadiusMap(text);
+        int ungraded = map.Count(entry => !entry.Verdict.HasValue);
+        string mapLine = map.Count == 0
+            ? "no entries this report could be read for — treat the review below as unmapped"
+            : $"{map.Count} entr{(map.Count == 1 ? "y" : "ies")} — "
+              + string.Join(", ", QaCoverageVerdict.All.Select(verdict =>
+                  $"{map.Count(entry => entry.Verdict == verdict)} {verdict.Value}"))
+              + (ungraded > 0 ? $", {ungraded} with no verdict stated" : string.Empty);
+
+        return $"Blast radius: {mapLine}.\n"
+            + $"End-to-end tests: {ReviewResultParser.ParseEndToEndOutcome(text).Describe()}.\n"
+            + $"Driven: {QaDrivenLine(text, drive)}.\n";
+    }
+
+    /// <summary>
+    /// What the QA summary's third line says about the flows walked, which is three states rather
+    /// than two (independent pre-PR review, cycle 1, adversarial lens; the design review's own
+    /// <see cref="DesignReviewSection"/> drive line already distinguishes the same three). Flows
+    /// named is the ordinary answer. No flows on a review that was never allowed to launch the
+    /// product is the ordinary default, and it says which of the two reasons applied. No flows on
+    /// a review that WAS allowed is the one the old wording got wrong: the session may have driven
+    /// and left its line out, or echoed the contract's own placeholder, and reporting that as
+    /// "the product was not launched" states something nobody observed.
+    /// </summary>
+    private static string QaDrivenLine(string text, ReviewDriveDecision drive)
+    {
+        IReadOnlyList<string> driven = ReviewResultParser.ParseDrivenFlows(text);
+        return driven.Count > 0 ? string.Join("; ", driven)
+            : drive.Drives
+                ? "no flows named — driving was authorised for this review and the report names none, "
+                  + "so read it as a static review whatever the session did"
+                : $"nothing — the product was not launched, because {drive.WhyNotDriven}";
     }
 
     /// <summary>

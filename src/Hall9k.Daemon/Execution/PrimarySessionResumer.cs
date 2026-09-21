@@ -35,8 +35,8 @@ public sealed class PrimarySessionResumer(IExecutor executor)
         IDocumentSession session, RunDetails run, TaskDetails task, ProjectDetails project, string prompt,
         CancellationToken cancellationToken)
     {
-        // A pr-review task's primary session is the adversarial lens reading another
-        // contributor's pull-request head (RunLauncher's UntrustedWorkingDirectory), so a
+        // A pr-review task's primary session reads another contributor's pull-request head
+        // (RunLauncher's UntrustedWorkingDirectory), so a
         // resume of that same session carries the same distrust forward — otherwise the
         // resumed --resume spawn would load the foreign checkout's own .claude/ config
         // and CLAUDE.md/AGENTS.md under the owner's credentials (adversarial review, cycle 2).
@@ -44,7 +44,11 @@ public sealed class PrimarySessionResumer(IExecutor executor)
         // than re-deriving it: a resume re-enters the same session, so it keeps the same
         // name it was dispatched under. A stream written before that field existed falls
         // back to the identical three-way split RunLauncher used to pick the name in the
-        // first place.
+        // first place. Which persona's session that is has been the plan's own first session
+        // since the registry landed (idea b9b09779) — QA's, for an assignee who declared only
+        // qa — so the adversarial arm below is the fallback's answer for a legacy stream, not
+        // a claim about today's runs: every stream carrying personas at all also carries the
+        // recorded name, and only a pre-persona stream ever reaches this branch.
         string sessionRole = task.Type == TaskType.PrReview
             ? SessionRoleName.ReviewAdversarial(1)
             : run.IsFollowUp
