@@ -1,8 +1,10 @@
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Courier;
+using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
@@ -393,6 +395,21 @@ public static class EventScopeRegistry
         // The idea-side half of a spike's own verdict (task: a spike is a run, not a walk) —
         // provenance of a team-visible fact, the same tier IdeaTaskCut already travels at.
         [typeof(IdeaSpikeConcluded)] = EventScope.ProjectScoped,
+
+        // Hall9k.Domain.Features.Decision and .Learning — idea d805fd8b, piece 1: a binding
+        // decision and a run-earned lesson are team-visible knowledge about the work, the same
+        // tier the Task and Idea streams already travel at, so the TYPE is project-scoped and
+        // M2a's outbound flush carries it. The per-record half of the same rule is not spelled
+        // here and cannot be: this registry classifies a type, and each record carries its own
+        // KnowledgeScope. An owner-scoped one names no project at all, so
+        // ReplicationProjectResolver resolves it to a null ProjectId, which never equals the
+        // project any outbox is flushing for — it stays on the node that recorded it, which is
+        // exactly what this piece's own acceptance criterion asks for. Widening an owner-scoped
+        // record to the rest of that owner's fleet is backlog 55's work, not this piece's.
+        [typeof(DecisionRecorded)] = EventScope.ProjectScoped,
+        [typeof(DecisionSuperseded)] = EventScope.ProjectScoped,
+        [typeof(LearningRecorded)] = EventScope.ProjectScoped,
+        [typeof(LearningRetired)] = EventScope.ProjectScoped,
     };
 
     /// <summary>The classified event types, for a completeness test to enumerate against.</summary>
