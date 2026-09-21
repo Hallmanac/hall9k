@@ -75,16 +75,17 @@ public sealed record ReviewDriveSetting(ReviewPersona Persona, bool Enabled, boo
     /// settings change because a drive setting is a team field
     /// (<see cref="ProjectSettingsHistory.LastRecordedTeamField{T}"/>).
     /// <para>
-    /// <see cref="Optional{T}.None"/> always for a persona with no field yet. That is
-    /// <see cref="ReviewPersona.Qa"/> today: piece 2 adds <c>QaReviewDrive</c> beside
-    /// <c>DesignReviewDrive</c> and reads it here, and until it does a QA drive setting resolves
-    /// as unrecorded, which is the honest answer, since nothing can record one. It is
-    /// <see cref="ReviewPersona.Engineer"/> permanently: that review reads a diff and has never
+    /// One field per persona rather than one keyed by persona, so a reader of the designer's
+    /// answer never has to parse QA's out of the same value — and
+    /// <see cref="Optional{T}.None"/> always for a persona with no field at all. That is
+    /// <see cref="ReviewPersona.Engineer"/>, permanently: that review reads a diff and has never
     /// stood anything up.
     /// </para>
     /// </summary>
     private static Optional<bool> RecordedChoice(ReviewPersona persona, ProjectSettingsHistory history) =>
         persona == ReviewPersona.Designer
             ? history.LastRecordedTeamField(change => change.DesignReviewDrive, change => change.DesignReviewDrive)
+        : persona == ReviewPersona.Qa
+            ? history.LastRecordedTeamField(change => change.QaReviewDrive, change => change.QaReviewDrive)
             : Optional<bool>.None;
 }

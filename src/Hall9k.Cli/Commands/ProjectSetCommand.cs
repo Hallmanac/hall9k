@@ -322,6 +322,21 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "the report names which of the two reasons applied.")]
         public string? DesignReviewDrive { get; init; }
 
+        [CommandOption("--qa-review-drive <on|off>")]
+        [Description(
+            "Whether a QA-persona review of a pull request in this project may launch the running "
+            + "product and drive it through browser automation (idea b9b09779, piece 2). Default 'off': "
+            + "the QA review reads the diff, builds its blast-radius map, and runs the project's "
+            + "end-to-end tests on the review worktree, and anything its verdict needs the running "
+            + "product for becomes a human walk-through it writes out step by step rather than "
+            + "something it goes and does. 'on' lets that session start the product from the run skill "
+            + "on the project's ledger, on an ephemeral port it reports and tears down, drive the "
+            + "changed flows, and put a screenshot beside each finding it supports. A project with no "
+            + "run skill never drives whatever this says, because there is nothing to launch it with. "
+            + "The designer persona's own --design-review-drive beside it is the same setting with "
+            + "the opposite default.")]
+        public string? QaReviewDrive { get; init; }
+
         [CommandOption("--claim-gate <off|tracker-assignee>")]
         [Description(
             "What has to be true on this install before a task linked to a Jira card or a GitHub issue "
@@ -654,6 +669,13 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             autoPrReview: settings.AutoPrReview is { } autoPrReview
                 ? Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Parse(autoPrReview))
                 : Optional<AutoPrReviewSpeed>.None,
+            // No clearing word: off IS the default, so "restore the default" and "turn it off"
+            // are the same act, and a third word for it would only invite the reader to think
+            // they differ. What distinguishes them is whether anything was recorded at all, which
+            // ReviewDriveSetting reads off the stream rather than off a value.
+            qaReviewDrive: settings.QaReviewDrive is { } qaReviewDrive
+                ? Optional<bool>.Of(ReviewDriveSetting.ParseOnOff(qaReviewDrive, "--qa-review-drive"))
+                : Optional<bool>.None,
             acceptedBrokenGate: acceptedBrokenGateValue,
             maxParallelTasks: maxParallelTasks,
             // 'default' is the clearing word and reaches ProjectPriority.Parse as the word rather
@@ -821,6 +843,27 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
                       + "this project's app, so nothing in a design report will have been seen running. The "
                       + "report states that plainly rather than leaving it to be assumed. Turn it back on:[/] "
                       + $"h9k project set {details.Name.EscapeMarkup()} --design-review-drive on");
+        }
+
+        // The same discipline, applied to the other setting that lets an agent do something to
+        // this machine rather than only read it: turning drive on is a standing consent that a
+        // review session starts this project's product here and drives a browser against it, on
+        // every QA review from now on rather than the one in front of the operator. Off says its
+        // own consequence too, because what it costs is real — a verdict that genuinely needs the
+        // running product becomes a walk-through for a human instead of an answer.
+        if (settings.QaReviewDrive is { } qaDriveWord)
+        {
+            AnsiConsole.MarkupLine(ReviewDriveSetting.ParseOnOff(qaDriveWord, "--qa-review-drive")
+                ? "[yellow]From now on, a QA review of a pull request here may start this project's "
+                  + "product from its run skill on an ephemeral port and drive the changed flows through "
+                  + "browser automation before it reports. That is a real process on this machine, on "
+                  + "every QA review rather than one you are watching; the session reports the port and "
+                  + "tears the product down, and a project with no run skill still drives nothing "
+                  + "because there is nothing to launch it with.[/]"
+                : "[yellow]QA reviews here will read the diff and run the end-to-end tests and never "
+                  + "start the product. Anything a verdict genuinely needs the running product for comes "
+                  + "back as a human walk-through written out step by step, which is a person's time "
+                  + "rather than an answer.[/]");
         }
 
         // Said at the moment of consent and only then, the discipline every standing consequence

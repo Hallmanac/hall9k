@@ -126,6 +126,12 @@ public sealed class ProjectAggregate
     /// </summary>
     public bool DesignReviewDrive { get; private set; } = ReviewDriveSetting.DefaultFor(ReviewPersona.Designer);
     /// <summary>
+    /// The last qa-review-drive choice this project's stream recorded (idea b9b09779, piece 2),
+    /// never the effective setting — <see cref="DesignReviewDrive"/> above states the terms, and
+    /// they are the same ones here.
+    /// </summary>
+    public bool QaReviewDrive { get; private set; } = ReviewDriveSetting.DefaultFor(ReviewPersona.Qa);
+    /// <summary>
     /// What has to be true on this install before a task linked to a Jira card or a GitHub issue
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
     /// </summary>
@@ -349,6 +355,11 @@ public sealed class ProjectAggregate
             DesignReviewDrive = @event.DesignReviewDrive.Value;
         }
 
+        if (@event.QaReviewDrive.HasValue)
+        {
+            QaReviewDrive = @event.QaReviewDrive.Value;
+        }
+
         if (@event.Priority.HasValue)
         {
             Priority = @event.Priority.Value ?? ProjectPriority.Normal;
@@ -480,6 +491,11 @@ public sealed class ProjectAggregate
         if (@event.DesignReviewDrive.HasValue)
         {
             DesignReviewDrive = @event.DesignReviewDrive.Value;
+        }
+
+        if (@event.QaReviewDrive.HasValue)
+        {
+            QaReviewDrive = @event.QaReviewDrive.Value;
         }
 
         if (@event.ClaimGate.HasValue)

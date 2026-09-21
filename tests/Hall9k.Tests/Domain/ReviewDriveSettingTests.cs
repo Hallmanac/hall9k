@@ -97,17 +97,58 @@ public sealed class ReviewDriveSettingTests
     }
 
     /// <summary>
-    /// QA's own field lands with piece 2. Until it does, a QA drive setting resolves as
-    /// unrecorded whatever a project did — the honest answer, since nothing can record one.
+    /// One field per persona, so neither answer can be read off the other's: a project that
+    /// turned design-review driving on has said nothing whatever about QA's, and a QA review
+    /// there still resolves to QA's own default.
     /// </summary>
     [Fact]
-    public void Qa_has_no_recordable_setting_yet_and_says_so_by_staying_unrecorded()
+    public void One_personas_recorded_choice_is_never_read_as_the_others()
     {
         ReviewDriveSetting setting = ReviewDriveSetting.From(
             ReviewPersona.Qa, ProjectSettingsHistory.FromChanges([Changed(drive: true)]));
 
         setting.Recorded.Should().BeFalse();
         setting.Enabled.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// QA's own field, read the same way the designer's is and defaulting the other way: an
+    /// explicit "on" is told apart from the default it does not match, and the last choice
+    /// recorded is the one that stands.
+    /// </summary>
+    [Fact]
+    public void Qas_own_choice_is_recorded_on_its_own_field_and_the_last_one_wins()
+    {
+        ReviewDriveSetting on = ReviewDriveSetting.From(
+            ReviewPersona.Qa, ProjectSettingsHistory.FromChanges([Changed(qaDrive: true)]));
+        on.Enabled.Should().BeTrue();
+        on.Recorded.Should().BeTrue();
+
+        ReviewDriveSetting off = ReviewDriveSetting.From(
+            ReviewPersona.Qa,
+            ProjectSettingsHistory.FromChanges([Changed(qaDrive: true), Changed(qaDrive: false)]));
+        off.Enabled.Should().BeFalse();
+        off.Recorded.Should().BeTrue(
+            "off as a choice somebody typed and off as the untouched default are different facts");
+
+        ReviewDriveSetting designer = ReviewDriveSetting.From(
+            ReviewPersona.Designer, ProjectSettingsHistory.FromChanges([Changed(qaDrive: false)]));
+        designer.Should().Be(ReviewDriveSetting.UnrecordedFor(ReviewPersona.Designer),
+            "qa-review-drive says nothing about the designer's review");
+    }
+
+    /// <summary>QA's field replicates like the designer's: the team half alone still resolves it.</summary>
+    [Fact]
+    public void A_replicated_qa_choice_carrying_only_the_team_half_still_resolves()
+    {
+        ProjectTeamSettingsChanged? replicated = ProjectTeamSettingsChanged.From(Changed(qaDrive: true));
+        replicated.Should().NotBeNull();
+
+        ReviewDriveSetting setting = ReviewDriveSetting.From(
+            ReviewPersona.Qa, ProjectSettingsHistory.FromEveryChange([replicated!]));
+
+        setting.Enabled.Should().BeTrue();
+        setting.Recorded.Should().BeTrue();
     }
 
     [Fact]
@@ -134,8 +175,16 @@ public sealed class ReviewDriveSettingTests
         changed.DesignReviewDrive.HasValue.Should().BeTrue();
         changed.DesignReviewDrive.Value.Should().BeFalse();
 
-        ProjectDecider.ChangeSettings(project, default, default, default, Now, Guid.Empty)
-            .DesignReviewDrive.HasValue.Should().BeFalse();
+        ProjectSettingsChanged qa = ProjectDecider.ChangeSettings(
+            project, default, default, default, Now, Guid.Empty, qaReviewDrive: Optional<bool>.Of(true));
+        qa.QaReviewDrive.HasValue.Should().BeTrue();
+        qa.QaReviewDrive.Value.Should().BeTrue();
+        qa.DesignReviewDrive.HasValue.Should().BeFalse("one persona's choice never records the other's");
+
+        ProjectSettingsChanged neither =
+            ProjectDecider.ChangeSettings(project, default, default, default, Now, Guid.Empty);
+        neither.DesignReviewDrive.HasValue.Should().BeFalse();
+        neither.QaReviewDrive.HasValue.Should().BeFalse();
     }
 
     /// <summary>
@@ -153,6 +202,12 @@ public sealed class ReviewDriveSettingTests
 
         project.Apply(ProjectTeamSettingsChanged.From(Changed(drive: true))!);
         project.DesignReviewDrive.Should().BeTrue("the replicated half sets the same property");
+
+        project.QaReviewDrive.Should().BeFalse("QA's own default is off");
+        project.Apply(Changed(qaDrive: true));
+        project.QaReviewDrive.Should().BeTrue();
+        project.Apply(ProjectTeamSettingsChanged.From(Changed(qaDrive: false))!);
+        project.QaReviewDrive.Should().BeFalse();
     }
 
     private static ProjectAggregate Registered()
@@ -164,7 +219,8 @@ public sealed class ReviewDriveSettingTests
         return project;
     }
 
-    private static ProjectSettingsChanged Changed(bool? drive = null, CommitStyle? commitStyle = null) => new(
+    private static ProjectSettingsChanged Changed(
+        bool? drive = null, CommitStyle? commitStyle = null, bool? qaDrive = null) => new(
         Guid.Empty,
         Optional<IReadOnlyList<VerifyCommand>>.None,
         Optional<bool>.None,
@@ -173,5 +229,6 @@ public sealed class ReviewDriveSettingTests
         Now,
         Guid.Empty,
         CommitStyle: commitStyle is null ? Optional<CommitStyle>.None : Optional<CommitStyle>.Of(commitStyle),
-        DesignReviewDrive: drive is null ? Optional<bool>.None : Optional<bool>.Of(drive.Value));
+        DesignReviewDrive: drive is null ? Optional<bool>.None : Optional<bool>.Of(drive.Value),
+        QaReviewDrive: qaDrive is null ? Optional<bool>.None : Optional<bool>.Of(qaDrive.Value));
 }
