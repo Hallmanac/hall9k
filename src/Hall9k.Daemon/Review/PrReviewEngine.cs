@@ -324,8 +324,8 @@ public sealed class PrReviewEngine(
         }
 
         await ComposeReportAndParkAsync(
-            runId, taskId, runDirectory, run.LeaseGeneration, task, plan, aggregate.PrReviewPersonaSessionFailures,
-            PersonasReported(plan, aggregate), cancellationToken);
+            runId, taskId, runDirectory, run.LeaseGeneration, run.WorktreePath, run.Branch, task, plan,
+            aggregate.PrReviewPersonaSessionFailures, PersonasReported(plan, aggregate), cancellationToken);
     }
 
     /// <summary>
@@ -998,8 +998,9 @@ public sealed class PrReviewEngine(
     }
 
     private async Task ComposeReportAndParkAsync(
-        Guid runId, Guid taskId, string runDirectory, int leaseGeneration, TaskDetails task,
-        ReviewPersonaPlan plan, IReadOnlyDictionary<string, ReviewPersonaSessionFailure> sessionFailures,
+        Guid runId, Guid taskId, string runDirectory, int leaseGeneration, string worktreePath, string branch,
+        TaskDetails task, ReviewPersonaPlan plan,
+        IReadOnlyDictionary<string, ReviewPersonaSessionFailure> sessionFailures,
         IReadOnlyList<ReviewPersona> personasReported, CancellationToken cancellationToken)
     {
         string report =
@@ -1009,7 +1010,8 @@ public sealed class PrReviewEngine(
             + "or have the session post on your behalf. Resolve with h9k review resolve --merge-ready "
             + "when you are done; it opens or merges nothing of its own, and parks the task waiting on "
             + "the pull request until it merges or closes.\n"
-            + await ComposePersonaSectionsAsync(runDirectory, plan, sessionFailures, cancellationToken);
+            + await ComposePersonaSectionsAsync(runDirectory, plan, sessionFailures, cancellationToken)
+            + LocalLaunchOffer.Compose(plan, taskId, runId, worktreePath, branch);
 
         // A mint whose own trigger was a mention (idea 2f079bcd, decision 2 and 3): the primary
         // session was also asked to write this file, and its content already opens with the
