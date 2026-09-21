@@ -99,11 +99,16 @@ public static class EventReplicationCodec
     /// own global sequence (<c>h9k project pull --since</c>); all three null asks for everything the
     /// peer holds for the project at all — a brand-new node's own bootstrap.
     /// <para>
-    /// The two NAMED shapes, <see cref="ForStreamId"/> and
-    /// <see cref="SinceGlobalSequence"/>, are the ones an answering node serves from below its own
-    /// replication switch-on point; the two open-ended ones (gap-fill and bootstrap) keep that
-    /// exclusion, since history stays inert until something actually asks for it by name.
-    /// <see cref="EventsRequestRecord.IsExplicitAsk"/> is the rule itself.
+    /// The NAMED shapes, <see cref="ForStreamId"/> and <see cref="SinceGlobalSequence"/>, are
+    /// served from below the answering node's own replication switch-on point whoever minted
+    /// them, and so is a brand-new node's own bootstrap
+    /// (<see cref="EventsRequestRecord.IsBootstrap"/>), which asks for a whole project once in
+    /// that node's life with nobody there to make the ask on its behalf. A gap-fill is the one
+    /// shape that keeps the exclusion, and it is the one bounded neither way: it names nothing,
+    /// and it is minted whenever a hole is noticed, over and over, on a node that already holds
+    /// the project's recent history, which is where "history is inert until something actually
+    /// asks for it" still earns its keep. <see cref="EventsRequestRecord.IsExplicitAsk"/> and
+    /// <see cref="EventsRequestRecord.IsBootstrap"/> are the rule itself.
     /// </para>
     /// <para>
     /// <see cref="SinceGlobalSequence"/> is trailing and defaulted so an envelope from a sender on
@@ -121,8 +126,10 @@ public static class EventReplicationCodec
         /// Whether this request names what it wants, which is the opt-in that lifts an answering
         /// node's own replication switch-on exclusion (task a56cf16e; the origin incident is in
         /// this type's own doc above): one named stream, or a named lower bound on the answering
-        /// node's own global sequence. A gap-fill and a brand-new node's bootstrap name neither, so
-        /// neither one lifts it.
+        /// node's own global sequence. A gap-fill and a brand-new node's bootstrap name neither,
+        /// so this is false for both — but the bootstrap lifts the exclusion anyway, on its own
+        /// separate grounds, which <see cref="IsBootstrap"/> gives. The gap-fill is the one shape
+        /// left keeping it.
         /// <para>
         /// Originally read as "a human explicitly asked for this", because the only requests that
         /// named a stream came from <c>h9k task pull</c> and the ledger-record adoption path. That
@@ -139,6 +146,19 @@ public static class EventReplicationCodec
         /// </para>
         /// </summary>
         public bool IsExplicitAsk => ForStreamId is not null || SinceGlobalSequence is not null;
+
+        /// <summary>
+        /// Whether this is a brand-new node's own bootstrap: no origin node, no stream and no
+        /// global sequence bound, the shape <c>MessageSweepEngine.AdvanceCatchUpAsync</c> mints
+        /// once, for a node whose own sweep found no applied history for this project at all. It
+        /// lifts the answering node's switch-on exclusion too (task 74a7cd0b, Decisions Log
+        /// #PLACEHOLDER-74a7cd0b, which supersedes #236 for this one automatic shape): a member
+        /// joining a project today has nobody to make an explicit ask on their behalf and no way
+        /// to know what sits below each peer's switch-on point, so bounding their one and only
+        /// bootstrap hands them a headless tail of the work that predates it.
+        /// </summary>
+        public bool IsBootstrap =>
+            ForOriginNodeId is null && ForStreamId is null && SinceGlobalSequence is null;
     }
 
     public static string EncodeRequest(EventsRequestRecord request) => JsonSerializer.Serialize(request, Options);
