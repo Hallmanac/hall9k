@@ -31,6 +31,7 @@ h9k project cancel-purge <name>   # ends a pending purge before it fires, leavin
 h9k project reactivate <name>   # undo h9k project remove: the project and its tasks are visible and live again — refused while a purge is pending, cancel it first (Decisions Log #182, #185)
 h9k project rename <name> <NEW-NAME>   # change a project's name only; the id, home directory, repository, and every task/run/idea are untouched (Decisions Log #182)
 h9k project pull <name> --since <global-sequence|all>   # ask this project's other members for history no automatic mechanism will ever fetch: a bound read on the ANSWERING node's own global sequence, or 'all' for everything it holds. For the established node the bootstrap can never help (it gates on no applied history at all) and a gap-fill never reaches; --since is required. Queues one project-wide events-request and returns, touching no git and no network; the daemon's next sweep sends it. Served from below the answering node's replication switch-on point, because an explicit ask is the opt-in that lifts it; a private task or idea is never served however far back the pull reaches (task a56cf16e, Decisions Log #236)
+h9k project reconcile <name>   # ask every node of THIS OWNER's own fleet for everything it holds of this project, one node-addressed ask each, carrying the same explicit bound project pull --since all does. The daemon's sweep already asks each fleet sibling once per project on its own and re-asks once inside the outbox squash window, so this is the lever for a reconcile h9k status reports stalled, or for running the exchange again now. Reads this project's ledger chain live to learn the fleet (the same read project members does); everything after that is local, and the daemon's next sweep sends the asks (task 252bc5cf, Decisions Log #PLACEHOLDER-252bc5cf)
 h9k project set <name> --branch-template "{key}-{slug}"   # the team's branch convention; 'none' restores task/{shortid}-{slug} (Decisions Log #121)
 h9k project set <name> --review-stage-composition <VALUE|default>   # which pre-PR review stages a run gets: full-pipeline (default), adversarial-only, conformance-only, skip-final-pass, none — also settable at node (h9k config set) and task (h9k task add/revise), task > project > node > default, frozen at each run's own dispatch; a value that removes a guarantee needs --accept-reduced-review (Decisions Log #129)
 h9k project set <name> --auto-pr-review off|normal|first|now   # a GitHub reviewer assignment to this install's own login auto-starts a pr-review task. Default NORMAL for every project, new and existing; 'off' is an explicit opt-out. No request older than the project's own cutoff ever starts on its own (no backfill), every request is recorded and shown either way, and the state is printed at daemon start, in h9k status and in h9k project show (Decisions Log #34's amendment, #133, #161)
@@ -547,6 +548,36 @@ stream, never inserted, so the older half would replay behind the newer half and
 aggregate to its creation state; the receiving node refuses those records, and `h9k task pull` (and
 the `--from-issue` adoption refusal) says so up front rather than queueing an ask that can only be
 refused on arrival.
+
+**One owner's own fleet reconciles itself** (task 252bc5cf, Decisions Log #PLACEHOLDER-252bc5cf).
+An owner's nodes are not ordinary peers: every one of them is supposed to hold every fleet- and
+team-scoped event of each project it registers, so that any one of them can answer a new teammate's
+bootstrap in full. So on every sweep, for each node of this owner's own fleet
+(`TrustedOwner.FleetNodeIds`) that this node has no reconcile record for, the daemon asks that one
+node for everything it holds of the project, addressed to that node alone rather than broadcast.
+The answering sibling asks back the moment it reads the request, so the pair settles in both
+directions with nobody typing anything, and each side's own record is what makes a third ask
+impossible. This is the **third** automatic shape served from below the answering node's
+replication switch-on point, after the held-tail ask (#259) and a brand-new node's own bootstrap
+(#260), and it supersedes #236's "history is inert until somebody asks" for it alone: the asking
+party is another node of the same owner, and it is entitled to everything this node holds. The
+gap-fill is the shape still keeping the bound. A reconcile and a bootstrap with the same peer are
+never in flight at once either way round: the reconcile waits while that node's bootstrap is in
+flight and is then asked in full, because a bootstrap closes on the first envelope from one ranked
+candidate that applies anything and so says nothing about whether the rest of that peer's history
+arrived. Completion is a fact rather than a guess: an answer
+ends with its own terminal `events-answer-complete` envelope carrying the batch count, and only
+reading that marks the reconcile complete, because a whole-project answer over history the asking
+node already holds applies nothing at all. A reconcile with no completion inside the outbox squash
+window (`MessageRetention`, 48 hours) is re-asked once and then reported; a stalled direction
+reopens on its own if that sibling later asks for its own half, which is proof it came back. A
+record whose peer has since left this owner's fleet is closed unanswered rather than re-asked and
+reported, because nothing outside the fleet will answer and the hand command walks the current
+fleet; vouching that node back in starts the exchange over. `h9k status` shows each
+reconcile in progress or complete with its envelope and record counts and how many streams are
+still held tail-only, and `h9k project reconcile <project>` runs the whole thing again by hand.
+Origin: on 2026-09-21 the Mac held almost none of arx-platform's history while the Windows node
+held all of it, and a bootstrap that ranks one answerer had no way to notice.
 
 **Trust files and the chain reader** (idea 202383dc, T1): vouches, revocations, and project
 membership are files in the same hidden ledger, and every read of every ledger and messages ref

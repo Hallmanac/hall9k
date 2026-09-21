@@ -777,6 +777,18 @@ back the pull reaches. A stream this node holds only the tail of stays as it is,
 touching no git and no network of its own. Background:
 [concepts.md](concepts.md#catching-a-node-up).
 
+`project reconcile <project>` asks every node of *this owner's own fleet* for everything it holds
+of the project. The daemon's sweep already does this once per (peer, project) on its own, and
+re-asks once if no answer completes inside the outbox squash window, so the command is the lever
+for what that rule cannot reach: a reconcile `h9k status` reports stalled, a fleet that changed
+shape mid-exchange, or simply wanting the exchange to run again now. One ask per sibling, addressed
+to that node rather than broadcast, carrying the same explicit bound `project pull --since all`
+does, so each sibling answers from the start of its own log. Unlike the two pull commands it reads
+this project's ledger chain live to learn the fleet, the same read `project members` performs;
+everything after that read is local, and the daemon's next sweep sends the asks. Each ask restarts
+that peer's exchange, so the counts `h9k status` then shows for it are this exchange's rather than a
+previous one's, including how many streams are still held tail-only.
+
 ### The project home
 
 Every project owns a directory on disk, `~/.hall9k/projects/<name>` unless the project says
