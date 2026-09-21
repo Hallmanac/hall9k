@@ -215,6 +215,105 @@ public sealed partial class VerificationRunner(
 
         IReadOnlyList<VerifyCommand> gates = project?.VerifyCommands ?? [];
         string gatesFingerprint = VerifyCommand.Fingerprint(gates);
+
+        // Before any gate runs — and before the no-gates-configured early return just below, so a
+        // content task's own refusal fires whether or not the project has any gates configured at
+        // all (independent pre-PR review, cycle 1, both lenses: a project with zero verify commands
+        // used to record a bare pass here without ever computing the classification below, which is
+        // the only thing standing between a content task's reduced review and a diff the adversarial
+        // lens never reads) — whether every path this run's branch changed against its base is
+        // content the project has declared non-executable (task: a delivered diff that touches no
+        // buildable or testable source skips the build and test gates — origin: ef2fefe5, a
+        // two-file skill markdown fix paying roughly twelve minutes of build-and-test ceremony on
+        // every pipeline entry while the actual work took four). Classified afresh at every entry
+        // into the gates — first delivery, an intermediate review-cycle reverify, and every
+        // follow-up lap alike — never cached from an earlier entry's own verdict, so a fix lap that
+        // starts touching real source is judged on its own diff, not an earlier lap's content-only
+        // one. Computed only when `project` is non-null — the same condition the no-gates return
+        // below folds in — since both the base branch and the project's own non-executable set come
+        // from it; project null already means gates.Count == 0 too, so there is nothing here for a
+        // content task to be refused against anyway.
+        //
+        // Unobservable git (GetChangedPathsAsync returning null) runs the gates as today for an
+        // ordinary task, never guessed as content-only (AGENTS.md's "never guess at unobserved
+        // facts" rule) — the same convention DetectStrandedWorkAsync's own git reads already
+        // follow. A content task cannot take that same fallback (independent pre-PR review, cycle
+        // 1, both lenses): running the gates does nothing to restore the adversarial lens its own
+        // reduced review already dropped, so an unobservable diff fails a content task before the
+        // gates instead, naming the diff as unclassifiable rather than guessing it content-only.
+        // Computed whenever there is a gate that could be skipped (gates.Count > 0, the original
+        // condition) OR the task is a content task, which needs the classification regardless of
+        // gate count to decide its own before-gates refusal — never for an ordinary task on a
+        // project with no gates at all, the same case that already short-circuits below without
+        // ever needing to know what changed.
+        IReadOnlyList<string>? changedPaths = project is not null && (task.Type == TaskType.Content || gates.Count > 0)
+            ? await GetChangedPathsAsync(
+                run.WorktreePath, run.BaseBranchOr(project.BaseBranch), run.StackedForkPoint(project.BaseBranch),
+                cancellationToken)
+            : null;
+
+        if (project is not null && changedPaths is null && task.Type == TaskType.Content)
+        {
+            string unclassifiableReason =
+                "This is a content task, but its diff against the project's base branch could not be read, " +
+                "so it could not be classified as content-only. A content task dispatches with a reduced, " +
+                "conformance-only review, so it can never proceed on a diff that was never proven content-only " +
+                "— retry once the branch's base and fork point resolve cleanly.";
+            await FailBeforeGatesAsync(runId, taskId, unclassifiableReason, cancellationToken);
+            logger.LogWarning(
+                "Run {RunId} failed before the gates: content task's diff could not be classified because its changed paths could not be read",
+                runId);
+            return new SettlingVerificationResult(false, null, null);
+        }
+
+        NonExecutablePathClassifier.ClassificationResult? classification = null;
+        if (project is not null && changedPaths is { Count: > 0 } nonEmptyChangedPaths)
+        {
+            classification = NonExecutablePathClassifier.Classify(nonEmptyChangedPaths, project.EffectiveNonExecutablePaths);
+            if (classification.Value.AllMatched && gates.Count > 0)
+            {
+                IReadOnlyList<VerificationSkippedPath> skippedPaths =
+                    [.. classification.Value.Paths.Select(path => new VerificationSkippedPath(path.Path, path.MatchedRule!))];
+                await RecordSkipAsync(runId, skippedPaths, cancellationToken);
+                logger.LogInformation(
+                    "Run {RunId} verification skipped: every changed path ({Count}) matched the project's non-executable set",
+                    runId, nonEmptyChangedPaths.Count);
+                return new SettlingVerificationResult(true, null, null);
+            }
+        }
+
+        // A content task's reduced review (TaskType.Content defaults to
+        // ReviewStageComposition.ConformanceOnly, no --accept-reduced-review needed — the type
+        // itself is the acknowledgment) depends entirely on its diff never carrying compiled or
+        // tested code: the classification above is the only thing standing between that reduced
+        // review and a diff the adversarial lens never reads. Reusing the SAME classification this
+        // pass already computed (never a second, possibly-disagreeing one) is what a content task's
+        // diff outside the non-executable set fails on, before any gate runs — and before the
+        // no-gates return just below, so a project with zero configured gates can never let a
+        // content task's mixed diff through on the strength of having nothing to run (independent
+        // pre-PR review, cycle 1, both lenses) — with the same outcome a failed gate has today,
+        // naming every offending path rather than a single one so a mixed diff does not make an
+        // operator hunt for the rest.
+        if (task.Type == TaskType.Content && classification is { } contentClassification)
+        {
+            IReadOnlyList<string> offendingPaths =
+                [.. contentClassification.Paths.Where(path => path.MatchedRule is null).Select(path => path.Path)];
+            if (offendingPaths.Count > 0)
+            {
+                string reason =
+                    $"This is a content task, but its diff touches path(s) outside the project's " +
+                    $"non-executable set: {SummarizeFiles(offendingPaths)}. A content task dispatches " +
+                    "with a reduced, conformance-only review, so it can never carry compiled or tested " +
+                    "code past it — change the task's type, or split this work so the content-only part " +
+                    "ships on its own.";
+                await FailBeforeGatesAsync(runId, taskId, reason, cancellationToken);
+                logger.LogWarning(
+                    "Run {RunId} failed before the gates: content task's diff touched {Count} path(s) outside the non-executable set",
+                    runId, offendingPaths.Count);
+                return new SettlingVerificationResult(false, null, null);
+            }
+        }
+
         // project is null only when gates.Count == 0 too (gates is derived from project?.VerifyCommands),
         // so folding the null check into this same early return is what lets the compiler — and
         // every block below it — treat `project` as non-null for the rest of this method, rather
@@ -227,36 +326,6 @@ public sealed partial class VerificationRunner(
                 gatesFingerprint, gateDurations: [], cancellationToken);
             logger.LogInformation("Run {RunId} verification passed: no gates configured", runId);
             return new SettlingVerificationResult(true, null, null);
-        }
-
-        // Before any gate runs, whether every path this run's branch changed against its base is
-        // content the project has declared non-executable (task: a delivered diff that touches no
-        // buildable or testable source skips the build and test gates — origin: ef2fefe5, a
-        // two-file skill markdown fix paying roughly twelve minutes of build-and-test ceremony on
-        // every pipeline entry while the actual work took four). Classified afresh at every entry
-        // into the gates — first delivery, an intermediate review-cycle reverify, and every
-        // follow-up lap alike — never cached from an earlier entry's own verdict, so a fix lap that
-        // starts touching real source is judged on its own diff, not an earlier lap's content-only
-        // one. Unobservable git (GetChangedPathsAsync returning null) runs the gates as today,
-        // never guessed as content-only (AGENTS.md's "never guess at unobserved facts" rule) — the
-        // same convention DetectStrandedWorkAsync's own git reads already follow.
-        IReadOnlyList<string>? changedPaths = await GetChangedPathsAsync(
-            run.WorktreePath, run.BaseBranchOr(project.BaseBranch), run.StackedForkPoint(project.BaseBranch),
-            cancellationToken);
-        if (changedPaths is { Count: > 0 })
-        {
-            NonExecutablePathClassifier.ClassificationResult classification =
-                NonExecutablePathClassifier.Classify(changedPaths, project.EffectiveNonExecutablePaths);
-            if (classification.AllMatched)
-            {
-                IReadOnlyList<VerificationSkippedPath> skippedPaths =
-                    [.. classification.Paths.Select(path => new VerificationSkippedPath(path.Path, path.MatchedRule!))];
-                await RecordSkipAsync(runId, skippedPaths, cancellationToken);
-                logger.LogInformation(
-                    "Run {RunId} verification skipped: every changed path ({Count}) matched the project's non-executable set",
-                    runId, changedPaths.Count);
-                return new SettlingVerificationResult(true, null, null);
-            }
         }
 
         // run.RunDirectory is whatever RunDispatched recorded once, at dispatch — stale for a
