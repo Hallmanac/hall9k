@@ -419,7 +419,12 @@ Daemon startup runs a fixed order, which is what makes a restart safe: **adopt**
 runs first (reattaching, refreshing heartbeats, and processing anything that completed while the
 daemon was down), then **sweep** expired leases back to the queue, then **claim** new work,
 killing any superseded prior-generation process before redispatching. The net effect on one node
-is that a healthy agent is never killed by lease mechanics.
+is that a healthy agent is never killed by lease mechanics. A run adopted mid-verification-gate is
+the one case where adoption does not simply reattach: if the gate the old daemon started is still
+alive, that process tree is ended (`ProcessManagerBase.TerminateTree`) before the pipeline resumes
+and re-runs the gate from the start — a gate the old daemon left running is ended, never raced with
+a freshly spawned one, which is what closes off a stale process still holding the gate's own log
+file locked out from under the new attempt.
 
 Depth: [PLAN.md §6.2](../PLAN.md), Decisions Log #7, #12, #29, #69, #70.
 
