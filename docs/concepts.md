@@ -828,10 +828,28 @@ so; the tail is still held and still replays if the genesis ever turns up, but a
 the fleet can serve does not become servable by being asked for a fourth time. This is the mechanism
 that lets a freed or truncated stream finish on its own.
 
-**An established node pulls, or nothing happens.** A node that is none of the three above (not
-brand-new, not looking at a hole, holding no stream's tail without its head) never asks for
-anything older on its own, and there is no state it can reach that changes that. `h9k task pull
-<task-id>` asks every member for one stream by id; `h9k project pull <project>
+**The nodes of one owner's fleet reconcile with each other.** An owner's own nodes are not peers in
+the ordinary sense: every one of them is supposed to hold every fleet- and team-scoped event of
+each project it registers, so that any one of them can answer a new teammate's bootstrap in full.
+So on every sweep, for each node of this owner's own fleet that this node has no reconcile record
+for, it asks that one node for everything it holds of the project. Addressed to that node alone,
+never broadcast, because only that node's answer is of any use to this one. The node on the far end
+asks back the moment it reads the request, so the pair settles in both directions with nobody
+typing anything, and each side's own record is what stops a third ask. The exchange is recorded per
+(peer, project) and `h9k status` shows it in progress or complete with its counts; `h9k project
+reconcile <project>` runs it again by hand. An exchange that goes unanswered is asked once more and
+then reported, and a peer that has since left the fleet has its record closed unanswered instead,
+since nothing out there will answer it and the hand command only reaches the current fleet. A
+sibling this node is already bootstrapping off waits its turn: the two are never in flight with the
+same peer at once, and the reconcile is asked in full once that bootstrap closes.
+The origin is concrete: on 2026-09-21 the Mac held
+almost none of arx-platform's history while the Windows node held all of it, and a bootstrap that
+ranks one answerer had no way to notice.
+
+**An established node pulls, or nothing happens.** A node that is none of the four above (not
+brand-new, not looking at a hole, holding no stream's tail without its head, and already reconciled
+with its own fleet) never asks for anything older on its own, and there is no state it can reach
+that changes that. `h9k task pull <task-id>` asks every member for one stream by id; `h9k project pull <project>
 --since <global-sequence|all>` asks for a whole project's history from a bound. `h9k task add
 --from-issue` queues the first of those two by itself when the project's ledger names a task this
 node does not hold. All three are broadcasts to the whole project rather than ranked cascades,
@@ -848,9 +866,14 @@ sequence bound. An ordinary flush and a gap-fill name nothing and both still sto
 Naming is the rule rather than a human's hand being on it, which matters because the held-tail ask
 above names one stream and comes from the sweep: it asks a peer to complete history that already
 partly arrived here, which is the case the switch-on point was never meant to strand, and it can
-reach exactly that one stream and nothing else. What never bends, however specific the ask: a currently-private task
+reach exactly that one stream and nothing else. A fleet sibling's reconcile comes from the sweep too
+and names a bound of zero, which is the whole of the answering node's own log. What earns it that
+reach is not the naming on its own but who is asking: another node of the same owner is entitled to
+everything this one holds for the project, and withholding it is what split the fleet in the first
+place. What never bends, however specific the ask or however closely related the asker: a
+currently-private task
 or idea is never served, and no node is ever handed its own history back. Answers apply by origin
-event id, so a pull over streams a node already holds changes nothing.
+event id, so a pull, or a reconcile, over streams a node already holds changes nothing.
 
 **The other automatic ask that reaches just as far: a brand-new node's bootstrap.** A node joining a
 project holds nothing of it, asks every peer once, and has nobody to type an explicit pull on its
