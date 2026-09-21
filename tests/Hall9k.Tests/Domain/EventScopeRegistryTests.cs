@@ -76,6 +76,11 @@ public sealed class EventScopeRegistryTests
         // event-sourced state (that type's own doc says so), so nothing here is ever appended to a
         // stream and none of it has a scope to classify.
         "Hall9k.Domain.Features.Replication.EventCatchUpDecline",
+        // What one partial replicated stream's repair will do, decided before anything is written
+        // (PartialReplicatedStreamRepairPlanner): a startup repair's own working shape, never
+        // appended to any stream, so it has no scope to classify. The same exemption
+        // MessageEnvelopeV1 has above, for the same reason.
+        "Hall9k.Domain.Features.Replication.PartialReplicatedStreamRepairPlan",
     ];
 
     [Fact]
