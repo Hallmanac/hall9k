@@ -651,7 +651,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
                     ReviewStageCompositionMarkup(run.ReviewStageComposition),
                     run.DispatchedAt.ToLocalTime().ToString("g").EscapeMarkup(),
                     (run.PullRequestUrl ?? "-").EscapeMarkup(),
-                    FormatGateDurations(run.GateDurations));
+                    FormatGateColumn(run));
             }
 
             AnsiConsole.Write(runsTable);
@@ -1836,6 +1836,24 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             : string.Join(", ", durations.Select(gate => gate.HostCoupledSkipped
                 ? $"{gate.Gate.EscapeMarkup()} [dim]skipped (host-coupled)[/]"
                 : $"{gate.Gate.EscapeMarkup()} {DurationFormat.Short(gate.Duration)}{(gate.Passed ? string.Empty : " [red]✗[/]")}"));
+
+    /// <summary>
+    /// The Gates column's own entry point (task: a delivered diff that touches no buildable or
+    /// testable source skips the build and test gates): a run whose most recently recorded gate
+    /// entry was a content-only skip reads that instead of <see cref="FormatGateDurations"/>'s own
+    /// per-gate list, naming every changed path and the rule it matched — the same place a pass
+    /// shows its own gate list today. <see cref="RunListItem.LastVerificationSkippedPaths"/> is
+    /// cleared by the projection the moment a later real pass or failure lands, so this only ever
+    /// wins when the skip really is this run's newest gate entry.
+    /// </summary>
+    private static string FormatGateColumn(RunListItem run) =>
+        run.LastVerificationSkippedPaths is { Count: > 0 } skippedPaths
+            ? FormatVerificationSkip(skippedPaths)
+            : FormatGateDurations(run.GateDurations);
+
+    private static string FormatVerificationSkip(List<VerificationSkippedPath> skippedPaths) =>
+        "[dim]skipped — non-executable diff:[/] " + string.Join(", ", skippedPaths.Select(path =>
+            $"{path.Path.EscapeMarkup()} [dim]→[/] {path.MatchedRule.EscapeMarkup()}"));
 
     /// <summary>
     /// The plain flag for a gate whose newest recorded duration materially exceeds this
