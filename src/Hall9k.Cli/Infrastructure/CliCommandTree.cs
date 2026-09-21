@@ -1256,6 +1256,22 @@ public static class CliCommandTree
                     + "claim against anything external, and the platform records what its own channels can see.")
                 .WithExample("task", "log-interaction", "28b19893", "--party", "\"another agent session\"", "--summary", "\"Shared this run's worktree path with it\"")
                 .WithExample("task", "log-interaction", "28b19893", "--party", "\"the operator\"", "--summary", "\"Skip the workaround\"", "--human-directed", "--reason", "\"Real bug\"");
+            task.AddCommand<TaskRunLocalCommand>("run-local")
+                .WithDescription(
+                    "Stand this task's branch up locally, in the review worktree it already has, by the "
+                    + "project's own run skill — the command to run when a reviewer says yes to the offer a "
+                    + "QA or design review report ends with. The reviewer names no branch and no directory: "
+                    + "the offer carries the identity, and this resolves the rest off the task's current run. "
+                    + "It follows the skill's steps in order, takes an ephemeral port wherever the launch "
+                    + "command has somewhere to put one, and prints the address plus every step only a person "
+                    + "can do. A step that needs you stops the launch and says what to do; --continue picks up "
+                    + "at the next one. It refuses when the worktree is gone, when the project has no run "
+                    + "skill (nothing records how it is started, and this will not guess), or when a launch of "
+                    + "the same task is already up. --stop ends it; so does the task closing out or the "
+                    + "worktree being removed, so nothing is left running.")
+                .WithExample("task", "run-local", "28b19893")
+                .WithExample("task", "run-local", "28b19893", "--continue")
+                .WithExample("task", "run-local", "28b19893", "--stop");
             task.AddCommand<TaskAbandonCommand>("abandon")
                 .WithDescription(
                     "Abandon a task (terminal; releases any lease). Reaches every non-terminal state, drafts "
