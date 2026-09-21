@@ -130,6 +130,12 @@ public static class OrchestratorFeedInterest
         [typeof(GateStarted)] = OrchestratorFeedLevel.Everything,
         [typeof(GateEnded)] = OrchestratorFeedLevel.Everything,
         [typeof(VerificationPassed)] = OrchestratorFeedLevel.Everything,
+        // The skip sibling of the pass above (task: a delivered diff that touches no buildable or
+        // testable source skips the build and test gates, independent pre-PR review, cycle 1,
+        // conformance lens, low): without an entry here, the one run where the gates were
+        // deliberately skipped is the one the feed says nothing about after "the agent session
+        // finished; the gates are next".
+        [typeof(VerificationSkipped)] = OrchestratorFeedLevel.Everything,
         [typeof(ReviewDispatched)] = OrchestratorFeedLevel.Everything,
         [typeof(ReviewPassCompleted)] = OrchestratorFeedLevel.Everything,
         [typeof(ReviewCompleted)] = OrchestratorFeedLevel.Everything,
