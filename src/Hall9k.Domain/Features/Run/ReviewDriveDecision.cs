@@ -53,10 +53,21 @@ public sealed record ReviewDriveDecision(ReviewPersona Persona, bool SettingOn, 
     public string? WhyNotDriven =>
         Drives ? null
         : !SettingOn && !ProjectHasRunSkill
-            ? "this project has design-review driving turned off and has no run skill on its ledger"
+            ? $"this project has {DrivingName} turned off and has no run skill on its ledger"
         : SettingOn
             ? "this project has no run skill on its ledger, so nothing says how to stand its product up"
-            : "this project has design-review driving turned off";
+            : $"this project has {DrivingName} turned off";
+
+    /// <summary>
+    /// What the setting this decision read is called in a sentence a person reads — one clause per
+    /// persona, because each is a separate project setting somebody turns on or off by name
+    /// (<c>--design-review-drive</c>, <c>--qa-review-drive</c>), and a report that named the wrong
+    /// one would send a reader to change a setting that had nothing to do with their review.
+    /// </summary>
+    private string DrivingName =>
+        Persona == ReviewPersona.Qa ? "QA-review driving"
+        : Persona == ReviewPersona.Designer ? "design-review driving"
+        : "review driving";
 
     /// <summary>The decision a caller with nothing to read makes: the persona's own default, and no run skill.</summary>
     public static ReviewDriveDecision NoneFor(ReviewPersona persona) =>

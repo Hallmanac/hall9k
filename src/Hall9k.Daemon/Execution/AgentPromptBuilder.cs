@@ -3112,12 +3112,13 @@ public static class AgentPromptBuilder
     /// Log #63's ride-along contract, untouched by this change).
     /// </para>
     /// <para>
-    /// Internal rather than private because <see cref="DesignReviewPromptBuilder"/> assembles a
-    /// review prompt of its own (idea b9b09779, piece 3) and has to state the identical contract:
-    /// the designer's session is screened by the same <c>PrReviewEngine.HasUsableVerdict</c> as
-    /// every other, and the standing run-skill-drift question rides inside this section, so a
-    /// design prompt that restated the contract in its own words would be two contracts drifting
-    /// apart rather than one.
+    /// Internal rather than private because two other review prompts are assembled outside this
+    /// class and have to state the identical contract: the designer's
+    /// (<see cref="DesignReviewPromptBuilder"/>, idea b9b09779 piece 3) and the QA persona's
+    /// (<see cref="QaReviewPromptBuilder"/>, piece 2). Both are screened by the same
+    /// <c>PrReviewEngine.HasUsableVerdict</c> as every other session, and the standing
+    /// run-skill-drift question rides inside this section, so a review that restated the contract
+    /// in its own words would be two contracts drifting apart rather than one.
     /// </para>
     /// </summary>
     internal static void AppendFindingContract(
@@ -3414,8 +3415,9 @@ public static class AgentPromptBuilder
     /// </para>
     /// <para>
     /// Internal for the same reason <see cref="AppendFindingContract"/> is: the design review
-    /// (<see cref="DesignReviewPromptBuilder"/>) ends in the same verdict line the engine parses,
-    /// so it states this contract rather than one of its own.
+    /// (<see cref="DesignReviewPromptBuilder"/>) and the QA review
+    /// (<see cref="QaReviewPromptBuilder"/>) both end in the same verdict line the engine parses,
+    /// so each states this contract rather than one of its own.
     /// </para>
     /// </summary>
     internal static void AppendVerdictContract(
