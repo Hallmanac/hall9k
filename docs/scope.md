@@ -376,6 +376,29 @@ sugar over cutting one task and concluding in the same breath. An idea reaches o
 terminal states only by an explicit, separate act: `h9k idea conclude` (something came of
 discovery) or `h9k idea archive` (nothing did), each with the reason kept and nothing deleted.
 
+### Decisions and lessons
+
+Two event-sourced aggregates with their own streams, `Decision` and `Learning`, each record
+carrying a stable UUIDv7 id that is its citation key, a scope (a project, or the owner for a
+cross-project habit), the statement, and provenance the platform observed rather than inferred:
+who recorded it, the run and task it came from where there was one, whether a human was
+attending that run, and for a decision the origin incident and what it supersedes. `h9k decide
+"<statement>"` and `h9k learn "<statement>"` record; the bare positional form always writes and
+never reads, and `list`, `show` and the terminal verb (`supersede` for a decision, `retire` for
+a lesson, both requiring a reason and neither deleting anything) live behind their own
+subcommands. A statement typed at a shell carries explicit nulls for run and task rather than a
+guess. A decision recorded from inside a run is refused unless that run is human-attended, read
+off the run's own claim and whether the calling process is itself a spawned detached session:
+agents record lessons, humans record decisions.
+Project-scoped decisions and lessons are project-scoped events in the stamping classification
+registry, so M2a replication carries them; an owner-scoped one names no project and stays on the
+node that recorded it. Listing is an indexed query over one projection row per record.
+
+What this piece does **not** yet do: render PLAN.md §16 or any other markdown from these
+streams, import the existing log into them, retire the Decisions Log renumberer, or inject
+active lessons into agent prompts. Those are the other four pieces of idea d805fd8b and backlog
+55, and until they land PLAN.md §16 is still the hand-edited source it always was.
+
 ### Spikes
 
 `h9k task add --type spike --kind <research|experiment|prototype> --exit-criterion "<sentence>"`

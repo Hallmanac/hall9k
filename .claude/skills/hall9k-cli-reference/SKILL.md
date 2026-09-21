@@ -681,6 +681,49 @@ home yet (or had none at all), or `<home>/ideas/<shortid>-<slug>/workspace` when
 workspace path forward as the draft's agent context. Cutting a task never concludes or archives
 the idea — discovery may keep producing — so ending it is always the separate, explicit act above.
 
+**Decisions and lessons are event-sourced platform data, not markdown somebody edits** (idea
+d805fd8b, piece 1, Brian's ruling 2026-09-16; backlog 55 for the learnings half). Two aggregates
+with their own streams, `Decision` and `Learning`, each record's UUIDv7 id being its citation
+key — which is precisely what PLAN.md §16's sequential numbers could never be, since a number
+assigned at merge time forces a renumberer, a placeholder value object, a guard test, and a tail
+conflict on every stacked replay.
+
+```bash
+h9k decide "<statement>"                          # record a binding decision; prints the id, which is the citation key
+h9k decide "<statement>" --origin "<incident>"    # the concrete failure behind the rule; omit it when there genuinely was none
+h9k decide "<statement>" --supersedes <id>        # records both directions in one act: the new claim, and the old one's ending
+h9k decide "<statement>" --owner                  # a cross-project habit rather than one project's rule
+h9k decide "<statement>" --task <id>              # from inside a run: carries that run and task as provenance
+h9k decide list [--project <n>|--owner] [--all]   # binding by default; --all brings superseded ones back
+h9k decide show <id>                              # claim, scope, origin, provenance, what it replaced, what replaced it
+h9k decide supersede <id> --reason "<why>"        # terminal, appends, never deletes; --by <id> names the successor
+h9k learn "<statement>"                           # record a run-earned lesson; live immediately, no gate
+h9k learn "<statement>" --task <id>               # from inside a run: carries that run and task as provenance
+h9k learn "<statement>" --owner                   # a habit that holds wherever you work
+h9k learn list [--project <n>|--owner] [--all]    # active by default; --all brings retired ones back
+h9k learn show <id>                               # claim, scope, provenance, and why it was retired if it was
+h9k learn retire <id> --reason "<why>"            # terminal, appends, never deletes
+```
+
+Four rules are worth knowing before you call either one. **The bare positional form always
+writes and never reads**, so no shape of these commands looks like a query and turns out to have
+appended an event; a statement whose entire text is a subcommand name goes through `h9k decide
+record "list"`. **Provenance is observed, never inferred**: name your task with `--task` and the
+record carries that run and task, leave it off and both are explicit nulls rather than a guess
+from a working directory. **Agents record lessons, humans record decisions** — a decision
+recorded from inside a run is refused unless that run is human-attended, read off the run's own
+claim sentinel plus whether the calling process is itself a spawned detached session, never off
+the `HALL9K_INTERACTIVE_RUN_ID` variable a spawned contractor would inherit. And **nothing deletes**: both terminal verbs append with a required reason, and
+nothing retires a lesson on age or on silence, because a lesson that works suppresses its own
+evidence.
+
+Scope decides travel. A project-scoped record is a project-scoped event in the stamping
+classification registry and rides M2a replication with the rest of that project's streams; an
+owner-scoped one names no project, so no outbox picks it up and it stays on the node that
+recorded it. Project is the default and `--owner` is the deliberate act, because the failure is
+asymmetric: too narrow means one project misses something useful, too wide means a wrong
+statement rides in every prompt everywhere.
+
 Task development and task dispatch are separate lifecycles (Decisions Log #34): `h9k task add`
 creates a **draft**, and nothing dispatches until a human publishes and assigns it.
 
