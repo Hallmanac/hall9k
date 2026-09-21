@@ -908,6 +908,71 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// A dotnet-test-shaped gate's own header write — truncating <c>verify-*.log</c> before the
+    /// gate ever spawns — is where the Windows incident this task closes actually bites (2026-09-19:
+    /// a daemon restart mid-gate left the old process tree still holding the file locked, and the
+    /// resumed pipeline crash-looped reopening it instead of failing honestly). Locking the log
+    /// with <see cref="FileShare.None"/> for the whole run reproduces that lock deterministically
+    /// on both platforms, the same mechanism
+    /// <see cref="A_gate_whose_log_cannot_be_read_classifies_as_infrastructure_rather_than_as_the_agents_work"/>
+    /// already uses for the read side. The gate's own <c>Command</c> never actually runs: the
+    /// IOException fires before <c>Process.Start</c> on both attempts, so nothing here is a real
+    /// gate spawn.
+    /// </summary>
+    [Fact]
+    public async Task An_IOException_opening_the_verify_log_at_gate_start_is_an_infrastructure_failure_naming_the_recorded_gate_process()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId) = await SeedAsync(store,
+            [new VerifyCommand("dead", "dotnet test-hall9k-fake-and-never-actually-run")], cts.Token);
+
+        // A stale ActiveGate this run's own stream already carried before this call — the
+        // failure must still name whatever the stream held even when this defensive backstop
+        // is reached without startup adoption's own cleanup (task: a daemon restart that
+        // adopts a run mid-gate ends that gate's orphaned tree instead of racing it) having
+        // run first, which is exactly the shape a residual OS teardown delay right after that
+        // cleanup would leave behind.
+        DateTimeOffset priorGateStartedAt = Now;
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Events.Append(runId, new GateStarted(runId, "dead", 999999, priorGateStartedAt, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        string runDirectory = RunPaths.GlobalDirectory(runId);
+        Directory.CreateDirectory(runDirectory);
+        using FileStream locked = new(
+            Path.Combine(runDirectory, "verify-dead.log"), FileMode.Create, FileAccess.ReadWrite, FileShare.None);
+
+        bool passed = await NewRunner(store).VerifyAsync(runId, taskId, scopeSinceSha: null, "test", RunSessionLeg.Build, cts.Token);
+
+        passed.Should().BeFalse("the verify log stays locked across the retry, so the run still fails");
+
+        await using IQuerySession query = store.QuerySession();
+        var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+        events.Select(e => e.Data).OfType<GateRetried>().Should().ContainSingle(
+            "an IOException opening the verify log earns the gate its one retry, same as any other infrastructure failure")
+            .Which.Cause.Should().Contain("could not open its verify log");
+
+        // Never re-entered through the stranded-pipeline sweep: VerifyAsync returns a genuine
+        // terminal RunFailed rather than throwing, which is what used to leave the run
+        // Verifying with no monitor for ResumeStrandedPipelinesAsync to crash-loop reopening
+        // the same locked file every dispatch cycle (the incident this task closes).
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.State.Value.Should().Be("Failed");
+        run.FailureReason.Should().Contain("infrastructure-classified")
+            .And.Contain("could not open its verify log")
+            .And.Contain("999999", "the failure names the run's own recorded gate process rather than staying silent about it");
+
+        // Nothing was ever spawned for either attempt — the stale GateStarted this test seeded
+        // up front is the only one on the stream, so a gate start that never happened never
+        // left an unrecorded process behind either.
+        events.Select(e => e.Data).OfType<GateStarted>().Should().ContainSingle(
+            "both attempts failed opening the log before Process.Start, so neither ever recorded a fresh GateStarted");
+    }
+
+    /// <summary>
     /// A gate the operating system refused to launch produced no evidence about anything, so it
     /// classifies as infrastructure whatever words the spawn failure happened to use. The
     /// classifier's marker list recognizes what a gate PRINTED, and a gate that never started

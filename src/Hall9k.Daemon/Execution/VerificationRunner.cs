@@ -323,7 +323,7 @@ public sealed partial class VerificationRunner(
 
             Stopwatch gateStopwatch = Stopwatch.StartNew();
             (bool passed, string summary, bool isInfrastructureFailure, string? excerpt, bool fellBackToFull, TimeSpan permitWaitElapsed) =
-                await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, cancellationToken);
+                await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, run.ActiveGate, cancellationToken);
             TimeSpan gateElapsed = gateStopwatch.Elapsed - permitWaitElapsed;
             bool gateFellBackToFull = fellBackToFull;
             if (passed)
@@ -380,7 +380,7 @@ public sealed partial class VerificationRunner(
 
             Stopwatch retryStopwatch = Stopwatch.StartNew();
             (bool retryPassed, string retrySummary, bool retryIsInfrastructureFailure, _, bool retryFellBackToFull, TimeSpan retryPermitWaitElapsed) =
-                await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, cancellationToken);
+                await RunGateAsync(runId, runDirectory, run.WorktreePath, gate, scope, run.ActiveGate, cancellationToken);
             TimeSpan totalGateElapsed = gateElapsed + retryStopwatch.Elapsed - retryPermitWaitElapsed;
 
             // The retry's own outcome replaces the first attempt's, not OR's with it (adversarial
@@ -1065,7 +1065,7 @@ public sealed partial class VerificationRunner(
     private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt, bool FellBackToFull, TimeSpan PermitWaitElapsed)>
         RunGateAsync(
         Guid runId, string runDirectory, string worktreePath, VerifyCommand gate, TestGateScope? scope,
-        CancellationToken cancellationToken)
+        ActiveGate? recordedActiveGate, CancellationToken cancellationToken)
     {
         string logFile = Path.Combine(runDirectory, $"verify-{Sanitize(gate.Name)}.log");
         Directory.CreateDirectory(runDirectory);
@@ -1115,7 +1115,31 @@ public sealed partial class VerificationRunner(
         {
             // Written before the gate runs, not appended after: the run artifacts say which mode
             // ran and why even if the gate itself times out or the process never produces output.
-            await File.WriteAllTextAsync(logFile, header, cancellationToken);
+            try
+            {
+                await File.WriteAllTextAsync(logFile, header, cancellationToken);
+            }
+            catch (IOException ioException)
+            {
+                // A lock an orphaned prior attempt left on this exact log is an infrastructure
+                // failure by construction (Windows field report, 2026-09-19: a daemon restart
+                // mid-gate left the old process tree holding verify-test.log locked, and the
+                // resumed pipeline crash-looped reopening it every dispatch cycle instead of
+                // failing honestly and spending its retry) — nothing of the gate ran, so nothing
+                // was observed about the agent's own work. Named against whatever gate process
+                // this run's own stream still recorded before this attempt started, since that is
+                // the process most likely still holding the handle if startup adoption's own
+                // orphan-tree cleanup (RunSupervisor.AdoptOrphansAsync) missed it, or the
+                // operating system simply has not finished releasing it yet.
+                string recordedGateProcessDescription = recordedActiveGate is { } activeGate
+                    ? $"the run's own recorded gate process for '{activeGate.GateName}' (pid {activeGate.ProcessId}, started {activeGate.StartedAt:u})"
+                    : "no gate process recorded on the run";
+                string openFailure =
+                    $"Gate '{gate.Name}' could not open its verify log at '{logFile}': {ioException.Message} " +
+                    $"-- {recordedGateProcessDescription} may still be holding it. Nothing of the gate ran, " +
+                    "so this says nothing about the work under test.";
+                return (false, openFailure, true, null, false, TimeSpan.Zero);
+            }
         }
 
         string redirect = header is null ? ">" : ">>";
@@ -1143,7 +1167,7 @@ public sealed partial class VerificationRunner(
             (bool passed, string summary, bool isInfrastructureFailure, string? infrastructureExcerpt, bool fellBackToFull) =
                 await RunGateProcessAsync(
                     runId, runDirectory, worktreePath, gate, scope, logFile, gateWaitDirectory, innerCommand,
-                    cancellationToken);
+                    recordedActiveGate, cancellationToken);
             return (passed, summary, isInfrastructureFailure, infrastructureExcerpt, fellBackToFull, permitWaitElapsed);
         }
         finally
@@ -1183,7 +1207,8 @@ public sealed partial class VerificationRunner(
     private async Task<(bool Passed, string Summary, bool IsInfrastructureFailure, string? InfrastructureExcerpt, bool FellBackToFull)>
         RunGateProcessAsync(
         Guid runId, string runDirectory, string worktreePath, VerifyCommand gate, TestGateScope? scope,
-        string logFile, string gateWaitDirectory, string innerCommand, CancellationToken cancellationToken)
+        string logFile, string gateWaitDirectory, string innerCommand, ActiveGate? recordedActiveGate,
+        CancellationToken cancellationToken)
     {
         using Process process = new();
         process.StartInfo = new ProcessStartInfo
@@ -1265,7 +1290,36 @@ public sealed partial class VerificationRunner(
         // gate is executing is reported as live work in progress, never as stalled with no
         // session recorded) — the gate's own pid-plus-start-time, the identical shape an agent
         // session already carries (the PID-reuse guard, log #2).
-        await RecordGateStartedAsync(runId, gate.Name, process.Id, ReadProcessStartedAt(process), cancellationToken);
+        DateTimeOffset gateProcessStartedAt = ReadProcessStartedAt(process);
+        try
+        {
+            await RecordGateStartedAsync(runId, gate.Name, process.Id, gateProcessStartedAt, cancellationToken);
+        }
+        catch (Exception exception)
+        {
+            // Unlike a daemon shutdown caught further down this method (where GateStarted has
+            // already landed, so a restart's own adoption can find and end this process later),
+            // a GateStarted that never reaches the stream leaves nothing for any future adoption
+            // sweep to discover at all — this process cannot become an orphan a restart later
+            // cleans up, because nothing will ever know it exists (task: a gate start that fails
+            // to record never leaves an unrecorded tree behind). Killed here, unconditionally,
+            // before this rethrows.
+            try
+            {
+                processManager.TerminateTree(process.Id, gateProcessStartedAt);
+            }
+            catch (Exception terminateException)
+            {
+                logger.LogWarning(terminateException,
+                    "Run {RunId}: could not terminate the just-started gate '{Gate}' process (pid {ProcessId}) after GateStarted failed to record",
+                    runId, gate.Name, process.Id);
+            }
+
+            logger.LogWarning(exception,
+                "Run {RunId}: GateStarted failed to record for gate '{Gate}' (pid {ProcessId}) — its process tree was terminated rather than left unrecorded",
+                runId, gate.Name, process.Id);
+            throw;
+        }
 
         // Whether this attempt's own end is safe to record: every path below that actually waits
         // for the process (the timeout branch's own kill-and-wait, or an ordinary exit) confirms
@@ -1382,7 +1436,7 @@ public sealed partial class VerificationRunner(
                             await RunGateAsync(
                                 runId, runDirectory, worktreePath, gate,
                                 TestGateScope.Full($"{vacuityDescription} ({scope.Reason})"),
-                                cancellationToken);
+                                recordedActiveGate, cancellationToken);
                         return (fallbackPassed, fallbackSummary, fallbackIsInfrastructureFailure, fallbackExcerpt, true);
                     }
                 }
