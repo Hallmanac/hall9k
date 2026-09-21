@@ -118,10 +118,19 @@ public static class CliCommandTree
                     + "possession of a secret from h9k node invite/h9k project invite by writing "
                     + "HMAC(secret, this node's own key fingerprint) into this node's own node file's proof "
                     + "field — the minting node's own daemon sweep matches it and vouches this node in, no "
-                    + "further prompt needed; refused together with --owner.")
+                    + "further prompt needed; refused together with --owner. A node whose own key is already "
+                    + "vouched under this owner's root on another registered project ledger carries that "
+                    + "vouch in as evidence when the project being joined has no root yet (task f53fecfd, "
+                    + "--from-project names the source ledger explicitly, otherwise every registered project "
+                    + "is searched) — establishes owners/<root>/root.yaml and owners/<root>/carried/<node-id>"
+                    + ".yaml in one push, verified offline by every other node's own chain read, with no need "
+                    + "for the root-holding node to ever touch this project. Refused with one plain sentence, "
+                    + "and every other branch unchanged, when no source vouch exists, this node's key is "
+                    + "revoked on the source, or the project being joined already has a root.")
                 .WithExample("project", "join", "hall9k")
                 .WithExample("project", "join", "hall9k", "--owner", "3f9c2a7e1b5d84a6f0c3e2b1a9d8c7f6e5d4c3b2a1908f7e6d5c4b3a29180716")
-                .WithExample("project", "join", "hall9k", "--invite", "3f9c2a7e...d1908f7e.9a41c6...");
+                .WithExample("project", "join", "hall9k", "--invite", "3f9c2a7e...d1908f7e.9a41c6...")
+                .WithExample("project", "join", "bioage-calc", "--from-project", "hall9k");
             project.AddCommand<ProjectAssignKeyCommand>("assign-key")
                 .WithDescription(
                     "One-time backfill of the project's own key (idea 202383dc, M2) for a ledger whose "

@@ -338,7 +338,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             chainReader: null, promptForInviteToken: null, cancellationToken);
 
     /// <summary>The full overload, wiring a real <see cref="ILedgerChainReader"/> and the console
-    /// prompt through to <see cref="ProjectJoinCommand.RunAsync(IDocumentSession,ProjectDetails,string?,string?,ILedger,NodeKeyStore,ProjectGitHubAccessMirror,ILedgerChainReader?,Func{string?}?,CancellationToken)"/>
+    /// prompt through to <see cref="ProjectJoinCommand.RunAsync(IDocumentSession,ProjectDetails,string?,string?,string?,ILedger,NodeKeyStore,ProjectGitHubAccessMirror,ILedgerChainReader?,ILedgerCommitReader?,Func{string?}?,CancellationToken)"/>
     /// so h9k project add's own join asks for the invite token on the spot exactly as a standalone
     /// h9k project join does, and records the project key the same way too (independent pre-PR
     /// review, cycle 1, conformance and adversarial lenses, both medium).</summary>
@@ -360,8 +360,8 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         {
             ProjectDetails project = (await session.LoadAsync<ProjectDetails>(projectId, cancellationToken))!;
             ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
-                session, project, claimedOwnerOverride: null, invite, ledger, keyStore, githubAccess,
-                chainReader, promptForInviteToken, cancellationToken);
+                session, project, claimedOwnerOverride: null, invite, fromProject: null, ledger, keyStore, githubAccess,
+                chainReader, commitReader: null, promptForInviteToken, cancellationToken);
             ProjectJoinCommand.Report(project, outcome);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)

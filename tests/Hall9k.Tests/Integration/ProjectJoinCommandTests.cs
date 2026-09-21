@@ -148,8 +148,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         await ProjectJoinCommand.RunAsync(
-            session, project, existingGenesisRoot, invite: null, ledger, new NodeKeyStore(),
-            GitHubAccessFakes.GrantingPush(), chainReader, promptForInviteToken: null, cts.Token);
+            session, project, existingGenesisRoot, invite: null, fromProject: null, ledger, new NodeKeyStore(),
+            GitHubAccessFakes.GrantingPush(), chainReader, commitReader: null, promptForInviteToken: null, cts.Token);
 
         ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
         updatedProject.ProjectKey.Should().Be(existingProjectKey);
@@ -266,8 +266,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
-            session, project, claimedOwnerOverride: null, invite: null, ledger, new NodeKeyStore(),
-            GitHubAccessFakes.GrantingPush(), chainReader: null, promptForInviteToken: PromptOnce, cts.Token);
+            session, project, claimedOwnerOverride: null, invite: null, fromProject: null, ledger, new NodeKeyStore(),
+            GitHubAccessFakes.GrantingPush(), chainReader: null, commitReader: null, promptForInviteToken: PromptOnce, cts.Token);
 
         prompted.Should().Be(1, "a terminal asks for the token exactly once");
         outcome.Deferred.Should().BeFalse("a real token was pasted, so this runs the ordinary --invite path instead of deferring");
@@ -297,8 +297,8 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         using ScopedAnsiConsoleCapture capture = ScopedAnsiConsoleCapture.Begin();
         ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
-            session, project, claimedOwnerOverride: null, invite: null, ledger, new NodeKeyStore(),
-            GitHubAccessFakes.GrantingPush(), chainReader: null, promptForInviteToken: PromptWithEnter, cts.Token);
+            session, project, claimedOwnerOverride: null, invite: null, fromProject: null, ledger, new NodeKeyStore(),
+            GitHubAccessFakes.GrantingPush(), chainReader: null, commitReader: null, promptForInviteToken: PromptWithEnter, cts.Token);
 
         prompted.Should().Be(1, "a terminal still asks once, even though the answer is blank");
         outcome.Deferred.Should().BeTrue();
