@@ -282,7 +282,7 @@ public sealed class TaskBrowseTests
     {
         TaskListCommand.Settings settings = new() { Epic = "28b19893" };
 
-        string message = TaskListCommand.EmptyResultMessage(hiddenArchived: 2, settings, project: null);
+        string message = TaskListCommand.EmptyResultMessage(hiddenArchived: 2, hiddenPartialHistory: 0, settings, project: null);
 
         message.Should().Contain("--epic 28b19893",
             "the suggested command must keep filtering to this epic, not the whole install");
@@ -293,7 +293,8 @@ public sealed class TaskBrowseTests
     [Fact]
     public void A_truly_unfiltered_view_that_is_all_archived_says_so_plainly()
     {
-        string message = TaskListCommand.EmptyResultMessage(hiddenArchived: 5, new TaskListCommand.Settings(), project: null);
+        string message = TaskListCommand.EmptyResultMessage(
+            hiddenArchived: 5, hiddenPartialHistory: 0, new TaskListCommand.Settings(), project: null);
 
         message.Should().Be("[dim]Every task is archived. See them with:[/] h9k task list --include-archived");
     }
