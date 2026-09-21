@@ -5,6 +5,26 @@ using Xunit;
 
 namespace Hall9k.Tests.Cli;
 
+/// <summary>
+/// <see cref="WindowsStandardHandleInheritance"/> against a real, known-inheritable handle
+/// installed as this process's own <c>STD_OUTPUT_HANDLE</c>.
+/// <para>
+/// <c>[Collection("RealProcessSpawn")]</c> (PLAN.md §16 #172): the shared resource this class
+/// contends for is not the runner's process-creation throughput but this process's own
+/// std-handle inherit flags, and the guard under test is the only thing in the tree that writes
+/// them. <c>WindowsDaemonLaunchTests</c> is the one other class that reaches it —
+/// <c>WindowsDaemonLaunch.Create</c> opens the same guard around every real child it creates —
+/// and unfenced the two interleave: that class's guard clears the flag on the fixture handle
+/// first, so this test's own guard finds nothing left to clear, its dispose has nothing to
+/// restore, and the restore assertion reads the 0 the other guard is still holding. Origin
+/// incident: a full Windows suite run on 2026-09-19 failed on that assertion alone ("expected
+/// 1u ... but found 0u") and passed immediately under <c>--filter</c>; PR #530's own mandatory
+/// final gate failed the identical way. Both classes now share one lane, which is also where
+/// #172 would have put <c>WindowsDaemonLaunchTests</c> on its own grounds.
+/// </para>
+/// </summary>
+[Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class WindowsStandardHandleInheritanceTests
 {
     private const int StdOutputHandle = -11;
