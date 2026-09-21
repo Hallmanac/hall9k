@@ -47,7 +47,9 @@ public sealed class EventScopeRegistryTests
     [
         "Hall9k.Domain.Features.Connection.CredentialKind",
         "Hall9k.Domain.Features.Connection.CredentialReference",
+        "Hall9k.Domain.Features.Decision.DecisionStatus",
         "Hall9k.Domain.Features.Epic.EpicState",
+        "Hall9k.Domain.Features.Learning.LearningStatus",
         "Hall9k.Domain.Features.Idea.IdeaSeed",
         "Hall9k.Domain.Features.Idea.IdeaState",
         "Hall9k.Domain.Features.Invite.VouchedProjectRecord",

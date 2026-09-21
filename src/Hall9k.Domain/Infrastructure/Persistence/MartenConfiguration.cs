@@ -1,8 +1,10 @@
 using Hall9k.Domain.Features.Connection;
 using Hall9k.Domain.Features.Courier;
+using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Invite;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Orchestrator;
@@ -69,5 +71,15 @@ public static class MartenConfiguration
         opts.Projections.Add<InviteDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<OrchestratorPresenceDetailsProjection>(ProjectionLifecycle.Inline);
         opts.Projections.Add<CourierRunDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<DecisionDetailsProjection>(ProjectionLifecycle.Inline);
+        opts.Projections.Add<LearningDetailsProjection>(ProjectionLifecycle.Inline);
+
+        // Idea d805fd8b, piece 1: h9k decide list and h9k learn list both filter on the scope
+        // coordinate and nothing else, so it is the one field on either row worth an index.
+        // Named here rather than left to a jsonb scan because these two tables are the only ones
+        // in this store designed to grow without bound — every ruling and every run-earned lesson
+        // this platform records lands in one of them, and nothing ever deletes a row.
+        opts.Schema.For<DecisionDetails>().Index(decision => decision.ScopeId);
+        opts.Schema.For<LearningDetails>().Index(learning => learning.ScopeId);
     }
 }
