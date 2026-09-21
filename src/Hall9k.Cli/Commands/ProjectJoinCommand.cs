@@ -62,7 +62,8 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             + "for one. Only ever considered when this join names no --owner and no --invite, and only "
             + "when the target ledger has no root for R yet — refused with one plain sentence, and the "
             + "join otherwise unchanged, when no source vouch exists, this node's key is revoked on the "
-            + "source, or the target already has a root for R.")]
+            + "source, the source's own vouch predates key-bound vouches (re-run h9k node vouch there "
+            + "first), or the target already has a root for R.")]
         public string? FromProject { get; init; }
     }
 
@@ -1087,6 +1088,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         }
 
         bool revokedFound = false;
+        bool oldFormatVouchFound = false;
         foreach (ProjectDetails source in candidates)
         {
             TrustChain sourceChain;
@@ -1154,6 +1156,23 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
                 continue;
             }
 
+            // Mirrors GitLedgerChainReader.VerifyCarriedRecordAsync's own check 3 exactly: the
+            // reader accepts a carried vouch only when its signed commit message names both this
+            // node id AND the fingerprint of the exact key it carries. A vouch written before that
+            // binding shipped ("Vouch node {id}", or "Vouch node {id} (invite)" — every vouch
+            // NodeVouchCommand or InviteSweepEngine wrote before this branch) will never satisfy it.
+            // Carrying one in anyway would write a bundle no later read can ever verify, permanently
+            // burning this project's own root.yaml slot the identical way a delegate-signed vouch
+            // would above (independent pre-PR review, cycle 3, both lenses, high). Skipped rather
+            // than failed outright, for the same reason as every other check in this loop: another
+            // candidate project may hold a fresh, key-bound vouch for this node.
+            string vouchMarker = $"Vouch node {nodeId} key {key.Fingerprint}";
+            if (!vouchSigned.RawCommitBytes.Contains(vouchMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                oldFormatVouchFound = true;
+                continue;
+            }
+
             string carriedContent = BuildCarriedRecordYaml(
                 nodeId, key.PublicKeyLine, source.Id, source.ProjectKey, source.RepositoryUrl?.ToString() ?? source.RepositoryPath,
                 rootSigned, vouchSigned, now);
@@ -1183,10 +1202,14 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             false, null,
             revokedFound
                 ? $"This node's key is revoked under owner {root} on the source ledger — nothing carried in."
-                : "No source vouch was found for this node's key under owner "
-                    + $"{root} on any registered project ledger"
-                    + (fromProjectName.IsNotBlank() ? $" named '{fromProjectName}'" : string.Empty)
-                    + " — nothing carried in.");
+                : oldFormatVouchFound
+                    ? $"This node's vouch under owner {root} predates key-bound vouches and cannot be carried "
+                        + "in safely — re-run h9k node vouch for this node on the source project first, then "
+                        + "retry h9k project join."
+                    : "No source vouch was found for this node's key under owner "
+                        + $"{root} on any registered project ledger"
+                        + (fromProjectName.IsNotBlank() ? $" named '{fromProjectName}'" : string.Empty)
+                        + " — nothing carried in.");
     }
 
     /// <summary>
