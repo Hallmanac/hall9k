@@ -128,6 +128,17 @@ public static class EventScopeRegistry
         [typeof(HumanThreadReplyParked)] = EventScope.ProjectScoped,
         [typeof(InteractiveSessionEnded)] = EventScope.NodeScoped,
         [typeof(InteractiveSessionStarted)] = EventScope.NodeScoped,
+        // A reviewer's own local launch (idea b9b09779, piece 5), node-scoped for the same reason
+        // the liveness markers above are and then some: every field on these is about one machine
+        // — a pid, a port bound on that machine's loopback, a worktree path under that machine's
+        // own home. Replicating them would put one member's filesystem layout on everybody else's
+        // disk to describe a process nobody else can see, let alone end.
+        [typeof(LocalLaunchFailed)] = EventScope.NodeScoped,
+        [typeof(LocalLaunchPausedForHuman)] = EventScope.NodeScoped,
+        [typeof(LocalLaunchResumed)] = EventScope.NodeScoped,
+        [typeof(LocalLaunchRunning)] = EventScope.NodeScoped,
+        [typeof(LocalLaunchStarted)] = EventScope.NodeScoped,
+        [typeof(LocalLaunchStopped)] = EventScope.NodeScoped,
         [typeof(PreFinalPassRebaseRecoveryCompleted)] = EventScope.NodeScoped,
         [typeof(PreFinalPassRebaseRecoveryDispatched)] = EventScope.NodeScoped,
         [typeof(PrReviewConformanceCompleted)] = EventScope.ProjectScoped,

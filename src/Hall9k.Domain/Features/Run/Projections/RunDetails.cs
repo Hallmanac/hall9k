@@ -129,6 +129,14 @@ public sealed class RunDetails : IJsonOnDeserialized
     /// </summary>
     public ActiveGate? ActiveGate { get; set; }
     /// <summary>
+    /// The local launch a reviewer asked for on this run's own checkout, or null when none was
+    /// ever started (idea b9b09779, piece 5). One slot rather than a list: a run has one worktree,
+    /// two launches of it would race each other, and <c>h9k task run-local</c> refuses a second
+    /// while this one is live — so the newest launch is the only one there is anything left to say
+    /// about, and a stopped one stays here as the record that it ended and why.
+    /// </summary>
+    public LocalLaunchState? LocalLaunch { get; set; }
+    /// <summary>
     /// When this run started waiting on the node-wide host-coupled-gate permit, or null when it
     /// is not waiting (task: at most one host-coupled gate runs on a node at a time —
     /// #225). Set by <see cref="Events.RunHostCoupledGateWaitStarted"/>, cleared
@@ -1564,6 +1572,84 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.ExternalInteractions.Add(new ExternalInteractionRecord(
             @event.Data.LoggedAt, @event.Data.Party, @event.Data.Summary, @event.Data.HumanDirected,
             @event.Data.Reason));
+
+    public void Apply(IEvent<LocalLaunchStarted> @event, RunDetails view) =>
+        view.LocalLaunch = new LocalLaunchState(
+            @event.Data.LaunchId, @event.Data.TaskId, @event.Data.NodeId, @event.Data.WorktreePath,
+            @event.Data.Steps,
+            NextStepNumber: 1, AwaitingHumanAtStep: null, Processes: [], @event.Data.Walker,
+            Port: null, Address: string.Empty,
+            @event.Data.StartedAt, StoppedReason: null, StoppedAt: null, FailedAtStep: null, FailedReason: null);
+
+    public void Apply(IEvent<LocalLaunchPausedForHuman> @event, RunDetails view) =>
+        view.LocalLaunch = Launch(view, @event.Data.LaunchId) is { } launch
+            ? launch with
+            {
+                NextStepNumber = @event.Data.StepNumber,
+                AwaitingHumanAtStep = @event.Data.StepNumber,
+                Walker = null,
+            }
+            : view.LocalLaunch;
+
+    public void Apply(IEvent<LocalLaunchResumed> @event, RunDetails view) =>
+        view.LocalLaunch = Launch(view, @event.Data.LaunchId) is { } launch
+            ? launch with
+            {
+                NextStepNumber = @event.Data.FromStepNumber,
+                AwaitingHumanAtStep = null,
+                Walker = @event.Data.Walker,
+            }
+            : view.LocalLaunch;
+
+    public void Apply(IEvent<LocalLaunchRunning> @event, RunDetails view) =>
+        view.LocalLaunch = Launch(view, @event.Data.LaunchId) is { } launch
+            ? launch with
+            {
+                NextStepNumber = @event.Data.NextStepNumber,
+                AwaitingHumanAtStep = null,
+                Processes = @event.Data.Processes,
+                // The pass that recorded this is over: it walked to the end of the plan or to the
+                // step it is about to pause at, and the h9k process that did it exits moments
+                // later. Leaving it set would have the next reader take a dead pid for a walk
+                // still in flight.
+                Walker = null,
+                Port = @event.Data.Port,
+                Address = @event.Data.Address,
+            }
+            : view.LocalLaunch;
+
+    public void Apply(IEvent<LocalLaunchFailed> @event, RunDetails view) =>
+        view.LocalLaunch = Launch(view, @event.Data.LaunchId) is { } launch
+            ? launch with
+            {
+                AwaitingHumanAtStep = null,
+                Processes = [],
+                Walker = null,
+                FailedAtStep = @event.Data.StepNumber,
+                FailedReason = @event.Data.Reason,
+            }
+            : view.LocalLaunch;
+
+    public void Apply(IEvent<LocalLaunchStopped> @event, RunDetails view) =>
+        view.LocalLaunch = Launch(view, @event.Data.LaunchId) is { } launch
+            ? launch with
+            {
+                AwaitingHumanAtStep = null,
+                Processes = [],
+                Walker = null,
+                StoppedReason = @event.Data.Reason,
+                StoppedAt = @event.Data.StoppedAt,
+            }
+            : view.LocalLaunch;
+
+    /// <summary>
+    /// The recorded launch, but only when the event names the same one. A launch event for some
+    /// other launch id is one this document has already been superseded past — a stop arriving
+    /// after a fresh launch started, say — and applying it would move the live launch's state on a
+    /// fact observed about a dead one.
+    /// </summary>
+    private static LocalLaunchState? Launch(RunDetails view, Guid launchId) =>
+        view.LocalLaunch is { } launch && launch.LaunchId == launchId ? launch : null;
 
     public void Apply(IEvent<RunPhaseDelegated> @event, RunDetails view) =>
         view.PhaseDelegations.Add(new PhaseDelegation(
