@@ -277,6 +277,15 @@ public sealed class DaemonOptions
     public TimeSpan RunSkillSweepPollInterval { get; set; } = TimeSpan.FromSeconds(60);
 
     /// <summary>
+    /// How often <c>LocalLaunchSweepEngine</c> checks whether a reviewer's local launch should
+    /// come down (idea b9b09779, piece 5). Faster than the run-skill sweep above because what it
+    /// catches is a real process holding a real port on somebody's own machine, and slower than
+    /// the run loops because the three things that end a launch — a closeout, a released worktree,
+    /// a process that died — are none of them urgent to the second.
+    /// </summary>
+    public TimeSpan LocalLaunchSweepPollInterval { get; set; } = TimeSpan.FromSeconds(20);
+
+    /// <summary>
     /// The turn ceiling on a run-skill discovery session (idea b9b09779, piece 4) — the same
     /// mechanically-enforced narrowness <see cref="StackAssessmentMaxTurns"/> gives the stack
     /// assessment, a little wider because this session reads several files before it writes

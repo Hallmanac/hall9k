@@ -1303,6 +1303,10 @@ public sealed class RunLauncher(
 
         foreach (RunDetails previous in previousRuns.Where(r => r.WorktreePath.IsNotBlank() && Directory.Exists(r.WorktreePath)))
         {
+            // A local launch left standing in that earlier run's checkout comes down before the
+            // checkout does (LocalLaunchProcesses' own doc).
+            LocalLaunchProcesses.EndAll(previous.LocalLaunch);
+
             try
             {
                 await worktrees.RemoveAsync(repositoryPath, previous.WorktreePath, cancellationToken);
@@ -1374,6 +1378,10 @@ public sealed class RunLauncher(
         {
             if (previous.WorktreePath.IsNotBlank() && Directory.Exists(previous.WorktreePath))
             {
+                // Same as the merged-workspace cleanup above: a launch standing in that earlier
+                // pr-review checkout comes down before the checkout does.
+                LocalLaunchProcesses.EndAll(previous.LocalLaunch);
+
                 try
                 {
                     await worktrees.RemoveAsync(project.RepositoryPath, previous.WorktreePath, cancellationToken);

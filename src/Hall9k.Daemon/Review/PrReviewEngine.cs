@@ -1,4 +1,5 @@
 using System.Text;
+using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Text;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Daemon.Execution;
@@ -1144,6 +1145,12 @@ public sealed class PrReviewEngine(
         bool hasCheckout = run.WorktreePath.IsNotBlank();
         if (hasCheckout)
         {
+            // A reviewer's own local launch comes down before the checkout it stands in goes away
+            // (LocalLaunchProcesses' own doc). This is the likeliest of the four release sites to
+            // find one: it releases the very checkout this review's closing offer invited the
+            // reviewer to launch in.
+            LocalLaunchProcesses.EndAll(run.LocalLaunch);
+
             try
             {
                 await worktrees.RemoveAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);

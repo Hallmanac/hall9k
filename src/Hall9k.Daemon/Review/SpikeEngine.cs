@@ -528,6 +528,12 @@ public sealed class SpikeEngine(
         bool hasCheckout = run.WorktreePath.IsNotBlank();
         if (hasCheckout)
         {
+            // A local launch standing in this checkout comes down first (LocalLaunchProcesses' own
+            // doc). A spike carries no review report and so no offer, but h9k task run-local is
+            // not restricted to pr-review tasks, so the shape is the same one and gets the same
+            // treatment rather than a reason it is exempt.
+            LocalLaunchProcesses.EndAll(run.LocalLaunch);
+
             try
             {
                 await worktrees.RemoveAsync(project.RepositoryPath, run.WorktreePath, cancellationToken);
