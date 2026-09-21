@@ -26,13 +26,35 @@ public static class RunSkillDocument
     /// </summary>
     public static readonly IReadOnlyList<string> Headings =
     [
-        "Prerequisites",
-        "One-time setup",
-        "Launch",
-        "How to know it is up",
-        "Address or entry point",
-        "Human steps",
+        PrerequisitesHeading,
+        OneTimeSetupHeading,
+        LaunchHeading,
+        HowToKnowItIsUpHeading,
+        AddressOrEntryPointHeading,
+        HumanStepsHeading,
     ];
+
+    /// <summary>What has to already be on the machine, and how to check each one.</summary>
+    public const string PrerequisitesHeading = "Prerequisites";
+
+    /// <summary>Everything done once per machine or per clone, in order.</summary>
+    public const string OneTimeSetupHeading = "One-time setup";
+
+    /// <summary>
+    /// The command or commands that actually start it. Named rather than indexed because it is
+    /// the one section whose steps a local launch leaves running rather than waiting on
+    /// (<see cref="RunSkillSteps"/>, idea b9b09779 piece 5).
+    /// </summary>
+    public const string LaunchHeading = "Launch";
+
+    /// <summary>The observable signal that it came up.</summary>
+    public const string HowToKnowItIsUpHeading = "How to know it is up";
+
+    /// <summary>Where a reader goes to actually use it.</summary>
+    public const string AddressOrEntryPointHeading = "Address or entry point";
+
+    /// <summary>Everything the composing session could not determine, never guessed at.</summary>
+    public const string HumanStepsHeading = "Human steps";
 
     /// <summary>
     /// What every run skill's first line starts with. A stable prefix so a reader — and

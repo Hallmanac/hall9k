@@ -1,13 +1,16 @@
-using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 
-namespace Hall9k.Daemon.Review;
+namespace Hall9k.Domain.Features.Project;
 
 /// <summary>
 /// The one place anything asks whether a project has a run skill, and what it says (idea
-/// b9b09779). A run skill is that project's own account of how it is stood up locally; a review
+/// b9b09779). It sits in the domain rather than beside the review engine that was its first caller
+/// because it has since acquired a second on the other side of the reference graph: the CLI's own
+/// <c>h9k task run-local</c> (piece 5) asks the identical question, and "the one place" has to be
+/// reachable from both or it is two places. A run skill is that project's own account of how it is
+/// stood up locally; a review
 /// session that drives the product follows it rather than guessing at a command, which is why
-/// having one is a precondition of driving at all (<see cref="ReviewDriveResolver"/>) and not
+/// having one is a precondition of driving at all (<c>ReviewDriveResolver</c>) and not
 /// merely a convenience.
 /// <para>
 /// Read off this node's own projection (<see cref="ProjectDetails.RunSkill"/>), which is what
