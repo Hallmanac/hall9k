@@ -389,14 +389,6 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
     }
 
     /// <summary>
-    /// Builds the new tree (<see cref="BuildTreeAsync"/>) and commits it as a child of
-    /// <paramref name="parentTip"/> (or a root commit when the ref does not exist yet), signed
-    /// per invocation when <see cref="LedgerWriteRequest.SigningKey"/> is present. Every config
-    /// override — identity, signing format, signing key — is passed as its own <c>-c</c> on this
-    /// one command line rather than written anywhere, so it never touches this repository's or
-    /// this machine's git config and never outlives this single process.
-    /// </summary>
-    /// <summary>
     /// Mirrors <see cref="BuildCommitAsync"/> for <see cref="WriteManyAsync"/>: the new tree carries
     /// every one of <see cref="LedgerManyWriteRequest.Files"/> rather than a single path, built by
     /// <see cref="BuildTreeAsync"/>'s own multi-file overload; everything else (parent, signing,
@@ -447,6 +439,14 @@ public sealed class GitLedger(ILogger<GitLedger> logger) : ILedger
         return output.Trim();
     }
 
+    /// <summary>
+    /// Builds the new tree (<see cref="BuildTreeAsync"/>) and commits it as a child of
+    /// <paramref name="parentTip"/> (or a root commit when the ref does not exist yet), signed
+    /// per invocation when <see cref="LedgerWriteRequest.SigningKey"/> is present. Every config
+    /// override — identity, signing format, signing key — is passed as its own <c>-c</c> on this
+    /// one command line rather than written anywhere, so it never touches this repository's or
+    /// this machine's git config and never outlives this single process.
+    /// </summary>
     private static async Task<string> BuildCommitAsync(
         LedgerWriteRequest request, string? parentTip, CancellationToken cancellationToken)
     {
