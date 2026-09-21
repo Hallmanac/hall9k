@@ -3,6 +3,7 @@ using Hall9k.Daemon.Execution;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -396,33 +397,58 @@ public sealed class DispatchLoop(
     }
 
     /// <summary>
-    /// The one-time fix for a task or idea whose own genesis event never arrived before this
-    /// build's replication guard existed — <see cref="HeadlessReplicatedStreamRepair"/>'s own doc.
-    /// Run at startup, right beside the two backfills above, for the identical reason: h9k status
-    /// and h9k task list already hide a document this shape describes, but nothing removes the
-    /// document itself, or frees its stream to receive a genuine genesis later, until this runs. A
-    /// failure is logged rather than fatal, and the next daemon start retries it.
+    /// The fix for a task, idea, epic or run stream whose own genesis event never arrived before
+    /// this build's replication guard existed; <see cref="HeadlessReplicatedStreamRepair"/>'s own
+    /// doc. Run at startup, right beside the two backfills above, for the identical reason: nothing
+    /// removes the partially-applied documents, frees the stream to receive a genuine genesis
+    /// later, or releases the lease an abandoned claim left on one until this runs. Idempotent, so a
+    /// start with nothing to fix says nothing; a failure is logged rather than fatal, and the next
+    /// daemon start retries it.
     /// </summary>
     private async Task RepairHeadlessReplicatedStreamsAsync(CancellationToken cancellationToken)
     {
         try
         {
-            IReadOnlyList<Guid> repaired = await HeadlessReplicatedStreamRepair.RunAsync(store, DateTimeOffset.UtcNow, cancellationToken);
-            if (repaired.Count > 0)
+            HeadlessReplicatedStreamRepair.Report report =
+                await HeadlessReplicatedStreamRepair.RunAsync(store, DateTimeOffset.UtcNow, cancellationToken);
+            if (report.Repaired.Count > 0)
             {
                 logger.LogInformation(
-                    "Repaired {Count} task/idea stream(s) whose own genesis event never arrived: the "
-                    + "headless document is gone and every record already received is held, ready to "
-                    + "complete the moment a future pull or catch-up finally delivers the genesis",
-                    repaired.Count);
+                    "Repaired {Count} partial replicated stream(s) whose own genesis event never arrived: the "
+                    + "partially-applied documents are gone and every replicated record already received is "
+                    + "held, ready to complete the moment a future pull or catch-up finally delivers the genesis",
+                    report.Repaired.Count);
+            }
+
+            foreach (PartialReplicatedStreamRepairPlan plan in report.Repaired
+                .Where(repaired => repaired.DroppedNativeEventTypes.Count > 0))
+            {
+                logger.LogWarning(
+                    "Partial stream {StreamId}'s repair dropped this node's own native event(s) {DroppedEventTypes} "
+                    + "rather than re-holding them, because replaying a claim after the genesis lands would leave "
+                    + "the task Working with no run alive to conclude it. Run named by the claim among them: "
+                    + "{ClaimedRunId}. Whatever TaskLease this stream carried was deleted in the same commit, so "
+                    + "the dispatcher stops counting it as a live slot",
+                    plan.StreamId,
+                    string.Join(", ", plan.DroppedNativeEventTypes),
+                    // Never a stand-in id: a stream whose dropped events carried no claim at all
+                    // (a lone dependency-completed) has no run to name, and says so.
+                    plan.ClaimedRunId?.ToString() ?? "none");
+            }
+
+            foreach (HeadlessReplicatedStreamRepair.Skipped skipped in report.Skipped)
+            {
+                logger.LogWarning(
+                    "Partial replicated stream {StreamId} was left exactly as it is rather than repaired: {Reason}",
+                    skipped.StreamId, skipped.Reason);
             }
         }
         catch (Exception exception) when (exception is not OperationCanceledException)
         {
             logger.LogError(exception,
-                "Repairing a headless task/idea stream failed. It stays hidden from h9k status and "
-                + "h9k task list either way, but its stream is not yet freed for a future genesis to "
-                + "start; the next daemon start retries it");
+                "Repairing a partial replicated stream failed. Its stream is not yet freed for a future genesis "
+                + "to start, and a lease an abandoned claim left on it still counts against this node's run "
+                + "ceiling; the next daemon start retries it");
         }
     }
 
