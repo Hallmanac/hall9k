@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Ledger;
+using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
@@ -384,6 +385,154 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         requests[0].ForStreamId.Should().Be(absentBlockerId);
         requests[0].ForDependencyOfTaskId.Should().Be(taskId, "h9k status says whose dependency it is fetching");
     }
+
+    /// <summary>
+    /// Task 252bc5cf: <c>h9k project reconcile</c> queues one node-addressed ask per fleet sibling,
+    /// and does it again on a second run rather than reporting the first one outstanding — a human
+    /// typing the command means the exchange starts over, which is the whole point of having a hand
+    /// lever behind a sweep that asks each pair exactly once.
+    /// </summary>
+    [Fact]
+    public async Task Project_reconcile_queues_one_node_addressed_ask_per_fleet_sibling_and_asks_again_on_demand()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = await SeedProjectAsync(claimOwnerRoot: true, cts.Token);
+        Guid siblingOne = DomainId.New();
+        Guid siblingTwo = DomainId.New();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectReconcileCommand.Settings settings = new() { Project = "pull-project" };
+        FakeLedgerChainReader chainReader = new(FleetOf(siblingOne, siblingTwo));
+
+        (await ProjectReconcileCommand.RunAsync(session, settings, chainReader, Now, cts.Token)).Should().Be(0);
+
+        await using (IQuerySession read = _postgres.Store.QuerySession())
+        {
+            IReadOnlyList<EventCatchUpRequest> requests = await read.Query<EventCatchUpRequest>()
+                .Where(request => request.ProjectId == projectId)
+                .ToListAsync(cts.Token);
+            requests.Should().HaveCount(2, "one ask per sibling, never one broadcast for the fleet");
+            requests.Select(request => request.ToNodeId).Should().BeEquivalentTo(new Guid?[] { siblingOne, siblingTwo });
+            requests.Should().OnlyContain(
+                request => request.SinceGlobalSequence == 0 && request.ForStreamId == null
+                    && request.ForOriginNodeId == null,
+                "the existing explicit shape, which is what lifts the answering node's switch-on bound");
+
+            IReadOnlyList<MessageDetails> queued = await read.Query<MessageDetails>()
+                .Where(message => message.ProjectId == projectId && message.Kind == MessageKind.EventsRequest.Value)
+                .ToListAsync(cts.Token);
+            queued.Select(message => message.To).Should().BeEquivalentTo(
+                [MessageAudience.Node(siblingOne).Value, MessageAudience.Node(siblingTwo).Value],
+                "every other project member would otherwise download a whole project's history it cannot apply");
+
+            IReadOnlyList<FleetProjectReconcile> records =
+                await read.Query<FleetProjectReconcile>().ToListAsync(cts.Token);
+            records.Select(record => record.PeerNodeId).Should().BeEquivalentTo(new[] { siblingOne, siblingTwo });
+            records.Should().OnlyContain(record => record.AskedAt == Now && record.CompletedAt == null);
+        }
+
+        (await ProjectReconcileCommand.RunAsync(session, settings, chainReader, Now.AddDays(1), cts.Token))
+            .Should().Be(0);
+
+        await using (IQuerySession read = _postgres.Store.QuerySession())
+        {
+            IReadOnlyList<EventCatchUpRequest> asks = await read.Query<EventCatchUpRequest>()
+                .Where(request => request.ProjectId == projectId).ToListAsync(cts.Token);
+            asks.Should().HaveCount(4, "a second run asks again rather than declining to");
+            asks.Count(request => request.IsOutstanding).Should().Be(
+                2, "each run closes the ask it replaced, or every run would leave one more outstanding forever");
+
+            IReadOnlyList<FleetProjectReconcile> records =
+                await read.Query<FleetProjectReconcile>().ToListAsync(cts.Token);
+            records.Should().HaveCount(2, "the record is keyed by the pair, so a re-ask re-points it rather than adding");
+            records.Should().OnlyContain(record => record.AskedAt == Now.AddDays(1) && record.ReAskedAt == null);
+        }
+    }
+
+    /// <summary>
+    /// A standing reconcile carries the identical bound <c>--since all</c> does, so without the
+    /// node-addressed exclusion in <c>RequestProjectHistoryBroadcastAsync</c>'s own
+    /// already-outstanding guard it would suppress every hand pull for as long as it stood (task
+    /// 252bc5cf).
+    /// </summary>
+    [Fact]
+    public async Task A_standing_fleet_reconcile_never_suppresses_a_hand_project_pull()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = await SeedProjectAsync(claimOwnerRoot: true, cts.Token);
+        Guid sibling = DomainId.New();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (await ProjectReconcileCommand.RunAsync(
+            session, new ProjectReconcileCommand.Settings { Project = "pull-project" },
+            new FakeLedgerChainReader(FleetOf(sibling)), Now, cts.Token)).Should().Be(0);
+
+        (await ProjectPullCommand.RunAsync(
+            session, new ProjectPullCommand.Settings { Project = "pull-project", Since = "all" }, cts.Token))
+            .Should().Be(0);
+
+        await using IQuerySession read = _postgres.Store.QuerySession();
+        IReadOnlyList<EventCatchUpRequest> requests = await read.Query<EventCatchUpRequest>()
+            .Where(request => request.ProjectId == projectId)
+            .ToListAsync(cts.Token);
+        requests.Should().HaveCount(2);
+        requests.Should().ContainSingle(
+            request => request.ToNodeId == null,
+            "the pull's own project-wide broadcast is queued, not suppressed by the reconcile's identical bound");
+    }
+
+    [Fact]
+    public async Task Project_reconcile_on_a_node_with_no_owner_root_refuses_naming_project_join_and_queues_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = await SeedProjectAsync(claimOwnerRoot: false, cts.Token);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        Func<Task> reconcile = () => ProjectReconcileCommand.RunAsync(
+            session, new ProjectReconcileCommand.Settings { Project = "pull-project" },
+            new FakeLedgerChainReader(FleetOf(DomainId.New())), Now, cts.Token);
+
+        var thrown = await reconcile.Should().ThrowAsync<DomainValidationException>();
+        thrown.Which.Message.Should().Contain("h9k project join pull-project");
+        thrown.Which.Message.Should().Contain(
+            "h9k project reconcile pull-project", "a refusal names the command that re-runs it once fixed");
+        thrown.Which.Message.Should().Contain("nothing was queued", "a refusal never promises history is on its way");
+
+        await using IQuerySession read = _postgres.Store.QuerySession();
+        (await read.Query<EventCatchUpRequest>().Where(request => request.ProjectId == projectId).ToListAsync(cts.Token))
+            .Should().BeEmpty();
+        (await read.Query<FleetProjectReconcile>().ToListAsync(cts.Token)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Project_reconcile_with_no_other_fleet_node_says_so_and_queues_nothing()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = await SeedProjectAsync(claimOwnerRoot: true, cts.Token);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (await ProjectReconcileCommand.RunAsync(
+            session, new ProjectReconcileCommand.Settings { Project = "pull-project" },
+            new FakeLedgerChainReader(FleetOf()), Now, cts.Token)).Should().Be(0);
+
+        await using IQuerySession read = _postgres.Store.QuerySession();
+        (await read.Query<EventCatchUpRequest>().Where(request => request.ProjectId == projectId).ToListAsync(cts.Token))
+            .Should().BeEmpty("there is nobody to reconcile with, which is reported rather than queued around");
+        (await read.Query<FleetProjectReconcile>().ToListAsync(cts.Token)).Should().BeEmpty();
+    }
+
+    /// <summary>A chain whose only owner root is the one <see cref="SeedProjectAsync"/> claims, with
+    /// <paramref name="siblingNodeIds"/> vouched into its fleet. No root node is named, so the fleet
+    /// is exactly the siblings and this node is never asked to reconcile with itself.</summary>
+    private static TrustChain FleetOf(params Guid[] siblingNodeIds) => new(
+        new Dictionary<string, TrustedOwner>
+        {
+            ["owner-pull-fingerprint"] = new TrustedOwner(
+                "owner-pull-fingerprint", "ssh-ed25519 AAAAFAKEPULL owner-pull",
+                [.. siblingNodeIds.Select(nodeId => new TrustedNode(
+                    nodeId.ToString(), $"ssh-ed25519 AAAAFAKE{nodeId:N} test", $"fingerprint-{nodeId:N}", Now))]),
+        },
+        [new ProjectMember("owner-pull-fingerprint", MembershipRole.Owner, Now)]);
 
     /// <summary>One registered, messaging-eligible project named <c>pull-project</c>, with this
     /// node bootstrapped — and its owner's root fingerprint claimed only when

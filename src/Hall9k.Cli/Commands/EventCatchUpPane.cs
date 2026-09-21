@@ -53,9 +53,15 @@ internal static class EventCatchUpPane
 
         foreach (EventCatchUpRequest request in outstanding.OrderBy(request => request.SentAt))
         {
-            string candidate = request.CurrentCandidateNodeId is { } current
-                ? $"asking {DomainId.Short(current)}"
-                : "broadcast to the whole project";
+            // A fleet reconcile (task 252bc5cf) is addressed to one sibling by node id and ranks
+            // no candidates at all, so without its own arm it reads as a broadcast to the whole
+            // project when it went to exactly one peer.
+            string candidate = request switch
+            {
+                { CurrentCandidateNodeId: { } current } => $"asking {DomainId.Short(current)}",
+                { ToNodeId: { } addressee } => $"asking {DomainId.Short(addressee)}",
+                _ => "broadcast to the whole project",
+            };
             lines.Add($"catch-up outstanding for {Describe(request)} — {candidate} (sent {request.SentAt:u})");
         }
 
@@ -93,6 +99,11 @@ internal static class EventCatchUpPane
             $"stream {DomainId.Short(streamId)}, a dependency of task {DomainId.Short(dependentTaskId)}",
         { ForStreamId: { } streamId } => $"stream {DomainId.Short(streamId)}",
         { ForOriginNodeId: { } originNodeId } => $"a gap from {DomainId.Short(originNodeId)} (since {request.SinceOriginSequence})",
+        // The fleet-reconcile shape carries the identical bound h9k project pull --since all does,
+        // so it has to be matched on ToNodeId BEFORE the bound arms below or it reads as a hand
+        // pull nobody typed, broadcast to every member, when it went to one sibling by node id
+        // (task 252bc5cf, independent pre-PR review, cycle 1, both lenses, low).
+        { ToNodeId: not null } => "this project's whole history (a fleet reconcile)",
         { SinceGlobalSequence: 0 } => "this project's whole history (h9k project pull --since all)",
         { SinceGlobalSequence: { } sinceGlobalSequence } =>
             $"this project's history from global sequence {sinceGlobalSequence} (h9k project pull --since)",

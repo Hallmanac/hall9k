@@ -1,3 +1,4 @@
+using System.Globalization;
 using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
@@ -78,6 +79,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await WriteMessagesLineAsync(session, cancellationToken);
         await WriteReplicatedEventsIgnoredSendersAsync(session, cancellationToken);
         await WriteEventCatchUpRequestsAsync(session, cancellationToken);
+        await WriteFleetReconcilesAsync(session, cancellationToken);
         await WriteUnverifiedLedgerWritesAsync(session, cancellationToken);
         await WriteMergedWithoutCopilotReviewAsync(session, cancellationToken);
 
@@ -519,9 +521,10 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
     /// Every outstanding catch-up request this node currently has open (idea 202383dc, M2b, task
     /// 9408d525: "h9k status shows outstanding gaps and requests") — a gap-fill for one origin
     /// node's own missing history, a brand-new node's own "everything" bootstrap, a broadcast for
-    /// one specific stream (a ledger-record adoption, or <c>h9k task pull</c>), or a whole-project
-    /// history pull (<c>h9k project pull --since</c>, task a56cf16e). Silent when there is nothing
-    /// outstanding, the same "a quiet pane says nothing" posture the rest of this command follows.
+    /// one specific stream (a ledger-record adoption, or <c>h9k task pull</c>), a whole-project
+    /// history pull (<c>h9k project pull --since</c>, task a56cf16e), or a fleet reconcile addressed
+    /// to one sibling by node id (task 252bc5cf). Silent when there is nothing outstanding, the same
+    /// "a quiet pane says nothing" posture the rest of this command follows.
     /// </summary>
     private static async Task WriteEventCatchUpRequestsAsync(IQuerySession session, CancellationToken cancellationToken)
     {
@@ -562,6 +565,108 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         {
             AnsiConsole.MarkupLineInterpolated($"[dim]catch-up requests: unavailable ({exception.Message})[/]");
         }
+    }
+
+    /// <summary>
+    /// Every fleet reconcile this node has a record for, in progress or complete (task 252bc5cf) —
+    /// one line per (peer, project), read from the standing record the sweep and the two inboxes
+    /// maintain, never from a live ledger walk, the same "no git or network work in h9k status
+    /// itself" rule every other pane here follows. Unlike the outstanding-requests pane above this
+    /// one also shows a COMPLETED reconcile: "this node and that sibling hold the same history for
+    /// this project" is the fact a human actually wants before inviting a teammate off either node,
+    /// and a pane that only ever spoke up about trouble could never say it.
+    /// </summary>
+    private static async Task WriteFleetReconcilesAsync(
+        IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<FleetProjectReconcile> reconciles = await session.Query<FleetProjectReconcile>()
+                .ToListAsync(cancellationToken);
+            if (reconciles.Count == 0)
+            {
+                return;
+            }
+
+            foreach (FleetProjectReconcile reconcile in reconciles
+                .OrderBy(record => record.ProjectId)
+                .ThenBy(record => record.AskedAt))
+            {
+                ProjectDetails? project = await session.LoadAsync<ProjectDetails>(reconcile.ProjectId, cancellationToken);
+                string projectName = project?.Name ?? reconcile.ProjectId.ToString();
+                string colour = reconcile switch
+                {
+                    { StalledAt: not null } => "yellow",
+                    { CompletedAt: not null } => "green",
+                    { PeerLeftFleetAt: not null } => "dim",
+                    _ => "blue",
+                };
+                AnsiConsole.MarkupLineInterpolated(
+                    $"[{colour}]fleet reconcile[/] {FleetReconcileLine(reconcile, projectName).EscapeMarkup()}");
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]fleet reconciles: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>
+    /// One reconcile's whole line, pure so its wording is checkable without a store. Five states,
+    /// and each one says something different: a peer that holds nothing for the project answered so
+    /// in its own words; a peer that is no longer part of this owner's fleet ended its exchange
+    /// unanswered and there is nothing for a human to run, which is exactly why that line must not
+    /// read as stalled; a stalled reconcile is one whose single automatic re-ask also went
+    /// unanswered past the outbox squash window, which is the point a human has to act; a complete
+    /// one carries the peer's own envelope count beside the number this node actually read, because
+    /// the two disagreeing is what an answer partly lost to a squash looks like; and one in progress
+    /// says whether anything has arrived yet at all.
+    /// <para>
+    /// The held-tail-only count is appended to whichever of those applies: those streams are a tail
+    /// whose genesis no answer carried, and no reconcile can fix them, since a replicated event is
+    /// appended and history older than what is already here cannot be put in front of it. Naming
+    /// them is the point — they are the one thing a completed reconcile has NOT settled.
+    /// </para>
+    /// </summary>
+    internal static string FleetReconcileLine(FleetProjectReconcile record, string projectName)
+    {
+        string peer = DomainId.Short(record.PeerNodeId);
+        string state = record switch
+        {
+            { UnavailableReason: { } reason } =>
+                $"with {peer} for {projectName}: that peer holds nothing for this project ({reason})",
+            // Before the stall arm, and reported as an ending rather than as trouble: a node that
+            // left this owner's fleet mid-exchange will never answer, and h9k project reconcile
+            // walks the CURRENT fleet, so naming that command here would send a human at something
+            // that cannot touch this record (independent pre-PR review, cycle 1, adversarial lens,
+            // medium). h9k node vouch is the one thing that revives it, and it does so by itself.
+            { PeerLeftFleetAt: { } leftAt, CompletedAt: null } =>
+                $"with {peer} for {projectName} closed unanswered — that node is no longer part of this owner's "
+                + $"fleet (observed {leftAt:u}), so nothing further was asked of it; vouching it back in starts "
+                + "the exchange over",
+            { StalledAt: { } stalledAt } =>
+                $"with {peer} for {projectName} STALLED — asked {record.AskedAt:u}, re-asked once, and no answer "
+                + $"has completed since (observed {stalledAt:u}); run h9k project reconcile {projectName}",
+            // Matched on CompletedAt alone, never on CompletedAt AND a claimed count: today only
+            // the terminal envelope sets one and it always carries the other, but a record that
+            // somehow held a completion with no count would otherwise fall through to the in-progress
+            // arm below and report a finished reconcile as still running. An unobserved count reads
+            // as unstated rather than as a number nobody sent.
+            { CompletedAt: { } completedAt } =>
+                $"with {peer} for {projectName} complete — {record.EnvelopesRead} of "
+                + $"{record.AnswerEnvelopeCount?.ToString(CultureInfo.InvariantCulture) ?? "an unstated number of"} "
+                + $"answering envelope(s) read, {record.RecordsApplied} record(s) applied, finished {completedAt:u}",
+            { FirstAnswerAt: { } firstAnswerAt } =>
+                $"with {peer} for {projectName} in progress — {record.EnvelopesRead} answering envelope(s) read, "
+                + $"{record.RecordsApplied} record(s) applied since {firstAnswerAt:u}, still waiting on that "
+                + "peer's own answer-complete",
+            _ => $"with {peer} for {projectName} in progress — asked {record.AskedAt:u}, nothing has arrived yet",
+        };
+
+        return record.HeldTailOnlyStreams == 0
+            ? state
+            : $"{state}; {record.HeldTailOnlyStreams} stream(s) held tail-only (a tail whose genesis no answer "
+                + "carried, which needs the held-tail ask rather than another reconcile)";
     }
 
     /// <summary>
