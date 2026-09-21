@@ -93,6 +93,23 @@ public static class OwnerDecider
         return new OwnerRootClaimed(owner.Id, rootFingerprint, verified, claimedAt);
     }
 
+    /// <summary>
+    /// Flips an already-claimed root to verified from a live chain read (task f53fecfd, criterion
+    /// 4) — never the reverse: nothing here ever un-verifies a root, and a caller with no chain
+    /// evidence simply never calls this at all. Refused when there is no claim yet to verify:
+    /// reconciliation only ever runs against an owner that already has <see cref="OwnerAggregate.RootFingerprint"/>
+    /// set, so reaching here with none is a caller defect, not a legitimate "nothing to verify yet".
+    /// </summary>
+    public static OwnerRootVerified VerifyRoot(OwnerAggregate owner, DateTimeOffset verifiedAt)
+    {
+        if (owner.RootFingerprint is null)
+        {
+            throw new DomainValidationException("An owner's root cannot be verified before it has claimed one.");
+        }
+
+        return new OwnerRootVerified(owner.Id, verifiedAt);
+    }
+
     public static NodeVouched VouchNode(OwnerAggregate owner, Guid nodeId, string nodeFingerprint, DateTimeOffset issuedAt)
     {
         if (nodeId == Guid.Empty)
