@@ -87,7 +87,8 @@ public static class ProjectDecider
         Optional<WorkItemProvider> primaryTracker = default,
         Optional<OrchestratorFeedLevel> orchestratorFeed = default,
         Optional<int?> courierMaxWaitSeconds = default,
-        Optional<bool> designReviewDrive = default)
+        Optional<bool> designReviewDrive = default,
+        Optional<bool> qaReviewDrive = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -448,7 +449,8 @@ public static class ProjectDecider
             PrimaryTracker: primaryTracker,
             OrchestratorFeed: orchestratorFeed,
             CourierMaxWaitSeconds: courierMaxWaitSeconds,
-            DesignReviewDrive: designReviewDrive);
+            DesignReviewDrive: designReviewDrive,
+            QaReviewDrive: qaReviewDrive);
     }
 
     /// <summary>

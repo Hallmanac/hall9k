@@ -259,9 +259,22 @@ public sealed record ProjectSettingsChanged(
     /// written before this setting existed replays byte-for-byte unchanged, and reads as a
     /// project that never chose.
     /// <para>
-    /// The QA persona's own drive setting (piece 2) lands beside this one as its own field with
-    /// its own default, off; there is deliberately no single field keyed by persona, since a
+    /// The QA persona's own <see cref="QaReviewDrive"/> sits beside this one as its own field
+    /// with its own default, off; there is deliberately no single field keyed by persona, since a
     /// reader of one persona's setting must never have to parse another's out of the same value.
     /// </para>
     /// </summary>
-    Optional<bool> DesignReviewDrive = default);
+    Optional<bool> DesignReviewDrive = default,
+    /// <summary>
+    /// Whether a QA-persona review of a pull request in this project may launch the running
+    /// product and drive it through browser automation (idea b9b09779, piece 2). Off is the
+    /// default and what nothing-recorded resolves to, so a project that never chose gets a QA
+    /// review that reads the diff and runs the end-to-end suite and never starts the
+    /// application. <see cref="Project.ReviewDriveSetting"/> is the resolution every reader goes
+    /// through, for the reason <see cref="AutoPrReview"/> states: the projection cannot tell a
+    /// recorded value apart from a field's own initialised default — and the designer's
+    /// <see cref="DesignReviewDrive"/> beside it has the same shape and the opposite default,
+    /// which is where that distinction stops being cosmetic. Trailing and optional so every
+    /// stream written before this setting existed replays byte-for-byte unchanged.
+    /// </summary>
+    Optional<bool> QaReviewDrive = default);

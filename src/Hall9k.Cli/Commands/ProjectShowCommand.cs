@@ -252,6 +252,8 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         table.AddRow("Auto pr-review", AutoPrReviewRow(project, autoPrReview));
         table.AddRow("Design review drive", DesignReviewDriveRow(
             project, ReviewDriveSetting.From(ReviewPersona.Designer, history)));
+        table.AddRow("QA review drive", QaReviewDriveRow(
+            project, ReviewDriveSetting.From(ReviewPersona.Qa, history)));
         table.AddRow("Claim gate", ClaimGateRow(project, claimGateRecorded));
         table.AddRow("Orchestrator feed", OrchestratorFeedRow(project));
         table.AddRow("Courier max wait", CourierMaxWaitRow(
@@ -469,6 +471,27 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
             : $"{value} [dim]— every design review here is code-and-design-file only: nothing starts this "
               + "project's app, and the report states that rather than leaving it assumed. Turn it on:[/] "
               + $"h9k project set {name} --design-review-drive on";
+    }
+
+    /// <summary>
+    /// Whether a QA-persona review here may launch and drive the product (idea b9b09779, piece
+    /// 2), with its origin printed the same way auto pr-review's row above prints one: "off" as
+    /// the persona's own default and "off" as a choice somebody made are different facts. Off is
+    /// the default, so this row is mostly reassurance — nothing on this machine gets started by a
+    /// review unless somebody said so.
+    /// </summary>
+    internal static string QaReviewDriveRow(ProjectDetails project, ReviewDriveSetting setting)
+    {
+        string name = project.Name.EscapeMarkup();
+        return setting.Enabled
+            ? $"on [dim]({OriginNote(setting.Recorded)}) — a QA review may start this project's product "
+              + "from its run skill on an ephemeral port, drive the changed flows through browser "
+              + "automation, and put a screenshot beside each finding it supports. A project with no run "
+              + $"skill drives nothing regardless. Turn it off:[/] h9k project set {name} --qa-review-drive off"
+            : $"[dim]off ({OriginNote(setting.Recorded)}) — a QA review reads the diff and runs the "
+              + "end-to-end tests and never launches the product; a verdict that needs the running "
+              + "product comes back as a human walk-through instead. Let it drive: "
+              + $"h9k project set {name} --qa-review-drive on[/]";
     }
 
     /// <summary>

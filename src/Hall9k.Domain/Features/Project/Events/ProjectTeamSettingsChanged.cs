@@ -57,7 +57,16 @@ public sealed record ProjectTeamSettingsChanged(
     /// <see cref="ProjectSettingsChanged.DesignReviewDrive"/>'s own doc for the default and why
     /// <see cref="Project.ReviewDriveSetting"/> and not the projection resolves it.
     /// </summary>
-    Optional<bool> DesignReviewDrive = default)
+    Optional<bool> DesignReviewDrive = default,
+    /// <summary>
+    /// Whether the QA persona's review drives this project's running product (idea b9b09779,
+    /// piece 2) — a team field for the same reason <see cref="DesignReviewDrive"/> above is: the
+    /// review a teammate's own node dispatches has to read this pull request the way whoever set
+    /// it intended. See <see cref="ProjectSettingsChanged.QaReviewDrive"/>'s own doc for the
+    /// default (off, the opposite of the designer's) and why <see cref="Project.ReviewDriveSetting"/>
+    /// and not the projection resolves it.
+    /// </summary>
+    Optional<bool> QaReviewDrive = default)
 {
     /// <summary>
     /// Builds the team companion from whatever <see cref="ProjectDecider.ChangeSettings"/> just
@@ -87,7 +96,8 @@ public sealed record ProjectTeamSettingsChanged(
             || changed.AutoPrReview.HasValue
             || changed.ContextLinks.HasValue
             || changed.CommitStyle.HasValue
-            || changed.DesignReviewDrive.HasValue;
+            || changed.DesignReviewDrive.HasValue
+            || changed.QaReviewDrive.HasValue;
 
         return anyTeamField
             ? new ProjectTeamSettingsChanged(
@@ -116,7 +126,8 @@ public sealed record ProjectTeamSettingsChanged(
                 changed.AutoPrReview,
                 changed.ContextLinks,
                 changed.CommitStyle,
-                changed.DesignReviewDrive)
+                changed.DesignReviewDrive,
+                changed.QaReviewDrive)
             : null;
     }
 }

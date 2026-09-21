@@ -106,6 +106,12 @@ public sealed class ProjectDetails
     /// </summary>
     public bool DesignReviewDrive { get; set; } = ReviewDriveSetting.DefaultFor(ReviewPersona.Designer);
     /// <summary>
+    /// The last qa-review-drive choice this project's stream recorded (idea b9b09779, piece 2),
+    /// never the effective one — the same terms <see cref="DesignReviewDrive"/> above states.
+    /// Initialised to the platform default (off) so the two agree for a project that never chose.
+    /// </summary>
+    public bool QaReviewDrive { get; set; } = ReviewDriveSetting.DefaultFor(ReviewPersona.Qa);
+    /// <summary>
     /// What has to be true on this install before a task linked to a Jira card or a GitHub issue
     /// may be claimed here (idea 64c75e43); Off is the platform's original behavior.
     /// </summary>
@@ -350,6 +356,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
             view.DesignReviewDrive = @event.Data.DesignReviewDrive.Value;
         }
 
+        if (@event.Data.QaReviewDrive.HasValue)
+        {
+            view.QaReviewDrive = @event.Data.QaReviewDrive.Value;
+        }
+
         if (@event.Data.Priority.HasValue)
         {
             view.Priority = @event.Data.Priority.Value ?? ProjectPriority.Normal;
@@ -476,6 +487,11 @@ public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDet
         if (@event.Data.DesignReviewDrive.HasValue)
         {
             view.DesignReviewDrive = @event.Data.DesignReviewDrive.Value;
+        }
+
+        if (@event.Data.QaReviewDrive.HasValue)
+        {
+            view.QaReviewDrive = @event.Data.QaReviewDrive.Value;
         }
 
         if (@event.Data.ClaimGate.HasValue)
