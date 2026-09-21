@@ -66,8 +66,6 @@ public sealed class TaskHandoffIntegrationTests(PostgresFixture postgres) : ICla
         Guid projectId = DomainId.New();
         Guid nodeA = DomainId.New();
         Guid nodeB = DomainId.New();
-        Guid taskId = await SeedClaimedTaskAsync(store, ownerId, projectId, nodeA, cts.Token);
-        await SeedProjectAsync(store, projectId, cts.Token);
 
         FakeLedger ledger = new();
         await SeedNodeFileAsync(ledger, nodeA, cts.Token);
@@ -78,6 +76,9 @@ public sealed class TaskHandoffIntegrationTests(PostgresFixture postgres) : ICla
 
         await using DocumentStore storeB = OpenStoreB();
 
+        // Replication switches on, on node A, before the task is even seeded — this test is about
+        // the handoff note propagating through a stream that arrives whole, genesis included,
+        // never about the switch-on-truncated tail-only shape EventCatchUpTests already covers.
         await using (IDocumentSession session = store.LightweightSession())
         {
             session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
@@ -88,6 +89,9 @@ public sealed class TaskHandoffIntegrationTests(PostgresFixture postgres) : ICla
         {
             await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
         }
+
+        Guid taskId = await SeedClaimedTaskAsync(store, ownerId, projectId, nodeA, cts.Token);
+        await SeedProjectAsync(store, projectId, cts.Token);
 
         // The holding node leaves the note after the switch-on point: the same append h9k task
         // handoff performs, through TaskDecider.LeaveHandoff directly.

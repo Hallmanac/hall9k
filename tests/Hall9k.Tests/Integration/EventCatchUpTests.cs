@@ -1895,12 +1895,18 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
 
     /// <summary>
     /// Independent pre-PR review, cycle 4, adversarial lens, high: a pull serves the pre-switch-on
-    /// HEAD of a stream whose post-switch-on tail the asking node already applied live, and a
-    /// replicated event is appended rather than inserted — so the head would land behind the tail
-    /// and the stream would replay backwards, with <c>TaskAggregate.Apply(TaskAdded)</c> running
-    /// last resetting the state and clearing the acceptance criteria. Every task open on a node at
-    /// its own switch-on moment is in exactly this shape on its peers, so the refusal has to hold
-    /// without also refusing the streams a pull genuinely fetches.
+    /// HEAD of a stream whose post-switch-on tail the asking node already holds (task
+    /// 6d9236e8's own genesis-required guard: the tail alone never carries <c>TaskAdded</c>, so it
+    /// is held rather than starting a headless document — <see cref="EventReplicationTests.A_held_tail_applies_in_order_once_its_streams_genesis_arrives_in_a_later_sweep"/>
+    /// covers that half directly). The pull's own answer is what finally carries the genesis: it
+    /// starts the stream and, in the same call, replays the held tail behind it
+    /// (<c>EventReplicationInbox.ApplyHeldTailAsync</c>) — but the SAME answer also carries this
+    /// stream's own middle (<c>TaskPublished</c>, <c>TaskAssigned</c>), older than the tail yet
+    /// arriving after it in this read, and a replicated event is appended rather than inserted: the
+    /// middle would land BEHIND the tail already there and replay the stream out of order. Every
+    /// task open on a node at its own switch-on moment is in exactly this shape on its peers, so the
+    /// refusal has to hold without also refusing the genesis a pull genuinely completes the story
+    /// with.
     /// </summary>
     [Fact]
     public async Task A_pulled_head_is_refused_rather_than_appended_behind_a_tail_the_asking_node_already_holds()
@@ -1974,15 +1980,15 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             EventReplicationReadResult liveRead = await replicationInbox.ReadFromAsync(
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(5),
                 trustChain: null, cts.Token);
-            liveRead.EventsApplied.Should().Be(1, "only the post-switch-on event ever rides an ordinary flush");
+            liveRead.EventsApplied.Should().Be(
+                0, "the post-switch-on event never carries TaskAdded, so it is held rather than starting a "
+                + "headless document");
         }
 
         await using (IQuerySession session = storeB.QuerySession())
         {
-            IReadOnlyList<IEvent> tail =
-                await session.Events.FetchStreamAsync(touchedAfterSwitchOnTaskId, token: cts.Token);
-            tail.Should().ContainSingle("node B holds the tail of this stream and nothing under it");
-            tail.Single().EventType.Should().Be(typeof(TaskUnassigned));
+            (await session.Events.FetchStreamStateAsync(touchedAfterSwitchOnTaskId, cts.Token)).Should().BeNull(
+                "the local stream never starts from a non-genesis record — the tail is held, not applied");
         }
 
         // h9k project pull --since all: node A serves this stream's pre-switch-on head too, now
@@ -2022,19 +2028,21 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
                 session, RepositoryPath, nodeA, projectId, nodeB, "owner-b-fingerprint", Now.AddSeconds(9),
                 trustChain: null, cts.Token);
             pullRead.EventsApplied.Should().Be(
-                3, "the stream node B holds nothing of arrives in full; the partial one's head is refused");
+                5, "TaskAdded starts the partial stream and the already-held tail replays behind it (2), the "
+                + "untouched stream arrives whole (3); the partial one's own middle — older than the tail yet "
+                + "answered after it — is refused twice, and the tail itself is a no-op the second time this "
+                + "same answer carries it");
         }
 
         await using (IQuerySession session = storeB.QuerySession())
         {
             IReadOnlyList<IEvent> partial =
                 await session.Events.FetchStreamAsync(touchedAfterSwitchOnTaskId, token: cts.Token);
-            partial.Should().ContainSingle(
-                "the pull's older events belong in front of the one already here, and appending them there "
-                + "would replay the stream backwards");
-            partial.Should().NotContain(
-                candidate => candidate.EventType == typeof(TaskAdded),
-                "TaskAdded applied last resets State and clears the acceptance criteria");
+            partial.Select(candidate => candidate.EventType).Should().Equal(
+                [typeof(TaskAdded), typeof(TaskUnassigned)],
+                "the pull's own genesis starts the stream and the held tail replays right behind it, in order; "
+                + "the stream's own middle belongs in front of the tail already there, and appending it there "
+                + "would replay the stream out of order");
 
             IReadOnlyList<IEvent> whole = await session.Events.FetchStreamAsync(untouchedTaskId, token: cts.Token);
             whole.Should().HaveCount(3, "a stream this node holds nothing of is exactly what a pull does fetch");

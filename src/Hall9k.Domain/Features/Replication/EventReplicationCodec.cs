@@ -63,6 +63,27 @@ public static class EventReplicationCodec
     }
 
     /// <summary>
+    /// One record on its own, the shape <see cref="Hall9k.Domain.Features.Replication.HeldReplicatedEventRecord"/>
+    /// stores while a stream's true genesis is still missing: kept apart from <see cref="EncodeBatch"/>
+    /// rather than wrapped in a one-element array, since nothing about holding a single record is a
+    /// batch of anything.
+    /// </summary>
+    public static string EncodeRecord(ReplicatedEventRecord record) => JsonSerializer.Serialize(record, Options);
+
+    /// <summary>Null on anything that fails to parse — this build wrote every stored copy itself, so a null here means the row was corrupted at rest, not that a peer sent something malformed.</summary>
+    public static ReplicatedEventRecord? DecodeRecord(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<ReplicatedEventRecord>(json, Options);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
     /// One catch-up ask (idea 202383dc, M2b, task 9408d525) — the body of a
     /// <see cref="Hall9k.Domain.Features.Message.MessageKind.EventsRequest"/> envelope. Exactly one
     /// of four shapes: <see cref="ForStreamId"/> set asks for one specific stream's own events,
