@@ -48,7 +48,10 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
 
         [CommandOption("--type <TYPE>")]
         [Description(
-            "Change the task type: feature | bugfix | refactor | chore | research. Not pr-review — "
+            "Change the task type: feature | bugfix | refactor | chore | research | content. content "
+            + "dispatches with a reduced, conformance-only review by default (no --accept-reduced-review "
+            + "needed) and refuses at the gates if its diff ever touches a path outside the project's "
+            + "non-executable-path set. Not pr-review — "
             + "that type needs a pull-request reference only h9k task add --from-pr attaches, so "
             + "revising an ordinary task to it here is refused")]
         public string? Type { get; init; }

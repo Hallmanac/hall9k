@@ -991,7 +991,9 @@ public static class CliCommandTree
                 .WithExample("task", "add", "--project", "hall9k", "--objective", "\"Prototype the new endpoint\"",
                     "--review-stage-composition", "none", "--accept-reduced-review")
                 .WithExample("task", "add", "--project", "hall9k", "--type", "spike", "--kind", "research",
-                    "--objective", "\"Does the flag survive\"", "--exit-criterion", "\"It resumes after a restart\"");
+                    "--objective", "\"Does the flag survive\"", "--exit-criterion", "\"It resumes after a restart\"")
+                .WithExample("task", "add", "--project", "hall9k", "--type", "content",
+                    "--objective", "\"Update the README\"", "--criteria", "\"docs/README.md covers it\"");
             task.AddCommand<TaskReviseCommand>("revise")
                 .WithDescription(
                     "Revise a draft: objective, acceptance criteria, agent context, type, model, dependencies, "
@@ -1021,7 +1023,8 @@ public static class CliCommandTree
                 .WithExample("task", "revise", "28b19893", "--close-linked-issue", "default")
                 .WithExample("task", "revise", "28b19893", "--clear-interactive-mode")
                 .WithExample("task", "revise", "28b19893", "--kind", "prototype", "--max-turns", "40")
-                .WithExample("task", "revise", "28b19893", "--clear-budget");
+                .WithExample("task", "revise", "28b19893", "--clear-budget")
+                .WithExample("task", "revise", "28b19893", "--type", "content");
             task.AddCommand<TaskSetReviewCapsCommand>("set-review-caps")
                 .WithDescription(
                     "Override one or more of this task's four review-cycle caps — the conformance and "

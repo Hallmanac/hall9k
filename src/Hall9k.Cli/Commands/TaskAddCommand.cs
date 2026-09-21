@@ -83,8 +83,14 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
 
         [CommandOption("--type <TYPE>")]
         [Description(
-            "feature | bugfix | refactor | chore | research | pr-review | spike. pr-review is set for "
-            + "you by --from-pr and needs no explicit --type of its own")]
+            "feature | bugfix | refactor | chore | research | content | pr-review | spike. pr-review "
+            + "is set for you by --from-pr and needs no explicit --type of its own. content is for "
+            + "documentation, skill markdown, prompt templates, or other non-compiled work: it "
+            + "dispatches with a reduced, conformance-only review by default (no --accept-reduced-review "
+            + "needed — the type itself is the acknowledgment) and refuses at the gates, naming every "
+            + "offending path, the moment its diff touches anything outside the project's "
+            + "non-executable-path set (h9k project show). An explicit --review-stage-composition still "
+            + "overrides the default")]
         public string? Type { get; init; }
 
         [CommandOption("--kind <KIND>")]
