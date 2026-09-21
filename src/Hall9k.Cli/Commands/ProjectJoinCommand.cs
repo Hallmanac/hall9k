@@ -51,6 +51,19 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             + "invite creates this node's own root when it has none yet, same as an ordinary --owner-less join. "
             + "Refused if the invite is not found in this project's own ledger, already spent, or expired.")]
         public string? Invite { get; init; }
+
+        [CommandOption("--from-project <NAME>")]
+        [Description(
+            "Names the registered project ledger this node's own key is already vouched under this "
+            + "owner's root on, for the cross-project root-carry path (task f53fecfd): a node vouched "
+            + "under owner root R on one project ledger joining a brand-new project ledger carries that "
+            + "vouch as evidence rather than needing the root-holding node to ever touch the new "
+            + "project. Omit it and every registered project this owner's node has joined is searched "
+            + "for one. Only ever considered when this join names no --owner and no --invite, and only "
+            + "when the target ledger has no root for R yet — refused with one plain sentence, and the "
+            + "join otherwise unchanged, when no source vouch exists, this node's key is revoked on the "
+            + "source, or the target already has a root for R.")]
+        public string? FromProject { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -87,7 +100,7 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         JoinOutcome outcome;
         try
         {
-            outcome = await RunAsync(session, project, settings.Owner, settings.Invite, cancellationToken);
+            outcome = await RunAsync(session, project, settings.Owner, settings.Invite, settings.FromProject, cancellationToken);
         }
         // A1's own git plumbing throws these as plain, undecorated exceptions rather than a
         // Domain*Exception — fine for h9k project add's own TryJoinAsync, which already wraps
@@ -124,6 +137,9 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         bool RetiredPreviousRoot,
         bool WroteNodeFile,
         bool OwnerClaimChanged,
+        bool CarriedRoot = false,
+        string? CarriedFromProjectName = null,
+        bool RootVerified = false,
         bool Deferred = false);
 
     /// <summary>Builds the one <see cref="JoinOutcome"/> a deferred join ever returns — every field
@@ -153,10 +169,20 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
     internal static Task<JoinOutcome> RunAsync(
         IDocumentSession session, ProjectDetails project, string? claimedOwnerOverride, string? invite,
         CancellationToken cancellationToken) =>
+        RunAsync(session, project, claimedOwnerOverride, invite, fromProject: null, cancellationToken);
+
+    /// <summary>The from-project-aware overload (task f53fecfd) — everything the invite-aware
+    /// overload already does, plus every real dependency the cross-project root-carry path itself
+    /// needs (<see cref="ILedgerCommitReader"/>, on top of the chain reader) and the real
+    /// interactive invite-token prompt when this process is attached to a terminal. What
+    /// <c>h9k project join</c>'s own <see cref="ExecuteAsync"/> calls.</summary>
+    internal static Task<JoinOutcome> RunAsync(
+        IDocumentSession session, ProjectDetails project, string? claimedOwnerOverride, string? invite, string? fromProject,
+        CancellationToken cancellationToken) =>
         RunAsync(
-            session, project, claimedOwnerOverride, invite,
+            session, project, claimedOwnerOverride, invite, fromProject,
             new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(),
-            new ProjectGitHubAccessMirror(), new GitLedgerChainReader(),
+            new ProjectGitHubAccessMirror(), new GitLedgerChainReader(), new GitLedgerCommitReader(),
             AnsiConsole.Profile.Capabilities.Interactive ? PromptForInviteTokenFromConsole : null,
             cancellationToken);
 
@@ -178,8 +204,8 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         ProjectGitHubAccessMirror githubAccess,
         CancellationToken cancellationToken) =>
         RunAsync(
-            session, project, claimedOwnerOverride, invite: null, ledger, keyStore, githubAccess, chainReader: null,
-            promptForInviteToken: null, cancellationToken);
+            session, project, claimedOwnerOverride, invite: null, fromProject: null, ledger, keyStore, githubAccess,
+            chainReader: null, commitReader: null, promptForInviteToken: null, cancellationToken);
 
     /// <summary>The invite-aware, ledger-seamed overload with no chain reader and no interactive
     /// prompt — every pre-existing test above this piece opts out of recording the project key and
@@ -190,8 +216,27 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         ILedger ledger, NodeKeyStore keyStore, ProjectGitHubAccessMirror githubAccess,
         CancellationToken cancellationToken) =>
         RunAsync(
-            session, project, claimedOwnerOverride, invite, ledger, keyStore, githubAccess, chainReader: null,
-            promptForInviteToken: null, cancellationToken);
+            session, project, claimedOwnerOverride, invite, fromProject: null, ledger, keyStore, githubAccess,
+            chainReader: null, commitReader: null, promptForInviteToken: null, cancellationToken);
+
+    /// <summary>The invite- and chain-reader-aware overload — every pre-existing test above this
+    /// piece that opts into project-key recording, never the carry path: no test above this piece
+    /// drives that against real git either (Brian's 2026-09-13 testing rule), so the carry path's
+    /// own tests live in <c>GitLedgerChainReaderTests</c> instead, on the fake ledger the chain
+    /// reader tests already use.</summary>
+    internal static Task<JoinOutcome> RunAsync(
+        IDocumentSession session,
+        ProjectDetails project,
+        string? claimedOwnerOverride,
+        string? invite,
+        ILedger ledger,
+        NodeKeyStore keyStore,
+        ProjectGitHubAccessMirror githubAccess,
+        ILedgerChainReader? chainReader,
+        CancellationToken cancellationToken) =>
+        RunAsync(
+            session, project, claimedOwnerOverride, invite, fromProject: null, ledger, keyStore, githubAccess,
+            chainReader, commitReader: null, promptForInviteToken: null, cancellationToken);
 
     /// <summary>
     /// The whole join flow, seamed on <see cref="ILedger"/>, <see cref="NodeKeyStore"/>, and
@@ -209,10 +254,12 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         ProjectDetails project,
         string? claimedOwnerOverride,
         string? invite,
+        string? fromProject,
         ILedger ledger,
         NodeKeyStore keyStore,
         ProjectGitHubAccessMirror githubAccess,
         ILedgerChainReader? chainReader,
+        ILedgerCommitReader? commitReader,
         Func<string?>? promptForInviteToken,
         CancellationToken cancellationToken)
     {
@@ -463,6 +510,51 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             }
         }
 
+        // The cross-project root-carry path (task f53fecfd): only ever considered when this join
+        // names no --owner and no --invite (claimedFingerprint already comes from owner.RootFingerprint,
+        // not a fresh claim) and is not establishing this node's own key as a brand-new root. Both
+        // seams are optional through every pre-existing overload (Brian's 2026-09-13 testing rule),
+        // so an ordinary test that opts out of them never attempts this at all.
+        bool carriedRoot = false;
+        string? carriedFromProjectName = null;
+        if (!establishingRoot && claimedOwnerOverride.IsBlank() && invite.IsBlank() && chainReader is not null && commitReader is not null)
+        {
+            CarryAttemptOutcome carryOutcome = await TryCarryVouchAsync(
+                session, ledger, chainReader, commitReader, project, context.OwnerId, context.NodeId, key,
+                claimedFingerprint, fromProject, committer, signingKey, now, cancellationToken);
+            if (carryOutcome.Carried)
+            {
+                carriedRoot = true;
+                carriedFromProjectName = carryOutcome.SourceProjectName;
+
+                // Verified immediately, the same call establishingRoot's own ClaimRoot(verified:
+                // true) makes for a self-established root — carrying in is itself the evidence, so
+                // there is nothing to wait on a later chain read for. The ordinary ClaimRoot append
+                // above never fires here (owner.RootFingerprint already equals claimedFingerprint
+                // by construction whenever this branch runs), so without this the persisted
+                // RootFingerprintVerified would stay false until the next reconciliation happened
+                // to run, even though this join's own report already says "verified" (independent
+                // pre-PR review, adversarial lens, medium).
+                if (!owner.RootFingerprintVerified)
+                {
+                    session.Events.Append(context.OwnerId, OwnerDecider.VerifyRoot(owner, now));
+                }
+
+                (bool wroteGenesisMember, string genesisProjectKey) = await EnsureGenesisMemberFileAsync(
+                    ledger, project.RepositoryPath, claimedFingerprint, now, committer, signingKey, cancellationToken);
+                if (wroteGenesisMember)
+                {
+                    session.Events.Append(
+                        project.Id, ProjectDecider.VouchMember(project.Id, claimedFingerprint, ProjectMemberRole.Owner, now));
+                    justWrittenProjectKey = genesisProjectKey;
+                }
+            }
+            else if (carryOutcome.RefusalMessage is not null)
+            {
+                AnsiConsole.MarkupLine($"[yellow]{carryOutcome.RefusalMessage.EscapeMarkup()}[/]");
+            }
+        }
+
         bool wroteNodeFile = await WriteNodeFileAsync(
             ledger, project.RepositoryPath, context.NodeId, key, claimedFingerprint,
             node.MachineName, node.OperatingSystem, node.KeyRegisteredAt ?? now, inviteProof,
@@ -492,6 +584,31 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         }
 
         await RecordProjectKeyAsync(session, project, justWrittenProjectKey, chainReader, now, cancellationToken);
+
+        // Reconciles OwnerAggregate.RootFingerprintVerified from a live chain read (task f53fecfd,
+        // criterion 4 — the gap draft f245371d found): establishingRoot and carriedRoot both already
+        // recorded verified: true directly above, so this only ever has real work to do for the
+        // "claimed elsewhere with --owner, still unverified" case — an owner later vouched into that
+        // root on the ledger by someone else, or by a carried record, otherwise stays "claimed,
+        // unverified" in h9k owner show and h9k status forever even though h9k project members
+        // already reads the identical live chain and shows it verified. Best-effort and never fatal
+        // to the join: a transient chain-read failure here simply leaves nothing to reconcile this
+        // tick, same as RecordProjectKeyAsync's own failure handling just above.
+        bool rootVerifiedByReconciliation = false;
+        if (!establishingRoot && !carriedRoot && chainReader is not null)
+        {
+            try
+            {
+                TrustChain reconciliationChain = await chainReader.ComputeAsync(project.RepositoryPath, cancellationToken);
+                rootVerifiedByReconciliation =
+                    OwnerRootVerificationReconciler.Reconcile(session, owner, key.Fingerprint, reconciliationChain, now);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                // Nothing to reconcile from an unreadable chain this tick; a later join or the
+                // daemon's own message sweep tries again.
+            }
+        }
 
         await session.SaveChangesAsync(cancellationToken);
 
@@ -529,7 +646,9 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
 
         return new JoinOutcome(
             context.NodeId, key.Fingerprint, key.PrivateKeyPath, claimedFingerprint,
-            establishingRoot, retiredPreviousRoot, wroteNodeFile, ownerClaimChanged);
+            establishingRoot, retiredPreviousRoot, wroteNodeFile, ownerClaimChanged,
+            carriedRoot, carriedFromProjectName,
+            RootVerified: establishingRoot || carriedRoot || rootVerifiedByReconciliation || owner.RootFingerprintVerified);
     }
 
     internal static void Report(ProjectDetails project, JoinOutcome outcome)
@@ -546,9 +665,19 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         AnsiConsole.MarkupLine(
             $"[green]Joined '{project.Name.EscapeMarkup()}'.[/] Node [dim]{outcome.NodeId}[/], "
             + $"key [dim]{outcome.KeyFingerprint}[/] at [dim]{outcome.PrivateKeyPath.EscapeMarkup()}[/].");
-        AnsiConsole.MarkupLine(outcome.EstablishedRoot
-            ? $"[dim]This is this owner's root — {outcome.ClaimedOwnerFingerprint} is the owner id everywhere in Hall9k now.[/]"
-            : $"[dim]Claimed owner {outcome.ClaimedOwnerFingerprint}, unverified until an already-enrolled node of that owner confirms it (h9k node vouch, or a matched h9k node invite).[/]");
+        AnsiConsole.MarkupLine(outcome switch
+        {
+            { EstablishedRoot: true } =>
+                $"[dim]This is this owner's root — {outcome.ClaimedOwnerFingerprint} is the owner id everywhere in Hall9k now.[/]",
+            { CarriedRoot: true } =>
+                $"[dim]Carried this owner's root in from '{outcome.CarriedFromProjectName.EscapeMarkup()}' — "
+                + $"{outcome.ClaimedOwnerFingerprint} is verified here on this node's own existing vouch, with no "
+                + "need for the root-holding node to ever touch this project.[/]",
+            { RootVerified: true } =>
+                $"[dim]Claimed owner {outcome.ClaimedOwnerFingerprint}, verified.[/]",
+            _ =>
+                $"[dim]Claimed owner {outcome.ClaimedOwnerFingerprint}, unverified until an already-enrolled node of that owner confirms it (h9k node vouch, or a matched h9k node invite).[/]",
+        });
         if (outcome.RetiredPreviousRoot)
         {
             AnsiConsole.MarkupLine("[yellow]This node's own previously self-created root was retired in favor of the claimed owner.[/]");
@@ -883,6 +1012,208 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
         // whichever caller's own freshly-minted key actually won.
         return (outcome.Verdict == LedgerWriteVerdict.Written, projectKey);
     }
+
+    /// <summary>What one carry attempt produced — either it carried, or it did not and names why
+    /// (null when the "why" is simply "not applicable, say nothing" — the everyday steady state for
+    /// a project this node already established a root in some other way).</summary>
+    private sealed record CarryAttemptOutcome(bool Carried, string? SourceProjectName, string? RefusalMessage)
+    {
+        public static readonly CarryAttemptOutcome NotApplicable = new(false, null, null);
+    }
+
+    /// <summary>
+    /// The cross-project root-carry path (task f53fecfd): when this node's own key is already
+    /// vouched under owner root <paramref name="root"/> on some OTHER registered project ledger, and
+    /// <paramref name="project"/>'s own ledger has no root for it yet, carries that vouch in as
+    /// evidence — <c>owners/&lt;root&gt;/root.yaml</c> (a verbatim copy of the source's own) and
+    /// <c>owners/&lt;root&gt;/carried/&lt;node-id&gt;.yaml</c> (the evidence bundle
+    /// <see cref="GitLedgerChainReader"/> verifies offline: the source root.yaml and vouch file, the
+    /// raw bytes of both signed commits, and provenance), in one push — rather than requiring the
+    /// root-holding node to ever touch this project.
+    /// <para>
+    /// Silent (<see cref="CarryAttemptOutcome.RefusalMessage"/> null) when the target already has a
+    /// root and no <paramref name="fromProjectName"/> was named: the everyday steady state for a
+    /// project this node has already joined some other way, not worth a line of console noise on
+    /// every ordinary re-join ("a quiet pane says nothing", <c>ProjectMembersCommand</c>'s own
+    /// convention). Every other refusal reason — no source vouch found, this node's key revoked on
+    /// the source, or an explicit <c>--from-project</c> naming a target that already has a root or a
+    /// source with nothing to carry — gets the one plain sentence the task's own acceptance
+    /// criterion asks for, and either way today's other branches apply unchanged.
+    /// </para>
+    /// </summary>
+    private static async Task<CarryAttemptOutcome> TryCarryVouchAsync(
+        IDocumentSession session, ILedger ledger, ILedgerChainReader chainReader, ILedgerCommitReader commitReader,
+        ProjectDetails project, Guid ownerId, Guid nodeId, NodeSigningKey key, string root, string? fromProjectName,
+        LedgerCommitter committer, LedgerSigningKey signingKey, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        string ownersRefName = $"refs/hall9k/ledger/owners/{root}";
+        string rootPath = $"owners/{root}/root.yaml";
+        LedgerFile existingTargetRoot = await ledger.ReadAsync(project.RepositoryPath, ownersRefName, rootPath, cancellationToken);
+        if (existingTargetRoot.Exists)
+        {
+            return fromProjectName.IsBlank()
+                ? CarryAttemptOutcome.NotApplicable
+                : new CarryAttemptOutcome(
+                    false, null, $"'{project.Name}' already has a root for {root} — nothing to carry from '{fromProjectName}'.");
+        }
+
+        IReadOnlyList<ProjectDetails> candidates;
+        if (fromProjectName.IsNotBlank())
+        {
+            ProjectDetails named;
+            try
+            {
+                named = ProjectResolver.Match(
+                    await session.Query<ProjectDetails>().Where(candidate => !candidate.IsArchived).ToListAsync(cancellationToken),
+                    fromProjectName);
+            }
+            catch (Exception exception) when (exception is DomainNotFoundException or DomainConflictException)
+            {
+                return new CarryAttemptOutcome(false, null, $"--from-project {fromProjectName} does not name a registered project: {exception.Message}");
+            }
+
+            if (named.Id == project.Id)
+            {
+                return new CarryAttemptOutcome(false, null, $"--from-project cannot name the project being joined ('{project.Name}').");
+            }
+
+            candidates = [named];
+        }
+        else
+        {
+            candidates = await session.Query<ProjectDetails>()
+                .Where(candidate => candidate.OwnerId == ownerId && candidate.Id != project.Id && !candidate.IsArchived)
+                .ToListAsync(cancellationToken);
+        }
+
+        bool revokedFound = false;
+        foreach (ProjectDetails source in candidates)
+        {
+            TrustChain sourceChain;
+            try
+            {
+                sourceChain = await chainReader.ComputeAsync(source.RepositoryPath, cancellationToken);
+            }
+            catch (InvalidOperationException exception)
+            {
+                if (fromProjectName.IsNotBlank())
+                {
+                    return new CarryAttemptOutcome(
+                        false, null, $"Could not read '{source.Name}'s own ledger to carry a vouch from it: {exception.Message}");
+                }
+
+                continue;
+            }
+
+            if (!sourceChain.OwnerChains.TryGetValue(root, out TrustedOwner? sourceOwner))
+            {
+                continue;
+            }
+
+            if (sourceOwner.RevokedNodeIds.Contains(nodeId.ToString()))
+            {
+                revokedFound = true;
+                continue;
+            }
+
+            TrustedNode? activeNode = sourceOwner.Nodes.FirstOrDefault(
+                candidate => candidate.NodeId == nodeId.ToString() && candidate.Fingerprint == key.Fingerprint);
+            if (activeNode is null)
+            {
+                continue;
+            }
+
+            string sourceVouchPath = $"owners/{root}/nodes/{nodeId}.yaml";
+            LedgerSignedCommit? rootSigned = await commitReader.ReadSignedCommitAsync(
+                source.RepositoryPath, ownersRefName, rootPath, cancellationToken);
+            LedgerSignedCommit? vouchSigned = await commitReader.ReadSignedCommitAsync(
+                source.RepositoryPath, ownersRefName, sourceVouchPath, cancellationToken);
+            if (rootSigned is null || vouchSigned is null)
+            {
+                // The chain read above already confirmed this node is currently vouched there — an
+                // unreadable commit here means something changed between those two reads (a
+                // concurrent revocation, an unreachable remote mid-attempt). Try the next candidate
+                // rather than fail the whole join over a race this node did not cause.
+                continue;
+            }
+
+            // Pre-verified against the identical single-hop rule GitLedgerChainReader's own
+            // VerifyCarriedRecordAsync will apply on every later read (signed directly by the
+            // root's own key — never merely by some other node the source ledger's own, more
+            // permissive "root or any enrolled node" rule accepted for an ordinary vouch there,
+            // NodeVouchCommand's own doc: "written by any enrolled node of that owner"). Without
+            // this, a delegate-signed vouch would carry cleanly here and then never verify on any
+            // future read anywhere, permanently burning this project's own root.yaml slot — nothing
+            // can overwrite it once it exists, established or not (independent pre-PR review,
+            // adversarial lens, high). Skipped rather than failed outright: another candidate
+            // project, or a source root the target project's own root holder directly enrolled this
+            // node under, may still carry cleanly.
+            if (!await commitReader.IsSignedByAsync(
+                source.RepositoryPath, vouchSigned.RawCommitBytes, sourceOwner.RootPublicKeyLine, cancellationToken))
+            {
+                continue;
+            }
+
+            string carriedContent = BuildCarriedRecordYaml(
+                nodeId, key.PublicKeyLine, source.Id, source.ProjectKey, source.RepositoryUrl?.ToString() ?? source.RepositoryPath,
+                rootSigned, vouchSigned, now);
+
+            LedgerWriteOutcome outcome = await ledger.WriteManyAsync(
+                new LedgerManyWriteRequest(
+                    project.RepositoryPath, ownersRefName,
+                    [
+                        new LedgerFileWrite(rootPath, rootSigned.Content, ExpectedBlobId: null),
+                        new LedgerFileWrite($"owners/{root}/carried/{nodeId}.yaml", carriedContent, ExpectedBlobId: null),
+                    ],
+                    $"Carry node {nodeId}'s own vouch under root {root} in from '{source.Name}'", committer, signingKey),
+                cancellationToken);
+
+            if (outcome.Verdict != LedgerWriteVerdict.Written)
+            {
+                // Lost the race to establish this root — another node (or another join attempt)
+                // landed one between the read at the top of this method and this write.
+                return new CarryAttemptOutcome(
+                    false, null, $"'{project.Name}' already has a root for {root} — nothing to carry from '{source.Name}'.");
+            }
+
+            return new CarryAttemptOutcome(true, source.Name, null);
+        }
+
+        return new CarryAttemptOutcome(
+            false, null,
+            revokedFound
+                ? $"This node's key is revoked under owner {root} on the source ledger — nothing carried in."
+                : "No source vouch was found for this node's key under owner "
+                    + $"{root} on any registered project ledger"
+                    + (fromProjectName.IsNotBlank() ? $" named '{fromProjectName}'" : string.Empty)
+                    + " — nothing carried in.");
+    }
+
+    /// <summary>
+    /// A carried bundle's own small, flat document (task f53fecfd, criterion 1): the carried node's
+    /// own key, source provenance, and the source root.yaml/vouch file content plus the raw bytes of
+    /// both signed commits — every multi-line value base64-encoded so it still fits this class' own
+    /// single-line-per-field <see cref="BuildYaml"/> shape unchanged. <see cref="GitLedgerChainReader"/>'s
+    /// own <c>VerifyCarriedRecordAsync</c> is this method's exact mirror on the read side.
+    /// </summary>
+    private static string BuildCarriedRecordYaml(
+        Guid nodeId, string nodePublicKeyLine, Guid sourceProjectId, string? sourceProjectKey, string sourceOriginUrl,
+        LedgerSignedCommit rootSigned, LedgerSignedCommit vouchSigned, DateTimeOffset carriedAt) =>
+        BuildYaml(
+            ("node_id", nodeId.ToString()),
+            ("node_public_key", nodePublicKeyLine),
+            ("source_project_id", sourceProjectId.ToString()),
+            ("source_project_key", sourceProjectKey),
+            ("source_origin_url", sourceOriginUrl),
+            ("root_yaml_base64", EncodeBase64(rootSigned.Content)),
+            ("root_commit_sha", rootSigned.CommitSha),
+            ("root_commit_base64", EncodeBase64(rootSigned.RawCommitBytes)),
+            ("vouch_yaml_base64", EncodeBase64(vouchSigned.Content)),
+            ("vouch_commit_sha", vouchSigned.CommitSha),
+            ("vouch_commit_base64", EncodeBase64(vouchSigned.RawCommitBytes)),
+            ("carried_at", carriedAt.ToString("o", CultureInfo.InvariantCulture)));
+
+    private static string EncodeBase64(string value) => Convert.ToBase64String(Encoding.UTF8.GetBytes(value));
 
     /// <summary>
     /// Records this install's own local mirror of the project's key (idea 202383dc, M2): the value
