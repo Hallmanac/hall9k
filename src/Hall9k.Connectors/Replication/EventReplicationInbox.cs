@@ -586,6 +586,30 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 && !ProjectStreamReplicationRules.IsProjectLifecycleEvent(eventType);
             if (genesisRequired && !AggregateGenesisEventTypes.IsGenesis(eventType))
             {
+                // A copy of an event this node ALREADY holds, re-delivered — which is the ordinary
+                // outcome of the held-tail ask itself (EventCatchUpCoordinator's own
+                // RequestHeldTailStreamsAsync): a peer that holds the same tail and not the genesis
+                // answers by serving that tail again. Left exactly as it is rather than stored
+                // over, because the held document carries this node's own ask bookkeeping
+                // (CatchUpAttempts, LastCatchUpAskedAt, CatchUpGivenUp) and its original HeldAt,
+                // and Store on the same id is an upsert: overwriting it reset the attempt count to
+                // zero on every answer, so the three-attempt stop never engaged for the one shape
+                // it exists for and the stream was asked about again every cooldown for as long as
+                // the node ran (independent pre-PR review, cycle 1, both lenses, high). Nothing in
+                // the row is worth refreshing anyway — the origin event id is the identity, so the
+                // wire record is the same event either way.
+                HeldReplicatedEventRecord? alreadyHeld =
+                    await session.LoadAsync<HeldReplicatedEventRecord>(record.OriginEventId, cancellationToken);
+                if (alreadyHeld is not null)
+                {
+                    logger?.LogDebug(
+                        "Replicated event {OriginEventId} targets stream {StreamId}, whose genesis is still "
+                        + "missing, and is already held here since {HeldAt} after {Attempts} ask(s) — kept as "
+                        + "held rather than re-held", record.OriginEventId, effectiveStreamId, alreadyHeld.HeldAt,
+                        alreadyHeld.CatchUpAttempts);
+                    return 0;
+                }
+
                 logger?.LogWarning(
                     "Replicated event {OriginEventId} (origin {OriginNodeId} sequence {OriginSequence}) of type "
                     + "{EventType} from sender {SenderNodeId} targets stream {StreamId}, whose own genesis this "
@@ -784,6 +808,39 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         }
 
         return 1;
+    }
+
+    /// <summary>
+    /// Replays the held tail of a stream that already exists here, outside any read of a sender's
+    /// own outbox — the one shape <see cref="ReadFromAsync"/>'s own deferred replay can miss. That
+    /// replay is driven by an in-memory set of the streams a genesis started THIS read, so a read
+    /// that starts a stream and then throws on a later record (a transient Npgsql failure, say)
+    /// loses the set: the retry finds the genesis already applied, never names the stream again,
+    /// and the held records outlive the stream indefinitely, asked about by the daemon's own
+    /// held-tail sweep forever and counted as a tail-only stream by <c>h9k status</c> for good
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium). That sweep
+    /// (<see cref="EventCatchUpCoordinator.RequestHeldTailStreamsAsync"/>) is what finds them, in
+    /// <see cref="HeldTailSweepResult.StreamsToReplay"/>, and this is what clears them.
+    /// <para>
+    /// Every parameter the in-read replay threads through is this read's own uncommitted state,
+    /// which a standalone call simply has none of: the stream exists in committed form, so an
+    /// empty started-this-read set reads the identical answer from the store.
+    /// </para>
+    /// </summary>
+    /// <returns>How many of the held records actually applied.</returns>
+    public Task<int> ReplayHeldTailAsync(
+        IDocumentSession session, Guid streamId, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        HashSet<Guid> streamsStartedThisRead = [];
+        HashSet<Guid> streamsThatFailedToStartThisRead = [];
+        HashSet<Guid> originEventIdsAppliedThisRead = [];
+        Dictionary<Guid, long> originProgressThisRead = [];
+        Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream = [];
+        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead = [];
+        return ApplyHeldTailAsync(
+            session, streamId, streamsStartedThisRead, streamsThatFailedToStartThisRead,
+            originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream,
+            streamsAwaitingHeldTailReplayThisRead, now, cancellationToken);
     }
 
     /// <summary>

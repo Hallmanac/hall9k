@@ -462,7 +462,72 @@ public sealed class MessageSweepEngine(
                 exception, "Advancing overdue catch-up requests failed for project {ProjectId}; will retry next sweep",
                 project.Id);
         }
+
+        // The held-tail ask: a stream this node holds only the post-switch-on tail of, whose own
+        // genesis never arrived, completes on its own rather than waiting for a human to notice the
+        // task missing from the board and run h9k task pull for work the fleet already holds. Run
+        // after the reads above rather than before them, so a genesis that arrived THIS tick has
+        // already replayed its held tail and deleted the records — a stream the ordinary flow just
+        // fixed is never asked about at all.
+        //
+        // Its own session, the same per-concern isolation every other block in this method uses.
+        try
+        {
+            await using IDocumentSession heldTailSession = store.LightweightSession();
+            HeldTailSweepResult heldTail = await eventCatchUpCoordinator.RequestHeldTailStreamsAsync(
+                heldTailSession, project.Id, nodeId, identity.OwnerRootFingerprint, HeldTailSettleWindow(options.Value),
+                options.Value.EventCatchUpRequestTimeout, EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, now,
+                cancellationToken);
+
+            // A held record whose own stream already exists here is waiting on nothing but the
+            // replay a failed read never got to — asking the fleet for a stream this node already
+            // holds would answer a question nobody has. Replayed here, one stream at a time, so a
+            // failure on one leaves the rest to the next sweep rather than to nothing.
+            foreach (Guid streamId in heldTail.StreamsToReplay)
+            {
+                try
+                {
+                    int replayed = await eventInbox.ReplayHeldTailAsync(
+                        heldTailSession, streamId, now, cancellationToken);
+                    logger.LogInformation(
+                        "Replayed {Replayed} held record(s) for stream {StreamId} in project {ProjectId}, whose "
+                        + "own local stream already exists — the genesis was never what they were waiting on",
+                        replayed, streamId, project.Id);
+                }
+                catch (Exception exception)
+                {
+                    // Whatever this stream staged and never committed is dropped before the next
+                    // one runs: the session is shared across the loop, and a half-staged append
+                    // left pending would otherwise ride the NEXT stream's own save into the store,
+                    // out of order and unaccounted for.
+                    heldTailSession.EjectAllPendingChanges();
+                    logger.LogWarning(
+                        exception,
+                        "Replaying the held tail of stream {StreamId} in project {ProjectId} failed; will retry "
+                        + "next sweep", streamId, project.Id);
+                }
+            }
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Asking for held-tail streams failed for project {ProjectId}; will retry next sweep",
+                project.Id);
+        }
     }
+
+    /// <summary>
+    /// How long a held record must have sat before its stream earns an ask: one sweep interval,
+    /// read off the idle cadence's own ceiling (<see cref="DaemonOptions.MessageIdlePollMaxSeconds"/>)
+    /// because that is the longest this sweep ever waits between ticks, so a hold that outlives it
+    /// is a hold at least one full sweep failed to resolve. The ceiling rather than the active
+    /// cadence or the minimum, deliberately: erring long costs one extra sweep of patience before
+    /// a stream nobody is completing gets asked about, and erring short asks the project for
+    /// history it is in the middle of sending — which is the bootstrap case, where hundreds of
+    /// tails are held for seconds at a time while their own genesis events are still in flight.
+    /// </summary>
+    private static TimeSpan HeldTailSettleWindow(DaemonOptions options) =>
+        TimeSpan.FromSeconds(Math.Max(options.MessageIdlePollMaxSeconds, 1));
 
     private async Task QueueReplicatedEventsAsync(
         ProjectDetails project, Guid nodeId, MessageNodeIdentity identity, DateTimeOffset now,

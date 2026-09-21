@@ -2188,6 +2188,210 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         }
     }
 
+    /// <summary>
+    /// Task c3bdb62e: a stream this node holds only the tail of completes on its own. Held records
+    /// that outlived a sweep, with no local stream behind them, earn one broadcast stream request
+    /// per sweep; the attempt is recorded on the held records themselves; the cooldown keeps the
+    /// next sweep quiet; and the third attempt is the last, after which the records are marked
+    /// given up and no fourth ask is ever minted. The shape that produces a genuinely unanswerable
+    /// tail is a genesis event whose type name the answering build no longer knows, which the
+    /// responder skips silently, so "stop" has to be a real stop rather than a longer wait.
+    /// </summary>
+    [Fact]
+    public async Task A_held_tail_earns_one_ask_a_sweep_and_stops_after_three_attempts()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid myNodeId = DomainId.New();
+        Guid senderNodeId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid streamId = DomainId.New();
+        EventCatchUpCoordinator coordinator = new();
+        TimeSpan settleWindow = TimeSpan.FromSeconds(45);
+        TimeSpan cooldown = TimeSpan.FromMinutes(5);
+
+        await using DocumentStore store = OpenStore("event_catchup_held_tail_stop");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Store(HeldRecord(streamId, projectId, senderNodeId, originSequence: 7009, heldAt: Now));
+            session.Store(HeldRecord(streamId, projectId, senderNodeId, originSequence: 7010, heldAt: Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The sweep that finds the hold fresh asks for nothing: a bootstrap in progress holds tails
+        // for seconds while their own genesis events are still landing.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            (await coordinator.RequestHeldTailStreamsAsync(
+                session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, Now.AddSeconds(10), cts.Token))
+                .AsksMinted.Should().Be(0, "a hold the ordinary flow has not had one sweep to fix is not a gap yet");
+        }
+
+        DateTimeOffset firstAskAt = Now.AddMinutes(2);
+        for (int attempt = 1; attempt <= EventCatchUpCoordinator.MaxHeldTailAttempts; attempt++)
+        {
+            DateTimeOffset askAt = firstAskAt.AddMinutes((attempt - 1) * 10);
+
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                (await coordinator.RequestHeldTailStreamsAsync(
+                    session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                    EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, askAt, cts.Token))
+                    .AsksMinted.Should().Be(1, $"attempt {attempt} is inside the three this node makes");
+            }
+
+            // The ask is outstanding and cooling, so the very next sweep adds nothing — the two
+            // guards that keep an unanswerable tail off the wire every fifteen seconds.
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                (await coordinator.RequestHeldTailStreamsAsync(
+                    session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                    EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, askAt.AddSeconds(30), cts.Token))
+                    .AsksMinted.Should().Be(0, "a request for this stream is already outstanding");
+            }
+
+            // What a human running h9k status sees while the ask stands: a stream being chased,
+            // never one given up on — the count only moves once the fleet has had its chance.
+            await using (IQuerySession session = store.QuerySession())
+            {
+                (await HeldTailStreams.SummarizeAsync(session, cts.Token))
+                    .Should().BeEquivalentTo(
+                        new HeldTailSummary(StreamsHeldTailOnly: 1, StreamsGivenUp: 0),
+                        "an ask in flight is a stream still being chased");
+            }
+
+            // Closed the way a decline closes one, which is what every sweep after this actually
+            // faces: not outstanding any more, and still without the genesis.
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                EventCatchUpRequest outstanding = (await session.Query<EventCatchUpRequest>()
+                    .Where(request => request.ProjectId == projectId && request.AnsweredAt == null)
+                    .FirstOrDefaultAsync(cts.Token))!;
+                EventCatchUpDeclineLog.Record(outstanding, senderNodeId, askAt.AddSeconds(40), "nothing held here");
+                outstanding.AnsweredAt = askAt.AddSeconds(40);
+                outstanding.ClosedByDecline = outstanding.Declines[^1];
+                session.Store(outstanding);
+                await session.SaveChangesAsync(cts.Token);
+            }
+
+            await using (IDocumentSession session = store.LightweightSession())
+            {
+                HeldTailSweepResult cooling = await coordinator.RequestHeldTailStreamsAsync(
+                    session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                    EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, askAt.AddMinutes(1), cts.Token);
+                cooling.AsksMinted.Should().Be(0, "the ask went out a minute ago and the cooldown is five");
+                cooling.StreamsGivenUp.Should().Be(0, "a decline inside the cooldown is not the fleet's last word");
+            }
+        }
+
+        // The sweep that would have minted a fourth ask is the one that gives up instead, which is
+        // the first moment the verdict is honest: three asks made, the last of them long closed.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            HeldTailSweepResult stopped = await coordinator.RequestHeldTailStreamsAsync(
+                session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, firstAskAt.AddHours(4), cts.Token);
+            stopped.AsksMinted.Should().Be(0, "three attempts is the stop, however long the cooldown has since elapsed");
+            stopped.StreamsGivenUp.Should().Be(1);
+            stopped.StreamsToReplay.Should().BeEmpty("no local stream ever started here");
+        }
+
+        // And it happens once: the sweep after it finds every record already marked and filtered
+        // out of the read entirely.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            HeldTailSweepResult afterStop = await coordinator.RequestHeldTailStreamsAsync(
+                session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, firstAskAt.AddHours(5), cts.Token);
+            afterStop.AsksMinted.Should().Be(0);
+            afterStop.StreamsGivenUp.Should().Be(0, "a stream given up on is not given up on twice");
+        }
+
+        await using (IQuerySession session = store.QuerySession())
+        {
+            (await session.Query<EventCatchUpRequest>()
+                .Where(request => request.ProjectId == projectId && request.ForStreamId == streamId)
+                .CountAsync(cts.Token))
+                .Should().Be(EventCatchUpCoordinator.MaxHeldTailAttempts);
+
+            IReadOnlyList<HeldReplicatedEventRecord> held = await session.Query<HeldReplicatedEventRecord>()
+                .Where(record => record.StreamId == streamId).ToListAsync(cts.Token);
+            held.Should().HaveCount(2, "the tail is still held; what stopped is this node asking for it");
+            held.Should().AllSatisfy(record =>
+            {
+                record.CatchUpAttempts.Should().Be(EventCatchUpCoordinator.MaxHeldTailAttempts);
+                record.CatchUpGivenUp.Should().BeTrue();
+                record.LastCatchUpAskedAt.Should().NotBeNull();
+            });
+
+            HeldTailSummary summary = await HeldTailStreams.SummarizeAsync(session, cts.Token);
+            summary.Should().BeEquivalentTo(new HeldTailSummary(StreamsHeldTailOnly: 0, StreamsGivenUp: 1));
+        }
+    }
+
+    /// <summary>
+    /// Task c3bdb62e: a held record whose stream actually exists locally is an artifact of a replay
+    /// that never ran, not a missing genesis — so it is never asked about, and it is handed back
+    /// for replay rather than left sitting there. This is the one rule in the held-tail ask that
+    /// needs a store to state, which is why it is proved here rather than against the pure plan.
+    /// </summary>
+    [Fact]
+    public async Task A_held_record_whose_stream_already_exists_here_is_sent_for_replay_not_asked_about()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid myNodeId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        EventCatchUpCoordinator coordinator = new();
+
+        await using DocumentStore store = OpenStore("event_catchup_held_tail_local_stream");
+
+        Guid taskId = await SeedQueuedTaskAsync(store, projectId, ownerId, Now, cts.Token);
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            session.Store(HeldRecord(taskId, projectId, DomainId.New(), originSequence: 21085, heldAt: Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            HeldTailSweepResult swept = await coordinator.RequestHeldTailStreamsAsync(
+                session, projectId, myNodeId, "owner-fingerprint", TimeSpan.FromSeconds(45), TimeSpan.FromMinutes(5),
+                EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, Now.AddMinutes(10), cts.Token);
+            swept.AsksMinted.Should().Be(0);
+            swept.StreamsGivenUp.Should().Be(0);
+            swept.StreamsToReplay.Should().Equal(
+                [taskId], "the records are waiting on the replay a failed read never ran, not on the fleet");
+        }
+
+        await using (IQuerySession session = store.QuerySession())
+        {
+            (await session.Query<EventCatchUpRequest>().CountAsync(cts.Token)).Should().Be(0);
+            HeldReplicatedEventRecord held = (await session.Query<HeldReplicatedEventRecord>()
+                .FirstOrDefaultAsync(cts.Token))!;
+            held.CatchUpAttempts.Should().Be(0, "an attempt is only ever recorded for an ask actually made");
+        }
+    }
+
+    /// <summary>A tail event held for want of its stream's genesis — the shape
+    /// <c>EventReplicationInbox.ApplyAsync</c> persists when a run's events arrive without the
+    /// <c>RunDispatched</c> that started the stream.</summary>
+    private static HeldReplicatedEventRecord HeldRecord(
+        Guid streamId, Guid projectId, Guid senderNodeId, long originSequence, DateTimeOffset heldAt) => new()
+        {
+            Id = DomainId.New(),
+            StreamId = streamId,
+            ProjectId = projectId,
+            SenderNodeId = senderNodeId,
+            OriginProjectKey = "shared-project-key",
+            RecordJson = "{}",
+            OriginSequence = originSequence,
+            OriginNodeId = senderNodeId,
+            HeldAt = heldAt,
+        };
+
     private static async Task<Guid> SeedQueuedTaskAsync(
         IDocumentStore store, Guid projectId, Guid ownerId, DateTimeOffset now, CancellationToken cancellationToken)
     {

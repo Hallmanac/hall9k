@@ -99,10 +99,10 @@ public static class EventReplicationCodec
     /// own global sequence (<c>h9k project pull --since</c>); all three null asks for everything the
     /// peer holds for the project at all — a brand-new node's own bootstrap.
     /// <para>
-    /// The two shapes a human explicitly asked for — <see cref="ForStreamId"/> and
-    /// <see cref="SinceGlobalSequence"/> — are the ones an answering node serves from below its own
-    /// replication switch-on point; the two a daemon sweep mints on its own (gap-fill and bootstrap)
-    /// keep that exclusion, since history stays inert until somebody actually asks for it.
+    /// The two NAMED shapes, <see cref="ForStreamId"/> and
+    /// <see cref="SinceGlobalSequence"/>, are the ones an answering node serves from below its own
+    /// replication switch-on point; the two open-ended ones (gap-fill and bootstrap) keep that
+    /// exclusion, since history stays inert until something actually asks for it by name.
     /// <see cref="EventsRequestRecord.IsExplicitAsk"/> is the rule itself.
     /// </para>
     /// <para>
@@ -118,11 +118,25 @@ public static class EventReplicationCodec
         long? SinceGlobalSequence = null)
     {
         /// <summary>
-        /// Whether a human explicitly asked for this, which is the opt-in that lifts an answering
+        /// Whether this request names what it wants, which is the opt-in that lifts an answering
         /// node's own replication switch-on exclusion (task a56cf16e; the origin incident is in
         /// this type's own doc above): one named stream, or a named lower bound on the answering
-        /// node's own global sequence. A gap-fill and a brand-new node's bootstrap are both minted
-        /// by a daemon sweep with nobody asking, so neither one lifts it.
+        /// node's own global sequence. A gap-fill and a brand-new node's bootstrap name neither, so
+        /// neither one lifts it.
+        /// <para>
+        /// Originally read as "a human explicitly asked for this", because the only requests that
+        /// named a stream came from <c>h9k task pull</c> and the ledger-record adoption path. That
+        /// is no longer the discriminator: the held-tail ask
+        /// (<c>EventCatchUpCoordinator.RequestHeldTailStreamsAsync</c>, task c3bdb62e) names one
+        /// stream and is minted by a daemon sweep. Naming is still the right rule, and for the same
+        /// reason it always was rather than by coincidence: a request that names one stream asks a
+        /// peer to complete history that already partly travelled to this node, which is the exact
+        /// case the switch-on exclusion was never meant to strand, and it can only ever pull that
+        /// one stream rather than a whole back catalogue. The 2026-09-21 evidence is what settles
+        /// it: the genesis events those held tails were waiting on sat at Mac origin sequences 7009
+        /// to 21085, below that node's own switch-on point at 30084, so a held-tail ask that did
+        /// not lift the exclusion could never be answered at all.
+        /// </para>
         /// </summary>
         public bool IsExplicitAsk => ForStreamId is not null || SinceGlobalSequence is not null;
     }
