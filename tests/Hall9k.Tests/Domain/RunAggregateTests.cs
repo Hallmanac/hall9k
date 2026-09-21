@@ -220,6 +220,52 @@ public sealed class RunAggregateTests
         run.LastGateVerifyCommandsFingerprint.Should().BeNull();
     }
 
+    /// <summary>
+    /// Task: a delivered diff that touches no buildable or testable source skips the build and
+    /// test gates. A skip is never a pass for scoping: <see cref="RunAggregate.Apply(VerificationSkipped)"/>
+    /// deliberately touches none of the scope-tracking fields <see cref="VerificationPassed"/>
+    /// sets, so the next gate that actually runs always scopes off the last real
+    /// <see cref="VerificationPassed"/> still on the stream — never off a skip that landed after
+    /// it, whatever that skip observed.
+    /// </summary>
+    [Fact]
+    public void A_verification_skip_never_overwrites_the_last_real_passs_own_scope_record()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), LeaseGeneration: 1,
+            SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now));
+
+        run.Apply(new VerificationPassed(
+            id, Now, "full", RanFullScope: true, HeadSha: "sha-1", VerifyCommandsFingerprint: "fp-1"));
+
+        run.Apply(new VerificationSkipped(
+            id, Now, [new VerificationSkippedPath("docs/notes.md", "docs/")]));
+
+        run.LastGateRanFullScope.Should().BeTrue("a skip never overwrites what the last real pass recorded");
+        run.LastGateHeadSha.Should().Be("sha-1");
+        run.LastGateVerifyCommandsFingerprint.Should().Be("fp-1");
+    }
+
+    [Fact]
+    public void A_verification_skip_clears_any_previously_failed_gates_the_same_as_a_real_pass()
+    {
+        RunAggregate run = new();
+        Guid id = DomainId.New();
+        run.Apply(new RunDispatched(
+            id, DomainId.New(), DomainId.New(), DomainId.New(), LeaseGeneration: 1,
+            SessionId: DomainId.New(), WorktreePath: "/wt/x", Branch: "task/x",
+            ExecutorMode.Subscription, Now));
+
+        run.Apply(new VerificationFailed(id, ["build"], Now));
+        run.FailedGates.Should().ContainSingle();
+
+        run.Apply(new VerificationSkipped(id, Now, [new VerificationSkippedPath("docs/notes.md", "docs/")]));
+        run.FailedGates.Should().BeEmpty("a skip means nothing is currently failing, the same as a real pass");
+    }
+
     [Fact]
     public void Follow_up_run_reaches_awaiting_review_through_pull_request_updated()
     {

@@ -208,6 +208,10 @@ public static class EventScopeRegistry
         [typeof(TokensRecorded)] = EventScope.ProjectScoped,
         [typeof(VerificationFailed)] = EventScope.ProjectScoped,
         [typeof(VerificationPassed)] = EventScope.ProjectScoped,
+        // Recorded in place of VerificationPassed (task: a delivered diff that touches no
+        // buildable or testable source skips the build and test gates) — the identical
+        // team-visible fact about the run's own verification outcome, travelling at the same tier.
+        [typeof(VerificationSkipped)] = EventScope.ProjectScoped,
 
         // Hall9k.Domain.Features.Project.Events — the project's own identity travels; its
         // settings split at M2a (idea 202383dc): ProjectSettingsChanged keeps every field for

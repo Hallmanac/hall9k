@@ -583,6 +583,18 @@ public static class TaskPassageQuery
 
                     fold.BuildEnd ??= failed.FailedAt;
                     break;
+                case VerificationSkipped skipped:
+                    // Task: a delivered diff that touches no buildable or testable source skips
+                    // the build and test gates. A skip is still an observed verification — the
+                    // gates were deliberately not run, not never recorded — so it must close
+                    // BuildEnd and mark VerificationObserved exactly like a pass or a failure does,
+                    // or a content-only task's own "gate wall-clock time" phase would misreport
+                    // PassagePhase.NotApplicable ("never went through gates") for a task that did.
+                    // GatesSum/GatesUnknown stay untouched: zero gates ran, which is a fact, not an
+                    // unobserved duration, so it must never be counted as either.
+                    fold.VerificationObserved = true;
+                    fold.BuildEnd ??= skipped.SkippedAt;
+                    break;
                 case ReviewDispatched dispatched:
                     fold.BuildEnd ??= dispatched.DispatchedAt;
                     reviewDispatchedAt.TryAdd(dispatched.Cycle, dispatched.DispatchedAt);

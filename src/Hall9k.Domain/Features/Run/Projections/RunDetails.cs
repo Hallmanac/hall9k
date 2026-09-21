@@ -1195,6 +1195,14 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         view.PendingGateRetry = null;
     }
 
+    // Mirrors VerificationPassed just above: a skip means nothing is currently failing, the same
+    // as a real pass, for whatever reads FailedGates/PendingGateRetry off this projection.
+    public void Apply(IEvent<VerificationSkipped> @event, RunDetails view)
+    {
+        view.FailedGates = [];
+        view.PendingGateRetry = null;
+    }
+
     // The gate's own retry going in, not the run's terminal outcome: cleared only by
     // VerificationFailed/VerificationPassed above, since a gate that resolves this event's
     // retry still leaves later gates in the same VerifyAsync call to run.
