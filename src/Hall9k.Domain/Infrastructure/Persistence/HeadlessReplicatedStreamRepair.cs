@@ -5,7 +5,6 @@ using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks.Projections;
 using JasperFx.Events;
 using Marten;
-using Npgsql;
 
 namespace Hall9k.Domain.Infrastructure.Persistence;
 
@@ -47,8 +46,12 @@ public static class HeadlessReplicatedStreamRepair
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web);
 
-    /// <summary>Repairs every headless stream this store currently holds and returns the stream ids it actually fixed.</summary>
-    public static async Task<IReadOnlyList<Guid>> RunAsync(IDocumentStore store, CancellationToken cancellationToken)
+    /// <summary>Repairs every headless stream this store currently holds and returns the stream ids it actually fixed.
+    /// <paramref name="now"/> is the caller's own clock (<see cref="Hall9k.Daemon.Dispatch.DispatchLoop"/> reads
+    /// <see cref="DateTimeOffset.UtcNow"/> once and passes it through) rather than read here, so a test can fix it
+    /// the same way it already fixes every event's own timestamp, keeping the held rows' <c>HeldAt</c> — and the
+    /// replay order it tie-breaks — independent of the host clock.</summary>
+    public static async Task<IReadOnlyList<Guid>> RunAsync(IDocumentStore store, DateTimeOffset now, CancellationToken cancellationToken)
     {
         Guid[] headless = await HeadlessStreamIdsAsync(store, cancellationToken);
         if (headless.Length == 0)
@@ -59,7 +62,7 @@ public static class HeadlessReplicatedStreamRepair
         List<Guid> repaired = [];
         foreach (Guid streamId in headless)
         {
-            if (await RepairStreamAsync(store, streamId, cancellationToken))
+            if (await RepairStreamAsync(store, streamId, now, cancellationToken))
             {
                 repaired.Add(streamId);
             }
@@ -97,88 +100,90 @@ public static class HeadlessReplicatedStreamRepair
         return [.. headlessTasks.Concat(headlessIdeas).Distinct()];
     }
 
-    private static async Task<bool> RepairStreamAsync(IDocumentStore store, Guid streamId, CancellationToken cancellationToken)
+    private static async Task<bool> RepairStreamAsync(IDocumentStore store, Guid streamId, DateTimeOffset now, CancellationToken cancellationToken)
     {
-        List<HeldReplicatedEventRecord> held;
-        await using (IDocumentSession session = store.LightweightSession())
+        await using IDocumentSession session = store.LightweightSession();
+        IReadOnlyList<IEvent> events = await session.Events.FetchStreamAsync(streamId, token: cancellationToken);
+        if (events.Count == 0)
         {
-            IReadOnlyList<IEvent> events = await session.Events.FetchStreamAsync(streamId, token: cancellationToken);
-            if (events.Count == 0)
+            return false;
+        }
+
+        List<HeldReplicatedEventRecord> held = [];
+        foreach (IEvent @event in events)
+        {
+            if (!TryReadOrigin(@event, out Guid originNodeId, out Guid originEventId, out long originSequence, out Guid senderNodeId))
             {
+                // Not a replicated event this repair knows how to preserve (a native local
+                // event, or one from a build too old to carry these headers) — nothing safe to
+                // hold, so the whole stream is left exactly as it is.
                 return false;
             }
 
-            held = [];
-            DateTimeOffset now = DateTimeOffset.UtcNow;
-            foreach (IEvent @event in events)
+            ReplicatedEventRecord? dedupe = await session.LoadAsync<ReplicatedEventRecord>(originEventId, cancellationToken);
+            if (dedupe is null)
             {
-                if (!TryReadOrigin(@event, out Guid originNodeId, out Guid originEventId, out long originSequence, out Guid senderNodeId))
-                {
-                    // Not a replicated event this repair knows how to preserve (a native local
-                    // event, or one from a build too old to carry these headers) — nothing safe to
-                    // hold, so the whole stream is left exactly as it is.
-                    return false;
-                }
-
-                ReplicatedEventRecord? dedupe = await session.LoadAsync<ReplicatedEventRecord>(originEventId, cancellationToken);
-                if (dedupe is null)
-                {
-                    // The local project id this record's own dedupe row carried when it was first
-                    // (wrongly) applied — the one fact neither this event nor the headless document
-                    // can answer, which is exactly why the document reads Guid.Empty/Unknown in the
-                    // first place. Absent means this repair cannot say which project the held copy
-                    // belongs to, so the never-guess rule leaves the stream exactly as it is.
-                    return false;
-                }
-
-                string? originProjectKey = @event.GetHeader(ReplicationEventHeaders.OriginProjectKey) as string;
-                string originOwnerRootFingerprint = @event.GetHeader(ReplicationEventHeaders.OriginOwnerRootFingerprint) as string ?? string.Empty;
-                Guid originProjectId = @event.GetHeader(ReplicationEventHeaders.OriginProjectId) is string originProjectIdText
-                    && Guid.TryParse(originProjectIdText, out Guid parsedOriginProjectId)
-                        ? parsedOriginProjectId
-                        : default;
-
-                EventReplicationCodec.ReplicatedEventRecord record = new(
-                    streamId, @event.EventType.FullName!, JsonSerializer.Serialize(@event.Data, JsonOptions),
-                    originEventId, originSequence, originNodeId, originOwnerRootFingerprint, @event.Timestamp,
-                    originProjectId);
-
-                held.Add(new HeldReplicatedEventRecord
-                {
-                    Id = originEventId,
-                    StreamId = streamId,
-                    ProjectId = dedupe.ProjectId,
-                    SenderNodeId = senderNodeId,
-                    OriginProjectKey = originProjectKey,
-                    RecordJson = EventReplicationCodec.EncodeRecord(record),
-                    OriginSequence = originSequence,
-                    OriginNodeId = originNodeId,
-                    HeldAt = now,
-                });
+                // The local project id this record's own dedupe row carried when it was first
+                // (wrongly) applied — the one fact neither this event nor the headless document
+                // can answer, which is exactly why the document reads Guid.Empty/Unknown in the
+                // first place. Absent means this repair cannot say which project the held copy
+                // belongs to, so the never-guess rule leaves the stream exactly as it is.
+                return false;
             }
 
-            foreach (HeldReplicatedEventRecord record in held)
-            {
-                session.Store(record);
-                session.Delete<ReplicatedEventRecord>(record.Id);
-            }
+            string? originProjectKey = @event.GetHeader(ReplicationEventHeaders.OriginProjectKey) as string;
+            string originOwnerRootFingerprint = @event.GetHeader(ReplicationEventHeaders.OriginOwnerRootFingerprint) as string ?? string.Empty;
+            Guid originProjectId = @event.GetHeader(ReplicationEventHeaders.OriginProjectId) is string originProjectIdText
+                && Guid.TryParse(originProjectIdText, out Guid parsedOriginProjectId)
+                    ? parsedOriginProjectId
+                    : default;
 
-            session.Delete<TaskListItem>(streamId);
-            session.Delete<TaskDetails>(streamId);
-            session.Delete<IdeaDetails>(streamId);
-            await session.SaveChangesAsync(cancellationToken);
+            EventReplicationCodec.ReplicatedEventRecord record = new(
+                streamId, @event.EventType.FullName!, JsonSerializer.Serialize(@event.Data, JsonOptions),
+                originEventId, originSequence, originNodeId, originOwnerRootFingerprint, @event.Timestamp,
+                originProjectId);
+
+            held.Add(new HeldReplicatedEventRecord
+            {
+                Id = originEventId,
+                StreamId = streamId,
+                ProjectId = dedupe.ProjectId,
+                SenderNodeId = senderNodeId,
+                OriginProjectKey = originProjectKey,
+                RecordJson = EventReplicationCodec.EncodeRecord(record),
+                OriginSequence = originSequence,
+                OriginNodeId = originNodeId,
+                HeldAt = now,
+            });
         }
+
+        foreach (HeldReplicatedEventRecord record in held)
+        {
+            session.Store(record);
+            session.Delete<ReplicatedEventRecord>(record.Id);
+        }
+
+        session.Delete<TaskListItem>(streamId);
+        session.Delete<TaskDetails>(streamId);
+        session.Delete<IdeaDetails>(streamId);
 
         // The corrupted local stream itself, hard-deleted — cascading (fkey_mt_events_stream_id)
         // to remove its own now-orphaned events too — so a future genesis can legitimately
-        // StartStream this id as its own version 1. A fresh session, after the document work
-        // above has already committed: this repair's one fact worth losing on a crash between the
-        // two is a redundant retry next start, never a document deleted with nothing held for it.
-        await using IDocumentSession purgeSession = store.LightweightSession();
-        await using NpgsqlCommand purge = new(
-            $"delete from {store.Options.Events.DatabaseSchemaName}.mt_streams where id = @id");
-        purge.Parameters.AddWithValue("id", streamId);
-        await purgeSession.ExecuteAsync(purge, cancellationToken);
+        // StartStream this id as its own version 1. Queued into this SAME session as the document
+        // and dedupe-row work above, rather than purged through a second session afterward: a
+        // second, separate commit left this repair's own retry undetectable the moment the first
+        // one alone landed — HeadlessStreamIdsAsync finds a stream to repair only through the
+        // TaskListItem/IdeaDetails document this same call already deletes, so a purge failure
+        // between the two committed transactions orphaned the held rows forever and, once a later
+        // tail event re-created a headless document over the still-corrupted stream, left this
+        // repair unable to ever find it again (independent pre-PR review, cycle 1, both lenses,
+        // medium). Queuing the delete here makes the whole repair, held rows included, one atomic
+        // commit: either everything above lands together with the purge, or none of it does, and
+        // the next daemon start retries the entire stream from scratch, exactly as the log message
+        // around this call already promises.
+        session.QueueSqlCommand(
+            $"delete from {store.Options.Events.DatabaseSchemaName}.mt_streams where id = ?", streamId);
+        await session.SaveChangesAsync(cancellationToken);
 
         return true;
     }

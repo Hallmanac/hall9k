@@ -407,7 +407,7 @@ public sealed class DispatchLoop(
     {
         try
         {
-            IReadOnlyList<Guid> repaired = await HeadlessReplicatedStreamRepair.RunAsync(store, cancellationToken);
+            IReadOnlyList<Guid> repaired = await HeadlessReplicatedStreamRepair.RunAsync(store, DateTimeOffset.UtcNow, cancellationToken);
             if (repaired.Count > 0)
             {
                 logger.LogInformation(

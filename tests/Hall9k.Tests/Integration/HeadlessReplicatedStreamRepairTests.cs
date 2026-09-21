@@ -71,7 +71,7 @@ public sealed class HeadlessReplicatedStreamRepairTests(PostgresFixture postgres
             row.AddedAt.Should().Be(default);
         }
 
-        IReadOnlyList<Guid> repaired = await HeadlessReplicatedStreamRepair.RunAsync(store, cts.Token);
+        IReadOnlyList<Guid> repaired = await HeadlessReplicatedStreamRepair.RunAsync(store, Now, cts.Token);
 
         repaired.Should().Equal(taskId);
 
@@ -144,7 +144,7 @@ public sealed class HeadlessReplicatedStreamRepairTests(PostgresFixture postgres
             await session.SaveChangesAsync(cts.Token);
         }
 
-        IReadOnlyList<Guid> repaired = await HeadlessReplicatedStreamRepair.RunAsync(store, cts.Token);
+        IReadOnlyList<Guid> repaired = await HeadlessReplicatedStreamRepair.RunAsync(store, Now, cts.Token);
 
         repaired.Should().BeEmpty("nothing here can be safely reconstructed as a held replicated record");
 
