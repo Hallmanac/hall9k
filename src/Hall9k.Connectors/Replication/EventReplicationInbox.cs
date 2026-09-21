@@ -194,6 +194,11 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // own record already committed, is refused the identical way (independent pre-PR review,
         // cycle 1, both lenses, medium: this set alone lapses the moment one read ends).
         HashSet<Guid> streamsThatFailedToStartThisRead = [];
+        // Every stream a genesis started fresh THIS READ, whose own previously-held tail (if any)
+        // still needs replaying (ApplyAsync's own doc on why the replay itself is deferred rather
+        // than run inline the moment the genesis lands). Drained once, below, only after this whole
+        // read's own batches have all landed in their own order.
+        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead = [];
         foreach (TransportEnvelope raw in read.Envelopes.OrderBy(envelope => envelope.Seq))
         {
             highestSeqConsidered = raw.Seq;
@@ -279,8 +284,22 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 applied += await ApplyAsync(
                     session, record, senderNodeId, projectId, envelope.ProjectKey, streamsStartedThisRead,
                     streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead, originProgressThisRead,
-                    originHighWaterByStream, now, cancellationToken);
+                    originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, now, cancellationToken);
             }
+        }
+
+        // Every genesis this read started fresh replays its own held tail only now, after every
+        // envelope this read inspected has already applied in order (ApplyAsync's own doc explains
+        // why): a `.ToArray()` snapshot, since nothing this loop replays can legitimately add a NEW
+        // entry to the set it is draining — a held-tail replay only ever appends to a stream
+        // streamsStartedThisRead already names as existing, so ApplyAsync's own !streamExists branch
+        // that populates this set never fires again for it.
+        foreach (Guid streamId in streamsAwaitingHeldTailReplayThisRead.ToArray())
+        {
+            applied += await ApplyHeldTailAsync(
+                session, streamId, streamsStartedThisRead, streamsThatFailedToStartThisRead,
+                originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream,
+                streamsAwaitingHeldTailReplayThisRead, now, cancellationToken);
         }
 
         highestSeqConsidered = Math.Max(highestSeqConsidered, read.HighestSeqInspected);
@@ -387,15 +406,16 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
     /// same read would otherwise find nothing yet and apply a duplicate. Also 0, with a
     /// warning, when appending this record would put it BEHIND an event the local stream already
     /// holds from the same origin — see <paramref name="originHighWaterByStream"/>. Otherwise 1 for
-    /// this record alone, PLUS however many <see cref="HeldReplicatedEventRecord"/> rows this call's
-    /// own genesis just unblocked and replayed (<see cref="ApplyHeldTailAsync"/>) — the count
-    /// <see cref="ReadFromAsync"/> sums into its own <c>EventsApplied</c>, so a sweep that completes
-    /// a long-held tail reports every fact that actually landed, not only the genesis itself.</summary>
+    /// this record alone: a genesis that just started a stream fresh here does NOT replay that
+    /// stream's own held tail inline — it only records the stream in
+    /// <paramref name="streamsAwaitingHeldTailReplayThisRead"/> for <see cref="ReadFromAsync"/> to
+    /// replay once this whole read's own batches have landed (that method's own doc explains why).</summary>
     private async Task<int> ApplyAsync(
         IDocumentSession session, EventReplicationCodec.ReplicatedEventRecord record, Guid senderNodeId, Guid projectId,
         string? originProjectKey, HashSet<Guid> streamsStartedThisRead, HashSet<Guid> streamsThatFailedToStartThisRead,
         HashSet<Guid> originEventIdsAppliedThisRead, Dictionary<Guid, long> originProgressThisRead,
-        Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream, DateTimeOffset now,
+        Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
+        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, DateTimeOffset now,
         CancellationToken cancellationToken)
     {
         if (!originEventIdsAppliedThisRead.Add(record.OriginEventId))
@@ -724,27 +744,38 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         }
 
         // This call just started the stream fresh — the one moment a tail this node held earlier
-        // (this record's own genesis simply had not arrived yet) can finally complete: every held
-        // record for this exact stream, oldest first, applied through the ordinary path above
-        // (streamsStartedThisRead already names this stream as existing, so each one appends
-        // rather than tries to start it again).
-        int heldTailApplied = streamExists
-            ? 0
-            : await ApplyHeldTailAsync(
-                session, effectiveStreamId, streamsStartedThisRead, streamsThatFailedToStartThisRead,
-                originEventIdsAppliedThisRead, originProgressThisRead, originHighWaterByStream, now,
-                cancellationToken);
+        // (this record's own genesis simply had not arrived yet) could finally complete. NOT
+        // replayed here, though: the one realistic way a held tail's own genesis arrives is inside a
+        // `h9k task pull`/`h9k project pull` answer, which carries the whole stream in origin order
+        // BEHIND this same record in this identical read — an ordinary flush never re-ships a
+        // pre-switch-on genesis on its own (task a56cf16e). Replaying the held tail immediately
+        // would push the per-origin high-water mark past that answer's own still-to-come middle,
+        // and OriginHighWaterAsync's own guard above would refuse every one of those records as
+        // "belongs before the tail", scrambling the stream and losing its middle for good
+        // (independent pre-PR review, cycle 1, both lenses, high). Recorded here instead, for
+        // ReadFromAsync's own deferred replay once this whole read's batches have landed in their
+        // own order — the held copies then dedupe as no-ops against whichever of them this same
+        // answer already redelivered.
+        if (!streamExists)
+        {
+            streamsAwaitingHeldTailReplayThisRead.Add(effectiveStreamId);
+        }
 
-        return 1 + heldTailApplied;
+        return 1;
     }
 
     /// <summary>
     /// Replays every <see cref="HeldReplicatedEventRecord"/> waiting on <paramref name="streamId"/>'s
-    /// own genesis, oldest first, now that <see cref="ApplyAsync"/> has just started that stream
-    /// from it. Reapplies each one through <see cref="ApplyAsync"/> itself — by the time this runs,
-    /// <paramref name="streamsStartedThisRead"/> already names the stream as existing, so every held
-    /// record simply appends — rather than duplicating its append/header/dedupe logic here, and
-    /// deletes each held document only once its own replay attempt has actually landed (or
+    /// own genesis, oldest first, called by <see cref="ReadFromAsync"/> only once this whole read's
+    /// own batches have already landed — never inline from <see cref="ApplyAsync"/> the moment the
+    /// genesis itself starts the stream, which would run in the middle of the very same read that,
+    /// realistically, also carries that stream's own middle behind the genesis (that method's own
+    /// doc explains why). By the time this runs, <paramref name="streamsStartedThisRead"/> already
+    /// names the stream as existing, so every held record simply appends through
+    /// <see cref="ApplyAsync"/> itself, rather than duplicating its append/header/dedupe logic here —
+    /// a held record whose own origin event id this same read's batches already redelivered in order
+    /// finds its <see cref="ReplicatedEventRecord"/> dedupe row already stored and replays as a
+    /// no-op. Deletes each held document only once its own replay attempt has actually landed (or
     /// permanently failed, the ordinary poison-event outcome <see cref="ApplyAsync"/> already
     /// handles), so a crash between two held records loses nothing: whichever ones already
     /// committed are gone from this table, and whichever did not are found here again next time.
@@ -756,7 +787,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         IDocumentSession session, Guid streamId, HashSet<Guid> streamsStartedThisRead,
         HashSet<Guid> streamsThatFailedToStartThisRead, HashSet<Guid> originEventIdsAppliedThisRead,
         Dictionary<Guid, long> originProgressThisRead, Dictionary<Guid, Dictionary<Guid, long>> originHighWaterByStream,
-        DateTimeOffset now, CancellationToken cancellationToken)
+        HashSet<Guid> streamsAwaitingHeldTailReplayThisRead, DateTimeOffset now, CancellationToken cancellationToken)
     {
         IReadOnlyList<HeldReplicatedEventRecord> held = await session.Query<HeldReplicatedEventRecord>()
             .Where(candidate => candidate.StreamId == streamId)
@@ -778,7 +809,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 applied += await ApplyAsync(
                     session, decoded, heldRecord.SenderNodeId, heldRecord.ProjectId, heldRecord.OriginProjectKey,
                     streamsStartedThisRead, streamsThatFailedToStartThisRead, originEventIdsAppliedThisRead,
-                    originProgressThisRead, originHighWaterByStream, now, cancellationToken);
+                    originProgressThisRead, originHighWaterByStream, streamsAwaitingHeldTailReplayThisRead, now,
+                    cancellationToken);
             }
             else
             {
