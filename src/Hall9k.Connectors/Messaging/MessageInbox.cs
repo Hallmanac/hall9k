@@ -232,16 +232,17 @@ public sealed class MessageInbox(IMessageTransport transport, ILogger<MessageInb
                 continue;
             }
 
-            if (envelope.Kind == MessageKind.Events || envelope.Kind == MessageKind.EventsRequest
-                || envelope.Kind == MessageKind.EventsUnavailable)
+            if (envelope.Kind.IsReplicationProtocol)
             {
-                // idea 202383dc, M2a/M2b: an events, events-request, or events-unavailable envelope
-                // is EventReplicationInbox's/EventCatchUpInbox's own business — a second,
-                // independent reader of this identical outbox ref, on its own cursor. It must never
-                // also land here as an ordinary received message (h9k messages would otherwise show
-                // a raw batch of replicated events, or a catch-up protocol message, as if it were a
-                // note); skipping it still lets the cursor above advance past it like any other
-                // inspected envelope.
+                // idea 202383dc, M2a/M2b: an events, events-request, events-unavailable or
+                // events-answer-complete envelope is EventReplicationInbox's/EventCatchUpInbox's own
+                // business — a second, independent reader of this identical outbox ref, on its own
+                // cursor. It must never also land here as an ordinary received message (h9k messages
+                // would otherwise show a raw batch of replicated events, or a catch-up protocol
+                // message, as if it were a note); skipping it still lets the cursor above advance
+                // past it like any other inspected envelope. Asked of MessageKind rather than
+                // spelled out here, so a further protocol kind (task 252bc5cf added the fourth) is
+                // skipped by every reader the moment it is named there.
                 continue;
             }
 

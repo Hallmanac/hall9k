@@ -43,8 +43,8 @@ public sealed class MessagesCommand : Hall9kAsyncCommand<MessagesCommand.Setting
 
         // Idea 202383dc, item 5: MessageKind.MechanicalKindValues' own three kinds carry a JSON
         // payload for ClaimRequestWatchLoop alone, never user-visible prose — the same reason
-        // Events, EventsRequest, and EventsUnavailable never reach this list at all (those three
-        // are never even stored as an ordinary MessageDetails; these three are, since
+        // every MessageKind.IsReplicationProtocol kind never reaches this list at all (none of
+        // those is even stored as an ordinary MessageDetails; these three are, since
         // ClaimRequestWatchLoop reads them by querying MessageDetails directly rather than through
         // a second, bespoke cursor the way event replication does).
         IReadOnlyList<string> mechanicalKinds = MessageKind.MechanicalKindValues;

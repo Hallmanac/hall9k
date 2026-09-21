@@ -29,6 +29,13 @@ public static class EventReplicationStreamId
     public static Guid ForOriginProgress(Guid projectId, Guid originNodeId) =>
         Derive("hall9k-event-origin-progress", projectId.ToString("N"), originNodeId.ToString("N"));
 
+    /// <summary>One fleet sibling's own reconcile of one project with this node (task 252bc5cf) —
+    /// <see cref="FleetProjectReconcile"/>'s own id. Derived from the pair rather than minted fresh
+    /// because the document's own existence is the guard that keeps the sweep from asking the same
+    /// peer twice and keeps two nodes from asking each other forever.</summary>
+    public static Guid ForFleetReconcile(Guid peerNodeId, Guid projectId) =>
+        Derive("hall9k-fleet-project-reconcile", peerNodeId.ToString("N"), projectId.ToString("N"));
+
     private static Guid Derive(params string[] parts)
     {
         byte[] hash = SHA256.HashData(Encoding.UTF8.GetBytes(string.Join('|', parts)));
