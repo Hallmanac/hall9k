@@ -47,6 +47,33 @@ namespace Hall9k.Cli.Commands;
 /// </summary>
 internal static class HeadlessLaunch
 {
+    /// <summary>
+    /// Stamped onto the detached child's own environment at spawn time, carrying the session name
+    /// it was launched under, and inherited by every descendant it spawns — so a command run from
+    /// inside that session can observe "I am a spawned, unattended session" about ITSELF, rather
+    /// than infer it from a run document it shares with whoever spawned it
+    /// (<see cref="RecordingProvenanceReader"/>; independent pre-PR review, cycle 1, conformance
+    /// lens). The run's own recorded session name cannot answer that question: <c>h9k task
+    /// delegate</c> spawns its contractor from inside an operator's still-attached claim and
+    /// overwrites that name with the contractor's, so both processes read identically off the run
+    /// from then on, and the operator was refused their own decisions for the rest of the claim.
+    /// <para>
+    /// Neither signal already on hand stands in for it. <c>CLAUDE_PID</c> matched against the run's
+    /// recorded session pid cannot: on Windows the recorded pid is cmd.exe's, never claude.exe's
+    /// (<see cref="SpawnDetachedWindows"/>'s own doc), so a contractor's own pid never matches what
+    /// was recorded for it. <c>RunDispatched</c>'s original session name cannot either: an
+    /// <c>h9k task start</c> claim re-entered with <c>h9k task work</c> keeps its build-role
+    /// dispatch name forever, so reading that would refuse an operator genuinely sitting in it.
+    /// </para>
+    /// <para>
+    /// Carries the session NAME rather than being a bare flag, because the reader matches it
+    /// against the task being recorded against: a contractor working task X attends neither X nor
+    /// some other task Z it happens to record a statement against, but nothing about it makes Z's
+    /// own claim unattended, and Z's record is what decides that.
+    /// </para>
+    /// </summary>
+    public const string DetachedSessionEnvironmentVariable = "HALL9K_DETACHED_SESSION";
+
     public static (int ProcessId, DateTimeOffset StartedAt) SpawnDetached(
         string worktreePath, Guid claudeSessionId, string sessionName, AgentModel model, string promptFile,
         string streamFile, string standardErrorFile, string settingsFile, bool skipPermissions)
@@ -57,16 +84,25 @@ internal static class HeadlessLaunch
             $"{claudeCommand} < \"{promptFile}\" > \"{streamFile}\" 2> \"{standardErrorFile}\"";
 
         return OperatingSystem.IsWindows()
-            ? SpawnDetachedWindows(worktreePath, redirected, standardErrorFile)
-            : SpawnDetachedUnix(worktreePath, redirected, standardErrorFile);
+            ? SpawnDetachedWindows(worktreePath, redirected, standardErrorFile, sessionName)
+            : SpawnDetachedUnix(worktreePath, redirected, standardErrorFile, sessionName);
     }
+
+    /// <summary>
+    /// Marks the wrapper shell's environment — inherited by claude, and by everything claude
+    /// spawns — as this detached session's own. Set on the wrapper rather than written into the
+    /// command line: the redirected command string is handed to <c>/bin/sh -c</c> and
+    /// <c>cmd.exe /c</c> verbatim, and an environment entry needs no quoting of either shell's.
+    /// </summary>
+    private static void MarkDetachedSession(ProcessStartInfo shell, string sessionName) =>
+        shell.Environment[DetachedSessionEnvironmentVariable] = sessionName;
 
     /// <summary>
     /// See the class doc for why this backgrounds rather than <c>exec</c>s in the foreground, and
     /// why the real pid is captured through a scratch pidfile rather than the wrapper's own.
     /// </summary>
     private static (int ProcessId, DateTimeOffset StartedAt) SpawnDetachedUnix(
-        string worktreePath, string redirectedCommand, string standardErrorFile)
+        string worktreePath, string redirectedCommand, string standardErrorFile, string sessionName)
     {
         string pidFile = Path.Combine(Path.GetTempPath(), $"hall9k-task-start-pid-{Guid.NewGuid():N}");
         try
@@ -100,6 +136,7 @@ internal static class HeadlessLaunch
                 WorkingDirectory = worktreePath,
                 UseShellExecute = false,
             };
+            MarkDetachedSession(shell, sessionName);
             shell.ArgumentList.Add("-c");
             shell.ArgumentList.Add($"{redirectedCommand} &\necho $! > \"{pidFile}\"\n");
 
@@ -187,7 +224,7 @@ internal static class HeadlessLaunch
     /// </para>
     /// </summary>
     private static (int ProcessId, DateTimeOffset StartedAt) SpawnDetachedWindows(
-        string worktreePath, string redirectedCommand, string standardErrorFile)
+        string worktreePath, string redirectedCommand, string standardErrorFile, string sessionName)
     {
         ProcessStartInfo shell = new()
         {
@@ -196,6 +233,7 @@ internal static class HeadlessLaunch
             UseShellExecute = false,
             CreateNoWindow = true,
         };
+        MarkDetachedSession(shell, sessionName);
         // The raw Arguments string, never ArgumentList (see WindowsCommandLine): the redirected
         // command already carries its own embedded quotes (a quoted flag value, a quoted
         // redirected file path), and ArgumentList would C-runtime-escape them in a way cmd.exe's
