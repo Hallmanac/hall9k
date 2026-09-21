@@ -37,3 +37,7 @@ context: |-
   Presentation note, not this task's: TaskStatusComposer.State maps a Done task with a pull request and no run document to Delivered (Closed() reads the run), and TaskPhaseComposer prints "PR #N open, no run record is watching it". That is the Decisions Log #34 honesty rule reading an absent run as a merge not observed. The 14 read Done once their runs reach Completed with PullRequestMergedAt, so this task needs no composer change; the general shape (a Done task whose run never arrived reads as an open pull request) is a separate card.
 
   Tests to extend rather than duplicate: EventScopeRegistryTests, EventCatchUpTests (A_held_tail_earns_one_ask_a_sweep_and_stops_after_three_attempts, An_answer_that_carries_a_tail_before_its_genesis_is_held_and_replayed_in_the_same_read), EventCatchUpHeldTailPlanTests, HeadlessReplicatedStreamRepairTests. Writing conventions: no em dashes, full sentences. Testing rule (Brian, 2026-09-13): no test touches a repository or remote.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-09-21 23:48:28Z
