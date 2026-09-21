@@ -1,5 +1,6 @@
 using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Extensions;
 using JasperFx.Events;
@@ -54,17 +55,17 @@ internal static class EventStreamCatchUp
         NoOwnerRoot,
     }
 
-    /// <summary>What this node already holds under a task id — an in-process outcome two commands
+    /// <summary>What this node already holds under an id — an in-process outcome two commands
     /// branch on, never persisted (AGENTS.md's own enum rule).</summary>
     internal enum LocalStreamHold
     {
         /// <summary>No stream at all under this id: the one shape an events-request can actually fill.</summary>
         Absent,
 
-        /// <summary>A stream exists, but no event on it comes from the task feature at all — some
-        /// other kind of id (a project, idea, epic, run, or node), since every id in this platform
-        /// is a stream id.</summary>
-        NotATask,
+        /// <summary>A stream exists, but no event on it comes from the task or the run feature at
+        /// all — some other kind of id (a project, idea, epic, or node), since every id in this
+        /// platform is a stream id.</summary>
+        NotPullable,
 
         /// <summary>A task stream whose own <c>TaskAdded</c> is here: the whole history, nothing to ask for.</summary>
         Whole,
@@ -73,31 +74,48 @@ internal static class EventStreamCatchUp
         /// ordinary flush shipped, with the head that created the task still only on the node that
         /// produced it. See <see cref="PartiallyHeldRefusal"/> for why no ask can fix it.</summary>
         Partial,
+
+        /// <summary>A run stream whose own genesis (<see cref="RunDispatched"/>, or the
+        /// reconstruction stub <see cref="RunRecordReconstructed"/>) is here: the whole history.
+        /// A run id is pullable in its own right — the responder now serves a task's runs along
+        /// with the task, and an explicit run ask is the lever for a run whose task is already
+        /// here.</summary>
+        RunWhole,
+
+        /// <summary>A run stream missing its own genesis — the same tail-only shape
+        /// <see cref="Partial"/> describes, and just as unfillable.</summary>
+        RunPartial,
     }
 
     /// <summary>
-    /// What this node holds under <paramref name="taskId"/>, read from the events rather than the
-    /// <c>TaskListItem</c> projection: "does this node hold this task's history" is a question
-    /// about events, and a projection rebuild or an inline projection that has not caught up would
-    /// answer it wrongly in both directions. A task stream always opens with its own
-    /// <see cref="TaskAdded"/>, so a task stream without one is a partial stream — nothing else
+    /// What this node holds under <paramref name="streamId"/>, read from the events rather than the
+    /// <c>TaskListItem</c> projection: "does this node hold this history" is a question about
+    /// events, and a projection rebuild or an inline projection that has not caught up would answer
+    /// it wrongly in both directions. A task stream always opens with its own
+    /// <see cref="TaskAdded"/> and a run stream with its own <see cref="RunDispatched"/> (or the
+    /// reconstruction stub), so such a stream without one is a partial stream — nothing else
     /// produces that shape.
     /// </summary>
     public static async Task<LocalStreamHold> ClassifyLocalHoldAsync(
-        IQuerySession session, Guid taskId, CancellationToken cancellationToken)
+        IQuerySession session, Guid streamId, CancellationToken cancellationToken)
     {
-        if (await session.Events.FetchStreamStateAsync(taskId, cancellationToken) is null)
+        if (await session.Events.FetchStreamStateAsync(streamId, cancellationToken) is null)
         {
             return LocalStreamHold.Absent;
         }
 
-        IReadOnlyList<IEvent> held = await session.Events.FetchStreamAsync(taskId, token: cancellationToken);
+        IReadOnlyList<IEvent> held = await session.Events.FetchStreamAsync(streamId, token: cancellationToken);
         return held switch
         {
             _ when held.Any(candidate => candidate.EventType == typeof(TaskAdded)) => LocalStreamHold.Whole,
+            _ when held.Any(candidate =>
+                candidate.EventType == typeof(RunDispatched) || candidate.EventType == typeof(RunRecordReconstructed)) =>
+                LocalStreamHold.RunWhole,
             _ when held.Any(candidate => candidate.EventType.Namespace == typeof(TaskAdded).Namespace) =>
                 LocalStreamHold.Partial,
-            _ => LocalStreamHold.NotATask,
+            _ when held.Any(candidate => candidate.EventType.Namespace == typeof(RunDispatched).Namespace) =>
+                LocalStreamHold.RunPartial,
+            _ => LocalStreamHold.NotPullable,
         };
     }
 
@@ -154,9 +172,12 @@ internal static class EventStreamCatchUp
         + $"to '{projectName}'s other members from, and nothing was queued";
 
     /// <summary>
-    /// The refusal both stream-asking commands print for a task stream this node holds only part
-    /// of, which no events-request can repair (independent pre-PR review, cycle 4, adversarial
-    /// lens). A replicated event is APPENDED to the local stream — Marten cannot put one in front
+    /// The refusal both stream-asking commands print for a stream this node holds only part of,
+    /// which no events-request can repair (independent pre-PR review, cycle 4, adversarial lens).
+    /// <paramref name="subject"/> names what is partly held, capitalised and ready to open the
+    /// sentence ("Task ec35ceca", "Run 3727884f"), since the same dead end applies to a run stream
+    /// a task pull may now be handed directly.
+    /// A replicated event is APPENDED to the local stream — Marten cannot put one in front
     /// of what is already there — so the pre-switch-on head an explicit pull would fetch would land
     /// behind the tail already here, and the stream would replay backwards:
     /// <c>TaskAggregate.Apply(TaskAdded)</c> running last resets the state and clears the
@@ -164,9 +185,9 @@ internal static class EventStreamCatchUp
     /// <c>EventReplicationInbox</c> refuses such a record rather than applying it, so saying so
     /// here is what keeps a human from queueing an ask that can only ever be refused on arrival.
     /// </summary>
-    public static string PartiallyHeldRefusal(string taskShortId, string closing) =>
-        $"Task {taskShortId}'s event stream is only partly on this node: what happened after this node "
-        + "began replicating is here, but not the events that created the task. Nothing was queued, because "
+    public static string PartiallyHeldRefusal(string subject, string closing) =>
+        $"{subject}'s event stream is only partly on this node: what happened after this node "
+        + "began replicating is here, but not the events that created it. Nothing was queued, because "
         + "catch-up cannot fill that in — a replicated event is appended to the end of the local stream, and "
         + "history older than what is already here cannot be put in front of it without replaying the stream "
         + $"backwards. {closing}";

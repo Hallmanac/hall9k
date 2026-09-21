@@ -1204,17 +1204,24 @@ public static class CliCommandTree
                     "Ask this project's other members for one task's whole event stream, by id, when this "
                     + "node does not hold it (idea 202383dc, M2b). The same project-wide events-request "
                     + "h9k task add --from-issue already queues when the ledger names a task that has not "
-                    + "replicated here, without needing a linked issue to hang the ask on: pass the task's "
-                    + "full id, which a fragment cannot substitute for since there is nothing local to "
-                    + "match against. A peer serves an explicit stream request from below its own "
-                    + "replication switch-on point, which an ordinary flush and a gap-fill are still held "
-                    + "above, so a task published before that peer ever switched replication on is "
-                    + "reachable this way and no other; a private task is still never served. Refused when "
-                    + "this node has no owner root yet, naming h9k project join. Queues and returns: no "
-                    + "git, no network here, and the daemon's next message sweep sends it. A broadcast "
-                    + "never times out, so a second run reports the one already outstanding rather than "
-                    + "queueing a second. h9k status shows it while it stands.")
+                    + "replicated here, without needing a linked issue to hang the ask on. Takes the full "
+                    + "id, or the short id a board row or a branch name carries, which resolves against "
+                    + "this project's own ledger records — the one local source that names a task whose "
+                    + "stream is not here, and which also says which project to ask. A peer serves an "
+                    + "explicit stream request from below its own replication switch-on point, which an "
+                    + "ordinary flush and a gap-fill are still held above, so a task published before that "
+                    + "peer ever switched replication on is reachable this way and no other; it answers "
+                    + "with the task's own runs as well, so a pulled task whose runs finished reads Done "
+                    + "rather than Delivered; a private task is still never served. Refused when this node "
+                    + "has no owner root yet, naming h9k project join. Queues and returns, and the "
+                    + "daemon's next message sweep sends it. A request a peer has already declined or "
+                    + "answered is closed, not in flight, so a re-run asks again; one genuinely still "
+                    + "outstanding is reported as such and cleared with --again. h9k status shows each "
+                    + "ask while it stands, including the ones the platform mints itself for a landed "
+                    + "task's missing dependencies.")
                 .WithExample("task", "pull", "01a0afc1-fc97-73b5-836e-39b8ec35ceca")
+                .WithExample("task", "pull", "ec35ceca")
+                .WithExample("task", "pull", "ec35ceca", "--again")
                 .WithExample("task", "pull", "01a0afc1-fc97-73b5-836e-39b8ec35ceca", "--project", "hall9k");
             task.AddCommand<TaskPushToJiraCommand>("push-to-jira")
                 .WithDescription(
