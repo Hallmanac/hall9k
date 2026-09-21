@@ -2,6 +2,8 @@ using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Cli.ProjectHomes;
+using Hall9k.Connectors.Identity;
+using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Features.Connection;
@@ -74,6 +76,16 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             + "first — freeing --name for this registration — then register as normal. Selects the "
             + "'rename' answer to the interactive prompt this collision otherwise asks.")]
         public string? RenameArchivedTo { get; init; }
+
+        [CommandOption("--invite <TOKEN>")]
+        [Description(
+            "A single-use secret from h9k node invite or h9k project invite, handed straight to the "
+            + "join this command runs right after registering — one command both registers and "
+            + "joins. Only needed on a project someone else already owns: registering, then being "
+            + "told the owner, then pasting their invite here (or later with h9k project join <name> "
+            + "--invite <token>) is the flow a newcomer meets. The first owner of a brand-new project "
+            + "needs none of this — that join still just establishes its own root.")]
+        public string? Invite { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -222,7 +234,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
             AnsiConsole.MarkupLine(
                 $"[dim]No home created (--no-home). Give it one later:[/] h9k project init {name.EscapeMarkup()}");
             await AskForRunSkillAsync(session, projectId, name, context.OwnerId, cancellationToken);
-            await TryJoinAsync(session, projectId, name, repositoryPath, cancellationToken);
+            await TryJoinAsync(session, projectId, name, repositoryPath, settings.Invite, cancellationToken);
             return ExitCodes.Ok;
         }
 
@@ -240,7 +252,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         bool ok = ProjectHomeRecipe.Report(steps);
 
         await AskForRunSkillAsync(session, projectId, name, context.OwnerId, cancellationToken);
-        await TryJoinAsync(session, projectId, name, repositoryPath, cancellationToken);
+        await TryJoinAsync(session, projectId, name, repositoryPath, settings.Invite, cancellationToken);
 
         AnsiConsole.MarkupLine(OrchestratorPointer.ForProject(name));
 
@@ -297,9 +309,25 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
     /// fatal to this command: the project registration above already committed, and a join that
     /// fails here (ssh-keygen unavailable, the repository not yet pushable) is exactly the
     /// "says so when it could not" case, not a reason to report the whole registration as failed.
+    /// <paramref name="invite"/> (task: "a newcomer who registers a project whose ledger already
+    /// has an owner...") is handed straight to that join: with one, this call runs exactly the
+    /// --invite path; with none, a ledger that already has a real owner defers rather than minting
+    /// this install a second one, the identical decision h9k project join makes on its own.
     /// </summary>
-    private static async Task TryJoinAsync(
-        IDocumentSession session, Guid projectId, string name, string repositoryPath, CancellationToken cancellationToken)
+    private static Task TryJoinAsync(
+        IDocumentSession session, Guid projectId, string name, string repositoryPath, string? invite,
+        CancellationToken cancellationToken) =>
+        TryJoinAsync(
+            session, projectId, name, repositoryPath, invite,
+            new GitLedger(new ConsoleWorktreeLogger<GitLedger>()), new NodeKeyStore(), new ProjectGitHubAccessMirror(),
+            cancellationToken);
+
+    /// <summary>The ledger-seamed overload, so a test can prove --invite actually reaches
+    /// ProjectJoinCommand.RunAsync without touching git or a network (Brian's 2026-09-13 testing
+    /// rule) — the identical seam ProjectJoinCommand.RunAsync's own overloads already use.</summary>
+    internal static async Task TryJoinAsync(
+        IDocumentSession session, Guid projectId, string name, string repositoryPath, string? invite,
+        ILedger ledger, NodeKeyStore keyStore, ProjectGitHubAccessMirror githubAccess, CancellationToken cancellationToken)
     {
         if (!Directory.Exists(repositoryPath))
         {
@@ -313,7 +341,7 @@ public sealed class ProjectAddCommand : Hall9kAsyncCommand<ProjectAddCommand.Set
         {
             ProjectDetails project = (await session.LoadAsync<ProjectDetails>(projectId, cancellationToken))!;
             ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
-                session, project, claimedOwnerOverride: null, cancellationToken);
+                session, project, claimedOwnerOverride: null, invite, ledger, keyStore, githubAccess, cancellationToken);
             ProjectJoinCommand.Report(project, outcome);
         }
         catch (Exception exception) when (exception is not OperationCanceledException)

@@ -10,6 +10,7 @@ using Hall9k.Daemon;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
 using Hall9k.Domain.Features.Connection;
+using Hall9k.Domain.Features.Invite;
 using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
@@ -148,50 +149,258 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         await ProjectJoinCommand.RunAsync(
             session, project, existingGenesisRoot, invite: null, ledger, new NodeKeyStore(),
-            GitHubAccessFakes.GrantingPush(), chainReader, cts.Token);
+            GitHubAccessFakes.GrantingPush(), chainReader, promptForInviteToken: null, cts.Token);
 
         ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
         updatedProject.ProjectKey.Should().Be(existingProjectKey);
     }
 
     /// <summary>
-    /// <see cref="ProjectJoinCommand.RunAsync"/>'s own genesis-member gate refuses to write when
-    /// the members/ folder already holds anyone's file, never merely when this node's own
-    /// fingerprint's file happens to be absent — a per-fingerprint check would let a second node
-    /// establishing its own fresh root self-claim ownership in a project that already has a real
-    /// owner, since its own fingerprint's file is of course absent too (independent pre-PR review,
-    /// cycle 1, conformance and adversarial lenses, medium). Simulated here with a member file
-    /// pre-seeded directly through the fake ledger under an unrelated fingerprint, standing in for
-    /// a genuinely earlier join this test never has to actually run.
+    /// <see cref="ProjectJoinCommand.RunAsync"/>'s own no-owner, no-invite gate (task: "a newcomer
+    /// who registers a project whose ledger already has an owner is told so and asked for their
+    /// invite token instead of being minted as a second owner root"): this install has no root
+    /// claim of its own, and the members/ folder already holds a real owner's own genesis file
+    /// under an unrelated fingerprint — so this join writes nothing at all rather than minting this
+    /// node its own, orphaned root.yaml and node.yaml the way it used to (a per-fingerprint absence
+    /// check, and later only the genesis MEMBER write, were the only things that ever backed off).
+    /// Simulated here with a member file pre-seeded directly through the fake ledger, standing in
+    /// for a genuinely earlier join this test never has to actually run.
     /// </summary>
     [Fact]
-    public async Task Establishing_a_fresh_root_never_self_claims_genesis_membership_when_the_members_folder_already_has_another_owner()
+    public async Task No_local_root_claim_against_an_existing_genesis_writes_nothing_and_names_the_known_owner()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
         ProjectDetails project = await SeedProjectAsync(cts.Token);
         FakeLedger ledger = new();
+        string realOwnerFingerprint = new string('d', 64);
+        await SeedGenesisOwnerMemberAsync(ledger, project.RepositoryPath, realOwnerFingerprint, cts.Token);
 
-        string priorOwnerFingerprint = new string('d', 64);
-        LedgerWriteOutcome seedOutcome = await ledger.WriteAsync(
-            new LedgerWriteRequest(
-                project.RepositoryPath, "refs/hall9k/ledger/members", $"members/{priorOwnerFingerprint}.yaml",
-                $"root_fingerprint: \"{priorOwnerFingerprint}\"\nrole: \"owner\"\nissued_at: \"{Now:o}\"\n",
-                ExpectedBlobId: null, "seed a prior owner's own genesis member", new LedgerCommitter("Seed", "seed@hall9k.local"),
-                new LedgerSigningKey("/does/not/matter/for/a/fake/ledger")),
-            cts.Token);
-        seedOutcome.Verdict.Should().Be(LedgerWriteVerdict.Written, "test setup: the prior owner's own member file must land");
+        // This install's local Owner documents happen to already know this fingerprint's own login
+        // — a separate, unrelated Owner stream, never this install's own (context.OwnerId, whose
+        // RootFingerprint SeedProjectAsync's own fresh bootstrap leaves null) — so the deferral's
+        // own message can name a login rather than only a bare fingerprint.
+        await using IDocumentSession seedOwnerSession = _postgres.Store.LightweightSession();
+        Guid realOwnerId = DomainId.New();
+        seedOwnerSession.Events.StartStream<OwnerAggregate>(
+            realOwnerId, OwnerDecider.Register(realOwnerId, "Real Project Owner", "owner@test.local", Now));
+        await seedOwnerSession.SaveChangesAsync(cts.Token);
+        OwnerAggregate realOwner = (await seedOwnerSession.Events.AggregateStreamAsync<OwnerAggregate>(realOwnerId, token: cts.Token))!;
+        seedOwnerSession.Events.Append(realOwnerId, OwnerDecider.ClaimRoot(realOwner, realOwnerFingerprint, verified: true, Now));
+        await seedOwnerSession.SaveChangesAsync(cts.Token);
 
+        int writesBeforeJoin = ledger.Writes.Count;
         await using IDocumentSession session = _postgres.Store.LightweightSession();
+        using ScopedAnsiConsoleCapture capture = ScopedAnsiConsoleCapture.Begin();
         ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
             session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
 
-        outcome.EstablishedRoot.Should().BeTrue("this node still establishes its own root — genesis membership alone is refused");
-        ledger.Writes.Should().NotContain(
-            w => w.RefName == "refs/hall9k/ledger/members" && w.Path == $"members/{outcome.KeyFingerprint}.yaml",
-            "the members folder was already non-empty, so this join must never self-claim genesis ownership");
+        outcome.Deferred.Should().BeTrue(
+            "this install has no root claim of its own and the ledger already has a real owner — it defers rather than minting a second one");
+        ledger.Writes.Should().HaveCount(
+            writesBeforeJoin, "no root.yaml, no node.yaml — nothing new is written when this join defers to the existing owner");
+        capture.Text.Should().Contain("Real Project Owner", "the existing owner's own known login names them, not only their fingerprint");
+        capture.Text.Should().Contain("invite");
 
         ProjectDetails updatedProject = (await session.LoadAsync<ProjectDetails>(project.Id, cts.Token))!;
-        updatedProject.Members.Should().NotContainKey(outcome.KeyFingerprint);
+        updatedProject.Members.Should().BeEmpty("nothing about this node's own membership was ever written");
+
+        OwnerAggregate owner = (await session.Events.AggregateStreamAsync<OwnerAggregate>(project.OwnerId, token: cts.Token))!;
+        owner.RootFingerprint.Should().BeNull("no OwnerRootClaimed event landed for this install's own owner");
+    }
+
+    /// <summary>The identical gate, with no local Owner document known for the real owner's own
+    /// fingerprint — the deferral message falls back to naming the bare fingerprint rather than
+    /// guessing at a login it was never told.</summary>
+    [Fact]
+    public async Task No_local_root_claim_against_an_existing_genesis_names_the_fingerprint_when_no_login_is_known()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+        string realOwnerFingerprint = new string('d', 64);
+        await SeedGenesisOwnerMemberAsync(ledger, project.RepositoryPath, realOwnerFingerprint, cts.Token);
+        int writesBeforeJoin = ledger.Writes.Count;
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        using ScopedAnsiConsoleCapture capture = ScopedAnsiConsoleCapture.Begin();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        outcome.Deferred.Should().BeTrue();
+        ledger.Writes.Should().HaveCount(writesBeforeJoin);
+        capture.Text.Should().Contain(realOwnerFingerprint, "with no local login known for this fingerprint, the message names it directly");
+    }
+
+    /// <summary>
+    /// A real, interactive terminal answers the deferral's own on-the-spot prompt with a genuine
+    /// invite token — the same call then runs the ordinary --invite path rather than deferring,
+    /// exactly as h9k project join &lt;project&gt; --invite &lt;token&gt; run afterward would.
+    /// </summary>
+    [Fact]
+    public async Task A_terminal_prompt_answered_with_a_token_runs_the_invite_path_in_the_same_call()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+        string realOwnerFingerprint = new string('d', 64);
+        await SeedGenesisOwnerMemberAsync(ledger, project.RepositoryPath, realOwnerFingerprint, cts.Token);
+
+        Guid inviteId = DomainId.New();
+        string secret = InviteSecret.Generate(realOwnerFingerprint, inviteId);
+        string secretHash = InviteSecret.Hash(secret);
+        InviteLedgerRecord record = new(
+            secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                project.RepositoryPath, InviteLedgerRecord.RefName(realOwnerFingerprint), InviteLedgerRecord.PathFor(realOwnerFingerprint, inviteId),
+                record.ToYaml(), ExpectedBlobId: null, "seed a member-of-project invite", new LedgerCommitter("Test", "t@test.local"),
+                new LedgerSigningKey("/does/not/matter")),
+            cts.Token);
+
+        int prompted = 0;
+        string? PromptOnce()
+        {
+            prompted++;
+            return secret;
+        }
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, invite: null, ledger, new NodeKeyStore(),
+            GitHubAccessFakes.GrantingPush(), chainReader: null, promptForInviteToken: PromptOnce, cts.Token);
+
+        prompted.Should().Be(1, "a terminal asks for the token exactly once");
+        outcome.Deferred.Should().BeFalse("a real token was pasted, so this runs the ordinary --invite path instead of deferring");
+        outcome.EstablishedRoot.Should().BeTrue("a member-of-project invite creates the joiner's own root when it has none yet");
+        ledger.Writes.Should().Contain(w => w.RefName.StartsWith("refs/hall9k/ledger/nodes/"), "the node file still lands, exactly like h9k project join --invite");
+    }
+
+    /// <summary>Pressing enter at the same on-the-spot prompt (a blank answer) defers exactly like a
+    /// non-interactive run, and names the exact command to run once a token is actually in hand.</summary>
+    [Fact]
+    public async Task A_terminal_prompt_answered_with_enter_prints_the_exact_invite_command()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+        string realOwnerFingerprint = new string('d', 64);
+        await SeedGenesisOwnerMemberAsync(ledger, project.RepositoryPath, realOwnerFingerprint, cts.Token);
+        int writesBeforeJoin = ledger.Writes.Count;
+
+        int prompted = 0;
+        string? PromptWithEnter()
+        {
+            prompted++;
+            return string.Empty;
+        }
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        using ScopedAnsiConsoleCapture capture = ScopedAnsiConsoleCapture.Begin();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, invite: null, ledger, new NodeKeyStore(),
+            GitHubAccessFakes.GrantingPush(), chainReader: null, promptForInviteToken: PromptWithEnter, cts.Token);
+
+        prompted.Should().Be(1, "a terminal still asks once, even though the answer is blank");
+        outcome.Deferred.Should().BeTrue();
+        ledger.Writes.Should().HaveCount(writesBeforeJoin);
+        capture.Text.Should().Contain($"h9k project join {project.Name} --invite <token>");
+    }
+
+    /// <summary>A non-interactive run (a script, an agent, a daemon) never calls the prompt at all —
+    /// there is nothing here it could invoke — and prints the identical instruction, exiting as a
+    /// kept registration rather than a failure.</summary>
+    [Fact]
+    public async Task A_non_terminal_run_never_prompts_and_prints_the_exact_invite_command()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+        string realOwnerFingerprint = new string('d', 64);
+        await SeedGenesisOwnerMemberAsync(ledger, project.RepositoryPath, realOwnerFingerprint, cts.Token);
+        int writesBeforeJoin = ledger.Writes.Count;
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        using ScopedAnsiConsoleCapture capture = ScopedAnsiConsoleCapture.Begin();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        outcome.Deferred.Should().BeTrue();
+        ledger.Writes.Should().HaveCount(writesBeforeJoin);
+        capture.Text.Should().Contain($"h9k project join {project.Name} --invite <token>");
+    }
+
+    /// <summary>h9k project add's own join call threads --invite straight through to the ordinary
+    /// --invite path (task: "h9k project add accepts --invite &lt;token&gt; and passes it to its
+    /// join, so one command registers and joins") — proven through
+    /// <see cref="ProjectAddCommand.TryJoinAsync(IDocumentSession,Guid,string,string,string?,ILedger,NodeKeyStore,ProjectGitHubAccessMirror,CancellationToken)"/>'s
+    /// own ledger-seamed overload rather than a real repository (Brian's 2026-09-13 testing rule).</summary>
+    [Fact]
+    public async Task ProjectAdds_own_join_passes_the_invite_token_through_to_the_ordinary_invite_path()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        DirectoryInfo tempRepository = Directory.CreateTempSubdirectory("h9k-project-add-invite-test-");
+        try
+        {
+            await NodeBootstrapSeed.SeedGitHubConnectionAsync(_postgres.Store, cts.Token);
+
+            await using IDocumentSession bootstrapSession = _postgres.Store.LightweightSession();
+            BootstrapContext context = await NodeBootstrap.EnsureAsync(bootstrapSession, cts.Token);
+            await bootstrapSession.SaveChangesAsync(cts.Token);
+
+            Guid projectId = DomainId.New();
+            await using IDocumentSession projectSession = _postgres.Store.LightweightSession();
+            projectSession.Events.StartStream<ProjectAggregate>(
+                projectId,
+                ProjectDecider.Register(
+                    projectId, context.OwnerId, context.ConnectionId, "smoke-add-invite",
+                    tempRepository.FullName, null, null, Now));
+            await projectSession.SaveChangesAsync(cts.Token);
+
+            FakeLedger ledger = new();
+            string realOwnerFingerprint = new string('d', 64);
+            await SeedGenesisOwnerMemberAsync(ledger, tempRepository.FullName, realOwnerFingerprint, cts.Token);
+
+            Guid inviteId = DomainId.New();
+            string secret = InviteSecret.Generate(realOwnerFingerprint, inviteId);
+            string secretHash = InviteSecret.Hash(secret);
+            InviteLedgerRecord record = new(
+                secretHash, InviteClaimKind.MemberOfProject, ProjectMemberRole.Member, DateTimeOffset.UtcNow.AddHours(72), Spent: false);
+            await ledger.WriteAsync(
+                new LedgerWriteRequest(
+                    tempRepository.FullName, InviteLedgerRecord.RefName(realOwnerFingerprint), InviteLedgerRecord.PathFor(realOwnerFingerprint, inviteId),
+                    record.ToYaml(), ExpectedBlobId: null, "seed a member-of-project invite", new LedgerCommitter("Test", "t@test.local"),
+                    new LedgerSigningKey("/does/not/matter")),
+                cts.Token);
+
+            await using IDocumentSession session = _postgres.Store.LightweightSession();
+            await ProjectAddCommand.TryJoinAsync(
+                session, projectId, "smoke-add-invite", tempRepository.FullName, secret, ledger, new NodeKeyStore(),
+                GitHubAccessFakes.GrantingPush(), cts.Token);
+
+            ledger.Writes.Should().Contain(
+                w => w.RefName.StartsWith("refs/hall9k/ledger/nodes/"),
+                "--invite reached ProjectJoinCommand.RunAsync and ran the ordinary invite path, not a deferral");
+        }
+        finally
+        {
+            tempRepository.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>Seeds this project's own first (owner-role) genesis member file directly through the
+    /// fake ledger, standing in for a genuinely earlier join by the real owner this test never has
+    /// to actually run.</summary>
+    private static async Task SeedGenesisOwnerMemberAsync(
+        ILedger ledger, string repositoryPath, string ownerFingerprint, CancellationToken cancellationToken)
+    {
+        LedgerWriteOutcome seedOutcome = await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                repositoryPath, "refs/hall9k/ledger/members", $"members/{ownerFingerprint}.yaml",
+                $"root_fingerprint: \"{ownerFingerprint}\"\nrole: \"owner\"\nissued_at: \"{Now:o}\"\n",
+                ExpectedBlobId: null, "seed the real owner's own genesis member", new LedgerCommitter("Seed", "seed@hall9k.local"),
+                new LedgerSigningKey("/does/not/matter/for/a/fake/ledger")),
+            cancellationToken);
+        seedOutcome.Verdict.Should().Be(LedgerWriteVerdict.Written, "test setup: the real owner's own genesis member file must land");
     }
 
     [Fact]
