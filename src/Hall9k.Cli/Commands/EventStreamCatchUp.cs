@@ -1,4 +1,5 @@
 using Hall9k.Connectors.Replication;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Infrastructure.Extensions;
 using JasperFx.Events;
@@ -26,14 +27,28 @@ internal static class EventStreamCatchUp
     /// never persisted (AGENTS.md's own enum rule).</summary>
     internal enum RequestDisposition
     {
-        /// <summary>This call queued the request; the daemon's next message sweep sends it.</summary>
+        /// <summary>This call queued the first request this node has ever made for that stream; the
+        /// daemon's next message sweep sends it.</summary>
         Queued,
 
-        /// <summary>An identical request from an earlier run is still in flight. A broadcast never
-        /// times out and never exhausts on its own, so this means "already on its way", never
-        /// "this run's ask was suppressed" — telling a human otherwise has them re-running a
-        /// command that can never queue anything new for that outcome.</summary>
+        /// <summary>Every earlier request for that stream is closed — answered, declined, or
+        /// superseded — so this call asked again. A decline DOES close a broadcast
+        /// (<c>EventCatchUpInbox</c>, since v0.10.5), so "one was asked before" is never the same
+        /// question as "one is in flight", and reporting the first as the second is what left the
+        /// 2026-09-19 re-run believing an ask that had been declined hours earlier was still on its
+        /// way.</summary>
+        ReAsked,
+
+        /// <summary>An identical request from an earlier run is genuinely still outstanding, and
+        /// nothing new was queued. <c>--again</c> is the lever that closes it out and asks
+        /// afresh.</summary>
         AlreadyOutstanding,
+
+        /// <summary>An outstanding request was closed out as superseded and a fresh one queued in
+        /// its place (<c>--again</c>) — also the only way to clear a request minted before
+        /// v0.10.5, which an inbox of the day left standing on a decline it only ever applied to a
+        /// candidate cascade.</summary>
+        Superseded,
 
         /// <summary>Nothing was queued, and nothing can be until <c>h9k project join</c> runs here.</summary>
         NoOwnerRoot,
@@ -93,16 +108,25 @@ internal static class EventStreamCatchUp
     /// behind it.</summary>
     public static async Task<RequestDisposition> RequestStreamAsync(
         IDocumentSession session, Guid projectId, Guid streamId, Guid nodeId, string? ownerRootFingerprint,
-        DateTimeOffset now, CancellationToken cancellationToken)
+        DateTimeOffset now, CancellationToken cancellationToken, bool again = false)
     {
         if (ownerRootFingerprint.IsBlank())
         {
             return RequestDisposition.NoOwnerRoot;
         }
 
-        bool queued = await new EventCatchUpCoordinator().RequestStreamBroadcastAsync(
-            session, projectId, streamId, nodeId, ownerRootFingerprint, now, cancellationToken);
-        return queued ? RequestDisposition.Queued : RequestDisposition.AlreadyOutstanding;
+        StreamRequestOutcome outcome = await new EventCatchUpCoordinator().RequestStreamBroadcastAsync(
+            session, projectId, streamId, nodeId, ownerRootFingerprint, now, cancellationToken, again);
+        return outcome switch
+        {
+            StreamRequestOutcome.Queued => RequestDisposition.Queued,
+            StreamRequestOutcome.ReAsked => RequestDisposition.ReAsked,
+            StreamRequestOutcome.Superseded => RequestDisposition.Superseded,
+            // CoolingDown cannot be reached from here: a re-mint cooldown is what produces it, and
+            // a human's own ask never passes one — only the platform's own dependency asks do
+            // (<c>TaskDependencyCatchUp</c>).
+            _ => RequestDisposition.AlreadyOutstanding,
+        };
     }
 
     /// <summary>Asks every member of <paramref name="projectId"/> for the project's whole history at
@@ -154,8 +178,8 @@ internal static class EventStreamCatchUp
     /// <summary>
     /// The whole refusal <c>h9k task add --from-issue</c>/<c>--from-jira</c> prints when this
     /// project's ledger already carries a record for the item but the task's own event stream is
-    /// not on this node — one sentence per disposition, because the three outcomes genuinely
-    /// differ: two of them mean waiting is the right move, and one means waiting is futile. Pure so
+    /// not on this node — one sentence per disposition, because the outcomes genuinely differ:
+    /// most of them mean waiting is the right move, and one means waiting is futile. Pure so
     /// the wording is checkable without driving the whole command.
     /// </summary>
     public static string RecordedElsewhereRefusal(
@@ -182,6 +206,15 @@ internal static class EventStreamCatchUp
                 $"{head} — an events-request for that stream is already on its way to this project's other "
                 + "members. It will appear on this node's own board once catch-up brings that stream in; "
                 + "re-run this command afterward.",
+            // Distinct from Queued because it answers the question a human re-running this command
+            // hours later is actually asking: the earlier ask is not still travelling, it came back
+            // (declined, or answered with something that did not land), and this run asked again
+            // rather than sitting on a request that had already closed (task 9eb5b245).
+            RequestDisposition.ReAsked =>
+                $"{head}. Every earlier events-request for that stream has closed — a peer declined it, or its "
+                + "answer is already applied — so this run asked this project's other members again. It will "
+                + "appear on this node's own board once catch-up brings that stream in; re-run this command "
+                + "afterward.",
             _ =>
                 $"{head} — an events-request for that stream is on its way to this project's other members "
                 + "now. It will appear on this node's own board once catch-up brings that stream in; "

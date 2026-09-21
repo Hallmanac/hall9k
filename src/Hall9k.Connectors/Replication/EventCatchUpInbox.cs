@@ -121,14 +121,19 @@ public sealed class EventCatchUpInbox(
                 }
 
                 EventCatchUpRequest? outstanding = await session.LoadAsync<EventCatchUpRequest>(unavailable.RequestId, cancellationToken);
-                if (outstanding is { AnsweredAt: null, Exhausted: false } && outstanding.CurrentCandidateNodeId == senderNodeId)
+                // IsOutstanding rather than the two fields it used to read: a request a later ask
+                // closed out as superseded (h9k task pull --again, task 9eb5b245) is no longer an
+                // ask at all, and a decline arriving for it must neither advance its cascade nor
+                // stamp AnsweredAt onto it — nothing answered it, and the audit trail already
+                // records what actually happened to it.
+                if (outstanding is { IsOutstanding: true } && outstanding.CurrentCandidateNodeId == senderNodeId)
                 {
                     outstanding.DeclinedReason = unavailable.Reason;
                     await EventCatchUpCoordinator.AdvanceToNextCandidateAsync(
                         session, myNodeId, myOwnerFingerprint, outstanding, now, cancellationToken);
                     declined++;
                 }
-                else if (outstanding is { AnsweredAt: null, Exhausted: false, Candidates.Count: 0 })
+                else if (outstanding is { IsOutstanding: true, Candidates.Count: 0 })
                 {
                     // A BROADCAST request — a whole-project history pull (h9k project pull), a
                     // stream request (h9k task pull, or the ledger-record adoption path) — has no
