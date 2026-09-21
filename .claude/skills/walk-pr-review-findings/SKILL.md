@@ -57,6 +57,22 @@ so posting a review under their login as their review is exactly what this skill
    - **"the engineer's review ran in their place"** near the top. Nothing the assignee declared
      could be run, so the engineer's review stood in. Worth saying once, up front.
 
+   A **QA review** section carries three more lines above its findings, and they are worth
+   reading to the owner before the findings themselves, because they frame everything under them:
+   - **Blast radius** — how many behaviours the review mapped and how each was graded (covered by
+     an existing test, owed a new automated end-to-end test, owed a human walk-through). An entry
+     counted as having no verdict stated is a gap in the review itself, not in the diff; say so.
+   - **End-to-end tests** — whether the suite ran on the review worktree and passed, ran and
+     failed, was absent, or was never reported. A failure's own output is quoted in the section
+     below; do not summarize it away when you present it.
+   - **Driven** — the user-facing flows the session walked through the running product, or
+     nothing, which is the default (`h9k project set <project> --qa-review-drive` decides, and a
+     project with no run skill drives nothing whatever it says).
+
+   A QA section may also end with an offer to run the branch locally for the owner. It is a
+   question the review is asking them, not a finding and not something to post; put it to them at
+   the end of the QA walk, and if they say yes, the run skill is how.
+
    Each session's findings open with a **Run-skill drift** line: the pass's answer to the standing
    question of whether the change altered how the application runs locally. "checked, no" means it
    was asked and answered; "not answered by this pass" means it was not, which is worth mentioning

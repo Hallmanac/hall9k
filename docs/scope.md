@@ -794,15 +794,18 @@ the prose. They also declare zero or more review personas from the fixed set eng
 designer — `h9k owner set --persona <name>` (repeatable), cleared with `--clear-personas` — which
 decide how a pull request assigned to them is reviewed: one review session per persona on the
 pr-review task's single worktree, reported in one report sectioned in that fixed order. Declaring
-none reads as the engineer's review, which is what every member gets today. The designer's own
-review answers seven lenses in a fixed order (user experience, conformance to the proposed design,
-motion, CSS practice, accessibility, look and feel, design system), reports `no reference supplied`
-rather than judging against an imagined design when no Figma link, image set, or prototype is
-named, and names the repository's design system or the absence of one. Whether it stands the
-product up is per project, `h9k project set --design-review-drive on|off`, default on: driving also
-needs a run skill on the ledger, and a driven review walks the changed flows through browser
-automation, audits each walked screen for accessibility, and cites its screenshots beside the
-findings they support. QA's own review is not built yet. The node has a
+none reads as the engineer's review, which is what every member gets today. The QA review
+reads a pull request through a blast-radius map, a covered / new-test / walk-through verdict on
+every entry, and the project's end-to-end tests run on the review worktree. The designer's own
+review answers seven lenses in a fixed order (user experience, conformance to the proposed
+design, motion, CSS practice, accessibility, look and feel, design system), reports `no
+reference supplied` rather than judging against an imagined design when no Figma link, image
+set, or prototype is named, and names the repository's design system or the absence of one.
+Whether either one stands the product up is per project and per persona, `h9k project set
+--design-review-drive on|off` (default on) and `--qa-review-drive on|off` (default off):
+driving also needs a run skill on the ledger, and a driven review walks the changed flows
+through browser automation and cites its screenshots beside the findings they support, with the
+design review also auditing each walked screen for accessibility. The node has a
 ceiling the dispatcher respects, counted directly in task runs (Decisions Log #111) — the retired
 session-denominated setting still converts when the new one is absent, and a per-run session cap
 (global default, overridable per task even mid-run) governs how many agent sessions one run may
