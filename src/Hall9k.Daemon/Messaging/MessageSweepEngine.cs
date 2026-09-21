@@ -4,6 +4,7 @@ using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
+using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Run;
@@ -139,6 +140,7 @@ public sealed class MessageSweepEngine(
             }
 
             await PersistUnverifiedWritesAsync(project, trustChain, now, cancellationToken);
+            await ReconcileRootVerificationAsync(project.Id, trustChain, now, cancellationToken);
 
             // The project's own generated wire key (idea 202383dc, M2; Brian's ruling 2026-09-17) —
             // never a local project id (differs per install for the identical shared project) and
@@ -645,6 +647,42 @@ public sealed class MessageSweepEngine(
             logger.LogWarning(
                 exception, "Persisting this sweep's unverifiable ledger writers failed for project {ProjectId}; "
                 + "will retry next sweep", project.Id);
+        }
+    }
+
+    /// <summary>
+    /// Reconciles this node's own owner's <c>RootFingerprintVerified</c> from the trust chain this
+    /// tick already computed for <paramref name="projectId"/> (task f53fecfd, criterion 4 — the gap
+    /// draft f245371d found): the daemon's own message sweep is one of the two places this runs, the
+    /// other being <c>h9k project join</c> itself, so an owner claimed with <c>--owner</c> and later
+    /// vouched in by someone else on the ledger self-heals within one sweep interval rather than
+    /// staying "claimed, unverified" in <c>h9k owner show</c> and <c>h9k status</c> forever.
+    /// Best-effort, the same as every other per-project step in this sweep: a failure here is logged
+    /// and retried next tick, never allowed to fail the sweep itself.
+    /// </summary>
+    private async Task ReconcileRootVerificationAsync(
+        Guid projectId, TrustChain trustChain, DateTimeOffset now, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IDocumentSession session = store.LightweightSession();
+            OwnerAggregate? owner = await session.Events.AggregateStreamAsync<OwnerAggregate>(node.OwnerId, token: cancellationToken);
+            NodeDetails? nodeDetails = await session.LoadAsync<NodeDetails>(node.NodeId, cancellationToken);
+            if (owner is null || nodeDetails?.KeyFingerprint is not { } myFingerprint)
+            {
+                return;
+            }
+
+            if (OwnerRootVerificationReconciler.Reconcile(session, owner, myFingerprint, trustChain, now))
+            {
+                await session.SaveChangesAsync(cancellationToken);
+            }
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(
+                exception, "Reconciling this owner's root verification failed for project {ProjectId}; will retry next sweep",
+                projectId);
         }
     }
 
