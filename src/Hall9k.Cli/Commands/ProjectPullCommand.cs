@@ -23,7 +23,8 @@ namespace Hall9k.Cli.Commands;
 /// all. This command is that node's lever, and the only one.
 /// <para>
 /// Answered under the explicit-ask rule (<c>EventCatchUpResponder</c>): a peer serves it from below
-/// its own replication switch-on point, which the automatic shapes are still held above. Applied
+/// its own replication switch-on point, as it serves a brand-new node's own bootstrap, and unlike
+/// an ordinary flush or a gap-fill, which are both still held above that point. Applied
 /// idempotently by origin event id (<c>EventReplicationInbox.ApplyAsync</c>), so pulling over
 /// streams this node already holds costs a re-read and changes nothing. Private tasks and ideas are
 /// never served, however far back the pull reaches.

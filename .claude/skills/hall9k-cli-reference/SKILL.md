@@ -529,12 +529,16 @@ says so; one genuinely outstanding is reported as outstanding and cleared only b
 that lands naming dependencies whose streams are not here has each of those asked for
 automatically, so `h9k task assign` is never refused for a dependency the platform could have
 fetched. A peer serves an **explicit** ask — one named stream, or a named
-sequence bound — from below its own replication switch-on point, which an ordinary flush, a
-gap-fill, and a bootstrap are all still held above: a task published before its node ever switched
-replication on is reachable this way and no other. Naming what it wants is the rule, not a human's
-hand being on it: the held-tail ask above is minted by the sweep, names one stream, and lifts the
-exclusion for that stream alone, which is how a genesis sitting below a peer's switch-on point ever
-becomes reachable at all. What never bends however specific the ask: a
+sequence bound — from below its own replication switch-on point, which an ordinary flush and a
+gap-fill are still held above: a task published before its node ever switched replication on is
+reachable this way and no other. Naming what it wants is the rule, not a human's hand being on
+it: the held-tail ask above is minted by the sweep, names one stream, and lifts the exclusion for
+that stream alone, which is how a genesis sitting below a peer's switch-on point ever becomes
+reachable at all. A brand-new node's own bootstrap reaches just as far on the other ground that
+bounds an ask, which is that it happens once in that node's life, because a member joining a
+project today has nobody to type an explicit ask on their behalf (task 74a7cd0b, Decisions Log
+#PLACEHOLDER-74a7cd0b, superseding #236 for that one shape). What never bends however specific
+the ask: a
 currently-private task or idea is never served, and no node is handed its own history back. Answers
 apply by origin event id, so pulling over streams a node already holds changes nothing. And what no
 pull reaches: a stream a node holds only the *tail* of, which is how every task that was open when

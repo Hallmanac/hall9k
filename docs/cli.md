@@ -769,8 +769,8 @@ read on the *answering* node, not this one (from that node's own diagnosis, or f
 log — no `h9k` command prints a node's own global sequence today), or the word `all` for everything
 it holds; it is required, because the two are very different
 asks. A peer serves a pull that names what it wants from below its own replication switch-on
-point, which an ordinary flush and a gap-fill are both still held above; answers apply by origin
-event id, so pulling over streams
+point, as it serves a brand-new node's own bootstrap; an ordinary flush and a gap-fill are both
+still held above. Answers apply by origin event id, so pulling over streams
 this node already holds changes nothing, and a private task or idea is never served however far
 back the pull reaches. A stream this node holds only the tail of stays as it is, for the reason
 `task pull` names above. Like `task pull` it queues one project-wide events-request and returns,
