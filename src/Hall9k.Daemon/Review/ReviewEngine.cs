@@ -6117,7 +6117,12 @@ public sealed class ReviewEngine(
     /// <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own no-op check already applies —
     /// deliberately never asking whether THIS gate failure was actually caused by the rebase, a
     /// coincident commit, or a changed verify command (the task's own criteria: no such separation
-    /// is attempted).
+    /// is attempted). A <see cref="VerificationSkipped"/> landing after the rebase also
+    /// clears both flags this reads (<c>RunAggregate.Apply(VerificationSkipped)</c>'s own
+    /// doc, independent pre-PR review, cycle 1, adversarial lens, medium): a content-only diff
+    /// carries no code the rebase could have broken, so it discharges the same obligation a
+    /// full-scope pass would, and this correctly goes back to false rather than staying eligible
+    /// for a repair lap the next, unrelated gate failure never earned.
     /// <para>
     /// Reads <see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/>, not
     /// <see cref="RunAggregate.LastPreFinalPassRebaseWasNoOp"/> (independent pre-PR review, cycle 3,
