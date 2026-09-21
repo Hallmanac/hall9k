@@ -275,6 +275,24 @@ public static class CliCommandTree
                     + "h9k status shows it while it stands.")
                 .WithExample("project", "pull", "hall9k", "--since", "all")
                 .WithExample("project", "pull", "hall9k", "--since", "28000");
+            project.AddCommand<ProjectReconcileCommand>("reconcile")
+                .WithDescription(
+                    "Ask every node of THIS OWNER's own fleet for everything it holds of this project, "
+                    + "by hand (task 252bc5cf). The invariant: every node in an owner's fleet holds every "
+                    + "fleet- and team-scoped event of each project it registers, so any one of them can "
+                    + "answer a new teammate's bootstrap in full. The daemon's sweep already asks each "
+                    + "fleet sibling once per project on its own, and re-asks once if no answer completes "
+                    + "within the outbox squash window, so this command is the lever for what that rule "
+                    + "cannot reach: a reconcile h9k status reports stalled, or simply wanting the exchange "
+                    + "to run again now. One ask per sibling, addressed to that node rather than broadcast, "
+                    + "carrying the same explicit bound project pull --since all does, so each sibling "
+                    + "answers from the start of its own log instead of from its replication switch-on "
+                    + "point. Reads this project's ledger chain to learn the fleet, the same live read "
+                    + "h9k project members does; everything after that is local, and the daemon's next "
+                    + "message sweep sends the asks. h9k status shows each reconcile in progress or "
+                    + "complete, with its envelope and record counts and how many streams are still held "
+                    + "tail-only.")
+                .WithExample("project", "reconcile", "hall9k");
             project.AddCommand<ProjectMembersCommand>("members")
                 .WithDescription(
                     "List this project's members as the ledger's own chain read currently sees them (idea "

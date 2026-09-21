@@ -256,4 +256,13 @@ internal static class EventStreamCatchUp
         $"Catch-up cannot bring '{projectName}'s history to this node until h9k project join has run "
         + $"here: {NoOwnerRootCause(projectName)}. "
         + JoinFirst(projectName, $"h9k project pull {projectName} --since <global-sequence|all>");
+
+    /// <summary>The refusal <c>h9k project reconcile</c> prints when it cannot ask at all (task
+    /// 252bc5cf). Composed here with the other three so all four read alike: a node with no owner
+    /// root has no identity to address an envelope from, and it has no owner's fleet to reconcile
+    /// with either, since a fleet is a property of an owner root.</summary>
+    public static string ProjectReconcileBlockedRefusal(string projectName) =>
+        $"This owner's fleet cannot reconcile '{projectName}' until h9k project join has run here: "
+        + $"{NoOwnerRootCause(projectName)}, and this node belongs to no owner's fleet yet either. "
+        + JoinFirst(projectName, $"h9k project reconcile {projectName}");
 }
