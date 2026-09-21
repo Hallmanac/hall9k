@@ -105,6 +105,98 @@ public sealed class VerificationRunnerTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// Task: a delivered diff that touches no buildable or testable source skips the build and
+    /// test gates (origin: ef2fefe5, a two-file skill markdown fix paying roughly twelve minutes
+    /// of build-and-test ceremony on every pipeline entry). Covers the runner-level wiring the
+    /// classifier's own pure-function tests cannot: a content-only first delivery skips outright
+    /// (the configured gate never spawns at all — no <c>GateStarted</c>), a later entry classifies
+    /// the whole branch diff afresh rather than reusing the first entry's verdict (a second
+    /// content-only commit still skips, a "fix lap" in shape), and once the branch's own diff
+    /// against base genuinely mixes in real source, the identical gate configuration runs for
+    /// real. This is deliberately the one integration test covering the runner for this feature;
+    /// every other scenario (a mixed diff, a path outside the set, a project-added glob, the
+    /// default rules) is covered as a pure function over a path list in
+    /// <c>NonExecutablePathClassifierTests</c>.
+    /// </summary>
+    [Fact]
+    public async Task Content_only_diff_skips_the_gates_a_later_content_only_entry_skips_again_and_a_mixed_diff_runs_them()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+
+        await InitGitWorktreeAsync(withTaskCommit: false, cts.Token);
+        await CommitAsync("docs/notes.md", "first content-only change\n", "docs: notes", cts.Token);
+
+        (Guid taskId, Guid runId) = await SeedAsync(store, [new VerifyCommand("truth", GateScript.Passes)], cts.Token);
+
+        bool firstDeliveryPassed = await NewRunner(store).VerifyAsync(
+            runId, taskId, scopeSinceSha: null, "first delivery", RunSessionLeg.Build, cts.Token);
+        firstDeliveryPassed.Should().BeTrue("a content-only diff is a passing verification, just a skipped one");
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+            events.Select(e => e.Data).OfType<VerificationSkipped>().Should().ContainSingle();
+            events.Select(e => e.Data).OfType<VerificationPassed>().Should().BeEmpty(
+                "a skip is recorded in place of a pass, never alongside one");
+            events.Select(e => e.Data).OfType<GateStarted>().Should().BeEmpty(
+                "the configured gate must never actually spawn for a content-only diff");
+
+            VerificationSkipped skipped = events.Select(e => e.Data).OfType<VerificationSkipped>().Single();
+            skipped.ChangedPaths.Should().ContainSingle().Which.Path.Should().Be("docs/notes.md");
+            skipped.ChangedPaths[0].MatchedRule.Should().NotBeNullOrEmpty();
+
+            RunListItem listItem = (await query.LoadAsync<RunListItem>(runId, cts.Token))!;
+            listItem.LastVerificationSkippedPaths.Should().ContainSingle(path => path.Path == "docs/notes.md");
+        }
+
+        // A "fix lap": another commit that only ever touches non-executable content. Every entry
+        // classifies afresh off the whole branch-vs-base diff, never off the first entry's own
+        // verdict, so this must skip again rather than silently trusting the earlier answer.
+        await CommitAsync(".claude/skills/foo/SKILL.md", "second content-only change\n", "skills: foo", cts.Token);
+        string cycleHeadSha = (await TestGit.CaptureAsync(_worktree, ["rev-parse", "HEAD~1"], cts.Token)).Trim();
+
+        bool fixLapPassed = await NewRunner(store).VerifyAsync(
+            runId, taskId, cycleHeadSha, "fix lap", RunSessionLeg.Fix, cts.Token);
+        fixLapPassed.Should().BeTrue();
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+            events.Select(e => e.Data).OfType<VerificationSkipped>().Should().HaveCount(
+                2, "the fix lap's own entry records its own fact rather than reusing the first one");
+            events.Select(e => e.Data).OfType<GateStarted>().Should().BeEmpty("still nothing to run — still content-only");
+
+            RunListItem listItem = (await query.LoadAsync<RunListItem>(runId, cts.Token))!;
+            listItem.LastVerificationSkippedPaths.Should().HaveCount(
+                2, "the whole branch-vs-base diff now carries both content-only commits");
+        }
+
+        // Now the branch's own diff against base genuinely mixes in real source: the identical
+        // gate configuration must run for real rather than skip.
+        await CommitAsync("src/Hall9k.Domain/Widget.cs", "public sealed class Widget\n{\n}\n", "feat: widget", cts.Token);
+
+        bool finalPassed = await NewRunner(store).VerifyAsync(
+            runId, taskId, scopeSinceSha: null, "final full pass", RunSessionLeg.Build, cts.Token);
+        finalPassed.Should().BeTrue();
+
+        await using (IQuerySession query = store.QuerySession())
+        {
+            var events = await query.Events.FetchStreamAsync(runId, token: cts.Token);
+            events.Select(e => e.Data).OfType<VerificationSkipped>().Should().HaveCount(
+                2, "a mixed diff never adds a third skip");
+            events.Select(e => e.Data).OfType<VerificationPassed>().Should().ContainSingle(
+                "a mixed diff runs the gates in full, recording an ordinary pass");
+            events.Select(e => e.Data).OfType<GateStarted>().Should().ContainSingle(gate => gate.GateName == "truth");
+
+            RunListItem listItem = (await query.LoadAsync<RunListItem>(runId, cts.Token))!;
+            listItem.LastVerificationSkippedPaths.Should().BeNull(
+                "the newest gate entry actually ran, so the Gates column falls back to the ordinary gate list");
+            listItem.GateDurations.Should().NotBeNull().And.ContainSingle();
+        }
+    }
+
+    /// <summary>
     /// The daemon itself shutting down mid-gate (independent pre-PR review, cycle 1, adversarial
     /// finding, low: nothing checked that <c>RunGateAsync</c>'s own shutdown path — the
     /// <c>gateAttemptConfirmedEnded = false</c> branch just above its <c>finally</c> — actually
