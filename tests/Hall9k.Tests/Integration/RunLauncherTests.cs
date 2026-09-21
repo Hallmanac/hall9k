@@ -3273,6 +3273,58 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// Task: a content task runs a lighter pipeline by default. Nothing here sets
+    /// --review-stage-composition or --accept-reduced-review anywhere — not on the task, not on
+    /// the project — so this proves the type's own default reaches RunDispatched entirely on its
+    /// own: the type itself is the acknowledgment, and TaskDecider.Add never demanded one.
+    /// </summary>
+    [Fact]
+    public async Task A_content_task_dispatches_with_conformance_only_recorded_and_no_acknowledgment_demanded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"content-default-{taskId:N}",
+                "/tmp/content-default-repo", null, "main", Now);
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Update the getting-started README", ["docs/getting-started.md covers it"],
+                    TaskType.Content, null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+            Options.Create(new DaemonOptions()), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
+        run.ReviewStageComposition.Should().Be(ReviewStageComposition.ConformanceOnly,
+            "a content task's own default reaches RunDispatched with no override anywhere, and no "
+            + "--accept-reduced-review was ever passed to get here");
+    }
+
+    /// <summary>
     /// TaskDecider.Add/Revise refuse a task-level review-stage-composition override on a pr-review
     /// task, but that refusal cannot reach a project- or node-level one — neither is task-type-aware
     /// — so without this, a project set to a reduced composition would still resolve one onto a
