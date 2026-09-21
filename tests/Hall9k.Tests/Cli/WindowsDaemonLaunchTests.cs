@@ -13,7 +13,19 @@ namespace Hall9k.Tests.Cli;
 /// the same convention <c>WindowsAppendOnlyLogTests</c> and <c>WindowsDaemonAutostartTests</c>
 /// already follow — <c>CreateProcess</c>, inheritable handles and mandatory sharing have no
 /// ubuntu equivalent to reproduce them with.
+/// <para>
+/// <c>[Collection("RealProcessSpawn")]</c> (PLAN.md §16 #172): every process this class creates
+/// goes through <c>WindowsDaemonLaunch.Create</c>, which opens
+/// <c>WindowsStandardHandleInheritance.SuppressForChildProcesses()</c> around its
+/// <c>CreateProcess</c> call — a write to this process's own std-handle inherit flags, shared
+/// with every test running at that moment. That made it the unseen half of a race against
+/// <c>WindowsStandardHandleInheritanceTests</c>, which asserts on those same flags and carries
+/// the full account; the two now share this lane. The real <c>cmd.exe</c> children below earn
+/// the membership on #172's own process-creation-throughput grounds as well.
+/// </para>
 /// </summary>
+[Collection("RealProcessSpawn")]
+[Trait("Category", "RealProcessSpawn")]
 public sealed class WindowsDaemonLaunchTests : IDisposable
 {
     private readonly string logFile = Path.Combine(

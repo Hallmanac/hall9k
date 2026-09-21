@@ -116,6 +116,19 @@ stays out; `GitWorktreeManagerTests` and `Hall9k.Tests.Cli.RepoMaterialiserTests
 times per test and join, so membership here is a judgment call recorded in the Decisions Log entry
 above, not a mechanically-enforced one, and there is no guard test for it.
 
+One pair joins for a second reason, and it is the reason to check a Windows class against before
+leaving it out. `Hall9k.Tests.Cli.WindowsDaemonLaunchTests` and
+`Hall9k.Tests.Cli.WindowsStandardHandleInheritanceTests` are the only two classes that touch this
+process's own std-handle inherit flags — the first through every child
+`WindowsDaemonLaunch.Create` creates, which opens
+`WindowsStandardHandleInheritance.SuppressForChildProcesses()` around its `CreateProcess` call, the
+second by asserting on what that guard does. Those flags are process-wide with no flow to unwind
+them, so unfenced the two interleaved and the assertions read the other class's guard state: a full
+Windows suite run on 2026-09-19 failed the restore assertion alone ("expected 1u ... but found
+0u") and passed immediately under `--filter`, and PR #530's own mandatory final gate failed the
+identical way. The contention here is a shared piece of process state rather than the runner's
+throughput, but the fence is the same one and both classes spawn real processes anyway.
+
 Every class in this collection also carries `[Trait("Category", "RealProcessSpawn")]` (task:
 host-coupled tests run in their own gate once per task, never in parallel with another run's copy
 — #225), the same "carries both attributes" shape `PublishesBinary` already has:
@@ -162,3 +175,7 @@ consult a flow-scoped override before their environment variable rather than re-
 environment variable with nowhere per-test to be scoped to; and `PostgresFixture`'s own
 container-gate wait notice goes to a `TraceSource` (`CrossProcessContainerGate.WaitNotice`)
 precisely so that no capture can pick it up.
+
+A fourth piece, Windows-only, has no helper and no guard because only two classes reach it: this
+process's own std-handle inherit flags. They are fenced by collection instead — see
+`[Collection("RealProcessSpawn")]` above.
