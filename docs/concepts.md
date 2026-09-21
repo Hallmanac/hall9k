@@ -844,8 +844,19 @@ backwards and leave the task reading as it did the moment it was created, so the
 refuses those events instead, and `h9k task pull` says so up front rather than queueing an ask that
 can only be refused on arrival. The full history stays readable on the node that produced it.
 
-`h9k status` shows every outstanding request while it stands, whichever of the three minted it. A
-broadcast closes when a member answers it, or when one says it holds nothing that matches.
+**A pull brings the whole story, not just the stream you named.** An ask for a task's stream is
+answered with that task's own run streams too, each whole — a run's stream id is not derivable from
+its task's, so an answer carrying the task alone lands a finished task reading as Delivered with no
+laps and no sessions, which is what happened to task 3727884f on 2026-09-21. And a task that lands
+naming blocked-by or stacked-on ids whose streams are not here has each of those asked for
+automatically, one request per missing dependency and the graph walked again as each one arrives,
+so `h9k task assign` is never refused for a dependency the platform could have fetched.
+
+`h9k status` shows every outstanding request while it stands, whichever mechanism minted it, and
+names whose dependency an automatic one is fetching. A broadcast closes when a member answers it,
+or when one says it holds nothing that matches — which means a re-run of the same pull asks again
+rather than reporting an ask that already came back. A request genuinely still in flight is
+reported as such, and `h9k task pull --again` is what closes it out and replaces it.
 
 Depth: [scope.md](scope.md), Decisions Log #236.
 
