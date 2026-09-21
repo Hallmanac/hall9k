@@ -4,6 +4,7 @@ using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
+using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
@@ -197,6 +198,92 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
         {
             TaskDetails? original = await session.LoadAsync<TaskDetails>(taskId, cts.Token);
             original!.ProjectId.Should().Be(projectIdA);
+        }
+    }
+
+    /// <summary>
+    /// The same per-install rewrite, for the family that carries its project under another name
+    /// (independent pre-PR review, cycle 1, adversarial lens): a project-scoped
+    /// <see cref="DecisionRecorded"/> names its project in <c>ScopeId</c>, not in a
+    /// <c>projectId</c> field, and an inbox that only rewrote the literal name left the sender's
+    /// foreign id on the receiver's copy — unreachable through <c>h9k decide list --project</c>,
+    /// through <see cref="ReplicationProjectResolver"/> (so B never forwarded it to a third
+    /// member), and through <c>ProjectPurgeEngine</c>'s own scope-id sweep. The sibling test above
+    /// covers the literal field and cannot see this.
+    /// </summary>
+    [Fact]
+    public async Task A_replicated_decision_lands_under_the_receivers_own_project_id_not_the_senders()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        Guid projectIdB = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        Guid decisionId = DomainId.New();
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<DecisionAggregate>(decisionId, DecisionDecider.Record(
+                decisionId, KnowledgeScope.Project, projectIdA, "Agents never push; the daemon does.",
+                originIncident: null, supersedes: [], RecordedProvenance.FromShell(ownerId), Now.AddSeconds(1)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectIdA, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(3), trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeFalse();
+            read.EventsApplied.Should().BeGreaterThan(0);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            DecisionDetails? replicated = await session.LoadAsync<DecisionDetails>(decisionId, cts.Token);
+            replicated.Should().NotBeNull();
+            replicated!.Scope.Should().Be(KnowledgeScope.Project);
+            replicated.ScopeId.Should().Be(
+                projectIdB, "the receiver's own local project id, never the sender's foreign one");
+
+            ReplicationOwnership ownership = await new ReplicationProjectResolver()
+                .ResolveAsync(session, decisionId, cts.Token);
+            ownership.ProjectId.Should().Be(
+                projectIdB, "so node B can forward this decision on to a third member of the same project");
+        }
+
+        await using (IQuerySession session = _postgres.Store.QuerySession())
+        {
+            DecisionDetails? original = await session.LoadAsync<DecisionDetails>(decisionId, cts.Token);
+            original!.ScopeId.Should().Be(projectIdA);
         }
     }
 

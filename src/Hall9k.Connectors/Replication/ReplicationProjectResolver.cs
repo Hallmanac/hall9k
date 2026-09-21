@@ -1,5 +1,7 @@
+using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Epic;
 using Hall9k.Domain.Features.Idea;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run.Projections;
 using Hall9k.Domain.Features.Tasks.Projections;
@@ -35,7 +37,8 @@ public sealed record ReplicationOwnership(
 /// this to scope a node-wide event log down to one project's own outbox) and whether the task or
 /// idea that stream belongs to is currently private. Every <c>ProjectScoped</c>
 /// <c>EventScopeRegistry</c> family is covered: the Project stream itself (settings, membership),
-/// Task, Idea, Epic, and Run (by way of its own task).
+/// Task, Idea, Epic, Run (by way of its own task), and Decision and Learning (by their own scope
+/// coordinate — idea d805fd8b, piece 1).
 /// </summary>
 public sealed class ReplicationProjectResolver
 {
@@ -84,6 +87,31 @@ public sealed class ReplicationProjectResolver
             TaskDetails? owningTask = await session.LoadAsync<TaskDetails>(run.TaskId, cancellationToken);
             return new ReplicationOwnership(
                 owningTask?.ProjectId, owningTask?.Scope ?? ReplicationScope.Team, TaskId: run.TaskId);
+        }
+
+        // Idea d805fd8b, piece 1. The scope coordinate IS the project for a project-scoped
+        // decision or lesson, and there is no project at all for an owner-scoped one: a null
+        // ProjectId never equals the project an outbox is flushing for, so an owner-scoped record
+        // stays on the node that recorded it without needing an exclusion of its own. Neither
+        // stream carries a replication scope to narrow further — a decision is either the
+        // project's or the owner's, and there is no private tier over it the way a task or an
+        // idea has one.
+        //
+        // Last, behind Run deliberately (independent pre-PR review, cycle 1, conformance lens):
+        // Run is the highest-volume replicated family by a wide margin, and every one of its
+        // events pays for whatever misses ahead of it on each outbox flush and catch-up pass. Two
+        // lookups that always miss for a run cost more in aggregate than one extra miss costs the
+        // two families that record a handful of rows a week.
+        if (await session.LoadAsync<DecisionDetails>(streamId, cancellationToken) is { } decision)
+        {
+            return new ReplicationOwnership(
+                decision.Scope == KnowledgeScope.Project ? decision.ScopeId : null, ReplicationScope.Team);
+        }
+
+        if (await session.LoadAsync<LearningDetails>(streamId, cancellationToken) is { } learning)
+        {
+            return new ReplicationOwnership(
+                learning.Scope == KnowledgeScope.Project ? learning.ScopeId : null, ReplicationScope.Team);
         }
 
         return new ReplicationOwnership(null, ReplicationScope.Team);
