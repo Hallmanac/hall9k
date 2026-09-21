@@ -30,3 +30,7 @@ context: |-
   Status counts (a bootstrap in progress with envelopes applied so far, and complete) are deliberately not this task's: an answer has no completion signal today, and 252bc5cf adds the terminal envelope and the status wording for both shapes, so the two drafts do not both edit StatusCommand. Two things "whole" cannot mean: an event whose type the answering build no longer knows is skipped silently by the responder (about line 122), and a stream the answering node itself holds only the tail of is served as a tail, which the v0.10.20 path holds on the new node; see 9eb5b245's context for the 14 run streams observed this morning.
 
   Related: 805f6986 (repair frees partial streams that still carry a document), 9eb5b245 (pull completeness and the held-tail ask), 252bc5cf (fleet reconcile; independent of this task in code, shares only the Decisions Log, whose tail-append conflict the mechanical rebase resolves per entry #250). Writing conventions: no em dashes, full sentences. Testing rule (Brian, 2026-09-13): no test touches a repository or remote.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a04de3-7a23-75c0-8a06-9314ef6ab27d
+holder-node-name: HALL-AGELESSRX
+holder-since: 2026-09-21 14:10:48Z
