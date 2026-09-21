@@ -546,6 +546,9 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // project never references. Every pr-review run whose assignee declared the designer
             // persona needs it (idea b9b09779, piece 3).
             "design-review-prompt-builder",
+            // QaReviewPromptBuilder's own package, a literal for the same reason (piece 2 of the
+            // same idea): every pr-review run whose assignee declared the QA persona needs it.
+            "qa-review-prompt-builder",
         })
         {
             string requiredTemplatePackage = Path.Combine(fromRelease, "templates", templateDirectory);
