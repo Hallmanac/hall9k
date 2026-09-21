@@ -657,9 +657,19 @@ lens a pull request assigned to them is reviewed through. The option is repeatab
 whole declaration, so pass every persona in one command; `--clear-personas` declares none, which is
 the ordinary case and reads as the engineer's review. The pr-review task the assignment mints runs
 one review session per declared persona on its single worktree and branch, and its findings report
-carries one section per persona. Only the engineer's prompt is registered today, so a declared `qa`
-or `designer` is named in the report and in `h9k task show` as skipped rather than silently
-ignored.
+carries one section per persona. All three prompts are registered, so a declaration always runs
+the review it asked for; a persona added to the set before its own prompt exists is named in the
+report and in `h9k task show` as skipped rather than silently ignored.
+
+The QA review reads the pull request through blast radius rather than correctness: it maps what
+the diff changes, what sits next to it, and the flows crossing either, grades every entry as
+covered, owed a new automated end-to-end test, or owed a human walk-through, and runs the
+project's end-to-end tests on the review worktree. Whether it may also launch the running product
+and drive it through browser automation is the project's own setting, `h9k project set <project>
+--qa-review-drive on|off`, and it is **off by default** — turning it on is standing consent that a
+review starts a real process on this machine on every pull request, not just the one you are
+watching. With it off, anything the review would have needed the running product for comes back as
+a walk-through for a person. A project with no run skill drives nothing whatever the setting says.
 
 `h9k project show <name>` prints every setting a project runs by, alongside how it is registered.
 Ask `h9k project set --help` for the current list and what each value means.

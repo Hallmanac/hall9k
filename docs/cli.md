@@ -634,7 +634,8 @@ below), the branch-name template (`--branch-template`,
 [below](#branch-naming)), the auto-pr-review speed (`--auto-pr-review
 off|normal|first|now`, [above](#pull-request-review)), the claim gate (`--claim-gate
 off|tracker-assignee`, [above](#the-claim-gate)), whether the design review drives the running
-product (`--design-review-drive on|off`, below), the close-linked-issue rule (`--close-linked-issue
+product (`--design-review-drive on|off`, below), whether a QA review may launch and drive it
+(`--qa-review-drive on|off`, default off, below), the close-linked-issue rule (`--close-linked-issue
 on-closeout|never|when-all-tasks-close`, [below](#closing-a-linked-issue)), the writing conventions
 (`--writing-conventions`, [below](#writing-conventions)), the orchestrator-feed band
 (`--orchestrator-feed actionable|transitions|everything`,
@@ -669,10 +670,24 @@ experience, the proposed design, accessibility and the project's design system. 
 assigned to them mints the same pr-review task it always has, and that task runs one review session
 per declared persona on its single worktree and branch, reported in one findings report sectioned
 engineer, QA, designer. Declaring none is the ordinary case and reads as the engineer's review, so
-nothing changes for anyone who never passes the option. The engineer's and the designer's prompts
-are registered; QA's is not yet, so a declared `qa` is named in the report and in `task show` as
-skipped rather than silently ignored, and a member who declared only unregistered personas gets the
-engineer's review in their place rather than an unreviewed pull request.
+nothing changes for anyone who never passes the option. All three prompts are registered, so a
+declaration always runs the review it asked for; a persona added to the set before its prompt
+exists would be named in the report and in `task show` as skipped rather than silently ignored,
+and a member who declared only unregistered personas would get the engineer's review in their
+place rather than an unreviewed pull request.
+
+The QA review's own subject is blast radius, not correctness. It opens with a map, in plain
+language, as the report's first section: what the diff changes, what sits next to it through a
+shared code path or a shared data shape, and the user-facing flows crossing either. Each entry is
+graded covered by a named existing test, owed a new automated end-to-end test it specifies, or
+owed a human walk-through it writes out step by step, and every later finding cites its entry. The
+session runs the project's end-to-end tests on the review worktree — scoped to the blast radius
+where the test layout allows, in full where it does not — and reports pass, fail, or absent with
+evidence. Whether it may also launch the running product and drive it through browser automation
+is the project's own `--qa-review-drive on|off`, off by default; with it off, a verdict that needs
+the running product comes back as a walk-through instead, and with it on the report carries a
+Driven section naming the flows walked and a screenshot beside each finding one supports. A
+project with no run skill drives nothing whatever the setting says.
 
 The design review answers seven lenses, in this fixed order every time: user experience,
 conformance to the proposed design, motion (transitions and animations), CSS practice,
@@ -694,7 +709,7 @@ skill, the review is code-and-design-file only, its accessibility findings are m
 the report says which of the two reasons applied rather than leaving a reader to assume the product
 was seen. Either way the report ends with the offer to run the branch locally so the reviewer can
 walk it in person, present whenever the project has a run skill — a question in the report, never
-an action.
+an action. The QA review ends with the same offer on the same terms.
 
 Which pre-PR review stages a run gets is itself a project-, task-, and node-level setting
 (`--review-stage-composition <full-pipeline|adversarial-only|conformance-only|skip-final-pass|none>`
