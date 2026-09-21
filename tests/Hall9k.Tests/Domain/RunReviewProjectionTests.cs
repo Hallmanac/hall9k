@@ -546,6 +546,38 @@ public sealed class RunReviewProjectionTests
     }
 
     /// <summary>
+    /// The third outcome the read model has to keep apart from the other two (task: the mechanical
+    /// pre-final-pass rebase resolves a Decisions Log tail-append conflict on its own): a rebase
+    /// that DID conflict, and was resolved mechanically rather than by a session, must not read
+    /// back as a clean apply — <c>h9k task show</c> renders exactly these three, and calling a
+    /// conflicted rebase "clean" is the word-versus-mark contradiction that rendering already
+    /// warns about. It survives the immediate no-op re-check for the same reason a recovery does.
+    /// </summary>
+    [Fact]
+    public void Run_details_keeps_a_mechanically_resolved_conflict_apart_from_a_clean_apply()
+    {
+        RunDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        RunDetails view = VerifiedRun(projection, id);
+
+        projection.Apply(new FakeEvent<RunRebasedOntoBase>(new RunRebasedOntoBase(
+            id, "abc1234567", "def7654321", WasNoOp: false, RecoveredByAgentSession: false,
+            "Rebased onto origin/main (from abc1234567 to def7654321) — the only conflict was the Decisions "
+            + "Log tail-append shape, resolved mechanically without a recovery session.", Now,
+            ConflictResolvedMechanically: true)), view);
+
+        view.LastPreFinalPassRebaseConflictResolvedMechanically.Should().BeTrue();
+        view.LastPreFinalPassRebaseRecovered.Should().BeFalse("no session exercised judgment here");
+
+        projection.Apply(new FakeEvent<RunRebasedOntoBase>(new RunRebasedOntoBase(
+            id, "def7654321", "def7654321", WasNoOp: true, RecoveredByAgentSession: false,
+            "origin/main has not moved since this branch's own merge base — nothing to rebase.", Now)), view);
+
+        view.LastPreFinalPassRebaseConflictResolvedMechanically.Should().BeTrue(
+            "the immediate re-check carries no new information and must not turn a conflicted rebase into a clean one");
+    }
+
+    /// <summary>
     /// A second genuine rebase (origin/main moved again later in the same run) is meaningful new
     /// information and must still overwrite the earlier record — the no-op guard above only
     /// suppresses a no-op immediately re-confirming a rebase already on file, never a later
