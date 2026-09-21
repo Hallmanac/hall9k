@@ -65,6 +65,24 @@ sentence becomes the objective) and concluding in the same breath. Cutting a tas
 idea; only an explicit `conclude` (something came of discovery) or `archive` (nothing did) does,
 each with its own required `--reason`.
 
+### Decisions and lessons
+
+`h9k decide "<statement>" | list | show | supersede` and `h9k learn "<statement>" | list | show | retire`
+
+Both branches have the same shape: the bare positional form always writes and never reads, and
+every read lives behind a subcommand. Recording prints the record's id, and that id is the
+citation key — a stable identity from the moment of recording, which is what the Decisions Log's
+sequential numbers could never be. Scope defaults to a project (the one named with `--project`,
+then the project of the run you are recording from, then the sole registered project) and
+`--owner` widens it to a cross-project habit. A decision also takes `--origin "<the incident that
+produced this rule>"` and `--supersedes <id>`, which records both directions of the replacement in
+one act. Provenance is observed rather than inferred: pass `--task <id>` from inside a run and the
+record carries that run and task, leave it off at a shell and both are recorded as explicit nulls.
+A decision recorded from inside a run that is not human-attended is refused and pointed at `h9k
+learn`, because agents record lessons and humans record decisions. Neither terminal verb deletes:
+`h9k decide supersede <id> --reason "…"` and `h9k learn retire <id> --reason "…"` append, and
+`--all` on either `list` brings the ended ones back into view.
+
 ### Tasks: development and dispatch
 
 `h9k task add | revise | set-session-cap | set-review-caps | publish | assign | unassign | draft | list | show | pull | log-interaction`
