@@ -53,7 +53,10 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         [CommandOption("--all")]
         [Description(
             "Show every matching task, unbounded — this wins over --limit, but never resurfaces Archived "
-            + "rows hidden by the default view; pair it with --include-archived or --state archived for that.")]
+            + "rows hidden by the default view; pair it with --include-archived or --state archived for that. "
+            + "It is also the only way to see a task whose own genesis event has not arrived yet over "
+            + "replication (a \"partial history held\" row: no project, no objective) — no --state word "
+            + "surfaces one of these, not even --state archived.")]
         public bool All { get; init; }
 
         [CommandOption("--include-archived")]
@@ -114,7 +117,7 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
         List<TaskStatusRow> matched = [.. visiblePastPartialHistory.OrderByDescending(row => row.AddedAt)];
         if (matched.Count == 0)
         {
-            AnsiConsole.MarkupLine(EmptyResultMessage(hiddenArchived, settings, project));
+            AnsiConsole.MarkupLine(EmptyResultMessage(hiddenArchived, hiddenPartialHistory, settings, project));
             return ExitCodes.Ok;
         }
 
@@ -217,17 +220,36 @@ public sealed class TaskListCommand : Hall9kAsyncCommand<TaskListCommand.Setting
     /// takes — project, epic, and state — or a filtered-to-nothing result (all of an epic's
     /// members archived, say) reads as a claim about the whole board and hands back a command
     /// that drops the filter that produced the empty result in the first place.
+    /// <paramref name="hiddenPartialHistory"/> covers the shape neither an Archived hint nor the
+    /// generic fallback below names on its own: every remaining candidate is a partial-history-held
+    /// row (<see cref="ApplyPartialHistoryDefault"/>), which no <c>--state</c> word ever asks back —
+    /// only <c>--all</c> does, so a reader with no Archived rows in the mix needs that told
+    /// explicitly rather than folded into "drop a filter".
     /// </summary>
-    internal static string EmptyResultMessage(int hiddenArchived, Settings settings, ProjectDetails? project)
+    internal static string EmptyResultMessage(
+        int hiddenArchived, int hiddenPartialHistory, Settings settings, ProjectDetails? project)
     {
         bool unfiltered = project is null && settings.Epic.IsBlank() && StateDisplay(settings).IsBlank();
-        return hiddenArchived > 0
-            ? unfiltered
+        if (hiddenArchived > 0)
+        {
+            return unfiltered
                 ? "[dim]Every task is archived. See them with:[/] h9k task list --include-archived"
                 : $"[dim]Every task matching {Filters(settings, project)} is archived. See them with:[/] "
-                  + $"h9k task list --include-archived{Repeat(settings, project)}"
-            : $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] "
-              + "h9k task list --all --include-archived";
+                  + $"h9k task list --include-archived{Repeat(settings, project)}";
+        }
+
+        if (hiddenPartialHistory > 0)
+        {
+            return unfiltered
+                ? "[dim]Every task has only partial history held — its own genesis event has not "
+                  + "arrived yet. See them with:[/] h9k task list --all"
+                : $"[dim]Every task matching {Filters(settings, project)} has only partial history "
+                  + $"held — its own genesis event has not arrived yet. See them with:[/] "
+                  + $"h9k task list --all{Repeat(settings, project)}";
+        }
+
+        return $"[dim]No tasks match {Filters(settings, project)}. Drop a filter, or browse everything:[/] "
+            + "h9k task list --all --include-archived";
     }
 
     /// <summary>

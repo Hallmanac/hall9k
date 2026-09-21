@@ -41,7 +41,10 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
         public int? Limit { get; init; }
 
         [CommandOption("--all")]
-        [Description("Show every matching idea, unbounded — this wins over --limit")]
+        [Description(
+            "Show every matching idea, unbounded — this wins over --limit. It is also the only way to "
+            + "see an idea whose own genesis event has not arrived yet over replication (a \"partial "
+            + "history held\" row, its state unrecorded) — not even --state all surfaces one of these.")]
         public bool All { get; init; }
     }
 
@@ -86,6 +89,7 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
         // rather than the blank note the auto-vivified document carries.
         List<IdeaDetails> ideasPastPartialHistory = [.. ideas
             .Where(idea => settings.All || !IdeaRow.IsPartialHistoryHeld(idea))];
+        int hiddenPartialHistory = ideas.Count - ideasPastPartialHistory.Count;
 
         // The scope the reader asked for, before the state filter: the footer speaks for what
         // the state filter hides, so it has to count within this and not across every idea.
@@ -98,7 +102,7 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
             .OrderByDescending(row => row.CapturedAt)];
         if (matched.Count == 0)
         {
-            AnsiConsole.MarkupLine(EmptyMatch(settings, project, state, ideas.Count));
+            AnsiConsole.MarkupLine(EmptyMatch(settings, project, state, ideas.Count, hiddenPartialHistory));
             return ExitCodes.Ok;
         }
 
@@ -247,15 +251,27 @@ public sealed class IdeaListCommand : Hall9kAsyncCommand<IdeaListCommand.Setting
     /// <summary>
     /// Why nothing showed. The default state filter is not one the reader typed, so an empty
     /// discovery list says what it is actually looking at rather than blaming "those filters".
+    /// <paramref name="hiddenPartialHistory"/> covers the shape "captured, concluded, archived" does
+    /// not: a partial-history-held idea (its own genesis event never arrived) is hidden even from
+    /// --state all, so the defaulted message needs to say --all itself, not only --state all, or a
+    /// reader with nothing but held rows is handed a command that still shows nothing.
     /// </summary>
-    private static string EmptyMatch(Settings settings, ProjectDetails? project, IdeaState? state, int total)
+    private static string EmptyMatch(
+        Settings settings, ProjectDetails? project, IdeaState? state, int total, int hiddenPartialHistory)
     {
         bool defaulted = settings.State.IsBlank() && project is null && !settings.Unassigned;
-        return defaulted
-            ? $"[dim]Nothing is in discovery right now — all {total} idea(s) were concluded or archived. "
-              + "See them with:[/] h9k idea list --state all [dim]· capture a new one:[/] h9k idea add \"…\""
-            : $"[dim]No ideas match {Filters(settings, project)}. Drop a filter, or see everything:[/] "
-              + "h9k idea list --state all --all";
+        if (!defaulted)
+        {
+            return $"[dim]No ideas match {Filters(settings, project)}. Drop a filter, or see everything:[/] "
+                + "h9k idea list --state all --all";
+        }
+
+        return hiddenPartialHistory > 0
+            ? $"[dim]Nothing is in discovery right now — all {total} idea(s) were concluded, archived, or "
+              + "have only partial history held. See them with:[/] h9k idea list --state all --all "
+              + "[dim]· capture a new one:[/] h9k idea add \"…\""
+            : $"[dim]Nothing is in discovery right now — all {total} idea(s) were concluded or archived. "
+              + "See them with:[/] h9k idea list --state all [dim]· capture a new one:[/] h9k idea add \"…\"";
     }
 
     private static string Filters(Settings settings, ProjectDetails? project)
