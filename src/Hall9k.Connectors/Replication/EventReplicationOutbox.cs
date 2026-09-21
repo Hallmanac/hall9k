@@ -697,11 +697,13 @@ public sealed class EventReplicationOutbox(ReplicationProjectResolver ownership)
     /// records that node's current global sequence as its switch-on point on the Node stream; events
     /// before it never travel"). Idempotent: a node that has already switched on just replays its
     /// recorded point back. Internal rather than private: <see cref="EventCatchUpResponder"/> calls
-    /// this identical method to learn the same switch-on point before forwarding ANY held event to a
-    /// catch-up requester — a pre-switch-on event is this node's own migration-era history, ruled to
-    /// never travel (idea 202383dc; Brian's 2026-09-13 ruling), and a catch-up answer must honor that
-    /// exclusion exactly as an ordinary outbox flush already does (independent pre-PR review, cycle 1,
-    /// conformance lens, high).</summary>
+    /// this identical method to learn the same switch-on point before answering a gap-fill — a
+    /// pre-switch-on event is this node's own migration-era history, ruled never to travel on a
+    /// recurring, unasked-for request (idea 202383dc; Brian's 2026-09-13 ruling), and that answer
+    /// must honor the exclusion exactly as an ordinary outbox flush already does (independent
+    /// pre-PR review, cycle 1, conformance lens, high). The three shapes that do reach below it —
+    /// the two explicit asks and a brand-new node's own bootstrap — never call this at all, since
+    /// its value is unused there (Decisions Log #236, #PLACEHOLDER-74a7cd0b).</summary>
     internal static async Task<long> EnsureSwitchedOnAsync(
         IDocumentSession session, Guid nodeId, DateTimeOffset now, CancellationToken cancellationToken)
     {

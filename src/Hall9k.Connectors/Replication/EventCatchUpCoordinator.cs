@@ -139,6 +139,16 @@ public sealed class EventCatchUpCoordinator
     /// immediately rather than timing out, so a cascade with no cooldown exhausts within a few ticks
     /// and re-mints again next sweep, forever — one signed commit and push per side, per tick, for as
     /// long as the project stays empty (independent pre-PR review, cycle 1, conformance lens, medium).
+    /// <para>
+    /// This is the one automatic shape an answering node serves WHOLE from the start of its own log
+    /// rather than from its replication switch-on point
+    /// (<see cref="EventReplicationCodec.EventsRequestRecord.IsBootstrap"/>, Decisions Log
+    /// #PLACEHOLDER-74a7cd0b): a node asks it once, holding nothing of the project, so it is also
+    /// the one chance a new member has to receive the work that predates any peer's switch-on. The
+    /// held-tail ask (<see cref="RequestHeldTailStreamsAsync"/>, task c3bdb62e) reaches below the
+    /// same point automatically too, but only ever for one named stream this node already holds
+    /// part of, which is why naming and asking-once are two separate grounds for lifting it.
+    /// </para>
     /// </summary>
     public async Task<bool> RequestBootstrapAsync(
         IDocumentSession session, Guid projectId, Guid myNodeId, string myOwnerFingerprint,

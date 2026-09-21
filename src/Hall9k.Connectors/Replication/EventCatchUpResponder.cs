@@ -24,16 +24,20 @@ namespace Hall9k.Connectors.Replication;
 /// own dedupe only ever recognises an event it received by replication, never one it produced
 /// natively, so an echo of its own history would apply as an un-deduped second copy.
 /// <para>
-/// A third exclusion, this node's own replication switch-on point, applies to a gap-fill and a
-/// bootstrap but NOT to a request that names what it wants
+/// A third exclusion, this node's own replication switch-on point, applies to a gap-fill alone. It
+/// does not apply to a request that names what it wants
 /// (<see cref="EventReplicationCodec.EventsRequestRecord.IsExplicitAsk"/>: one named stream, or a
 /// named global sequence bound) — whoever minted it, a human through <c>h9k task pull</c> or the
 /// daemon's own held-tail sweep (task c3bdb62e). Task a56cf16e, Decisions Log #236: history is
 /// inert until something asks for it by name, and naming is the opt-in — the switch-on point
 /// otherwise made every task published on a
 /// node before that node switched replication on permanently unservable to its peers, with the
-/// asking side told only "nothing held here matches this request". The two private exclusions above
-/// hold regardless of how explicit the ask was.
+/// asking side told only "nothing held here matches this request". Nor does it apply to a
+/// brand-new node's own bootstrap
+/// (<see cref="EventReplicationCodec.EventsRequestRecord.IsBootstrap"/>), which is served whole
+/// from the start of this node's log (task 74a7cd0b, Decisions Log #PLACEHOLDER-74a7cd0b,
+/// superseding #236 for that one automatic shape). The two private exclusions above hold
+/// regardless of which shape asked.
 /// </para>
 /// <para>
 /// Queues one or more <see cref="MessageKind.Events"/> envelopes back to the requester, batched and
@@ -97,12 +101,12 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, 
         // high).
         IReadOnlyList<IEvent> candidates = await query.OrderBy(e => e.Sequence).ToListAsync(cancellationToken);
 
-        // This node's own pre-replication history never travels UNASKED, in a catch-up answer any
-        // more than an ordinary outbox flush (EventReplicationOutbox.QueuePendingAsync's own
-        // identical Math.Max(position, switchOnSequence) exclusion) — independent pre-PR review,
-        // cycle 1, conformance lens, high: an unfiltered scan here would hand a brand-new node this
-        // node's entire pre-switch-on back catalogue, which idea 202383dc's migration ruling keeps
-        // out of scope for now.
+        // This node's own pre-replication history never travels on a RECURRING ask, in a catch-up
+        // answer any more than an ordinary outbox flush (EventReplicationOutbox.QueuePendingAsync's
+        // own identical Math.Max(position, switchOnSequence) exclusion) — independent pre-PR
+        // review, cycle 1, conformance lens, high: this node's entire pre-switch-on back catalogue
+        // riding every gap-fill a peer mints is what idea 202383dc's migration ruling keeps out of
+        // scope.
         //
         // A request that NAMES what it wants (EventsRequestRecord.IsExplicitAsk: one named stream,
         // or a named global sequence bound) is the opt-in that lifts it, and only for that one
@@ -110,15 +114,28 @@ public sealed class EventCatchUpResponder(ReplicationProjectResolver ownership, 
         // landed at global sequence 30084 while the task the Windows node was asking for sat at
         // 28273-30020, so every stream request for it answered "nothing held here matches this
         // request" and no re-run could ever have changed that. History stays inert until something
-        // asks for it by name. Never lifted for the two open-ended shapes, an ordinary flush and a
-        // gap-fill, which is where the inertness matters.
+        // asks for it by name. Never lifted for an ordinary flush or a gap-fill.
         //
         // Naming, not a human's hand, is the rule: the held-tail ask (task c3bdb62e) is minted by a
         // daemon sweep and does lift it, because it names one stream this node already holds part
         // of and is asking the peer to complete history that already partly travelled — see
         // IsExplicitAsk's own doc for why that is the same case the exclusion was never meant to
         // strand, rather than a hole in it.
-        long? switchOnSequence = request.IsExplicitAsk
+        //
+        // A brand-new node's own bootstrap (EventsRequestRecord.IsBootstrap: no origin node, no
+        // stream, no global sequence bound) lifts it as well, though it names nothing — task
+        // 74a7cd0b, Decisions Log #PLACEHOLDER-74a7cd0b, which supersedes #236 for that one
+        // automatic shape. Naming is one way to be bounded and it is not the only one: a
+        // two-direction pull test on 2026-09-21 showed a node joining a project receives, from
+        // every peer, only what that peer appended after its own switch-on point, so the tail of
+        // work that predates it lands headless or not at all and the new member has no way to know
+        // there is anything below to name. A bootstrap is minted once in a node's life, for a node
+        // holding nothing of this project at all, so serving it whole costs one answer rather than
+        // re-serving history on every tick. The gap-fill is what keeps the bound, and it is the one
+        // shape bounded neither way: it names nothing AND it is minted whenever a hole is noticed,
+        // on a node that already holds the project's recent history, which is where inertness still
+        // matters.
+        long? switchOnSequence = request.IsExplicitAsk || request.IsBootstrap
             ? null
             : await EventReplicationOutbox.EnsureSwitchedOnAsync(session, myNodeId, now, cancellationToken);
 
