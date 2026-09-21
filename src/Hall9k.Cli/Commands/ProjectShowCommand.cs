@@ -36,9 +36,10 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         ProjectDetails project = await ProjectResolver.ResolveAsync(session, settings.Project, cancellationToken);
         ConnectionDetails? connection = await session.LoadAsync<ConnectionDetails>(project.ConnectionId, cancellationToken);
         OwnerDetails? owner = await session.LoadAsync<OwnerDetails>(project.OwnerId, cancellationToken);
+        bool needsInvite = ProjectJoinStatus.NeedsInvite(project, owner?.RootFingerprint);
         OperatingSettings operatingSettings = (await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken)).Settings;
 
-        AnsiConsole.Write(Registration(project, connection, owner));
+        AnsiConsole.Write(Registration(project, connection, owner, needsInvite));
         AnsiConsole.MarkupLine("\n[bold]Settings[/] [dim](change them with h9k project set "
             + $"{project.Name.EscapeMarkup()} …)[/]");
         ProjectSettingsHistory history = await ProjectSettingsHistory.ReadAsync(session, project.Id, cancellationToken);
@@ -106,12 +107,24 @@ public sealed class ProjectShowCommand : Hall9kAsyncCommand<ProjectShowCommand.S
         }
     }
 
-    private static Table Registration(ProjectDetails project, ConnectionDetails? connection, OwnerDetails? owner)
+    private static Table Registration(ProjectDetails project, ConnectionDetails? connection, OwnerDetails? owner, bool needsInvite)
     {
         Table table = new Table().Border(TableBorder.None).HideHeaders();
         table.AddColumns("k", "v");
         table.AddRow("[bold]Project[/]", $"[bold]{project.Name.EscapeMarkup()}[/]");
         table.AddRow("Id", $"[dim]{project.Id}[/]");
+        if (needsInvite)
+        {
+            // Registered, but this install has no recognized membership on this project's own
+            // ledger yet (task: "a newcomer who registers a project whose ledger already has an
+            // owner..."): the join deferred to an existing owner, an explicit --owner claim is
+            // still unverified, or an --invite already pasted is still waiting on its own vouch.
+            // Named here, not folded into the Owner row below, since it is the first thing a
+            // newcomer reading this pane after registering actually needs to act on.
+            table.AddRow("Joined", $"[yellow]not joined, invite needed[/] [dim]— paste one: "
+                + $"h9k project join {project.Name.EscapeMarkup()} --invite <token>[/]");
+        }
+
         if (project.IsArchived)
         {
             // While a purge is pending, ProjectDecider.Reactivate refuses it outright — offering
