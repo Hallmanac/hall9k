@@ -982,7 +982,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             throw new DomainValidationException(
                 $"{reference} is already published elsewhere as task {shortId}. "
                 + EventStreamCatchUp.PartiallyHeldRefusal(
-                    shortId, "This item cannot be adopted here while that is true."));
+                    $"Task {shortId}", "This item cannot be adopted here while that is true."));
         }
 
         // Three outcomes, three sentences, all of them composed in one place

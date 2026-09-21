@@ -98,9 +98,11 @@ public sealed class EventStreamCatchUpRefusalTests
     [Fact]
     public void The_partially_held_refusal_says_nothing_was_queued_and_why_an_ask_cannot_help()
     {
-        string refusal = EventStreamCatchUp.PartiallyHeldRefusal("ec35ceca", "h9k task show ec35ceca.");
+        // The subject opens the sentence, so callers pass it capitalised and named: a run stream is
+        // refused by the identical function now that h9k task pull accepts a run id (task 9eb5b245).
+        string refusal = EventStreamCatchUp.PartiallyHeldRefusal("Task ec35ceca", "h9k task show ec35ceca.");
 
-        refusal.Should().Contain("ec35ceca");
+        refusal.Should().StartWith("Task ec35ceca's event stream");
         refusal.Should().Contain("only partly on this node");
         refusal.Should().Contain("Nothing was queued");
         refusal.Should().Contain("cannot be put in front of it");

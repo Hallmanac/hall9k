@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Connectors.Ledger;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
@@ -30,6 +31,13 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
     private const string RepositoryPath = "/repo-pull-commands";
     private static readonly DateTimeOffset Now = new(2026, 9, 19, 12, 0, 0, TimeSpan.Zero);
 
+    /// <summary>An empty in-memory ledger: <c>h9k task pull</c> reads task records only when it has
+    /// to resolve a short id or pick among several projects, and every test here passes a full id
+    /// with one project registered, so this stands in for a ledger none of them reaches (Brian's
+    /// 2026-09-13 testing rule: no test outside <c>GitLedgerTests</c> touches a real repository).
+    /// The one test that does reach it seeds a record of its own.</summary>
+    private static readonly FakeLedger Ledger = new();
+
     private readonly PostgresFixture _postgres;
 
     public PullCommandTests(PostgresFixture postgres) => _postgres = postgres;
@@ -48,8 +56,8 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         TaskPullCommand.Settings settings = new() { TaskId = absentTaskId.ToString() };
 
-        (await TaskPullCommand.RunAsync(session, settings, cts.Token)).Should().Be(0);
-        (await TaskPullCommand.RunAsync(session, settings, cts.Token)).Should().Be(0);
+        (await TaskPullCommand.RunAsync(session, Ledger, settings, cts.Token)).Should().Be(0);
+        (await TaskPullCommand.RunAsync(session, Ledger, settings, cts.Token)).Should().Be(0);
 
         await using IQuerySession read = _postgres.Store.QuerySession();
         IReadOnlyList<EventCatchUpRequest> requests = await read.Query<EventCatchUpRequest>()
@@ -79,7 +87,7 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         TaskPullCommand.Settings settings = new() { TaskId = absentTaskId.ToString() };
 
-        Func<Task> pull = () => TaskPullCommand.RunAsync(session, settings, cts.Token);
+        Func<Task> pull = () => TaskPullCommand.RunAsync(session, Ledger, settings, cts.Token);
 
         var thrown = await pull.Should().ThrowAsync<DomainValidationException>();
         thrown.Which.Message.Should().Contain("h9k project join pull-project");
@@ -106,7 +114,7 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         }
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
-        (await TaskPullCommand.RunAsync(session, new TaskPullCommand.Settings { TaskId = taskId.ToString() }, cts.Token))
+        (await TaskPullCommand.RunAsync(session, Ledger, new TaskPullCommand.Settings { TaskId = taskId.ToString() }, cts.Token))
             .Should().Be(0);
 
         await using IQuerySession read = _postgres.Store.QuerySession();
@@ -129,10 +137,10 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         TaskPullCommand.Settings settings = new() { TaskId = projectId.ToString() };
 
-        Func<Task> pull = () => TaskPullCommand.RunAsync(session, settings, cts.Token);
+        Func<Task> pull = () => TaskPullCommand.RunAsync(session, Ledger, settings, cts.Token);
 
         var thrown = await pull.Should().ThrowAsync<DomainValidationException>();
-        thrown.Which.Message.Should().Contain("not a task's");
+        thrown.Which.Message.Should().Contain("neither a task's nor a run's");
 
         await using IQuerySession read = _postgres.Store.QuerySession();
         (await read.Query<EventCatchUpRequest>().Where(request => request.ProjectId == projectId).ToListAsync(cts.Token))
@@ -164,7 +172,7 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
 
         await using IDocumentSession session = _postgres.Store.LightweightSession();
         Func<Task> pull = () => TaskPullCommand.RunAsync(
-            session, new TaskPullCommand.Settings { TaskId = taskId.ToString() }, cts.Token);
+            session, Ledger, new TaskPullCommand.Settings { TaskId = taskId.ToString() }, cts.Token);
 
         var thrown = await pull.Should().ThrowAsync<DomainValidationException>();
         thrown.Which.Message.Should().Contain("only partly on this node");
@@ -222,6 +230,161 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
             .Should().BeEmpty();
     }
 
+    /// <summary>
+    /// Task 9eb5b245's own first criterion: a CLOSED request is not an ask in flight. The 2026-09-19
+    /// re-run was told the old request was still on its way when a peer had declined it ten hours
+    /// earlier, and the only lever that clears one genuinely still outstanding — including the
+    /// pre-v0.10.5 request 01a0bac1, left standing by an inbox that applied a decline to a candidate
+    /// cascade alone — is <c>--again</c>.
+    /// </summary>
+    [Fact]
+    public async Task Task_pull_re_asks_once_the_earlier_request_closed_and_again_supersedes_one_still_outstanding()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = await SeedProjectAsync(claimOwnerRoot: true, cts.Token);
+        Guid absentTaskId = DomainId.New();
+        TaskPullCommand.Settings settings = new() { TaskId = absentTaskId.ToString() };
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            (await TaskPullCommand.RunAsync(session, Ledger, settings, cts.Token)).Should().Be(0);
+        }
+
+        // A peer declines it: EventCatchUpInbox closes a broadcast on a decline (v0.10.5), which is
+        // the state the re-ask rule turns on.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            EventCatchUpRequest first = (await session.Query<EventCatchUpRequest>()
+                .Where(request => request.ForStreamId == absentTaskId).FirstOrDefaultAsync(cts.Token))!;
+            first.AnsweredAt = Now.AddMinutes(1);
+            first.DeclinedReason = "nothing held here matches this request";
+            session.Store(first);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            (await TaskPullCommand.RunAsync(session, Ledger, settings, cts.Token)).Should().Be(0);
+        }
+
+        await using (IQuerySession afterReAsk = _postgres.Store.QuerySession())
+        {
+            IReadOnlyList<EventCatchUpRequest> requests = await afterReAsk.Query<EventCatchUpRequest>()
+                .Where(request => request.ForStreamId == absentTaskId).ToListAsync(cts.Token);
+            requests.Should().HaveCount(2, "the declined request was not an ask in flight, so this run asked again");
+            requests.Where(request => request.IsOutstanding).Should().ContainSingle();
+        }
+
+        // The fresh one IS outstanding, so an ordinary re-run must report it rather than pile a
+        // third on top, and --again is what clears it.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            (await TaskPullCommand.RunAsync(session, Ledger, settings, cts.Token)).Should().Be(0);
+        }
+
+        await using (IQuerySession afterRepeat = _postgres.Store.QuerySession())
+        {
+            (await afterRepeat.Query<EventCatchUpRequest>()
+                .Where(request => request.ForStreamId == absentTaskId).ToListAsync(cts.Token))
+                .Should().HaveCount(2, "an outstanding request suppresses the ask");
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            (await TaskPullCommand.RunAsync(
+                session, Ledger, new TaskPullCommand.Settings { TaskId = absentTaskId.ToString(), Again = true },
+                cts.Token))
+                .Should().Be(0);
+        }
+
+        await using IQuerySession read = _postgres.Store.QuerySession();
+        IReadOnlyList<EventCatchUpRequest> all = await read.Query<EventCatchUpRequest>()
+            .Where(request => request.ForStreamId == absentTaskId).ToListAsync(cts.Token);
+        all.Should().HaveCount(3);
+        EventCatchUpRequest fresh = all.Single(request => request.IsOutstanding);
+        EventCatchUpRequest superseded = all.Single(request => request.SupersededAt is not null);
+        superseded.SupersededByRequestId.Should().Be(fresh.Id, "the audit trail names the ask that replaced it");
+        superseded.AnsweredAt.Should().BeNull("nothing answered it, and a supersede must never be recorded as an answer");
+    }
+
+    /// <summary>
+    /// Task 9eb5b245: the id a human has in front of them is the SHORT one, off a board row or a
+    /// branch name — the full id lived only on the node that held the task. The ledger's own task
+    /// records resolve it, and the project whose ledger carries that record is the project to ask,
+    /// which is what keeps a node with several projects registered from having to be told which one
+    /// a task id belongs to.
+    /// </summary>
+    [Fact]
+    public async Task Task_pull_resolves_a_short_id_off_the_ledger_and_defaults_the_project_that_names_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        await SeedProjectAsync(claimOwnerRoot: true, cts.Token);
+        const string SecondRepositoryPath = "/repo-pull-commands-second";
+        Guid secondProjectId = await RegisterProjectAsync("second-project", SecondRepositoryPath, cts.Token);
+        Guid absentTaskId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await ledger.WriteAsync(
+            new LedgerWriteRequest(
+                SecondRepositoryPath,
+                LedgerRefRegistry.Records.RefspecSource,
+                LedgerRefRegistry.RecordPath(absentTaskId),
+                $"hall9k-task-record: 1\ntask-id: {absentTaskId}\nproject: second-project\nobjective: Ship the thing\n",
+                ExpectedBlobId: null,
+                "seed task record",
+                new LedgerCommitter("Brian Hall", "brian@agelessrx.com"),
+                new LedgerSigningKey("fake-key")),
+            cts.Token);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (await TaskPullCommand.RunAsync(
+            session, ledger, new TaskPullCommand.Settings { TaskId = DomainId.Short(absentTaskId) }, cts.Token))
+            .Should().Be(0);
+
+        await using IQuerySession read = _postgres.Store.QuerySession();
+        EventCatchUpRequest request = (await read.Query<EventCatchUpRequest>()
+            .Where(candidate => candidate.ForStreamId == absentTaskId).FirstOrDefaultAsync(cts.Token))!;
+        request.ProjectId.Should().Be(
+            secondProjectId, "two projects are eligible, and only one ledger names this task");
+        request.IsOutstanding.Should().BeTrue();
+    }
+
+    /// <summary>
+    /// Task 9eb5b245: <c>TaskDecider.Assign</c> refuses an assignment whose blockers this node holds
+    /// no document for, which for a task pulled from a peer is a refusal over a stream the platform
+    /// could have fetched. The platform mints those asks itself the moment such a task lands; this
+    /// is the same ask for a task that landed before it did.
+    /// </summary>
+    [Fact]
+    public async Task Task_pull_asks_for_a_missing_dependency_of_a_task_it_already_holds()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid projectId = await SeedProjectAsync(claimOwnerRoot: true, cts.Token);
+        Guid taskId = DomainId.New();
+        Guid absentBlockerId = DomainId.New();
+
+        await using (IDocumentSession seed = _postgres.Store.LightweightSession())
+        {
+            TaskAdded added = TaskDecider.Add(
+                taskId, projectId, "Pulled from a peer", ["it works"], TaskType.Feature, null, null, null, Now,
+                DomainId.New(), blockedBy: [absentBlockerId]);
+            seed.Events.StartStream<TaskAggregate>(taskId, added);
+            await seed.SaveChangesAsync(cts.Token);
+        }
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (await TaskPullCommand.RunAsync(
+            session, Ledger, new TaskPullCommand.Settings { TaskId = taskId.ToString() }, cts.Token))
+            .Should().Be(0);
+
+        await using IQuerySession read = _postgres.Store.QuerySession();
+        IReadOnlyList<EventCatchUpRequest> requests = await read.Query<EventCatchUpRequest>()
+            .Where(request => request.ProjectId == projectId).ToListAsync(cts.Token);
+        requests.Should().ContainSingle("the task itself is here; its blocker is the only thing to ask for");
+        requests[0].ForStreamId.Should().Be(absentBlockerId);
+        requests[0].ForDependencyOfTaskId.Should().Be(taskId, "h9k status says whose dependency it is fetching");
+    }
+
     /// <summary>One registered, messaging-eligible project named <c>pull-project</c>, with this
     /// node bootstrapped — and its owner's root fingerprint claimed only when
     /// <paramref name="claimOwnerRoot"/> says so, which is the single fact that decides whether
@@ -256,6 +419,21 @@ public sealed class PullCommandTests : IClassFixture<PostgresFixture>, IAsyncLif
             await registerSession.SaveChangesAsync(cancellationToken);
         }
 
+        return projectId;
+    }
+
+    /// <summary>A second messaging-eligible project, for the tests where having only one would make
+    /// the default trivially right.</summary>
+    private async Task<Guid> RegisterProjectAsync(
+        string name, string repositoryPath, CancellationToken cancellationToken)
+    {
+        Guid projectId = DomainId.New();
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        BootstrapContext context = await NodeBootstrap.EnsureAsync(session, cancellationToken);
+        session.Events.StartStream<ProjectAggregate>(
+            projectId,
+            ProjectDecider.Register(projectId, context.OwnerId, DomainId.New(), name, repositoryPath, null, null, Now));
+        await session.SaveChangesAsync(cancellationToken);
         return projectId;
     }
 }
