@@ -10899,10 +10899,15 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// <c>merge-base --is-ancestor &lt;onto&gt; HEAD</c> containment check with "not an ancestor" for
     /// that one commit — every other commit answers it as contained, the same "everything this fake
     /// is handed exists/lands" default every other check here already takes.
+    /// <paramref name="unmergedFiles"/> is what a conflicted replay's own
+    /// <c>diff --name-only --diff-filter=U</c> reports to the mechanical tail-append resolver;
+    /// left null it reports none, which is what makes that resolver decline and every conflict test
+    /// here park exactly as it did before the resolver existed.
     /// </summary>
     private static RecordingProcessRunner FakeCheckpointGit(
         string? conflictingUpstream = null, string? cleanUpstream = null,
-        IReadOnlyDictionary<string, string>? branchTips = null, string? nonAncestorOnto = null)
+        IReadOnlyDictionary<string, string>? branchTips = null, string? nonAncestorOnto = null,
+        IReadOnlyList<string>? unmergedFiles = null)
     {
         branchTips ??= new Dictionary<string, string>();
         return new RecordingProcessRunner(arguments =>
@@ -10910,6 +10915,12 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             if (arguments is ["rev-parse", "HEAD"])
             {
                 return new ProcessResult(0, "preattempthead1111111111111111111111111\n", string.Empty);
+            }
+
+            if (arguments is ["diff", "--name-only", "--diff-filter=U"])
+            {
+                return new ProcessResult(
+                    0, unmergedFiles is null ? string.Empty : string.Join("\n", unmergedFiles) + "\n", string.Empty);
             }
 
             if (arguments.Count >= 4 && arguments[0] == "rev-parse" && arguments[1] == "--verify" && arguments[2] == "--quiet")
@@ -11099,6 +11110,89 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<StackAssessmentCompleted>().Should().ContainSingle(e => e.ResolvedBaseBranchName == "task/grandparent");
     }
+
+    /// <summary>
+    /// The stacked-child checkpoint replay's own conflict branch calls the same mechanical
+    /// tail-append resolver the unstacked pre-final-pass rebase does, and nothing else about it
+    /// changed (task: the mechanical pre-final-pass rebase resolves a Decisions Log tail-append
+    /// conflict on its own): the replay conflicts on PLAN.md alone, the resolver recognises the
+    /// shape, the replay continues, and this run's one read-only stack assessment is never spent —
+    /// there was no park for it to run ahead of.
+    /// </summary>
+    [Fact]
+    public async Task A_stacked_checkpoint_replay_conflicting_only_on_the_Decisions_Log_tail_resolves_mechanically()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) =
+            await SeedVerifiedRunWithOriginAsync(store, cts.Token, baseBranch: "task/parent-branch");
+
+        string taskShortId = DomainId.Short(taskId);
+        string planPath = Path.Combine(worktreePath, "PLAN.md");
+        await File.WriteAllTextAsync(planPath, ConflictedTailAppendPlanMarkdown(taskShortId), cts.Token);
+
+        RecordingProcessRunner git = FakeCheckpointGit(
+            conflictingUpstream: ScriptedBoundary,
+            branchTips: new Dictionary<string, string> { ["task/parent-branch"] = ScriptedOnto },
+            unmergedFiles: ["PLAN.md"]);
+
+        ReviewEngine engine = NewEngine(
+            store, new ScriptedExecutor("no assessment should ever be dispatched here"), new DaemonOptions(), git.Runner);
+        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
+
+        ReviewEngine.RebaseGateOutcome outcome = await engine.ReplayCheckpointAsync(
+            context, StackedCheckpoint.BeforeFinalPass, "task/parent-branch", ScriptedBoundary, ScriptedOnto,
+            "the parent branch moved", git.Runner, cts.Token);
+
+        outcome.Should().Be(
+            ReviewEngine.RebaseGateOutcome.Proceed,
+            "the only conflict carried no judgment, so the replay continued rather than parking");
+
+        string resolved = await File.ReadAllTextAsync(planPath, cts.Token);
+        resolved.Should().NotContain("<<<<<<<").And.NotContain(">>>>>>>");
+        resolved.IndexOf("246. **", StringComparison.Ordinal).Should().BeLessThan(
+            resolved.IndexOf($"PLACEHOLDER-{taskShortId}. **", StringComparison.Ordinal),
+            "the parent's own entry keeps its place and this branch's placeholder goes after it");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        RunRebasedOntoBase rebased = events.OfType<RunRebasedOntoBase>().Should().ContainSingle().Subject;
+        rebased.ConflictResolvedMechanically.Should().BeTrue();
+        rebased.RecoveredByAgentSession.Should().BeFalse("nothing here was an agent session's judgment");
+        rebased.Detail.Should().Contain("#246").And.Contain($"PLACEHOLDER-{taskShortId}");
+        events.OfType<StackAssessmentDispatched>().Should().BeEmpty(
+            "the run's one read-only assessment is spent only where a checkpoint would otherwise park");
+    }
+
+    /// <summary>
+    /// A PLAN.md exactly as git leaves it when the base and this branch each appended one Decisions
+    /// Log entry at the tail of §16 — the conflict this whole shape exists for.
+    /// </summary>
+    private static string ConflictedTailAppendPlanMarkdown(string taskShortId) =>
+        string.Join(
+            "\n",
+            "# Hall9k — Plan",
+            "",
+            "## 16. v0 Decisions Log",
+            "",
+            "245. **An earlier decision both sides already had.** Why: it was here before either branch.",
+            "",
+            "<<<<<<< HEAD",
+            "246. **A decision that reached the parent branch first.** Why: it merged before this replay.",
+            "=======",
+            $"PLACEHOLDER-{taskShortId}. **This branch's own decision.** Why: this task asked for it.",
+            "",
+            "> Renumbering placement note: this entry was appended under placeholder",
+            $"> `PLACEHOLDER-{taskShortId}` and will be assigned its real number by the mechanical",
+            "> pre-final-pass rebase step, the log's next free number once this branch is rebased.",
+            ">>>>>>> 1a2b3c4d (task: log this branch's own decision)",
+            "",
+            "---",
+            "",
+            "## 17. Reference Materials",
+            "",
+            "- a reference",
+            "");
 
     /// <summary>
     /// The record update is only worth anything if a later checkpoint on the same run actually

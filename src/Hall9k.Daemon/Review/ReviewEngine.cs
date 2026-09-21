@@ -2965,6 +2965,13 @@ public sealed class ReviewEngine(
             }
 
             string? preRebaseHead = null;
+
+            // Recorded into as each stop of THIS rebase is resolved mechanically, so the stuck-pipe
+            // catch below can still record honestly that a conflict was resolved here when the
+            // exception lands after a resolution the loop had already applied — never guess at
+            // unobserved facts (AGENTS.md). Stays empty on every rebase that never conflicts, which
+            // is nearly all of them.
+            MechanicalTailConflictProgress mechanicalProgress = new();
             try
             {
                 // Captured before anything below can mutate the worktree, the same
@@ -3061,7 +3068,7 @@ public sealed class ReviewEngine(
                               "Log's tail entry still needed the mechanical rebase step's own renumbering commit."
                             : $"origin/{baseBranch} has not moved since this branch's own merge base — nothing to rebase.",
                         checkpointSpend: null, decisionsLogRenumbered: renumberCommitted, forkPointAdvanced: false,
-                        cancellationToken);
+                        conflictResolvedMechanically: false, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -3073,15 +3080,53 @@ public sealed class ReviewEngine(
                         context.RunId, mergeBase, originTip, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased cleanly onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(originTip)}).",
                         checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: false,
-                        cancellationToken);
+                        conflictResolvedMechanically: false, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
-                // Conflict: abort back to the pre-attempt tip rather than leaving the mandatory
-                // gate and pass to trip over a worktree mid-rebase, then fall out of this lock
-                // scope to dispatch the recovery session below (Brian's 2026-09-04 ruling on
+                // Conflict. One shape is resolved right here, without a session, and it is the
+                // only one: the base and this branch each appended an entry at the end of PLAN.md's
+                // Decisions Log and nothing else disagrees. That conflict carries no judgment to
+                // exercise — the placeholder-numbering convention (Decisions Log #162) already
+                // decided its answer, which is that the base's entries keep their places and this
+                // branch's placeholder follows them to be assigned the next free number by the
+                // renumbering step a few lines down. Brian's 2026-09-04 ruling still stands over
+                // every other conflict, and this is its single documented exception
+                // (Decisions Log #PLACEHOLDER-64ba195a); DecisionsLogTailConflictResolver's own
+                // doc has the shape and every near miss that is not it.
+                MechanicalTailConflictOutcome mechanical = await TryResolveDecisionsLogTailConflictsAsync(
+                    context, git, worktreePath, mechanicalProgress, cancellationToken);
+                if (mechanical.Resolved && mechanicalProgress.ResolvedShape is { } shape)
+                {
+                    logger.LogInformation(
+                        "Run {RunId}: the pre-final-pass rebase onto origin/{Base} conflicted only on {Shape} — resolved mechanically and the rebase continued, no recovery session dispatched",
+                        context.RunId, baseBranch, shape);
+
+                    // The same renumbering every other landed rebase on this path runs, in the same
+                    // place: the placeholder this resolution just placed last is exactly what it
+                    // assigns a real number to, so the mandatory gate reads a numbered log.
+                    await RenumberDecisionsLogPlaceholderAsync(
+                        context, git, worktreePath, mergeBase, originTip, cancellationToken);
+                    await RecordRebaseOutcomeAsync(
+                        context.RunId, mergeBase, originTip, wasNoOp: false, recoveredByAgentSession: false,
+                        $"Rebased onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(originTip)}) — "
+                        + $"the only conflict was {shape}, resolved mechanically without a recovery session.",
+                        checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: false,
+                        conflictResolvedMechanically: true, cancellationToken);
+                    return RebaseGateOutcome.Proceed;
+                }
+
+                // Not that shape: abort back to the pre-attempt tip rather than leaving the
+                // mandatory gate and pass to trip over a worktree mid-rebase, then fall out of this
+                // lock scope to dispatch the recovery session below (Brian's 2026-09-04 ruling on
                 // scope: git conflicting is itself evidence that judgment IS required, unlike the
-                // clean-apply case above).
+                // clean-apply case above). A rebase stops commit by commit, so this is also where a
+                // later stop of a rebase whose earlier stops WERE the shape lands: the resolver
+                // refuses the moment one stop is not it, and the restore below undoes every stop it
+                // had already resolved along with the rest of the attempt.
+                logger.LogInformation(
+                    "Run {RunId}: the pre-final-pass rebase onto origin/{Base} conflicted and it is not the Decisions Log tail-append shape ({Reason}) — handing it to the recovery session",
+                    context.RunId, baseBranch, mechanical.Explanation);
                 await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
             }
             // git itself can have exited 0 for whichever call was in flight — most importantly the
@@ -3106,6 +3151,11 @@ public sealed class ReviewEngine(
                         $"Rebased onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(observedOntoCommit)}) — "
                         + "the rebase itself exited 0 before a background process's stuck output pipe timed the call out.",
                         checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: false,
+                        // A stuck pipe can land on the mechanical resolver's own `rebase --continue`
+                        // just as easily as on the first attempt, and by then the conflict this
+                        // rebase hit really was resolved mechanically — recorded from what the loop
+                        // actually did rather than defaulted to false (AGENTS.md's never-guess rule).
+                        conflictResolvedMechanically: mechanicalProgress.ResolvedShape is not null,
                         cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
@@ -3297,6 +3347,189 @@ public sealed class ReviewEngine(
             await RestoreRenumberWorktreeBestEffortAsync(git, worktreePath, preRenumberHead, cancellationToken);
             return new DecisionsLogRenumberResult(DecisionsLogRenumberOutcome.NoActionNeeded, null, null, 0);
         }
+    }
+
+    /// <summary>
+    /// What <see cref="TryResolveDecisionsLogTailConflictsAsync"/> made of a conflicted rebase.
+    /// </summary>
+    /// <param name="Resolved">
+    /// True only when the rebase itself is finished — every stop it made was the tail-append shape
+    /// and the last <c>rebase --continue</c> exited 0. False leaves the worktree mid-rebase for the
+    /// caller to restore, exactly as a conflict always did.
+    /// </param>
+    /// <param name="Explanation">
+    /// Why the run is not getting a mechanical resolution, in the wording the caller logs before
+    /// handing the conflict on. On the resolved outcome, the last stop's own shape description;
+    /// what the caller logs and records there is <see cref="MechanicalTailConflictProgress.ResolvedShape"/>
+    /// instead, which accounts for every stop rather than only the last.
+    /// </param>
+    private sealed record MechanicalTailConflictOutcome(bool Resolved, string Explanation);
+
+    /// <summary>
+    /// What <see cref="TryResolveDecisionsLogTailConflictsAsync"/> has resolved so far on one rebase
+    /// attempt. Mutable and caller-owned on purpose: a rebase stops commit by commit, and the
+    /// caller's own <see cref="ProcessOutputStuckException"/> catch has to be able to see what this
+    /// step had already done when the exception landed — a return value never reaches a catch, and
+    /// recording "no conflict was resolved here" over one that was is precisely the guessed audit
+    /// field AGENTS.md's never-guess rule forbids.
+    /// </summary>
+    private sealed class MechanicalTailConflictProgress
+    {
+        private readonly List<int> _keptBaseEntryNumbers = [];
+
+        /// <summary>
+        /// The shape, and the base entries every resolved stop of this attempt kept, in the wording
+        /// the caller logs and records — or null when no stop was ever resolved, which is what tells
+        /// an ordinary conflict from this one.
+        /// </summary>
+        public string? ResolvedShape { get; private set; }
+
+        public void RecordResolvedStop(IReadOnlyList<int> keptBaseEntryNumbers, string placeholderToken)
+        {
+            _keptBaseEntryNumbers.AddRange(keptBaseEntryNumbers);
+            ResolvedShape = DecisionsLogTailConflictResolver.DescribeShape(_keptBaseEntryNumbers, placeholderToken);
+        }
+    }
+
+    /// <summary>
+    /// The safety bound on how many stops of one rebase this step will resolve. A rebase stops at
+    /// most once per commit it replays, so no honest branch approaches this; it is here only so a
+    /// <c>rebase --continue</c> that somehow neither advances nor fails cannot spin. Not a policy
+    /// limit and not a gate limit — a branch that legitimately hit it would park with the reason
+    /// named, which is the same place every other refusal here lands.
+    /// </summary>
+    private const int MaxMechanicalTailConflictStops = 64;
+
+    /// <summary>
+    /// Drives <see cref="DecisionsLogTailConflictResolver"/> over a rebase that has already
+    /// conflicted, resolving and continuing for as long as every stop is the Decisions Log
+    /// tail-append shape (task: the mechanical pre-final-pass rebase resolves a Decisions Log
+    /// tail-append conflict on its own). A rebase stops commit by commit, so the shape check runs
+    /// again at every stop and the first stop that is not the shape ends this method at once,
+    /// leaving the worktree mid-rebase for the caller's own restore — the run parks from there
+    /// exactly as it did before this existed, including when earlier stops of the SAME rebase had
+    /// already been resolved: those resolutions are undone with the rest of the attempt rather than
+    /// half-kept.
+    /// <para>
+    /// Every git call here is the caller's own runner, made inside the caller's own repository lock
+    /// and its own try, so a stuck output pipe or a deadline on <c>rebase --continue</c> is handled
+    /// by the catches that already cover the rebase itself. <paramref name="progress"/> is the
+    /// caller's own, recorded into as each stop resolves, so those catches can still see what this
+    /// method had done before the exception — a return value cannot reach them.
+    /// </para>
+    /// <para>
+    /// This method's OWN file reads and writes are the one thing those catches do not cover — they
+    /// catch a stuck git pipe and a deadline, and a sharing violation or a denied write is neither
+    /// — so each is caught here and turned into a not-resolved outcome instead. Left to escape, an
+    /// <c>IOException</c> from the read of a file git has just written (a Windows indexer or
+    /// antivirus still holding it, the artifact this repo's own notes already document) would skip
+    /// the caller's restore entirely and fail the whole review loop, leaving the worktree
+    /// mid-rebase with a possibly half-written PLAN.md in it — where before this existed a conflict
+    /// always ended restored, with a recovery session dispatched. Returning the refusal instead
+    /// puts it back on the ordinary restore-and-park path, which is where everything this step
+    /// cannot read belongs (independent pre-PR review, cycle 1, adversarial lens; the renumbering
+    /// step's own identical PLAN.md read/write has had the same catch-all for the same reason).
+    /// </para>
+    /// <para>
+    /// The resolution itself is written to PLAN.md and staged, never committed here: git's own
+    /// <c>rebase --continue</c> is what commits it, onto the replayed commit it belongs to, so the
+    /// branch keeps the authored history it had rather than gaining a resolution commit of its own.
+    /// That continue would otherwise open the replayed commit's message in an editor and nothing
+    /// here has a terminal; what actually keeps it non-interactive is <c>NonInteractiveGit.Apply</c>,
+    /// which every git this daemon spawns through <c>ExternalProcess</c> goes through and which
+    /// exports <c>GIT_EDITOR=true</c> — the <c>-c core.editor=true</c> below is a deliberate
+    /// redundancy for a runner that some day does not, not the thing doing the work. Either way a
+    /// continue that did stop for an editor fails loudly (it exits non-zero, the next pass reads no
+    /// unmerged file, and the run parks with that named) rather than silently.
+    /// </para>
+    /// </summary>
+    private async Task<MechanicalTailConflictOutcome> TryResolveDecisionsLogTailConflictsAsync(
+        ReviewContext context, ProcessRunner git, string worktreePath, MechanicalTailConflictProgress progress,
+        CancellationToken cancellationToken)
+    {
+        string taskShortId = DomainId.Short(context.TaskId);
+        string planPath = Path.Combine(worktreePath, DecisionsLogTailConflictResolver.PlanMarkdownFileName);
+
+        for (int stop = 1; stop <= MaxMechanicalTailConflictStops; stop++)
+        {
+            ProcessResult unmerged = await git(
+                "git", ["diff", "--name-only", "--diff-filter=U"], worktreePath, cancellationToken);
+            if (unmerged.ExitCode != 0)
+            {
+                return new MechanicalTailConflictOutcome(
+                    false, $"the conflicted-file list could not be read ({FirstLine(unmerged.StandardError)})");
+            }
+
+            string[] conflictedFiles =
+            [
+                .. unmerged.StandardOutput
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(line => line.Trim())
+                    .Where(line => line.Length > 0),
+            ];
+
+            // Read unconditionally rather than only when the list already names PLAN.md: the
+            // resolver owns the whole shape test, file list included, so it also owns the wording
+            // of every refusal — one account of why a run parked, not two that can disagree.
+            string conflictedPlanMarkdown;
+            try
+            {
+                conflictedPlanMarkdown = File.Exists(planPath)
+                    ? await File.ReadAllTextAsync(planPath, cancellationToken)
+                    : "";
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return new MechanicalTailConflictOutcome(
+                    false,
+                    $"the conflicted {DecisionsLogTailConflictResolver.PlanMarkdownFileName} could not be read "
+                    + $"({exception.Message})");
+            }
+
+            DecisionsLogTailConflictResolution resolution = DecisionsLogTailConflictResolver.Recognize(
+                conflictedFiles, conflictedPlanMarkdown, taskShortId);
+            if (resolution.ResolvedPlanMarkdown is not { } resolvedPlanMarkdown
+                || resolution.PlaceholderToken is not { } placeholderToken)
+            {
+                return new MechanicalTailConflictOutcome(false, resolution.Explanation);
+            }
+
+            try
+            {
+                await File.WriteAllTextAsync(planPath, resolvedPlanMarkdown, cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                return new MechanicalTailConflictOutcome(
+                    false,
+                    $"the resolved {DecisionsLogTailConflictResolver.PlanMarkdownFileName} could not be written "
+                    + $"({exception.Message})");
+            }
+
+            progress.RecordResolvedStop(resolution.KeptBaseEntryNumbers, placeholderToken);
+
+            ProcessResult staged = await git(
+                "git", ["add", "--", DecisionsLogTailConflictResolver.PlanMarkdownFileName],
+                worktreePath, cancellationToken);
+            if (staged.ExitCode != 0)
+            {
+                return new MechanicalTailConflictOutcome(
+                    false,
+                    $"the resolved {DecisionsLogTailConflictResolver.PlanMarkdownFileName} could not be staged "
+                    + $"({FirstLine(staged.StandardError)})");
+            }
+
+            ProcessResult resumed = await git(
+                "git", ["-c", "core.editor=true", "rebase", "--continue"], worktreePath, cancellationToken);
+            if (resumed.ExitCode == 0)
+            {
+                return new MechanicalTailConflictOutcome(true, resolution.Explanation);
+            }
+        }
+
+        return new MechanicalTailConflictOutcome(
+            false,
+            $"the rebase stopped more than {MaxMechanicalTailConflictStops} times, which no branch's own history explains");
     }
 
     /// <summary>
@@ -3514,7 +3747,8 @@ public sealed class ReviewEngine(
             $"{skipDetail} — origin/{baseBranch} has not moved since this branch's own merge base, but the "
             + "Decisions Log's tail entry still needed the mechanical pre-final-pass step's own renumbering "
             + "commit, run here despite the skip.",
-            checkpointSpend: null, decisionsLogRenumbered: true, forkPointAdvanced: false, cancellationToken);
+            checkpointSpend: null, decisionsLogRenumbered: true, forkPointAdvanced: false,
+            conflictResolvedMechanically: false, cancellationToken);
         logger.LogInformation(
             "Run {RunId}: {SkipDetail} — renumbered the Decisions Log's tail placeholder anyway",
             context.RunId, skipDetail);
@@ -3925,7 +4159,8 @@ public sealed class ReviewEngine(
                     $"No rebase owed before {checkpoint.Describe()}: {observation.Detail} — this run's own "
                     + $"recorded fork point moves to {ShortSha(observation.BoundaryCommit)} so later ranges, "
                     + "including the mandatory final pass, read only this task's own commits.",
-                    checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: true, cancellationToken);
+                    checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: true,
+                    conflictResolvedMechanically: false, cancellationToken);
                 return RebaseGateOutcome.Proceed;
             }
 
@@ -4004,6 +4239,10 @@ public sealed class ReviewEngine(
     {
         string worktreePath = context.Run.WorktreePath;
         string? preRebaseHead = null;
+
+        // The same caller-owned record the unstacked path keeps, for the same reason its own
+        // declaration gives: the catches below need to see what the resolver had already done.
+        MechanicalTailConflictProgress mechanicalProgress = new();
         await using (IAsyncDisposable repositoryLock =
             await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
         {
@@ -4051,10 +4290,32 @@ public sealed class ReviewEngine(
                     await RecordStackedCheckpointAsync(
                         context, parentBranch, checkpoint,
                         new StackedCheckpointVerdict(StackedCheckpointAction.Replay, upstreamCommit, ontoCommit, reason),
-                        cancellationToken);
+                        mechanicalTailConflictShape: null, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
+                // The identical Decisions Log tail-append shape the unstacked pre-final-pass rebase
+                // resolves without a session, over the identical resolver: a replay onto a parent
+                // branch hits it for the same reason, because the parent's own branch is where that
+                // base's tail entries came from. Nothing here is specific to a stacked child, which
+                // is exactly why this is a plain call rather than a variant of its own.
+                MechanicalTailConflictOutcome mechanical = await TryResolveDecisionsLogTailConflictsAsync(
+                    context, git, worktreePath, mechanicalProgress, cancellationToken);
+                if (mechanical.Resolved && mechanicalProgress.ResolvedShape is { } shape)
+                {
+                    logger.LogInformation(
+                        "Run {RunId}: the stacked checkpoint {Checkpoint} replay onto {ParentBranch} conflicted only on {Shape} — resolved mechanically and the replay continued",
+                        context.RunId, checkpoint.Value, parentBranch, shape);
+                    await RecordStackedCheckpointAsync(
+                        context, parentBranch, checkpoint,
+                        new StackedCheckpointVerdict(StackedCheckpointAction.Replay, upstreamCommit, ontoCommit, reason),
+                        shape, cancellationToken);
+                    return RebaseGateOutcome.Proceed;
+                }
+
+                logger.LogInformation(
+                    "Run {RunId}: the stacked checkpoint {Checkpoint} replay onto {ParentBranch} conflicted and it is not the Decisions Log tail-append shape ({Reason})",
+                    context.RunId, checkpoint.Value, parentBranch, mechanical.Explanation);
                 await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
             }
             // git itself can have exited 0 for the call in flight — most importantly the rebase,
@@ -4070,6 +4331,11 @@ public sealed class ReviewEngine(
                     await RecordStackedCheckpointAsync(
                         context, parentBranch, checkpoint,
                         new StackedCheckpointVerdict(StackedCheckpointAction.Replay, upstreamCommit, ontoCommit, reason),
+                        // A stuck pipe can land on the mechanical resolver's own `rebase --continue`
+                        // too, and by then this replay's conflict really was resolved mechanically
+                        // — read from what the loop did rather than assumed (AGENTS.md's never-guess
+                        // rule), the same way the unstacked path's own identical catch reads it.
+                        mechanicalProgress.ResolvedShape,
                         cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
@@ -4165,7 +4431,9 @@ public sealed class ReviewEngine(
                     new StackedCheckpointVerdict(
                         StackedCheckpointAction.Replay, assessment.BoundaryCommit, assessment.OntoCommit,
                         $"stack assessment verdict: replay — {assessment.Evidence}"),
-                    cancellationToken);
+                    // The assessment-driven retry never reaches the tail-append resolver, which
+                    // only the checkpoint's own first attempt runs.
+                    mechanicalTailConflictShape: null, cancellationToken);
                 return RebaseGateOutcome.Proceed;
             }
 
@@ -4202,19 +4470,31 @@ public sealed class ReviewEngine(
     /// budget it spent on the task's stream, in one transaction, so a reader can never find a
     /// rebase that cost nothing or a cost with no rebase behind it.
     /// </summary>
+    /// <param name="mechanicalTailConflictShape">
+    /// The Decisions Log tail-append shape this replay's own conflict was resolved as, when it
+    /// conflicted at all — the same audit distinction the unstacked path records
+    /// (<see cref="RunRebasedOntoBase.ConflictResolvedMechanically"/>), carried here rather than
+    /// left to a reader to infer from a Detail line. Null for a replay that applied cleanly, which
+    /// is every other caller.
+    /// </param>
     private async Task RecordStackedCheckpointAsync(
         ReviewContext context, string parentBranch, StackedCheckpoint checkpoint,
-        StackedCheckpointVerdict verdict, CancellationToken cancellationToken) =>
+        StackedCheckpointVerdict verdict, string? mechanicalTailConflictShape,
+        CancellationToken cancellationToken) =>
         await RecordRebaseOutcomeAsync(
             context.RunId, verdict.UpstreamCommit, verdict.OntoCommit, wasNoOp: false,
             recoveredByAgentSession: false,
             $"Replayed onto the stacked parent {parentBranch} before {checkpoint.Describe()} "
-            + $"(from {ShortSha(verdict.UpstreamCommit)} onto {ShortSha(verdict.OntoCommit)}): {verdict.Reason}",
+            + $"(from {ShortSha(verdict.UpstreamCommit)} onto {ShortSha(verdict.OntoCommit)}): {verdict.Reason}"
+            + (mechanicalTailConflictShape is null
+                ? ""
+                : $" — the only conflict was {mechanicalTailConflictShape}, resolved mechanically."),
             new StackedCheckpointRebased(
                 context.TaskId, context.RunId, checkpoint, parentBranch, verdict.UpstreamCommit,
                 verdict.OntoCommit, DateTimeOffset.UtcNow),
             decisionsLogRenumbered: false,
             forkPointAdvanced: false,
+            conflictResolvedMechanically: mechanicalTailConflictShape is not null,
             cancellationToken);
 
     /// <summary>
@@ -4753,7 +5033,7 @@ public sealed class ReviewEngine(
                       + $"the Decisions Log's tail entry still needed the mechanical rebase step's own renumbering commit: {assessment.Evidence}"
                     : $"The stack assessment found the mandatory final pass's own pre-flight rebase already aligned: {assessment.Evidence}",
                 checkpointSpend: null, decisionsLogRenumbered: decisionsLogRenumberedForAligned, forkPointAdvanced: false,
-                cancellationToken);
+                conflictResolvedMechanically: false, cancellationToken);
             await ClearRebaseRecoveryNeededIfResolvedAsync(context, run, cancellationToken);
             return RebaseGateOutcome.Proceed;
         }
@@ -4792,7 +5072,9 @@ public sealed class ReviewEngine(
                 "Rebased onto the commit a read-only stack assessment named (from "
                 + $"{ShortSha(assessment.BoundaryCommit)} to {ShortSha(assessment.OntoCommit)}): {assessment.Evidence}",
                 checkpointSpend: null, decisionsLogRenumbered: replay.Value.DecisionsLogRenumbered, forkPointAdvanced: false,
-                cancellationToken);
+                // The assessment-driven retry's own replay either lands or it does not; it never
+                // reaches the tail-append resolver, which only the first attempt runs.
+                conflictResolvedMechanically: false, cancellationToken);
             await ClearRebaseRecoveryNeededIfResolvedAsync(context, run, cancellationToken);
             return RebaseGateOutcome.Proceed;
         }
@@ -5123,15 +5405,24 @@ public sealed class ReviewEngine(
     /// explicitly, not defaulted, for the identical reason <paramref name="checkpointSpend"/>'s own
     /// doc gives — the cancellation token stays this method's last parameter (AGENTS.md).
     /// </param>
+    /// <param name="conflictResolvedMechanically">
+    /// See <see cref="RunRebasedOntoBase.ConflictResolvedMechanically"/>. True on the two call sites
+    /// whose rebase actually conflicted and whose only conflict was the Decisions Log tail-append
+    /// shape: <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own mechanical-resolution branch,
+    /// and the stacked checkpoint replay's, which reaches it through
+    /// <see cref="RecordStackedCheckpointAsync"/>. Every other call site passes false because its
+    /// rebase never conflicted at all — a distinction the two existing flags cannot carry between
+    /// them.
+    /// </param>
     private async Task RecordRebaseOutcomeAsync(
         Guid runId, string rebasedFromCommit, string rebasedOntoCommit, bool wasNoOp, bool recoveredByAgentSession,
         string detail, StackedCheckpointRebased? checkpointSpend, bool decisionsLogRenumbered,
-        bool forkPointAdvanced, CancellationToken cancellationToken)
+        bool forkPointAdvanced, bool conflictResolvedMechanically, CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunRebasedOntoBase(
             runId, rebasedFromCommit, rebasedOntoCommit, wasNoOp, recoveredByAgentSession, detail,
-            DateTimeOffset.UtcNow, decisionsLogRenumbered, forkPointAdvanced));
+            DateTimeOffset.UtcNow, decisionsLogRenumbered, forkPointAdvanced, conflictResolvedMechanically));
         if (checkpointSpend is not null)
         {
             // No expectedVersion fence: this is a counter, not a state change (the shape
