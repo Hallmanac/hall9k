@@ -397,6 +397,27 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         }
 
         await session.SaveChangesAsync(cancellationToken);
+
+        // A task that just landed here may name blocked-by or stacked-on ids whose own streams this
+        // node does not hold, and nothing asked for those — TaskDecider.Assign then refuses the
+        // assignment for a dependency the platform could have fetched itself (task 9eb5b245). Run
+        // after this read's own save rather than inside it: MessageOutbox.QueueAsync saves the
+        // session it is handed, so an ask queued mid-read would commit this read's cursor early,
+        // alongside a write that has nothing to do with it.
+        if (applied > 0)
+        {
+            IReadOnlyList<TaskDependencyCatchUp.MissingDependency> dependencyAsks =
+                await TaskDependencyCatchUp.QueueMissingAsync(
+                    session, projectId, streamIdsAnsweredThisRead, myNodeId, myOwnerFingerprint, now,
+                    TaskDependencyCatchUp.ReMintCooldown, cancellationToken);
+            foreach (TaskDependencyCatchUp.MissingDependency ask in dependencyAsks)
+            {
+                logger?.LogInformation(
+                    "Task {TaskId} landed naming dependency {DependencyStreamId}, whose stream is not held here — "
+                    + "an events-request for it is queued", ask.NamedByTaskId, ask.StreamId);
+            }
+        }
+
         return new EventReplicationReadResult(SenderIgnored: senderIgnored, applied, read.StalledAtSeq ?? read.PrunedBelowSeq);
     }
 

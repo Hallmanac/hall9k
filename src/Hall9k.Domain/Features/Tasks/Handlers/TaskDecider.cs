@@ -1185,9 +1185,15 @@ public static class TaskDecider
 
         if (task.BlockedBy.Except(dependencies.Select(dependency => dependency.Id)).ToArray() is { Length: > 0 } unresolved)
         {
+            // The ordinary cause is a task pulled or adopted from a peer whose blockers' own streams
+            // have not reached this node: the platform asks for those itself the moment such a task
+            // lands (TaskDependencyCatchUp, task 9eb5b245), so the useful thing to say here is where
+            // that ask is, and how to make it again — not merely that the ids are unknown.
             throw new DomainNotFoundException(
                 $"Task {task.Id} depends on {unresolved.Length} task(s) the platform does not know: " +
-                $"{string.Join(", ", unresolved)}.");
+                $"{string.Join(", ", unresolved)}. A task that came from another node has its missing " +
+                "dependencies asked for automatically when it lands: h9k status shows any such ask while it " +
+                $"stands, and h9k task pull {task.Id} makes the ask again for whatever is still missing.");
         }
 
         // Per edge, not per dependency: the one this task declared itself stacked on is met at the
