@@ -274,7 +274,7 @@ public sealed class InviteSweepEngine(
                 {
                     await WriteNodeVouchAsync(
                         project.RepositoryPath, aggregate.MinterOwnerFingerprint, candidate.NodeId,
-                        candidate.PublicKeyLine, issuedAt, committer, signingKey, cancellationToken);
+                        candidate.PublicKeyLine, candidate.KeyFingerprint, issuedAt, committer, signingKey, cancellationToken);
                 }
                 else
                 {
@@ -517,7 +517,7 @@ public sealed class InviteSweepEngine(
     /// redundant signed commit every 20 seconds until the invite expires (independent pre-PR
     /// review, cycle 4, adversarial lens, medium).</summary>
     private async Task WriteNodeVouchAsync(
-        string repositoryPath, string rootFingerprint, Guid candidateNodeId, string publicKeyLine,
+        string repositoryPath, string rootFingerprint, Guid candidateNodeId, string publicKeyLine, string keyFingerprint,
         DateTimeOffset issuedAt, LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
     {
         string refName = $"refs/hall9k/ledger/owners/{rootFingerprint}";
@@ -526,7 +526,9 @@ public sealed class InviteSweepEngine(
             ("node_id", candidateNodeId.ToString()),
             ("public_key", publicKeyLine),
             ("issued_at", issuedAt.ToString("o", CultureInfo.InvariantCulture)));
-        await WriteWithRetryAsync(repositoryPath, refName, path, content, $"Vouch node {candidateNodeId} (invite)", committer, signingKey, cancellationToken);
+        await WriteWithRetryAsync(
+            repositoryPath, refName, path, content, $"Vouch node {candidateNodeId} key {keyFingerprint} (invite)", committer, signingKey,
+            cancellationToken);
     }
 
     /// <summary>Mirrors <see cref="NodeSlotCheckAsync"/>'s own guard, for

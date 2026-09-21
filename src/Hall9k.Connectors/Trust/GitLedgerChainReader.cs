@@ -378,16 +378,23 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                         continue;
                     }
 
-                    // Gated on a PRIOR SUCCESSFUL establishment of this exact node id, never merely
-                    // a prior touch of the path: an earlier commit that failed verification (a
-                    // stranger's garbage, or this same carrying node's own malformed retry) must
+                    // Gated on a PRIOR SUCCESSFUL establishment of this exact node id (never merely
+                    // a prior touch of the path: an earlier commit that failed verification — a
+                    // stranger's garbage, or this same carrying node's own malformed retry — must
                     // never block a later, genuinely valid carry for the identical node id from
-                    // still self-authorizing on its own embedded evidence — nothing was ever
-                    // actually established for this node yet, so there is nothing to require
-                    // re-authorization from (independent review finding, round two: the first draft
-                    // of this fix gated on "already touched," which let one bad early commit at a
-                    // node id's own path permanently lock out every later, legitimate one).
-                    if (carriedPathsEstablished.Contains(carriedNodeId))
+                    // still self-authorizing on its own embedded evidence, since nothing was ever
+                    // actually established for this node yet to require re-authorization from;
+                    // independent review finding, round two: the first draft of this fix gated on
+                    // "already touched," which let one bad early commit at a node id's own path
+                    // permanently lock out every later, legitimate one) OR this exact node id
+                    // already being revoked at this point in the replay: a node vouched the
+                    // ORDINARY way (never carried before) and then revoked still holds its own
+                    // private key and its own embedded carry evidence never changes, so without this
+                    // second condition its first-ever carried record would self-authorize on that
+                    // same untouched evidence and resurrect it, erasing the revocation exactly the
+                    // way the carriedPathsEstablished condition alone already prevents for a node
+                    // that was carried before (independent pre-PR review, adversarial lens, high).
+                    if (carriedPathsEstablished.Contains(carriedNodeId) || revokedNodeIds.Contains(carriedNodeId))
                     {
                         List<string> reAuthorizeCandidates = [publicKeyLine, .. nodes.Values.Select(node => node.PublicKeyLine)];
                         bool reAuthorized = false;
@@ -404,8 +411,9 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
                         {
                             unverified.Add(new UnverifiedLedgerWrite(
                                 "carried", carriedNodeId, root,
-                                $"commit {commit} for {path} rewrites an already-established carried record but is not "
-                                + $"signed by root {root} or any node currently enrolled in it"));
+                                $"commit {commit} for {path} targets a node id that is already revoked or was "
+                                + $"already carry-established, and is not signed by root {root} or any node "
+                                + "currently enrolled in it"));
                             continue;
                         }
                     }
@@ -527,7 +535,10 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// <item>the embedded root commit is SSH-signed by that key;</item>
     /// <item>the embedded vouch commit is signed by the root key — the only key a single carried
     /// bundle could ever transitively enrol before the vouch itself is checked, since nothing else
-    /// this bundle carries is trusted yet at that point;</item>
+    /// this bundle carries is trusted yet at that point — AND its own signed commit message names
+    /// both the node id and the fingerprint of the exact key this bundle declares, so the key this
+    /// bundle enrols is the key the root actually vouched, not merely a field the bundle's own
+    /// writer set;</item>
     /// <item>the carried node's own declared public key equals THIS ledger's own current
     /// <c>nodes/&lt;node-id&gt;/node.yaml</c>, and that file's own commit is self-signed by that
     /// same key — the binding that ties this bundle to whoever is actually running the join on
@@ -586,32 +597,39 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             return (null, Unverified("carries an embedded root commit that is not signed by the root's own key"));
         }
 
-        // Check 3: the embedded vouch commit is signed by the root key (single-hop, see the doc
-        // above), AND its own raw bytes — the exact payload that signature covers, never something
-        // this method trusts on faith — name this specific node id. Every vouch this platform ever
-        // writes carries the node id in its own commit message (NodeVouchCommand: "Vouch node
-        // {id}"; InviteSweepEngine: "Vouch node {id} (invite)"), so a genuine vouch commit for a
-        // DIFFERENT node — or any other commit root ever happened to sign, root.yaml's own
-        // establishing commit included — can never satisfy this. Without it, any commit root ever
-        // signed for any reason at all (root.yaml's own commit is already embedded and proven
-        // signed by check 2, and is trivially reusable here too) would satisfy "signed by root",
-        // letting a bundle claim root vouched a node it never vouched at all (independent pre-PR
-        // review, adversarial lens, critical).
-        if (!TryDecodeBase64(vouchCommitBase64, out string vouchCommitBytes)
-            || !await IsSignedByRawBytesAsync(repositoryPath, vouchCommitBytes, embeddedRootPublicKey, cancellationToken)
-            || !vouchCommitBytes.Contains(nodeId, StringComparison.OrdinalIgnoreCase))
-        {
-            return (null, Unverified(
-                "carries an embedded vouch commit that is not signed by the root's own key, or is signed but never names this node"));
-        }
-
-        // Check 4: the carried node's own declared public key equals this ledger's own current
-        // node.yaml for the same node id, and that file's own commit is self-signed by that key.
         if (!TryFingerprint(nodePublicKey, out string nodeFingerprint))
         {
             return (null, Unverified("declares a node public key that is malformed"));
         }
 
+        // Check 3: the embedded vouch commit is signed by the root key (single-hop, see the doc
+        // above), AND its own raw bytes — the exact payload that signature covers, never something
+        // this method trusts on faith — name BOTH this specific node id AND the fingerprint of the
+        // exact key this bundle declares in `node_public_key`. Every vouch this platform ever
+        // writes carries both in its own commit message (NodeVouchCommand: "Vouch node {id} key
+        // {fingerprint}"; InviteSweepEngine: "Vouch node {id} key {fingerprint} (invite)"), so a
+        // genuine vouch commit for this node id but a DIFFERENT key — an attacker who copied a
+        // genuine bundle and substituted their own key into node_public_key, keeping the genuine
+        // root-signed root/vouch commits — can never satisfy this, and neither can any other commit
+        // root ever happened to sign for an unrelated reason, root.yaml's own establishing commit or
+        // a "Revoke node {id}" commit included, both of which name the node id but never this
+        // binding (independent pre-PR review, cycle 1, both lenses, high: node_public_key was
+        // previously never tied to what the root actually vouched — check 4 below only ever compared
+        // it against this ledger's own current node.yaml, which anyone who can push here can
+        // overwrite and self-sign with any key they hold).
+        string vouchMarker = $"Vouch node {nodeId} key {nodeFingerprint}";
+        if (!TryDecodeBase64(vouchCommitBase64, out string vouchCommitBytes)
+            || !await IsSignedByRawBytesAsync(repositoryPath, vouchCommitBytes, embeddedRootPublicKey, cancellationToken)
+            || !vouchCommitBytes.Contains(vouchMarker, StringComparison.OrdinalIgnoreCase))
+        {
+            return (null, Unverified(
+                "carries an embedded vouch commit that is not signed by the root's own key, or is signed but never names both this node and this exact key"));
+        }
+
+        // Check 4: the carried node's own declared public key equals this ledger's own current
+        // node.yaml for the same node id, and that file's own commit is self-signed by that key —
+        // now a belt-and-suspenders binding to whoever is actually running the join on this exact
+        // machine, on top of check 3's own binding to what the root actually vouched.
         string nodeRefName = $"{NodesRefPrefix}{nodeId}";
         string nodePath = $"nodes/{nodeId}/node.yaml";
         await FetchRefAsync(repositoryPath, nodeRefName, cancellationToken);

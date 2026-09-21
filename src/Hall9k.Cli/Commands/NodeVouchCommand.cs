@@ -222,7 +222,7 @@ public sealed class NodeVouchCommand : Hall9kAsyncCommand<NodeVouchCommand.Setti
             LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
             LedgerWriteOutcome outcome = await ledger.WriteAsync(
                 new LedgerWriteRequest(
-                    repositoryPath, refName, path, content, current.BlobId, $"Vouch node {targetNodeId}", committer, signingKey),
+                    repositoryPath, refName, path, content, current.BlobId, $"Vouch node {targetNodeId} key {targetFingerprint}", committer, signingKey),
                 cancellationToken);
             if (outcome.Verdict == LedgerWriteVerdict.Written)
             {
