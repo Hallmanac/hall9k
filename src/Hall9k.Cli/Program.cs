@@ -8,6 +8,12 @@ using Spectre.Console.Cli;
 CommandApp app = new();
 app.Configure(CliCommandTree.Configure);
 
+// h9k decide "…" and h9k learn "…" reach their own record subcommand from here on, because
+// Spectre cannot bind a positional argument to a branch's default command — see
+// BarePositionalRecording for the verification behind that claim. Normalised once, and used for
+// the usage explainer below too, so what an error message quotes back is what actually ran.
+string[] commandArguments = BarePositionalRecording.Normalise(args);
+
 // Without this, Ctrl-C takes SIGINT's default action and the process terminates immediately —
 // no command's own cancellation handling (e.g. TaskWorkCommand's started/ended pairing, PLAN.md
 // #103) ever runs, because RunAsync(args) alone is handed CancellationToken.None and nothing else
@@ -77,7 +83,7 @@ Console.CancelKeyPress += (_, e) =>
 
 try
 {
-    return await app.RunAsync(args, cancellation.Token);
+    return await app.RunAsync(commandArguments, cancellation.Token);
 }
 catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
 {
@@ -92,7 +98,7 @@ catch (CommandAppException exception)
     // rule the caller broke. PropagateExceptions handed them to us, so we owe them an explanation
     // rather than a stack trace (UsageError carries the origin incident). No token: this is the
     // process's last act, printing help nobody can usefully interrupt.
-    return await UsageError.ExplainAsync(exception, args, Console.Error, CancellationToken.None);
+    return await UsageError.ExplainAsync(exception, commandArguments, Console.Error, CancellationToken.None);
 }
 catch (DomainValidationException exception)
 {

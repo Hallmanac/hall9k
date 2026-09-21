@@ -858,6 +858,108 @@ public static class CliCommandTree
                 .WithExample("orchestrator", "measure", "--cli", "claude-code", "--project", "hall9k");
         });
 
+        config.AddBranch("decide", decide =>
+        {
+            decide.SetDescription(
+                "Record and read binding decisions (idea d805fd8b). A decision is one claim, stated as a "
+                + "rule rather than a story, self-contained enough to read on its own six months from now, "
+                + "and carrying the incident that produced it where there was one. The bare positional "
+                + "form always writes and never reads: every read lives behind a subcommand, so no shape "
+                + "of this command looks like a query and turns out to have appended an event. The id it "
+                + "prints is the citation key — a stable identity from the moment of recording, rather "
+                + "than a sequential number assigned at merge time.");
+            decide.AddExample("decide",
+                "\"Agents never push; the daemon pushes every branch with --force-with-lease\"");
+            decide.AddExample("decide", "\"Every event type is classified before it ships\"",
+                "--origin", "\"PR #370: an unclassified event shipped and replication silently dropped it\"");
+            decide.AddCommand<DecideCommand>("record")
+                .WithDescription(
+                    "Record a decision. h9k decide \"…\" reaches this same command with the statement "
+                    + "as its argument; spell the subcommand out when the statement itself is the word "
+                    + "list, show, supersede, or record.")
+                .WithExample("decide", "record",
+                    "\"Agents never push; the daemon pushes every branch with --force-with-lease\"")
+                .WithExample("decide", "record", "\"Split a ternary across lines\"", "--owner")
+                .WithExample("decide", "record", "\"The Decisions Log is a projection, not a source\"",
+                    "--project", "hall9k", "--supersedes", "28b19893")
+                .WithExample("decide", "record", "\"A stacked child is retargeted by the daemon, never by hand\"",
+                    "--task", "13d6b371");
+            decide.AddCommand<DecisionListCommand>("list")
+                .WithDescription(
+                    "Browse decisions newest-first: their scope, their age, and the claim itself. Shows "
+                    + "what still binds by default; --all adds what was superseded, which is never deleted.")
+                .WithExample("decide", "list")
+                .WithExample("decide", "list", "--project", "hall9k")
+                .WithExample("decide", "list", "--owner")
+                .WithExample("decide", "list", "--all");
+            decide.AddCommand<DecisionShowCommand>("show")
+                .WithDescription(
+                    "One decision in full: the claim, where it binds, the incident behind it, who recorded "
+                    + "it and from which run and task, whether a human was attending, what it replaced, "
+                    + "and what replaced it.")
+                .WithExample("decide", "show", "28b19893");
+            decide.AddCommand<DecisionSupersedeCommand>("supersede")
+                .WithDescription(
+                    "A decision's one terminal act: it stopped binding, with a required reason and, when "
+                    + "there is one, the decision that replaced it. Appends and never deletes — the "
+                    + "statement and its provenance stay queryable forever. Recording the replacement with "
+                    + "h9k decide --supersedes does both halves in one act instead.")
+                .WithExample("decide", "supersede", "28b19893", "--reason",
+                    "\"The renumberer it existed to serve is gone\"")
+                .WithExample("decide", "supersede", "28b19893", "--by", "4f10ac72", "--reason",
+                    "\"Replaced by the event-sourced log\"");
+        });
+
+        config.AddBranch("learn", learn =>
+        {
+            learn.SetDescription(
+                "Record and read run-earned lessons (idea d805fd8b, backlog 55). A lesson is one claim, "
+                + "phrased as an instruction to the next agent and self-contained: no run ids, no paths "
+                + "out of one worktree, nothing that only makes sense inside one session. One path, two "
+                + "callers — an agent mid-run records a lesson with the same command a human types at a "
+                + "shell. A recorded lesson is live immediately, with no gate and no approval step, "
+                + "because a lesson believed before it was corroborated costs one line of a prompt while "
+                + "the corroboration gate costs the rediscovery this exists to prevent. The bare "
+                + "positional form always writes and never reads.");
+            learn.AddExample("learn", "\"Integration tests need Docker running before dotnet test\"");
+            learn.AddExample("learn", "\"Prefer a fake over a real process when proving a timing rule\"",
+                "--owner");
+            learn.AddCommand<LearnCommand>("record")
+                .WithDescription(
+                    "Record a lesson. h9k learn \"…\" reaches this same command with the statement as "
+                    + "its argument; spell the subcommand out when the statement itself is the word "
+                    + "list, show, retire, or record.")
+                .WithExample("learn", "record",
+                    "\"Integration tests need Docker running before dotnet test\"")
+                .WithExample("learn", "record", "\"Prefer a fake over a real process when proving a timing rule\"",
+                    "--owner")
+                .WithExample("learn", "record", "\"A worktree's local base-branch ref is routinely stale\"",
+                    "--task", "13d6b371");
+            learn.AddCommand<LearningListCommand>("list")
+                .WithDescription(
+                    "Browse lessons newest-first: their scope, their age, and the claim itself. Shows "
+                    + "active ones by default; --all adds what was retired, which is never deleted.")
+                .WithExample("learn", "list")
+                .WithExample("learn", "list", "--project", "hall9k")
+                .WithExample("learn", "list", "--owner")
+                .WithExample("learn", "list", "--all");
+            learn.AddCommand<LearningShowCommand>("show")
+                .WithDescription(
+                    "One lesson in full: the claim, where it applies, who recorded it and from which run "
+                    + "and task, whether a human was attending, and why it was retired if it was. A claim "
+                    + "from an unattended run reads differently from one a human typed, which is why the "
+                    + "provenance is shown rather than summarised away.")
+                .WithExample("learn", "show", "28b19893");
+            learn.AddCommand<LearningRetireCommand>("retire")
+                .WithDescription(
+                    "A lesson's one terminal act: it stopped earning its line, with a required reason — "
+                    + "wrong, absorbed into something better, or graduated into a rule now enforced "
+                    + "somewhere harder. Appends and never deletes, and nothing here retires a lesson on "
+                    + "age or on silence: a lesson that works suppresses its own evidence.")
+                .WithExample("learn", "retire", "28b19893", "--reason",
+                    "\"Graduated: the gate now fails the build for it\"");
+        });
+
         config.AddBranch("idea", idea =>
         {
             idea.SetDescription(

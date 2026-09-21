@@ -169,7 +169,11 @@ public sealed class CommandTreeHelpTests
         Exception? refusal = null;
         try
         {
-            app.Run([.. tokens.Skip(1)]);
+            // Through the same argument normalisation Program.cs applies before the command app
+            // ever runs (idea d805fd8b, piece 1): h9k decide "…" and h9k learn "…" reach their
+            // record subcommand there, and a check that skipped this step would call an example
+            // the shipped binary accepts unrunnable.
+            app.Run(BarePositionalRecording.Normalise([.. tokens.Skip(1)]));
         }
         catch (StopOnceBound.Bound)
         {
