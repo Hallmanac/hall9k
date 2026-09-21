@@ -18,8 +18,8 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// <paramref name="Requested"/>.
 /// </param>
 /// <param name="DriveDecisions">
-/// For each persona whose review can stand the product up (idea b9b09779, piece 3 — the
-/// designer today, QA once piece 2 lands), whether this run's own dispatch decided it would:
+/// For each persona whose review can stand the product up (idea b9b09779, pieces 2 and 3 — the
+/// designer and QA), whether this run's own dispatch decided it would:
 /// the project's drive setting as it stood at dispatch, and whether there was a run skill on the
 /// ledger to drive with. Recorded here rather than re-resolved when the report is composed,
 /// because both inputs can move while a review is in flight and the report must say what

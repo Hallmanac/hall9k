@@ -143,11 +143,21 @@ public static class SessionRoleName
     /// The designer persona's pass over a pull request (idea b9b09779, piece 3) — user
     /// experience, conformance to the proposed design, motion, CSS practice, accessibility, look
     /// and feel, and the design system. Its own role rather than
-    /// <see cref="ReviewConformance"/>'s: this is the one review session that may stand the
-    /// project's product up and drive it, so a reader of a session list, and the interaction
-    /// rules that key on these strings, should be able to tell it apart at a glance.
+    /// <see cref="ReviewConformance"/>'s: it is one of the two review sessions that may stand
+    /// the project's product up and drive it (<see cref="ReviewQa"/> is the other), so a reader
+    /// of a session list, and the interaction rules that key on these strings, should be able to
+    /// tell it apart at a glance.
     /// </summary>
     public static string ReviewDesign(int cycle) => $"review-design-{cycle}";
+
+    /// <summary>
+    /// The QA persona's own review of a pull request (idea b9b09779, piece 2) — blast radius,
+    /// coverage, and compliance. Its own role rather than either engineer lens because it is the
+    /// one review session that runs the suite and, where the project says so, launches the
+    /// product: a reader of a session list should be able to tell at a glance which session on
+    /// this node is allowed to do that.
+    /// </summary>
+    public static string ReviewQa(int cycle) => $"review-qa-{cycle}";
 
     /// <summary>
     /// <see cref="ReviewConformance"/>, <see cref="ReviewAdversarial"/>, or <see cref="ReviewVerify"/>,

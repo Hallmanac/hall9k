@@ -16,7 +16,7 @@ namespace Hall9k.Daemon.Review;
 /// </summary>
 /// <param name="Drive">
 /// What this run decided about standing the product up for the persona whose prompt is being
-/// built (idea b9b09779, piece 3) — resolved once at dispatch and recorded on the run stream, so
+/// built (idea b9b09779, pieces 2 and 3) — resolved once at dispatch and recorded on the run stream, so
 /// the prompt and the report it produces cannot disagree about whether the session was meant to
 /// drive. Null for a persona that never drives (the engineer's two lenses), whose prompt has no
 /// seam for it.
@@ -89,7 +89,7 @@ public sealed record ReviewPersonaSession(
 /// </param>
 /// <param name="CanDriveTheProduct">
 /// Whether this persona's review is one that may stand the project's product up and drive it
-/// (idea b9b09779, pieces 2 and 3). True for the designer; true for QA once piece 2 lands; false
+/// (idea b9b09779, pieces 2 and 3). True for the designer and for QA; false
 /// for the engineer, whose review reads a diff and has never started anything. It is what tells
 /// the dispatch to resolve a <see cref="ReviewDriveDecision"/> at all, so a persona that cannot
 /// drive never records one and never carries a drive sentence in its report.
@@ -144,14 +144,17 @@ public sealed record ReviewPersonaPlan(
 /// <summary>
 /// The persona registry (idea b9b09779, piece 1): the one place a review persona is mapped to its
 /// prompt and its criteria. A pr-review run reads the assignee's declared personas, asks this for
-/// a plan, and dispatches exactly what the plan names — so adding the QA persona's review (piece 2)
-/// or the designer's (piece 3) is an entry here plus its prompt, and nothing in the dispatch, the
-/// report, or the CLI has to learn about it.
+/// a plan, and dispatches exactly what the plan names — so the QA persona's review (piece 2) was
+/// an entry here plus its prompt, the designer's (piece 3) was the same, and nothing in the
+/// dispatch, the report, or the CLI had to learn about either.
 /// <para>
-/// All three personas have an entry; only the engineer has sessions. That asymmetry is the point:
-/// the vocabulary a member can declare from is fixed and complete today
-/// (<see cref="ReviewPersona.All"/>), while the reviews behind two of the three are still to be
-/// built, and a declaration the platform cannot yet honour has to be visible rather than silent.
+/// All three personas have an entry and all three now have sessions, so nothing a member can
+/// declare from <see cref="ReviewPersona.All"/> is skipped today. The machinery that says
+/// otherwise stays: <see cref="ReviewPersonaEntry.IsRegistered"/>, the plan's own
+/// <see cref="ReviewPersonaPlan.Skipped"/> list, and its fall back to the engineer are what make
+/// the next persona added to the vocabulary visible rather than silent between the moment it can
+/// be declared and the moment its review exists. They are unreachable on today's set by
+/// construction, not by accident.
 /// </para>
 /// </summary>
 public static class ReviewPersonaRegistry
@@ -181,13 +184,34 @@ public static class ReviewPersonaRegistry
                 request => BuildLens(request, ReviewLens.Conformance)),
         ]);
 
+    /// <summary>
+    /// The QA review's session slug, which is what its findings file on disk is named
+    /// (<see cref="Hall9k.Domain.Infrastructure.Storage.RunPaths.ReviewLensFindingsFile"/>) and
+    /// what the run stream records it as. A plain persona name rather than a lens name, unlike
+    /// the engineer's two: QA is one session and has no second lens to be distinguished from.
+    /// </summary>
+    public const string QaSlug = "qa";
+
     private static readonly ReviewPersonaEntry QaEntry = new(
         ReviewPersona.Qa,
         "Compliance and functionality through the lens of blast radius: what changed, what "
         + "adjacent behaviour is owed a regression test, and what new automated end-to-end tests "
         + "this change earns.",
         FailureFailsTheRun: false,
-        []);
+        [
+            new ReviewPersonaSession(
+                ReviewPersona.Qa,
+                QaSlug,
+                "QA (blast radius, coverage, and compliance)",
+                SessionRoleName.ReviewQa(PrReviewCycle),
+                // Unlike the engineer's adversarial lens, this one is handed the task's own
+                // objective and the pull request's imported context, and it has to be: one of
+                // the four standards it grades against is the acceptance criteria on whatever
+                // this pull request is linked to, and that basis arrives nowhere else.
+                SeesTaskContext: true,
+                QaReviewPromptBuilder.Build),
+        ],
+        CanDriveTheProduct: true);
 
     private static readonly ReviewPersonaEntry DesignerEntry = new(
         ReviewPersona.Designer,

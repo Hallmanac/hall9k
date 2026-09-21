@@ -56,28 +56,69 @@ public sealed class ReviewPersonaRegistryTests
             [ReviewPersona.Designer, ReviewPersona.Engineer, ReviewPersona.Qa]);
 
         plan.Requested.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer);
-        plan.Ran.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Designer);
-        plan.Skipped.Should().Equal([ReviewPersona.Qa], "the QA review's own prompt lands with piece 2");
+        plan.Ran.Should().Equal(ReviewPersona.Engineer, ReviewPersona.Qa, ReviewPersona.Designer);
+        plan.Skipped.Should().BeEmpty("every persona in the fixed set has a review of its own now");
         plan.FellBackToEngineer.Should().BeFalse("the engineer's review really did run, and it was declared");
+        // Persona order, then session order within each: the engineer's two lenses, then QA's
+        // one, then the designer's. The primary session is still the engineer's adversarial
+        // lens, which is what keeps the artifact layout of a mixed-persona run identical to an
+        // engineer-only one.
         plan.Sessions.Select(session => session.Slug).Should().Equal(
-            ReviewLens.Adversarial.Slug, ReviewLens.Conformance.Slug, DesignReviewSection.SessionSlug);
+            ReviewLens.Adversarial.Slug, ReviewLens.Conformance.Slug, ReviewPersonaRegistry.QaSlug,
+            DesignReviewSection.SessionSlug);
     }
 
     /// <summary>
-    /// Nothing the assignee declared has a prompt yet. Leaving the pull request unreviewed would
-    /// be the literal reading and the worse outcome, so the engineer's review stands in and the
-    /// plan says so explicitly rather than leaving it to be inferred.
+    /// The QA persona's own review (idea b9b09779, piece 2): one session, its own role name and
+    /// slug, and a declaration of qa alone no longer falls back to anything — it is a review the
+    /// platform can now actually run.
     /// </summary>
     [Fact]
-    public void A_declaration_nothing_can_run_falls_back_to_the_engineer_and_records_that_it_did()
+    public void Declaring_qa_alone_runs_the_qa_review_and_nothing_else()
     {
         ReviewPersonaPlan plan = ReviewPersonaRegistry.Plan([ReviewPersona.Qa]);
 
         plan.Requested.Should().Equal(ReviewPersona.Qa);
-        plan.Ran.Should().Equal(ReviewPersona.Engineer);
-        plan.Skipped.Should().Equal(ReviewPersona.Qa);
-        plan.FellBackToEngineer.Should().BeTrue();
-        plan.Sessions.Should().HaveCount(2);
+        plan.Ran.Should().Equal(ReviewPersona.Qa);
+        plan.Skipped.Should().BeEmpty();
+        plan.FellBackToEngineer.Should().BeFalse(
+            "qa is registered now, so nothing stands in for it");
+        plan.Sessions.Should().ContainSingle();
+        plan.Sessions[0].Slug.Should().Be(ReviewPersonaRegistry.QaSlug);
+        plan.Sessions[0].Persona.Should().Be(ReviewPersona.Qa);
+        plan.Sessions[0].RoleName.Should().Be(SessionRoleName.ReviewQa(1));
+        plan.Sessions[0].SeesTaskContext.Should().BeTrue(
+            "the QA review grades the change against the acceptance criteria on whatever it is linked to");
+    }
+
+    [Fact]
+    public void The_qa_persona_maps_to_the_qa_review_prompt()
+    {
+        ReviewPersonaSession session = ReviewPersonaRegistry.For(ReviewPersona.Qa).Sessions.Single();
+
+        string prompt = session.BuildPrompt(new ReviewPersonaPromptRequest(
+            QaReviewPromptTests.SomeTask(), QaReviewPromptTests.SomeProject(), "task/1-slug", "main",
+            TimeSpan.FromMinutes(30)));
+
+        prompt.Should().StartWith("# QA review");
+        prompt.Should().Contain("blast radius");
+    }
+
+    /// <summary>
+    /// A request carrying no drive decision renders the safe shape rather than the permissive
+    /// one: a session told it may launch a product on the strength of a fact nobody looked up is
+    /// the one outcome the setting exists to prevent.
+    /// </summary>
+    [Fact]
+    public void A_qa_prompt_built_with_no_drive_decision_neither_drives_nor_offers()
+    {
+        string prompt = ReviewPersonaRegistry.For(ReviewPersona.Qa).Sessions.Single().BuildPrompt(
+            new ReviewPersonaPromptRequest(
+                QaReviewPromptTests.SomeTask(), QaReviewPromptTests.SomeProject(), "task/1-slug", "main",
+                TimeSpan.FromMinutes(30)));
+
+        prompt.Should().Contain("## You do not launch the product");
+        prompt.Should().Contain("Do not offer to run the branch locally.");
     }
 
     [Fact]
@@ -92,10 +133,20 @@ public sealed class ReviewPersonaRegistryTests
         }
 
         ReviewPersonaRegistry.For(ReviewPersona.Engineer).IsRegistered.Should().BeTrue();
-        ReviewPersonaRegistry.For(ReviewPersona.Qa).IsRegistered.Should().BeFalse(
-            "the QA review's own prompt lands with piece 2 of this idea");
+        ReviewPersonaRegistry.For(ReviewPersona.Qa).IsRegistered.Should().BeTrue(
+            "the QA review's own prompt is piece 2 of this idea, and it has landed");
         ReviewPersonaRegistry.For(ReviewPersona.Designer).IsRegistered.Should().BeTrue(
             "the design review's own prompt is piece 3 of this idea, and it has landed");
+
+        // Which leaves Plan's fall-back-to-the-engineer arm with no input a member could
+        // actually declare: all three are registered, so every declaration runs the review it
+        // asked for. The arm stays for the next persona added to the set before its prompt
+        // exists — the state QA and the designer were both in — and this is what says it is
+        // unreachable today rather than quietly broken.
+        foreach (ReviewPersona persona in ReviewPersona.All)
+        {
+            ReviewPersonaRegistry.Plan([persona]).FellBackToEngineer.Should().BeFalse();
+        }
     }
 
     /// <summary>
@@ -333,11 +384,15 @@ public sealed class ReviewPersonaRegistryTests
         Directory.CreateDirectory(runDirectory);
         try
         {
-            // QA rather than the designer, whose own prompt landed with piece 3: this is the
-            // shape where NOTHING the assignee declared can run, and it needs a persona that is
-            // still unregistered to produce it at all.
+            // Rebuilt from what a run actually recorded rather than planned fresh: every
+            // persona a member can declare is registered now, so Plan cannot produce this shape
+            // any more, and the runs that carry it are the ones dispatched while QA or the
+            // designer was still declared-but-unbuilt. Their reports are still read.
             string body = await PrReviewEngine.ComposePersonaSectionsAsync(
-                runDirectory, ReviewPersonaRegistry.Plan([ReviewPersona.Qa]),
+                runDirectory,
+                ReviewPersonaRegistry.Recorded(
+                    [ReviewPersona.Qa], [ReviewPersona.Engineer], [ReviewPersona.Qa],
+                    fellBackToEngineer: true),
                 new Dictionary<string, ReviewPersonaSessionFailure>(), CancellationToken.None);
 
             body.Should().Contain("the engineer's review ran in their place");
