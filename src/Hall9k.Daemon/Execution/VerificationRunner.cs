@@ -215,7 +215,11 @@ public sealed partial class VerificationRunner(
 
         IReadOnlyList<VerifyCommand> gates = project?.VerifyCommands ?? [];
         string gatesFingerprint = VerifyCommand.Fingerprint(gates);
-        if (gates.Count == 0)
+        // project is null only when gates.Count == 0 too (gates is derived from project?.VerifyCommands),
+        // so folding the null check into this same early return is what lets the compiler — and
+        // every block below it — treat `project` as non-null for the rest of this method, rather
+        // than a null-forgiving `!` asserting a fact AGENTS.md says never to assume unobserved.
+        if (project is null || gates.Count == 0)
         {
             string? noGatesHeadSha = await GetHeadShaAsync(run.WorktreePath, cancellationToken);
             await RecordPassAsync(
@@ -223,6 +227,36 @@ public sealed partial class VerificationRunner(
                 gatesFingerprint, gateDurations: [], cancellationToken);
             logger.LogInformation("Run {RunId} verification passed: no gates configured", runId);
             return new SettlingVerificationResult(true, null, null);
+        }
+
+        // Before any gate runs, whether every path this run's branch changed against its base is
+        // content the project has declared non-executable (task: a delivered diff that touches no
+        // buildable or testable source skips the build and test gates — origin: ef2fefe5, a
+        // two-file skill markdown fix paying roughly twelve minutes of build-and-test ceremony on
+        // every pipeline entry while the actual work took four). Classified afresh at every entry
+        // into the gates — first delivery, an intermediate review-cycle reverify, and every
+        // follow-up lap alike — never cached from an earlier entry's own verdict, so a fix lap that
+        // starts touching real source is judged on its own diff, not an earlier lap's content-only
+        // one. Unobservable git (GetChangedPathsAsync returning null) runs the gates as today,
+        // never guessed as content-only (AGENTS.md's "never guess at unobserved facts" rule) — the
+        // same convention DetectStrandedWorkAsync's own git reads already follow.
+        IReadOnlyList<string>? changedPaths = await GetChangedPathsAsync(
+            run.WorktreePath, run.BaseBranchOr(project.BaseBranch), run.StackedForkPoint(project.BaseBranch),
+            cancellationToken);
+        if (changedPaths is { Count: > 0 })
+        {
+            NonExecutablePathClassifier.ClassificationResult classification =
+                NonExecutablePathClassifier.Classify(changedPaths, project.EffectiveNonExecutablePaths);
+            if (classification.AllMatched)
+            {
+                IReadOnlyList<VerificationSkippedPath> skippedPaths =
+                    [.. classification.Paths.Select(path => new VerificationSkippedPath(path.Path, path.MatchedRule!))];
+                await RecordSkipAsync(runId, skippedPaths, cancellationToken);
+                logger.LogInformation(
+                    "Run {RunId} verification skipped: every changed path ({Count}) matched the project's non-executable set",
+                    runId, changedPaths.Count);
+                return new SettlingVerificationResult(true, null, null);
+            }
         }
 
         // run.RunDirectory is whatever RunDispatched recorded once, at dispatch — stale for a
@@ -1610,12 +1644,27 @@ public sealed partial class VerificationRunner(
     /// </para>
     /// </summary>
     private static async Task<int?> CountBranchCommitsAsync(
+        string worktreePath, string baseBranch, string? forkPointCommit, CancellationToken cancellationToken) =>
+        (await ResolveBranchBoundaryAsync(worktreePath, baseBranch, forkPointCommit, cancellationToken)).SmallestCount;
+
+    /// <summary>
+    /// The boundary-selection half of <see cref="CountBranchCommitsAsync"/>'s own doc, extracted so
+    /// <see cref="GetChangedPathsAsync"/> can diff against the identical winning boundary rather
+    /// than recomputing its own, possibly different, notion of "this branch's base" (task: a
+    /// delivered diff that touches no buildable or testable source skips the build and test
+    /// gates). Returns both the smallest count <see cref="CountBranchCommitsAsync"/> has always
+    /// returned and the boundary ref that produced it — null <see cref="Boundary"/> only when
+    /// every candidate boundary was itself unreadable, the same unobservable case
+    /// <see cref="SmallestCount"/> already reports as null.
+    /// </summary>
+    private static async Task<(int? SmallestCount, string? Boundary)> ResolveBranchBoundaryAsync(
         string worktreePath, string baseBranch, string? forkPointCommit, CancellationToken cancellationToken)
     {
         string[] boundaries = forkPointCommit is null
             ? [$"origin/{baseBranch}", baseBranch]
             : [forkPointCommit, $"origin/{baseBranch}", baseBranch];
         int? smallest = null;
+        string? winningBoundary = null;
         foreach (string baseRef in boundaries)
         {
             (int exitCode, string output) = await RunGitAsync(
@@ -1623,10 +1672,75 @@ public sealed partial class VerificationRunner(
             if (exitCode == 0 && int.TryParse(output.Trim(), out int count) && (smallest is null || count < smallest))
             {
                 smallest = count;
+                winningBoundary = baseRef;
             }
         }
 
-        return smallest;
+        return (smallest, winningBoundary);
+    }
+
+    /// <summary>
+    /// Every path this run's branch changed against the identical boundary
+    /// <see cref="CountBranchCommitsAsync"/> itself resolves to (task: a delivered diff that
+    /// touches no buildable or testable source skips the build and test gates) — deletions and
+    /// renames included: <c>git diff --name-status -z</c> records a rename or copy as two
+    /// NUL-terminated paths (the old name, then the new) rather than one, and both are returned
+    /// separately so either one falling outside the project's non-executable set is what forces
+    /// the ordinary gates to run. Null when the boundary itself could not be resolved, or the diff
+    /// itself could not be read — never guessed as "nothing changed" (AGENTS.md's never-guess
+    /// rule), the same convention every other git read in this file already follows.
+    /// </summary>
+    private static async Task<IReadOnlyList<string>?> GetChangedPathsAsync(
+        string worktreePath, string baseBranch, string? forkPointCommit, CancellationToken cancellationToken)
+    {
+        (_, string? boundary) = await ResolveBranchBoundaryAsync(worktreePath, baseBranch, forkPointCommit, cancellationToken);
+        if (boundary is null)
+        {
+            return null;
+        }
+
+        (int exitCode, string output) = await RunGitAsync(
+            worktreePath, ["diff", "--name-status", "-z", $"{boundary}..HEAD"], cancellationToken);
+        return exitCode == 0 ? ParseChangedPaths(output) : null;
+    }
+
+    /// <summary>
+    /// Parses <c>git diff --name-status -z</c>'s own NUL-separated record shape: an ordinary
+    /// change (A/M/D/T/U) is one status token followed by one path; a rename or copy (R/C, each
+    /// carrying a trailing similarity score digit string like <c>R100</c>) is one status token
+    /// followed by TWO paths, the old name and the new. A truncated trailing record (the output
+    /// ended mid-record) is dropped rather than guessed at.
+    /// </summary>
+    private static IReadOnlyList<string> ParseChangedPaths(string nameStatusOutput)
+    {
+        string[] tokens = nameStatusOutput.Split('\0', StringSplitOptions.RemoveEmptyEntries);
+        List<string> paths = [];
+        int index = 0;
+        while (index < tokens.Length)
+        {
+            string status = tokens[index++];
+            char kind = status.Length > 0 ? status[0] : '\0';
+            if (kind is 'R' or 'C')
+            {
+                if (index + 1 >= tokens.Length)
+                {
+                    break;
+                }
+
+                paths.Add(tokens[index++]);
+                paths.Add(tokens[index++]);
+                continue;
+            }
+
+            if (index >= tokens.Length)
+            {
+                break;
+            }
+
+            paths.Add(tokens[index++]);
+        }
+
+        return paths;
     }
 
     /// <summary>
@@ -1787,6 +1901,20 @@ public sealed partial class VerificationRunner(
             runId,
             new VerificationPassed(
                 runId, DateTimeOffset.UtcNow, note, ranFullScope, headSha, verifyCommandsFingerprint, gateDurations));
+        await session.SaveChangesAsync(cancellationToken);
+    }
+
+    /// <summary>
+    /// Records <see cref="VerificationSkipped"/> in place of a pass (task: a delivered diff that
+    /// touches no buildable or testable source skips the build and test gates) — see that event's
+    /// own doc for why <c>RunAggregate.Apply(VerificationSkipped)</c> deliberately never sets any
+    /// of the scope fields <see cref="RecordPassAsync"/>'s own <see cref="VerificationPassed"/> does.
+    /// </summary>
+    private async Task RecordSkipAsync(
+        Guid runId, IReadOnlyList<VerificationSkippedPath> changedPaths, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = store.LightweightSession();
+        session.Events.Append(runId, new VerificationSkipped(runId, DateTimeOffset.UtcNow, changedPaths));
         await session.SaveChangesAsync(cancellationToken);
     }
 
