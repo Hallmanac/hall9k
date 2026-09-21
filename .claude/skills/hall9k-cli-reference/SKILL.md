@@ -1357,6 +1357,38 @@ silence to be read as a no. A `yes` comes with a finding carrying a `kind=run-sk
 which is fixed, routed or carried as a ride-along on exactly the terms its severity and scope
 already decide — the kind says what sort of finding it is, never what the platform does with it.
 
+**A reviewer who says yes to a review's offer gets the branch stood up for them** (idea b9b09779
+piece 5, Decisions Log #PLACEHOLDER-09fad63d). A QA or design review report that ends with the
+offer to run the branch locally carries, at the end of the report, the identity that answers it:
+the task, the run, the worktree, and the command itself. The reviewer names none of them — they
+say yes in their orchestrator window, and the window runs `h9k task run-local <task>`.
+
+```bash
+h9k task run-local 28b19893              # stand the branch up in the review's own worktree
+h9k task run-local 28b19893 --continue   # resume after doing a step only you could do
+h9k task run-local 28b19893 --stop       # end it
+```
+
+It reads the project's run skill (the one on the ledger, above) as an ordered plan and follows it
+on that worktree: the `Human steps` section first, hoisted there because every entry in it is by
+definition something the discovery session could not determine and therefore could not sequence,
+then Prerequisites, One-time setup and Launch in the document's own order. A step carrying a
+command runs; a step carrying none stops the launch, prints exactly what the run skill says to do,
+and `--continue` picks up at the next one. A launch command with somewhere to put a port
+(`{{PORT}}`, a `--port` option, or a leading `PORT=`) gets an ephemeral one, so a review launch
+never seizes the port the reviewer already has something on; one with nowhere to put one runs as
+written and the launch records no port of its own rather than claiming one. What it prints when the
+product is up is the skill's own address with that port applied, the skill's own "how to know it is
+up", and every human step in the plan, in order.
+
+It refuses with a sentence naming the rule in each of three cases: the review worktree is gone, the
+project has no run skill (nothing records how it is started, and this will not guess at a launch
+command), or a launch of the same task is already up — including one merely waiting on a human and
+one still part-way through its own plan, both of which are somebody's live walk of that branch even
+though neither has anything running yet. A launch is never left running: `--stop` ends
+it, and the daemon's own sweep ends one whose task closed out, whose worktree was removed, or whose
+process is already gone, recording which of the four it was.
+
 **A reviewer runs their own review lap on top of that same pr-review task** (Decisions Log #149,
 idea 21ddf2b3, walked 2026-09-06). `h9k pr review` is the reviewer's counterpart to
 `h9k task work`: it prepares the lap and hands over a briefing, and it deliberately builds on the

@@ -847,7 +847,13 @@ Whether either one stands the product up is per project and per persona, `h9k pr
 --design-review-drive on|off` (default on) and `--qa-review-drive on|off` (default off):
 driving also needs a run skill on the ledger, and a driven review walks the changed flows
 through browser automation and cites its screenshots beside the findings they support, with the
-design review also auditing each walked screen for accessibility. The node has a
+design review also auditing each walked screen for accessibility. Either report ends by offering
+to run the branch locally for the reviewer, and a yes in their orchestrator window runs
+`h9k task run-local <task>`: the report carries the task, run and worktree the command resolves,
+and the command follows the project's run skill on that checkout, stopping at every step only a
+person can do and printing the address when the product is up. `--continue` resumes after such a
+step and `--stop` ends it; a launch is also torn down when the task closes out or the worktree is
+removed, so none is left running. The node has a
 ceiling the dispatcher respects, counted directly in task runs (Decisions Log #111) — the retired
 session-denominated setting still converts when the new one is absent, and a per-run session cap
 (global default, overridable per task even mid-run) governs how many agent sessions one run may
