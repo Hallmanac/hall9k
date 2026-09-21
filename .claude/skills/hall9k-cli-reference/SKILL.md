@@ -1358,7 +1358,7 @@ which is fixed, routed or carried as a ride-along on exactly the terms its sever
 already decide — the kind says what sort of finding it is, never what the platform does with it.
 
 **A reviewer who says yes to a review's offer gets the branch stood up for them** (idea b9b09779
-piece 5, Decisions Log #PLACEHOLDER-09fad63d). A QA or design review report that ends with the
+piece 5, Decisions Log #256). A QA or design review report that ends with the
 offer to run the branch locally carries, at the end of the report, the identity that answers it:
 the task, the run, the worktree, and the command itself. The reviewer names none of them — they
 say yes in their orchestrator window, and the window runs `h9k task run-local <task>`.
