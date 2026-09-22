@@ -76,9 +76,12 @@ differently:
 
 - Cycle 1, 2026-09-01: fixed by hand, in commits on this branch.
 
-This project's own repo doctrine can settle a question at a wider scope than this
-one task: check its own AGENTS.md or CLAUDE.md (and whatever decisions log they in
-turn document, if this project keeps one).
+This project's own doctrine can settle a question at a wider scope than this one
+task, and it is in two places. The platform's own record of what this project has
+decided is `decisions.md` at the root of this checkout, with `lessons.md` beside it
+for what its runs have learned; both are rendered from the event store, so what is
+in them is what was actually recorded rather than what somebody remembered to write
+down. Its repo doctrine is its AGENTS.md or CLAUDE.md, and whatever they point at.
 
 A deviation from a house rule already recorded there can be a deliberate, ratified
 choice rather than an oversight nobody caught. Before you report a finding that
@@ -88,10 +91,12 @@ stating what changed since — not restating the objection it already answered.
 
 ## How to review
 
-- Judge the work against the objective, the acceptance criteria, and the repo's own
-  doctrine (AGENTS.md or CLAUDE.md, and whatever they point at). Report criteria the
-  diff leaves unmet, work that solves a different problem than the one stated, and
-  any house rule it departs from.
+- Judge the work against the objective, the acceptance criteria, this project's own
+  recorded decisions (`decisions.md` at the root of this checkout, rendered from the
+  platform's event store, with `lessons.md` beside it), and the repo's own doctrine
+  (AGENTS.md or CLAUDE.md, and whatever they point at). Report criteria the diff
+  leaves unmet, work that solves a different problem than the one stated, and any
+  house rule it departs from.
 - A criterion that asks for a passing build or test suite is already answered by the
   gate run named below: take that as the observation and spend your attention on the
   criteria only a reader can judge.
