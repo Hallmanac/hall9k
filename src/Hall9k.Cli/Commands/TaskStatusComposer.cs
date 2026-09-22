@@ -345,7 +345,7 @@ internal static class TaskStatusComposer
             phase,
             attention,
             group,
-            PublishedFacts.Compose(task, state, held, heldByTracker, now, heldByLedgerHolder),
+            PublishedFacts.Compose(task, state, held, heldByTracker, now, heldByLedgerHolder, context.OwnersByFingerprint),
             project,
             task.Objective,
             task.Type.Value,

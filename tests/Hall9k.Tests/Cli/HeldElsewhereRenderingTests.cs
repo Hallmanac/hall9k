@@ -34,6 +34,93 @@ public sealed class HeldElsewhereRenderingTests
         row.DetailMarkup.Should().Contain(line => line.Contains("held by") && line.Contains("since"));
     }
 
+    /// <summary>
+    /// h9k task show's own state gloss used to fall through to "this build does not recognize the
+    /// recorded state" for HeldElsewhere: <see cref="TaskShowCommand.StateGloss"/> switches on
+    /// <see cref="LifecycleState.Word"/>, and the switch simply carried no case for it, even though
+    /// the state is very much recognized elsewhere (it is what renders the word in the first
+    /// place). Windows field report, 2026-09-19, task a56cf16e: "State HeldElsewhere (this build
+    /// does not recognize the recorded state)".
+    /// </summary>
+    [Fact]
+    public void The_state_gloss_names_HeldElsewhere_rather_than_falling_to_the_unrecognized_state_text()
+    {
+        Guid foreignNodeId = DomainId.New();
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, claimedByNodeId: foreignNodeId);
+
+        TaskStatusRow row = StatusFixtures.Compose(task, run: null);
+
+        string gloss = TaskShowCommand.StateGloss(row);
+
+        gloss.Should().Contain("a Claimed task another node currently holds")
+            .And.NotContain("this build does not recognize the recorded state");
+    }
+
+    /// <summary>
+    /// The held-by fact must name the node that actually holds the claim, never the owner root
+    /// fingerprint standing in for it. Windows field report, 2026-09-19, task a56cf16e: "held by
+    /// c8f5c85900da since 11m ago" named the owner root fingerprint's own short prefix as if it
+    /// were the node id.
+    /// </summary>
+    [Fact]
+    public void The_held_by_fact_names_the_holder_node_never_the_owner_root_alone()
+    {
+        Guid foreignNodeId = DomainId.New();
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, claimedByNodeId: foreignNodeId);
+        task.ClaimedByOwnerRootFingerprint = "c8f5c85900da1234567890abcdef1234567890abcdef1234567890abcdef12";
+        task.ClaimedAt = StatusFixtures.Now.AddMinutes(-11);
+
+        TaskStatusRow row = StatusFixtures.Compose(task, run: null);
+
+        string fact = row.Facts.Should().ContainSingle(line => line.StartsWith("held by")).Subject;
+
+        fact.Should().Contain($"node {DomainId.Short(foreignNodeId)}");
+        fact.Should().NotContain("held by c8f5c85900da", "the owner root fingerprint must never stand in for the node id");
+    }
+
+    /// <summary>
+    /// When this install can resolve the claiming owner's root fingerprint to a login (idea
+    /// f72138e1), the held-by fact names it rather than the bare fingerprint prefix — the same
+    /// resolution <see cref="TaskStatusComposer"/>'s own assignee display already gives a fingerprint
+    /// it can resolve.
+    /// </summary>
+    [Fact]
+    public void The_held_by_fact_names_the_owners_login_when_this_install_can_resolve_it()
+    {
+        Guid foreignNodeId = DomainId.New();
+        string fingerprint = "c8f5c85900da1234567890abcdef1234567890abcdef1234567890abcdef12";
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, claimedByNodeId: foreignNodeId);
+        task.ClaimedByOwnerRootFingerprint = fingerprint;
+        task.ClaimedAt = StatusFixtures.Now.AddMinutes(-11);
+
+        TaskStatusContext context = StatusFixtures.Context() with
+        {
+            OwnersByFingerprint = new Dictionary<string, string> { [fingerprint] = "brian" },
+        };
+        TaskStatusRow row = TaskStatusComposer.Compose(task, context, StatusFixtures.Now);
+
+        string fact = row.Facts.Should().ContainSingle(line => line.StartsWith("held by")).Subject;
+
+        fact.Should().Contain("owner brian");
+    }
+
+    /// <summary>
+    /// No fingerprint recorded at all (a claim replicated before the fingerprint field existed)
+    /// says so honestly rather than inventing an owner.
+    /// </summary>
+    [Fact]
+    public void The_held_by_fact_names_an_unknown_owner_when_no_fingerprint_was_recorded()
+    {
+        Guid foreignNodeId = DomainId.New();
+        TaskListItem task = StatusFixtures.Task(TaskState.Claimed, claimedByNodeId: foreignNodeId);
+
+        TaskStatusRow row = StatusFixtures.Compose(task, run: null);
+
+        string fact = row.Facts.Should().ContainSingle(line => line.StartsWith("held by")).Subject;
+
+        fact.Should().Contain("owner an unknown owner");
+    }
+
     [Fact]
     public void An_interactive_claim_is_never_read_as_held_elsewhere()
     {
