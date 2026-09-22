@@ -394,10 +394,25 @@ Project-scoped decisions and lessons are project-scoped events in the stamping c
 registry, so M2a replication carries them; an owner-scoped one names no project and stays on the
 node that recorded it. Listing is an indexed query over one projection row per record.
 
-What this piece does **not** yet do: render PLAN.md §16 or any other markdown from these
-streams, import the existing log into them, retire the Decisions Log renumberer, or inject
-active lessons into agent prompts. Those are the other four pieces of idea d805fd8b and backlog
-55, and until they land PLAN.md §16 is still the hand-edited source it always was.
+The daemon renders both streams to markdown. Its project-home sweep writes `decisions.md` and
+`lessons.md` at the home's root, and `RunLauncher` writes the identical two files into every
+worktree it cuts at dispatch, after putting both names on that repository's own `info/exclude`
+so a projection is never untracked work a session is told to commit and can never reach authored
+history. Only binding decisions and live lessons are rendered; a superseded or retired record is
+still there behind `--all`, just not in a file agents read as the rulebook. The render is
+deterministic — explicit `\n`, UTC and invariant timestamps, an order derived from the records
+themselves, and no per-install coordinate anywhere in the bytes — so two nodes holding the same
+history render byte-identical files. Only project-scoped records are rendered: an owner-scoped
+one is a cross-project habit belonging to the owner rather than to any project's home. A file at
+either name that the platform did not render (a repository that tracks its own `decisions.md`)
+is never overwritten, and the skip is logged. Every prompt template that used to point a session
+at a hand-maintained decisions log now points at these two files instead.
+
+What this piece does **not** yet do: import PLAN.md §16's own 264 entries into these streams,
+retire the Decisions Log renumberer and its placeholder value object, or inject active lessons
+into a prompt's own text. Those are the remaining pieces of idea d805fd8b and backlog 55, and
+until they land PLAN.md §16 is still the hand-edited source it always was — this repository's
+own rendered `decisions.md` carries only what has been recorded through `h9k decide` since.
 
 ### Spikes
 
@@ -1041,9 +1056,10 @@ Decisions Log #185](../PLAN.md).
 
 ### The project home
 
-Every project owns a directory in one shape on every machine: a generated `AGENTS.md`, `repo/`
-(bare clone, `dev/` worktree, task worktrees), `ideas/`, `tasks/`, `skills/` seeded from the
-install's canonical set, and a generated `.claude/` adapter. `h9k project add` creates it and
+Every project owns a directory in one shape on every machine: a generated `AGENTS.md`, a
+rendered `decisions.md` and `lessons.md` beside it, `repo/` (bare clone, `dev/` worktree, task
+worktrees), `ideas/`, `tasks/`, `skills/` seeded from the install's canonical set, and a
+generated `.claude/` adapter. `h9k project add` creates it and
 `h9k project init` is the adopt-and-repair path; both are platform code end to end, with no agent
 anywhere in the recipe, and both are idempotent. The dispatcher composes the home into every
 agent briefing, so a dispatched session is told where the skills and the docs are rather than

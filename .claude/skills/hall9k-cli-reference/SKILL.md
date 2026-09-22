@@ -724,6 +724,19 @@ recorded it. Project is the default and `--owner` is the deliberate act, because
 asymmetric: too narrow means one project misses something useful, too wide means a wrong
 statement rides in every prompt everywhere.
 
+**You read them as files, and you never write them as files** (idea d805fd8b, piece 2). The
+daemon renders `decisions.md` and `lessons.md` from those streams into the project home's root on
+its ordinary project-home sweep, and writes the identical two files into every worktree it cuts
+at dispatch, on that repository's own `info/exclude` so a projection is never untracked work a
+session is told to commit and can never reach authored history. Read them; change them with
+`h9k decide` and `h9k learn`. An edit to either file is gone on the next render, and the header
+at the top of each says so and names the command. Only binding decisions and live lessons appear
+there — a superseded or retired record is still in the store, one `--all` away. The render is
+deterministic (explicit `\n`, UTC and invariant timestamps, an order derived from the records
+themselves, no per-install id anywhere in the bytes), so two nodes holding the same history render
+byte-identical files. A file at either name that the platform did not render, which its own
+generated header is how you tell, is never overwritten and never read as the platform's.
+
 Task development and task dispatch are separate lifecycles (Decisions Log #34): `h9k task add`
 creates a **draft**, and nothing dispatches until a human publishes and assigns it.
 
