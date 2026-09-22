@@ -737,6 +737,40 @@ themselves, no per-install id anywhere in the bytes), so two nodes holding the s
 byte-identical files. A file at either name that the platform did not render, which its own
 generated header is how you tell, is never overwritten and never read as the platform's.
 
+**Active lessons also arrive in your prompt's own text** (idea d805fd8b, piece 5; backlog 55), so
+the section under "What this project's earlier runs already learned" is not a duplicate of
+`lessons.md` and not a substitute for it. It carries this project's active lessons plus the
+owner's, newest first, each line led by the id you cite or retire it by. Two caps bound it and
+truncation is announced: the section says how many of how many it carries, names both caps, and
+names `h9k learn list` for the rest. Provenance is what decides membership, not just what is
+displayed: a lesson recorded by an agent run on ANOTHER node is rendered in `lessons.md` and held
+out of every prompt until the security review in idea 7e403b80 rules otherwise, and so is one
+whose recording node could not be read at all. `h9k learn show <id>` says which side of that line
+a lesson falls on, and whether it is still active enough to reach a prompt at all. So an absent
+section never means "this project has learned nothing", and a present one never means "this is
+everything".
+
+Recording from inside a dispatched run, always name the task: `h9k learn "<claim>" --task <id>`.
+Nothing in a dispatched session's environment names its run, so the bare form records the same
+"no run named" provenance a person typing at a shell does, and the mark then says only that. The
+section's own recording verb spells the `--task` out for exactly this reason.
+
+```bash
+h9k config set --lesson-prompt-max-lessons 15         # how many lessons any one prompt carries
+h9k config set --lesson-prompt-max-characters 4000    # and how many characters of lesson text
+h9k learn "<merged claim>" --distilled-from <id> --distilled-from <id>   # record a merge, citing its sources
+h9k learn distill [--project <name>|--owner]          # author the Research task DRAFT that merges a scope's lessons
+```
+
+Distillation is a task a human authors, never something the daemon decides to do. `h9k learn
+distill` creates an ordinary Research task draft and stops there; a person publishes and assigns
+it like any other. Its instructions are merge-and-cite only, and the citation half is enforced:
+`--distilled-from` is refused outright when its citations resolve to nothing, repeat, or name the
+lesson itself, because a merge nobody can check against what it merged is a new claim wearing a
+merge's clothes. Merging does not retire what it merged; that is still `h9k learn retire <id>
+--reason "Absorbed into <id>"`, and a source left live keeps riding in prompts. `h9k status` names
+this lever for a project whose active lessons have passed the count cap.
+
 Task development and task dispatch are separate lifecycles (Decisions Log #34): `h9k task add`
 creates a **draft**, and nothing dispatches until a human publishes and assigns it.
 
