@@ -685,7 +685,7 @@ the idea — discovery may keep producing — so ending it is always the separat
 d805fd8b, piece 1, Brian's ruling 2026-09-16; backlog 55 for the learnings half). Two aggregates
 with their own streams, `Decision` and `Learning`, each record's UUIDv7 id being its citation
 key — which is precisely what PLAN.md §16's sequential numbers could never be, since a number
-assigned at merge time forces a renumberer, a placeholder value object, a guard test, and a tail
+assigned at merge time forced a renumberer, a placeholder value object, a guard test, and a tail
 conflict on every stacked replay.
 
 ```bash
