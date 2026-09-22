@@ -408,11 +408,57 @@ either name that the platform did not render (a repository that tracks its own `
 is never overwritten, and the skip is logged. Every prompt template that used to point a session
 at a hand-maintained decisions log now points at these two files instead.
 
-What this piece does **not** yet do: import PLAN.md §16's own 264 entries into these streams,
-retire the Decisions Log renumberer and its placeholder value object, or inject active lessons
-into a prompt's own text. Those are the remaining pieces of idea d805fd8b and backlog 55, and
-until they land PLAN.md §16 is still the hand-edited source it always was — this repository's
-own rendered `decisions.md` carries only what has been recorded through `h9k decide` since.
+Active lessons ride in the prompt's own text, bounded and marked. Every implementation,
+follow-up, review and fix prompt carries a section of this project's active lessons plus the
+owner's, newest first, each line led by the eight-character id a session cites or retires it by
+and tagged with how far it travels and who recorded it. Two settings bound it:
+`h9k config set --lesson-prompt-max-lessons` (15) and `--lesson-prompt-max-characters` (4000),
+and truncation is announced rather than silent: the section says how many of how many it is
+carrying, names both caps, and names `h9k learn list`. A lesson is never cut part-way; one that
+will not fit whole is held back whole and counted. Both caps are read from the config file at
+every prompt composition, so a change is in force for the next dispatch with no daemon restart.
+
+Provenance decides what is injected, not just what is displayed. Three marks: recorded with no
+run named, recorded by an agent run on this node, and recorded by an agent run on another
+node. The first says only what was observed, which is that nothing named a run: a person at a
+shell records that, and so does an agent that skips `--task`, and nothing on the event separates
+them, which is why the shipped templates make a dispatched session name its task. The third is
+rendered in `lessons.md` and listed by `h9k learn list` and deliberately held
+out of every prompt, until the security review in idea 7e403b80 rules otherwise: nothing today
+authenticates the agent that wrote a lesson on a machine this node does not control, and a lesson
+rides into the instructions of every later session. A lesson from a run whose node could not be
+read at all is held out on the same terms rather than assumed local, and so is one whose stream
+carries no provenance to read; a section that held any of them back counts them under each of
+those reasons separately rather than reporting a total under one of them. `h9k learn show <id>` says
+which side of that line a lesson falls on and why; `lessons.md` does not, because that file holds
+a byte-for-byte determinism contract across nodes and this answer depends on which node is
+asking.
+
+Distillation is a task a human authors. `h9k learn distill` creates an ordinary Research task
+draft and stops: nothing dispatches until a person publishes and assigns it, and no daemon code
+path authors one (a source sweep in the test suite holds that). Its instructions are
+merge-and-cite only, and the citation half is enforced rather than requested: `h9k learn
+--distilled-from <id>` records the merge with its sources, and the decider refuses a distilled
+lesson whose citations resolve to nothing, repeat, or name the lesson itself. Merging does not
+retire what it merged: that stays the explicit act with its own reason, which is why distillation
+shipped without a second terminal status. `h9k status` names the lever for each project whose
+active lessons have passed the count cap, and goes no further than naming it.
+
+What this piece does **not** yet do: import PLAN.md §16's own 267 entries into these streams, or
+retire the Decisions Log renumberer and its placeholder value object. Those are the remaining
+pieces of idea d805fd8b, and until they land PLAN.md §16 is still the hand-edited source it
+always was; this repository's own rendered `decisions.md` carries only what has been recorded
+through `h9k decide` since. Two smaller limits are deliberate rather than pending. A review or
+fix session dispatched into a worktree cut earlier reads whatever `lessons.md` was written there
+at that worktree's original dispatch, while its injected section is always read fresh. And the
+section reaches the twelve prompts that do implementation, follow-up, review or fix work on a
+task's own branch, which is every arm of the daemon's own dispatch switches, and no others: the
+mechanical retry and recovery prompts (budget retry, session-error retry, uncommitted-work
+recovery, stack assessment, context synthesis, verdict re-prompt) carry none because they ask one
+procedural question rather than doing the work; a spike carries none because it answers one stated
+question under a budget and never merges; and a pr-review lens carries none because it judges a
+contributor's own pull request in a detached checkout of somebody else's head, against that pull
+request's stated intent rather than against what this project's runs learned about building it.
 
 ### Spikes
 

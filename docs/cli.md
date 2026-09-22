@@ -67,7 +67,7 @@ each with its own required `--reason`.
 
 ### Decisions and lessons
 
-`h9k decide "<statement>" | list | show | supersede` and `h9k learn "<statement>" | list | show | retire`
+`h9k decide "<statement>" | list | show | supersede` and `h9k learn "<statement>" | list | show | retire | distill`
 
 Both branches have the same shape: the bare positional form always writes and never reads, and
 every read lives behind a subcommand. Recording prints the record's id, and that id is the
@@ -82,6 +82,29 @@ A decision recorded from inside a run that is not human-attended is refused and 
 learn`, because agents record lessons and humans record decisions. Neither terminal verb deletes:
 `h9k decide supersede <id> --reason "…"` and `h9k learn retire <id> --reason "…"` append, and
 `--all` on either `list` brings the ended ones back into view.
+
+Lessons also ride into the prompt of every implementation, follow-up, review and fix session, as
+a bounded section under "What this project's earlier runs already learned": this project's active
+lessons plus the owner's, newest first, each line led by the id a session cites or retires it by.
+`h9k config set --lesson-prompt-max-lessons` and `--lesson-prompt-max-characters` bound it, and
+truncation is announced rather than silent: the section names both counts, both caps, and
+`h9k learn list`. The section's own recording verb names the task (`h9k learn "…" --task <id>`),
+so a dispatched session's lesson carries its run rather than landing marked as having named none.
+What is injected is decided by provenance, not only displayed: a lesson an agent
+run on ANOTHER node recorded stays in `lessons.md` and out of every prompt until the security
+review in idea 7e403b80 rules otherwise, and `h9k learn show <id>` says which side of that line a
+lesson falls on, and whether it is still active enough to reach one at all.
+
+`h9k learn distill [--project <name>|--owner]` authors the task that merges a scope's lessons into
+fewer, better ones. It creates an ordinary Research task **draft** and stops there: the daemon
+never distils on its own judgment, because merging two claims into one is a judgment about meaning
+and a wrong merge replaces two things somebody observed with one thing nobody did. The task's
+instructions are merge-and-cite only, and the citation half is enforced rather than requested:
+`h9k learn "<merged claim>" --distilled-from <id> --distilled-from <id>` records the merge with its
+sources, and the decider refuses one whose citations resolve to nothing, repeat, or name the lesson
+itself. Merging retires nothing on its own; each source still ends with its own
+`h9k learn retire <id> --reason "Absorbed into <id>"`. `h9k status` names this lever for a project
+whose active lessons have passed the count cap.
 
 ### Tasks: development and dispatch
 
@@ -1172,12 +1195,16 @@ claimed; `--spend-budget none` clears it back to unbudgeted, since "no budget" h
 default number the way the review caps do; and the message sweep's own poll ranges
 (`--message-poll-active-min`/`-max`, 15 to 25 seconds by default, and `--message-poll-idle-min`/
 `-max`, 30 to 45 seconds by default; idea 202383dc, M1b), each a floor that must stay at or below
-its own ceiling once this call's change applies. Unlike the four review-cycle caps above, the
+its own ceiling once this call's change applies; and the two caps bounding how much of a project's
+recorded lessons any one dispatched prompt carries (`--lesson-prompt-max-lessons`, 15, and
+`--lesson-prompt-max-characters`, 4000; idea d805fd8b, piece 5), two rather than one because
+thirty short lessons and three essays are each a prompt nobody reads. Unlike the four review-cycle caps above, the
 spend budget and the per-role model overrides (`default` clears an override) both have a real way
 back once set. Every one of these is durable in the platform config file so a fresh machine or an
 autostarted daemon runs with the operator's settings without an environment variable ritual, and
-every one except the interactive-claim staleness threshold takes effect only on the daemon's next
-start.
+every one except the interactive-claim staleness threshold, the invite expiry, and the two
+lesson-prompt caps takes effect only on the daemon's next start; those four are read fresh from
+the file at the moment each is used, so they are in force the instant they are written.
 `h9k status`'s own Queued section names a stopped concurrency or spend gate honestly, but only for
 whatever a running daemon last confirmed, so raising a spent budget still needs a restart before
 the queue moves again. `show` resolves and names each setting's origin (environment variable,
