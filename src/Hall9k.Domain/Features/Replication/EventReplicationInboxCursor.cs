@@ -20,6 +20,15 @@ public sealed class EventReplicationInboxCursor
     /// every envelope actually looked at, whether or not it carried an events-kind payload.</summary>
     public long HighestSeqInspected { get; set; }
 
+    /// <summary>When <see cref="HighestSeqInspected"/> last moved, so a reader can say not only how
+    /// far into this sender's outbox this node has got but when it got there (task 054d5ab0:
+    /// <c>h9k task take --force</c>'s own evidence line). Only a sweep that genuinely inspected
+    /// fresh content stamps this; a sweep that found nothing new, and one that could not vouch for
+    /// the sender at all, both carry the previous stamp forward, because the fact recorded here is
+    /// when this node last heard something from that outbox rather than when it last looked. Null
+    /// on a cursor that has never advanced, and on one written before this field existed.</summary>
+    public DateTimeOffset? HighestSeqInspectedAt { get; set; }
+
     /// <summary>True when this sender is currently ignored — either because no node file vouches
     /// for its outbox at all, or because <see cref="IgnoredForProjectKeyMismatch"/> is true and a
     /// specific envelope carried a project key that does not match this project's own. Idea

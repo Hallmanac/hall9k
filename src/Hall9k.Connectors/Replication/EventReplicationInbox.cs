@@ -105,6 +105,11 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
                 SenderNodeId = senderNodeId,
                 ProjectId = projectId,
                 HighestSeqInspected = sinceSeq,
+                // Nothing was inspected on this sweep, so the stamp stays on whatever sweep last
+                // advanced the cursor: a refusal to vouch says nothing about when this node last
+                // genuinely heard from that outbox, and overwriting the stamp here would tell an
+                // operator reading h9k task take --force's evidence line that it heard just now.
+                HighestSeqInspectedAt = cursor?.HighestSeqInspectedAt,
                 SenderIgnored = true,
                 IgnoredReason = read.NotVouchedReason ?? "no node file vouches for this sender's outbox",
                 IgnoredForProjectKeyMismatch = false,
@@ -362,6 +367,11 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             SenderNodeId = senderNodeId,
             ProjectId = projectId,
             HighestSeqInspected = highestSeqConsidered,
+            // Stamped only by a sweep that actually got further into this sender's outbox than the
+            // last one did (task 054d5ab0). A sweep that inspected nothing new keeps the earlier
+            // stamp, so the pair reads as "this node had reached seq N by this time" rather than
+            // as "a sweep ran at this time", which is the fact h9k task take --force prints.
+            HighestSeqInspectedAt = inspectedNewContent ? now : cursor?.HighestSeqInspectedAt,
             SenderIgnored = senderIgnored,
             IgnoredReason = ignoredReason,
             IgnoredForProjectKeyMismatch = ignoredForProjectKeyMismatch,
