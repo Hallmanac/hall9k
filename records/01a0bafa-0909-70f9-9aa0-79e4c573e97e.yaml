@@ -19,3 +19,7 @@ origin-branch: task/c573e97e-h9k-task-show-renders-a-task-a
 published: 2026-09-19 18:50:18Z
 context: |-
   Captured 2026-09-19 14:4x EDT by the Mac project window; narrowed 15:2x: the foreign worktree path in task show is owned by Windows task 5c46cd1d (hall9k#497), so it is out of scope here. Evidence, verbatim from the Windows project window for a56cf16e while the Mac held it: 'State HeldElsewhere (this build does not recognize the recorded state)' and 'held by c8f5c85900da since 11m ago' (the owner root fingerprint, not a node); the Mac shows the same unrecognized-state text for a56cf16e now that Windows holds it. Pointers: src/Hall9k.Cli/Commands/TaskShowCommand.cs about line 928 (the state switch default), PublishedFacts.HeldElsewhereFact, LifecycleState.HeldElsewhere. Lineage: rendering gaps in M2a, not a fix of a fix.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-09-22 11:23:14Z
