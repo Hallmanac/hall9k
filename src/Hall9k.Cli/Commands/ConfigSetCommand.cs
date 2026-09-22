@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Globalization;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
@@ -260,6 +261,25 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "202383dc T2). Read directly by h9k node invite/h9k project invite at mint time — an invite "
             + "already minted keeps whatever expiry it was minted with, unaffected by a later change here.")]
         public int? InviteExpiryHours { get; init; }
+
+        [CommandOption("--lesson-prompt-max-lessons <COUNT>")]
+        [Description(
+            "How many recorded lessons a dispatched session's prompt carries, newest first "
+            + "(LessonInjectionCaps.DefaultMaxLessons, default 15, idea d805fd8b piece 5). Past this the "
+            + "section announces what it held back and names h9k learn list rather than truncating "
+            + "silently. Read fresh at every prompt composition, so a change is in force for the next "
+            + "dispatch with no daemon restart. Retiring a lesson and h9k learn distill are the levers "
+            + "that shrink the inventory itself; this one only bounds what a prompt pays for.")]
+        public int? LessonPromptMaxLessons { get; init; }
+
+        [CommandOption("--lesson-prompt-max-characters <COUNT>")]
+        [Description(
+            "How many characters of lesson text that same section carries "
+            + "(LessonInjectionCaps.DefaultMaxCharacters, default 4000, roughly a thousand tokens on every "
+            + "single session). Two caps rather than one because they fail differently: thirty short "
+            + "lessons and three essays are each a prompt nobody reads. A lesson is never cut mid-claim: "
+            + "one that will not fit whole is held back whole and counted.")]
+        public int? LessonPromptMaxCharacters { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
@@ -301,14 +321,16 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             AnsiConsole.MarkupLineInterpolated($"[green]{line}[/]");
         }
 
-        // Both settings named here take effect the moment this write lands — neither is read
+        // Every setting named here takes effect the moment this write lands, and none is read
         // through a live DaemonOptions instance a running daemon would need restarting to pick up
         // (InteractiveClaimStaleAfterDays: h9k status reads the file fresh every render;
-        // InviteExpiryHours: h9k node invite/h9k project invite read the file fresh at mint time) —
-        // so a call touching only these two, in any combination, gets the "already in force" note
-        // below rather than the daemon-restart one every other setting on this command needs.
+        // InviteExpiryHours: h9k node invite/h9k project invite read the file fresh at mint time;
+        // the two lesson-prompt caps: LessonPromptFeed reads the file fresh at every prompt
+        // composition), so a call touching only these, in any combination, gets the "already in
+        // force" note below rather than the daemon-restart one every other setting here needs.
         bool onlyImmediateEffectSettingsChanged =
-            (settings.InteractiveClaimStaleAfterDays is not null || settings.InviteExpiryHours is not null)
+            (settings.InteractiveClaimStaleAfterDays is not null || settings.InviteExpiryHours is not null
+                || settings.LessonPromptMaxLessons is not null || settings.LessonPromptMaxCharacters is not null)
             && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
             && settings.OrchestratorModel is null
@@ -359,7 +381,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.ReviewStageComposition is null
             && settings.MessagePollActiveMin is null && settings.MessagePollActiveMax is null
             && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null
-            && settings.InviteExpiryHours is null)
+            && settings.InviteExpiryHours is null
+            && settings.LessonPromptMaxLessons is null && settings.LessonPromptMaxCharacters is null)
         {
             throw new DomainValidationException(
                 "Nothing to change — pass at least one setting, e.g. --max-concurrent-task-runs 2. "
@@ -492,6 +515,31 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 "--invite-expiry-hours must be at least 1 — an invite that expires before it is even minted "
                 + "could never be claimed.");
         }
+
+        // Refused here rather than silently accepted, even though LessonInjectionCaps.Resolve
+        // clamps whatever it reads: that clamp exists for a hand-edited config file, which skips
+        // this gate entirely and must never be able to stop a dispatch. A value typed at this
+        // command is a value somebody meant, so writing one the composition would not honour would
+        // confirm a setting that is not in force, the same trade
+        // --interactive-claim-stale-after-days already makes against h9k status's own clamp.
+        if (settings.LessonPromptMaxLessons is { } maxLessons
+            && (maxLessons < 1 || maxLessons > LessonInjectionCaps.MaxConfigurableLessons))
+        {
+            throw new DomainValidationException(
+                $"--lesson-prompt-max-lessons must be between 1 and {LessonInjectionCaps.MaxConfigurableLessons}. "
+                + "Zero would turn the section off by making every lesson read as held back rather than by "
+                + "saying so, and an unbounded count is an unbounded prompt, which is what this cap exists "
+                + "to prevent. To shrink what a prompt carries, shrink the inventory: h9k learn retire, or "
+                + "h9k learn distill.");
+        }
+
+        if (settings.LessonPromptMaxCharacters is { } maxCharacters
+            && (maxCharacters < 1 || maxCharacters > LessonInjectionCaps.MaxConfigurableCharacters))
+        {
+            throw new DomainValidationException(
+                "--lesson-prompt-max-characters must be between 1 and "
+                + $"{LessonInjectionCaps.MaxConfigurableCharacters}.");
+        }
     }
 
     /// <summary>
@@ -596,6 +644,18 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             operating.InviteExpiryHours = inviteExpiryHours;
             changed.Add($"invite-expiry-hours = {inviteExpiryHours}");
+        }
+
+        if (settings.LessonPromptMaxLessons is { } lessonPromptMaxLessons)
+        {
+            operating.LessonPromptMaxLessons = lessonPromptMaxLessons;
+            changed.Add($"lesson-prompt-max-lessons = {lessonPromptMaxLessons}");
+        }
+
+        if (settings.LessonPromptMaxCharacters is { } lessonPromptMaxCharacters)
+        {
+            operating.LessonPromptMaxCharacters = lessonPromptMaxCharacters;
+            changed.Add($"lesson-prompt-max-characters = {lessonPromptMaxCharacters}");
         }
 
         if (settings.MaxComplianceReviewCycles is { } complianceCap)

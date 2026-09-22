@@ -1,5 +1,6 @@
 using FluentAssertions;
 using Hall9k.Cli.Commands;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Xunit;
@@ -599,5 +600,51 @@ public sealed class ConfigSetCommandTests
         Action act = () => ConfigSetCommand.Validate(settings, current);
 
         act.Should().NotThrow();
+    }
+
+    /// <summary>
+    /// The lesson-prompt caps are refused here rather than silently accepted and clamped later
+    /// (idea d805fd8b, piece 5). <c>LessonInjectionCaps.Resolve</c> clamps whatever it reads
+    /// because it runs on the dispatch path and a hand-edited file must never stop a run from
+    /// starting; a value typed at this command is a value somebody meant, so writing one the
+    /// composition would not honour would confirm a setting that is not in force.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(LessonInjectionCaps.MaxConfigurableLessons + 1)]
+    public void A_lesson_prompt_lesson_cap_outside_the_honoured_range_is_refused(int requested)
+    {
+        ConfigSetCommand.Settings settings = new() { LessonPromptMaxLessons = requested };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*--lesson-prompt-max-lessons*")
+            .WithMessage($"*{LessonInjectionCaps.MaxConfigurableLessons}*");
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(LessonInjectionCaps.MaxConfigurableCharacters + 1)]
+    public void A_lesson_prompt_character_cap_outside_the_honoured_range_is_refused(int requested)
+    {
+        ConfigSetCommand.Settings settings = new() { LessonPromptMaxCharacters = requested };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*--lesson-prompt-max-characters*");
+    }
+
+    [Fact]
+    public void Either_lesson_prompt_cap_alone_is_a_change_worth_writing()
+    {
+        Action lessons = () => ConfigSetCommand.Validate(new ConfigSetCommand.Settings { LessonPromptMaxLessons = 8 });
+        Action characters =
+            () => ConfigSetCommand.Validate(new ConfigSetCommand.Settings { LessonPromptMaxCharacters = 2500 });
+
+        lessons.Should().NotThrow();
+        characters.Should().NotThrow();
     }
 }

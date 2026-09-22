@@ -1,5 +1,6 @@
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Marten;
 using Spectre.Console;
@@ -112,6 +113,24 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
         string inviteExpiryOrigin = configured.InviteExpiryHours is null ? "default" : "config file";
         table.AddRow("invite-expiry-hours", $"{inviteExpiryHours}h ({inviteExpiryOrigin})".EscapeMarkup());
 
+        // Not part of the report either, on the same reasoning: LessonPromptFeed reads the config
+        // file fresh at every prompt composition rather than binding through DaemonOptions, so a
+        // change is in force for the next dispatch with no daemon restart. Rendered through
+        // Resolve rather than the raw fields so a hand-edited value out of range shows the number
+        // the composition would actually honour, the same clamp-and-say-so shape
+        // interactive-claim-stale-after-days already uses.
+        LessonInjectionCaps lessonCaps = LessonInjectionCaps.Resolve(
+            configured.LessonPromptMaxLessons, configured.LessonPromptMaxCharacters);
+        string lessonCapsOrigin =
+            configured.LessonPromptMaxLessons is null && configured.LessonPromptMaxCharacters is null
+                ? "default"
+                : LessonCapsWereClamped(configured, lessonCaps)
+                    ? "config file, clamped to the range h9k config set accepts"
+                    : "config file";
+        table.AddRow(
+            "lesson-prompt-max-lessons/-characters",
+            $"{lessonCaps.MaxLessons} / {lessonCaps.MaxCharacters} ({lessonCapsOrigin})".EscapeMarkup());
+
         AnsiConsole.Write(table);
 
         foreach (string line in await SpendLinesAsync(report, cancellationToken))
@@ -123,6 +142,17 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
             "\n[dim]Change a setting:[/] h9k config set --max-concurrent-task-runs 2");
         return ExitCodes.Ok;
     }
+
+    /// <summary>
+    /// Whether either lesson cap in the file sits outside the range the composition honours, which
+    /// only a hand edit can produce (<c>h9k config set</c> refuses one). Worth naming rather than
+    /// showing the clamped number as though it were what the file said: an operator who typed 500
+    /// into the file and reads back 200 without explanation would reasonably think the file was
+    /// ignored.
+    /// </summary>
+    private static bool LessonCapsWereClamped(OperatingSettings configured, LessonInjectionCaps effective) =>
+        (configured.LessonPromptMaxLessons is { } lessons && lessons != effective.MaxLessons)
+        || (configured.LessonPromptMaxCharacters is { } characters && characters != effective.MaxCharacters);
 
     /// <summary>
     /// The current period's recorded spend, by model, shown whether or not a budget is set
