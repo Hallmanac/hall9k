@@ -683,7 +683,7 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
             .SingleAsync(decision => decision.LegacyId == "Decisions Log #162", CancellationToken.None);
         retired.Status.Should().Be(DecisionStatus.Superseded);
         retired.SupersededByDecisionId.Should().BeNull();
-        retired.SupersedeReason.Should().Contain("DecisionsLogNumberingGuardTests");
+        retired.SupersedeReason.Should().Contain("no tail for a branch to append its own entry to");
 
         // The citation's whole point, end to end: every spelling written across this repository
         // reaches the decision it names, the retired one included, through the resolver h9k decide

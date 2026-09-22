@@ -72,14 +72,14 @@ public static class LegacyKnowledgeImportDecider
             [$"{LegacyDecisionsLogParser.CitationPrefix}#162"] =
                 "Retired by the change that imported it (idea d805fd8b, piece 3). PLAN.md §16 carries no "
                 + "numbered entries now, so there is no tail for a branch to append its own entry to and no "
-                + "number for a placeholder to stand in for; DecisionsLogNumberingGuardTests fails the build "
-                + "of a branch that appends one anyway. This entry is imported rather than skipped so the "
+                + "number for a placeholder to stand in for. This entry is imported rather than skipped so the "
                 + "citations already written across this repository as \"Decisions Log #162\" still resolve, "
-                + "and superseded in the same act so the rendered decisions.md never tells a session to do "
-                + "the one thing the gate now refuses. Nothing replaced it: a decision is recorded with "
+                + "and superseded in the same act so the rendered decisions.md never tells a session to "
+                + "append one anyway. Nothing replaced it: a decision is recorded with "
                 + "h9k decide and cited by the id in its own heading. The renumbering machinery this entry "
-                + "describes is still shipped and still cited from the source, and retiring that is a later "
-                + "piece of the same idea.",
+                + "describes is gone too (piece 4 of the same idea): the renumberer, the placeholder value "
+                + "object, the numbering guard test and the tail-append conflict resolver are all deleted, so "
+                + "nothing assigns a log entry a number and no branch conflicts at a log tail.",
         };
 
     /// <summary>
