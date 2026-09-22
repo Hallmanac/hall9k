@@ -40,13 +40,23 @@ public static class CliCommandTree
     internal const int MinimumHelpWidth = 160;
 
     /// <summary>
-    /// Register the application's identity, its exception posture, and every command.
+    /// Register the application's identity, its exception posture, and every command, reading the
+    /// process environment for <see cref="DispatchedSessionInterceptor"/> the ordinary way.
     /// </summary>
-    public static void Configure(IConfigurator config)
+    public static void Configure(IConfigurator config) => Configure(config, Environment.GetEnvironmentVariable);
+
+    /// <summary>
+    /// The same registration, with the environment <see cref="DispatchedSessionInterceptor"/> reads
+    /// injected rather than fixed to <see cref="Environment.GetEnvironmentVariable(string)"/> — the
+    /// seam a test uses to prove a refusal without mutating process-wide state shared across every
+    /// parallel test class.
+    /// </summary>
+    public static void Configure(IConfigurator config, Func<string, string?> environmentVariable)
     {
         config.SetApplicationName(ApplicationName);
         config.SetApplicationVersion(CliVersion.Current);
         config.PropagateExceptions();
+        config.SetInterceptor(new DispatchedSessionInterceptor(environmentVariable));
 
         // The help is rendered at least MinimumHelpWidth wide, here rather than at either call site,
         // because the width belongs to the examples registered below rather than to whoever printed
