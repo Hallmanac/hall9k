@@ -459,6 +459,37 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         }
     }
 
+    /// <summary>
+    /// Commits the PLAN.md §16 fixture every placeholder-renumbering path here needs: one real,
+    /// already numbered entry, with <paramref name="taskShortId"/>'s own placeholder at the tail
+    /// behind it. The real entry ahead of it is the whole point. A §16 carrying no numbered entry
+    /// at all is declined outright by <c>DecisionsLogRenumberer</c>, which has no number space to
+    /// read a next number off once the decision store took the log over, and
+    /// <see cref="An_aligned_verdict_declines_the_placeholder_when_section_16_carries_no_numbered_entry"/>
+    /// is the test for that decline. So a test of the renumbering itself has to write the regime
+    /// the step was built for rather than the emptied section this repository ships today.
+    /// </summary>
+    private static void CommitDecisionsLogPlaceholderFixture(string worktreePath, string taskShortId)
+    {
+        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
+        [
+            "# Fixture Plan",
+            "",
+            "## 16. v0 Decisions Log",
+            "",
+            "1. **An earlier decision.** Body.",
+            "",
+            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
+            "",
+            "---",
+            "",
+            "## 17. Reference Materials",
+            "",
+        ]));
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+    }
+
     /// <summary>Like <see cref="Git"/>, but never throws — for a call a test expects to fail (a conflicting rebase).</summary>
     private static int TryGit(string workingDirectory, string arguments)
     {
@@ -2172,21 +2203,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
 
         string taskShortId = DomainId.Short(taskId);
-        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
-        [
-            "# Fixture Plan",
-            "",
-            "## 16. v0 Decisions Log",
-            "",
-            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
-            "",
-            "---",
-            "",
-            "## 17. Reference Materials",
-            "",
-        ]));
-        Git(worktreePath, "add -A");
-        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+        CommitDecisionsLogPlaceholderFixture(worktreePath, taskShortId);
 
         ScriptedExecutor executor = new(
             "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
@@ -2197,7 +2214,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         mergeReady.Should().BeTrue();
 
         string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
-        plan.Should().Contain("1. **A test decision.**",
+        plan.Should().Contain("2. **A test decision.**",
             "the no-op rebase path must still renumber the tail placeholder rather than let it merge unrenumbered");
         plan.Should().NotContain(
             $"#PLACEHOLDER-{taskShortId}", "no citation of the placeholder may survive once the mandatory final pass has run");
@@ -2206,7 +2223,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
         string log = GitOutput(worktreePath, "log --oneline -5");
         log.Should().Contain(
-            "chore: assign Decisions Log #1 to placeholder", "the renumbering step commits mechanically, with no agent in the loop");
+            "chore: assign Decisions Log #2 to placeholder", "the renumbering step commits mechanically, with no agent in the loop");
 
         // Independent pre-PR review, cycle 3, conformance lens: a renumbering commit moves HEAD
         // past whatever this run's tip was last gated at, exactly like a real rebase does, so the
@@ -2241,21 +2258,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             await SeedVerifiedRunWithOriginAsync(store, cts.Token, ownOrigin: false);
 
         string taskShortId = DomainId.Short(taskId);
-        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
-        [
-            "# Fixture Plan",
-            "",
-            "## 16. v0 Decisions Log",
-            "",
-            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
-            "",
-            "---",
-            "",
-            "## 17. Reference Materials",
-            "",
-        ]));
-        Git(worktreePath, "add -A");
-        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+        CommitDecisionsLogPlaceholderFixture(worktreePath, taskShortId);
 
         // Breaks every subsequent `git fetch origin main`, including the renumbering step's own
         // retry — the worktree's own locally known `origin/main`, already populated by this seed's
@@ -2299,21 +2302,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             await SeedVerifiedRunWithOriginAsync(store, cts.Token, ownOrigin: false);
 
         string taskShortId = DomainId.Short(taskId);
-        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
-        [
-            "# Fixture Plan",
-            "",
-            "## 16. v0 Decisions Log",
-            "",
-            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
-            "",
-            "---",
-            "",
-            "## 17. Reference Materials",
-            "",
-        ]));
-        Git(worktreePath, "add -A");
-        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+        CommitDecisionsLogPlaceholderFixture(worktreePath, taskShortId);
 
         File.WriteAllText(
             Path.Combine(worktreePath, "scratch.txt"), "not part of this run's own recorded work\n");
@@ -2327,7 +2316,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         mergeReady.Should().BeTrue();
 
         string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
-        plan.Should().Contain("1. **A test decision.**",
+        plan.Should().Contain("2. **A test decision.**",
             "a dirty worktree must not leave the tail placeholder unrenumbered either");
         plan.Should().NotContain($"#PLACEHOLDER-{taskShortId}");
         File.Exists(Path.Combine(worktreePath, "scratch.txt")).Should().BeTrue(
@@ -2359,21 +2348,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             await SeedVerifiedRunWithOriginAsync(store, cts.Token, ownOrigin: false);
 
         string taskShortId = DomainId.Short(taskId);
-        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
-        [
-            "# Fixture Plan",
-            "",
-            "## 16. v0 Decisions Log",
-            "",
-            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
-            "",
-            "---",
-            "",
-            "## 17. Reference Materials",
-            "",
-        ]));
-        Git(worktreePath, "add -A");
-        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+        CommitDecisionsLogPlaceholderFixture(worktreePath, taskShortId);
 
         File.WriteAllText(
             Path.Combine(worktreePath, "staged.txt"), "staged before this session's own commit ever landed\n");
@@ -11488,21 +11463,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
 
         string taskShortId = DomainId.Short(taskId);
-        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
-        [
-            "# Fixture Plan",
-            "",
-            "## 16. v0 Decisions Log",
-            "",
-            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
-            "",
-            "---",
-            "",
-            "## 17. Reference Materials",
-            "",
-        ]));
-        Git(worktreePath, "add -A");
-        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+        CommitDecisionsLogPlaceholderFixture(worktreePath, taskShortId);
         string head = GitOutput(worktreePath, "rev-parse HEAD");
 
         // Already current with its base — nothing needs to move — so BoundaryCommit and
@@ -11522,7 +11483,7 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         executor.Spawns.Should().BeEmpty("an aligned verdict dispatches nothing further");
 
         string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
-        plan.Should().Contain("1. **A test decision.**",
+        plan.Should().Contain("2. **A test decision.**",
             "an aligned verdict must still renumber the tail placeholder rather than let it merge unrenumbered");
         plan.Should().NotContain(
             $"#PLACEHOLDER-{taskShortId}", "no citation of the placeholder may survive once the mandatory final pass has run");
@@ -11532,6 +11493,77 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         events.OfType<RunRebasedOntoBase>().Should().Contain(
             e => e.WasNoOp && e.DecisionsLogRenumbered,
             "aligned moved nothing mechanically, but the renumbering commit that landed must still raise the gate flag");
+    }
+
+    /// <summary>
+    /// The same aligned-verdict path, against the §16 this repository actually ships now: a
+    /// section carrying no numbered entry at all, because the log became the decision store and
+    /// the heading became a pointer at the rendered decisions.md. The renumbering step declines
+    /// there rather than minting #1, a number the import already handed to the entry that used to
+    /// stand at §16 #1, so the placeholder is left exactly as the branch wrote it for the mandatory
+    /// gate's own numbering guard to fail by name. <c>DecisionsLogRenumbererEmptiedSectionTests</c>
+    /// proves the decline happens before the first git call; what this one adds, at the ReviewEngine
+    /// seam and over a real worktree, is that the aligned verdict still proceeds afterwards with no
+    /// renumbering recorded against the run.
+    /// </summary>
+    [Fact]
+    public async Task An_aligned_verdict_declines_the_placeholder_when_section_16_carries_no_numbered_entry()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        DocumentStore store = postgres.Store;
+        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
+
+        string taskShortId = DomainId.Short(taskId);
+        string placeholderEntry = $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.";
+        // No numbered entry ahead of the placeholder, unlike CommitDecisionsLogPlaceholderFixture:
+        // this is the emptied section, the state idea d805fd8b's own import left §16 in.
+        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
+        [
+            "# Fixture Plan",
+            "",
+            "## 16. v0 Decisions Log",
+            "",
+            "The log this section carried is platform data now. The file to read is `decisions.md`.",
+            "",
+            placeholderEntry,
+            "",
+            "---",
+            "",
+            "## 17. Reference Materials",
+            "",
+        ]));
+        Git(worktreePath, "add -A");
+        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
+        string head = GitOutput(worktreePath, "rev-parse HEAD");
+
+        // Already current with its base, the same honest shape the sibling test above names.
+        StackAssessmentVerdict verdict = StackAssessmentVerdict.Aligned(
+            head, head, "git merge-base --is-ancestor confirmed the recorded fork point already contains main's tip.");
+
+        ScriptedExecutor executor = new();
+        ReviewEngine engine = NewEngine(store, executor, new DaemonOptions(), ExternalProcess.Runner, ExternalProcess.Runner);
+        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
+        RunAggregate run = await store.QuerySession().Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token)
+            ?? throw new InvalidOperationException("run stream must exist");
+
+        ReviewEngine.RebaseGateOutcome outcome = await engine.ActOnPreFinalPassAssessmentAsync(context, run, verdict, cts.Token);
+
+        outcome.Should().Be(ReviewEngine.RebaseGateOutcome.Proceed,
+            "the decline is not a run failure: aligned still proceeds into the mandatory final pass, which is "
+            + "where the numbering guard fails this branch by name and tells it to run h9k decide instead");
+
+        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
+        plan.Should().Contain(placeholderEntry,
+            "declining leaves the placeholder exactly as the branch wrote it, never renumbered to a #1 the "
+            + "import already gave away to the entry that used to stand at §16 #1");
+        GitOutput(worktreePath, "rev-parse HEAD").Should().Be(
+            head, "the decline happens before any git call, so no renumbering commit moved this branch's tip");
+
+        await using IQuerySession query = store.QuerySession();
+        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
+        events.OfType<RunRebasedOntoBase>().Should().NotContain(
+            e => e.DecisionsLogRenumbered,
+            "nothing was renumbered, so nothing may raise the gate flag that exists to re-gate a moved tip");
     }
 
     /// <summary>
