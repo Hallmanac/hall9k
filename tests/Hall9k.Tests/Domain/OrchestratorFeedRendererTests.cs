@@ -20,6 +20,12 @@ public sealed class OrchestratorFeedRendererTests
     private static readonly Guid FeedTask = Guid.Parse("01a0bc05-a960-7657-b708-1aed37b5ec69");
     private static readonly Guid PresenceTask = Guid.Parse("01a0bc05-a960-7657-b708-1aed579dcd44");
 
+    // Fixed rather than fresh, because a note's own feed line now opens with its stream id and
+    // MessageStreamId.ForMessage derives that from exactly these two plus the seq — a Guid.NewGuid()
+    // here would make the golden below a different string on every run.
+    private static readonly Guid NoteSender = Guid.Parse("01a0bc05-a960-7657-b708-1aed4a1b2c3d");
+    private static readonly Guid NoteProject = Guid.Parse("01a0bc05-a960-7657-b708-1aed9f8e7d6c");
+
     [Fact]
     public void The_grouped_output_reads_oldest_first_under_one_heading_per_task()
     {
@@ -52,7 +58,7 @@ public sealed class OrchestratorFeedRendererTests
             "  2026-09-19 14:15  the run failed: the verification gate never finished",
             "Not about one task",
             "  2026-09-19 14:12  idea logged: The platform owns the orchestrator's watching",
-            "  2026-09-19 14:14  a message from abcdef012345: are you still on the stacked pair?");
+            "  2026-09-19 14:14  1d077852 a message from abcdef012345: are you still on the stacked pair?");
     }
 
     [Fact]
@@ -170,7 +176,7 @@ public sealed class OrchestratorFeedRendererTests
         new(sequence, At.AddMinutes(sequence), taskId, OrchestratorFeedDescription.Of(data)!);
 
     private static MessageReceived Note(string body) => new(
-        FromNodeId: Guid.NewGuid(),
+        FromNodeId: NoteSender,
         Seq: 1,
         SentAt: At,
         FromOwnerFingerprint: "abcdef0123456789",
@@ -179,5 +185,5 @@ public sealed class OrchestratorFeedRendererTests
         Kind: MessageKind.Note.Value,
         Body: body,
         ReceivedAt: At,
-        ProjectId: Guid.NewGuid());
+        ProjectId: NoteProject);
 }
