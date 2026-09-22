@@ -64,7 +64,12 @@ public sealed record DecisionsLogRenumberResult(
 /// <para>
 /// <b>The next number.</b> The highest real (non-placeholder) entry number anywhere in the
 /// current section, plus one — read fresh off the rebased tree, never cached, so two entries
-/// from the same install racing this step in sequence still land dense and gap-free.
+/// from the same install racing this step in sequence still land dense and gap-free. A section
+/// carrying no real entry at all is the one case where that arithmetic has nothing to read: §16
+/// stopped being the log the day the decision store took it over (idea d805fd8b, piece 3), and
+/// the number this step would mint there, #1, is a citation the import already handed to the
+/// entry that used to stand under it. So it declines instead, and the branch's placeholder is
+/// left for the mandatory gate's own numbering guard to fail by name.
 /// </para>
 /// </summary>
 public static class DecisionsLogRenumberer
@@ -158,6 +163,24 @@ public static class DecisionsLogRenumberer
             // next free number and the duplicate check are both read off numbers it would then be
             // missing one of. Doing nothing leaves the log exactly as authored, which is what every
             // other thing this step cannot make sense of already gets.
+            return NoAction();
+        }
+
+        if (scan.RealEntryLinesByNumber.Count == 0)
+        {
+            // The section carries no numbered entry at all, which is what §16 looks like on every
+            // base from idea d805fd8b piece 3 onward: the log is the decision store now and the
+            // heading is a pointer at the rendered decisions.md. There is no number space left to
+            // read a next number off, and the one this step would otherwise mint is
+            // `MaxRealNumber + 1` == #1 — a citation the import already gave away to the entry
+            // that stood at §16 #1, so every citation of this branch's own placeholder would be
+            // rewritten to point at somebody else's decision. Declining leaves the placeholder
+            // exactly as the branch wrote it, which is the state the mandatory gate's own
+            // DecisionsLogNumberingGuardTests already fails with a message naming h9k decide
+            // (independent pre-PR review, cycle 1, conformance lens). Ahead of the two guards
+            // below, because the placeholder shape reaches the mint with no duplicate or
+            // fork-point check of its own to stop it first; the transition shape cannot reach it
+            // at all, since a duplicate real number needs two real entries to be one.
             return NoAction();
         }
 
