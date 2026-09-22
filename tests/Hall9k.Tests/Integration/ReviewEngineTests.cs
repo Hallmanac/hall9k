@@ -459,37 +459,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         }
     }
 
-    /// <summary>
-    /// Commits the PLAN.md §16 fixture every placeholder-renumbering path here needs: one real,
-    /// already numbered entry, with <paramref name="taskShortId"/>'s own placeholder at the tail
-    /// behind it. The real entry ahead of it is the whole point. A §16 carrying no numbered entry
-    /// at all is declined outright by <c>DecisionsLogRenumberer</c>, which has no number space to
-    /// read a next number off once the decision store took the log over, and
-    /// <see cref="An_aligned_verdict_declines_the_placeholder_when_section_16_carries_no_numbered_entry"/>
-    /// is the test for that decline. So a test of the renumbering itself has to write the regime
-    /// the step was built for rather than the emptied section this repository ships today.
-    /// </summary>
-    private static void CommitDecisionsLogPlaceholderFixture(string worktreePath, string taskShortId)
-    {
-        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
-        [
-            "# Fixture Plan",
-            "",
-            "## 16. v0 Decisions Log",
-            "",
-            "1. **An earlier decision.** Body.",
-            "",
-            $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.",
-            "",
-            "---",
-            "",
-            "## 17. Reference Materials",
-            "",
-        ]));
-        Git(worktreePath, "add -A");
-        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
-    }
-
     /// <summary>Like <see cref="Git"/>, but never throws — for a call a test expects to fail (a conflicting rebase).</summary>
     private static int TryGit(string workingDirectory, string arguments)
     {
@@ -2188,196 +2157,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     }
 
     /// <summary>
-    /// Independent pre-PR review, cycle 1, both lenses: a placeholder Decisions Log entry must
-    /// still get its real number even when origin's base has not moved — the no-op path used to
-    /// return before ever calling the renumberer, which is exactly the shape a branch that needs
-    /// no rebase (and a branch whose conflict a recovery session already resolved by hand before
-    /// the loop re-entered here) both take, so it was also the shape most likely to merge its own
-    /// placeholder into main unrenumbered.
-    /// </summary>
-    [Fact]
-    public async Task Pre_final_pass_rebase_no_op_still_assigns_the_placeholders_real_number()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
-
-        string taskShortId = DomainId.Short(taskId);
-        CommitDecisionsLogPlaceholderFixture(worktreePath, taskShortId);
-
-        ScriptedExecutor executor = new(
-            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
-            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
-
-        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
-
-        mergeReady.Should().BeTrue();
-
-        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
-        plan.Should().Contain("2. **A test decision.**",
-            "the no-op rebase path must still renumber the tail placeholder rather than let it merge unrenumbered");
-        plan.Should().NotContain(
-            $"#PLACEHOLDER-{taskShortId}", "no citation of the placeholder may survive once the mandatory final pass has run");
-        plan.Should().Contain(
-            "Renumbering placement note:", "the placement note deliberately keeps naming the old placeholder as history");
-
-        string log = GitOutput(worktreePath, "log --oneline -5");
-        log.Should().Contain(
-            "chore: assign Decisions Log #2 to placeholder", "the renumbering step commits mechanically, with no agent in the loop");
-
-        // Independent pre-PR review, cycle 3, conformance lens: a renumbering commit moves HEAD
-        // past whatever this run's tip was last gated at, exactly like a real rebase does, so the
-        // outcome recorded for it must still raise RunAggregate.PreFinalPassRebaseAwaitingGate.
-        // Cycle 5's adversarial lens found that forcing this by lying about WasNoOp
-        // (`wasNoOp: !renumberCommitted`) broke RunAggregate's own trailing-no-op guard on the
-        // post-recovery re-entry — origin genuinely never moved, so WasNoOp stays true, and
-        // DecisionsLogRenumbered is the honest, separate signal that still earns the gate.
-        await using IQuerySession query = store.QuerySession();
-        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<RunRebasedOntoBase>().Should().Contain(
-            e => e.WasNoOp && e.DecisionsLogRenumbered,
-            "origin never moved, but the renumbering commit that landed must still raise the gate flag");
-    }
-
-    /// <summary>
-    /// Task: the Decisions Log renumbering runs before the mandatory final pass even when the
-    /// pre-final-pass rebase is skipped, but never against a base it cannot confirm is current. A
-    /// failed fetch means this worktree's own locally known <c>origin/main</c> could be stale by an
-    /// unbounded amount, and renumbering against it risks assigning a number some other branch
-    /// already claimed on the base's real, current tip (independent pre-PR review, cycle 1,
-    /// adversarial lens) — so the renumbering step retries the fetch once for itself, under the
-    /// same repository lock, and leaves the placeholder for a later pass when that retry also
-    /// fails, exactly as this test's permanently broken origin remote forces it to.
-    /// </summary>
-    [Fact]
-    public async Task Pre_final_pass_rebase_leaves_the_placeholder_when_fetching_origin_fails()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        (Guid taskId, Guid runId, string worktreePath, _) =
-            await SeedVerifiedRunWithOriginAsync(store, cts.Token, ownOrigin: false);
-
-        string taskShortId = DomainId.Short(taskId);
-        CommitDecisionsLogPlaceholderFixture(worktreePath, taskShortId);
-
-        // Breaks every subsequent `git fetch origin main`, including the renumbering step's own
-        // retry — the worktree's own locally known `origin/main`, already populated by this seed's
-        // own clone, must never be trusted once this run can no longer confirm it is current.
-        Git(worktreePath, "remote set-url origin /nonexistent/hall9k-test-origin-does-not-exist");
-
-        ScriptedExecutor executor = new(
-            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
-            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
-
-        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
-
-        mergeReady.Should().BeTrue("a failed fetch is left for a later pass, not treated as a run failure");
-
-        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
-        plan.Should().Contain($"PLACEHOLDER-{taskShortId}",
-            "a fetch failure must leave the tail placeholder unrenumbered rather than risk a duplicate "
-            + "number against a base this run could no longer confirm was current");
-
-        await using IQuerySession query = store.QuerySession();
-        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<RunRebasedOntoBase>().Should().NotContain(
-            e => e.DecisionsLogRenumbered,
-            "the renumbering step must not run against a base it could not confirm was current");
-    }
-
-    /// <summary>
-    /// The sibling skip to the fetch failure above: the worktree has uncommitted changes when the
-    /// pre-final-pass check runs (origin incident: task 609bd344's second leaked placeholder, the
-    /// same run, five seconds before its pull request opened). The dirty file here is deliberately
-    /// untracked rather than staged: the renumbering step's own commit only ever <c>git add</c>s
-    /// PLAN.md and whatever citation files it rewrites, so an untracked file sitting alongside it
-    /// is never swept into that commit — this test asserts exactly that.
-    /// </summary>
-    [Fact]
-    public async Task Pre_final_pass_rebase_still_renumbers_the_placeholder_when_the_worktree_is_dirty()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        (Guid taskId, Guid runId, string worktreePath, _) =
-            await SeedVerifiedRunWithOriginAsync(store, cts.Token, ownOrigin: false);
-
-        string taskShortId = DomainId.Short(taskId);
-        CommitDecisionsLogPlaceholderFixture(worktreePath, taskShortId);
-
-        File.WriteAllText(
-            Path.Combine(worktreePath, "scratch.txt"), "not part of this run's own recorded work\n");
-
-        ScriptedExecutor executor = new(
-            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
-            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
-
-        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
-
-        mergeReady.Should().BeTrue();
-
-        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
-        plan.Should().Contain("2. **A test decision.**",
-            "a dirty worktree must not leave the tail placeholder unrenumbered either");
-        plan.Should().NotContain($"#PLACEHOLDER-{taskShortId}");
-        File.Exists(Path.Combine(worktreePath, "scratch.txt")).Should().BeTrue(
-            "the dirty file this test planted is untouched, never committed by the renumbering step");
-
-        await using IQuerySession query = store.QuerySession();
-        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<RunRebasedOntoBase>().Should().Contain(
-            e => e.WasNoOp && e.DecisionsLogRenumbered,
-            "the renumbering commit landed despite the dirty worktree, and must still raise the mandatory gate");
-    }
-
-    /// <summary>
-    /// The risky sibling shape the untracked-only test above deliberately does not cover
-    /// (independent pre-PR review, cycle 1, both lenses): the pre-flight's own dirty-worktree
-    /// refusal can just as easily be reached with content already staged in the index — a build
-    /// session killed after its own <c>git add</c> but before its own commit — and
-    /// <c>DecisionsLogRenumberer.RenumberIfNeededAsync</c>'s closing commit has no pathspec, so it
-    /// would commit that staged content alongside the renumbering under a <c>chore:</c> message
-    /// that describes none of it. The renumbering step must refuse instead, leaving both the
-    /// placeholder and the staged file exactly as this test left them for a later pass to pick up.
-    /// </summary>
-    [Fact]
-    public async Task Pre_final_pass_rebase_leaves_the_placeholder_when_the_worktree_has_staged_content()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        (Guid taskId, Guid runId, string worktreePath, _) =
-            await SeedVerifiedRunWithOriginAsync(store, cts.Token, ownOrigin: false);
-
-        string taskShortId = DomainId.Short(taskId);
-        CommitDecisionsLogPlaceholderFixture(worktreePath, taskShortId);
-
-        File.WriteAllText(
-            Path.Combine(worktreePath, "staged.txt"), "staged before this session's own commit ever landed\n");
-        Git(worktreePath, "add -- staged.txt");
-
-        ScriptedExecutor executor = new(
-            "Every acceptance criterion is met.\n\nVERDICT: merge-ready",
-            "Hunted the trust boundaries and the lifetimes; nothing survived verification.\n\nVERDICT: merge-ready");
-
-        bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
-
-        mergeReady.Should().BeTrue("the dirty worktree is left for a later pass, not treated as a run failure");
-
-        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
-        plan.Should().Contain($"PLACEHOLDER-{taskShortId}",
-            "staged content the renumbering commit would sweep in must leave the placeholder unrenumbered");
-
-        string status = GitOutput(worktreePath, "status --porcelain -- staged.txt");
-        status.Should().StartWith("A ",
-            "the staged file must still be staged, uncommitted, exactly as this test left it");
-
-        await using IQuerySession query = store.QuerySession();
-        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<RunRebasedOntoBase>().Should().NotContain(
-            e => e.DecisionsLogRenumbered,
-            "the renumbering step must not have run at all against a worktree with staged content");
-    }
-
-    /// <summary>
     /// Task: a run rebases its branch onto the current base branch (independent pre-PR review,
     /// cycle 1, both lenses). A follow-up run reuses whatever pull request the task already has
     /// open, and that pull request's base can have been retargeted away from the project's own
@@ -3961,79 +3740,74 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// <summary>
     /// Task: a composition-none lap whose mandatory gate fails after the pre-final-pass rebase
     /// parks or fails the run instead of stopping silently with the task left Claimed. Covers the
-    /// ordinary fail-hard path's own control flow at the <c>ReviewEngine</c> layer — not the
-    /// 2026-09-15 08:57 incident's own timing gap, which lived entirely inside
-    /// <c>VerificationRunner</c>'s own gate-failure recording and is covered there instead, at the
-    /// layer that actually caused it
-    /// (<see cref="VerificationRunnerTests.A_failing_gate_records_the_failure_before_a_slow_clean_base_comparison_finishes"/>,
-    /// independent pre-PR review, cycle 1, both lenses, medium): this test's own scripted executor
-    /// records no real elapsed time, so nothing here ever exercised that gap in the first place.
-    /// An earlier real rebase already landed and was gated clean, then a StackReplay lap's own
-    /// renumbering-only no-op — real content (a Decisions Log placeholder assigned its number), not
-    /// an infrastructure hiccup — moved this branch's tip again without itself being a real rebase
-    /// (<see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/>'s own trailing-no-op
-    /// carry-forward stays false once an earlier real rebase has already been gated clean). The
-    /// mandatory gate the composition-none path still owes (Decisions Log #92's review guarantee is
-    /// waived, not this one) fails for real, and repair is not eligible — <c>ReviewEngine</c>'s own
-    /// <c>EnsureGateCoversHeadRepairEligibleAsync</c> must not return
-    /// <c>GateCoverageOutcome.Stop</c> without a park or a fail already on the stream: the ordinary
-    /// path here already reaches a task-level disposition on its own (<c>VerificationRunner</c>'s
-    /// own <c>RecordFailureAsync</c>), so <c>EnsureGateFailureRecordedAsync</c>'s own park branch is
-    /// never reached. That branch — the lost-generation-race shape it actually exists for — has no
-    /// test of its own yet (independent pre-PR review, cycle 1, adversarial lens, low: named here
-    /// rather than fixed, since reproducing the race deterministically needs a seam this suite does
-    /// not have today).
+    /// composition-none arm's own <c>GateCoverageOutcome.Stop</c> return, the one control-flow line
+    /// <c>EnsureGateCoversHeadRepairEligibleAsync</c> must never reach without a park or a failure
+    /// already on the stream, and it is reached here the only way this composition can reach it: a
+    /// real pre-final-pass rebase leaves the tip ungated, the mandatory gate this path still owes
+    /// (Decisions Log #92's review guarantee is waived, not this one) fails for real, the one repair
+    /// round the cap allows is spent on a session that never finds the cause, and the next Settling
+    /// entry parks for a human rather than returning with nothing recorded.
+    /// <para>
+    /// The fail-hard half of that same exit, a genuine mandatory-gate failure with no real rebase
+    /// behind it, which records <c>RunFailed</c> and dispatches nothing, is unreachable from this
+    /// composition's own call site and is pinned instead on the compositions that can reach it, by
+    /// <see cref="A_settling_gate_failure_with_no_real_rebase_behind_it_fails_the_run_with_no_repair_session"/>
+    /// and <see cref="A_gate_failure_after_a_later_no_op_rebase_fails_the_run_with_no_repair_session_once_an_earlier_real_rebase_already_passed"/>.
+    /// Composition none short-circuits before the <c>needsFullGateBeforeSettling</c> and changed-
+    /// verify-commands triggers those two use, so it gates only when
+    /// <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> is raised, and only a non-no-op
+    /// rebase raises that: every gate failure this arm can observe is repair-eligible by
+    /// construction, ending in a repair dispatch or, as here, in this park. The one shape that used
+    /// to reach fail-hard through this arm was the Decisions Log renumbering-only no-op, which
+    /// raised the gate obligation without being a real rebase; it left the repository with idea
+    /// d805fd8b, together with the second aggregate flag whose only job was telling the two apart.
+    /// </para>
+    /// <para>
+    /// <c>EnsureGateFailureRecordedAsync</c>'s own park branch, the lost-generation-race shape it
+    /// actually exists for, where <c>VerificationRunner</c> skipped its own <c>RunFailed</c> and
+    /// <c>TaskFailed</c> append, still has no test of its own: reproducing that race
+    /// deterministically needs a seam this suite does not have today (named here rather than
+    /// fixed).
+    /// </para>
     /// </summary>
     [Fact]
-    public async Task A_settling_gate_failure_from_a_renumbering_only_no_op_under_composition_none_fails_the_run_with_no_repair_session()
+    public async Task A_settling_gate_repair_that_never_fixes_it_under_composition_none_parks_rather_than_stopping_silently()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
         DocumentStore store = postgres.Store;
         IReadOnlyList<Hall9k.Domain.Features.Project.VerifyCommand> failingVerifyCommands =
         [
             new Hall9k.Domain.Features.Project.VerifyCommand(
-                "test", GateScript.New().Print("DecisionsLogNumberingGuardTests: buried placeholder, real content").Exit(1).Command),
+                "test", GateScript.New().Print("RealContractTests: a genuine assertion failure, real content").Exit(1).Command),
         ];
-        (Guid taskId, Guid runId, _, _) = await SeedVerifiedRunWithOriginAndGateAsync(
+        (Guid taskId, Guid runId, _, string originPath) = await SeedVerifiedRunWithOriginAndGateAsync(
             store, failingVerifyCommands, cts.Token, ReviewStageComposition.None);
 
-        // An earlier real rebase already landed and was gated clean (08:41's own "initial gates
-        // passed"), then a later renumbering-only no-op moved this branch's tip again — the exact
-        // pair RunAggregate.Apply(RunRebasedOntoBase) has to tell apart so the second landing does
-        // not wrongly inherit the first one's repair eligibility.
-        await using (IDocumentSession session = store.LightweightSession())
-        {
-            session.Events.Append(runId,
-                new RunRebasedOntoBase(
-                    runId, "aaaaaaa", "bbbbbbb", WasNoOp: false, RecoveredByAgentSession: false,
-                    "rebased onto origin/main", Now),
-                new VerificationPassed(runId, Now, null, RanFullScope: true, "bbbbbbb", ""),
-                new RunRebasedOntoBase(
-                    runId, "bbbbbbb", "bbbbbbb", WasNoOp: true, RecoveredByAgentSession: false,
-                    "StackReplay lap: Decisions Log placeholder assigned its number", Now,
-                    DecisionsLogRenumbered: true));
-            await session.SaveChangesAsync(cts.Token);
-        }
+        PushToOrigin(originPath, "unrelated.txt", "merged while this run was building\n", "unrelated merge");
 
-        ScriptedExecutor executor = new();
+        ScriptedExecutor executor = new("Read the gate output, but could not find what the rebase broke.");
 
         bool mergeReady = await NewEngine(store, executor).ReviewAsync(runId, taskId, cts.Token);
 
-        mergeReady.Should().BeFalse("the gate fails with no real rebase behind it, so today's fail-hard contract is unchanged");
-        executor.Spawns.Should().BeEmpty(
-            "composition none never dispatches a reviewer, and no repair session is repair-eligible here");
+        mergeReady.Should().BeFalse("the repair round never fixes the gate, and the spent cap parks rather than dispatching again");
+        executor.Spawns.Should().ContainSingle(
+            "composition none never dispatches a reviewer, so the only spawn is the one repair session the cap allows");
 
         await using IQuerySession query = store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(runId, cts.Token))!;
-        run.State.Should().Be(RunState.Failed, "a mandatory gate failure with no repair eligibility must end the run, never leave it live with nothing to show for it");
-
-        TaskDetails task = (await query.LoadAsync<TaskDetails>(taskId, cts.Token))!;
-        task.State.Should().Be(TaskState.Failed, "the task must leave Claimed rather than sit unresolved with a dead run");
-        task.FailureReason.Should().Contain("DecisionsLogNumberingGuardTests", "the gate's own failure summary must be named for a human to act on");
+        run.State.Should().Be(
+            RunState.ReviewParked,
+            "UnderReview with no session, no monitor and no park is never a resting state, not even under a "
+            + "composition that reviews nothing");
+        run.ParkedReason.Should().Contain(
+            "RealContractTests", "the park has to carry the gate's own output for a human to act on");
 
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<SettlingGateRepairDispatched>().Should().BeEmpty("a renumbering-only no-op earns no repair lap");
-        events.OfType<Hall9k.Domain.Features.Run.Events.RunFailed>().Should().ContainSingle();
+        events.OfType<SettlingGateRepairDispatched>().Should().ContainSingle(
+            "the cap stops the second dispatch before it ever spawns");
+        events.OfType<SettlingGateRepairCapReached>().Should().ContainSingle();
+        events.OfType<Hall9k.Domain.Features.Run.Events.RunFailed>().Should().BeEmpty(
+            "a spent repair cap parks for a human, it does not fail the run");
     }
 
     /// <summary>
@@ -10874,15 +10648,10 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
     /// <c>merge-base --is-ancestor &lt;onto&gt; HEAD</c> containment check with "not an ancestor" for
     /// that one commit — every other commit answers it as contained, the same "everything this fake
     /// is handed exists/lands" default every other check here already takes.
-    /// <paramref name="unmergedFiles"/> is what a conflicted replay's own
-    /// <c>diff --name-only --diff-filter=U</c> reports to the mechanical tail-append resolver;
-    /// left null it reports none, which is what makes that resolver decline and every conflict test
-    /// here park exactly as it did before the resolver existed.
     /// </summary>
     private static RecordingProcessRunner FakeCheckpointGit(
         string? conflictingUpstream = null, string? cleanUpstream = null,
-        IReadOnlyDictionary<string, string>? branchTips = null, string? nonAncestorOnto = null,
-        IReadOnlyList<string>? unmergedFiles = null)
+        IReadOnlyDictionary<string, string>? branchTips = null, string? nonAncestorOnto = null)
     {
         branchTips ??= new Dictionary<string, string>();
         return new RecordingProcessRunner(arguments =>
@@ -10890,12 +10659,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
             if (arguments is ["rev-parse", "HEAD"])
             {
                 return new ProcessResult(0, "preattempthead1111111111111111111111111\n", string.Empty);
-            }
-
-            if (arguments is ["diff", "--name-only", "--diff-filter=U"])
-            {
-                return new ProcessResult(
-                    0, unmergedFiles is null ? string.Empty : string.Join("\n", unmergedFiles) + "\n", string.Empty);
             }
 
             if (arguments.Count >= 4 && arguments[0] == "rev-parse" && arguments[1] == "--verify" && arguments[2] == "--quiet")
@@ -11085,89 +10848,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
         List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
         events.OfType<StackAssessmentCompleted>().Should().ContainSingle(e => e.ResolvedBaseBranchName == "task/grandparent");
     }
-
-    /// <summary>
-    /// The stacked-child checkpoint replay's own conflict branch calls the same mechanical
-    /// tail-append resolver the unstacked pre-final-pass rebase does, and nothing else about it
-    /// changed (task: the mechanical pre-final-pass rebase resolves a Decisions Log tail-append
-    /// conflict on its own): the replay conflicts on PLAN.md alone, the resolver recognises the
-    /// shape, the replay continues, and this run's one read-only stack assessment is never spent —
-    /// there was no park for it to run ahead of.
-    /// </summary>
-    [Fact]
-    public async Task A_stacked_checkpoint_replay_conflicting_only_on_the_Decisions_Log_tail_resolves_mechanically()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        (Guid taskId, Guid runId, string worktreePath, _) =
-            await SeedVerifiedRunWithOriginAsync(store, cts.Token, baseBranch: "task/parent-branch");
-
-        string taskShortId = DomainId.Short(taskId);
-        string planPath = Path.Combine(worktreePath, "PLAN.md");
-        await File.WriteAllTextAsync(planPath, ConflictedTailAppendPlanMarkdown(taskShortId), cts.Token);
-
-        RecordingProcessRunner git = FakeCheckpointGit(
-            conflictingUpstream: ScriptedBoundary,
-            branchTips: new Dictionary<string, string> { ["task/parent-branch"] = ScriptedOnto },
-            unmergedFiles: ["PLAN.md"]);
-
-        ReviewEngine engine = NewEngine(
-            store, new ScriptedExecutor("no assessment should ever be dispatched here"), new DaemonOptions(), git.Runner);
-        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
-
-        ReviewEngine.RebaseGateOutcome outcome = await engine.ReplayCheckpointAsync(
-            context, StackedCheckpoint.BeforeFinalPass, "task/parent-branch", ScriptedBoundary, ScriptedOnto,
-            "the parent branch moved", git.Runner, cts.Token);
-
-        outcome.Should().Be(
-            ReviewEngine.RebaseGateOutcome.Proceed,
-            "the only conflict carried no judgment, so the replay continued rather than parking");
-
-        string resolved = await File.ReadAllTextAsync(planPath, cts.Token);
-        resolved.Should().NotContain("<<<<<<<").And.NotContain(">>>>>>>");
-        resolved.IndexOf("246. **", StringComparison.Ordinal).Should().BeLessThan(
-            resolved.IndexOf($"PLACEHOLDER-{taskShortId}. **", StringComparison.Ordinal),
-            "the parent's own entry keeps its place and this branch's placeholder goes after it");
-
-        await using IQuerySession query = store.QuerySession();
-        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        RunRebasedOntoBase rebased = events.OfType<RunRebasedOntoBase>().Should().ContainSingle().Subject;
-        rebased.ConflictResolvedMechanically.Should().BeTrue();
-        rebased.RecoveredByAgentSession.Should().BeFalse("nothing here was an agent session's judgment");
-        rebased.Detail.Should().Contain("#246").And.Contain($"PLACEHOLDER-{taskShortId}");
-        events.OfType<StackAssessmentDispatched>().Should().BeEmpty(
-            "the run's one read-only assessment is spent only where a checkpoint would otherwise park");
-    }
-
-    /// <summary>
-    /// A PLAN.md exactly as git leaves it when the base and this branch each appended one Decisions
-    /// Log entry at the tail of §16 — the conflict this whole shape exists for.
-    /// </summary>
-    private static string ConflictedTailAppendPlanMarkdown(string taskShortId) =>
-        string.Join(
-            "\n",
-            "# Hall9k — Plan",
-            "",
-            "## 16. v0 Decisions Log",
-            "",
-            "245. **An earlier decision both sides already had.** Why: it was here before either branch.",
-            "",
-            "<<<<<<< HEAD",
-            "246. **A decision that reached the parent branch first.** Why: it merged before this replay.",
-            "=======",
-            $"PLACEHOLDER-{taskShortId}. **This branch's own decision.** Why: this task asked for it.",
-            "",
-            "> Renumbering placement note: this entry was appended under placeholder",
-            $"> `PLACEHOLDER-{taskShortId}` and will be assigned its real number by the mechanical",
-            "> pre-final-pass rebase step, the log's next free number once this branch is rebased.",
-            ">>>>>>> 1a2b3c4d (task: log this branch's own decision)",
-            "",
-            "---",
-            "",
-            "## 17. Reference Materials",
-            "",
-            "- a reference",
-            "");
 
     /// <summary>
     /// The record update is only worth anything if a later checkpoint on the same run actually
@@ -11443,128 +11123,6 @@ public sealed class ReviewEngineTests(PostgresFixture postgres, SeededGitOriginF
 
     /// <summary>A short SHA the way <c>ReviewEngine.ShortSha</c> renders one, for asserting on a prompt's own text.</summary>
     private static string ShortShaFor(string commit) => commit.Length > 10 ? commit[..10] : commit;
-
-    /// <summary>
-    /// An aligned verdict on the mandatory final pass's own pre-flight rebase is the one "this
-    /// branch is current with its base" exit on this path that used to skip
-    /// <c>RenumberDecisionsLogPlaceholderAsync</c> — every sibling exit (a clean rebase, a
-    /// confirmed-landed stuck-pipe rebase, the plain no-op, a replay that lands clean) already
-    /// numbers this branch's own placeholder before proceeding; this one owes it the identical
-    /// obligation (independent pre-PR review, cycle 1, adversarial lens). Real git, not a fake: the
-    /// renumberer reads and rewrites PLAN.md and commits the result, the same reason
-    /// <see cref="Pre_final_pass_rebase_no_op_still_assigns_the_placeholders_real_number"/> uses a
-    /// real worktree rather than a scripted one.
-    /// </summary>
-    [Fact]
-    public async Task An_aligned_verdict_on_the_pre_final_pass_path_still_numbers_the_placeholder()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
-
-        string taskShortId = DomainId.Short(taskId);
-        CommitDecisionsLogPlaceholderFixture(worktreePath, taskShortId);
-        string head = GitOutput(worktreePath, "rev-parse HEAD");
-
-        // Already current with its base — nothing needs to move — so BoundaryCommit and
-        // OntoCommit are the same commit, the honest shape an "aligned" verdict names.
-        StackAssessmentVerdict verdict = StackAssessmentVerdict.Aligned(
-            head, head, "git merge-base --is-ancestor confirmed the recorded fork point already contains main's tip.");
-
-        ScriptedExecutor executor = new();
-        ReviewEngine engine = NewEngine(store, executor, new DaemonOptions(), ExternalProcess.Runner, ExternalProcess.Runner);
-        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
-        RunAggregate run = await store.QuerySession().Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token)
-            ?? throw new InvalidOperationException("run stream must exist");
-
-        ReviewEngine.RebaseGateOutcome outcome = await engine.ActOnPreFinalPassAssessmentAsync(context, run, verdict, cts.Token);
-
-        outcome.Should().Be(ReviewEngine.RebaseGateOutcome.Proceed, "aligned means nothing needs to move mechanically");
-        executor.Spawns.Should().BeEmpty("an aligned verdict dispatches nothing further");
-
-        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
-        plan.Should().Contain("2. **A test decision.**",
-            "an aligned verdict must still renumber the tail placeholder rather than let it merge unrenumbered");
-        plan.Should().NotContain(
-            $"#PLACEHOLDER-{taskShortId}", "no citation of the placeholder may survive once the mandatory final pass has run");
-
-        await using IQuerySession query = store.QuerySession();
-        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<RunRebasedOntoBase>().Should().Contain(
-            e => e.WasNoOp && e.DecisionsLogRenumbered,
-            "aligned moved nothing mechanically, but the renumbering commit that landed must still raise the gate flag");
-    }
-
-    /// <summary>
-    /// The same aligned-verdict path, against the §16 this repository actually ships now: a
-    /// section carrying no numbered entry at all, because the log became the decision store and
-    /// the heading became a pointer at the rendered decisions.md. The renumbering step declines
-    /// there rather than minting #1, a number the import already handed to the entry that used to
-    /// stand at §16 #1, so the placeholder is left exactly as the branch wrote it for the mandatory
-    /// gate's own numbering guard to fail by name. <c>DecisionsLogRenumbererEmptiedSectionTests</c>
-    /// proves the decline happens before the first git call; what this one adds, at the ReviewEngine
-    /// seam and over a real worktree, is that the aligned verdict still proceeds afterwards with no
-    /// renumbering recorded against the run.
-    /// </summary>
-    [Fact]
-    public async Task An_aligned_verdict_declines_the_placeholder_when_section_16_carries_no_numbered_entry()
-    {
-        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
-        DocumentStore store = postgres.Store;
-        (Guid taskId, Guid runId, string worktreePath, _) = await SeedVerifiedRunWithOriginAsync(store, cts.Token);
-
-        string taskShortId = DomainId.Short(taskId);
-        string placeholderEntry = $"PLACEHOLDER-{taskShortId}. **A test decision.** Placeholder body.";
-        // No numbered entry ahead of the placeholder, unlike CommitDecisionsLogPlaceholderFixture:
-        // this is the emptied section, the state idea d805fd8b's own import left §16 in.
-        File.WriteAllText(Path.Combine(worktreePath, "PLAN.md"), string.Join('\n',
-        [
-            "# Fixture Plan",
-            "",
-            "## 16. v0 Decisions Log",
-            "",
-            "The log this section carried is platform data now. The file to read is `decisions.md`.",
-            "",
-            placeholderEntry,
-            "",
-            "---",
-            "",
-            "## 17. Reference Materials",
-            "",
-        ]));
-        Git(worktreePath, "add -A");
-        Git(worktreePath, "-c user.name=Test -c user.email=test@test commit -q -m \"decisions log entry\"");
-        string head = GitOutput(worktreePath, "rev-parse HEAD");
-
-        // Already current with its base, the same honest shape the sibling test above names.
-        StackAssessmentVerdict verdict = StackAssessmentVerdict.Aligned(
-            head, head, "git merge-base --is-ancestor confirmed the recorded fork point already contains main's tip.");
-
-        ScriptedExecutor executor = new();
-        ReviewEngine engine = NewEngine(store, executor, new DaemonOptions(), ExternalProcess.Runner, ExternalProcess.Runner);
-        ReviewEngine.ReviewContext context = await LoadStackAssessmentContextAsync(engine, runId, taskId, cts.Token);
-        RunAggregate run = await store.QuerySession().Events.AggregateStreamAsync<RunAggregate>(runId, token: cts.Token)
-            ?? throw new InvalidOperationException("run stream must exist");
-
-        ReviewEngine.RebaseGateOutcome outcome = await engine.ActOnPreFinalPassAssessmentAsync(context, run, verdict, cts.Token);
-
-        outcome.Should().Be(ReviewEngine.RebaseGateOutcome.Proceed,
-            "the decline is not a run failure: aligned still proceeds into the mandatory final pass, which is "
-            + "where the numbering guard fails this branch by name and tells it to run h9k decide instead");
-
-        string plan = await File.ReadAllTextAsync(Path.Combine(worktreePath, "PLAN.md"));
-        plan.Should().Contain(placeholderEntry,
-            "declining leaves the placeholder exactly as the branch wrote it, never renumbered to a #1 the "
-            + "import already gave away to the entry that used to stand at §16 #1");
-        GitOutput(worktreePath, "rev-parse HEAD").Should().Be(
-            head, "the decline happens before any git call, so no renumbering commit moved this branch's tip");
-
-        await using IQuerySession query = store.QuerySession();
-        List<object> events = [.. (await query.Events.FetchStreamAsync(runId, token: cts.Token)).Select(e => e.Data)];
-        events.OfType<RunRebasedOntoBase>().Should().NotContain(
-            e => e.DecisionsLogRenumbered,
-            "nothing was renumbered, so nothing may raise the gate flag that exists to re-gate a moved tip");
-    }
 
     /// <summary>
     /// An undecidable verdict on the mandatory final pass's own pre-flight rebase (never the

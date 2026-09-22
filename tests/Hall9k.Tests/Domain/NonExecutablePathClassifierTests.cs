@@ -113,10 +113,11 @@ public sealed class NonExecutablePathClassifierTests
     }
 
     /// <summary>
-    /// The compiled defaults treat <c>AGENTS.md</c> and <c>PLAN.md</c> as doctrine this platform's
-    /// own tooling checks, not plain docs — this repository's own <c>AgentsMarkdownLineCountTests</c>
-    /// and <c>DecisionsLogNumberingGuardTests</c> read them, so a diff that only edits one of them
-    /// must still run the gates (independent pre-PR review, cycle 1, adversarial lens, high).
+    /// The compiled defaults treat <c>AGENTS.md</c> and <c>PLAN.md</c> as doctrine rather than plain
+    /// docs, so a diff that only edits one of them must still run the gates (independent pre-PR
+    /// review, cycle 1, adversarial lens, high). <c>AgentsMarkdownLineCountTests</c> reads
+    /// <c>AGENTS.md</c>; <c>PLAN.md</c> keeps the exclusion on the doctrine ground alone, since the
+    /// numbering guard that used to read it is gone (idea d805fd8b).
     /// </summary>
     [Theory]
     [InlineData("AGENTS.md")]
@@ -126,7 +127,7 @@ public sealed class NonExecutablePathClassifierTests
         NonExecutablePathClassifier.ClassificationResult result = NonExecutablePathClassifier.Classify(
             [path], CompiledDefaults);
 
-        result.AllMatched.Should().BeFalse($"{path} is doctrine this platform's own tests check, not plain docs");
+        result.AllMatched.Should().BeFalse($"{path} is doctrine this platform treats as load-bearing, not plain docs");
         result.Paths.Single().MatchedRule.Should().BeNull();
     }
 

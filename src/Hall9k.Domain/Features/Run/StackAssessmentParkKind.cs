@@ -21,9 +21,6 @@ public sealed record StackAssessmentParkKind
     /// <summary>The parent branch or its pull request could not be resolved to a live, reachable head (a dead or unresolvable parent).</summary>
     public static readonly StackAssessmentParkKind UndecidableBoundary = new("UndecidableBoundary");
 
-    /// <summary>A Decisions Log placeholder's own renumbering guard declined a real collision it could not resolve mechanically.</summary>
-    public static readonly StackAssessmentParkKind DecisionsLogPlaceholderCollision = new("DecisionsLogPlaceholderCollision");
-
     /// <summary>A force-with-lease push was refused because origin's tip is one this node's own history never accounted for.</summary>
     public static readonly StackAssessmentParkKind PushGuardRefusal = new("PushGuardRefusal");
 

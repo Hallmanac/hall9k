@@ -17,9 +17,8 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// produced. A conflicting attempt ordinarily never reaches this event at all: it is followed by
 /// <see cref="PreFinalPassRebaseRecoveryDispatched"/> instead, and this event is appended only
 /// once that recovery session (or a later resolved retry of it) actually resolves the conflict.
-/// The one exception is <see cref="ConflictResolvedMechanically"/>, the single conflict shape that
-/// carries no judgment to exercise and so is resolved in place, without a session, and recorded
-/// here directly.
+/// That ruling has no exceptions: the one shape the engine used to resolve in place was the
+/// Decisions Log tail-append, and the log left this repository with idea d805fd8b.
 /// </para>
 /// </summary>
 /// <param name="RebasedFromCommit">
@@ -40,54 +39,23 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// </param>
 /// <param name="RecoveredByAgentSession">
 /// True when a plain <c>git rebase</c> conflicted and a narrow recovery session resolved it with
-/// judgment; false for a no-op, for a rebase git applied cleanly on its own, and for one whose
-/// only conflict was resolved mechanically (<see cref="ConflictResolvedMechanically"/>) — three
-/// outcomes this field and that one tell apart, because "a session exercised judgment here" is
-/// what earns <see cref="RunAggregate.PreFinalPassRebaseAwaitingReview"/> and neither of the
-/// other two did.
+/// judgment; false for a no-op and for a rebase git applied cleanly on its own, because "a session
+/// exercised judgment here" is what earns
+/// <see cref="RunAggregate.PreFinalPassRebaseAwaitingReview"/> and neither of those did.
 /// </param>
 /// <param name="Detail">What actually happened, readable from <c>h9k task show</c>.</param>
-/// <param name="DecisionsLogRenumbered">
-/// True when the mechanical pre-final-pass rebase step committed a Decisions Log renumbering on
-/// this otherwise-no-op check — origin's base had not moved (<paramref name="WasNoOp"/> stays
-/// true, an honest fact), but the renumbering commit itself moved this branch's tip past whatever
-/// was last gated, so <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> must still be
-/// raised. Kept as its own field rather than folded into <paramref name="WasNoOp"/> so that field
-/// keeps its one meaning ("did origin's base move") for every existing reader — overloading it to
-/// also mean "gate again" silently defeated
-/// <see cref="RunAggregate"/>'s own trailing-no-op guard on the post-recovery re-entry
-/// (independent pre-PR review, cycle 5, adversarial lens). Defaults to false so every call site
-/// that never renumbers — which is most of them — is unaffected.
-/// </param>
 /// <param name="ForkPointAdvanced">
 /// True for a stacked checkpoint's own <c>ParentMergedAligned</c> observation: this branch already
 /// contained the parent base's freshly observed tip, so <paramref name="WasNoOp"/> stays true (git
-/// did nothing — an honest fact, the same reasoning <paramref name="DecisionsLogRenumbered"/>'s own
-/// doc gives for keeping that field's one meaning), but the recorded fork point still has to move to
-/// that tip or a later replay — including the mandatory final pass — reads a stale upstream and
-/// carries commits the base gained after the parent merged as if they were this task's own work.
-/// Deliberately kept out of the <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> condition
-/// <paramref name="DecisionsLogRenumbered"/> feeds: nothing here moved this branch's own HEAD, so the
-/// tip is exactly what an earlier gate already covered, and forcing a second fail-hard full gate over
-/// it would be re-verifying work already proven (independent pre-PR review, cycle 1, both lenses).
-/// Defaults to false so every call site that never observes this shape is unaffected.
-/// </param>
-/// <param name="ConflictResolvedMechanically">
-/// True when the rebase recorded here did conflict, and the only thing it conflicted on was the
-/// Decisions Log tail-append shape — the base and this branch each appended an entry at the end of
-/// PLAN.md §16 — which <c>DecisionsLogTailConflictResolver</c> resolved in place, keeping the
-/// base's entries first and this branch's placeholder after them, so the rebase continued without
-/// a recovery session. A third outcome, distinct from a clean apply (this false,
-/// <paramref name="RecoveredByAgentSession"/> false) and from recovery by an agent session (this
-/// false, that true): the conflict happened and was not left to judgment, which is a fact neither
-/// of the other two records and an audit trail must not have to infer. It is the single documented
-/// exception to Brian's 2026-09-04 ruling that a git conflict is itself the evidence judgment is
-/// required — the placeholder-numbering convention (Decisions Log #162) already decided this
-/// conflict's answer, so there is nothing left to exercise. Earns no
-/// <see cref="RunAggregate.PreFinalPassRebaseAwaitingReview"/> for exactly that reason, and needs
-/// no help raising <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/>, which the real
-/// (non-no-op) rebase it belongs to already raises. Defaults to false so every call site that
-/// never sees this shape is unaffected.
+/// did nothing — an honest fact, and that field keeps its one meaning, "did origin's base move",
+/// for every reader), but the recorded fork point still has to move to that tip or a later replay —
+/// including the mandatory final pass — reads a stale upstream and carries commits the base gained
+/// after the parent merged as if they were this task's own work. Deliberately kept out of the
+/// <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/> condition: nothing here moved this
+/// branch's own HEAD, so the tip is exactly what an earlier gate already covered, and forcing a
+/// second fail-hard full gate over it would be re-verifying work already proven (independent pre-PR
+/// review, cycle 1, both lenses). Defaults to false so every call site that never observes this
+/// shape is unaffected.
 /// </param>
 public sealed record RunRebasedOntoBase(
     Guid Id,
@@ -97,9 +65,7 @@ public sealed record RunRebasedOntoBase(
     bool RecoveredByAgentSession,
     string Detail,
     DateTimeOffset RebasedAt,
-    bool DecisionsLogRenumbered = false,
-    bool ForkPointAdvanced = false,
-    bool ConflictResolvedMechanically = false)
+    bool ForkPointAdvanced = false)
 {
     /// <summary>
     /// What <see cref="RebasedFromCommit"/> and <see cref="RebasedOntoCommit"/> carry when the read

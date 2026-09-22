@@ -11,13 +11,13 @@ namespace Hall9k.Domain.Features.Run.Events;
 /// alongside it — a no-op one, upstream and onto both the same commit, for a child that already
 /// sits on the base branch's own tip when its parent merges
 /// (<c>StackedParentVerdict.ParentMergedAligned</c>), which has nothing left to REPLAY but still
-/// needs the dispatch: it is the only path left that ever earns this task's own Decisions Log
-/// placeholder its real number once this retarget has moved it off the parent's branch
-/// (independent pre-PR review, cycle 1, adversarial lens — an earlier version of this fix skipped
-/// that dispatch here, so the retarget alone left the placeholder unrenumbered forever). Skipped
+/// needs the dispatch: it is the only path left that ever moves this run's own recorded fork point
+/// onto the base this retarget has just aimed it at (independent pre-PR review, cycle 1,
+/// adversarial lens — an earlier version of this fix skipped that dispatch here, so the retarget
+/// alone left every later range a reviewer reads open at the parent's old head). Skipped
 /// only when the rebase budget is already spent and this retarget itself needed no write (GitHub
 /// had already moved the base on its own) — the one shape where this event really is the whole of
-/// what happens, the placeholder staying unrenumbered until a human's own h9k pr resolve grants a
+/// what happens, the fork point staying put until a human's own h9k pr resolve grants a
 /// further lap. Whenever the dispatch does happen, it is what actually moves this run on, arriving
 /// as the ordinary <c>TaskReopened</c> + <see cref="RunSuperseded"/> pair every automatic follow-up
 /// uses.

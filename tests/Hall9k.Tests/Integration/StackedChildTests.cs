@@ -531,12 +531,12 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
     /// sweep here observes the merge (Decisions Log #186) — so there is no provider
     /// write left for a spent rebase budget to gate. This sweep still parks, though (independent
     /// pre-PR review, cycle 1, conformance and adversarial lenses): once the run stops reading as a
-    /// stacked child, nothing else ever prompts the h9k pr resolve that renumbers this task's own
-    /// Decisions Log placeholder, so the park is what tells a human to grant that lap rather than
-    /// letting the run sit unrenumbered with no attention flag.
+    /// stacked child, nothing else ever prompts the h9k pr resolve that moves this run's own
+    /// recorded fork point onto the base it now targets, so the park is what tells a human to grant
+    /// that lap rather than letting the run sit on a stale fork point with no attention flag.
     /// </summary>
     [Fact]
-    public async Task A_child_past_its_rebase_budget_and_already_retargeted_by_github_still_parks_for_the_placeholder()
+    public async Task A_child_past_its_rebase_budget_and_already_retargeted_by_github_still_parks_for_the_fork_point()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
         StackedFixture fixture = await SeedAsync(cts.Token, priorStackReplays: 2);
@@ -566,8 +566,8 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         await using IQuerySession query = fixture.Store.QuerySession();
         RunDetails run = (await query.LoadAsync<RunDetails>(fixture.ChildRunId, cts.Token))!;
         run.State.Should().Be(RunState.CloseoutParked,
-            "the retarget already landed and nothing else will ever prompt the h9k pr resolve that renumbers "
-            + "this task's own Decisions Log placeholder, so this sweep parks to ask for it directly");
+            "the retarget already landed and nothing else will ever prompt the h9k pr resolve that moves "
+            + "this run's own recorded fork point onto the new base, so this sweep parks to ask for it directly");
         run.ParkedReason.Should().Contain("rebase budget is spent")
             .And.Contain("2/2")
             .And.Contain("h9k pr resolve")
@@ -926,7 +926,7 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
         runAfterSweep.StackedOnBranch.Should().BeNull("the retarget clears the recorded parent base");
         runAfterSweep.State.Should().Be(RunState.Superseded,
             "the reopen hands the pull request to a no-op follow-up run — the only path left that ever "
-            + "earns this task's own Decisions Log placeholder its real number, now that the retarget has "
+            + "moves this run's own recorded fork point onto the base, now that the retarget has "
             + "moved it off the parent's branch (independent pre-PR review, cycle 1, adversarial lens)");
 
         TaskAggregate childAfterSweep =
@@ -937,8 +937,8 @@ public sealed class StackedChildTests(PostgresFixture postgres) : IClassFixture<
             "there is nothing to replay, so upstream and onto both name the base tip this child already holds");
         childAfterSweep.StackReplayOntoCommit.Should().Be(baseTip);
         childAfterSweep.StackReplaysDispatched.Should().Be(1,
-            "the retarget alone would leave this task's placeholder unrenumbered forever, so the no-op "
-            + "follow-up that earns it a real number does spend one unit of the rebase budget, even though "
+            "the retarget alone would leave this run's recorded fork point at the parent's old head forever, "
+            + "so the no-op follow-up that moves it does spend one unit of the rebase budget, even though "
             + "nothing here was owed to replay");
     }
 

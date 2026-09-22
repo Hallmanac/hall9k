@@ -21,8 +21,8 @@ namespace Hall9k.Tests.Daemon;
 /// default parallel collections at the exact moment this class needed to spawn or tear down its
 /// own nested process tree — evidenced from the three jobs' own logs, not assumed, including which
 /// class overlapped which failure: PR #311's alone overlapped
-/// <see cref="Hall9k.Tests.Daemon.Review.DecisionsLogRenumbererTransitionTests"/> and
-/// <see cref="Hall9k.Tests.Daemon.Review.DecisionsLogRenumbererFixtureTests"/> for its whole
+/// <c>DecisionsLogRenumbererTransitionTests</c> and <c>DecisionsLogRenumbererFixtureTests</c> —
+/// both since deleted with the renumbering machinery itself (idea d805fd8b) — for its whole
 /// window, not <see cref="GitWorktreeManagerTests"/> or
 /// <c>Hall9k.Tests.Cli.RepoMaterialiserTests</c> (the latter only started after PR #311's failure
 /// was already logged); PR #312 and #313 overlapped <see cref="GitWorktreeManagerTests"/> and

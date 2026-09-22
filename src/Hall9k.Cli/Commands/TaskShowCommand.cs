@@ -1756,17 +1756,15 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         }
 
         string detail = ExternalText.OneLineMarkup(run.LastPreFinalPassRebaseDetail ?? string.Empty);
-        // Three outcomes past a no-op, not two: "clean" has to keep meaning git applied every
-        // commit without a conflict, so a rebase that DID conflict and was resolved mechanically
-        // on the Decisions Log tail-append shape says so rather than borrowing that word — the
-        // same word-versus-mark contradiction this method's own doc above already warns about.
+        // "clean" means git applied every commit without a conflict, and nothing else: a rebase
+        // that conflicted at all is resolved by the recovery session's own judgment and reads as
+        // recovered, which is the word-versus-mark distinction this method's own doc above warns
+        // about keeping straight.
         string outcome = run.LastPreFinalPassRebaseWasNoOp == true
             ? $"[dim]no-op[/] [dim]— {detail}[/]"
             : run.LastPreFinalPassRebaseRecovered
                 ? $"[yellow]recovered by a narrow session[/] [dim]— {detail}[/]"
-                : run.LastPreFinalPassRebaseConflictResolvedMechanically
-                    ? $"[green]conflict resolved mechanically[/] [dim]— {detail}[/]"
-                    : $"[green]clean[/] [dim]— {detail}[/]";
+                : $"[green]clean[/] [dim]— {detail}[/]";
 
         AnsiConsole.MarkupLine(
             $"\n[bold]Pre-push rebase[/]  {outcome} "

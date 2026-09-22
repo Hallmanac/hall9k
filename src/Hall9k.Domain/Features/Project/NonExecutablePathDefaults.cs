@@ -25,14 +25,16 @@ public static class NonExecutablePathDefaults
     /// looks like docs but is not (independent pre-PR review, cycle 1, adversarial lens, high).</item>
     /// <item><c>AGENTS.md</c> and <c>PLAN.md</c> are the two guidance files this platform's own
     /// doctrine treats as load-bearing rather than descriptive — this repository's own
-    /// <c>AgentsMarkdownLineCountTests</c> checks <c>AGENTS.md</c> against a line ceiling and
-    /// <c>DecisionsLogNumberingGuardTests</c> checks <c>PLAN.md</c>'s own Decisions Log numbering,
-    /// and a diff that only edits one of them is exactly the shape those tests exist to catch
-    /// (independent pre-PR review, cycle 1, adversarial lens, high). Excluded by bare file name
-    /// rather than a root-anchored path, matching every other project's own copy of these files as
-    /// conservatively as this repository's, since the same compiled set applies to all of them and
-    /// a project cannot add this exclusion for itself once the leading-<c>!</c> syntax is refused
-    /// in a project's own additions below.</item>
+    /// <c>AgentsMarkdownLineCountTests</c> checks <c>AGENTS.md</c> against a line ceiling, and a
+    /// diff that only edits one of them is exactly the shape a doctrine check exists to catch
+    /// (independent pre-PR review, cycle 1, adversarial lens, high). <c>PLAN.md</c> keeps its
+    /// exclusion on the doctrine ground alone now that the Decisions Log numbering guard that used
+    /// to read it is gone (idea d805fd8b): the conservative direction for a load-bearing file is to
+    /// run the gates, not to skip them because no test happens to read it today. Excluded by bare
+    /// file name rather than a root-anchored path, matching every other project's own copy of
+    /// these files as conservatively as this repository's, since the same compiled set applies to
+    /// all of them and a project cannot add this exclusion for itself once the leading-<c>!</c>
+    /// syntax is refused in a project's own additions below.</item>
     /// </list>
     /// Each leading <c>!</c> carves its target back out so an edit there still runs the gates that
     /// would catch it, regardless of which other rule would otherwise have matched it.
