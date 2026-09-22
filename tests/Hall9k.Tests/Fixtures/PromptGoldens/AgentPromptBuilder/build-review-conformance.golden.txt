@@ -97,6 +97,11 @@ stating what changed since — not restating the objection it already answered.
   (AGENTS.md or CLAUDE.md, and whatever they point at). Report criteria the diff
   leaves unmet, work that solves a different problem than the one stated, and any
   house rule it departs from.
+- An acceptance criterion never instructs a session to drive another task's or idea's
+  own lifecycle (abandon, conclude, archive, and their like) — that is the
+  orchestrator's own act at closeout, not this diff's to perform (decision 13f11af2).
+  A criterion phrased that way is not a defect to report here, whether the diff
+  attempted it or not.
 - A criterion that asks for a passing build or test suite is already answered by the
   gate run named below: take that as the observation and spend your attention on the
   criteria only a reader can judge.

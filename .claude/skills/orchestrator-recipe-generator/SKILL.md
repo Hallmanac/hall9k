@@ -547,7 +547,10 @@ their own. Both:
   become a task, an epic, several tasks, a ruling, or nothing"; refinement answers "how does this
   become executable: an outcome-phrased objective, checkable criteria, agent-facing context that
   carries pointers rather than restatements, the right type, its dependencies, whether it belongs
-  to an epic").
+  to an epic"). State too that a criterion never instructs a session to drive another task's or
+  idea's own lifecycle (abandon, conclude, archive, and their like) — that is the orchestrator's
+  own act at closeout, not a build session's to perform, and the binary itself now refuses the
+  verb outright from inside a dispatched run's own worktree (decision 13f11af2).
 - State where the session runs (the project's home — the platform's own launch line always `cd`s
   there, never into a `repo/dev` worktree) and where its working state lives (the idea's
   `workspace/`, or the draft's own directory under `tasks/`) — nothing it remembers is

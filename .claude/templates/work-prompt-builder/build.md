@@ -55,10 +55,12 @@ Left by {{Author}} at {{When}}, for whoever holds this task next:
   what its runs have already learned is in `lessons.md` beside it.** Read them before you decide
   something they already settled. Both were rendered from the platform's own event store when this
   worktree was cut, and both are ignored by git there, so neither is ever yours to edit or commit:
-  a correction to one is `h9k decide supersede <id> --reason "<what changed>"` or
-  `h9k learn retire <id> --reason "<why>"`, and something new this run establishes is
-  `h9k learn "<what you learned>"` — which is the verb for an agent, since a decision recorded
-  from a run the platform cannot see a human attending is refused.
+  a correction to a lesson is `h9k learn retire <id> --reason "<why>"`, and something new this run
+  establishes is `h9k learn "<what you learned>"` — which is the verb for an agent, since a decision
+  recorded from a run the platform cannot see a human attending is refused. A decision cannot be
+  corrected from in here at all — `h9k decide supersede` is refused from inside a dispatched run's own
+  worktree (task 91cb52fc), the same door and the same reason: state the correction in your closing
+  summary and a human supersedes it.
 ===implement-objective===
 - Implement the objective so every acceptance criterion is satisfied.
 ===commit-clear-messages===
