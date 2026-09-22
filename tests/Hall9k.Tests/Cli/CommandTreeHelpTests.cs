@@ -157,7 +157,14 @@ public sealed class CommandTreeHelpTests
         CommandApp app = new();
         app.Configure(config =>
         {
-            CliCommandTree.Configure(config);
+            // Never the real process environment (Configure's single-arg overload): this test
+            // process can itself inherit HALL9K_DISPATCHED_RUN_ID from a dispatched session running
+            // this very suite, which would let DispatchedSessionInterceptor — registered ahead of
+            // this class's own interceptor below, in Spectre's own registration order — throw before
+            // StopOnceBound ever runs, failing this parse over the example's own refusal rather than
+            // the runnability this test proves (independent pre-PR review, cycle 1, conformance and
+            // adversarial findings).
+            CliCommandTree.Configure(config, _ => null);
             config.SetInterceptor(interceptor);
             // Stricter than the shipped binary parses, on purpose. Spectre's default is to absorb an
             // option it does not recognise into the remaining arguments, so `--asign` reaches the
