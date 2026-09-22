@@ -2,6 +2,7 @@ using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Replication;
 using Hall9k.Daemon;
+using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Project;
@@ -387,6 +388,49 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
         await using IQuerySession fresh = _postgres.Store.QuerySession();
         DecisionDetails? untouched = await fresh.LoadAsync<DecisionDetails>(recorded.Id, CancellationToken.None);
         untouched!.Status.Should().Be(DecisionStatus.Recorded);
+    }
+
+    /// <summary>
+    /// The render's own query seam (idea d805fd8b, piece 2), which the pure renderer tests cannot
+    /// reach: what a project's <c>decisions.md</c> and <c>lessons.md</c> are allowed to carry.
+    /// Only this project's own records, and specifically not an owner-scoped lesson, which is a
+    /// cross-project habit belonging to the owner rather than to any one project's home — widening
+    /// one into every project's file is backlog 55's prompt-injection work, and a wrong statement
+    /// riding in every prompt everywhere is exactly the asymmetric failure scope exists to bound.
+    /// </summary>
+    [Fact]
+    public async Task The_rendered_documents_carry_this_projects_own_records_and_nothing_elses()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedProjectAsync(CancellationToken.None);
+        (_, ProjectDetails elsewhere) = await SeedProjectAsync(CancellationToken.None);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await DecideCommand.RunAsync(
+            session,
+            new DecideCommand.Settings { Statement = "This project decided this", Project = project.Name },
+            node.OwnerId, Now, CancellationToken.None);
+        await DecideCommand.RunAsync(
+            session,
+            new DecideCommand.Settings { Statement = "Another project decided that", Project = elsewhere.Name },
+            node.OwnerId, Now, CancellationToken.None);
+        await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings { Statement = "This project's runs learned this", Project = project.Name },
+            node.OwnerId, Now, CancellationToken.None);
+        await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings { Statement = "A habit of mine everywhere", Owner = true },
+            node.OwnerId, Now, CancellationToken.None);
+        await session.SaveChangesAsync(CancellationToken.None);
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        RenderedKnowledgeDocuments documents = await KnowledgeDocuments.RenderAsync(
+            query, project.Id, CancellationToken.None);
+
+        documents.Decisions.Should().Contain("This project decided this");
+        documents.Decisions.Should().NotContain("Another project decided that");
+        documents.Lessons.Should().Contain("This project's runs learned this");
+        documents.Lessons.Should().NotContain("A habit of mine everywhere");
     }
 
     private async Task<(NodeContext Node, ProjectDetails Project)> SeedProjectAsync(CancellationToken cancellationToken)

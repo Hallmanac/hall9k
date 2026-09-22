@@ -219,6 +219,8 @@ public sealed class RunLauncher(
                     : await CheckoutFreshOrRetryAsync(
                         task, project, stackedBase.BaseBranch, taskId, runId, cancellationToken);
 
+            await RenderKnowledgeDocumentsIntoAsync(session, project, worktree.Path, runId, cancellationToken);
+
             Guid sessionId = DomainId.New();
             ExecutorMode mode = ExecutorMode.Subscription;
             // Resolved once, here, and carried to both the spawn and the record: the model
@@ -843,6 +845,8 @@ public sealed class RunLauncher(
             Worktree worktree = await worktrees.CreatePrReviewCheckoutAsync(
                 new PrReviewWorktreeRequest(project.RepositoryPath, facts.Number, taskId, runId), cancellationToken);
 
+            await RenderKnowledgeDocumentsIntoAsync(session, project, worktree.Path, runId, cancellationToken);
+
             Guid sessionId = DomainId.New();
             AgentModel model = options.Value.ResolveModel(AgentRole.Review, task.Model, project.Model);
             string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.PrReviewMentionFollowUp);
@@ -1226,6 +1230,61 @@ public sealed class RunLauncher(
 
         await pullRequests.OpenAsync(runId, taskId, cancellationToken);
         return true;
+    }
+
+    /// <summary>
+    /// Writes this project's <c>decisions.md</c> and <c>lessons.md</c> into the worktree this run
+    /// is about to be spawned into (idea d805fd8b, piece 2), so a session reads the platform's own
+    /// record of what binds from the checkout it is working in rather than from a hand-edited
+    /// markdown file in the repository.
+    /// <para>
+    /// The ignore comes first and is a precondition, not a courtesy. A generated file that git
+    /// reports as untracked is work a session is told to commit before it finishes (the platform's
+    /// own left-behind check), and committing a projection into authored history is exactly what
+    /// this feature exists to stop, so a checkout whose exclude list cannot be resolved gets no
+    /// files at all and the reason is logged.
+    /// </para>
+    /// <para>
+    /// Best-effort past that, like every other per-project step on this path: the run's whole
+    /// point is the work, and a session that has to read <c>h9k decide list</c> instead of a file
+    /// is a worse session rather than a failed dispatch.
+    /// </para>
+    /// </summary>
+    private async Task RenderKnowledgeDocumentsIntoAsync(
+        IQuerySession query, ProjectDetails project, string worktreePath, Guid runId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            // The ignore is settled before anything is rendered, not after: a checkout this
+            // cannot be established for gets no files, so rendering first would be two store
+            // queries spent on documents there was never going to be anywhere to put.
+            if (!await KnowledgeDocuments.EnsureIgnoredAsync(worktreePath, cancellationToken))
+            {
+                logger.LogWarning(
+                    "Run {RunId}: could not resolve {Worktree}'s repository exclude list, so the decisions "
+                    + "and lessons projections were not written there — they would read as untracked work",
+                    runId, worktreePath);
+                return;
+            }
+
+            RenderedKnowledgeDocuments documents = await KnowledgeDocuments.RenderAsync(
+                query, project.Id, cancellationToken);
+            KnowledgeDocumentWriteResult result = KnowledgeDocuments.WriteInto(worktreePath, documents);
+            foreach (string skipped in result.SkippedForeignFiles)
+            {
+                logger.LogWarning(
+                    "Run {RunId}: '{File}' is not this platform's own render and was left alone; this "
+                    + "session reads that file rather than {Project}'s recorded decisions or lessons",
+                    runId, skipped, project.Name);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(exception,
+                "Run {RunId}: could not write the decisions and lessons projections into {Worktree}; "
+                + "the session runs without them", runId, worktreePath);
+        }
     }
 
     /// <summary>

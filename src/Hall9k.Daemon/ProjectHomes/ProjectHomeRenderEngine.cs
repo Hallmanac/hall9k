@@ -17,7 +17,7 @@ namespace Hall9k.Daemon.ProjectHomes;
 
 /// <summary>One sweep's tally, for the loop's log line — see <c>CardPublicationLoop</c> for the pattern.</summary>
 public sealed record ProjectHomeRenderSweepResult(
-    int ProjectsInspected, int TasksRendered, int IdeasRendered, int OrphansHandled);
+    int ProjectsInspected, int TasksRendered, int IdeasRendered, int OrphansHandled, int KnowledgeDocumentsRendered);
 
 /// <summary>
 /// Renders every task and idea in every project that has a home on this machine (backlog 48).
@@ -55,6 +55,7 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
         int tasksRendered = 0;
         int ideasRendered = 0;
         int orphansHandled = 0;
+        int knowledgeDocumentsRendered = 0;
 
         foreach (ProjectDetails project in projects)
         {
@@ -232,6 +233,8 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
                 orphansHandled += ReconcileOrphans(
                     tasksRoot, archivedTasksRoot, ideasRoot, liveTaskDirectoryNames, archivedTaskDirectoryNames,
                     ideas, ideasAnchoredHereButOwnedElsewhere, project.Name, failedTaskShortIds, failedIdeaShortIds);
+
+                knowledgeDocumentsRendered += await RenderKnowledgeDocumentsAsync(query, home, project, cancellationToken);
             }
             catch (Exception exception) when (exception is not OperationCanceledException)
             {
@@ -244,7 +247,49 @@ public sealed class ProjectHomeRenderEngine(IDocumentStore store, ILogger<Projec
             }
         }
 
-        return new ProjectHomeRenderSweepResult(projectsInspected, tasksRendered, ideasRendered, orphansHandled);
+        return new ProjectHomeRenderSweepResult(
+            projectsInspected, tasksRendered, ideasRendered, orphansHandled, knowledgeDocumentsRendered);
+    }
+
+    /// <summary>
+    /// The project's <c>decisions.md</c> and <c>lessons.md</c> at the home's own root (idea
+    /// d805fd8b, piece 2), rendered by the same sweep that renders its tasks and ideas and for
+    /// the same reason: a render is a pure function of the store's current state, so recomputing
+    /// it on every sweep computes exactly "whatever changed since last time" and the write only
+    /// touches disk when the bytes actually differ.
+    /// <para>
+    /// These two are not entries under a root the way a task or an idea is, so they go through
+    /// <see cref="KnowledgeDocuments"/> rather than <see cref="HomeEntryWriter"/> and take no part
+    /// in orphan reconciliation: there is one of each, always, at a fixed name, and a project with
+    /// nothing recorded yet still gets a file that says so and names the command that records the
+    /// first one.
+    /// </para>
+    /// </summary>
+    private async Task<int> RenderKnowledgeDocumentsAsync(
+        IQuerySession query, string home, ProjectDetails project, CancellationToken cancellationToken)
+    {
+        try
+        {
+            RenderedKnowledgeDocuments documents = await KnowledgeDocuments.RenderAsync(
+                query, project.Id, cancellationToken);
+            KnowledgeDocumentWriteResult result = KnowledgeDocuments.WriteInto(home, documents);
+            foreach (string skipped in result.SkippedForeignFiles)
+            {
+                logger.LogWarning(
+                    "'{File}' in project {Project}'s home is not this platform's own render and was left alone; "
+                    + "the decisions and lessons projections cannot be written there until it is moved",
+                    skipped, project.Name);
+            }
+
+            return result.Written;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            logger.LogWarning(exception,
+                "decisions.md/lessons.md render failed for project {Project}; a future sweep retries it",
+                project.Name);
+            return 0;
+        }
     }
 
     /// <summary>
