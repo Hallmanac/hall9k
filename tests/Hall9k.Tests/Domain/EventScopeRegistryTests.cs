@@ -1,5 +1,6 @@
 using System.Reflection;
 using FluentAssertions;
+using Hall9k.Domain.Features.Run.Events;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Xunit;
 
@@ -111,6 +112,18 @@ public sealed class EventScopeRegistryTests
         // code — but it means the registry has drifted from what it claims to classify.
         Type[] candidateEventTypes = DiscoverCandidateEventTypes();
         EventScopeRegistry.KnownEventTypes.Should().BeSubsetOf(candidateEventTypes);
+    }
+
+    /// <summary>
+    /// Task: a run stream whose first event is a reconstruction rather than a dispatch. A
+    /// reconstruction is a fact about the work — which run exists for which task and pull request —
+    /// the same tier <see cref="RunDispatched"/> already travels at, not this node's own process or
+    /// repair mechanics; it carries no worktree, run directory, session or process id.
+    /// </summary>
+    [Fact]
+    public void RunRecordReconstructed_travels_project_scoped_as_the_runs_own_second_genesis()
+    {
+        EventScopeRegistry.ClassificationOf(typeof(RunRecordReconstructed)).Should().Be(EventScope.ProjectScoped);
     }
 
     [Fact]

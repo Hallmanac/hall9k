@@ -8,14 +8,17 @@ using Hall9k.Domain.Features.Tasks.Events;
 namespace Hall9k.Domain.Features.Replication;
 
 /// <summary>
-/// The one event type each replicated aggregate's own stream can legally start from: Task, Idea,
-/// Epic, Run, Decision and Learning each mint exactly one genesis event, and every other event on
-/// that stream only ever means anything once the genesis is already applied. <c>Hall9k.Connectors.Replication.EventReplicationInbox</c>
-/// uses this to refuse starting a local stream from anything else — a task whose
-/// <see cref="TaskAdded"/> predates the sender's outbox, or a run whose parent task never arrived —
-/// holding the record rather than letting Marten auto-vivify a headless document nothing will ever
-/// repair (the same "starts a document even with no matching Create" behaviour
-/// <c>IdeaDetailsProjection</c>'s own doc already names for legitimate out-of-order delivery).
+/// The event types each replicated aggregate's own stream can legally start from: Task, Idea,
+/// Epic, Decision and Learning each mint exactly one genesis event, and Run mints one of two —
+/// <see cref="RunDispatched"/> for the ordinary case, or <see cref="RunRecordReconstructed"/> for
+/// a run this node reconstructed after the fact, never dispatched from a live launch — and every
+/// other event on that stream only ever means anything once one of them is already applied.
+/// <c>Hall9k.Connectors.Replication.EventReplicationInbox</c> uses this to refuse starting a local
+/// stream from anything else — a task whose <see cref="TaskAdded"/> predates the sender's outbox,
+/// or a run whose parent task never arrived — holding the record rather than letting Marten
+/// auto-vivify a headless document nothing will ever repair (the same "starts a document even with
+/// no matching Create" behaviour <c>IdeaDetailsProjection</c>'s own doc already names for
+/// legitimate out-of-order delivery).
 /// <para>
 /// Every project-scoped event type in <c>EventScopeRegistry</c> whose stream this node can be
 /// asked to START has to be named here, or the inbox holds it forever waiting on a genesis that
@@ -31,6 +34,7 @@ public static class AggregateGenesisEventTypes
         || eventType == typeof(IdeaCaptured)
         || eventType == typeof(EpicAdded)
         || eventType == typeof(RunDispatched)
+        || eventType == typeof(RunRecordReconstructed)
         || eventType == typeof(DecisionRecorded)
         || eventType == typeof(LearningRecorded);
 }
