@@ -210,6 +210,11 @@ public static class EventScopeRegistry
         // The event carries Id, TaskId, NodeId, OwnerId, PullRequestUrl, PullRequestNumber and
         // ReconstructedAt — no worktree, run directory, session or process id — so nothing here is
         // the kind of machine-local detail the node-scoped mechanics around it exist to keep home.
+        // Two nodes can each independently mint one for the identical run id — CloseoutEngine's own
+        // missing-run sweep is deliberately fleet-wide, not node-scoped — so EventReplicationInbox
+        // refuses a genesis-classified event whose target stream already exists here rather than
+        // appending a second genesis into an existing stream's own middle (independent pre-PR
+        // review, cycle 1, adversarial lens, medium).
         [typeof(RunRecordReconstructed)] = EventScope.ProjectScoped,
         [typeof(RunResumed)] = EventScope.NodeScoped,
         [typeof(RunSessionErrorRetried)] = EventScope.NodeScoped,
