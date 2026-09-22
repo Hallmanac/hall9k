@@ -21,6 +21,8 @@ public sealed class DecisionAggregate
     public string? OriginIncident { get; private set; }
     /// <summary>What this decision replaced, recorded at birth.</summary>
     public IReadOnlyList<Guid> Supersedes => supersedes;
+    /// <summary>The citation this decision answered to before this store existed, or null when it was recorded natively (idea d805fd8b, piece 3).</summary>
+    public string? LegacyId { get; private set; }
     public RecordedProvenance? Provenance { get; private set; }
     public DateTimeOffset RecordedAt { get; private set; }
     public DecisionStatus Status { get; private set; } = DecisionStatus.Unknown;
@@ -38,6 +40,7 @@ public sealed class DecisionAggregate
         OriginIncident = @event.OriginIncident;
         supersedes.Clear();
         supersedes.AddRange(@event.Supersedes);
+        LegacyId = @event.LegacyId;
         Provenance = @event.Provenance;
         RecordedAt = @event.RecordedAt;
         Status = DecisionStatus.Recorded;

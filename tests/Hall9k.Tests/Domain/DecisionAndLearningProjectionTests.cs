@@ -29,7 +29,7 @@ public sealed class DecisionAndLearningProjectionTests
 
         DecisionDetails view = projection.Create(new FakeEvent<DecisionRecorded>(new DecisionRecorded(
             id, KnowledgeScope.Project, Project, "One claim", "An incident", [],
-            RecordedProvenance.FromShell(Owner), Now)));
+            RecordedProvenance.FromShell(Owner), Now, "Decisions Log #62")));
 
         view.Id.Should().Be(id);
         view.Scope.Should().Be(KnowledgeScope.Project);
@@ -37,6 +37,7 @@ public sealed class DecisionAndLearningProjectionTests
         view.Status.Should().Be(DecisionStatus.Recorded);
         view.RecordedAt.Should().Be(Now);
         view.OriginIncident.Should().Be("An incident");
+        view.LegacyId.Should().Be("Decisions Log #62", "an imported decision keeps the citation it already had");
         view.Provenance!.RunId.Should().BeNull();
     }
 
@@ -49,7 +50,7 @@ public sealed class DecisionAndLearningProjectionTests
 
         DecisionDetails view = projection.Create(new FakeEvent<DecisionRecorded>(new DecisionRecorded(
             id, KnowledgeScope.Project, Project, "The old ruling", null, [],
-            RecordedProvenance.FromShell(Owner), Now)));
+            RecordedProvenance.FromShell(Owner), Now, LegacyId: null)));
         projection.Apply(
             new FakeEvent<DecisionSuperseded>(new DecisionSuperseded(
                 id, replacement, "Replaced", Owner, Now.AddDays(2))),
@@ -82,7 +83,7 @@ public sealed class DecisionAndLearningProjectionTests
         projection.Apply(
             new FakeEvent<DecisionRecorded>(new DecisionRecorded(
                 id, KnowledgeScope.Project, Project, "The old ruling", null, [],
-                RecordedProvenance.FromShell(Owner), Now)),
+                RecordedProvenance.FromShell(Owner), Now, LegacyId: null)),
             view);
 
         view.Statement.Should().Be("The old ruling", "the recording is authoritative for the claim");

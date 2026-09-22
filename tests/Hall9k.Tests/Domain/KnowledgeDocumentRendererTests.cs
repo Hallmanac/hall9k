@@ -32,6 +32,41 @@ public sealed class KnowledgeDocumentRendererTests
         rendered.Should().Contain("- Origin incident: a plain push rejected two rebased follow-up branches, 2026-08-17");
     }
 
+    /// <summary>
+    /// The whole point of the legacy id (idea d805fd8b, piece 3): the citations already written
+    /// across this repository were not rewritten when §16 was imported, so the rendered file is
+    /// where they have to land. A reader who followed "Decisions Log #62" out of a source comment
+    /// finds that text in a heading here, with the id that replaces it beside it.
+    /// </summary>
+    [Fact]
+    public void An_imported_decision_carries_its_old_citation_in_its_heading_and_a_native_one_carries_none()
+    {
+        DecisionDetails imported = SomeDecision("Agents never push.");
+        imported.LegacyId = "Decisions Log #62";
+        DecisionDetails native = SomeDecision("Something decided since.");
+
+        string rendered = DecisionsDocumentRenderer.Render([imported, native]);
+
+        rendered.Should().Contain($"## {DomainId.Short(imported.Id)} (Decisions Log #62)");
+        rendered.Should().Contain($"## {DomainId.Short(native.Id)}\n");
+        rendered.Should().Contain("`Decisions Log #62` is found by searching this file for that text");
+        rendered.Should().Contain("`§16 #62` or `PLAN.md §16 #62`",
+            "113 citations in this repository name a §16 entry by its section rather than by the log, and "
+            + "searching this file for that form finds nothing unless it says so");
+    }
+
+    /// <summary>
+    /// The explanatory paragraph is conditional on there being something to explain, so a project
+    /// that never imported anything does not carry a sentence about a migration it never had.
+    /// </summary>
+    [Fact]
+    public void A_store_with_no_imported_decision_says_nothing_about_old_citations()
+    {
+        string rendered = DecisionsDocumentRenderer.Render([SomeDecision("Something decided since.")]);
+
+        rendered.Should().NotContain("predates this store");
+    }
+
     [Fact]
     public void The_decisions_header_says_it_is_generated_and_names_the_command_that_records_one()
     {
@@ -211,6 +246,7 @@ public sealed class KnowledgeDocumentRendererTests
         Statement = decision.Statement,
         OriginIncident = decision.OriginIncident,
         Supersedes = [.. decision.Supersedes],
+        LegacyId = decision.LegacyId,
         Provenance = decision.Provenance,
         RecordedAt = decision.RecordedAt,
         Status = decision.Status,
