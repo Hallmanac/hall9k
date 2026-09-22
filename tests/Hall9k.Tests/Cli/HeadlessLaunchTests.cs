@@ -57,8 +57,8 @@ public sealed class HeadlessLaunchTests : IDisposable
         Environment.SetEnvironmentVariable("HALL9K_CLAUDE_PATH", fakeClaude);
 
         (int processId, DateTimeOffset startedAt) = HeadlessLaunch.SpawnDetached(
-            _scratchDirectory, Guid.NewGuid(), Guid.NewGuid(), "test-headless-build", AgentModel.Sonnet, promptFile,
-            streamFile, standardErrorFile, settingsFile, skipPermissions: false);
+            _scratchDirectory, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "test-headless-build",
+            AgentModel.Sonnet, promptFile, streamFile, standardErrorFile, settingsFile, skipPermissions: false);
 
         processId.Should().BePositive();
         startedAt.Should().NotBe(DateTimeOffset.MinValue, "the process really started, so its start time is observed, not the never-started sentinel");
@@ -112,8 +112,8 @@ public sealed class HeadlessLaunchTests : IDisposable
         Environment.SetEnvironmentVariable("HALL9K_CLAUDE_PATH", "hall9k-test-binary-that-does-not-exist-xyz");
 
         Action act = () => HeadlessLaunch.SpawnDetached(
-            _scratchDirectory, Guid.NewGuid(), Guid.NewGuid(), "test-headless-build", AgentModel.Sonnet, promptFile,
-            streamFile, standardErrorFile, settingsFile, skipPermissions: false);
+            _scratchDirectory, Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "test-headless-build",
+            AgentModel.Sonnet, promptFile, streamFile, standardErrorFile, settingsFile, skipPermissions: false);
 
         act.Should().Throw<InvalidOperationException>()
             .Where(exception => exception.Message.Contains("already exited")

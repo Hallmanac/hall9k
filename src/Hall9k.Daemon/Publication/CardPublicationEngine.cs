@@ -620,6 +620,7 @@ public sealed class CardPublicationEngine(
                 sessionId, sessionId, checkout, RunPaths.GlobalDirectory(sessionId), prompt,
                 ExecutorMode.Subscription, model, project.SkipPermissions)
             {
+                TaskId = task.Id,
                 SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.CardPublication),
             },
             cancellationToken);

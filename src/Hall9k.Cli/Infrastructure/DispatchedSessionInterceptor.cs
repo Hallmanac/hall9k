@@ -13,7 +13,12 @@ namespace Hall9k.Cli.Infrastructure;
 /// <see cref="DispatchedRunEnvironment.RunIdVariable"/> onto a child process's own environment, and
 /// every headless dispatch this platform makes goes through one of them — an operator's own attended
 /// claim (<c>h9k task work</c>, a pasted prompt, <c>--direct-launch</c>) never carries it, so this
-/// interceptor is a no-op for a human at a real terminal.
+/// interceptor is a no-op for a human at a real terminal. The same two sites also stamp
+/// <see cref="DispatchedRunEnvironment.TaskIdVariable"/> whenever the session is task-bound, so the
+/// refusal below can name the task and not only the run (independent pre-PR review, cycle 1,
+/// conformance finding) — a session with no owning task (card publication, courier delivery,
+/// project-scoped run-skill discovery) carries no such variable, and the refusal degrades to naming
+/// only the run for those, exactly as it always has.
 /// <para>
 /// Registered with Spectre.Console.Cli's own <c>IConfigurator.SetInterceptor</c>
 /// (<see cref="CliCommandTree.Configure(IConfigurator, Func{string, string?})"/>), which runs after
@@ -48,11 +53,15 @@ internal sealed class DispatchedSessionInterceptor(Func<string, string?> environ
             return;
         }
 
+        string? taskId = environmentVariable(DispatchedRunEnvironment.TaskIdVariable);
+        string whereClause = taskId.IsBlank()
+            ? "a dispatched session working inside this task's own worktree"
+            : $"a dispatched session working inside task {taskId}'s own worktree";
+
         throw new DomainBusinessRuleException(
-            $"h9k {classification.Verb} is refused: this process is run {runId}, a dispatched session "
-            + "working inside this task's own worktree, and a dispatched session cannot drive this "
-            + "task's — or another task's or idea's — own lifecycle (decision 13f11af2). The "
-            + "orchestrator or a person owns this call; state the need in your closing summary instead "
-            + "of retrying it.");
+            $"h9k {classification.Verb} is refused: this process is run {runId}, {whereClause}, and a "
+            + "dispatched session cannot drive this task's — or another task's or idea's — own lifecycle "
+            + "(decision 13f11af2). The orchestrator or a person owns this call; state the need in your "
+            + "closing summary instead of retrying it.");
     }
 }

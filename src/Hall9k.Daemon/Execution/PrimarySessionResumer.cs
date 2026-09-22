@@ -97,6 +97,7 @@ public sealed class PrimarySessionResumer(IExecutor executor)
             // own default is null/unbounded (independent pre-PR review, cycle 1, adversarial lens).
             MaxTurns: task.Constraints?.MaxTurns)
         {
+            TaskId = task.Id,
             SessionName = sessionName,
         }, cancellationToken);
 

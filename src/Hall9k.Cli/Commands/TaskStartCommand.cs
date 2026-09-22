@@ -229,8 +229,8 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         try
         {
             (processId, startedAt) = HeadlessLaunch.SpawnDetached(
-                worktreePath, runId, claudeSessionId, sessionName, model, promptFile, streamFile, standardErrorFile,
-                settingsFile, project.SkipPermissions);
+                worktreePath, runId, taskId, claudeSessionId, sessionName, model, promptFile, streamFile,
+                standardErrorFile, settingsFile, project.SkipPermissions);
         }
         catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)
         {

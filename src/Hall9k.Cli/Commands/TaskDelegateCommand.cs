@@ -167,7 +167,7 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         try
         {
             (processId, startedAt) = HeadlessLaunch.SpawnDetached(
-                plan.WorktreePath, plan.RunId, plan.ClaudeSessionId, plan.SessionName, plan.Model, promptFile,
+                plan.WorktreePath, plan.RunId, taskId, plan.ClaudeSessionId, plan.SessionName, plan.Model, promptFile,
                 streamFile, standardErrorFile, settingsFile, plan.SkipPermissions);
         }
         catch (Exception exception) when (exception is Win32Exception or InvalidOperationException)

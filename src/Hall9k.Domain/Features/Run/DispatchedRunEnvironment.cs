@@ -29,4 +29,15 @@ namespace Hall9k.Domain.Features.Run;
 public static class DispatchedRunEnvironment
 {
     public const string RunIdVariable = "HALL9K_DISPATCHED_RUN_ID";
+
+    /// <summary>
+    /// The task a dispatched run's own worktree belongs to, stamped alongside <see cref="RunIdVariable"/>
+    /// at the same two spawn sites whenever the session is task-bound (every build, review, fix, verify,
+    /// recovery, and follow-up dispatch): <c>DispatchedSessionInterceptor</c>'s own refusal names it so
+    /// an agent or an operator reading the log can tell which task was involved without cross-referencing
+    /// the run id (independent pre-PR review, cycle 1, conformance finding). Absent for a session with no
+    /// owning task — card publication, courier delivery, and project-scoped run-skill discovery all spawn
+    /// with no task of their own, and the interceptor's message degrades gracefully when it is unset.
+    /// </summary>
+    public const string TaskIdVariable = "HALL9K_DISPATCHED_TASK_ID";
 }

@@ -630,6 +630,7 @@ public sealed class PrReviewEngine(
             runId, sessionId, run.WorktreePath, runDirectory, prompt, (ExecutorMode)run.ExecutorMode, model,
             project.SkipPermissions, ConformanceArtifactName(sessionId), UntrustedWorkingDirectory: true)
         {
+            TaskId = taskId,
             SessionName = sessionName,
         },
             cancellationToken);

@@ -918,6 +918,7 @@ public sealed partial class VerificationRunner(
                     MaxTurns: options.Value.UncommittedWorkRecoveryMaxTurns,
                     GuardsReviewThreadReplies: run.IsFollowUp)
                 {
+                    TaskId = task.Id,
                     SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.CommitRecovery),
                 }, cancellationToken);
             }
