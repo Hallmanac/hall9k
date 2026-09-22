@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Hall9k.Cli.DaemonControl;
+using Hall9k.Domain.Features.Run;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -75,8 +76,8 @@ internal static class HeadlessLaunch
     public const string DetachedSessionEnvironmentVariable = "HALL9K_DETACHED_SESSION";
 
     public static (int ProcessId, DateTimeOffset StartedAt) SpawnDetached(
-        string worktreePath, Guid claudeSessionId, string sessionName, AgentModel model, string promptFile,
-        string streamFile, string standardErrorFile, string settingsFile, bool skipPermissions)
+        string worktreePath, Guid runId, Guid claudeSessionId, string sessionName, AgentModel model,
+        string promptFile, string streamFile, string standardErrorFile, string settingsFile, bool skipPermissions)
     {
         string claudeCommand =
             $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(claudeSessionId, sessionName, model, settingsFile, skipPermissions))}";
@@ -84,8 +85,8 @@ internal static class HeadlessLaunch
             $"{claudeCommand} < \"{promptFile}\" > \"{streamFile}\" 2> \"{standardErrorFile}\"";
 
         return OperatingSystem.IsWindows()
-            ? SpawnDetachedWindows(worktreePath, redirected, standardErrorFile, sessionName)
-            : SpawnDetachedUnix(worktreePath, redirected, standardErrorFile, sessionName);
+            ? SpawnDetachedWindows(worktreePath, runId, redirected, standardErrorFile, sessionName)
+            : SpawnDetachedUnix(worktreePath, runId, redirected, standardErrorFile, sessionName);
     }
 
     /// <summary>
@@ -93,16 +94,23 @@ internal static class HeadlessLaunch
     /// spawns — as this detached session's own. Set on the wrapper rather than written into the
     /// command line: the redirected command string is handed to <c>/bin/sh -c</c> and
     /// <c>cmd.exe /c</c> verbatim, and an environment entry needs no quoting of either shell's.
+    /// Also stamps <see cref="DispatchedRunEnvironment.RunIdVariable"/> (task: a dispatched session
+    /// cannot drive the project's own lifecycle) — this call's own <paramref name="runId"/> is
+    /// h9k task start's or h9k task delegate's caller's own claim, never an operator's own attended
+    /// run, so both callers here are unattended by construction and carry it unconditionally.
     /// </summary>
-    private static void MarkDetachedSession(ProcessStartInfo shell, string sessionName) =>
+    private static void MarkDetachedSession(ProcessStartInfo shell, Guid runId, string sessionName)
+    {
         shell.Environment[DetachedSessionEnvironmentVariable] = sessionName;
+        shell.Environment[DispatchedRunEnvironment.RunIdVariable] = runId.ToString();
+    }
 
     /// <summary>
     /// See the class doc for why this backgrounds rather than <c>exec</c>s in the foreground, and
     /// why the real pid is captured through a scratch pidfile rather than the wrapper's own.
     /// </summary>
     private static (int ProcessId, DateTimeOffset StartedAt) SpawnDetachedUnix(
-        string worktreePath, string redirectedCommand, string standardErrorFile, string sessionName)
+        string worktreePath, Guid runId, string redirectedCommand, string standardErrorFile, string sessionName)
     {
         string pidFile = Path.Combine(Path.GetTempPath(), $"hall9k-task-start-pid-{Guid.NewGuid():N}");
         try
@@ -136,7 +144,7 @@ internal static class HeadlessLaunch
                 WorkingDirectory = worktreePath,
                 UseShellExecute = false,
             };
-            MarkDetachedSession(shell, sessionName);
+            MarkDetachedSession(shell, runId, sessionName);
             shell.ArgumentList.Add("-c");
             shell.ArgumentList.Add($"{redirectedCommand} &\necho $! > \"{pidFile}\"\n");
 
@@ -224,7 +232,7 @@ internal static class HeadlessLaunch
     /// </para>
     /// </summary>
     private static (int ProcessId, DateTimeOffset StartedAt) SpawnDetachedWindows(
-        string worktreePath, string redirectedCommand, string standardErrorFile, string sessionName)
+        string worktreePath, Guid runId, string redirectedCommand, string standardErrorFile, string sessionName)
     {
         ProcessStartInfo shell = new()
         {
@@ -233,7 +241,7 @@ internal static class HeadlessLaunch
             UseShellExecute = false,
             CreateNoWindow = true,
         };
-        MarkDetachedSession(shell, sessionName);
+        MarkDetachedSession(shell, runId, sessionName);
         // The raw Arguments string, never ArgumentList (see WindowsCommandLine): the redirected
         // command already carries its own embedded quotes (a quoted flag value, a quoted
         // redirected file path), and ArgumentList would C-runtime-escape them in a way cmd.exe's
