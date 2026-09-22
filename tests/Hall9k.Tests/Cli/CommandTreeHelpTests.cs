@@ -189,8 +189,11 @@ public sealed class CommandTreeHelpTests
         interceptor.Reached.Should().BeTrue($"'{example}' has to reach a command with its settings bound");
     }
 
-    /// <summary>The tokens a shell would hand the binary: whitespace splits, double quotes group.</summary>
-    private static IReadOnlyList<string> Tokenize(string example)
+    /// <summary>
+    /// The tokens a shell would hand the binary: whitespace splits, double quotes group — internal
+    /// for the same reason <see cref="Examples"/> is.
+    /// </summary>
+    internal static IReadOnlyList<string> Tokenize(string example)
     {
         List<string> tokens = [];
         StringBuilder token = new();
@@ -303,8 +306,12 @@ public sealed class CommandTreeHelpTests
         return children;
     }
 
-    /// <summary>The lines of the EXAMPLES block, one invocation each.</summary>
-    private static IReadOnlyList<string> Examples(string help)
+    /// <summary>
+    /// The lines of the EXAMPLES block, one invocation each — internal so
+    /// <c>DispatchedSessionTreeTests</c> can reuse the identical extraction rather than a second
+    /// parser of the same rendered help.
+    /// </summary>
+    internal static IReadOnlyList<string> Examples(string help)
     {
         string[] lines = help.Split('\n');
         int start = Array.FindIndex(lines, line => line.Trim() == "EXAMPLES:");
