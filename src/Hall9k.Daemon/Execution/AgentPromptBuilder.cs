@@ -2655,6 +2655,7 @@ public static class AgentPromptBuilder
         else
         {
             AppendFragment(prompt, file, "judge-work-own");
+            AppendFragment(prompt, file, "lifecycle-criterion-is-orchestrators-act");
         }
 
         if (mechanicsOverride is { DiffIsForeignPullRequest: true }
