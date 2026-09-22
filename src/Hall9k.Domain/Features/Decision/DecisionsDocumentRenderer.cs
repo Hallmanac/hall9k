@@ -66,10 +66,22 @@ public static class DecisionsDocumentRenderer
             + "not deleted, only left out of this file: `h9k decide list --all` shows those, and "
             + "`h9k decide show <id>` shows one in full with its provenance.");
 
+        if (binding.Any(decision => decision.LegacyId.IsNotBlank()))
+        {
+            Line(document);
+            Line(document,
+                "A heading carrying a second name in parentheses is a decision that predates this store "
+                + "and kept the citation it already had, so a reference written elsewhere as "
+                + "`Decisions Log #62` is found by searching this file for that text. The same entry is "
+                + "cited in some places as `§16 #62` or `PLAN.md §16 #62`, which name the same number "
+                + "under the section that used to hold it: search for `Decisions Log #62` to find those "
+                + "too. Cite the id from here on; the older name is never minted again.");
+        }
+
         foreach (DecisionDetails decision in binding)
         {
             Line(document);
-            Line(document, $"## {DomainId.Short(decision.Id)}");
+            Line(document, $"## {DomainId.Short(decision.Id)}{LegacyCitation(decision.LegacyId)}");
             Line(document);
             Line(document, Statement(decision.Statement));
             Line(document);
@@ -87,6 +99,17 @@ public static class DecisionsDocumentRenderer
 
         return document.ToString();
     }
+
+    /// <summary>
+    /// The citation an imported decision already answered to, printed in its own heading beside
+    /// the id that supersedes it (idea d805fd8b, piece 3). This is what makes the citations
+    /// already written across this repository resolve here: a reader who followed
+    /// <c>Decisions Log #62</c> out of a source comment finds that text in this file's headings,
+    /// and the id beside it is what a new citation uses. Empty for a natively recorded decision,
+    /// which has no earlier name to answer to.
+    /// </summary>
+    private static string LegacyCitation(string? legacyId) =>
+        legacyId.IsNotBlank() ? $" ({SingleLine(legacyId)})" : string.Empty;
 
     /// <summary>
     /// The decisions that still bind, in the one order every node derives the same way: when they

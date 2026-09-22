@@ -20,6 +20,14 @@ namespace Hall9k.Domain.Features.Decision;
 /// in the same transaction, so both directions are on the streams and neither is derived by
 /// scanning the other's documents.
 /// </para>
+/// <para>
+/// <see cref="LegacyId"/> is how a decision that predates this store keeps answering to the
+/// citation it already had (idea d805fd8b, piece 3): the one-time import carries each §16 entry's
+/// own number across as <c>Decisions Log #62</c>, and the rendered document prints it beside the
+/// real id, so the 1,283 citations already written across this repository resolve without one of
+/// them being rewritten. Null for every decision recorded natively, which is the normal case and
+/// stays the normal case: nothing mints a new legacy id.
+/// </para>
 /// </summary>
 public sealed record DecisionRecorded(
     Guid Id,
@@ -29,4 +37,5 @@ public sealed record DecisionRecorded(
     string? OriginIncident,
     IReadOnlyList<Guid> Supersedes,
     RecordedProvenance Provenance,
-    DateTimeOffset RecordedAt);
+    DateTimeOffset RecordedAt,
+    string? LegacyId);

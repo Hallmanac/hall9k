@@ -29,6 +29,12 @@ public sealed class DecisionDetails
     public string? OriginIncident { get; set; }
     /// <summary>What this decision replaced, recorded at birth.</summary>
     public List<Guid> Supersedes { get; set; } = [];
+    /// <summary>
+    /// The citation this decision answered to before this store existed (<c>Decisions Log #62</c>),
+    /// or null when it was recorded natively (idea d805fd8b, piece 3). Also the one-time import's
+    /// own idempotency key: a legacy id already sitting in this scope is never imported twice.
+    /// </summary>
+    public string? LegacyId { get; set; }
     public RecordedProvenance? Provenance { get; set; }
     public DateTimeOffset RecordedAt { get; set; }
     public DecisionStatus Status { get; set; } = DecisionStatus.Unknown;
@@ -48,6 +54,7 @@ public sealed class DecisionDetailsProjection : SingleStreamProjection<DecisionD
         Statement = @event.Data.Statement,
         OriginIncident = @event.Data.OriginIncident,
         Supersedes = [.. @event.Data.Supersedes],
+        LegacyId = @event.Data.LegacyId,
         Provenance = @event.Data.Provenance,
         RecordedAt = @event.Data.RecordedAt,
         Status = DecisionStatus.Recorded,
@@ -70,6 +77,7 @@ public sealed class DecisionDetailsProjection : SingleStreamProjection<DecisionD
         view.Statement = @event.Data.Statement;
         view.OriginIncident = @event.Data.OriginIncident;
         view.Supersedes = [.. @event.Data.Supersedes];
+        view.LegacyId = @event.Data.LegacyId;
         view.Provenance = @event.Data.Provenance;
         view.RecordedAt = @event.Data.RecordedAt;
         view.Status = view.SupersededAt is null ? DecisionStatus.Recorded : DecisionStatus.Superseded;

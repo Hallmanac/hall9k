@@ -11,6 +11,13 @@ namespace Hall9k.Domain.Features.Decision;
 /// 2026-09-16). The second is deliberately not a permission check on who is typing — the
 /// platform cannot see that — it is a check on the one thing it can observe, which is whether
 /// the run this call named has a human attached to it.
+/// <para>
+/// <c>legacyId</c> is the one-time import's own parameter (idea d805fd8b, piece 3) and is null
+/// for every other caller: a decision that predates this store carries the citation it already
+/// had, and nothing mints a new one. It is trimmed like every other recorded string and validated
+/// no further, because its whole job is to reproduce a token this repository already wrote
+/// hundreds of times rather than to impose a shape on it.
+/// </para>
 /// </summary>
 public static class DecisionDecider
 {
@@ -22,7 +29,8 @@ public static class DecisionDecider
         string? originIncident,
         IReadOnlyList<Guid> supersedes,
         RecordedProvenance provenance,
-        DateTimeOffset recordedAt)
+        DateTimeOffset recordedAt,
+        string? legacyId = null)
     {
         if (statement.IsBlank())
         {
@@ -56,7 +64,8 @@ public static class DecisionDecider
         }
 
         return new DecisionRecorded(
-            id, scope, scopeId, statement.Trim(), Trimmed(originIncident), [.. supersedes], provenance, recordedAt);
+            id, scope, scopeId, statement.Trim(), Trimmed(originIncident), [.. supersedes], provenance, recordedAt,
+            Trimmed(legacyId));
     }
 
     /// <summary>
@@ -87,12 +96,48 @@ public static class DecisionDecider
                 + $"h9k decide supersede {decision.Id} --reason \"<why it stopped binding>\".");
         }
 
-        if (supersededBy == decision.Id)
+        RequireNotItself(supersededBy, decision.Id);
+
+        return new DecisionSuperseded(decision.Id, supersededBy, reason.Trim(), supersededByOwnerId, supersededAt);
+    }
+
+    /// <summary>
+    /// The same terminal act as <see cref="Supersede"/>, against a decision being recorded in the
+    /// very same transaction rather than one read back out of the store. The one-time import is the
+    /// only caller and the only need (idea d805fd8b, piece 3): a rule that has to be imported so
+    /// the citations already written for it still resolve, but that stopped binding the moment the
+    /// import landed, is recorded and ended in one act rather than left in the rendered rulebook
+    /// for a session to follow into a gate failure. There is no rehydrated aggregate to read a
+    /// status off, and none is needed: a stream whose first two events these are has never been
+    /// superseded before, so the already-superseded conflict <see cref="Supersede"/> guards
+    /// against cannot arise.
+    /// </summary>
+    public static DecisionSuperseded SupersedeAsRecorded(
+        DecisionRecorded recorded,
+        Guid? supersededBy,
+        string reason,
+        Guid supersededByOwnerId,
+        DateTimeOffset supersededAt)
+    {
+        if (reason.IsBlank())
+        {
+            throw new DomainValidationException(
+                "Superseding a decision needs a reason — what changed, or what was wrong with it. A "
+                + "decision recorded and superseded in one act needs it most: the reason is the only "
+                + "record of why it was worth importing a rule that never bound.");
+        }
+
+        RequireNotItself(supersededBy, recorded.Id);
+
+        return new DecisionSuperseded(recorded.Id, supersededBy, reason.Trim(), supersededByOwnerId, supersededAt);
+    }
+
+    private static void RequireNotItself(Guid? supersededBy, Guid id)
+    {
+        if (supersededBy == id)
         {
             throw new DomainValidationException("A decision cannot supersede itself.");
         }
-
-        return new DecisionSuperseded(decision.Id, supersededBy, reason.Trim(), supersededByOwnerId, supersededAt);
     }
 
     /// <summary>Shared with <see cref="Learning.LearningDecider"/>'s own identical check, spelled out once per slice rather than shared across two tiny flat slices.</summary>
