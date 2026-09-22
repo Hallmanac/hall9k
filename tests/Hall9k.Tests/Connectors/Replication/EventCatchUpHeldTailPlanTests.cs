@@ -197,4 +197,24 @@ public sealed class EventCatchUpHeldTailPlanTests
         planned.Should().HaveCount(EventCatchUpCoordinator.MaxHeldTailAsksPerSweep);
         planned.Should().NotIntersectWith(cooling.Select(stream => stream.StreamId));
     }
+
+    /// <summary>
+    /// The build-version bound lift (task: a run stream whose first event is a reconstruction): a
+    /// stream given up while this node ran an older build earns three fresh asks the moment this
+    /// node upgrades, without any human running a pull. <see cref="EventCatchUpCoordinator.RequestHeldTailStreamsAsync"/>
+    /// is the caller that actually resets such a record's own attempts and give-up mark before
+    /// <see cref="EventCatchUpCoordinator.PlanHeldTailAsks"/> ever sees it — this is the pure
+    /// decision underneath that reset, checkable without a database.
+    /// </summary>
+    [Theory]
+    [InlineData(null, "0.10.31", false, "no recorded version counts as older than anything")]
+    [InlineData("0.10.27", "0.10.31", false, "given up on an older build no longer stands")]
+    [InlineData("0.10.31", "0.10.31", true, "given up on the current build still stands")]
+    [InlineData("0.10.32", "0.10.31", true, "given up on a build newer than the one running now still stands")]
+    public void GivenUpMarkStillStands_reads_an_older_build_as_no_longer_given_up(
+        string? givenUpOnBuildVersion, string currentBuildVersion, bool expected, string because)
+    {
+        EventCatchUpCoordinator.GivenUpMarkStillStands(givenUpOnBuildVersion, currentBuildVersion)
+            .Should().Be(expected, because);
+    }
 }

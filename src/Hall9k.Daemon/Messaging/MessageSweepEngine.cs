@@ -1,6 +1,7 @@
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
+using Hall9k.Daemon;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
@@ -503,9 +504,9 @@ public sealed class MessageSweepEngine(
         {
             await using IDocumentSession heldTailSession = store.LightweightSession();
             HeldTailSweepResult heldTail = await eventCatchUpCoordinator.RequestHeldTailStreamsAsync(
-                heldTailSession, project.Id, nodeId, identity.OwnerRootFingerprint, HeldTailSettleWindow(options.Value),
-                options.Value.EventCatchUpRequestTimeout, EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, now,
-                cancellationToken);
+                heldTailSession, project.Id, nodeId, identity.OwnerRootFingerprint, DaemonVersion.Current,
+                HeldTailSettleWindow(options.Value), options.Value.EventCatchUpRequestTimeout,
+                EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, now, cancellationToken);
 
             // A held record whose own stream already exists here is waiting on nothing but the
             // replay a failed read never got to — asking the fleet for a stream this node already

@@ -80,4 +80,18 @@ public sealed class HeldReplicatedEventRecord
     /// no number of asks will ever produce.
     /// </summary>
     public bool CatchUpGivenUp { get; set; }
+
+    /// <summary>
+    /// The build this node was running when <see cref="CatchUpGivenUp"/> was set — this install's
+    /// own <c>CliVersion.Current</c>/<c>DaemonVersion.Current</c> at the moment of give-up, null
+    /// for a record given up before this field existed. A give-up this node marked cannot know
+    /// whether the fleet's own build has since changed, so
+    /// <c>Hall9k.Connectors.Replication.EventCatchUpCoordinator.GivenUpMarkStillStands</c> reads
+    /// this against the build running NOW: a give-up recorded on an older build is treated
+    /// as not given up at all, earning the stream three fresh asks the moment this node itself
+    /// upgrades, rather than standing forever on a verdict a since-fixed peer never got the chance
+    /// to answer for. A record with no recorded version counts as older unconditionally, the same
+    /// as every pre-existing given-up row.
+    /// </summary>
+    public string? GivenUpOnBuildVersion { get; set; }
 }
