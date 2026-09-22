@@ -48,13 +48,21 @@ public static class HeldTailStreams
     public static async Task<HashSet<Guid>> GivenUpStreamIdsAsync(
         IQuerySession session, Guid projectId, string currentBuildVersion, CancellationToken cancellationToken)
     {
-        IReadOnlyList<HeldReplicatedEventRecord> givenUp = await session.Query<HeldReplicatedEventRecord>()
+        // Projected to the two scalar fields GivenUpMarkStillStands actually needs, not the whole
+        // document: a held record carries the wire-format event it is waiting to apply
+        // (RecordJson), and this read has no business loading hundreds of those just to learn which
+        // streams still stand given up (independent pre-PR review, cycle 1, adversarial lens, low —
+        // the same reasoning SummarizeAsync below already documents for its own stream-id-only read).
+        IReadOnlyList<GivenUpMark> givenUp = await session.Query<HeldReplicatedEventRecord>()
             .Where(record => record.ProjectId == projectId && record.CatchUpGivenUp)
+            .Select(record => new GivenUpMark(record.StreamId, record.GivenUpOnBuildVersion))
             .ToListAsync(cancellationToken);
         return [.. givenUp
-            .Where(record => EventCatchUpCoordinator.GivenUpMarkStillStands(record.GivenUpOnBuildVersion, currentBuildVersion))
-            .Select(record => record.StreamId)];
+            .Where(mark => EventCatchUpCoordinator.GivenUpMarkStillStands(mark.GivenUpOnBuildVersion, currentBuildVersion))
+            .Select(mark => mark.StreamId)];
     }
+
+    private sealed record GivenUpMark(Guid StreamId, string? GivenUpOnBuildVersion);
 
     /// <summary>
     /// The node-wide counts, across every project — <c>h9k status</c>'s own scope, which is this

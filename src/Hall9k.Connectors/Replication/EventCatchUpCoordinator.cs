@@ -490,8 +490,16 @@ public sealed class EventCatchUpCoordinator
         // node's own since-fixed build never got the chance to answer for. Persisted immediately,
         // never merely computed for this one pass, because the ordinary query's own
         // !CatchUpGivenUp filter — and every later sweep's — has to see the reset too.
+        // Narrowed to a mismatched build version in the query itself, not merely in the loop below:
+        // a record already marked on the CURRENT build can never satisfy GivenUpMarkStillStands's
+        // own reset condition (its base and distance are trivially equal to themselves), so once a
+        // sweep has reset every stream this node's own build can reset, every later sweep on the
+        // identical build read zero full documents — RecordJson included — instead of every
+        // given-up record in the project on every single sweep (independent pre-PR review, cycle 1,
+        // adversarial lens, low).
         IReadOnlyList<HeldReplicatedEventRecord> givenUpSoFar = await session.Query<HeldReplicatedEventRecord>()
-            .Where(record => record.ProjectId == projectId && record.CatchUpGivenUp)
+            .Where(record => record.ProjectId == projectId && record.CatchUpGivenUp
+                && (record.GivenUpOnBuildVersion == null || record.GivenUpOnBuildVersion != currentBuildVersion))
             .ToListAsync(cancellationToken);
         bool resetAnyOnNewerBuild = false;
         foreach (HeldReplicatedEventRecord record in givenUpSoFar)
