@@ -10,6 +10,7 @@ using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
@@ -29,8 +30,8 @@ namespace Hall9k.Cli.Commands;
 /// h9k task take: <c>--force</c> is an owner-role member's own unilateral override of an absent
 /// holder (idea 202383dc, item 4). Absence is never detected — presence detection is dead, never
 /// parked — so that path prints whatever evidence it has and proceeds on the operator's own
-/// judgment: the holder it currently reads, since when, and the last time anything from that
-/// node's own outbox was observed here.
+/// judgment: the holder it currently reads, since when, and how far into that node's own outbox
+/// this node has actually read, with when it got there.
 /// <para>
 /// Without <c>--force</c> this is the cooperative take instead (idea 202383dc, item 5, "a member
 /// can ask a holder for a task"): a task with no current holder claims directly through the
@@ -124,7 +125,7 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             ?? throw new DomainNotFoundException($"No project {task.ProjectId}.");
         await AssertOwnerRoleAsync(session, context, project, chainReader, keyStore, cancellationToken);
 
-        await PrintEvidenceAsync(session, previousHolderNodeId, task.HolderSince, cancellationToken);
+        await PrintEvidenceAsync(session, previousHolderNodeId, project.Id, task.HolderSince, cancellationToken);
 
         (LedgerCommitter committer, LedgerSigningKey signingKey, string ownerFingerprint) =
             await TaskRecordPublication.ResolveIdentityAsync(session, context, cancellationToken);
@@ -856,14 +857,19 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
     /// <summary>
     /// The evidence this command prints and then proceeds past (idea 202383dc, item 4: "the
     /// command prints the evidence it has ... and proceeds on the operator's judgment, never on
-    /// detected absence"). "When that node's outbox last moved" is read from the most recent
-    /// message this node has ever received FROM the holder's own node — the one durable, already-
-    /// replicated proxy this platform has for "when did we last hear anything from them"; there is
-    /// no stored commit timestamp for a sender's outbox ref anywhere in the existing message or
-    /// replication seams, and this command is not the place to add one.
+    /// detected absence"). What this node has heard from the holder's own outbox is read from the
+    /// <see cref="EventReplicationInboxCursor"/> this node keeps for that sender in this task's own
+    /// project (decision ea4c1a8b): that cursor is the record of what was actually read here,
+    /// envelope by envelope, whatever each one turned out to carry. The received-message view it
+    /// used to read instead was a narrower fact wearing the same words — it counts only envelopes
+    /// addressed to this node as messages, so a holder whose whole outbox this node had read and
+    /// applied as replicated events still printed "nothing has ever been heard from its outbox"
+    /// (task 054d5ab0: fourteen Mac envelopes read on Windows, 2026-09-19, and the forced take
+    /// there said it had heard nothing).
     /// </summary>
     private static async Task PrintEvidenceAsync(
-        IDocumentSession session, Guid holderNodeId, DateTimeOffset? holderSince, CancellationToken cancellationToken)
+        IDocumentSession session, Guid holderNodeId, Guid projectId, DateTimeOffset? holderSince,
+        CancellationToken cancellationToken)
     {
         NodeDetails? holderNode = await session.LoadAsync<NodeDetails>(holderNodeId, cancellationToken);
         string holderName = holderNode?.MachineName.IsNotBlank() == true
@@ -871,16 +877,11 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             : $"node {DomainId.Short(holderNodeId)}";
         string since = holderSince is { } sinceAt ? sinceAt.ToString("u") : "an unrecorded time";
 
-        MessageDetails? lastMessage = await session.Query<MessageDetails>()
-            .Where(message => message.FromNodeId == holderNodeId && message.ReceivedAt != null)
-            .OrderByDescending(message => message.ReceivedAt)
-            .FirstOrDefaultAsync(cancellationToken);
-        string outboxFact = lastMessage?.ReceivedAt is { } heardAt
-            ? $"last heard from at {heardAt:u}"
-            : "nothing has ever been heard from its outbox on this node";
+        EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
+            EventReplicationStreamId.ForInboxCursor(holderNodeId, projectId), cancellationToken);
 
         AnsiConsole.MarkupLine(
-            $"[yellow]Evidence:[/] currently held by {holderName.EscapeMarkup()}, since {since} — {outboxFact}.");
+            $"[yellow]Evidence:[/] currently held by {holderName.EscapeMarkup()}, since {since} — {DescribeOutboxAsObserved(cursor)}.");
         AnsiConsole.MarkupLine(
             "[yellow]This is not a detected absence[/] — nothing here confirms the holder is actually "
             + "gone. Proceeding overrides it on your own judgment.");
@@ -889,4 +890,23 @@ public sealed class TaskTakeCommand : Hall9kAsyncCommand<TaskTakeCommand.Setting
             + "the next time this takeover replicates there — recorded as superseded by takeover, its "
             + "transcript kept, no pull request action follows from it.[/]");
     }
+
+    /// <summary>
+    /// One clause saying what this node has observed of a holder's own outbox, from that sender's
+    /// events-replication cursor. The seq is the highest envelope this node has inspected there
+    /// (inspected, not applied: the cursor advances past every envelope looked at, whatever it
+    /// carried, which is exactly the "we have heard from them" fact an operator needs), and the
+    /// time is when the cursor last reached it. A cursor standing at seq 0, and a sender with no
+    /// cursor at all, are the same fact and say so; a cursor that has advanced but carries no
+    /// stamp was written before this node started keeping one, so it names the seq and admits the
+    /// time is missing rather than claiming the outbox was never read.
+    /// </summary>
+    internal static string DescribeOutboxAsObserved(EventReplicationInboxCursor? cursor) => cursor switch
+    {
+        { HighestSeqInspected: > 0 and var seq, HighestSeqInspectedAt: { } inspectedAt } =>
+            $"its outbox has been read here through seq {seq}, as of {inspectedAt:u}",
+        { HighestSeqInspected: > 0 and var seq } =>
+            $"its outbox has been read here through seq {seq}, at a time this node did not record",
+        _ => "nothing from its outbox has ever been read on this node",
+    };
 }

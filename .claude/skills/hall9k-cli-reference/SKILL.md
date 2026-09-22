@@ -276,9 +276,10 @@ own agent context (`WorkPromptBuilder.Build`).
 `h9k task take <id> --force --reason "<why>"`: owner-role required (the identical gate `h9k
 project member remove`/`h9k project invite` already apply, checked against the task's own
 project chain). Absence is never detected — presence detection is dead, never parked — so the
-command prints the evidence it has (the current holder, since when, and the last time anything
-was heard from that node's own outbox — the latest received `MessageDetails` row from it, the
-one durable proxy this platform has) and proceeds on the operator's own judgment. A gated
+command prints the evidence it has (the current holder, since when, and how far into that node's
+own outbox this node has actually read, with when it got there — the `EventReplicationInboxCursor`
+this node keeps for that sender in the task's own project, which records every envelope inspected
+here whatever it turned out to carry) and proceeds on the operator's own judgment. A gated
 project's own tracker take (`TrackerClaimCheck.TakeOrRefuseAsync`) runs first; its refusal stops
 the override outright, before the ledger holder is ever touched, with the tracker's own sentence.
 The ledger write itself (`TaskLedgerHolder.TryOverrideAsync`) is a conditional write through A1
