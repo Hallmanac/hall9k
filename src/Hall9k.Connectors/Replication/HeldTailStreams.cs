@@ -28,22 +28,32 @@ public sealed record HeldTailSummary(int StreamsHeldTailOnly, int StreamsGivenUp
 public static class HeldTailStreams
 {
     /// <summary>
-    /// Every stream in <paramref name="projectId"/> carrying at least one given-up held record.
+    /// Every stream in <paramref name="projectId"/> carrying at least one held record whose own
+    /// give-up still stands against <paramref name="currentBuildVersion"/>
+    /// (<see cref="EventCatchUpCoordinator.GivenUpMarkStillStands"/>) — a record given up on an
+    /// older build counts as not given up here, the build-version bound lift this node's own sweep
+    /// applies before this read ever runs (<see cref="EventCatchUpCoordinator.RequestHeldTailStreamsAsync"/>
+    /// resets such a record's own <see cref="HeldReplicatedEventRecord.CatchUpGivenUp"/> and
+    /// <see cref="HeldReplicatedEventRecord.CatchUpAttempts"/> before this method is ever called,
+    /// so this is normally a belt-and-braces read of state that already agrees).
+    /// <para>
     /// The mark is per record but the verdict is per stream, and this is what makes that so: a
     /// held record that arrives AFTER its stream reached the attempt stop carries a count of zero
     /// of its own, and without this set that one fresh record would put its stream back in the ask
     /// rotation and start the whole three-attempt cycle again on every later arrival — which for a
     /// tail that keeps growing behind a genesis nobody holds is the unbounded loop the stop exists
     /// to prevent.
+    /// </para>
     /// </summary>
     public static async Task<HashSet<Guid>> GivenUpStreamIdsAsync(
-        IQuerySession session, Guid projectId, CancellationToken cancellationToken)
+        IQuerySession session, Guid projectId, string currentBuildVersion, CancellationToken cancellationToken)
     {
-        IReadOnlyList<Guid> streamIds = await session.Query<HeldReplicatedEventRecord>()
+        IReadOnlyList<HeldReplicatedEventRecord> givenUp = await session.Query<HeldReplicatedEventRecord>()
             .Where(record => record.ProjectId == projectId && record.CatchUpGivenUp)
-            .Select(record => record.StreamId)
             .ToListAsync(cancellationToken);
-        return [.. streamIds];
+        return [.. givenUp
+            .Where(record => EventCatchUpCoordinator.GivenUpMarkStillStands(record.GivenUpOnBuildVersion, currentBuildVersion))
+            .Select(record => record.StreamId)];
     }
 
     /// <summary>

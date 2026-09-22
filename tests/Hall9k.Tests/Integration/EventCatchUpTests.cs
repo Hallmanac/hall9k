@@ -42,6 +42,7 @@ namespace Hall9k.Tests.Integration;
 public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLifetime
 {
     private const string RepositoryPath = "/repo-shared-catchup";
+    private const string BuildVersion = "0.10.31";
     private static readonly DateTimeOffset Now = new(2026, 9, 17, 12, 0, 0, TimeSpan.Zero);
 
     private readonly PostgresFixture _postgres;
@@ -2776,7 +2777,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = store.LightweightSession())
         {
             (await coordinator.RequestHeldTailStreamsAsync(
-                session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                session, projectId, myNodeId, "owner-fingerprint", BuildVersion, settleWindow, cooldown,
                 EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, Now.AddSeconds(10), cts.Token))
                 .AsksMinted.Should().Be(0, "a hold the ordinary flow has not had one sweep to fix is not a gap yet");
         }
@@ -2789,7 +2790,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             await using (IDocumentSession session = store.LightweightSession())
             {
                 (await coordinator.RequestHeldTailStreamsAsync(
-                    session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                    session, projectId, myNodeId, "owner-fingerprint", BuildVersion, settleWindow, cooldown,
                     EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, askAt, cts.Token))
                     .AsksMinted.Should().Be(1, $"attempt {attempt} is inside the three this node makes");
             }
@@ -2799,7 +2800,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             await using (IDocumentSession session = store.LightweightSession())
             {
                 (await coordinator.RequestHeldTailStreamsAsync(
-                    session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                    session, projectId, myNodeId, "owner-fingerprint", BuildVersion, settleWindow, cooldown,
                     EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, askAt.AddSeconds(30), cts.Token))
                     .AsksMinted.Should().Be(0, "a request for this stream is already outstanding");
             }
@@ -2831,7 +2832,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             await using (IDocumentSession session = store.LightweightSession())
             {
                 HeldTailSweepResult cooling = await coordinator.RequestHeldTailStreamsAsync(
-                    session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                    session, projectId, myNodeId, "owner-fingerprint", BuildVersion, settleWindow, cooldown,
                     EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, askAt.AddMinutes(1), cts.Token);
                 cooling.AsksMinted.Should().Be(0, "the ask went out a minute ago and the cooldown is five");
                 cooling.StreamsGivenUp.Should().Be(0, "a decline inside the cooldown is not the fleet's last word");
@@ -2843,7 +2844,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = store.LightweightSession())
         {
             HeldTailSweepResult stopped = await coordinator.RequestHeldTailStreamsAsync(
-                session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                session, projectId, myNodeId, "owner-fingerprint", BuildVersion, settleWindow, cooldown,
                 EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, firstAskAt.AddHours(4), cts.Token);
             stopped.AsksMinted.Should().Be(0, "three attempts is the stop, however long the cooldown has since elapsed");
             stopped.StreamsGivenUp.Should().Be(1);
@@ -2855,7 +2856,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = store.LightweightSession())
         {
             HeldTailSweepResult afterStop = await coordinator.RequestHeldTailStreamsAsync(
-                session, projectId, myNodeId, "owner-fingerprint", settleWindow, cooldown,
+                session, projectId, myNodeId, "owner-fingerprint", BuildVersion, settleWindow, cooldown,
                 EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, firstAskAt.AddHours(5), cts.Token);
             afterStop.AsksMinted.Should().Be(0);
             afterStop.StreamsGivenUp.Should().Be(0, "a stream given up on is not given up on twice");
@@ -2880,6 +2881,86 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
 
             HeldTailSummary summary = await HeldTailStreams.SummarizeAsync(session, cts.Token);
             summary.Should().BeEquivalentTo(new HeldTailSummary(StreamsHeldTailOnly: 0, StreamsGivenUp: 1));
+        }
+    }
+
+    /// <summary>
+    /// Task: a run stream whose first event is a reconstruction rather than a dispatch — the
+    /// build-version bound lift for the 14 Mac-origin streams the Windows node had already given
+    /// up on under v0.10.27. A stream given up while this node ran an older build earns three
+    /// fresh asks, automatically, the moment this node's own build changes — no fleet reconcile,
+    /// no <c>h9k task pull</c> or <c>h9k project pull</c>, and no human involved at all.
+    /// </summary>
+    [Fact]
+    public async Task A_stream_given_up_on_an_older_build_earns_three_fresh_asks_on_a_newer_one()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid myNodeId = DomainId.New();
+        Guid senderNodeId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid streamId = DomainId.New();
+        EventCatchUpCoordinator coordinator = new();
+        TimeSpan settleWindow = TimeSpan.FromSeconds(45);
+        TimeSpan cooldown = TimeSpan.FromMinutes(5);
+        const string olderBuild = "0.10.27";
+        const string newerBuild = "0.10.31";
+
+        await using DocumentStore store = OpenStore("event_catchup_held_tail_build_version_reset");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            HeldReplicatedEventRecord alreadyGivenUp =
+                HeldRecord(streamId, projectId, senderNodeId, originSequence: 7009, heldAt: Now);
+            alreadyGivenUp.CatchUpAttempts = EventCatchUpCoordinator.MaxHeldTailAttempts;
+            alreadyGivenUp.CatchUpGivenUp = true;
+            alreadyGivenUp.GivenUpOnBuildVersion = olderBuild;
+            alreadyGivenUp.LastCatchUpAskedAt = Now.AddHours(-4);
+            session.Store(alreadyGivenUp);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // A sweep still on the OLD build changes nothing: the give-up still stands against its own
+        // build, and asking again would be the exact fourth ask the stop exists to prevent.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            HeldTailSweepResult stillOldBuild = await coordinator.RequestHeldTailStreamsAsync(
+                session, projectId, myNodeId, "owner-fingerprint", olderBuild, settleWindow, cooldown,
+                EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, Now.AddMinutes(1), cts.Token);
+            stillOldBuild.AsksMinted.Should().Be(0, "the give-up still stands against the build that marked it");
+            stillOldBuild.StreamsGivenUp.Should().Be(0, "already given up, not given up on again this sweep");
+        }
+
+        await using (IQuerySession session = store.QuerySession())
+        {
+            HeldReplicatedEventRecord stillGivenUp = (await session.Query<HeldReplicatedEventRecord>()
+                .Where(record => record.StreamId == streamId).FirstOrDefaultAsync(cts.Token))!;
+            stillGivenUp.CatchUpGivenUp.Should().BeTrue();
+            stillGivenUp.CatchUpAttempts.Should().Be(EventCatchUpCoordinator.MaxHeldTailAttempts);
+        }
+
+        // This node's own build changes. The very next sweep resets the give-up before it ever
+        // reads which streams to ask about, and this stream earns its first of three fresh asks.
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            HeldTailSweepResult onNewerBuild = await coordinator.RequestHeldTailStreamsAsync(
+                session, projectId, myNodeId, "owner-fingerprint", newerBuild, settleWindow, cooldown,
+                EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, Now.AddMinutes(2), cts.Token);
+            onNewerBuild.AsksMinted.Should().Be(1, "the newer build earns this stream three fresh asks");
+            onNewerBuild.StreamsGivenUp.Should().Be(0);
+        }
+
+        await using (IQuerySession session = store.QuerySession())
+        {
+            HeldReplicatedEventRecord reset = (await session.Query<HeldReplicatedEventRecord>()
+                .Where(record => record.StreamId == streamId).FirstOrDefaultAsync(cts.Token))!;
+            reset.CatchUpGivenUp.Should().BeFalse();
+            reset.GivenUpOnBuildVersion.Should().BeNull("cleared along with the reset, not carried forward stale");
+            reset.CatchUpAttempts.Should().Be(1, "reset to zero and then bumped once for the ask this sweep just made");
+
+            HeldTailSummary summary = await HeldTailStreams.SummarizeAsync(session, cts.Token);
+            summary.Should().BeEquivalentTo(
+                new HeldTailSummary(StreamsHeldTailOnly: 1, StreamsGivenUp: 0),
+                "chased again under the newer build, not given up on any more");
         }
     }
 
@@ -2911,7 +2992,7 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
         await using (IDocumentSession session = store.LightweightSession())
         {
             HeldTailSweepResult swept = await coordinator.RequestHeldTailStreamsAsync(
-                session, projectId, myNodeId, "owner-fingerprint", TimeSpan.FromSeconds(45), TimeSpan.FromMinutes(5),
+                session, projectId, myNodeId, "owner-fingerprint", BuildVersion, TimeSpan.FromSeconds(45), TimeSpan.FromMinutes(5),
                 EventCatchUpCoordinator.MaxHeldTailAsksPerSweep, Now.AddMinutes(10), cts.Token);
             swept.AsksMinted.Should().Be(0);
             swept.StreamsGivenUp.Should().Be(0);

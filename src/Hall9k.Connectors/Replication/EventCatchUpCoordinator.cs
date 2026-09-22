@@ -2,6 +2,7 @@ using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Replication;
+using Hall9k.Domain.Infrastructure;
 using Hall9k.Domain.Infrastructure.Ids;
 using Marten;
 
@@ -277,6 +278,23 @@ public sealed class EventCatchUpCoordinator
     /// <c>RunDispatched</c>.</summary>
     public const int MaxHeldTailAttempts = 3;
 
+    /// <summary>
+    /// Whether a give-up recorded on <paramref name="givenUpOnBuildVersion"/> still stands against
+    /// <paramref name="currentBuildVersion"/> — the build-version bound lift this node's own
+    /// receiver applies because it cannot know a PEER's build: a give-up marked while this node
+    /// itself ran an older build is read as untested against whatever this node's own newer build
+    /// actually fixed (the responder or the genesis classification, say), so it no longer stands
+    /// and the stream earns three fresh asks. A give-up recorded on the build currently running, or
+    /// on one newer still, stands unchanged. A record with no recorded version at all — every row
+    /// given up before this field existed — counts as recorded on a version older than anything
+    /// this method is ever asked to compare it against, so it never stands either. Two values this
+    /// method cannot parse as numeric versions are read as still standing, the same "never guess"
+    /// default <see cref="BuildVersionOrdering.IsOlderThan"/> already applies.
+    /// </summary>
+    public static bool GivenUpMarkStillStands(string? givenUpOnBuildVersion, string currentBuildVersion) =>
+        givenUpOnBuildVersion is not null
+        && !BuildVersionOrdering.IsOlderThan(givenUpOnBuildVersion, currentBuildVersion);
+
     /// <summary>How many NEW held-tail asks one sweep mints, however many streams qualify. Ten,
     /// because the qualifying set is unbounded in exactly one situation — a bootstrap or a
     /// <c>--since all</c> pull whose answer lands hundreds of tails at once, each of them held
@@ -451,13 +469,50 @@ public sealed class EventCatchUpCoordinator
     /// nothing else — double answers are harmless by dedupe, the same tolerance
     /// <see cref="RequestStreamBroadcastAsync"/> already documents.
     /// </para>
+    /// <para>
+    /// <paramref name="currentBuildVersion"/> is this node's own build (<c>CliVersion.Current</c>/
+    /// <c>DaemonVersion.Current</c>), read before either query below: <see cref="GivenUpMarkStillStands"/>
+    /// decides which given-up records this sweep resets before this project's own held-tail state
+    /// is ever read, so a stream given up under an older build earns three fresh asks the moment
+    /// this node upgrades, with no fleet reconcile and no human-run pull needed for it.
+    /// </para>
     /// </summary>
     /// <returns>What this sweep did: the asks minted, the streams given up on, and the streams
     /// whose held records are waiting on a replay rather than on the fleet.</returns>
     public async Task<HeldTailSweepResult> RequestHeldTailStreamsAsync(
-        IDocumentSession session, Guid projectId, Guid myNodeId, string myOwnerFingerprint, TimeSpan settleWindow,
-        TimeSpan reMintCooldown, int maxAsksPerSweep, DateTimeOffset now, CancellationToken cancellationToken)
+        IDocumentSession session, Guid projectId, Guid myNodeId, string myOwnerFingerprint,
+        string currentBuildVersion, TimeSpan settleWindow, TimeSpan reMintCooldown, int maxAsksPerSweep,
+        DateTimeOffset now, CancellationToken cancellationToken)
     {
+        // The build-version bound lift: a stream given up while this node ran an older build than
+        // the one running now is reset here, before the ordinary query below ever runs, so it
+        // earns three fresh asks under the newer build rather than standing on a verdict this
+        // node's own since-fixed build never got the chance to answer for. Persisted immediately,
+        // never merely computed for this one pass, because the ordinary query's own
+        // !CatchUpGivenUp filter — and every later sweep's — has to see the reset too.
+        IReadOnlyList<HeldReplicatedEventRecord> givenUpSoFar = await session.Query<HeldReplicatedEventRecord>()
+            .Where(record => record.ProjectId == projectId && record.CatchUpGivenUp)
+            .ToListAsync(cancellationToken);
+        bool resetAnyOnNewerBuild = false;
+        foreach (HeldReplicatedEventRecord record in givenUpSoFar)
+        {
+            if (GivenUpMarkStillStands(record.GivenUpOnBuildVersion, currentBuildVersion))
+            {
+                continue;
+            }
+
+            record.CatchUpGivenUp = false;
+            record.CatchUpAttempts = 0;
+            record.GivenUpOnBuildVersion = null;
+            session.Store(record);
+            resetAnyOnNewerBuild = true;
+        }
+
+        if (resetAnyOnNewerBuild)
+        {
+            await session.SaveChangesAsync(cancellationToken);
+        }
+
         // Narrowed in the query rather than in the planner for cost alone: in the steady state this
         // reads nothing at all, and during a bootstrap it reads only the holds that already
         // outlived a sweep. Both conditions are restated in PlanHeldTailAsks, which is where they
@@ -473,7 +528,8 @@ public sealed class EventCatchUpCoordinator
 
         // The mark is per record and the verdict is per stream — see HeldTailStreams'
         // GivenUpStreamIdsAsync for why a fresh record on a given-up stream must not restart it.
-        HashSet<Guid> givenUpStreams = await HeldTailStreams.GivenUpStreamIdsAsync(session, projectId, cancellationToken);
+        HashSet<Guid> givenUpStreams =
+            await HeldTailStreams.GivenUpStreamIdsAsync(session, projectId, currentBuildVersion, cancellationToken);
 
         // Every stream-shaped request this project has ever recorded, in one query rather than one
         // per candidate stream: the set is bounded by how many streams have ever been asked for
@@ -553,6 +609,7 @@ public sealed class EventCatchUpCoordinator
             foreach (HeldReplicatedEventRecord record in forStream)
             {
                 record.CatchUpGivenUp = true;
+                record.GivenUpOnBuildVersion = currentBuildVersion;
                 session.Store(record);
             }
 
