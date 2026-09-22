@@ -45,6 +45,14 @@ public sealed class DecisionShowCommand : Hall9kAsyncCommand<DecisionShowCommand
         AnsiConsole.MarkupLine($"[bold]{decision.Statement.EscapeMarkup()}[/]");
         AnsiConsole.WriteLine();
         AnsiConsole.MarkupLine($"[dim]Id[/]           {decision.Id} [dim](cite it as {DomainId.Short(decision.Id)})[/]");
+        if (decision.LegacyId is { } legacyId)
+        {
+            // An imported decision (idea d805fd8b, piece 3) is also findable by the name it had
+            // before this store existed, so a reader who arrived here from an old citation can see
+            // they are in the right place.
+            AnsiConsole.MarkupLine($"[dim]Cited as[/]     {legacyId.EscapeMarkup()} [dim](before this store)[/]");
+        }
+
         AnsiConsole.MarkupLine($"[dim]Scope[/]        {await ScopeLineAsync(session, decision, cancellationToken)}");
         AnsiConsole.MarkupLine($"[dim]Status[/]       {StatusLine(decision)}");
         AnsiConsole.MarkupLine($"[dim]Recorded[/]     {decision.RecordedAt.ToLocalTime():g}");
