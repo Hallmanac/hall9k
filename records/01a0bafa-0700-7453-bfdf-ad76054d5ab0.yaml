@@ -17,3 +17,7 @@ origin-branch: task/054d5ab0-the-forced-take-s-evidence-lin
 published: 2026-09-19 18:50:12Z
 context: |-
   Captured 2026-09-19 14:4x EDT by the Mac project window, first forced take between real nodes. Evidence: on Windows at 14:33 EDT, h9k task take a56cf16e --force printed 'currently held by node 25e490e4, since 2026-09-19 18:21:51Z, nothing has ever been heard from its outbox on this node' while refs/hall9k/messages/01a00d41-5b80-753d-a3f1-070b25e490e4 held 14 Mac envelopes that Windows had read and applied (the Mac's TokensRecorded broadcasts arrived there, per the Windows project window's 13:43 EDT post). Pointer: TaskTakeCommand's evidence sentence (src/Hall9k.Cli/Commands/TaskTakeCommand.cs) and whatever record it reads for the holder's outbox; the EventReplicationInboxCursor for that sender is the observed fact. Lineage: a follow-on to the forced take (7eaaf6bc, PR #481), not a fix of a fix.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a04de3-7a23-75c0-8a06-9314ef6ab27d
+holder-node-name: HALL-AGELESSRX
+holder-since: 2026-09-22 11:23:36Z
