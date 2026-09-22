@@ -6,6 +6,7 @@ using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Learning.Queries;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -612,6 +613,98 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
             recorded.Id, token: CancellationToken.None);
         events.Should().ContainSingle().Which
             .Headers![EventOriginStampingListener.NodeIdHeader].Should().Be(node.NodeId.ToString());
+    }
+
+    /// <summary>
+    /// The import's own gate (idea d805fd8b, piece 3): a node with no replication switch-on point
+    /// records nothing at all, because an event written before that point never rides an outbox
+    /// and is never backfilled from elsewhere, so the whole rulebook would be stranded in one
+    /// install's store with no id anybody else could cite.
+    /// </summary>
+    [Fact]
+    public async Task The_import_is_refused_on_a_node_that_has_not_switched_replication_on()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedProjectAsync(CancellationToken.None);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        Func<Task> importing = () => DecisionImportCommand.RunAsync(
+            session, new DecisionImportCommand.Settings { Project = project.Name },
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
+
+        await importing.Should().ThrowAsync<DomainValidationException>().WithMessage("*M2a*");
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        (await query.Query<DecisionDetails>().CountAsync(CancellationToken.None)).Should().Be(0);
+    }
+
+    /// <summary>
+    /// The import itself, end to end against a real store: every §16 entry and every AGENTS.md
+    /// standing rule recorded once, each keeping the citation it already had, and the rendered
+    /// document carrying that citation so the references already written across the repository
+    /// land somewhere. Then the same call again, which must record nothing.
+    /// </summary>
+    [Fact]
+    public async Task The_import_records_every_legacy_entry_once_and_a_second_run_records_nothing()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedProjectAsync(CancellationToken.None);
+        await SwitchReplicationOnAsync(node, CancellationToken.None);
+
+        int expected = LegacyDecisionsLogParser.Parse(LegacyKnowledgeSource.DecisionsLog()).Count
+            + LegacyStandingRulesParser.Parse(LegacyKnowledgeSource.StandingRules()).Count;
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            LegacyImportOutcome first = await DecisionImportCommand.RunAsync(
+                session, new DecisionImportCommand.Settings { Project = project.Name },
+                node.OwnerId, node.NodeId, Now, CancellationToken.None);
+            await session.SaveChangesAsync(CancellationToken.None);
+
+            first.Recorded.Should().Be(expected);
+            first.AlreadyImported.Should().Be(0);
+            first.Retired.Should().Be(1, "§16 #162 is the one rule this change retired as it imported it");
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            LegacyImportOutcome second = await DecisionImportCommand.RunAsync(
+                session, new DecisionImportCommand.Settings { Project = project.Name },
+                node.OwnerId, node.NodeId, Now, CancellationToken.None);
+            await session.SaveChangesAsync(CancellationToken.None);
+
+            second.Recorded.Should().Be(0);
+            second.AlreadyImported.Should().Be(expected);
+            second.Retired.Should().Be(0, "a run that records nothing retires nothing either");
+        }
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        (await query.Query<DecisionDetails>().CountAsync(CancellationToken.None)).Should().Be(expected);
+
+        DecisionDetails retired = await query.Query<DecisionDetails>()
+            .SingleAsync(decision => decision.LegacyId == "Decisions Log #162", CancellationToken.None);
+        retired.Status.Should().Be(DecisionStatus.Superseded);
+        retired.SupersededByDecisionId.Should().BeNull();
+        retired.SupersedeReason.Should().Contain("DecisionsLogNumberingGuardTests");
+
+        RenderedKnowledgeDocuments documents = await KnowledgeDocuments.RenderAsync(
+            query, project.Id, CancellationToken.None);
+        documents.Decisions.Should().Contain("(Decisions Log #62)");
+        documents.Decisions.Should().Contain("(AGENTS.md Git rules #1)");
+        documents.Decisions.Should().NotContain("(Decisions Log #162)",
+            "the retired rule is still in the store for a citation to resolve against, and out of the "
+            + "file agents read as the rulebook");
+    }
+
+    /// <summary>
+    /// What the first outbound replication sweep would have recorded here, without running one:
+    /// the import reads this node's own switch-on point and nothing else about replication.
+    /// </summary>
+    private async Task SwitchReplicationOnAsync(NodeContext node, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        NodeAggregate aggregate = (await session.Events.AggregateStreamAsync<NodeAggregate>(
+            node.NodeId, token: cancellationToken))!;
+        session.Events.Append(node.NodeId, NodeDecider.SwitchOnReplication(aggregate, 0, Now));
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private async Task<(NodeContext Node, ProjectDetails Project)> SeedProjectAsync(CancellationToken cancellationToken)

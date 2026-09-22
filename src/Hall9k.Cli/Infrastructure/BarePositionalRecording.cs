@@ -48,7 +48,7 @@ internal static class BarePositionalRecording
     public static readonly IReadOnlyDictionary<string, string[]> Branches =
         new Dictionary<string, string[]>(StringComparer.Ordinal)
         {
-            ["decide"] = [RecordSubcommand, "list", "show", "supersede"],
+            ["decide"] = [RecordSubcommand, "list", "show", "supersede", "import"],
             ["learn"] = [RecordSubcommand, "list", "show", "retire", "distill"],
         };
 

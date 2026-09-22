@@ -876,7 +876,7 @@ public static class CliCommandTree
                 .WithDescription(
                     "Record a decision. h9k decide \"…\" reaches this same command with the statement "
                     + "as its argument; spell the subcommand out when the statement itself is the word "
-                    + "list, show, supersede, or record.")
+                    + "list, show, supersede, import, or record.")
                 .WithExample("decide", "record",
                     "\"Agents never push; the daemon pushes every branch with --force-with-lease\"")
                 .WithExample("decide", "record", "\"Split a ternary across lines\"", "--owner")
@@ -908,6 +908,17 @@ public static class CliCommandTree
                     "\"The renumberer it existed to serve is gone\"")
                 .WithExample("decide", "supersede", "28b19893", "--by", "4f10ac72", "--reason",
                     "\"Replaced by the event-sourced log\"");
+            decide.AddCommand<DecisionImportCommand>("import")
+                .WithDescription(
+                    "The one-time import of this repository's markdown rulebooks: every PLAN.md §16 "
+                    + "Decisions Log entry and every AGENTS.md standing rule, recorded as a decision "
+                    + "keeping the citation it already had, so a reference to Decisions Log #62 still "
+                    + "resolves in the rendered decisions.md. Refused on a node where event replication "
+                    + "has not switched on (idea 202383dc, M2a), because an event written before that "
+                    + "point never travels. Safe to run twice: the second run records only what the "
+                    + "first one missed.")
+                .WithExample("decide", "import")
+                .WithExample("decide", "import", "--project", "hall9k");
         });
 
         config.AddBranch("learn", learn =>
