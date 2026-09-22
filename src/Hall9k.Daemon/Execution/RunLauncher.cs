@@ -6,6 +6,8 @@ using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
@@ -220,6 +222,13 @@ public sealed class RunLauncher(
                         task, project, stackedBase.BaseBranch, taskId, runId, cancellationToken);
 
             await RenderKnowledgeDocumentsIntoAsync(session, project, worktree.Path, runId, cancellationToken);
+            // The lesson section every prompt this method composes carries (idea d805fd8b, piece
+            // 5). Read once here, beside the render that writes the same store's lessons into the
+            // worktree as a file, and handed to whichever prompt branch below actually runs: the
+            // section is identical for a fresh build, a follow-up, a failing-checks lap and a
+            // changes-requested lap, and a per-branch read would be four chances to disagree.
+            InjectedLessons lessons = await LoadRecordedLessonsAsync(
+                session, project, runId, cancellationToken);
 
             Guid sessionId = DomainId.New();
             ExecutorMode mode = ExecutorMode.Subscription;
@@ -600,7 +609,7 @@ public sealed class RunLauncher(
                         task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                         interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                         baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                        voiceSkill: voiceSkill)
+                        voiceSkill: voiceSkill, lessons: lessons)
                     : task.FollowUpKind == FollowUpKind.Rebase
                         // voiceSkill on both of these too: each ends in the rebase verification
                         // rule, whose gate-fix instruction asks an append-style project for an
@@ -609,7 +618,7 @@ public sealed class RunLauncher(
                             task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                             interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                             baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                            voiceSkill: voiceSkill)
+                            voiceSkill: voiceSkill, lessons: lessons)
                         : isStackReplay
                             ? AgentPromptBuilder.BuildStackReplay(
                                 task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
@@ -619,7 +628,8 @@ public sealed class RunLauncher(
                                 commandTimeout: options.Value.VerifyGateTimeout,
                                 voiceSkill: voiceSkill,
                                 ontoCommitResolvedFromCurrentBaseTip: stackReplayOnto.ResolvedFromCurrentBaseTip,
-                                recordedOntoCommit: task.StackReplayOntoCommit)
+                                recordedOntoCommit: task.StackReplayOntoCommit,
+                                lessons: lessons)
                             // A human's changes-requested review gets its own prompt rather than
                             // the thread one (task: a changes-requested pull-request review from a
                             // human becomes a fix lap): the findings are handed over, and a
@@ -629,12 +639,12 @@ public sealed class RunLauncher(
                                     task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                                     baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                                    voiceSkill: voiceSkill)
+                                    voiceSkill: voiceSkill, lessons: lessons)
                                 : AgentPromptBuilder.BuildFollowUp(
                                     task, project, worktree.Branch, review.PullRequestUrl, commitStyle,
                                     interactiveMilestoneAddress: null, baseBranch: runBaseBranch,
                                     baseCommit: baseCommit, commandTimeout: options.Value.VerifyGateTimeout,
-                                    voiceSkill: voiceSkill);
+                                    voiceSkill: voiceSkill, lessons: lessons);
             }
             else
             {
@@ -676,7 +686,8 @@ public sealed class RunLauncher(
                     : AgentPromptBuilder.Build(
                         task, project, worktree.Branch, worktree.Path, resumesPreviousWork, handoffs,
                         baseBranch: runBaseBranch, baseCommit: baseCommit,
-                        commandTimeout: options.Value.VerifyGateTimeout, voiceSkill: voiceSkill);
+                        commandTimeout: options.Value.VerifyGateTimeout, voiceSkill: voiceSkill,
+                        lessons: lessons);
             }
 
             // isPrReview and the followUp branches above both compose through AgentPromptBuilder's
@@ -1230,6 +1241,34 @@ public sealed class RunLauncher(
 
         await pullRequests.OpenAsync(runId, taskId, cancellationToken);
         return true;
+    }
+
+    /// <summary>
+    /// This project's bounded lesson section for the prompt about to be composed (idea d805fd8b,
+    /// piece 5; backlog 55).
+    /// <para>
+    /// Best-effort in exactly the way <see cref="RenderKnowledgeDocumentsIntoAsync"/> is, and for
+    /// the same reason: the run's point is the work, and a session whose prompt is missing its
+    /// lessons is a worse session rather than a failed dispatch. A store or config-file problem is
+    /// logged once and the run goes on with <see cref="InjectedLessons.None"/>, which composes no
+    /// section at all, never a section that claims the project has nothing recorded, which would
+    /// be a claim nobody here is in a position to make.
+    /// </para>
+    /// </summary>
+    private async Task<InjectedLessons> LoadRecordedLessonsAsync(
+        IQuerySession query, ProjectDetails project, Guid runId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await LessonPromptFeed.LoadAsync(query, project.Id, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Run {RunId}: could not read {Project}'s recorded lessons, so this session's prompt "
+                + "carries no lesson section; h9k learn list still shows them", runId, project.Name);
+            return InjectedLessons.None;
+        }
     }
 
     /// <summary>

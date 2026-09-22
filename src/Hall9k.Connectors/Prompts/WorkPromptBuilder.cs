@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Linq;
 using System.Text;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Domain.Features.Learning;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -87,7 +88,8 @@ public static class WorkPromptBuilder
         string? baseBranch = null,
         string? baseCommit = null,
         TimeSpan? commandTimeout = null,
-        VoiceSkillName? voiceSkill = null)
+        VoiceSkillName? voiceSkill = null,
+        InjectedLessons? lessons = null)
     {
         // The branch this session's work sits on top of, resolved by the caller at dispatch
         // (RunDispatched.BaseBranch): the project's own for every ordinary run, a stacked child's
@@ -252,6 +254,11 @@ public static class WorkPromptBuilder
         }
 
         AppendProjectHome(prompt, project);
+        // After the home, which names where lessons.md lives, and before the working rules, whose
+        // own bullet tells this session to read that file: the section is the same knowledge
+        // arriving by a route that does not depend on the session choosing to open anything, so it
+        // belongs beside the pointer rather than buried among the rules (idea d805fd8b, piece 5).
+        AppendRecordedLessons(prompt, lessons, task.Id);
 
         AppendFragment(prompt, file, "working-rules-heading");
         prompt.AppendLine();
@@ -1731,6 +1738,131 @@ public static class WorkPromptBuilder
 
         AppendFragment(prompt, $"{TemplateDirectory}/build.md", "recorded-decisions-and-lessons");
     }
+
+    /// <summary>
+    /// The bounded, provenance-marked section of this project's recorded lessons plus the owner's
+    /// (idea d805fd8b, piece 5; backlog 55), the lesson TEXT itself, spliced into the prompt,
+    /// which is what separates this from <see cref="AppendRecordedDecisionsAndLessons"/> and from
+    /// <see cref="AppendProjectHome"/>: those two point a session at a file and depend on it
+    /// choosing to read one, and this costs nothing at turn one because the claims are already in
+    /// the prompt.
+    /// <para>
+    /// Public and called from <c>Hall9k.Daemon.Execution.AgentPromptBuilder</c> as well, the same
+    /// reason <see cref="AppendWritingConventions"/> and <see cref="AppendPromptAddendum"/> are:
+    /// an implementation prompt, a follow-up, a review pass and a fix lap all carry the identical
+    /// section, and a second copy of this composition in the daemon's own builder is exactly the
+    /// shape that drifts.
+    /// </para>
+    /// <para>
+    /// A no-op for null, which every caller with no store to read passes and every existing test
+    /// gets by default, so a prompt with no lessons behind it renders byte for byte as it always
+    /// has. It is deliberately NOT a no-op when the section carries no lessons but held some back:
+    /// a session handed nothing and told nothing concludes the project has learned nothing and
+    /// stops looking, which is worse than the cap it was protecting it from
+    /// (<see cref="InjectedLessons.WorthComposing"/>).
+    /// </para>
+    /// </summary>
+    /// <param name="taskId">
+    /// The task this session is working, which the recording verb names through <c>--task</c> so
+    /// the lesson it writes carries its own run as provenance. Without it the bare verb records
+    /// <see cref="LessonProvenanceMark.NoRunNamed"/> — a dispatched session carries no run-naming
+    /// environment variable, so an unattended agent's claim was indistinguishable from one a
+    /// person typed and rode into every later prompt as though it were (independent pre-PR review,
+    /// cycle 3, adversarial lens).
+    /// </param>
+    public static void AppendRecordedLessons(StringBuilder prompt, InjectedLessons? lessons, Guid taskId)
+    {
+        if (lessons is not { WorthComposing: true })
+        {
+            return;
+        }
+
+        const string file = $"{TemplateDirectory}/recorded-lessons.md";
+        prompt.AppendLine();
+        AppendFragment(prompt, file, "heading");
+        prompt.AppendLine();
+        if (lessons.Any)
+        {
+            AppendFragment(prompt, file, "lead");
+            prompt.AppendLine();
+            foreach (InjectedLesson lesson in lessons.Lessons)
+            {
+                prompt.AppendLine(lesson.Line);
+            }
+        }
+        else
+        {
+            AppendFragment(prompt, file, "nothing-injected");
+        }
+
+        if (lessons.TruncatedByCap)
+        {
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "truncation",
+                ("Shown", lessons.Lessons.Count.ToString(CultureInfo.InvariantCulture)),
+                ("Eligible", lessons.EligibleForPrompt.ToString(CultureInfo.InvariantCulture)),
+                ("HeldForCap", lessons.HeldForCap.ToString(CultureInfo.InvariantCulture)),
+                ("MaxLessons", lessons.Caps.MaxLessons.ToString(CultureInfo.InvariantCulture)),
+                ("MaxCharacters", lessons.Caps.MaxCharacters.ToString(CultureInfo.InvariantCulture)));
+
+            // Only when the provenance rule actually held something back. Unconditionally, this
+            // sentence told a section whose whole inventory was eligible that the difference
+            // between two equal numbers "was held back on provenance", which is a hold that never
+            // happened, stated in the one paragraph whose job is to account honestly for what was
+            // left out (independent pre-PR review, cycle 3, both lenses).
+            if (lessons.HeldForProvenance > 0)
+            {
+                AppendFragment(prompt, file, "truncation-provenance-reconciliation",
+                    ("Eligible", lessons.EligibleForPrompt.ToString(CultureInfo.InvariantCulture)),
+                    ("Active", lessons.ActiveInScope.ToString(CultureInfo.InvariantCulture)));
+            }
+
+            AppendFragment(prompt, file, "truncation-pointer");
+        }
+
+        if (lessons.HeldForProvenance > 0)
+        {
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "held-for-provenance",
+                ("HeldForProvenance", HeldForProvenancePhrase(lessons)));
+        }
+
+        if (lessons.Any)
+        {
+            prompt.AppendLine();
+            AppendFragment(prompt, file, "verbs", ("TaskId", taskId.ToString()));
+        }
+
+        prompt.AppendLine();
+    }
+
+    /// <summary>
+    /// A count phrase that reads like English rather than "1 lesson(s)". Composed here rather than
+    /// left as a bare number in the template because the sentences around it need a subject that
+    /// agrees with its verb, and a template cannot inflect one.
+    /// </summary>
+    private static string CountOfLessons(int count) => count == 1 ? "one lesson" : $"{count} lessons";
+
+    /// <summary>
+    /// What the section says it held back on provenance, counted under each mark that actually
+    /// held something rather than under one mark standing in for all three. Three different
+    /// claims share that hold — an agent on a machine this node does not control, a recording node
+    /// nobody observed, and a lesson with no provenance at all — and naming the first for all of
+    /// them tells a session something nobody saw, which is the guess AGENTS.md forbids outright
+    /// (cycle-1 pre-PR review, both lenses).
+    /// <para>
+    /// One mark reads as the plain phrase, because the total and the breakdown are then the same
+    /// sentence and repeating it would only add a number. Two or more lead with the total, so the
+    /// count the section is accounting for is still the first thing read.
+    /// </para>
+    /// </summary>
+    private static string HeldForProvenancePhrase(InjectedLessons lessons) =>
+        lessons.HeldForProvenanceByMark switch
+        {
+            [HeldLessonCount only] => $"{CountOfLessons(only.Count)} {only.Mark.Label}",
+            var byMark => $"{CountOfLessons(lessons.HeldForProvenance)}: " + string.Join(
+                "; ", byMark.Select(held => $"{held.Count} {held.Mark.Label}")),
+        };
 
     /// <summary>
     /// Names the project's home and what is in it, so a dispatched session is told where
