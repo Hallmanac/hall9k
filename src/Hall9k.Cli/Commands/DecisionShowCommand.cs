@@ -21,7 +21,10 @@ public sealed class DecisionShowCommand : Hall9kAsyncCommand<DecisionShowCommand
     public sealed class Settings : CommandSettings
     {
         [CommandArgument(0, "<DECISION>")]
-        [Description("The decision: its id, or an unambiguous fragment of one")]
+        [Description(
+            "The decision: its id, an unambiguous fragment of one, or the citation an imported "
+            + "decision kept from before this store (\"Decisions Log #162\", or \"§16 #162\" for the "
+            + "same entry under the section that used to hold it)")]
         public string Decision { get; init; } = string.Empty;
     }
 

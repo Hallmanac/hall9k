@@ -49,9 +49,11 @@ public sealed record LegacyImportPlan(
 /// the same way: thirteen places in this repository cite <c>Decisions Log #162</c> today, and a
 /// citation whose entry was never imported resolves to nothing. So it is imported, keeping its
 /// citation, and ended on its own stream in the same transaction (<see cref="RetiredOnImport"/>) —
-/// which keeps it out of the rendered <c>decisions.md</c> agents read as the rulebook, while
-/// leaving it one <c>h9k decide list --all</c> or <c>h9k decide show</c> away for anybody following
-/// a citation to it (independent pre-PR review, cycle 1, adversarial lens).
+/// which keeps the rule itself out of the rulebook agents read, while leaving the citation
+/// answerable: <c>DecisionsDocumentRenderer</c> names it at the foot of <c>decisions.md</c> as
+/// ended, without restating it, and <c>DecisionIdResolver</c> accepts the citation itself, so
+/// <c>h9k decide show "Decisions Log #162"</c> reads it in full with the reason it ended
+/// (independent pre-PR review, cycle 1, adversarial and conformance lenses).
 /// </para>
 /// </summary>
 public static class LegacyKnowledgeImportDecider

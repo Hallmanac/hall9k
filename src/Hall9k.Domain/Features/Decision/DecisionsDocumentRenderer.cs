@@ -29,6 +29,15 @@ namespace Hall9k.Domain.Features.Decision;
 /// <c>h9k decide list --all</c> away, but a document agents read as the rulebook must not carry
 /// rules that stopped binding.
 /// </para>
+/// <para>
+/// One exception, and it is a signpost rather than a rule: a superseded decision that carries a
+/// legacy citation is named in a closing list, by citation and id, with no statement. The
+/// citations imported from PLAN.md §16 are written into source comments across this repository
+/// and this file's own header tells a reader to search for them, so a citation whose entry is
+/// simply absent reads as a dangling reference rather than as a rule that ended (independent
+/// pre-PR review, cycle 1, conformance lens). Naming it without restating it is what keeps the
+/// rulebook free of rules that stopped binding while still answering the reference.
+/// </para>
 /// </summary>
 public static class DecisionsDocumentRenderer
 {
@@ -51,6 +60,7 @@ public static class DecisionsDocumentRenderer
         Line(document);
 
         IReadOnlyList<DecisionDetails> binding = Binding(decisions);
+        IReadOnlyList<DecisionDetails> endedButCited = EndedButCited(decisions);
         if (binding.Count == 0)
         {
             Line(document,
@@ -58,12 +68,13 @@ public static class DecisionsDocumentRenderer
                 + "story, and self-contained enough to read on its own six months from now: "
                 + "`h9k decide \"Agents never push; the daemon pushes every branch with --force-with-lease\" "
                 + "--origin \"a plain push rejected two rebased follow-up branches, 2026-08-17\"`.");
+            AppendEndedButCited(document, endedButCited);
             return document.ToString();
         }
 
         Line(document,
             $"{Count(binding.Count, "decision")} binding here, oldest first. A superseded decision is "
-            + "not deleted, only left out of this file: `h9k decide list --all` shows those, and "
+            + "not deleted, only left out of the rules: `h9k decide list --all` shows those, and "
             + "`h9k decide show <id>` shows one in full with its provenance.");
 
         if (binding.Any(decision => decision.LegacyId.IsNotBlank()))
@@ -97,7 +108,43 @@ public static class DecisionsDocumentRenderer
             }
         }
 
+        AppendEndedButCited(document, endedButCited);
         return document.ToString();
+    }
+
+    /// <summary>
+    /// The closing signpost for a citation whose decision no longer binds: the citation, the id,
+    /// and the command that shows it in full. Deliberately not the statement — this file is read
+    /// as the rulebook, and a rule that stopped binding must not be readable here as though it
+    /// had not. Written only when there is one, so an ordinary project's document ends where its
+    /// last binding decision does.
+    /// <para>
+    /// The example command quotes the first citation in this project's own list rather than a
+    /// fixed one, so the line a reader can copy is a line that works in the document they are
+    /// actually holding.
+    /// </para>
+    /// </summary>
+    private static void AppendEndedButCited(StringBuilder document, IReadOnlyList<DecisionDetails> endedButCited)
+    {
+        if (endedButCited.Count == 0)
+        {
+            return;
+        }
+
+        Line(document);
+        Line(document, "## Ended, named here for the citations that still point at them");
+        Line(document);
+        Line(document,
+            $"{Count(endedButCited.Count, "decision")} here, each one predating this store, each keeping "
+            + "the citation it already had, and each since superseded. None of them binds and none is "
+            + "restated: they are named so a reference written elsewhere lands somewhere rather than on "
+            + "nothing. Read one in full, with the reason it ended, by the citation itself: "
+            + $"`h9k decide show \"{SingleLine(endedButCited[0].LegacyId)}\"`.");
+        Line(document);
+        foreach (DecisionDetails decision in endedButCited)
+        {
+            Line(document, $"- {SingleLine(decision.LegacyId)} — now {DomainId.Short(decision.Id)}, superseded.");
+        }
     }
 
     /// <summary>
@@ -120,6 +167,19 @@ public static class DecisionsDocumentRenderer
     private static IReadOnlyList<DecisionDetails> Binding(IReadOnlyList<DecisionDetails> decisions) =>
         [.. decisions
             .Where(decision => decision.Status == DecisionStatus.Recorded)
+            .OrderBy(decision => decision.RecordedAt)
+            .ThenBy(decision => decision.Id.ToString("N"), StringComparer.Ordinal)];
+
+    /// <summary>
+    /// The decisions the closing signpost names: superseded, and carrying a citation from before
+    /// this store. Superseded rather than "not binding", so a row whose status this build does not
+    /// recognise is left out of both lists rather than asserted to have ended. Ordered the same
+    /// way <see cref="Binding"/> is, for the same reason: two nodes holding the same history
+    /// render the same bytes.
+    /// </summary>
+    private static IReadOnlyList<DecisionDetails> EndedButCited(IReadOnlyList<DecisionDetails> decisions) =>
+        [.. decisions
+            .Where(decision => decision.Status == DecisionStatus.Superseded && decision.LegacyId.IsNotBlank())
             .OrderBy(decision => decision.RecordedAt)
             .ThenBy(decision => decision.Id.ToString("N"), StringComparer.Ordinal)];
 }

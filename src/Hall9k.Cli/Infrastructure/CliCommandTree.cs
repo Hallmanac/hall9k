@@ -896,8 +896,11 @@ public static class CliCommandTree
                 .WithDescription(
                     "One decision in full: the claim, where it binds, the incident behind it, who recorded "
                     + "it and from which run and task, whether a human was attending, what it replaced, "
-                    + "and what replaced it.")
-                .WithExample("decide", "show", "28b19893");
+                    + "and what replaced it. Named by its id, or by the citation an imported decision kept "
+                    + "from before this store, which is how a reference to Decisions Log #162 reads a "
+                    + "decision the rendered file leaves out for no longer binding.")
+                .WithExample("decide", "show", "28b19893")
+                .WithExample("decide", "show", "\"Decisions Log #162\"");
             decide.AddCommand<DecisionSupersedeCommand>("supersede")
                 .WithDescription(
                     "A decision's one terminal act: it stopped binding, with a required reason and, when "

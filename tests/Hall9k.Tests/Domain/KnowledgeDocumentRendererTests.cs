@@ -121,6 +121,67 @@ public sealed class KnowledgeDocumentRendererTests
     }
 
     /// <summary>
+    /// The one thing a superseded decision still gets in this file, and only when it carries a
+    /// citation from before this store (idea d805fd8b, piece 3): its citation and its id at the
+    /// foot of the document, with no statement. §16 #162 is cited from a dozen places in this
+    /// repository and was superseded by the very change that imported it, so a reader who searches
+    /// this file for that text the way its own header tells them to would otherwise find nothing
+    /// at all (independent pre-PR review, cycle 1, conformance lens). The rule itself stays out,
+    /// which is the whole point of leaving superseded decisions out of the rulebook.
+    /// </summary>
+    [Fact]
+    public void A_superseded_decision_that_kept_a_citation_is_named_at_the_foot_without_its_statement()
+    {
+        DecisionDetails ended = SomeDecision("Append your entry to PLAN.md §16 under a placeholder.");
+        ended.LegacyId = "Decisions Log #162";
+        ended.Status = DecisionStatus.Superseded;
+        ended.SupersededAt = Noon.AddDays(1);
+
+        string rendered = DecisionsDocumentRenderer.Render([ended, SomeDecision("What we do now.")]);
+
+        rendered.Should().Contain("## Ended, named here for the citations that still point at them");
+        rendered.Should().Contain($"- Decisions Log #162 — now {DomainId.Short(ended.Id)}, superseded.");
+        rendered.Should().Contain("h9k decide show \"Decisions Log #162\"");
+        rendered.Should().NotContain("Append your entry to PLAN.md §16 under a placeholder.",
+            "the citation is answered; the rule that stopped binding is still not restated here");
+    }
+
+    /// <summary>
+    /// The same signpost, on the one document where the alternative would be worse: a project
+    /// whose only imported decision has since been superseded renders no rules at all, and the
+    /// citation still has to land somewhere.
+    /// </summary>
+    [Fact]
+    public void A_store_whose_only_citation_has_ended_still_names_it_under_the_empty_rulebook()
+    {
+        DecisionDetails ended = SomeDecision("What we used to do.");
+        ended.LegacyId = "AGENTS.md Git rules #1";
+        ended.Status = DecisionStatus.Superseded;
+        ended.SupersededAt = Noon.AddDays(1);
+
+        string rendered = DecisionsDocumentRenderer.Render([ended]);
+
+        rendered.Should().Contain("Nothing is recorded here yet.");
+        rendered.Should().Contain($"- AGENTS.md Git rules #1 — now {DomainId.Short(ended.Id)}, superseded.");
+    }
+
+    /// <summary>
+    /// A superseded decision with no citation is what the store is mostly going to hold, and it
+    /// gets no signpost: there is no reference written anywhere for it to answer, and naming it
+    /// would be the rulebook carrying rules that stopped binding by another route.
+    /// </summary>
+    [Fact]
+    public void A_superseded_decision_recorded_natively_is_not_named_at_the_foot_at_all()
+    {
+        DecisionDetails ended = SomeDecision("What we used to do.");
+        ended.Status = DecisionStatus.Superseded;
+        ended.SupersededAt = Noon.AddDays(1);
+
+        DecisionsDocumentRenderer.Render([ended, SomeDecision("What we do now.")])
+            .Should().NotContain("Ended, named here");
+    }
+
+    /// <summary>
     /// The origin incident sits inside a markdown list item, and nothing stops a recorded one
     /// from spanning lines: the deciders trim a statement, they do not reflow it. A newline left
     /// in would end the bullet and leave the rest of the sentence rendering as a paragraph of its
