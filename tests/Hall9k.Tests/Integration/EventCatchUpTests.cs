@@ -1416,6 +1416,110 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
     }
 
     /// <summary>
+    /// Task: a run stream whose first event is a reconstruction rather than a dispatch.
+    /// <see cref="RunRecordReconstructed"/> is now classified <see cref="EventScope.ProjectScoped"/>,
+    /// so both halves of the live path serve it: <see cref="EventCatchUpResponder.AnswerAsync"/>
+    /// serves it genesis first in a stream answer, exactly the sibling test just above for
+    /// <see cref="RunDispatched"/>, and <see cref="EventReplicationOutbox.QueuePendingAsync"/> — the
+    /// ordinary flush, never a catch-up answer — queues it genesis first too. Before this task, a
+    /// node-scoped <see cref="RunRecordReconstructed"/> would have been skipped by both, and this
+    /// run's stream would never have travelled at all.
+    /// </summary>
+    [Fact]
+    public async Task A_reconstructed_first_run_stream_is_served_genesis_first_by_both_the_responder_and_the_ordinary_flush()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid requesterNodeId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        EventCatchUpResponder responder = new(new ReplicationProjectResolver(), ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, Environment.MachineName, "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            // Switched on before the task and run below are ever appended, so the ordinary flush
+            // below (unlike the responder, which is never bound by this point on an explicit ask)
+            // finds them eligible rather than pre-switch-on history.
+            await EventReplicationOutbox.EnsureSwitchedOnAsync(session, nodeA, Now, cts.Token);
+        }
+
+        Guid taskId = await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<RunAggregate>(
+                runId,
+                new RunRecordReconstructed(
+                    runId, taskId, nodeA, ownerId, "https://github.com/x/y/pull/9", 9, Now.AddSeconds(2)));
+            session.Events.Append(runId, new RunCompleted(runId, Now.AddSeconds(3)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            int envelopes = await responder.AnswerAsync(
+                session, RepositoryPath, nodeA, "owner-a-fingerprint", projectId, requesterNodeId,
+                new EventReplicationCodec.EventsRequestRecord(
+                    DomainId.New(), ForOriginNodeId: null, SinceOriginSequence: 0, taskId),
+                Now.AddSeconds(4), trustChain: null, cts.Token);
+            envelopes.Should().Be(1);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await using (IQuerySession read = _postgres.Store.QuerySession())
+        {
+            MessageDetails answered = (await read.Query<MessageDetails>()
+                .Where(message => message.ProjectId == projectId && message.Kind == MessageKind.Events.Value)
+                .FirstOrDefaultAsync(cts.Token))!;
+            IReadOnlyList<EventReplicationCodec.ReplicatedEventRecord> served =
+                EventReplicationCodec.DecodeBatch(answered.Body!)!;
+
+            served.Where(record => record.StreamId == runId).Should().HaveCount(2);
+            served.First(record => record.StreamId == runId).EventTypeName.Should().Be(
+                typeof(RunRecordReconstructed).FullName,
+                "the reconstructed genesis leads its own stream in the responder's own answer, exactly as "
+                + "RunDispatched already does");
+        }
+
+        // The ordinary flush, never a catch-up answer, is the other half this task requires: before
+        // the reclassification, RunRecordReconstructed's own NodeScoped tag skipped it here entirely,
+        // so this run's whole stream would never have been queued at all.
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(5), cts.Token);
+        }
+
+        await using (IQuerySession read = _postgres.Store.QuerySession())
+        {
+            // Filtered to the "project" audience alone: the responder's own earlier answer above is
+            // an Events-kind message too, but addressed to the requester by node id rather than
+            // broadcast, and would otherwise double the records this query counts.
+            IReadOnlyList<MessageDetails> flushed = await read.Query<MessageDetails>()
+                .Where(message => message.ProjectId == projectId && message.Kind == MessageKind.Events.Value
+                    && message.To == MessageAudience.Project.Value)
+                .ToListAsync(cts.Token);
+            List<EventReplicationCodec.ReplicatedEventRecord> allQueued =
+                [.. flushed.SelectMany(message => EventReplicationCodec.DecodeBatch(message.Body!)!)];
+
+            List<EventReplicationCodec.ReplicatedEventRecord> queuedForRun =
+                [.. allQueued.Where(record => record.StreamId == runId)];
+            queuedForRun.Should().HaveCount(2, "the ordinary flush now ships the reconstructed run whole, not skipped");
+            queuedForRun[0].EventTypeName.Should().Be(
+                typeof(RunRecordReconstructed).FullName,
+                "the run's own genesis is the lowest sequence on its stream, which the flush's global-sequence "
+                + "order gives free");
+            queuedForRun[1].EventTypeName.Should().Be(typeof(RunCompleted).FullName);
+        }
+    }
+
+    /// <summary>
     /// Task 74a7cd0b's own criterion: a member joining a project this week receives every
     /// project-scoped aggregate the answering node holds, from that node's own genesis rather than
     /// from its replication switch-on point, and the aggregates arrive whole enough to project.
@@ -1730,6 +1834,92 @@ public sealed class EventCatchUpTests : IClassFixture<PostgresFixture>, IAsyncLi
             RunDetails run = (await session.LoadAsync<RunDetails>(runId, cts.Token))!;
             run.State.Should().Be(RunState.Completed);
             run.TaskId.Should().Be(taskId);
+
+            (await session.Query<HeldReplicatedEventRecord>().CountAsync(cts.Token)).Should().Be(
+                0, "the held record is deleted once its own replay lands, so nothing stays partial");
+        }
+    }
+
+    /// <summary>
+    /// Task: a run stream whose first event is a reconstruction rather than a dispatch. The
+    /// sibling of the test just above, proving the identical tail-before-genesis recovery for
+    /// <see cref="RunRecordReconstructed"/> now that it is the Run aggregate's own second genesis
+    /// (<see cref="AggregateGenesisEventTypes.IsGenesis"/>): a reconstructed-first stream lands
+    /// whole on a store with no prior history of it at all, its tail replays behind its genesis in
+    /// order, and <see cref="RunListItem"/> — not just <see cref="RunDetails"/> — reads the run
+    /// Completed.
+    /// </summary>
+    [Fact]
+    public async Task An_answer_that_carries_a_reconstructed_streams_tail_before_its_genesis_is_held_and_replayed_in_the_same_read()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid nodeB = DomainId.New();
+        Guid originNodeId = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectIdA = DomainId.New();
+        Guid projectIdB = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committerA, LedgerSigningKey signingKeyA) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStore("event_catchup_reconstructed_tail_first_answer_node_b");
+
+        TaskAdded added = TaskDecider.Add(
+            taskId, projectIdA, "Ship the thing", ["it ships"], TaskType.Feature, null, null, null, Now, ownerId);
+        List<EventReplicationCodec.ReplicatedEventRecord> answer =
+        [
+            ForeignRecord(taskId, added, originNodeId, originSequence: 1, projectIdA),
+            ForeignRecord(taskId, new TaskPublished(taskId, Now, ownerId), originNodeId, 2, projectIdA),
+            ForeignRecord(taskId, new TaskAssigned(taskId, ownerId, [], Now, ownerId), originNodeId, 3, projectIdA),
+            // The run's tail ahead of its own reconstructed genesis, which is the order under test.
+            ForeignRecord(runId, new RunCompleted(runId, Now.AddSeconds(2)), originNodeId, 9, projectIdA),
+            ForeignRecord(
+                runId,
+                new RunRecordReconstructed(
+                    runId, taskId, originNodeId, ownerId, "https://github.com/x/y/pull/9", 9, Now.AddSeconds(1)),
+                originNodeId, 5, projectIdA),
+        ];
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "Windows", Now));
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectIdA, "owner-a-fingerprint", MessageAudience.Node(nodeB),
+                about: DomainId.New().ToString(), MessageKind.Events, EventReplicationCodec.EncodeBatch(answer), Now,
+                cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectIdA, "shared-project-key", adoptUnassigned: false, committerA,
+                signingKeyA, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectIdB, nodeB, "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: null, cts.Token);
+            read.EventsApplied.Should().Be(
+                5, "the task's own three, the run's reconstructed genesis, and the tail held until it landed");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            IReadOnlyList<IEvent> runStream = await session.Events.FetchStreamAsync(runId, token: cts.Token);
+            runStream.Select(candidate => candidate.EventType).Should().Equal(
+                [typeof(RunRecordReconstructed), typeof(RunCompleted)],
+                "the held tail replays behind the reconstructed genesis, in order, rather than starting a "
+                + "headless stream ahead of it");
+
+            RunListItem run = (await session.LoadAsync<RunListItem>(runId, cts.Token))!;
+            run.State.Should().Be(RunState.Completed);
+            run.TaskId.Should().Be(taskId);
+            run.IsReconstructed.Should().BeTrue();
 
             (await session.Query<HeldReplicatedEventRecord>().CountAsync(cts.Token)).Should().Be(
                 0, "the held record is deleted once its own replay lands, so nothing stays partial");

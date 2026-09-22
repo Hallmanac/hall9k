@@ -32,7 +32,11 @@ namespace Hall9k.Domain.Infrastructure.Persistence;
 /// started and ended, recovery attempts). Every other Run event is classified by the same
 /// question the ruling asks of the named ones: a team-visible fact about the pull request, the
 /// review, or the run's own outcome travels; this node's own process, session, or local-repair
-/// mechanics stays.
+/// mechanics stays. <see cref="RunRecordReconstructed"/> travels for that identical reason even
+/// though it is minted by a local repair (CloseoutEngine's orphan sweep, RunLauncher's
+/// declined-dispatch path): which run exists for which task and pull request is the fact, not the
+/// sweep that noticed it, and the event itself carries none of the machine-local detail (worktree,
+/// run directory, session or process id) the mechanics around it stay home for.
 /// </para>
 /// </summary>
 public static class EventScopeRegistry
@@ -200,7 +204,13 @@ public static class EventScopeRegistry
         [typeof(RunPhaseDelegated)] = EventScope.ProjectScoped,
         [typeof(RunProcessStarted)] = EventScope.NodeScoped,
         [typeof(RunRebasedOntoBase)] = EventScope.ProjectScoped,
-        [typeof(RunRecordReconstructed)] = EventScope.NodeScoped,
+        // Travels, as the Run aggregate's own second genesis (AggregateGenesisEventTypes.IsGenesis):
+        // which run exists for which task and pull request is a fact about the work, the same
+        // tier RunDispatched already travels at, not this node's own process or repair mechanics.
+        // The event carries Id, TaskId, NodeId, OwnerId, PullRequestUrl, PullRequestNumber and
+        // ReconstructedAt — no worktree, run directory, session or process id — so nothing here is
+        // the kind of machine-local detail the node-scoped mechanics around it exist to keep home.
+        [typeof(RunRecordReconstructed)] = EventScope.ProjectScoped,
         [typeof(RunResumed)] = EventScope.NodeScoped,
         [typeof(RunSessionErrorRetried)] = EventScope.NodeScoped,
         // Travels, unlike the local-repair mechanics around it: "the branch your run built is
