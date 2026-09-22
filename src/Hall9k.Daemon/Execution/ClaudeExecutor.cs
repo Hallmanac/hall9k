@@ -63,8 +63,17 @@ public sealed class ClaudeExecutor(
 
         // The child inherits the owner's environment (log #1) with the caller's additions on
         // top — the caller states what this particular session needs, and nothing else changes.
+        // HALL9K_DISPATCHED_RUN_ID is stamped here rather than by each of the eighteen
+        // AgentSpawnRequest builders (task: a dispatched session cannot drive the project's own
+        // lifecycle): every daemon dispatch — build, fix, review, verify, final pass, recovery,
+        // courier, and anything else this executor ever spawns — is unattended by construction, so
+        // the one spawn site marks every one of them rather than trusting each call site to
+        // remember. Inherited by every Bash-tool child the session spawns, the same way
+        // HALL9K_DETACHED_SESSION already rides a headless launch's environment.
+        List<KeyValuePair<string, string>> environment =
+            [.. request.Environment, new(DispatchedRunEnvironment.RunIdVariable, request.RunId.ToString())];
         SpawnedProcess spawned = processManager.Spawn(new ProcessSpawnRequest(
-            command, request.WorktreePath, [.. request.Environment], promptFile, streamFile, standardErrorFile));
+            command, request.WorktreePath, environment, promptFile, streamFile, standardErrorFile));
 
         logger.LogInformation(
             "Agent spawned for run {RunId}: pid {ProcessId}, session {SessionId}, mode {Mode}, model {Model}",

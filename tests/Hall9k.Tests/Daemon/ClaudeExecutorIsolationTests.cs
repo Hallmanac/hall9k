@@ -81,6 +81,47 @@ public sealed class ClaudeExecutorIsolationTests
     }
 
     /// <summary>
+    /// Task: a dispatched session cannot drive the project's own lifecycle. Every daemon dispatch
+    /// carries <see cref="DispatchedRunEnvironment.RunIdVariable"/> naming its own run — the CLI's
+    /// own interceptor reads this back to refuse a lifecycle verb from inside it — so this asserts
+    /// it against <see cref="ProcessSpawnRequest.Environment"/>, the field both process managers
+    /// copy verbatim onto the child, rather than against <see cref="ClaudeExecutor.Arguments"/>,
+    /// which never carries environment at all.
+    /// </summary>
+    [Fact]
+    public async Task Every_spawn_carries_its_own_run_id_as_the_dispatched_run_environment_variable()
+    {
+        string runDirectory = Directory.CreateTempSubdirectory("hall9k-claude-executor-tests-").FullName;
+        try
+        {
+            FakeProcessManager processManager = new();
+            ClaudeExecutor executor = new(
+                NullLogger<ClaudeExecutor>.Instance, processManager,
+                Options.Create(new DaemonOptions()));
+
+            Guid runId = DomainId.New();
+            AgentSpawnRequest request = new(
+                runId, DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
+                ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+            {
+                SessionName = "test-build",
+            };
+
+            await executor.SpawnAsync(request, CancellationToken.None);
+
+            processManager.Spawns.Should().ContainSingle()
+                .Which.Environment.Should().Contain(
+                    new KeyValuePair<string, string>(DispatchedRunEnvironment.RunIdVariable, runId.ToString()),
+                    "the spawned child, and every Bash-tool descendant it starts, must be able to observe " +
+                    "which run it is — the CLI interceptor refuses a lifecycle verb off exactly this value");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// The 2026-09-02 finding, verified end to end: a compile-time constant mirroring
     /// <c>DaemonOptions.VerifyGateTimeout</c>'s own default went stale the moment an operator
     /// raised the live option, since nothing spawned actually read it. <c>ClaudeExecutor</c> now
