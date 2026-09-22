@@ -142,11 +142,13 @@ public sealed class DecisionImportCommand : Hall9kAsyncCommand<DecisionImportCom
         {
             AnsiConsole.MarkupLine(
                 $"[dim]  recorded and superseded in the same act, because this change is what retired "
-                + $"them:[/] {outcome.Retired} [dim](h9k decide list --all shows them; the reason is on each one)[/]");
+                + $"them:[/] {outcome.Retired} [dim](named at the foot of decisions.md, in full with "
+                + "h9k decide show \"<citation>\")[/]");
         }
 
         AnsiConsole.MarkupLine(
-            "[dim]  each one keeps the citation it had, so a reference to Decisions Log #62 still resolves[/]");
+            "[dim]  each one keeps the citation it had, so[/] h9k decide show \"Decisions Log #62\" "
+            + "[dim]resolves, and so does searching decisions.md for that text[/]");
         AnsiConsole.MarkupLine(
             "[dim]Read them back:[/] h9k decide list [dim]· the rendered file:[/] decisions.md "
             + "[dim]in this project's home[/]");

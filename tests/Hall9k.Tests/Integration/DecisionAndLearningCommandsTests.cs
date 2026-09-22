@@ -685,13 +685,23 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
         retired.SupersededByDecisionId.Should().BeNull();
         retired.SupersedeReason.Should().Contain("DecisionsLogNumberingGuardTests");
 
+        // The citation's whole point, end to end: every spelling written across this repository
+        // reaches the decision it names, the retired one included, through the resolver h9k decide
+        // show and h9k decide supersede both use (independent pre-PR review, cycle 1, adversarial
+        // lens — the store had no surface that answered a citation).
+        (await DecisionIdResolver.ResolveAsync(query, "Decisions Log #162", CancellationToken.None))
+            .Should().Be(retired.Id);
+        (await DecisionIdResolver.ResolveAsync(query, "§16 #162", CancellationToken.None))
+            .Should().Be(retired.Id);
+
         RenderedKnowledgeDocuments documents = await KnowledgeDocuments.RenderAsync(
             query, project.Id, CancellationToken.None);
         documents.Decisions.Should().Contain("(Decisions Log #62)");
         documents.Decisions.Should().Contain("(AGENTS.md Git rules #1)");
-        documents.Decisions.Should().NotContain("(Decisions Log #162)",
-            "the retired rule is still in the store for a citation to resolve against, and out of the "
-            + "file agents read as the rulebook");
+        documents.Decisions.Should().NotContain("## Decisions Log #162",
+            "the retired rule is out of the rulebook the file carries");
+        documents.Decisions.Should().Contain($"- Decisions Log #162 — now {DomainId.Short(retired.Id)}, superseded.",
+            "and named at the foot of it, so a reader searching the file for that citation lands");
     }
 
     /// <summary>
