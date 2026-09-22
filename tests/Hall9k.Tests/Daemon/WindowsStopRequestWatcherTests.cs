@@ -34,7 +34,8 @@ public sealed class WindowsStopRequestWatcherTests : IDisposable
         FakeApplicationLifetime lifetime = new();
         WindowsStopRequestWatcher watcher = new(lifetime, NullLogger<WindowsStopRequestWatcher>.Instance);
 
-        await RunBrieflyAsync(watcher);
+        await RunUntilAsync(
+            watcher, RequestAndClaimFilesGone, "the stop-request file and its .claimed sibling being cleared");
 
         lifetime.StopRequested.Should().BeFalse(
             "the file names a different daemon's pid, so this one has nothing to act on");
@@ -58,7 +59,8 @@ public sealed class WindowsStopRequestWatcherTests : IDisposable
         FakeApplicationLifetime lifetime = new();
         WindowsStopRequestWatcher watcher = new(lifetime, NullLogger<WindowsStopRequestWatcher>.Instance);
 
-        await RunBrieflyAsync(watcher);
+        await RunUntilAsync(
+            watcher, RequestAndClaimFilesGone, "the stop-request file and its .claimed sibling being cleared");
 
         lifetime.StopRequested.Should().BeFalse(
             "the pid matches by reuse but the start time does not, so this is not the daemon the request meant");
@@ -76,7 +78,7 @@ public sealed class WindowsStopRequestWatcherTests : IDisposable
         FakeApplicationLifetime lifetime = new();
         WindowsStopRequestWatcher watcher = new(lifetime, NullLogger<WindowsStopRequestWatcher>.Instance);
 
-        await RunBrieflyAsync(watcher);
+        await RunUntilAsync(watcher, () => lifetime.StopRequested, "lifetime.StopRequested becoming true");
 
         lifetime.StopRequested.Should().BeTrue();
         File.Exists(DaemonRuntime.StopRequestFile).Should().BeFalse();
@@ -120,11 +122,34 @@ public sealed class WindowsStopRequestWatcherTests : IDisposable
             2, "distinct stale content is a distinct occurrence, and each still gets its own warning");
     }
 
-    private static async Task RunBrieflyAsync(WindowsStopRequestWatcher watcher)
+    private static bool RequestAndClaimFilesGone() =>
+        !File.Exists(DaemonRuntime.StopRequestFile) && !File.Exists(DaemonRuntime.StopRequestFile + ".claimed");
+
+    /// <summary>
+    /// Starts the watcher and waits, with an async poll rather than a fixed delay, until
+    /// <paramref name="outcomeReached"/> reports the outcome the calling test is about to
+    /// assert on, then stops the watcher. One 30-second token bounds both the start and the
+    /// wait — wide enough that a loaded CI runner's slow first poll never starves it, since
+    /// the watcher links the same token into its own stopping token (BackgroundService's
+    /// contract) — and a wait that reaches it fails with what never happened rather than
+    /// hanging or surfacing a bare <see cref="OperationCanceledException"/>.
+    /// </summary>
+    private static async Task RunUntilAsync(
+        WindowsStopRequestWatcher watcher, Func<bool> outcomeReached, string outcomeDescription)
     {
-        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(5));
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         await watcher.StartAsync(cts.Token);
-        await Task.Delay(TimeSpan.FromMilliseconds(600), CancellationToken.None);
+
+        while (!outcomeReached())
+        {
+            if (cts.IsCancellationRequested)
+            {
+                throw new TimeoutException($"{outcomeDescription} never happened within the 30s bound");
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(20), CancellationToken.None);
+        }
+
         await watcher.StopAsync(CancellationToken.None);
     }
 
