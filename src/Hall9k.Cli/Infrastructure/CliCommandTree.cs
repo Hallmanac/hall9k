@@ -916,10 +916,11 @@ public static class CliCommandTree
                     "The one-time import of this repository's markdown rulebooks: every PLAN.md §16 "
                     + "Decisions Log entry and every AGENTS.md standing rule, recorded as a decision "
                     + "keeping the citation it already had, so a reference to Decisions Log #62 still "
-                    + "resolves in the rendered decisions.md. Refused on a node where event replication "
-                    + "has not switched on (idea 202383dc, M2a), because an event written before that "
-                    + "point never travels. Safe to run twice: the second run records only what the "
-                    + "first one missed.")
+                    + "resolves, in the rendered decisions.md and through h9k decide show. Refused on a "
+                    + "node where event replication has not switched on (idea 202383dc, M2a), because an "
+                    + "event written before that point never travels. Safe to run again: the later run "
+                    + "records only what the earlier one missed. Two at once is refused, because each would "
+                    + "record the whole rulebook under its own ids.")
                 .WithExample("decide", "import")
                 .WithExample("decide", "import", "--project", "hall9k");
         });

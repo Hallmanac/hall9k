@@ -705,6 +705,48 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
     }
 
     /// <summary>
+    /// The guard that makes the import's own idempotency hold for runs that overlap, not only for
+    /// runs that follow each other (independent pre-PR review, cycle 1, adversarial lens). Two
+    /// shells importing at once would each read an empty set of citations, each plan the whole
+    /// rulebook under their own fresh ids, and each commit — two copies of every rule, replicated
+    /// to every member, with nothing in this store able to delete either. Driven as two overlapping
+    /// sessions rather than by racing threads: the second reaches its lock while the first is
+    /// provably still between its own read and its save, which is the state the defect needed.
+    /// </summary>
+    [Fact]
+    public async Task A_second_import_that_starts_before_the_first_one_commits_is_refused_and_records_nothing()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedProjectAsync(CancellationToken.None);
+        await SwitchReplicationOnAsync(node, CancellationToken.None);
+
+        await using IDocumentSession first = _postgres.Store.LightweightSession();
+        LegacyImportOutcome planned = await DecisionImportCommand.RunAsync(
+            first, new DecisionImportCommand.Settings { Project = project.Name },
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
+        planned.Recorded.Should().BeGreaterThan(0, "the first run holds the lock with its work pending");
+
+        await using (IDocumentSession second = _postgres.Store.LightweightSession())
+        {
+            Func<Task> importing = () => DecisionImportCommand.RunAsync(
+                second, new DecisionImportCommand.Settings { Project = project.Name },
+                node.OwnerId, node.NodeId, Now, CancellationToken.None);
+
+            await importing.Should().ThrowAsync<DomainConflictException>()
+                .WithMessage("*Another h9k decide import is in flight*");
+        }
+
+        await first.SaveChangesAsync(CancellationToken.None);
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        (await query.Query<DecisionDetails>().CountAsync(CancellationToken.None)).Should().Be(planned.Recorded,
+            "one copy of every rule, recorded by the run that held the lock");
+        (await query.Query<DecisionDetails>()
+                .Where(decision => decision.LegacyId == "Decisions Log #162")
+                .CountAsync(CancellationToken.None))
+            .Should().Be(1);
+    }
+
+    /// <summary>
     /// What the first outbound replication sweep would have recorded here, without running one:
     /// the import reads this node's own switch-on point and nothing else about replication.
     /// </summary>
