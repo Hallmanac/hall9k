@@ -55,7 +55,14 @@ branch's placeholder after them, and carries on: the numbering convention alread
 answer, so there is nothing left to judge (PLAN.md §16, Decisions Log #250). The
 shape is read narrowly — one conflicted file, one hunk, whole numbered entries on the base's side
 sitting at the log's tail, this task's own placeholder with its placement note on the branch's —
-and every near miss of it, along with every other conflict, parks exactly as before. This run's own
+and every near miss of it, along with every other conflict, parks exactly as before. Both halves
+still ship and both now decline on their own, because §16 carries no numbered entries any more:
+the renumbering step refuses a section with no number space to read rather than minting #1 over a
+citation the import has already given away, and the conflict shape needs whole numbered entries on
+the base's side that an emptied section cannot offer. A branch cut before that landed, still
+carrying its own §16 entry, therefore reaches the mandatory gate with the entry intact and is
+failed there by name, with the message pointing at `h9k decide`. Retiring both is the remaining
+piece of idea d805fd8b. This run's own
 one read-only stack assessment (PLAN.md §16, Decisions Log #205) gets its say only at that
 session's own two park points: a dispute it cannot honestly resolve, or the exhaustion of its own
 round cap, never on the first conflict the session is about to attempt. It reaches a structured
@@ -408,6 +415,24 @@ either name that the platform did not render (a repository that tracks its own `
 is never overwritten, and the skip is logged. Every prompt template that used to point a session
 at a hand-maintained decisions log now points at these two files instead.
 
+`h9k decide import` is the one-time migration that filled the store: every entry PLAN.md's §16
+Decisions Log carried and every standing rule AGENTS.md's Git rules and Working agreements
+sections carried, recorded as a decision keeping the citation it already had, so a reference
+written anywhere as "Decisions Log #62" resolves by searching `decisions.md` for that text. It
+refuses on a node where event replication has not switched on (idea 202383dc, M2a), because an
+event written before that point never rides an outbox and would strand the whole rulebook in one
+install's store, and it is idempotent through those citations, so a second run records only what
+the first one missed. One entry is recorded and superseded in the same act: §16 #162, the
+placeholder-numbering convention, is the rule this very change retires, and it is imported anyway
+because thirteen places in this repository cite it and a citation whose entry was never imported
+resolves to nothing. Superseding it in the same transaction keeps it out of the rendered
+`decisions.md` agents read as the rulebook while leaving it one `h9k decide show` away. The two
+sections it read are kept verbatim at
+`src/Hall9k.Domain/Features/Decision/Legacy/`, embedded in `Hall9k.Domain` as the import's frozen
+input, since the same change that added the import is the one that emptied the markdown. PLAN.md
+§16 and AGENTS.md's two rule sections are pointers now; AGENTS.md's build, coding-standard and
+CLI-standard sections stay authored where they are.
+
 Active lessons ride in the prompt's own text, bounded and marked. Every implementation,
 follow-up, review and fix prompt carries a section of this project's active lessons plus the
 owner's, newest first, each line led by the eight-character id a session cites or retires it by
@@ -444,11 +469,11 @@ retire what it merged: that stays the explicit act with its own reason, which is
 shipped without a second terminal status. `h9k status` names the lever for each project whose
 active lessons have passed the count cap, and goes no further than naming it.
 
-What this piece does **not** yet do: import PLAN.md §16's own 267 entries into these streams, or
-retire the Decisions Log renumberer and its placeholder value object. Those are the remaining
-pieces of idea d805fd8b, and until they land PLAN.md §16 is still the hand-edited source it
-always was; this repository's own rendered `decisions.md` carries only what has been recorded
-through `h9k decide` since. Two smaller limits are deliberate rather than pending. A review or
+What these pieces do **not** yet do: retire the Decisions Log renumberer and its placeholder
+value object. That is the last piece of idea d805fd8b still outstanding. The renumberer does
+still ship, so an in-flight branch that appended a placeholder before §16 was emptied reaches it
+on its own rebase, and it declines there rather than minting #1 over a citation the import has
+already handed out. Two smaller limits are deliberate rather than pending. A review or
 fix session dispatched into a worktree cut earlier reads whatever `lessons.md` was written there
 at that worktree's original dispatch, while its injected section is always read fresh. And the
 section reaches the twelve prompts that do implementation, follow-up, review or fix work on a

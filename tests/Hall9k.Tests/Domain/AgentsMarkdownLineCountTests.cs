@@ -60,11 +60,19 @@ namespace Hall9k.Tests.Domain;
 /// host-coupled gates killed at their 30-minute limit racing a session's own hand-run full suite)
 /// traced back to, and a turn-1 fact for every dispatched session working in this repo, not a
 /// narrower audience's concern. Five more lines, ceiling to 227.
+/// The first cut since the original one, and the reason every raise above reads the way it does:
+/// idea d805fd8b, piece 3, moved the Git rules and the Working agreements into the decision
+/// store, where the platform renders them into every worktree at dispatch as `decisions.md`
+/// rather than into every session's turn-1 context. Sixty-six lines left, and the ceiling comes
+/// down to 161 with them rather than staying at 227 and handing the next addition sixty-six
+/// lines of silent slack — which is the one thing this guard exists to prevent. What is left
+/// here is what a session needs before it has read anything else: what the project is, how to
+/// build and test it, the coding standards, and the CLI command standards.
 /// </para>
 /// </summary>
 public sealed class AgentsMarkdownLineCountTests
 {
-    private const int LineCeiling = 227;
+    private const int LineCeiling = 161;
 
     [Fact]
     public void AGENTS_markdown_stays_at_or_under_its_recorded_line_ceiling()

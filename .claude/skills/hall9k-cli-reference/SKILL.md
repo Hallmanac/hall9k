@@ -697,6 +697,7 @@ h9k decide "<statement>" --task <id>              # from inside a run: carries t
 h9k decide list [--project <n>|--owner] [--all]   # binding by default; --all brings superseded ones back
 h9k decide show <id>                              # claim, scope, origin, provenance, what it replaced, what replaced it
 h9k decide supersede <id> --reason "<why>"        # terminal, appends, never deletes; --by <id> names the successor
+h9k decide import [--project <n>]                 # the one-time migration of PLAN.md §16 and AGENTS.md's standing rules; refused unless M2a replication is on, safe to repeat
 h9k learn "<statement>"                           # record a run-earned lesson; live immediately, no gate
 h9k learn "<statement>" --task <id>               # from inside a run: carries that run and task as provenance
 h9k learn "<statement>" --owner                   # a habit that holds wherever you work
@@ -723,6 +724,15 @@ owner-scoped one names no project, so no outbox picks it up and it stays on the 
 recorded it. Project is the default and `--owner` is the deliberate act, because the failure is
 asymmetric: too narrow means one project misses something useful, too wide means a wrong
 statement rides in every prompt everywhere.
+
+`h9k decide import` is the one-time migration that filled hall9k's own store: every PLAN.md §16
+entry and every AGENTS.md standing rule, each recorded keeping the citation it already had, so a
+reference written anywhere as "Decisions Log #62" still resolves by searching `decisions.md` for
+that text. Two things govern it. It **refuses on a node where replication has not switched on**
+(idea 202383dc, M2a) and says so, because an event written before a node's own switch-on point
+never rides an outbox and nothing would ever backfill it. And it is **idempotent through those
+citations**, so a second run records only what the first one missed rather than minting a second
+copy of the rulebook.
 
 **You read them as files, and you never write them as files** (idea d805fd8b, piece 2). The
 daemon renders `decisions.md` and `lessons.md` from those streams into the project home's root on

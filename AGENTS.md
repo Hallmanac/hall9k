@@ -10,13 +10,17 @@ orchestrator window**: read `ORCHESTRATOR-WINDOW.md` before anything else, becau
 you are in. A *headless* dispatched session is not one, never loads that file, and should read on
 here instead. Then, in order of need:
 
-- `PLAN.md` — vision, architecture, and the **v0 Decisions Log** (§16; binding decisions live there)
+- `decisions.md` — **the binding decisions**, including the git and working rules this file used to
+  carry, rendered from the decision store into this project's home and into every dispatched
+  worktree (`h9k decide list` reads the same thing from anywhere). `lessons.md` is its companion,
+  holding what runs have learned. Neither is ever edited or committed
+- `PLAN.md` — vision and architecture (§16, the hand-maintained decisions log, became the store above)
 - `TASK-MODEL.md` — the domain model: streams, events, aggregates, type discipline
 - `SLICE-1.md` — the current build breakdown and acceptance criteria
 - `HALL9K-P2P-DESIGN.md` — the peer-to-peer layer: identity, discovery, NAT traversal (design only, nothing built; Decisions Log #38-#58)
 - `README.md` + `docs/` — the newcomer's on-ramp (concepts, CLI map, operations, and `docs/scope.md`,
   which is the honest works-today / designed-but-unbuilt / never-doing inventory). Written from this
-  file and the four above, so when behaviour changes here, `docs/` is downstream and needs the edit too.
+  file and the five above, so when behaviour changes here, `docs/` is downstream and needs the edit too.
 - **Doctrine:** Hall9k is prescriptive about the lifecycle and permissive about judgment; the template layer (prompt prose as shipped markdown templates) and the skill layer are the judgment side, the parsed contracts stay in code. Detail: [docs/concepts.md](docs/concepts.md#the-judgment-layer-templates-and-skills).
 
 ## Build / test / run
@@ -95,66 +99,13 @@ first-class interface, always, for every command:
 
 ## Git rules
 
-- **Commits are authored as the repo owner. No `Co-Authored-By` trailers, no bot attribution,
-  no generated-with footers** (PLAN.md §6.6). This is a hard rule for agents.
-- **Agents never START a review thread on a pull request; they only reply inside existing
-  ones.** A thread's FIRST comment is always a reviewer's — including one where the author is the
-  pull request's own owner leaving themselves a note — because every comment is authored under
-  the human's login, and that is the only way the platform tells a reviewer's comment from an
-  agent's. Open a new thread and the next run cannot tell your comment from feedback. Origin
-  incident (2026-08-20): a human's own PR comment was structurally indistinguishable from an
-  agent's reply under the same login. The honest long-term fix is node-signed authorship in the
-  P2P identity layer (§16 #38-#58); until then, breaking this invariant breaks review handling
-  (§16 #62). The one command that starts a thread, `h9k pr request-changes` (§16 #149), posts a
-  review a human typed and ran; a lap's push guard denies an agent the ordinary route to it.
-- **An agent never posts a decline or a route into a thread a *person* opened** — not the reply, not
-  the resolve, whatever their verdict and however right it is. Draft it, park, and let the owner
-  send, edit, or drop it (`h9k review resolve --post-reply-as-written` / `--post-reply "…"` /
-  `--post-nothing`); replies route through `h9k pr reply`, which refuses the rest. A **fix**'s reply
-  still posts in anyone's thread; a **bot's** thread is untouched (§16 #62, #152, #159). Origin: two
-  accurate replies posted under Brian's login minutes after a reviewer approved, arx-platform
-  PR #2021 (2026-09-09) and PR #2042 (2026-09-15), both deleted by hand.
-- **Feedback reaches the platform only when a review is submitted.** GitHub hides an unsubmitted
-  (`PENDING`) review's comments from the API entirely, so a reviewer part-way through a draft is
-  invisible to the closeout monitor and to any agent reading the PR. Never read silence as "the
-  reviewer had nothing to say".
-- **Merging by hand is a four-gate check, and every gate is a reason not to merge** — the same four
-  the daemon's pre-approved merge reads (§16 #135): CI green, the review decision satisfied, **no
-  outstanding requested reviewer**, every review thread resolved. The third is a gate, not a
-  formality, and `h9k status` / `h9k task show` name who (§16 #150). Detail: ORCHESTRATOR-WINDOW.md.
-- Branch naming: `task/<id>-<slug>` unless the project set its own convention
-  (`h9k project set <project> --branch-template`), created off `origin/main` with `--no-track` —
-  except a task declared `--stacked-on` another, whose branch is cut from that parent's branch head
-  and whose pull request targets it (Decisions Log #144). **Every base-branch reference in a
-  dispatched session's own prompt is already the right one for that session**, stacked or not:
-  never substitute `origin/main` for what the prompt names, and never retarget or rebase a stacked
-  branch onto main by hand — the daemon does both mechanically when the parent merges.
-- `main` is only ever checked out in the `dev/` worktree; agent worktrees are siblings of `dev/`.
-- **PR branches are authored history, not a diary.** No work-in-progress commits, no "address
-  review feedback" commits. A fix that belongs to an existing commit folds into it:
-  `git commit --fixup=<owning-commit>`, then
-  `GIT_SEQUENCE_EDITOR=: git rebase -i --autosquash origin/main` and
-  `git push --force-with-lease`, verifying `git diff <old-tip> HEAD` is empty so a green test run
-  carries over. Origin incident (2026-08-17, PR #6): a review-round fix first landed as its own
-  commit and had to be rebuilt into the owning commits by hand.
-- **An agent never pushes; the daemon pushes every branch — fresh or follow-up — with
-  `git push --force-with-lease`, never plain `--force`.** Rewriting history per the rule above is
-  safe: verify tree identity, finish, and let the platform push. The daemon's push runs an
-  explicit ancestor-or-reflog check before pinning the lease's expected value, refusing outright
-  rather than forcing over a tip it cannot account for (Decisions Log #26, #103, #104 — origin: a
-  plain push once rejected two rebased follow-up branches and stranded completed work in 2026-08-17's
-  first automatic follow-up runs).
-- **Commit as you go during a fresh build session, then recompose once, right before you
-  finish.** Checkpoint commits are crash protection, not authored history. Once the full suite is
-  green and every checkpoint is committed, the session hunts its own diff for defects — a
-  same-session adversarial self-review, capped at two rounds — then resets to the branch's fork
-  point and recomposes the checkpoints into real history in one continuous step, verifying tree
-  identity against the pre-reset tip before finishing. Every dispatched session's own prompt
-  spells out the exact mechanics for that run (fork-point capture, the tree-identity check, the
-  three mandatory self-review hunts); this is the standing rule behind it, not a substitute for
-  it. Origin: Decisions Log #104, #113 — two full external review laps in one afternoon
-  (2026-08-30) and three no-commit strandings in one night (2026-08-29) that this discipline now
-  prevents.
+The git rules this section carried are decisions in the store now (idea d805fd8b): commit
+authorship and the no-trailer rule, what an agent may and may not post into a review thread,
+branch naming and stacked branches, the four-gate check before a hand merge, PR branches as
+authored history, and who pushes. Read them in **`decisions.md`**, rendered into this project's
+home and into every worktree at dispatch, or with `h9k decide list` from anywhere. Record a new
+one with `h9k decide "<one claim>"` rather than editing this file, and give it the concrete
+incident behind it with `--origin`.
 
 ## Repo skills
 
@@ -198,30 +149,13 @@ rather than left to discover them.
 
 ## Working agreements
 
-- Slice 1 before anything shiny; check SLICE-1.md before inventing work.
-- A **branch** appends its own decision to PLAN.md §16 (v0 Decisions Log) at the tail, under a
-  placeholder from its task's own short id (`PLACEHOLDER-<shortid>`) rather than a hand-picked
-  number (Decisions Log #162). The mechanical pre-final-pass rebase step assigns
-  the true number, rewriting the entry, its note, and every citation — no agent renumbers it.
-- **Standing rules carry their origin incident.** When a failure produces a new rule (in
-  this file, the decisions log, or a skill), record the concrete incident that created it
-  alongside the rule — so future readers know why it exists and when it might not apply.
-  A rulebook is an accumulation of documented scars, not decrees.
-- **Never guess at unobserved facts.** Audit fields, history, and identifiers record what
-  was actually observed; the unobserved is represented as explicitly unknown (sentinels,
-  nulls, honest labels like "purged per policy") — never plausibly filled in. An audit
-  trail that guesses at provenance is worse than one that admits the gap.
-- Every dependency or pattern choice gets a one-line "why" and a one-line "does this block
-  the later vision?"
-- A headless session runs its gates in the foreground, never behind
-  `run_in_background`/`Monitor`/`ScheduleWakeup`, and never ends its turn with one still
-  pending — it is killed the instant it finishes (PLAN.md §16 #167).
-- **A dispatched session never generates host load to reproduce or prove a flaky or timing-dependent
-  test** — no parallel copies of a suite or test, no stress or spin loops, no deliberate memory
-  pressure, no CPU pinning, nothing whose purpose is to make a flake appear or prove it gone.
-  Reproduce it deterministically instead (a fake, controlled scheduling, an injected delay), run the
-  suite once in the foreground, or hand off honestly that it would not reproduce deterministically
-  and leave the fix best-effort — this never forbids running this project's own gates, and adds no
-  new gate, timeout, or setting. Origin: 2026-09-10 09:36 EDT, Windows, task 2c6e95f7, run 01a08b83
-  — forty pwsh stress loops (4.4 GB, CPU pinned) starved h9kd and Postgres for seven minutes and
-  forced a machine reboot (PLAN.md §16 #169).
+The standing rules this section carried are decisions in the store now, alongside the git rules
+above: what gets built before anything shiny, that a rule carries the incident that created it,
+that an unobserved fact is recorded as unknown rather than guessed at, that a dependency choice
+states its own why, how a headless session runs its gates, and what a session may never do to
+this host to chase a flaky test. Read them in **`decisions.md`** or with `h9k decide list`, and
+record a new one with `h9k decide "<one claim>"`.
+
+A run-earned lesson is the other half of the same store and a different act: `h9k learn "<what
+this run learned>"` records one, and `lessons.md` renders them beside the decisions. A dispatched
+agent records lessons; decisions are a human's to record.

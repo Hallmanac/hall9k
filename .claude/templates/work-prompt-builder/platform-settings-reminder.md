@@ -1,7 +1,7 @@
 ===lead===
 - **Two platform rules apply here whether or not you were launched with the
   recommended `--settings` file.** Never add a `Co-Authored-By` trailer to any
-  commit — a hard rule for agents (AGENTS.md "Git rules"). And size any slow Bash
+  commit — a hard rule for agents (`decisions.md`). And size any slow Bash
   tool command's timeout for this project's own gates rather than trusting the
 ===no-gates===
   default: this project configures no verification gates, but any other slow

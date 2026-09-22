@@ -47,6 +47,19 @@ this skill is not needed; GitHub merges it fine as-is.
      lines, and picking either would silently drop real work. See "When a conflict is not
      yours to resolve" below.
 
+   **PLAN.md's §16 carries no numbered entries any more, so check that first.** The section is
+   a pointer at the rendered `decisions.md` now (idea d805fd8b): every decision is an event in
+   the store, cited by the id in its own heading. A branch cut before that landed can still
+   bring its own §16 entry into this rebase, and neither shape below applies to it. Take the
+   base's side for the section, and do not hand-number the entry or leave it for
+   `DecisionsLogRenumberer`: that step declines a section with no number space to read rather
+   than minting #1 over a citation the import has already given away, so nothing will ever
+   number it, and `DecisionsLogNumberingGuardTests` fails the mandatory gate while the entry is
+   still there. The decision itself belongs in the store, and `h9k decide` refuses a decision
+   recorded from inside an unattended run, so say so in your handoff and let the owner record
+   it rather than trying to type it yourself. The two shapes below apply only where the base's
+   own §16 still carries numbered entries.
+
    **PLAN.md's own §16 v0 Decisions Log tail is a conflict of two different shapes, and only
    one of them is left for the mechanical step.** Either way, it is always **keep both**: this
    branch's own entry stays exactly as written, ordered after whatever main gained. Which shape
@@ -88,8 +101,8 @@ this skill is not needed; GitHub merges it fine as-is.
        re-entry, and the check reads that instead of the freshly-advanced merge-base — so it
        correctly sees the collision as a parallel merge, not a hand-numbering mistake, and
        renumbers on its own once this rebase lands. Hand-renumbering here would race the
-       mechanical step and hand citation-rewriting to judgment instead of the sweep AGENTS.md's
-       own "no agent renumbers it" rule exists to guarantee.
+       mechanical step and hand citation-rewriting to judgment instead of the sweep the
+       "no agent renumbers it" rule exists to guarantee.
 
    Land a resolved conflict inside the commit being replayed (`git add <files>` then
    `git rebase --continue`), never as a separate "resolve conflict" commit. The mapping
