@@ -115,6 +115,11 @@ public sealed class DispatchLoop(
         // an idea's document carries, and a finished idea never gets another event to trigger an
         // ordinary Inline rewrite.
         await BackfillIdeaProjectionsAsync(stoppingToken);
+        // And for lessons: the prompt feed (idea d805fd8b, piece 5) added the recording node to
+        // LearningDetails, and a lesson's only later event is its retirement, which never rewrites
+        // that field — so an install's existing lessons keep a null node forever and are described
+        // as recorded on a node nobody observed, which the events themselves contradict.
+        await BackfillLearningProjectionsAsync(stoppingToken);
         // A different repair than the two above, run right beside them for the identical reason:
         // a headless task or idea document an earlier build's own genesis-skip gap already
         // produced needs its own one-time fix the moment this build (carrying the guard that
@@ -393,6 +398,36 @@ public sealed class DispatchLoop(
                 "Re-projecting out-of-date idea documents failed. Ideas last projected before the "
                 + "fan-out redesign will misread their ending until this succeeds; the next daemon "
                 + "start retries it");
+        }
+    }
+
+    /// <summary>
+    /// The migration the prompt feed's own projection change needs (idea d805fd8b, piece 5), run
+    /// at startup for the same reason the two above are: a lesson row written before the
+    /// recording node existed reads as an agent run on a node nobody observed, so it is held out
+    /// of every prompt and described that way to a reader, when the event's own metadata says
+    /// otherwise. A failure is logged rather than fatal, and the next start tries again.
+    /// </summary>
+    private async Task BackfillLearningProjectionsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<Guid> rebuilt = await LearningDetailsProjectionBackfill.RunAsync(store, cancellationToken);
+            if (rebuilt.Count > 0)
+            {
+                logger.LogInformation(
+                    "Re-projected {Count} lesson(s) whose documents were written before the recording "
+                    + "node was projected onto them — an absent node reads as one nobody observed, which "
+                    + "holds this node's own agent-recorded lessons out of every prompt",
+                    rebuilt.Count);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception,
+                "Re-projecting out-of-date lesson documents failed. Lessons last projected before the "
+                + "recording node landed will read as recorded on an unobserved node until this "
+                + "succeeds; the next daemon start retries it");
         }
     }
 

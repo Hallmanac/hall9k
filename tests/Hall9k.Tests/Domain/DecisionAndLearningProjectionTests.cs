@@ -1,7 +1,9 @@
 using FluentAssertions;
 using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Xunit;
@@ -147,5 +149,121 @@ public sealed class DecisionAndLearningProjectionTests
 
         view.Statement.Should().Be("The old lesson");
         view.Status.Should().Be(LearningStatus.Retired);
+    }
+
+    /// <summary>
+    /// The recording node is projected off the event's own metadata, not off the event's shape
+    /// (idea d805fd8b, piece 5): the prompt feed has to tell this node's own agent from another
+    /// node's, and a stream replay per lesson to answer that would make composing one prompt an
+    /// unbounded read.
+    /// </summary>
+    [Fact]
+    public void A_lesson_carries_the_node_that_appended_it()
+    {
+        LearningDetailsProjection projection = new();
+        Guid nodeId = DomainId.New();
+        FakeEvent<LearningRecorded> recorded = Stamped(nodeId);
+
+        LearningDetails view = projection.Create(recorded);
+
+        view.RecordedOnNodeId.Should().Be(nodeId);
+    }
+
+    /// <summary>
+    /// On a replicated lesson the stamping listener has already written the RECEIVING node over
+    /// its own header, so the preserved replication origin is the only header that still names the
+    /// node the lesson actually came from. Reading the wrong one would mark every other node's
+    /// lesson as this node's and inject it.
+    /// </summary>
+    [Fact]
+    public void A_replicated_lesson_carries_the_node_it_came_from_rather_than_the_one_that_applied_it()
+    {
+        LearningDetailsProjection projection = new();
+        Guid originNode = DomainId.New();
+        Guid receivingNode = DomainId.New();
+        FakeEvent<LearningRecorded> recorded = Stamped(receivingNode);
+        recorded.SetHeader(ReplicationEventHeaders.OriginNodeId, originNode.ToString());
+
+        LearningDetails view = projection.Create(recorded);
+
+        view.RecordedOnNodeId.Should().Be(originNode);
+    }
+
+    /// <summary>
+    /// The sending node stamps its own empty id while it is still bootstrapping, and the inbox
+    /// carries that forward faithfully, so a replicated lesson can arrive with a replication
+    /// origin header that names nobody. Falling back to the stamped header there would answer with
+    /// the RECEIVING node and present another install's lesson as this one's own, which is the
+    /// worst possible wrong answer for a reader deciding whether an agent it controls wrote
+    /// something.
+    /// </summary>
+    [Theory]
+    [InlineData("00000000-0000-0000-0000-000000000000")]
+    [InlineData("")]
+    [InlineData("not-a-guid")]
+    public void A_replicated_lesson_whose_origin_is_unreadable_never_falls_back_to_the_receiving_node(
+        string originHeader)
+    {
+        LearningDetailsProjection projection = new();
+        Guid receivingNode = DomainId.New();
+        FakeEvent<LearningRecorded> recorded = Stamped(receivingNode);
+        recorded.SetHeader(ReplicationEventHeaders.OriginNodeId, originHeader);
+
+        LearningDetails view = projection.Create(recorded);
+
+        view.RecordedOnNodeId.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A lesson appended before the origin stamping existed, or one stamped while an install was
+    /// still bootstrapping, has no readable node. That answers null rather than the asking node,
+    /// which is what keeps it out of prompts instead of silently claimed as local.
+    /// </summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("not-a-guid")]
+    [InlineData("00000000-0000-0000-0000-000000000000")]
+    public void An_unreadable_or_bootstrapping_node_header_projects_as_no_node_at_all(string? header)
+    {
+        LearningDetailsProjection projection = new();
+        FakeEvent<LearningRecorded> recorded = new(new LearningRecorded(
+            DomainId.New(), KnowledgeScope.Project, Project, "One claim",
+            RecordedProvenance.FromShell(Owner), Now));
+        if (header is not null)
+        {
+            recorded.SetHeader(EventOriginStampingListener.NodeIdHeader, header);
+        }
+
+        LearningDetails view = projection.Create(recorded);
+
+        view.RecordedOnNodeId.Should().BeNull();
+    }
+
+    [Fact]
+    public void A_distilled_lessons_citations_reach_the_row_both_in_order_and_out_of_it()
+    {
+        LearningDetailsProjection projection = new();
+        Guid id = DomainId.New();
+        Guid source = DomainId.New();
+        LearningRecorded distilled = new(
+            id, KnowledgeScope.Project, Project, "The merged claim",
+            RecordedProvenance.FromShell(Owner), Now, [source]);
+
+        LearningDetails created = projection.Create(new FakeEvent<LearningRecorded>(distilled));
+        LearningDetails applied = new();
+        projection.Apply(new FakeEvent<LearningRecorded>(distilled), applied);
+
+        created.DistilledFrom.Should().Equal(source);
+        applied.DistilledFrom.Should().Equal(source);
+    }
+
+    private static FakeEvent<LearningRecorded> Stamped(Guid nodeId)
+    {
+        FakeEvent<LearningRecorded> recorded = new(new LearningRecorded(
+            DomainId.New(), KnowledgeScope.Project, Project, "One claim",
+            RecordedProvenance.FromShell(Owner), Now));
+        recorded.SetHeader(EventOriginStampingListener.NodeIdHeader, nodeId.ToString());
+        return recorded;
     }
 }

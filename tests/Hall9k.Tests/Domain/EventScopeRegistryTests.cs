@@ -51,6 +51,14 @@ public sealed class EventScopeRegistryTests
         "Hall9k.Domain.Features.Decision.DecisionStatus",
         "Hall9k.Domain.Features.Epic.EpicState",
         "Hall9k.Domain.Features.Learning.LearningStatus",
+        // The prompt feed (idea d805fd8b, piece 5) is a read over the Learning streams composed
+        // into prompt text, never a stream of its own: not one of these is ever appended anywhere,
+        // so none of them has a scope to classify. The same exemption the orchestrator feed's own
+        // read shapes have below, for the same reason.
+        "Hall9k.Domain.Features.Learning.InjectedLesson",
+        "Hall9k.Domain.Features.Learning.InjectedLessons",
+        "Hall9k.Domain.Features.Learning.LessonInjectionCaps",
+        "Hall9k.Domain.Features.Learning.LessonProvenanceMark",
         "Hall9k.Domain.Features.Idea.IdeaSeed",
         "Hall9k.Domain.Features.Idea.IdeaState",
         "Hall9k.Domain.Features.Invite.VouchedProjectRecord",
