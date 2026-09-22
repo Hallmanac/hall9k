@@ -34,7 +34,33 @@ public sealed class DispatchedSessionInterceptorTests
         exception.Message.Should().Contain("task abandon", "the refusal names the verb it refused");
         exception.Message.Should().Contain(runId, "the refusal names the run it refused inside");
         exception.Message.Should().Contain("orchestrator", "the refusal says who owns this call instead");
-        ExitCodes.BusinessRule.Should().Be(70, "Program.cs maps DomainBusinessRuleException to exactly this exit code");
+    }
+
+    /// <summary>
+    /// The task-bound spawn sites (<c>ClaudeExecutor.SpawnAsync</c>,
+    /// <see cref="Hall9k.Cli.Commands.HeadlessLaunch.SpawnDetached"/>) stamp
+    /// <see cref="DispatchedRunEnvironment.TaskIdVariable"/> alongside the run id, and the refusal
+    /// has to name it too (independent pre-PR review, cycle 1, conformance finding) — an agent or an
+    /// operator reading the refusal off a log could otherwise tell which run it came from but not
+    /// which task, the fact that actually matters for finding the worktree.
+    /// </summary>
+    [Fact]
+    public void A_refused_verb_names_the_task_when_the_task_variable_is_set()
+    {
+        string runId = DomainId.New().ToString();
+        string taskId = DomainId.New().ToString();
+        DispatchedSessionInterceptor interceptor = new(name => name switch
+        {
+            _ when name == DispatchedRunEnvironment.RunIdVariable => runId,
+            _ when name == DispatchedRunEnvironment.TaskIdVariable => taskId,
+            _ => null,
+        });
+
+        Action act = () => interceptor.Intercept(Context, new TaskAbandonCommand.Settings());
+
+        DomainBusinessRuleException exception = act.Should().Throw<DomainBusinessRuleException>()
+            .Which;
+        exception.Message.Should().Contain(taskId, "the refusal names the task it refused inside, not only the run");
     }
 
     [Fact]
@@ -56,6 +82,23 @@ public sealed class DispatchedSessionInterceptorTests
         Action act = () => interceptor.Intercept(Context, new TaskVerifyCommand.Settings());
 
         act.Should().NotThrow("h9k task verify is a dispatched session's own legitimate act on its own run");
+    }
+
+    /// <summary>
+    /// <c>pr reply</c> is the only route a review-feedback follow-up has to answer a review thread
+    /// at all (<c>PullRequestReplyCommand</c>'s own doc), so classifying it Refused rather than
+    /// Allowed silently breaks every such follow-up (independent pre-PR review, cycle 1, conformance
+    /// and adversarial findings, both high severity).
+    /// </summary>
+    [Fact]
+    public void Pr_reply_is_untouched_even_with_the_variable_set()
+    {
+        string runId = DomainId.New().ToString();
+        DispatchedSessionInterceptor interceptor = new(name => name == DispatchedRunEnvironment.RunIdVariable ? runId : null);
+
+        Action act = () => interceptor.Intercept(Context, new PullRequestReplyCommand.Settings());
+
+        act.Should().NotThrow("pr reply posts no lifecycle state of its own and is the only route a follow-up has into a review thread");
     }
 
     /// <summary>

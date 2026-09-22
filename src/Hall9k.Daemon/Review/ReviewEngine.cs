@@ -2145,6 +2145,7 @@ public sealed class ReviewEngine(
             GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
             Environment = ReviewSessionEnvironment,
+            TaskId = context.TaskId,
             SessionName = sessionName,
         }, cancellationToken);
 
@@ -2226,6 +2227,7 @@ public sealed class ReviewEngine(
             GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
             Environment = ReviewSessionEnvironment,
+            TaskId = context.TaskId,
             SessionName = sessionName,
         }, cancellationToken);
 
@@ -2309,6 +2311,7 @@ public sealed class ReviewEngine(
             ResumeSessionId: resumeSessionId, GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
             Environment = ReviewSessionEnvironment,
+            TaskId = context.TaskId,
             SessionName = sessionName,
         }, cancellationToken);
 
@@ -2521,6 +2524,7 @@ public sealed class ReviewEngine(
             context.Project.SkipPermissions, FixArtifactName(cycle, sessionId),
             GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
+            TaskId = context.TaskId,
             SessionName = sessionName,
         }, cancellationToken);
 
@@ -3783,6 +3787,7 @@ public sealed class ReviewEngine(
                     SessionArtifactName: SessionRoleName.StackAssessment, MaxTurns: _options.StackAssessmentMaxTurns,
                     GuardsReviewThreadReplies: context.Run.IsFollowUp)
                 {
+                    TaskId = context.TaskId,
                     SessionName = sessionName,
                 }, cancellationToken);
             }
@@ -4716,6 +4721,7 @@ public sealed class ReviewEngine(
             context.Project.SkipPermissions, artifactName,
             GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
+            TaskId = context.TaskId,
             SessionName = sessionName,
         }, cancellationToken);
 
@@ -5271,6 +5277,7 @@ public sealed class ReviewEngine(
             context.Project.SkipPermissions, artifactName,
             GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
+            TaskId = context.TaskId,
             SessionName = sessionName,
         }, cancellationToken);
 

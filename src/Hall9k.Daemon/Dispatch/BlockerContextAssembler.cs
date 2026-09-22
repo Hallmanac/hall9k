@@ -110,6 +110,7 @@ public sealed class BlockerContextAssembler(
                     task, blockerCount, raw, commandTimeout: _options.VerifyGateTimeout),
                 mode, model, project.SkipPermissions, artifactName)
             {
+                TaskId = task.Id,
                 SessionName = sessionName,
             }, cancellationToken);
             unfinished = agent;

@@ -443,6 +443,7 @@ public sealed class SpikeEngine(
                 runId, sessionId, run.WorktreePath, runDirectory, prompt, (ExecutorMode)run.ExecutorMode, model,
                 project.SkipPermissions, artifactName)
             {
+                TaskId = taskId,
                 SessionName = sessionName,
             },
             cancellationToken);

@@ -78,6 +78,16 @@ public sealed record AgentSpawnRequest(
         ReadOnlyDictionary<string, string>.Empty;
 
     /// <summary>
+    /// The task this session's own worktree belongs to, when it has one — stamped onto
+    /// <see cref="Hall9k.Domain.Features.Run.DispatchedRunEnvironment.TaskIdVariable"/> alongside
+    /// <see cref="RunId"/> (task: a dispatched session cannot drive the project's own lifecycle), so
+    /// <c>DispatchedSessionInterceptor</c>'s own refusal can name the task and not only the run. Null
+    /// for the sessions this platform spawns with no owning task — card publication, courier
+    /// delivery, and project-scoped run-skill discovery — which carry no task worktree to name.
+    /// </summary>
+    public Guid? TaskId { get; init; }
+
+    /// <summary>
     /// The name this session's Claude Code process launches under (task: every dispatched agent
     /// session launches under a human-readable id-and-role name) — passed straight through to
     /// <c>claude -n/--name</c>, verified against <c>claude --help</c> and confirmed empirically

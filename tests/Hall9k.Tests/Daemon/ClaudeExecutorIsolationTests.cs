@@ -122,6 +122,80 @@ public sealed class ClaudeExecutorIsolationTests
     }
 
     /// <summary>
+    /// Task: a dispatched session cannot drive the project's own lifecycle (independent pre-PR
+    /// review, cycle 1, conformance finding) — <see cref="DispatchedSessionInterceptor"/>'s own
+    /// refusal names the task, not only the run, so the task-bound spawn sites have to stamp it too.
+    /// </summary>
+    [Fact]
+    public async Task A_task_bound_spawn_carries_its_own_task_id_as_the_dispatched_task_environment_variable()
+    {
+        string runDirectory = Directory.CreateTempSubdirectory("hall9k-claude-executor-tests-").FullName;
+        try
+        {
+            FakeProcessManager processManager = new();
+            ClaudeExecutor executor = new(
+                NullLogger<ClaudeExecutor>.Instance, processManager,
+                Options.Create(new DaemonOptions()));
+
+            Guid taskId = DomainId.New();
+            AgentSpawnRequest request = new(
+                DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
+                ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+            {
+                TaskId = taskId,
+                SessionName = "test-build",
+            };
+
+            await executor.SpawnAsync(request, CancellationToken.None);
+
+            processManager.Spawns.Should().ContainSingle()
+                .Which.Environment.Should().Contain(
+                    new KeyValuePair<string, string>(DispatchedRunEnvironment.TaskIdVariable, taskId.ToString()),
+                    "the CLI interceptor's own refusal names which task a dispatched session is inside, not only which run");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Card publication, courier delivery, and project-scoped run-skill discovery all spawn with no
+    /// owning task (<see cref="AgentSpawnRequest.TaskId"/>'s own doc) — this proves the variable is
+    /// genuinely absent for that shape rather than stamped as an empty or default value.
+    /// </summary>
+    [Fact]
+    public async Task A_spawn_with_no_task_never_carries_the_dispatched_task_environment_variable()
+    {
+        string runDirectory = Directory.CreateTempSubdirectory("hall9k-claude-executor-tests-").FullName;
+        try
+        {
+            FakeProcessManager processManager = new();
+            ClaudeExecutor executor = new(
+                NullLogger<ClaudeExecutor>.Instance, processManager,
+                Options.Create(new DaemonOptions()));
+
+            AgentSpawnRequest request = new(
+                DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
+                ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+            {
+                SessionName = "test-build",
+            };
+
+            await executor.SpawnAsync(request, CancellationToken.None);
+
+            processManager.Spawns.Should().ContainSingle()
+                .Which.Environment.Should().NotContain(
+                    entry => entry.Key == DispatchedRunEnvironment.TaskIdVariable,
+                    "a session with no owning task carries no task-id variable rather than an empty one");
+        }
+        finally
+        {
+            Directory.Delete(runDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
     /// The 2026-09-02 finding, verified end to end: a compile-time constant mirroring
     /// <c>DaemonOptions.VerifyGateTimeout</c>'s own default went stale the moment an operator
     /// raised the live option, since nothing spawned actually read it. <c>ClaudeExecutor</c> now

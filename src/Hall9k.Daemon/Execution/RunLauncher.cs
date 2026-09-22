@@ -755,6 +755,7 @@ public sealed class RunLauncher(
                     // every other task's own build session already is.
                     MaxTurns: task.Constraints?.MaxTurns)
                 {
+                    TaskId = task.Id,
                     SessionName = sessionName,
                 },
                 cancellationToken);
@@ -921,6 +922,7 @@ public sealed class RunLauncher(
                     runId, sessionId, worktree.Path, runDirectory, prompt, ExecutorMode.Subscription, model,
                     project.SkipPermissions, UntrustedWorkingDirectory: true)
                 {
+                    TaskId = taskId,
                     SessionName = sessionName,
                 },
                 cancellationToken);
