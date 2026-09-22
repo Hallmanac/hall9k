@@ -17,22 +17,17 @@ namespace Hall9k.Tests.Domain;
 /// Each needs to tell a real source file from build output, and each strips comments and string
 /// literals before matching so quoted prose cannot be mistaken for real code.
 /// <para>
-/// <see cref="Hall9k.Tests.Domain.DecisionsLogNumberingGuardTests"/> is a fifth consumer, and
-/// keeps this list from being "every tree-walking guard" alone: it uses <see cref="SourceDirectory"/>
-/// only, to resolve the repository root and locate PLAN.md, rather than walking a tree of source
-/// files, so it needs neither <see cref="IsBuildOutput"/> nor
-/// <see cref="StripCommentsAndStrings"/>.
-/// <see cref="Hall9k.Tests.Domain.StackedBaseBranchGuardTests"/> is a sixth: it walks <c>src/</c>
+/// <see cref="Hall9k.Tests.Domain.StackedBaseBranchGuardTests"/> is a fifth: it walks <c>src/</c>
 /// alone and matches on raw lines rather than stripped text, since each of its four scans reads a
 /// call's own argument list within a few lines of it (a whole-line comment is skipped instead) — so
 /// it needs <see cref="SourceDirectory"/> and <see cref="IsBuildOutput"/> but not
 /// <see cref="StripCommentsAndStrings"/>.
-/// <see cref="Hall9k.Tests.Domain.PublishLaneGuardTests"/> is a seventh: it walks the whole
+/// <see cref="Hall9k.Tests.Domain.PublishLaneGuardTests"/> is a sixth: it walks the whole
 /// <c>tests/</c> directory like <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/>, and
 /// uses all three members — but matches the stripped text for the call it looks for and the
 /// <em>raw</em> text for the two attributes that call site then has to carry, since an
 /// attribute's own arguments are string literals the stripping removes.
-/// <see cref="Hall9k.Tests.Domain.ProcessWideStateGuardTests"/> is an eighth: it walks the whole
+/// <see cref="Hall9k.Tests.Domain.ProcessWideStateGuardTests"/> is a seventh: it walks the whole
 /// <c>tests/</c> directory like <see cref="Hall9k.Tests.Domain.ContainerRoutingGuardTests"/> and
 /// matches stripped text, but with regexes rather than substrings, since two of the three
 /// mutations it forbids are assignments to a property whose reads are legitimate. Three more have
@@ -43,10 +38,12 @@ namespace Hall9k.Tests.Domain;
 /// <c>src/</c> on raw lines, so it needs <see cref="SourceDirectory"/> and
 /// <see cref="IsBuildOutput"/> only; and
 /// <see cref="Hall9k.Tests.Domain.AgentsMarkdownLineCountTests"/> uses
-/// <see cref="SourceDirectory"/> alone to reach the repository root and locate AGENTS.md, exactly
-/// as <see cref="Hall9k.Tests.Domain.DecisionsLogNumberingGuardTests"/> does for PLAN.md. That is
-/// eleven, which is every file naming this type today — worth keeping current, but a grep for
-/// <c>TestSourceTree.</c> is the authority on the set, not this paragraph.
+/// <see cref="SourceDirectory"/> alone to reach the repository root and locate AGENTS.md, rather
+/// than walking a tree of source files, so it needs neither <see cref="IsBuildOutput"/> nor
+/// <see cref="StripCommentsAndStrings"/> — and it is what keeps this list from being "every
+/// tree-walking guard" alone. That is ten, which is every file naming this type today — worth
+/// keeping current, but a grep for <c>TestSourceTree.</c> is the authority on the set, not this
+/// paragraph.
 /// </para>
 /// </summary>
 internal static class TestSourceTree

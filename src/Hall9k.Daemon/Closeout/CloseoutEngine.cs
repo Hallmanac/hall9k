@@ -1426,61 +1426,6 @@ public sealed class CloseoutEngine(
             return InspectionOutcome.Inspected;
         }
 
-        // The last gate before the merge call itself (task: closeout never merges a pull request
-        // whose PLAN.md tail still carries this task's own placeholder). Every stacked shape that
-        // would still owe a replay lap to renumber it has already had its chance this same sweep —
-        // the stacked check ahead of the conflict read in InspectAndActAsync, and this method's own
-        // stacked check above — so reaching this line already means no such lap is coming from
-        // elsewhere this sweep; the two leaked-placeholder incidents this guard exists for
-        // (PLACEHOLDER-609bd344, PLACEHOLDER-5e0cbfeb) both reached this exact merge call with their
-        // own tail entry still unnumbered, on branches that were never stacked at all. Read straight
-        // off the retained worktree — the only check in this method that touches the filesystem
-        // rather than snapshot, run, task, or _options; a worktree this sweep cannot read (gone, or
-        // never checked out) is not this run's own fault, so the guard is skipped rather than
-        // parking over it, the same best-effort stance every other worktree read on this platform
-        // already takes.
-        if (run.WorktreePath.IsNotBlank() && Directory.Exists(run.WorktreePath))
-        {
-            string taskShortId = DomainId.Short(task.Id);
-            bool stillPlaceholder;
-            try
-            {
-                stillPlaceholder = await DecisionsLogRenumberer.TailEntryIsThisTasksUnresolvedPlaceholderAsync(
-                    run.WorktreePath, taskShortId, cancellationToken);
-            }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-            {
-                // Directory.Exists above only rules out the worktree being gone outright — a
-                // removal racing this very check (TOCTOU), or PLAN.md itself being unreadable
-                // (permissions, a filesystem error), still reaches File.ReadAllTextAsync inside
-                // TailEntryIsThisTasksUnresolvedPlaceholderAsync uncaught. Caught here instead so a
-                // worktree this sweep genuinely cannot read is skipped exactly as the comment above
-                // promises, rather than surfacing as a generic per-run poll failure that never
-                // mentions the Decisions Log guard at all (independent pre-PR review, cycle 1,
-                // adversarial lens).
-                logger.LogWarning(
-                    exception,
-                    "Run {RunId}: could not read PLAN.md to check the Decisions Log guard before the "
-                    + "pre-approved merge — skipping the guard rather than parking over an unreadable worktree",
-                    run.Id);
-                stillPlaceholder = false;
-            }
-
-            if (stillPlaceholder)
-            {
-                string placeholderParkReason =
-                    $"Pre-approved, but PLAN.md's own Decisions Log (section 16) still carries this task's own "
-                    + $"placeholder PLACEHOLDER-{taskShortId} at its tail rather than a real number — merging "
-                    + $"now would land an unnumbered entry on {project.BaseBranch}. Run h9k pr resolve so a "
-                    + "follow-up run rebases the branch and the mechanical pre-final-pass step assigns it a "
-                    + "real number, then this sweep merges it; rebasing onto "
-                    + $"{project.BaseBranch} by hand does not run that step, so a hand rebase still needs the "
-                    + "placeholder replaced with a real number by hand before this sweep will merge it.";
-                await ParkAsync(session, run, placeholderParkReason, now, cancellationToken);
-                return InspectionOutcome.Inspected;
-            }
-        }
-
         try
         {
             await inspector.MergeAsync(
@@ -3576,9 +3521,9 @@ public sealed class CloseoutEngine(
     /// <summary>
     /// Parks a stacked child whose rebase budget is spent and still has something owed — either the
     /// replay proper, or (for a child already sitting on its merged parent's base tip) only the
-    /// retarget and the no-op follow-up dispatch that earns its Decisions Log placeholder its real
-    /// number, distinguished by <paramref name="rebaseOwed"/> so the park's own wording never tells
-    /// a human to rebase by hand when nothing here would have rebased at all (independent pre-PR
+    /// retarget and the no-op follow-up dispatch that brings the run's own recorded fork point onto
+    /// the base it now targets, distinguished by <paramref name="rebaseOwed"/> so the park's own
+    /// wording never tells a human to rebase by hand when nothing here would have rebased at all (independent pre-PR
     /// review, cycle 1, adversarial lens). Reached even when the child already sits on the base and
     /// the retarget itself is a no-op write — <see cref="TryReplayStackedChildAsync"/>'s own
     /// <c>ParentMergedAligned</c> arm checks the budget regardless, because the follow-up dispatch
@@ -3628,9 +3573,11 @@ public sealed class CloseoutEngine(
     /// own early return below this comment rather than folded into the replay path further down. It
     /// still dispatches and still spends budget, though (independent pre-PR review, cycle 1,
     /// adversarial lens): a no-op follow-up, upstream and onto both the base tip already held, is
-    /// the only path that ever earns this task's own Decisions Log placeholder its real number once
-    /// the retarget lands, the same "later call" <c>ReviewEngine.EnsureRebasedBeforeFinalPassAsync</c>
-    /// defers to — leaving this arm to only retarget and return let that call never come.
+    /// the only path that ever moves this run's own recorded fork point onto the base it now
+    /// targets once the retarget lands — the same "later call"
+    /// <c>ReviewEngine.EnsureRebasedBeforeFinalPassAsync</c> defers to, and leaving this arm to
+    /// only retarget and return let that call never come, so every later range this task's own
+    /// reviewers read stayed open at the parent's old head.
     /// </para>
     /// <para>
     /// Two budgets bound this path, deliberately asymmetrically. The rebase budget below is the
@@ -3770,15 +3717,17 @@ public sealed class CloseoutEngine(
             // retarget it still owed was never dispatched).
             //
             // The retarget alone is not enough, though (independent pre-PR review, cycle 1,
-            // adversarial lens): renumbering this task's own Decisions Log placeholder only ever
-            // happens inside a run's own pre-final-pass check, once that run reads itself as no
-            // longer a stacked child (ReviewEngine.EnsureRebasedBeforeFinalPassAsync's own "a later
-            // call here" doc) — and nothing else ever dispatches this task a follow-up run again
-            // once this sweep returns without one. A no-op StackReplay dispatch is exactly what the
-            // ParentMerged path below already relies on for the identical reason, so this arm ends
-            // the same way when it can afford to: upstream and onto both name the base tip this
-            // child already holds, so the dispatched run's own checkpoint finds nothing left to
-            // replay and proceeds straight through to the pass that assigns the real number.
+            // adversarial lens): moving this run's own recorded fork point onto the base it now
+            // targets only ever happens inside a run's own pre-final-pass check, once that run
+            // reads itself as no longer a stacked child
+            // (ReviewEngine.EnsureRebasedBeforeFinalPassAsync's own "a later call here" doc) — and
+            // nothing else ever dispatches this task a follow-up run again once this sweep returns
+            // without one, so every later range a reviewer reads would stay open at the parent's
+            // old head. A no-op StackReplay dispatch is exactly what the ParentMerged path below
+            // already relies on for the identical reason, so this arm ends the same way when it can
+            // afford to: upstream and onto both name the base tip this child already holds, so the
+            // dispatched run's own checkpoint finds nothing left to replay and records the moved
+            // fork point instead.
             //
             // The rebase budget still gates the retarget write exactly as it did before (conformance
             // review, cycle 2) — checked ahead of it, not after, and skipped only when the pull
@@ -3807,10 +3756,10 @@ public sealed class CloseoutEngine(
             // three more park verdicts — an unmet dependency, the lifetime automatic-closeout
             // ceiling, the per-obstruction cap — and every one of them used to land AFTER the retarget
             // had already moved this pull request off a parent branch that is going away, leaving a
-            // human a pull request aimed at the project's base with no follow-up dispatched to assign
-            // this task's own Decisions Log number (independent review, PR #380 — the ordering this
-            // arm's sibling, the ParentMerged/ParentMoved path below, already enforces for its own
-            // retarget). The same decision is handed to the dispatch below rather than re-asked.
+            // human a pull request aimed at the project's base with no follow-up dispatched to move
+            // this run's own recorded fork point onto it (independent review, PR #380 — the ordering
+            // this arm's sibling, the ParentMerged/ParentMoved path below, already enforces for its
+            // own retarget). The same decision is handed to the dispatch below rather than re-asked.
             FollowUpDecision alignedDecision = await DecideFollowUpAsync(
                 session, task, run, FollowUpKind.StackReplay,
                 [observation.BoundaryCommit], snapshot, alignedReason, cancellationToken);
@@ -3851,8 +3800,8 @@ public sealed class CloseoutEngine(
             // than returned silently (independent pre-PR review, cycle 1, conformance and
             // adversarial lenses): the retarget above already landed, so the run stops reading as a
             // stacked child from the next sweep on, and nothing else ever prompts the h9k pr resolve
-            // that renumbers this task's own Decisions Log placeholder if this arm does not ask for
-            // it directly.
+            // that moves this run's own recorded fork point onto the base it now targets if this arm
+            // does not ask for it directly.
             if (task.StackReplaysDispatched >= _options.MaxStackReplayRuns)
             {
                 await ParkAsync(
@@ -3860,8 +3809,8 @@ public sealed class CloseoutEngine(
                     $"This is a stacked pull request and {observation.Detail}. It is retargeted onto "
                     + $"{project.BaseBranch} now, but its rebase budget is spent "
                     + $"({task.StackReplaysDispatched}/{_options.MaxStackReplayRuns} rebase(s)), so no "
-                    + "follow-up was dispatched to earn this task's own Decisions Log placeholder its "
-                    + "real number. Grant another attempt with h9k pr resolve.",
+                    + "follow-up was dispatched to move this run's own recorded fork point onto that "
+                    + "base. Grant another attempt with h9k pr resolve.",
                     now, cancellationToken);
                 return true;
             }

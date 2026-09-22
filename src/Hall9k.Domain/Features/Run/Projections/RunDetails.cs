@@ -351,8 +351,6 @@ public sealed class RunDetails : IJsonOnDeserialized
     public bool? LastPreFinalPassRebaseWasNoOp { get; set; }
     /// <summary>Whether the last non-no-op pre-final-pass rebase needed the recovery session rather than applying cleanly on its own.</summary>
     public bool LastPreFinalPassRebaseRecovered { get; set; }
-    /// <summary>Whether the last non-no-op pre-final-pass rebase conflicted and was resolved mechanically on the Decisions Log tail-append shape — neither clean nor recovered by a session. See <see cref="Events.RunRebasedOntoBase.ConflictResolvedMechanically"/>; <c>h9k task show</c> would otherwise have to call a rebase that conflicted "clean".</summary>
-    public bool LastPreFinalPassRebaseConflictResolvedMechanically { get; set; }
     /// <summary>The base commit the branch was rebased from, as of the last pre-final-pass rebase attempt.</summary>
     public string? LastPreFinalPassRebaseFromCommit { get; set; }
     /// <summary>The base commit the branch was rebased onto, as of the last pre-final-pass rebase attempt.</summary>
@@ -1814,7 +1812,6 @@ public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Gu
         {
             view.LastPreFinalPassRebaseWasNoOp = @event.Data.WasNoOp;
             view.LastPreFinalPassRebaseRecovered = @event.Data.RecoveredByAgentSession;
-            view.LastPreFinalPassRebaseConflictResolvedMechanically = @event.Data.ConflictResolvedMechanically;
             view.LastPreFinalPassRebaseFromCommit = @event.Data.RebasedFromCommit;
             view.LastPreFinalPassRebaseOntoCommit = @event.Data.RebasedOntoCommit;
             view.LastPreFinalPassRebaseDetail = @event.Data.Detail;

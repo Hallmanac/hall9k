@@ -2814,15 +2814,7 @@ public sealed class ReviewEngine(
     /// A fetch or read failure is logged and treated as <see cref="RebaseGateOutcome.Proceed"/>
     /// rather than failing or parking the run: a transient network blip is not this run's fault,
     /// and the ordinary post-push closeout mechanical rebase (<see cref="Events.PullRequestMechanicalRebaseAttempted"/>)
-    /// still covers whatever residual staleness the REBASE itself could not observe. That is never
-    /// true for a placeholder still sitting at PLAN.md's own tail, which nothing on the ordinary
-    /// mechanical paths ever assigns a number to (Decisions Log #162) — every one of these skip
-    /// paths also routes through <see cref="RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync"/>
-    /// before returning, so a placeholder still gets its number here whenever this branch turns out
-    /// to already be current with its locally known base, and is otherwise left for a later pass
-    /// rather than risk a duplicate number against a base this call could not confirm (two
-    /// placeholders reached <c>origin/main</c> unnumbered before this existed — see that method's own
-    /// doc).
+    /// still covers whatever residual staleness the REBASE itself could not observe.
     /// </para>
     /// </summary>
     private async Task<RebaseGateOutcome> EnsureRebasedBeforeFinalPassAsync(
@@ -2867,73 +2859,18 @@ public sealed class ReviewEngine(
         // loop is running. A stale "still stacked" read would send this iteration down
         // RebaseOntoStackedParentAsync's own "no longer a stacked child, nothing owed" branch, which
         // returns RebaseGateOutcome.Proceed straight back to THIS method's own caller — skipping the
-        // unstacked rebase-and-renumber path a few lines below entirely, the one place a stacked
-        // child's placeholder is ever assigned its real number, for however many iterations pass
-        // before something else notices the mismatch (Settling's "nothing owed, no review left"
-        // path notices nothing, since no renumbering was ever this run's job to notice missing).
+        // unstacked rebase path a few lines below entirely, for however many iterations pass before
+        // something else notices the mismatch (Settling's "nothing owed, no review left" path
+        // notices nothing).
         if (await IsCurrentlyStackedChildAsync(context, cancellationToken))
         {
-            // Deliberately not wired to DecisionsLogRenumberer here (Decisions Log
-            // #162 — a documented scope limit, not an oversight): the fork point
-            // a transition-shape check needs is "against main", which a
-            // checkpoint replay onto a PARENT branch's head does not carry, and this run's own
-            // mergeBase-against-origin-base is never computed on this path at all. A stacked
-            // child's own placeholder stays unrenumbered until this task's branch is retargeted
-            // onto main (#144/#153) and a later call here takes the unstacked path below instead —
-            // the fresh check above is what makes that "later call" this SAME call, the moment the
-            // retarget has actually landed, rather than depending on some future iteration to
-            // notice on its own.
             return await RebaseOntoStackedParentAsync(
                 context, StackedCheckpoint.BeforeFinalPass, cancellationToken);
         }
 
-        RebasePreflightResult preflight = await RebasePreflightAsync(context, baseBranch, "the mandatory final pass", cancellationToken);
-        if (preflight.Outcome is { } refused)
+        if (await RebasePreflightAsync(context, baseBranch, "the mandatory final pass", cancellationToken)
+            is { } refused)
         {
-            // The preflight's own skip is unstacked-only (RebaseOntoStackedParentAsync's own call
-            // to this same preflight, above, never reaches here — it returns from its own branch
-            // first), so attempting the placeholder renumbering here never touches a stacked
-            // child's own placeholder (Decisions Log #162's scope limit stands). Locked the same as
-            // every other fetch/merge-base read and renumbering commit on this path (the comment
-            // above the repository-lock block below gives the reason), acquired and released here
-            // rather than reused from below because this preflight refusal returns before that
-            // block is ever entered.
-            await using (IAsyncDisposable preflightRenumberLock =
-                await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
-            {
-                // The lock's own wait is unbounded, exactly like the repository lock the primary
-                // rebase attempt below takes — re-checked here immediately after acquiring it and
-                // before anything in the worktree is touched, the same fence re-check that block's
-                // own comment requires of itself, for the identical reason: this attempt's
-                // generation can go stale while it merely waits its turn for the lock (independent
-                // pre-PR review, cycle 1, both lenses).
-                if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
-                {
-                    return RebaseGateOutcome.Stop;
-                }
-
-                if (preflight.BaseWasRetargeted)
-                {
-                    // baseBranch itself is not this pull request's own base anymore — the
-                    // retargeted-base refusal above already established that — so it is never this
-                    // skip's authority to judge "already current with its base" against, whatever a
-                    // fetch or a locally known ref might say about it (independent pre-PR review,
-                    // cycle 1, adversarial lens: renumbering here risks assigning a number off a
-                    // PLAN.md that is current with the WRONG branch, duplicating whatever the
-                    // pull request's real base has landed since).
-                    logger.LogInformation(
-                        "Run {RunId}: the pull request's base was retargeted away from the base this run recorded, so the Decisions Log renumbering was left for a later pass rather than judged against a base that is no longer this branch's authoritative one",
-                        context.RunId);
-                }
-                else
-                {
-                    await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
-                        context, run, git, worktreePath, baseBranch,
-                        "the mandatory final pass's own pre-flight check skipped this branch's rebase",
-                        cancellationToken);
-                }
-            }
-
             return refused;
         }
 
@@ -2952,12 +2889,6 @@ public sealed class ReviewEngine(
         // already read moments earlier, not worth a second read.
         string? mergeBaseForStuckRebase = null;
 
-        // Set only by the TimeoutException catch below, never returned from directly: the git call
-        // that just timed out has already proven this repository or the network unresponsive, so
-        // the retry this skip owes is deferred until AFTER repositoryLock below is released, under a
-        // freshly acquired lock of its own (independent pre-PR review, cycle 1, adversarial lens —
-        // see the comment where timedOutSkipDetail is read, after the lock scope, for why).
-        string? timedOutSkipDetail = null;
         await using (IAsyncDisposable repositoryLock =
             await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
         {
@@ -2972,12 +2903,6 @@ public sealed class ReviewEngine(
 
             string? preRebaseHead = null;
 
-            // Recorded into as each stop of THIS rebase is resolved mechanically, so the stuck-pipe
-            // catch below can still record honestly that a conflict was resolved here when the
-            // exception lands after a resolution the loop had already applied — never guess at
-            // unobserved facts (AGENTS.md). Stays empty on every rebase that never conflicts, which
-            // is nearly all of them.
-            MechanicalTailConflictProgress mechanicalProgress = new();
             try
             {
                 // Captured before anything below can mutate the worktree, the same
@@ -3001,9 +2926,6 @@ public sealed class ReviewEngine(
                     logger.LogWarning(
                         "Run {RunId}: could not fetch origin/{Base} before the mandatory final pass ({Error}) — proceeding unrebased; closeout's own mechanical rebase still covers a stale push",
                         context.RunId, baseBranch, FirstLine(fetch.StandardError));
-                    await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
-                        context, run, git, worktreePath, baseBranch,
-                        $"could not fetch origin/{baseBranch} before the mandatory final pass", cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -3015,9 +2937,6 @@ public sealed class ReviewEngine(
                     logger.LogWarning(
                         "Run {RunId}: could not read origin/{Base} or its merge-base before the mandatory final pass — proceeding unrebased",
                         context.RunId, baseBranch);
-                    await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
-                        context, run, git, worktreePath, baseBranch,
-                        $"could not read origin/{baseBranch} or its merge-base before the mandatory final pass", cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -3027,112 +2946,36 @@ public sealed class ReviewEngine(
                 if (mergeBase == originTip)
                 {
                     // origin/<base> has not moved past what this branch already contains (task:
-                    // the no-op guarantee) — nothing to rebase, but a placeholder at the tail
-                    // still needs its number: this is also the shape the loop re-enters through
-                    // once a conflict's own recovery session has already rebased by hand
-                    // (DispatchRebaseRecoverySessionAsync's LoopAgain lands back here, and by then
-                    // mergeBase already equals originTip), so skipping the call here is the one
-                    // path that would let a branch merge its own placeholder into main
-                    // unrenumbered (independent pre-PR review, cycle 1, both lenses).
-                    //
-                    // The transition-shape check inside DecisionsLogRenumberer needs this branch's
-                    // own TRUE original fork point, not mergeBase as freshly recomputed above: on
-                    // the ordinary no-op path (nothing ever conflicted) the two are identical, but
-                    // on the post-recovery re-entry this branch's own doc names, mergeBase already
-                    // equals originTip precisely BECAUSE the recovery session's own rebase already
-                    // landed the base's content — reading the transition check against it here
-                    // would make "was this number already taken at the fork point" trivially true
-                    // forever, and the transition shape could never fire on the one re-entry it
-                    // exists for (independent pre-PR review, cycle 3, conformance lens).
-                    // RunAggregate.Apply(RunRebasedOntoBase)'s own "trailing no-op" guard keeps
-                    // LastPreFinalPassRebaseFromCommit pointing at that original fork point across
-                    // exactly this re-entry, so it is read here instead whenever the run's last
-                    // landed rebase needed the recovery session.
-                    string transitionForkPointSha = run.LastPreFinalPassRebaseRecovered
-                        && run.LastPreFinalPassRebaseFromCommit is { } recoveredForkPoint
-                            ? recoveredForkPoint
-                            : mergeBase;
-                    DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
-                        context, git, worktreePath, transitionForkPointSha, originTip, cancellationToken);
-
-                    // origin's base genuinely did not move, so WasNoOp stays true — that field keeps
-                    // its one meaning ("did origin's base move") for every existing reader, including
-                    // RunAggregate's own trailing-no-op guard, which the post-recovery re-entry relies
-                    // on to keep a recorded recovery from being clobbered by this very check. A
-                    // renumbering commit still moves HEAD past whatever this run's tip was last gated
-                    // at, exactly like a real rebase does, so it must not go ungated: DecisionsLogRenumbered
-                    // is what raises RunAggregate.PreFinalPassRebaseAwaitingGate on this otherwise-no-op
-                    // outcome, without WasNoOp itself having to lie about whether origin moved
-                    // (independent pre-PR review, cycle 3 conformance lens raised the gate; cycle 5
-                    // adversarial lens found the earlier `wasNoOp: !renumberCommitted` shape broke the
-                    // trailing-no-op guard to do it).
-                    bool renumberCommitted = renumberResult.Outcome == DecisionsLogRenumberOutcome.Renumbered;
+                    // the no-op guarantee) — nothing to rebase. This is also the shape the loop
+                    // re-enters through once a conflict's own recovery session has already rebased
+                    // by hand (DispatchRebaseRecoverySessionAsync's LoopAgain lands back here, and
+                    // by then mergeBase already equals originTip).
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, originTip, wasNoOp: true, recoveredByAgentSession: false,
-                        renumberCommitted
-                            ? $"origin/{baseBranch} has not moved since this branch's own merge base, but the Decisions " +
-                              "Log's tail entry still needed the mechanical rebase step's own renumbering commit."
-                            : $"origin/{baseBranch} has not moved since this branch's own merge base — nothing to rebase.",
-                        checkpointSpend: null, decisionsLogRenumbered: renumberCommitted, forkPointAdvanced: false,
-                        conflictResolvedMechanically: false, cancellationToken);
+                        $"origin/{baseBranch} has not moved since this branch's own merge base — nothing to rebase.",
+                        checkpointSpend: null, forkPointAdvanced: false, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
                 ProcessResult rebase = await git("git", ["rebase", $"origin/{baseBranch}"], worktreePath, cancellationToken);
                 if (rebase.ExitCode == 0)
                 {
-                    await RenumberDecisionsLogPlaceholderAsync(context, git, worktreePath, mergeBase, originTip, cancellationToken);
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, originTip, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased cleanly onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(originTip)}).",
-                        checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: false,
-                        conflictResolvedMechanically: false, cancellationToken);
+                        checkpointSpend: null, forkPointAdvanced: false, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
-                // Conflict. One shape is resolved right here, without a session, and it is the
-                // only one: the base and this branch each appended an entry at the end of PLAN.md's
-                // Decisions Log and nothing else disagrees. That conflict carries no judgment to
-                // exercise — the placeholder-numbering convention (Decisions Log #162) already
-                // decided its answer, which is that the base's entries keep their places and this
-                // branch's placeholder follows them to be assigned the next free number by the
-                // renumbering step a few lines down. Brian's 2026-09-04 ruling still stands over
-                // every other conflict, and this is its single documented exception
-                // (Decisions Log #250); DecisionsLogTailConflictResolver's own
-                // doc has the shape and every near miss that is not it.
-                MechanicalTailConflictOutcome mechanical = await TryResolveDecisionsLogTailConflictsAsync(
-                    context, git, worktreePath, mechanicalProgress, cancellationToken);
-                if (mechanical.Resolved && mechanicalProgress.ResolvedShape is { } shape)
-                {
-                    logger.LogInformation(
-                        "Run {RunId}: the pre-final-pass rebase onto origin/{Base} conflicted only on {Shape} — resolved mechanically and the rebase continued, no recovery session dispatched",
-                        context.RunId, baseBranch, shape);
-
-                    // The same renumbering every other landed rebase on this path runs, in the same
-                    // place: the placeholder this resolution just placed last is exactly what it
-                    // assigns a real number to, so the mandatory gate reads a numbered log.
-                    await RenumberDecisionsLogPlaceholderAsync(
-                        context, git, worktreePath, mergeBase, originTip, cancellationToken);
-                    await RecordRebaseOutcomeAsync(
-                        context.RunId, mergeBase, originTip, wasNoOp: false, recoveredByAgentSession: false,
-                        $"Rebased onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(originTip)}) — "
-                        + $"the only conflict was {shape}, resolved mechanically without a recovery session.",
-                        checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: false,
-                        conflictResolvedMechanically: true, cancellationToken);
-                    return RebaseGateOutcome.Proceed;
-                }
-
-                // Not that shape: abort back to the pre-attempt tip rather than leaving the
-                // mandatory gate and pass to trip over a worktree mid-rebase, then fall out of this
-                // lock scope to dispatch the recovery session below (Brian's 2026-09-04 ruling on
-                // scope: git conflicting is itself evidence that judgment IS required, unlike the
-                // clean-apply case above). A rebase stops commit by commit, so this is also where a
-                // later stop of a rebase whose earlier stops WERE the shape lands: the resolver
-                // refuses the moment one stop is not it, and the restore below undoes every stop it
-                // had already resolved along with the rest of the attempt.
+                // Conflict: abort back to the pre-attempt tip rather than leaving the mandatory
+                // gate and pass to trip over a worktree mid-rebase, then fall out of this lock
+                // scope to dispatch the recovery session below. Brian's 2026-09-04 ruling governs
+                // every conflict without exception again now that the Decisions Log has left this
+                // repository (idea d805fd8b): git conflicting is itself evidence that judgment IS
+                // required, unlike the clean-apply case above.
                 logger.LogInformation(
-                    "Run {RunId}: the pre-final-pass rebase onto origin/{Base} conflicted and it is not the Decisions Log tail-append shape ({Reason}) — handing it to the recovery session",
-                    context.RunId, baseBranch, mechanical.Explanation);
+                    "Run {RunId}: the pre-final-pass rebase onto origin/{Base} conflicted — handing it to the recovery session",
+                    context.RunId, baseBranch);
                 await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
             }
             // git itself can have exited 0 for whichever call was in flight — most importantly the
@@ -3151,18 +2994,11 @@ public sealed class ReviewEngine(
                         worktreePath, context.Run.Branch, $"origin/{baseBranch}", cancellationToken))
                 {
                     string observedOntoCommit = await ResolveObservedOntoCommitAsync(worktreePath, baseBranch, cancellationToken);
-                    await RenumberDecisionsLogPlaceholderAsync(context, git, worktreePath, mergeBase, observedOntoCommit, cancellationToken);
                     await RecordRebaseOutcomeAsync(
                         context.RunId, mergeBase, observedOntoCommit, wasNoOp: false, recoveredByAgentSession: false,
                         $"Rebased onto origin/{baseBranch} (from {ShortSha(mergeBase)} to {ShortSha(observedOntoCommit)}) — "
                         + "the rebase itself exited 0 before a background process's stuck output pipe timed the call out.",
-                        checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: false,
-                        // A stuck pipe can land on the mechanical resolver's own `rebase --continue`
-                        // just as easily as on the first attempt, and by then the conflict this
-                        // rebase hit really was resolved mechanically — recorded from what the loop
-                        // actually did rather than defaulted to false (AGENTS.md's never-guess rule).
-                        conflictResolvedMechanically: mechanicalProgress.ResolvedShape is not null,
-                        cancellationToken);
+                        checkpointSpend: null, forkPointAdvanced: false, cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
@@ -3171,10 +3007,6 @@ public sealed class ReviewEngine(
                     exception,
                     "Run {RunId}: a git call before the mandatory final pass exited 0 but its output pipe stuck past the drain grace, and the worktree does not confirm a rebase landed — proceeding unrebased",
                     context.RunId);
-                await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
-                    context, run, git, worktreePath, baseBranch,
-                    "a git call before the mandatory final pass exited 0 but its output pipe stuck past the drain grace",
-                    cancellationToken);
                 return RebaseGateOutcome.Proceed;
             }
             catch (TimeoutException exception)
@@ -3184,42 +3016,11 @@ public sealed class ReviewEngine(
                     exception,
                     "Run {RunId}: a git call exceeded its deadline checking origin/{Base} before the mandatory final pass — proceeding unrebased",
                     context.RunId, baseBranch);
-
-                // Deliberately NOT the retry call itself: the fetch that just proved this call's own
-                // GitDeadline unresponsive is the single slowest git operation this whole method can
-                // run, and RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync's own first act is
-                // an identical fetch under the identical deadline. Running it here, still inside
-                // repositoryLock, would hold the node-wide repository lock every other run's own
-                // worktree-add/fetch already serializes behind (Decisions Log #4) for a second full
-                // GitDeadline window on the one skip site where the retry is guaranteed to be that
-                // slow — and gains nothing, since the same hang that caused this catch would defeat
-                // the retry too. Recorded here and read after the lock scope ends instead (independent
-                // pre-PR review, cycle 1, adversarial lens).
-                timedOutSkipDetail = $"a git call exceeded its deadline checking origin/{baseBranch} before the mandatory final pass";
+                return RebaseGateOutcome.Proceed;
             }
         }
 
-        if (timedOutSkipDetail is { } skipDetail)
-        {
-            await using IAsyncDisposable timeoutRenumberLock =
-                await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken);
-
-            // The lock's own wait is unbounded, exactly like every other repository-lock acquisition
-            // in this method — re-checked immediately after acquiring it and before anything in the
-            // worktree is touched, for the identical reason (independent pre-PR review, cycle 1, both
-            // lenses).
-            if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
-            {
-                return RebaseGateOutcome.Stop;
-            }
-
-            await RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
-                context, run, git, worktreePath, baseBranch, skipDetail, cancellationToken);
-            return RebaseGateOutcome.Proceed;
-        }
-
-        // Reached only on a conflict: every other path above returns from inside the lock scope, or
-        // (the git-deadline timeout) from the block just above this comment.
+        // Reached only on a conflict: every other path above returns from inside the lock scope.
         // Dispatches the pre-existing rebase-recovery session directly, unconditionally — this
         // path's conflicts have always been that session's own territory, and stay so (task: the
         // stack assessment runs only where a checkpoint would otherwise park). The one read-only
@@ -3263,648 +3064,15 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
-    /// The placeholder-numbering convention's own half of this method (Decisions Log
-    /// #162): called for every outcome that leaves this branch current with
-    /// origin's base — a clean rebase, a stuck-pipe rebase confirmed landed, AND the no-op case
-    /// where origin had not moved — before <see cref="RecordRebaseOutcomeAsync"/>, so the
-    /// mandatory gate that runs next reads the renumbered tree rather than a placeholder still
-    /// waiting for its real number. Covering the no-op case too is what keeps a branch that needs
-    /// no rebase at all, or whose conflict was already resolved by hand by the rebase-recovery
-    /// session before the loop re-entered here, from merging its placeholder unrenumbered — the
-    /// one gap this call used to leave (independent pre-PR review, cycle 1, both lenses).
-    /// <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/> does the actual work —
-    /// mechanically, no agent session — against this run's own task short id, the merge-base this
-    /// rebase computed before it ran (<paramref name="forkPointSha"/>, the fork point its own
-    /// transition-shape check reads), and the base's own tip now that this branch is current with
-    /// it (<paramref name="baseTipSha"/>, what its citation sweep reads to tell the base's own
-    /// additions apart from this branch's). Best-effort like every other step on this path: a
-    /// renumbering failure is logged and swallowed rather than failing the run, since it is never
-    /// this run's own work at fault and closeout's own guard keeps failing the build honestly if
-    /// something about the log's tail is genuinely wrong. The caller reads the returned
-    /// <see cref="DecisionsLogRenumberResult.Outcome"/> to decide whether this call actually
-    /// landed a commit — a no-op rebase call that still committed a renumbering must not be
-    /// recorded as though nothing happened to this branch's tip.
-    /// <para>
-    /// <paramref name="forkPointSha"/> or <paramref name="baseTipSha"/> can arrive as
-    /// <see cref="RunRebasedOntoBase.UnreadableCommit"/> — a git read one of this rebase's own
-    /// callers could not resolve, most often <c>ResolveObservedOntoCommitAsync</c>'s fallback
-    /// after a stuck output pipe — and <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/>
-    /// itself is what refuses to treat that literal string as a revision, before it ever writes
-    /// PLAN.md's heading to disk, rather than this call guarding it up front: only its rare
-    /// transition shape ever reads either parameter, so a blanket check here would also have
-    /// skipped the ordinary placeholder rename whenever the run's own worktree happened to have
-    /// nothing usable to observe for a value neither its own shape needed (independent pre-PR
-    /// review, cycle 3, adversarial lens — the exception this call's own catch below used to
-    /// swallow left a half-applied rewrite sitting uncommitted for the mandatory final pass to read).
-    /// </para>
-    /// </summary>
-    private async Task<DecisionsLogRenumberResult> RenumberDecisionsLogPlaceholderAsync(
-        ReviewContext context, ProcessRunner git, string worktreePath, string forkPointSha, string baseTipSha,
-        CancellationToken cancellationToken)
-    {
-        string? preRenumberHead = null;
-        try
-        {
-            // Captured before RenumberIfNeededAsync ever touches the worktree, so the catch below
-            // has a known-good ref to compare against and, if the commit never landed, to reset
-            // back to (independent pre-PR review, cycle 1, conformance lens: this call's own git
-            // runner can throw ProcessOutputStuckException/TimeoutException the same way the
-            // rebase call above does, and by the time RenumberIfNeededAsync would throw one it has
-            // already written PLAN.md — and, on the transition shape, citation files too).
-            ProcessResult preRenumberHeadResult = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
-            preRenumberHead = preRenumberHeadResult.ExitCode == 0 ? preRenumberHeadResult.StandardOutput.Trim() : null;
-
-            DecisionsLogRenumberResult result = await DecisionsLogRenumberer.RenumberIfNeededAsync(
-                git, worktreePath, forkPointSha, baseTipSha, DomainId.Short(context.TaskId), cancellationToken);
-            if (result.Outcome == DecisionsLogRenumberOutcome.Renumbered)
-            {
-                logger.LogInformation(
-                    "Run {RunId}: Decisions Log #{OldToken} renumbered to #{NewNumber} ({FilesRewritten} citation file(s) rewritten)",
-                    context.RunId, result.OldToken, result.NewNumber, result.FilesRewritten);
-            }
-
-            return result;
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            // Exit 0 with a stuck output pipe is exactly as possible on this step's own `git add`/
-            // `git commit` calls as it is on the rebase call above — so a thrown exception here
-            // does not by itself mean the renumbering commit never landed, and recording
-            // DecisionsLogRenumbered: false for a renumbering that actually did land would let its
-            // moved tip go ungated into the mandatory final pass (the exact hole this field exists
-            // to close).
-            if (preRenumberHead is not null
-                && await RenumberCommitLandedAsync(git, worktreePath, preRenumberHead, cancellationToken))
-            {
-                logger.LogWarning(
-                    exception,
-                    "Run {RunId}: the Decisions Log renumbering step's own git call failed after its commit had already landed — treating it as renumbered",
-                    context.RunId);
-                return new DecisionsLogRenumberResult(DecisionsLogRenumberOutcome.Renumbered, null, null, 0);
-            }
-
-            // The commit did not land, so whatever RenumberIfNeededAsync wrote to disk before it
-            // threw — a rewritten heading, rewritten citation files, or both — is a half-applied
-            // rewrite sitting uncommitted (or staged) in the worktree. Left in place, it would push
-            // without the renumbering and hand closeout's own mechanical rebase a dirty worktree;
-            // discarded here the same way a failed rebase attempt already is above.
-            logger.LogWarning(
-                exception, "Run {RunId}: the Decisions Log renumbering step failed — proceeding without it", context.RunId);
-            await RestoreRenumberWorktreeBestEffortAsync(git, worktreePath, preRenumberHead, cancellationToken);
-            return new DecisionsLogRenumberResult(DecisionsLogRenumberOutcome.NoActionNeeded, null, null, 0);
-        }
-    }
-
-    /// <summary>
-    /// What <see cref="TryResolveDecisionsLogTailConflictsAsync"/> made of a conflicted rebase.
-    /// </summary>
-    /// <param name="Resolved">
-    /// True only when the rebase itself is finished — every stop it made was the tail-append shape
-    /// and the last <c>rebase --continue</c> exited 0. False leaves the worktree mid-rebase for the
-    /// caller to restore, exactly as a conflict always did.
-    /// </param>
-    /// <param name="Explanation">
-    /// Why the run is not getting a mechanical resolution, in the wording the caller logs before
-    /// handing the conflict on. On the resolved outcome, the last stop's own shape description;
-    /// what the caller logs and records there is <see cref="MechanicalTailConflictProgress.ResolvedShape"/>
-    /// instead, which accounts for every stop rather than only the last.
-    /// </param>
-    private sealed record MechanicalTailConflictOutcome(bool Resolved, string Explanation);
-
-    /// <summary>
-    /// What <see cref="TryResolveDecisionsLogTailConflictsAsync"/> has resolved so far on one rebase
-    /// attempt. Mutable and caller-owned on purpose: a rebase stops commit by commit, and the
-    /// caller's own <see cref="ProcessOutputStuckException"/> catch has to be able to see what this
-    /// step had already done when the exception landed — a return value never reaches a catch, and
-    /// recording "no conflict was resolved here" over one that was is precisely the guessed audit
-    /// field AGENTS.md's never-guess rule forbids.
-    /// </summary>
-    private sealed class MechanicalTailConflictProgress
-    {
-        private readonly List<int> _keptBaseEntryNumbers = [];
-
-        /// <summary>
-        /// The shape, and the base entries every resolved stop of this attempt kept, in the wording
-        /// the caller logs and records — or null when no stop was ever resolved, which is what tells
-        /// an ordinary conflict from this one.
-        /// </summary>
-        public string? ResolvedShape { get; private set; }
-
-        public void RecordResolvedStop(IReadOnlyList<int> keptBaseEntryNumbers, string placeholderToken)
-        {
-            _keptBaseEntryNumbers.AddRange(keptBaseEntryNumbers);
-            ResolvedShape = DecisionsLogTailConflictResolver.DescribeShape(_keptBaseEntryNumbers, placeholderToken);
-        }
-    }
-
-    /// <summary>
-    /// The safety bound on how many stops of one rebase this step will resolve. A rebase stops at
-    /// most once per commit it replays, so no honest branch approaches this; it is here only so a
-    /// <c>rebase --continue</c> that somehow neither advances nor fails cannot spin. Not a policy
-    /// limit and not a gate limit — a branch that legitimately hit it would park with the reason
-    /// named, which is the same place every other refusal here lands.
-    /// </summary>
-    private const int MaxMechanicalTailConflictStops = 64;
-
-    /// <summary>
-    /// Drives <see cref="DecisionsLogTailConflictResolver"/> over a rebase that has already
-    /// conflicted, resolving and continuing for as long as every stop is the Decisions Log
-    /// tail-append shape (task: the mechanical pre-final-pass rebase resolves a Decisions Log
-    /// tail-append conflict on its own). A rebase stops commit by commit, so the shape check runs
-    /// again at every stop and the first stop that is not the shape ends this method at once,
-    /// leaving the worktree mid-rebase for the caller's own restore — the run parks from there
-    /// exactly as it did before this existed, including when earlier stops of the SAME rebase had
-    /// already been resolved: those resolutions are undone with the rest of the attempt rather than
-    /// half-kept.
-    /// <para>
-    /// Every git call here is the caller's own runner, made inside the caller's own repository lock
-    /// and its own try, so a stuck output pipe or a deadline on <c>rebase --continue</c> is handled
-    /// by the catches that already cover the rebase itself. <paramref name="progress"/> is the
-    /// caller's own, recorded into as each stop resolves, so those catches can still see what this
-    /// method had done before the exception — a return value cannot reach them.
-    /// </para>
-    /// <para>
-    /// This method's OWN file reads and writes are the one thing those catches do not cover — they
-    /// catch a stuck git pipe and a deadline, and a sharing violation or a denied write is neither
-    /// — so each is caught here and turned into a not-resolved outcome instead. Left to escape, an
-    /// <c>IOException</c> from the read of a file git has just written (a Windows indexer or
-    /// antivirus still holding it, the artifact this repo's own notes already document) would skip
-    /// the caller's restore entirely and fail the whole review loop, leaving the worktree
-    /// mid-rebase with a possibly half-written PLAN.md in it — where before this existed a conflict
-    /// always ended restored, with a recovery session dispatched. Returning the refusal instead
-    /// puts it back on the ordinary restore-and-park path, which is where everything this step
-    /// cannot read belongs (independent pre-PR review, cycle 1, adversarial lens; the renumbering
-    /// step's own identical PLAN.md read/write has had the same catch-all for the same reason).
-    /// </para>
-    /// <para>
-    /// The resolution itself is written to PLAN.md and staged, never committed here: git's own
-    /// <c>rebase --continue</c> is what commits it, onto the replayed commit it belongs to, so the
-    /// branch keeps the authored history it had rather than gaining a resolution commit of its own.
-    /// That continue would otherwise open the replayed commit's message in an editor and nothing
-    /// here has a terminal; what actually keeps it non-interactive is <c>NonInteractiveGit.Apply</c>,
-    /// which every git this daemon spawns through <c>ExternalProcess</c> goes through and which
-    /// exports <c>GIT_EDITOR=true</c> — the <c>-c core.editor=true</c> below is a deliberate
-    /// redundancy for a runner that some day does not, not the thing doing the work. Either way a
-    /// continue that did stop for an editor fails loudly (it exits non-zero, the next pass reads no
-    /// unmerged file, and the run parks with that named) rather than silently.
-    /// </para>
-    /// </summary>
-    private async Task<MechanicalTailConflictOutcome> TryResolveDecisionsLogTailConflictsAsync(
-        ReviewContext context, ProcessRunner git, string worktreePath, MechanicalTailConflictProgress progress,
-        CancellationToken cancellationToken)
-    {
-        string taskShortId = DomainId.Short(context.TaskId);
-        string planPath = Path.Combine(worktreePath, DecisionsLogTailConflictResolver.PlanMarkdownFileName);
-
-        for (int stop = 1; stop <= MaxMechanicalTailConflictStops; stop++)
-        {
-            ProcessResult unmerged = await git(
-                "git", ["diff", "--name-only", "--diff-filter=U"], worktreePath, cancellationToken);
-            if (unmerged.ExitCode != 0)
-            {
-                return new MechanicalTailConflictOutcome(
-                    false, $"the conflicted-file list could not be read ({FirstLine(unmerged.StandardError)})");
-            }
-
-            string[] conflictedFiles =
-            [
-                .. unmerged.StandardOutput
-                    .Split('\n', StringSplitOptions.RemoveEmptyEntries)
-                    .Select(line => line.Trim())
-                    .Where(line => line.Length > 0),
-            ];
-
-            // Read unconditionally rather than only when the list already names PLAN.md: the
-            // resolver owns the whole shape test, file list included, so it also owns the wording
-            // of every refusal — one account of why a run parked, not two that can disagree.
-            string conflictedPlanMarkdown;
-            try
-            {
-                conflictedPlanMarkdown = File.Exists(planPath)
-                    ? await File.ReadAllTextAsync(planPath, cancellationToken)
-                    : "";
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                return new MechanicalTailConflictOutcome(
-                    false,
-                    $"the conflicted {DecisionsLogTailConflictResolver.PlanMarkdownFileName} could not be read "
-                    + $"({exception.Message})");
-            }
-
-            DecisionsLogTailConflictResolution resolution = DecisionsLogTailConflictResolver.Recognize(
-                conflictedFiles, conflictedPlanMarkdown, taskShortId);
-            if (resolution.ResolvedPlanMarkdown is not { } resolvedPlanMarkdown
-                || resolution.PlaceholderToken is not { } placeholderToken)
-            {
-                return new MechanicalTailConflictOutcome(false, resolution.Explanation);
-            }
-
-            try
-            {
-                await File.WriteAllTextAsync(planPath, resolvedPlanMarkdown, cancellationToken);
-            }
-            catch (Exception exception) when (exception is not OperationCanceledException)
-            {
-                return new MechanicalTailConflictOutcome(
-                    false,
-                    $"the resolved {DecisionsLogTailConflictResolver.PlanMarkdownFileName} could not be written "
-                    + $"({exception.Message})");
-            }
-
-            progress.RecordResolvedStop(resolution.KeptBaseEntryNumbers, placeholderToken);
-
-            ProcessResult staged = await git(
-                "git", ["add", "--", DecisionsLogTailConflictResolver.PlanMarkdownFileName],
-                worktreePath, cancellationToken);
-            if (staged.ExitCode != 0)
-            {
-                return new MechanicalTailConflictOutcome(
-                    false,
-                    $"the resolved {DecisionsLogTailConflictResolver.PlanMarkdownFileName} could not be staged "
-                    + $"({FirstLine(staged.StandardError)})");
-            }
-
-            ProcessResult resumed = await git(
-                "git", ["-c", "core.editor=true", "rebase", "--continue"], worktreePath, cancellationToken);
-            if (resumed.ExitCode == 0)
-            {
-                return new MechanicalTailConflictOutcome(true, resolution.Explanation);
-            }
-        }
-
-        return new MechanicalTailConflictOutcome(
-            false,
-            $"the rebase stopped more than {MaxMechanicalTailConflictStops} times, which no branch's own history explains");
-    }
-
-    /// <summary>
-    /// The other half of the placeholder-numbering convention's own coverage (task: the Decisions
-    /// Log renumbering runs before the mandatory final pass even when the pre-final-pass rebase is
-    /// skipped): every skip <see cref="EnsureRebasedBeforeFinalPassAsync"/> and
-    /// <see cref="RebasePreflightAsync"/> can take — a failed fetch, an unreadable origin, a git
-    /// deadline, a stuck output pipe never confirmed landed, a missing worktree, a dirty one, the
-    /// wrong branch checked out, or a retargeted pull request base — already reads as "closeout's
-    /// own mechanical rebase still covers a stale push" in its own log line, which is true for the
-    /// REBASE itself but never true for a placeholder still sitting at PLAN.md's own tail: nothing
-    /// else in this platform's mechanical paths ever assigns one a number except this exact step
-    /// (Decisions Log #162). Two placeholders reached <c>origin/main</c> unnumbered on exactly these
-    /// skip paths before this method existed — PLACEHOLDER-609bd344 and PLACEHOLDER-5e0cbfeb, both
-    /// hand-numbered afterwards in a recovery commit (Decisions Log #225 and #226). A dirty worktree
-    /// the preflight's own refusal can still leave behind — the one skip site every OTHER site
-    /// reaches only after the preflight already proved the worktree clean — is renumbered anyway
-    /// when the only thing dirty is a bare untracked file, which
-    /// <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/> never stages or commits; any
-    /// staged or uncommitted change to a TRACKED file is left for a later pass instead, since its
-    /// own citation sweep rewrites, and its own closing commit can stage and land, any tracked file
-    /// it touches, not only PLAN.md — checked below (independent pre-PR review, cycle 1, both
-    /// lenses; narrowed further after cycle 1 shipped, once the sweep was found to reach every
-    /// tracked file, not only PLAN.md and whatever the index already held staged).
-    /// <para>
-    /// Deliberately narrower than a real rebase: it only ever commits when this branch's own
-    /// locally known <c>origin/&lt;baseBranch&gt;</c> — read fresh here, never fetched by this
-    /// method itself — already equals this branch's own merge base against it. That is the
-    /// identical "no rebase owed" shape <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own no-op
-    /// branch already renumbers against, so <c>wasNoOp: true</c> stays honest by the same test that
-    /// branch already uses. A caller that cannot vouch for that locally known ref's own freshness —
-    /// its own fetch just failed, or the exception it caught could have interrupted one in flight —
-    /// routes through <see cref="RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync"/> first,
-    /// which retries the fetch once for itself and only calls this method when that retry confirms
-    /// the ref current, rather than handing this method's own no-op test a ref that could be stale
-    /// by an unbounded amount (independent pre-PR review, cycle 1, adversarial lens: judging
-    /// "already current with its base" against an unconfirmed ref risks assigning a number some
-    /// other branch already claimed on the base's real, current tip). Origin having moved further
-    /// than this branch's own locally known ref confirms is left alone rather than renumbered
-    /// against a base this branch was never actually rebased onto — recording <c>wasNoOp: true</c>
-    /// in that shape would misrepresent the one fact every reader of
-    /// <see cref="RunRebasedOntoBase.WasNoOp"/> trusts it to carry, and recording <c>wasNoOp: false</c>
-    /// would just as wrongly claim a real rebase landed here (<see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/>'s
-    /// own doc). That branch is exactly what closeout's own placeholder guard before merge exists to
-    /// catch instead (task: closeout never merges a pull request whose PLAN.md tail still carries
-    /// this task's own placeholder).
-    /// </para>
-    /// <para>
-    /// Only ever called from an UNSTACKED call site: <see cref="RebaseOntoStackedParentAsync"/>'s
-    /// own call into <see cref="RebasePreflightAsync"/> never reaches this method, so a stacked
-    /// child's own placeholder stays exactly as unrenumbered on a skip as it already was before this
-    /// method existed (Decisions Log #162's own documented scope limit stands).
-    /// </para>
-    /// </summary>
-    private async Task TryRenumberDecisionsLogPlaceholderOnSkipAsync(
-        ReviewContext context, RunAggregate run, ProcessRunner git, string worktreePath, string baseBranch,
-        string skipDetail, CancellationToken cancellationToken)
-    {
-        // The worktree-availability check this method used to open with now runs in
-        // RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync instead, ahead of ITS OWN git
-        // fetch: this method is only ever reached through that wrapper (every one of the five skip
-        // sites routes through it), and a fetch spawned against a worktreePath that does not exist
-        // throws before this method's own check could ever run, logging the wrong cause (independent
-        // pre-PR review, cycle 1, both lenses).
-        //
-        // One of the skips this method exists to cover is the preflight's own "the worktree is not
-        // checked out on its own branch" refusal — reachable whenever a human, or another process
-        // on this shared node, left the worktree pointed somewhere else. Every read below trusts
-        // HEAD to mean this run's own branch (`git merge-base HEAD ...`, then a commit straight onto
-        // whatever HEAD names), so without this check a wrong-branch skip would compute a merge base
-        // against the WRONG branch's tip and, on the rare unlucky match, commit the renumbering onto
-        // it — never this run's branch to touch (independent self-review, blast-radius sweep: the
-        // preflight's own branch check ahead of the dirty check is exactly the guard this method's
-        // own reads never re-ran).
-        ProcessResult branchCheck;
-        try
-        {
-            branchCheck = await git("git", ["rev-parse", "--abbrev-ref", "HEAD"], worktreePath, cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(
-                exception,
-                "Run {RunId}: {SkipDetail} — could not confirm the worktree is still on this run's own branch, "
-                + "so the Decisions Log renumbering could not be attempted here",
-                context.RunId, skipDetail);
-            return;
-        }
-
-        if (branchCheck.ExitCode != 0 || branchCheck.StandardOutput.Trim() != context.Run.Branch)
-        {
-            logger.LogInformation(
-                "Run {RunId}: {SkipDetail} — the worktree is not checked out on this run's own branch, so the "
-                + "Decisions Log renumbering could not be attempted here",
-                context.RunId, skipDetail);
-            return;
-        }
-
-        ProcessResult originTipResult;
-        ProcessResult mergeBaseResult;
-        try
-        {
-            originTipResult = await git("git", ["rev-parse", $"origin/{baseBranch}"], worktreePath, cancellationToken);
-            mergeBaseResult = await git(
-                "git", ["merge-base", "HEAD", $"origin/{baseBranch}"], worktreePath, cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(
-                exception,
-                "Run {RunId}: {SkipDetail} — could not read this branch's own locally known base either, so "
-                + "the Decisions Log renumbering could not be attempted here",
-                context.RunId, skipDetail);
-            return;
-        }
-
-        if (originTipResult.ExitCode != 0 || mergeBaseResult.ExitCode != 0)
-        {
-            logger.LogInformation(
-                "Run {RunId}: {SkipDetail} — this repository holds no locally known origin/{Base} to renumber "
-                + "against, so the Decisions Log renumbering could not be attempted here",
-                context.RunId, skipDetail, baseBranch);
-            return;
-        }
-
-        string originTip = originTipResult.StandardOutput.Trim();
-        string mergeBase = mergeBaseResult.StandardOutput.Trim();
-        if (mergeBase != originTip)
-        {
-            logger.LogInformation(
-                "Run {RunId}: {SkipDetail} — this branch is not current with its own locally known base "
-                + "(origin/{Base} has moved past this branch's merge base), so the Decisions Log renumbering "
-                + "was left for a later pass rather than committed on top of a base this branch was never "
-                + "actually rebased onto",
-                context.RunId, skipDetail, baseBranch);
-            return;
-        }
-
-        // One of the refusals this method exists to cover is the preflight's own dirty-worktree
-        // refusal, which every OTHER skip site reaches only after the preflight already proved the
-        // worktree clean — this is the one branch-check-passing skip that can still have staged or
-        // modified content sitting anywhere in the repository. DecisionsLogRenumberer.RenumberIfNeededAsync's
-        // own citation sweep (RewriteCitationsAsync) rewrites, on disk, every TRACKED file that
-        // contains a matching citation — not only PLAN.md — and its closing commit stages exactly
-        // those rewritten files and has no pathspec of its own, so it commits the whole index: any
-        // content already staged before this call ever ran rides along, and a rewritten file that
-        // was already sitting modified-but-uncommitted is force-staged and swept in the same way. A
-        // renumbering failure's own recovery runs `git reset --hard`, which would just as readily
-        // discard whatever uncommitted work was sitting in any of those files. An untracked file is
-        // the one shape genuinely safe to leave alone: `git ls-files` never lists it, so the
-        // citation sweep never reads it and the closing commit never stages it (independent pre-PR
-        // review, cycle 1, both lenses — narrowed further after cycle 1 shipped: any tracked file's
-        // own uncommitted change is this same risk, not only a staged one or PLAN.md itself, since
-        // the citation sweep can force-stage ANY tracked file it rewrites).
-        ProcessResult statusCheck;
-        try
-        {
-            statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(
-                exception,
-                "Run {RunId}: {SkipDetail} — could not confirm the worktree is clean, so the Decisions Log "
-                + "renumbering could not be attempted here",
-                context.RunId, skipDetail);
-            return;
-        }
-
-        if (statusCheck.ExitCode != 0)
-        {
-            logger.LogInformation(
-                "Run {RunId}: {SkipDetail} — could not confirm the worktree is clean, so the Decisions Log "
-                + "renumbering could not be attempted here",
-                context.RunId, skipDetail);
-            return;
-        }
-
-        foreach (string statusLine in statusCheck.StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-        {
-            if (statusLine.Length < 2)
-            {
-                continue;
-            }
-
-            char indexStatus = statusLine[0];
-            char worktreeStatus = statusLine[1];
-            bool isUntracked = indexStatus == '?' && worktreeStatus == '?';
-            if (!isUntracked)
-            {
-                logger.LogInformation(
-                    "Run {RunId}: {SkipDetail} — the worktree already has staged or uncommitted changes "
-                    + "to a tracked file that the renumbering commit's own citation sweep could force-stage "
-                    + "and commit alongside it, so the Decisions Log renumbering was left for a later pass "
-                    + "rather than committed alongside it",
-                    context.RunId, skipDetail);
-                return;
-            }
-        }
-
-        string transitionForkPointSha = run.LastPreFinalPassRebaseRecovered
-            && run.LastPreFinalPassRebaseFromCommit is { } recoveredForkPoint
-                ? recoveredForkPoint
-                : mergeBase;
-
-        DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
-            context, git, worktreePath, transitionForkPointSha, originTip, cancellationToken);
-        if (renumberResult.Outcome != DecisionsLogRenumberOutcome.Renumbered)
-        {
-            return;
-        }
-
-        await RecordRebaseOutcomeAsync(
-            context.RunId, mergeBase, originTip, wasNoOp: true, recoveredByAgentSession: false,
-            $"{skipDetail} — origin/{baseBranch} has not moved since this branch's own merge base, but the "
-            + "Decisions Log's tail entry still needed the mechanical pre-final-pass step's own renumbering "
-            + "commit, run here despite the skip.",
-            checkpointSpend: null, decisionsLogRenumbered: true, forkPointAdvanced: false,
-            conflictResolvedMechanically: false, cancellationToken);
-        logger.LogInformation(
-            "Run {RunId}: {SkipDetail} — renumbered the Decisions Log's tail placeholder anyway",
-            context.RunId, skipDetail);
-    }
-
-    /// <summary>
-    /// The freshness half of <see cref="TryRenumberDecisionsLogPlaceholderOnSkipAsync"/>'s own
-    /// contract: that method judges "already current with its base" against this branch's own
-    /// locally known <c>origin/&lt;baseBranch&gt;</c> without ever fetching one itself, which is
-    /// only safe when a caller can vouch that ref is actually current. A caller reached after its
-    /// own fetch failed, or after an exception that could have interrupted one in flight, cannot —
-    /// the ref could be however stale this run's last successful fetch of it left behind, and
-    /// judging the no-op test against it risks committing a number some other branch has already
-    /// claimed on the base's real, current tip (independent pre-PR review, cycle 1, adversarial
-    /// lens). This retries the fetch once, under whatever repository lock the caller already holds,
-    /// and only calls through when that retry actually lands — a second failure is left for a later
-    /// pass exactly like every other skip already is, rather than falling back to the very staleness
-    /// this method exists to rule out.
-    /// </summary>
-    private async Task RefetchAndTryRenumberDecisionsLogPlaceholderOnSkipAsync(
-        ReviewContext context, RunAggregate run, ProcessRunner git, string worktreePath, string baseBranch,
-        string skipDetail, CancellationToken cancellationToken)
-    {
-        // Checked here, before this method's own `git fetch` below, rather than only inside
-        // TryRenumberDecisionsLogPlaceholderOnSkipAsync (which this method always calls next): a
-        // process spawned with a WorkingDirectory that does not exist throws rather than exiting
-        // non-zero, so a missing-worktree skip reaching this method first would otherwise be logged
-        // as an unconfirmable origin rather than the unavailable worktree it actually is
-        // (independent pre-PR review, cycle 1, both lenses).
-        if (worktreePath.IsBlank() || !Directory.Exists(worktreePath))
-        {
-            logger.LogInformation(
-                "Run {RunId}: {SkipDetail} — its own worktree is unavailable, so the Decisions Log renumbering "
-                + "this task's own tail placeholder may still need could not be attempted here",
-                context.RunId, skipDetail);
-            return;
-        }
-
-        ProcessResult? fetch = null;
-        try
-        {
-            fetch = await git("git", ["fetch", "origin", baseBranch], worktreePath, cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(
-                exception,
-                "Run {RunId}: {SkipDetail} — could not confirm origin/{Base} is current before attempting the Decisions Log renumbering — left for a later pass",
-                context.RunId, skipDetail, baseBranch);
-            return;
-        }
-
-        if (fetch is not { ExitCode: 0 })
-        {
-            logger.LogWarning(
-                "Run {RunId}: {SkipDetail} — could not confirm origin/{Base} is current before attempting the Decisions Log renumbering ({Error}) — left for a later pass",
-                context.RunId, skipDetail, baseBranch, FirstLine(fetch?.StandardError ?? ""));
-            return;
-        }
-
-        await TryRenumberDecisionsLogPlaceholderOnSkipAsync(
-            context, run, git, worktreePath, baseBranch, skipDetail, cancellationToken);
-    }
-
-    /// <summary>
-    /// Whether the renumbering step's own commit actually landed despite the exception
-    /// <see cref="RenumberDecisionsLogPlaceholderAsync"/> just caught — a worktree left clean, with
-    /// HEAD past <paramref name="preRenumberHead"/>, is only possible if `git commit` really did
-    /// land even though the call that ran it never returned normally. A read failure reads as "not
-    /// confirmed" (false), the same stance <see cref="RebaseActuallyLandedAsync"/> already takes
-    /// for the identical shape on the rebase call above.
-    /// </summary>
-    private static async Task<bool> RenumberCommitLandedAsync(
-        ProcessRunner git, string worktreePath, string preRenumberHead, CancellationToken cancellationToken)
-    {
-        try
-        {
-            ProcessResult statusCheck = await git("git", ["status", "--porcelain"], worktreePath, cancellationToken);
-            if (statusCheck.ExitCode != 0 || statusCheck.StandardOutput.Trim().Length > 0)
-            {
-                return false;
-            }
-
-            ProcessResult headCheck = await git("git", ["rev-parse", "HEAD"], worktreePath, cancellationToken);
-            return headCheck.ExitCode == 0 && headCheck.StandardOutput.Trim() != preRenumberHead;
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Discards whatever <see cref="DecisionsLogRenumberer.RenumberIfNeededAsync"/> left on disk
-    /// when its own commit never landed — unlike <see cref="RestoreRebaseWorktreeBestEffortAsync"/>,
-    /// which only resets when HEAD itself has moved, this step's failure mode is a dirty worktree
-    /// with HEAD unchanged (a rewritten PLAN.md, and possibly rewritten citation files, sitting
-    /// modified or staged but never committed), so the reset always runs rather than being gated on
-    /// HEAD having diverged.
-    /// </summary>
-    private async Task RestoreRenumberWorktreeBestEffortAsync(
-        ProcessRunner git, string worktreePath, string? preRenumberHead, CancellationToken cancellationToken)
-    {
-        if (preRenumberHead is null)
-        {
-            return;
-        }
-
-        try
-        {
-            await git("git", ["reset", "--hard", preRenumberHead], worktreePath, cancellationToken);
-        }
-        catch (Exception exception) when (exception is not OperationCanceledException)
-        {
-            logger.LogWarning(
-                exception,
-                "Decisions Log renumbering recovery failed to restore {Path} back to {Head}",
-                worktreePath, preRenumberHead);
-        }
-    }
-
-    /// <summary>
-    /// A <see cref="RebasePreflightAsync"/> result: the outcome to return when the caller may not
-    /// proceed with its rebase (null when it may), plus whether the refusal was specifically the
-    /// retargeted-pull-request-base mismatch. That one refusal reason is called out on its own
-    /// because <paramref name="BaseWasRetargeted"/>'s whole point is different from every other
-    /// refusal this method can return: every other reason says "baseBranch is still this branch's
-    /// real base, but something about the worktree or the network stopped the rebase itself" — the
-    /// Decisions Log renumbering that runs on a skip is still safe to attempt against baseBranch
-    /// in that shape. This one reason says baseBranch is not even the RIGHT branch anymore, so
-    /// nothing downstream may use it as the authority for "is this branch already current with its
-    /// base" without risking a placeholder assigned against a base the pull request has already
-    /// moved off of (independent pre-PR review, cycle 1, adversarial lens).
-    /// </summary>
-    private readonly record struct RebasePreflightResult(RebaseGateOutcome? Outcome, bool BaseWasRetargeted)
-    {
-        public static implicit operator RebasePreflightResult(RebaseGateOutcome? outcome) => new(outcome, false);
-    }
-
-    /// <summary>
     /// The checks every rebase this engine performs runs before it touches the worktree — shared
     /// by the unstacked merge-base rebase onto the project's base and by a stacked child's
     /// checkpoint replay onto its parent's head, so neither can quietly acquire a guard the other
-    /// lacks (the two-arm shape AGENTS.md warns about by name). The returned
-    /// <see cref="RebasePreflightResult.Outcome"/> is null when the caller may proceed with its
-    /// rebase, and the outcome to return when it may not — always <see cref="RebaseGateOutcome.Proceed"/>
-    /// today: none of these is this run's fault, and each one's own comment says what still covers
-    /// the staleness left behind.
+    /// lacks (the two-arm shape AGENTS.md warns about by name). The return is null when the caller
+    /// may proceed with its rebase, and the outcome to return when it may not — always
+    /// <see cref="RebaseGateOutcome.Proceed"/> today: none of these is this run's fault, and each
+    /// one's own comment says what still covers the staleness left behind.
     /// </summary>
-    private async Task<RebasePreflightResult> RebasePreflightAsync(
+    private async Task<RebaseGateOutcome?> RebasePreflightAsync(
         ReviewContext context, string baseBranch, string step, CancellationToken cancellationToken)
     {
         string worktreePath = context.Run.WorktreePath;
@@ -3945,7 +3113,7 @@ public sealed class ReviewEngine(
                 logger.LogWarning(
                     "Run {RunId}: the pull request's actual base is {ActualBase}, not the base this run recorded ({RecordedBase}) — skipping the rebase before {Step} so it does not silently rewrite the branch onto a base it was never meant to be on; closeout's own mechanical rebase already refuses the identical mismatch",
                     context.RunId, retargetedBase, baseBranch, step);
-                return new RebasePreflightResult(RebaseGateOutcome.Proceed, BaseWasRetargeted: true);
+                return RebaseGateOutcome.Proceed;
             }
         }
 
@@ -4043,8 +3211,8 @@ public sealed class ReviewEngine(
     private async Task<RebaseGateOutcome> RebaseOntoStackedParentAsync(
         ReviewContext context, StackedCheckpoint checkpoint, CancellationToken cancellationToken)
     {
-        if ((await RebasePreflightAsync(context, context.BaseBranch, checkpoint.Describe(), cancellationToken))
-            .Outcome is { } refused)
+        if (await RebasePreflightAsync(context, context.BaseBranch, checkpoint.Describe(), cancellationToken)
+            is { } refused)
         {
             return refused;
         }
@@ -4150,11 +3318,10 @@ public sealed class ReviewEngine(
         //
         // wasNoOp stays true — that is the honest fact, git never ran — and forkPointAdvanced is
         // what carries the fork-point move instead (independent pre-PR review, cycle 1, both
-        // lenses: a false wasNoOp here used to also raise PreFinalPassRebaseAwaitingGate and its
-        // FromRealRebase sibling, which forced a second, fail-hard full gate over the exact tip an
-        // earlier gate had already passed, and made every Settling entry re-append this same event
-        // and become newly eligible for the rebase repair lap over a fix session's own ordinary
-        // commit).
+        // lenses: a false wasNoOp here used to also raise PreFinalPassRebaseAwaitingGate, which
+        // forced a second, fail-hard full gate over the exact tip an earlier gate had already
+        // passed, and made every Settling entry re-append this same event and become newly
+        // eligible for the rebase repair lap over a fix session's own ordinary commit).
         if (verdict.Action == StackedCheckpointAction.Proceed)
         {
             if (observation.Verdict == StackedParentVerdict.ParentMergedAligned)
@@ -4165,8 +3332,7 @@ public sealed class ReviewEngine(
                     $"No rebase owed before {checkpoint.Describe()}: {observation.Detail} — this run's own "
                     + $"recorded fork point moves to {ShortSha(observation.BoundaryCommit)} so later ranges, "
                     + "including the mandatory final pass, read only this task's own commits.",
-                    checkpointSpend: null, decisionsLogRenumbered: false, forkPointAdvanced: true,
-                    conflictResolvedMechanically: false, cancellationToken);
+                    checkpointSpend: null, forkPointAdvanced: true, cancellationToken);
                 return RebaseGateOutcome.Proceed;
             }
 
@@ -4246,9 +3412,6 @@ public sealed class ReviewEngine(
         string worktreePath = context.Run.WorktreePath;
         string? preRebaseHead = null;
 
-        // The same caller-owned record the unstacked path keeps, for the same reason its own
-        // declaration gives: the catches below need to see what the resolver had already done.
-        MechanicalTailConflictProgress mechanicalProgress = new();
         await using (IAsyncDisposable repositoryLock =
             await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
         {
@@ -4296,32 +3459,13 @@ public sealed class ReviewEngine(
                     await RecordStackedCheckpointAsync(
                         context, parentBranch, checkpoint,
                         new StackedCheckpointVerdict(StackedCheckpointAction.Replay, upstreamCommit, ontoCommit, reason),
-                        mechanicalTailConflictShape: null, cancellationToken);
-                    return RebaseGateOutcome.Proceed;
-                }
-
-                // The identical Decisions Log tail-append shape the unstacked pre-final-pass rebase
-                // resolves without a session, over the identical resolver: a replay onto a parent
-                // branch hits it for the same reason, because the parent's own branch is where that
-                // base's tail entries came from. Nothing here is specific to a stacked child, which
-                // is exactly why this is a plain call rather than a variant of its own.
-                MechanicalTailConflictOutcome mechanical = await TryResolveDecisionsLogTailConflictsAsync(
-                    context, git, worktreePath, mechanicalProgress, cancellationToken);
-                if (mechanical.Resolved && mechanicalProgress.ResolvedShape is { } shape)
-                {
-                    logger.LogInformation(
-                        "Run {RunId}: the stacked checkpoint {Checkpoint} replay onto {ParentBranch} conflicted only on {Shape} — resolved mechanically and the replay continued",
-                        context.RunId, checkpoint.Value, parentBranch, shape);
-                    await RecordStackedCheckpointAsync(
-                        context, parentBranch, checkpoint,
-                        new StackedCheckpointVerdict(StackedCheckpointAction.Replay, upstreamCommit, ontoCommit, reason),
-                        shape, cancellationToken);
+                        cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
 
                 logger.LogInformation(
-                    "Run {RunId}: the stacked checkpoint {Checkpoint} replay onto {ParentBranch} conflicted and it is not the Decisions Log tail-append shape ({Reason})",
-                    context.RunId, checkpoint.Value, parentBranch, mechanical.Explanation);
+                    "Run {RunId}: the stacked checkpoint {Checkpoint} replay onto {ParentBranch} conflicted",
+                    context.RunId, checkpoint.Value, parentBranch);
                 await RestoreRebaseWorktreeBestEffortAsync(git, worktreePath, preRebaseHead, cancellationToken);
             }
             // git itself can have exited 0 for the call in flight — most importantly the rebase,
@@ -4337,11 +3481,6 @@ public sealed class ReviewEngine(
                     await RecordStackedCheckpointAsync(
                         context, parentBranch, checkpoint,
                         new StackedCheckpointVerdict(StackedCheckpointAction.Replay, upstreamCommit, ontoCommit, reason),
-                        // A stuck pipe can land on the mechanical resolver's own `rebase --continue`
-                        // too, and by then this replay's conflict really was resolved mechanically
-                        // — read from what the loop did rather than assumed (AGENTS.md's never-guess
-                        // rule), the same way the unstacked path's own identical catch reads it.
-                        mechanicalProgress.ResolvedShape,
                         cancellationToken);
                     return RebaseGateOutcome.Proceed;
                 }
@@ -4418,13 +3557,8 @@ public sealed class ReviewEngine(
             // this same run — ReplayCheckpointAsync's own callers), it is this exact verdict's own
             // retry failing, which earns a dedicated fix session rather than a park (task: the stack
             // assessment runs only where a checkpoint would otherwise park).
-            // renumberDecisionsLog: false — a stacked checkpoint's own placeholder is never
-            // renumbered by this run's replay, whether the first attempt (ReplayCheckpointAsync)
-            // or this assessment-driven retry: #162's documented scope limit applies identically
-            // to both, and RecordStackedCheckpointAsync below always records the unrenumbered fact.
             MechanicalReplayFromAssessmentResult? replay = await TryMechanicalReplayFromAssessmentAsync(
-                context, assessment.BoundaryCommit, assessment.OntoCommit, renumberDecisionsLog: false,
-                cancellationToken);
+                context, assessment.BoundaryCommit, assessment.OntoCommit, cancellationToken);
             if (replay is null)
             {
                 return RebaseGateOutcome.Stop;
@@ -4437,9 +3571,7 @@ public sealed class ReviewEngine(
                     new StackedCheckpointVerdict(
                         StackedCheckpointAction.Replay, assessment.BoundaryCommit, assessment.OntoCommit,
                         $"stack assessment verdict: replay — {assessment.Evidence}"),
-                    // The assessment-driven retry never reaches the tail-append resolver, which
-                    // only the checkpoint's own first attempt runs.
-                    mechanicalTailConflictShape: null, cancellationToken);
+                    cancellationToken);
                 return RebaseGateOutcome.Proceed;
             }
 
@@ -4476,31 +3608,18 @@ public sealed class ReviewEngine(
     /// budget it spent on the task's stream, in one transaction, so a reader can never find a
     /// rebase that cost nothing or a cost with no rebase behind it.
     /// </summary>
-    /// <param name="mechanicalTailConflictShape">
-    /// The Decisions Log tail-append shape this replay's own conflict was resolved as, when it
-    /// conflicted at all — the same audit distinction the unstacked path records
-    /// (<see cref="RunRebasedOntoBase.ConflictResolvedMechanically"/>), carried here rather than
-    /// left to a reader to infer from a Detail line. Null for a replay that applied cleanly, which
-    /// is every other caller.
-    /// </param>
     private async Task RecordStackedCheckpointAsync(
         ReviewContext context, string parentBranch, StackedCheckpoint checkpoint,
-        StackedCheckpointVerdict verdict, string? mechanicalTailConflictShape,
-        CancellationToken cancellationToken) =>
+        StackedCheckpointVerdict verdict, CancellationToken cancellationToken) =>
         await RecordRebaseOutcomeAsync(
             context.RunId, verdict.UpstreamCommit, verdict.OntoCommit, wasNoOp: false,
             recoveredByAgentSession: false,
             $"Replayed onto the stacked parent {parentBranch} before {checkpoint.Describe()} "
-            + $"(from {ShortSha(verdict.UpstreamCommit)} onto {ShortSha(verdict.OntoCommit)}): {verdict.Reason}"
-            + (mechanicalTailConflictShape is null
-                ? ""
-                : $" — the only conflict was {mechanicalTailConflictShape}, resolved mechanically."),
+            + $"(from {ShortSha(verdict.UpstreamCommit)} onto {ShortSha(verdict.OntoCommit)}): {verdict.Reason}",
             new StackedCheckpointRebased(
                 context.TaskId, context.RunId, checkpoint, parentBranch, verdict.UpstreamCommit,
                 verdict.OntoCommit, DateTimeOffset.UtcNow),
-            decisionsLogRenumbered: false,
             forkPointAdvanced: false,
-            conflictResolvedMechanically: mechanicalTailConflictShape is not null,
             cancellationToken);
 
     /// <summary>
@@ -4801,9 +3920,8 @@ public sealed class ReviewEngine(
         // own HEAD already contains it", and every caller reaches this verdict already knowing HEAD
         // does NOT (an aligned dispatch only ever follows a park or a conflict). Confirmed the same
         // way ReplayCheckpointAsync confirms a landed replay, `git merge-base --is-ancestor <onto>
-        // HEAD`, before either caller trusts it enough to renumber the Decisions Log placeholder and
-        // proceed on a tree that may still be stale (independent pre-PR review, cycle 1, adversarial
-        // lens).
+        // HEAD`, before either caller trusts it enough to record a rebase outcome and proceed on a
+        // tree that may still be stale (independent pre-PR review, cycle 1, adversarial lens).
         if (verdict.Kind == StackAssessmentVerdictKind.Aligned
             && !await CommitIsAncestorOfHeadAsync(context.Run.WorktreePath, verdict.OntoCommit, cancellationToken))
         {
@@ -4998,48 +4116,16 @@ public sealed class ReviewEngine(
     internal async Task<RebaseGateOutcome> ActOnPreFinalPassAssessmentAsync(
         ReviewContext context, RunAggregate run, StackAssessmentVerdict assessment, CancellationToken cancellationToken)
     {
-        // This method is reached only from DispatchRebaseRecoverySessionAsync's own round-cap
-        // check (see this method's own doc), which now redispatches a checkpoint-originated track
-        // (RebaseRecoveryNeeded's own carry-forward, or ActOnStackAssessmentAsync's Replay-failed
-        // dispatch) exactly as it redispatches the ordinary unstacked one — RebaseRecoveryBaseCommit
-        // is what tells the two apart. A checkpoint-originated track's placeholder must stay
-        // unrenumbered here too (#162), the identical scope limit
-        // TryMechanicalReplayFromAssessmentAsync's own doc gives.
-        bool renumberDecisionsLog = run.RebaseRecoveryBaseCommit is null;
         if (assessment.Kind == StackAssessmentVerdictKind.Aligned)
         {
             logger.LogInformation(
                 "Run {RunId}: the stack assessment found the mandatory final pass's own pre-flight rebase already aligned — {Evidence}",
                 context.RunId, assessment.Evidence);
 
-            bool decisionsLogRenumberedForAligned = false;
-            if (renumberDecisionsLog)
-            {
-                string worktreePathForAligned = context.Run.WorktreePath;
-                ProcessRunner gitForAligned = gitProcessRunner;
-                await using (IAsyncDisposable repositoryLock =
-                    await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
-                {
-                    if (!await EnsureCurrentGenerationAsync(context, cancellationToken))
-                    {
-                        return RebaseGateOutcome.Stop;
-                    }
-
-                    DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
-                        context, gitForAligned, worktreePathForAligned, assessment.BoundaryCommit, assessment.OntoCommit,
-                        cancellationToken);
-                    decisionsLogRenumberedForAligned = renumberResult.Outcome == DecisionsLogRenumberOutcome.Renumbered;
-                }
-            }
-
             await RecordRebaseOutcomeAsync(
                 context.RunId, assessment.BoundaryCommit, assessment.OntoCommit, wasNoOp: true, recoveredByAgentSession: false,
-                decisionsLogRenumberedForAligned
-                    ? "The stack assessment found the mandatory final pass's own pre-flight rebase already aligned, but "
-                      + $"the Decisions Log's tail entry still needed the mechanical rebase step's own renumbering commit: {assessment.Evidence}"
-                    : $"The stack assessment found the mandatory final pass's own pre-flight rebase already aligned: {assessment.Evidence}",
-                checkpointSpend: null, decisionsLogRenumbered: decisionsLogRenumberedForAligned, forkPointAdvanced: false,
-                conflictResolvedMechanically: false, cancellationToken);
+                $"The stack assessment found the mandatory final pass's own pre-flight rebase already aligned: {assessment.Evidence}",
+                checkpointSpend: null, forkPointAdvanced: false, cancellationToken);
             await ClearRebaseRecoveryNeededIfResolvedAsync(context, run, cancellationToken);
             return RebaseGateOutcome.Proceed;
         }
@@ -5064,7 +4150,7 @@ public sealed class ReviewEngine(
         // non-assessment path uses ExternalProcess.RunnerWithDeadline(GitDeadline) rather than the
         // short ExternalProcess.Deadline (independent pre-PR review, cycle 1, both lenses).
         MechanicalReplayFromAssessmentResult? replay = await TryMechanicalReplayFromAssessmentAsync(
-            context, assessment.BoundaryCommit, assessment.OntoCommit, renumberDecisionsLog, cancellationToken);
+            context, assessment.BoundaryCommit, assessment.OntoCommit, cancellationToken);
         if (replay is null)
         {
             return RebaseGateOutcome.Stop;
@@ -5077,10 +4163,7 @@ public sealed class ReviewEngine(
                 recoveredByAgentSession: false,
                 "Rebased onto the commit a read-only stack assessment named (from "
                 + $"{ShortSha(assessment.BoundaryCommit)} to {ShortSha(assessment.OntoCommit)}): {assessment.Evidence}",
-                checkpointSpend: null, decisionsLogRenumbered: replay.Value.DecisionsLogRenumbered, forkPointAdvanced: false,
-                // The assessment-driven retry's own replay either lands or it does not; it never
-                // reaches the tail-append resolver, which only the first attempt runs.
-                conflictResolvedMechanically: false, cancellationToken);
+                checkpointSpend: null, forkPointAdvanced: false, cancellationToken);
             await ClearRebaseRecoveryNeededIfResolvedAsync(context, run, cancellationToken);
             return RebaseGateOutcome.Proceed;
         }
@@ -5128,36 +4211,29 @@ public sealed class ReviewEngine(
     }
 
     /// <summary><see cref="TryMechanicalReplayFromAssessmentAsync"/>'s own result.</summary>
-    private readonly record struct MechanicalReplayFromAssessmentResult(bool Landed, bool Attempted, bool DecisionsLogRenumbered);
+    private readonly record struct MechanicalReplayFromAssessmentResult(bool Landed, bool Attempted);
 
     /// <summary>
     /// The one mechanical <c>git rebase --onto</c> a Replay verdict earns, shared by
     /// <see cref="ActOnPreFinalPassAssessmentAsync"/>'s own retry, <see cref="ActOnRebaseRecoveryDisputeAssessmentAsync"/>'s
     /// identical one, and <see cref="ActOnStackAssessmentAsync"/>'s own stacked-checkpoint retry
-    /// (task: the stack assessment runs only where a checkpoint would otherwise park). Only the
-    /// unstacked pre-final-pass callers renumber this branch's own Decisions Log placeholder on a
-    /// clean land — the "current with its base" obligation every other proceed exit on the
-    /// unstacked path already carries — controlled by <paramref name="renumberDecisionsLog"/>: a
-    /// stacked checkpoint's own placeholder stays unrenumbered until this task's branch is
-    /// retargeted onto main (#144/#153), the same documented scope limit
-    /// <see cref="ReplayCheckpointAsync"/>'s own doc gives. Returns null when the generation fence
-    /// itself refuses — the caller's own <see cref="RebaseGateOutcome.Stop"/>, not a git outcome to
-    /// report — otherwise whether the rebase landed clean and whether it was actually attempted at
-    /// all: an onto commit missing from this repository's object store, or a git call that failed
-    /// before the rebase itself started, never attempts one (distinguished so a caller building
-    /// guidance never tells its dispatched session a mechanical attempt already conflicted when none
-    /// ran — AGENTS.md's never-guess rule).
+    /// (task: the stack assessment runs only where a checkpoint would otherwise park). Returns null
+    /// when the generation fence itself refuses — the caller's own
+    /// <see cref="RebaseGateOutcome.Stop"/>, not a git outcome to report — otherwise whether the
+    /// rebase landed clean and whether it was actually attempted at all: an onto commit missing
+    /// from this repository's object store, or a git call that failed before the rebase itself
+    /// started, never attempts one (distinguished so a caller building guidance never tells its
+    /// dispatched session a mechanical attempt already conflicted when none ran — AGENTS.md's
+    /// never-guess rule).
     /// </summary>
     private async Task<MechanicalReplayFromAssessmentResult?> TryMechanicalReplayFromAssessmentAsync(
-        ReviewContext context, string boundaryCommit, string ontoCommit, bool renumberDecisionsLog,
-        CancellationToken cancellationToken)
+        ReviewContext context, string boundaryCommit, string ontoCommit, CancellationToken cancellationToken)
     {
         string worktreePath = context.Run.WorktreePath;
         ProcessRunner git = gitProcessRunner;
         string? preRebaseHead = null;
         bool landedClean = false;
         bool rebaseAttempted = false;
-        bool decisionsLogRenumbered = false;
         await using (IAsyncDisposable repositoryLock =
             await worktrees.AcquireRepositoryLockAsync(context.Project.RepositoryPath, cancellationToken))
         {
@@ -5182,18 +4258,6 @@ public sealed class ReviewEngine(
                     if (replay.ExitCode == 0)
                     {
                         landedClean = true;
-
-                        if (renumberDecisionsLog)
-                        {
-                            // Renumbered here, still inside the repository lock, the same "before the
-                            // mandatory gate reads the tree" ordering EnsureRebasedBeforeFinalPassAsync's
-                            // own plain-rebase call already keeps — not after the lock releases, which
-                            // would let another worktree's own fetch or renumbering race this branch's
-                            // own commit against the shared bare repository.
-                            DecisionsLogRenumberResult renumberResult = await RenumberDecisionsLogPlaceholderAsync(
-                                context, git, worktreePath, boundaryCommit, ontoCommit, cancellationToken);
-                            decisionsLogRenumbered = renumberResult.Outcome == DecisionsLogRenumberOutcome.Renumbered;
-                        }
                     }
                     else
                     {
@@ -5211,7 +4275,7 @@ public sealed class ReviewEngine(
             }
         }
 
-        return new MechanicalReplayFromAssessmentResult(landedClean, rebaseAttempted, decisionsLogRenumbered);
+        return new MechanicalReplayFromAssessmentResult(landedClean, rebaseAttempted);
     }
 
     /// <summary>
@@ -5390,20 +4454,6 @@ public sealed class ReviewEngine(
     /// no budget at all — passed explicitly rather than defaulted, so the cancellation token stays
     /// this method's last parameter (AGENTS.md; conformance review, cycle 1).
     /// </param>
-    /// <param name="decisionsLogRenumbered">
-    /// See <see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>. True on two call sites, both of
-    /// them a <paramref name="wasNoOp"/>: true outcome whose own renumbering call actually landed a
-    /// commit — the one shape where <paramref name="wasNoOp"/> alone does not already raise the
-    /// mandatory gate: the no-op-rebase call site inside <c>EnsureRebasedBeforeFinalPassAsync</c>'s
-    /// own repository-lock block, and <c>TryRenumberDecisionsLogPlaceholderOnSkipAsync</c>'s own call
-    /// site, reached on every preflight refusal and every caught fetch/read/deadline/stuck-pipe skip
-    /// that still finds this branch current with its locally known base. The clean-rebase and
-    /// stuck-pipe-rebase call sites always pass false here, even on a rebase whose own renumbering
-    /// call did land a commit, because their <paramref name="wasNoOp"/>: false already raises that
-    /// gate; this field is not a general "did this rebase renumber the Decisions Log" audit flag,
-    /// only the gap wasNoOp itself can't cover (independent pre-PR review, cycle 1, conformance
-    /// lens).
-    /// </param>
     /// <param name="forkPointAdvanced">
     /// See <see cref="RunRebasedOntoBase.ForkPointAdvanced"/>. True only on the stacked checkpoint's
     /// own <c>ParentMergedAligned</c> call site: the branch already held the observed base tip, so
@@ -5411,24 +4461,15 @@ public sealed class ReviewEngine(
     /// explicitly, not defaulted, for the identical reason <paramref name="checkpointSpend"/>'s own
     /// doc gives — the cancellation token stays this method's last parameter (AGENTS.md).
     /// </param>
-    /// <param name="conflictResolvedMechanically">
-    /// See <see cref="RunRebasedOntoBase.ConflictResolvedMechanically"/>. True on the two call sites
-    /// whose rebase actually conflicted and whose only conflict was the Decisions Log tail-append
-    /// shape: <see cref="EnsureRebasedBeforeFinalPassAsync"/>'s own mechanical-resolution branch,
-    /// and the stacked checkpoint replay's, which reaches it through
-    /// <see cref="RecordStackedCheckpointAsync"/>. Every other call site passes false because its
-    /// rebase never conflicted at all — a distinction the two existing flags cannot carry between
-    /// them.
-    /// </param>
     private async Task RecordRebaseOutcomeAsync(
         Guid runId, string rebasedFromCommit, string rebasedOntoCommit, bool wasNoOp, bool recoveredByAgentSession,
-        string detail, StackedCheckpointRebased? checkpointSpend, bool decisionsLogRenumbered,
-        bool forkPointAdvanced, bool conflictResolvedMechanically, CancellationToken cancellationToken)
+        string detail, StackedCheckpointRebased? checkpointSpend, bool forkPointAdvanced,
+        CancellationToken cancellationToken)
     {
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(runId, new RunRebasedOntoBase(
             runId, rebasedFromCommit, rebasedOntoCommit, wasNoOp, recoveredByAgentSession, detail,
-            DateTimeOffset.UtcNow, decisionsLogRenumbered, forkPointAdvanced, conflictResolvedMechanically));
+            DateTimeOffset.UtcNow, forkPointAdvanced));
         if (checkpointSpend is not null)
         {
             // No expectedVersion fence: this is a counter, not a state change (the shape
@@ -5957,24 +4998,14 @@ public sealed class ReviewEngine(
                 context, assessment.BoundaryCommit, assessment.OntoCommit, wasNoOp: true,
                 "the recovery session disputed this conflict, but a read-only stack assessment found it already "
                 + $"aligned: {assessment.Evidence}",
-                decisionsLogRenumbered: false, tokensRecorded, cancellationToken);
+                tokensRecorded, cancellationToken);
             return RebaseGateOutcome.Proceed;
         }
 
         if (assessment.Kind == StackAssessmentVerdictKind.Replay)
         {
-            // renumberDecisionsLog: true — this method is reached only through
-            // RecordRebaseRecoveryResultAsync's own AssessOrParkAsync call, which the one-shot
-            // assessment rule (AssessOrParkAsync's own doc) already refuses for any track whose
-            // assessment was dispatched earlier from a stacked checkpoint: HasDispatchedStackAssessment
-            // is set the moment that dispatch happens, before ActOnStackAssessmentAsync's own Replay
-            // branch ever runs, so a checkpoint-originated track's dispute always parks through
-            // onAssessmentAlreadySpent instead of ever reaching this branch. Only the ordinary,
-            // unstacked pre-final-pass dispute — which owes its placeholder the identical renumbering
-            // obligation ActOnPreFinalPassAssessmentAsync's own Replay branch carries — reaches here.
             MechanicalReplayFromAssessmentResult? replay = await TryMechanicalReplayFromAssessmentAsync(
-                context, assessment.BoundaryCommit, assessment.OntoCommit, renumberDecisionsLog: true,
-                cancellationToken);
+                context, assessment.BoundaryCommit, assessment.OntoCommit, cancellationToken);
             if (replay is null)
             {
                 // The generation fence itself refused (EnsureCurrentGenerationAsync inside
@@ -5999,7 +5030,7 @@ public sealed class ReviewEngine(
                     context, assessment.BoundaryCommit, assessment.OntoCommit, wasNoOp: false,
                     "the recovery session disputed this conflict, but a read-only stack assessment's own replay "
                     + $"verdict landed cleanly: {assessment.Evidence}",
-                    decisionsLogRenumbered: replay.Value.DecisionsLogRenumbered, tokensRecorded, cancellationToken);
+                    tokensRecorded, cancellationToken);
                 return RebaseGateOutcome.Proceed;
             }
         }
@@ -6027,11 +5058,6 @@ public sealed class ReviewEngine(
     /// showing a rebase it already recorded as landed while still "awaiting" a session that is long
     /// since gone.
     /// </summary>
-    /// <param name="decisionsLogRenumbered">
-    /// Whether the replay that resolved this dispute also committed a Decisions Log renumbering —
-    /// see <see cref="RunRebasedOntoBase.DecisionsLogRenumbered"/>'s own doc. False for the Aligned
-    /// verdict, which never rebases at all.
-    /// </param>
     /// <param name="tokensRecorded">
     /// The disputing session's own token usage — owed regardless of how the dispute resolves, and
     /// appended in this same transaction rather than separately, the identical atomicity every
@@ -6039,14 +5065,13 @@ public sealed class ReviewEngine(
     /// </param>
     private async Task RecordRebaseRecoveryDisputeResolvedAsync(
         ReviewContext context, string boundaryCommit, string ontoCommit, bool wasNoOp, string detail,
-        bool decisionsLogRenumbered, TokensRecorded tokensRecorded, CancellationToken cancellationToken)
+        TokensRecorded tokensRecorded, CancellationToken cancellationToken)
     {
         DateTimeOffset now = DateTimeOffset.UtcNow;
         await using IDocumentSession session = store.LightweightSession();
         session.Events.Append(context.RunId, tokensRecorded);
         session.Events.Append(context.RunId, new RunRebasedOntoBase(
-            context.RunId, boundaryCommit, ontoCommit, wasNoOp, RecoveredByAgentSession: false, detail, now,
-            DecisionsLogRenumbered: decisionsLogRenumbered));
+            context.RunId, boundaryCommit, ontoCommit, wasNoOp, RecoveredByAgentSession: false, detail, now));
         session.Events.Append(context.RunId, new PreFinalPassRebaseRecoveryCompleted(context.RunId, ReviewFixOutcome.Fixed, now));
         await session.SaveChangesAsync(cancellationToken);
         logger.LogInformation(
@@ -6131,30 +5156,18 @@ public sealed class ReviewEngine(
     /// full-scope pass would, and this correctly goes back to false rather than staying eligible
     /// for a repair lap the next, unrelated gate failure never earned.
     /// <para>
-    /// Reads <see cref="RunAggregate.PreFinalPassRebaseAwaitingGateFromRealRebase"/>, not
+    /// Reads <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/>, not
     /// <see cref="RunAggregate.LastPreFinalPassRebaseWasNoOp"/> (independent pre-PR review, cycle 3,
     /// conformance lens): <c>LastPreFinalPassRebaseWasNoOp</c> is a display field whose own trailing-
     /// no-op guard deliberately leaves it pointing at an earlier real rebase across a later no-op
-    /// re-check, so a no-op re-check that only committed a Decisions Log renumbering — which does
-    /// raise <see cref="RunAggregate.PreFinalPassRebaseAwaitingGate"/>, since the renumbering commit
-    /// moved this branch's tip too — would otherwise read as "the last rebase was real" and wrongly
-    /// earn repair eligibility for a gate break that has nothing to do with an actual rebase.
-    /// <c>PreFinalPassRebaseAwaitingGateFromRealRebase</c> is <c>true</c> off the triggering event's
-    /// own <c>WasNoOp</c> every time <c>PreFinalPassRebaseAwaitingGate</c> is (re)raised, except that
-    /// a renumbering-only no-op landing while an earlier real rebase is still ungated carries that
-    /// earlier grant forward instead of clearing it (independent pre-PR review, cycle 5, both
-    /// lenses) — a recovered rebase's own re-entry lands the real rebase and its trailing
-    /// renumbering-only no-op back to back, with no gate in between, and clearing the grant on the
-    /// second landing would make a recovered rebase permanently ineligible for this repair lap. So
-    /// it always reflects whichever event most recently left this tip ungated: a real rebase, or a
-    /// renumbering-only no-op that followed one already-gated-clean, with no trailing-guard
-    /// staleness to account for.
+    /// re-check, so it cannot answer "is this tip still ungated because a real rebase moved it".
+    /// The flag can: only a non-no-op <c>RunRebasedOntoBase</c> raises it, and the very next
+    /// full-scope pass or skip clears it.
     /// </para>
     /// </summary>
     private static bool EligibleForSettlingGateRepair(RunAggregate run) =>
         run.LastPreFinalPassRebaseAt is not null
-        && run.PreFinalPassRebaseAwaitingGate
-        && run.PreFinalPassRebaseAwaitingGateFromRealRebase;
+        && run.PreFinalPassRebaseAwaitingGate;
 
     /// <summary>
     /// The leg the mandatory gate's own re-run right after a pre-final-pass rebase (or a Settling-

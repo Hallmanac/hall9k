@@ -16,10 +16,8 @@ namespace Hall9k.Tests.Daemon;
 /// <para>
 /// Runs against a real, local, throwaway git repository (a git "origin" and a worktree with it
 /// configured as a remote) rather than any GitHub-facing fixture — no network, no provider, just
-/// two temp directories and the real <c>git</c> binary, the same fake-repo style
-/// <c>DecisionsLogRenumbererTransitionTests</c> already uses for the identical reason: this is a
-/// git-mechanics question, not one this project's own Testcontainers integration tier needs to
-/// answer.
+/// two temp directories and the real <c>git</c> binary: this is a git-mechanics question, not one
+/// this project's own Testcontainers integration tier needs to answer.
 /// </para>
 /// <c>[Collection("RealProcessSpawn")]</c> (Decisions Log #172): joins the other
 /// real-<c>git</c>-subprocess test classes so they never run concurrently with each other.

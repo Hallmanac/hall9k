@@ -150,32 +150,12 @@ public sealed class RunAggregate
     /// gated" would force a redundant full gate on every such settle forever, not just the one
     /// this flag actually exists to catch. Set by a non-no-op <see cref="Events.RunRebasedOntoBase"/>
     /// (whether it applied cleanly on its own or only after a recovery session resolved its
-    /// conflict) — or by a no-op one whose <see cref="Events.RunRebasedOntoBase.DecisionsLogRenumbered"/>
-    /// is true, since that renumbering commit also moves this branch's tip past whatever was last
-    /// gated even though origin's base itself never moved — and cleared by the very next
-    /// full-scope <see cref="Events.VerificationPassed"/>, or by a
-    /// <see cref="Events.VerificationSkipped"/> (see <see cref="Apply(Events.VerificationSkipped)"/>'s
-    /// own doc for why a skip discharges the same obligation), whichever event lands later on the
-    /// stream.
+    /// conflict), and cleared by the very next full-scope <see cref="Events.VerificationPassed"/>,
+    /// or by a <see cref="Events.VerificationSkipped"/> (see
+    /// <see cref="Apply(Events.VerificationSkipped)"/>'s own doc for why a skip discharges the same
+    /// obligation), whichever event lands later on the stream.
     /// </summary>
     public bool PreFinalPassRebaseAwaitingGate { get; private set; }
-
-    /// <summary>
-    /// Whether the current <see cref="PreFinalPassRebaseAwaitingGate"/> grant was earned by a
-    /// genuine, non-no-op rebase rather than a no-op re-check that only committed a Decisions Log
-    /// renumbering (independent pre-PR review, cycle 3, conformance lens): the two share the same
-    /// flag above because both leave this branch's tip ungated, but
-    /// <see cref="Hall9k.Daemon.Review.ReviewEngine.EligibleForSettlingGateRepair"/> means only the
-    /// former by "a pre-final-pass rebase that applies cleanly but breaks the mandatory gate" — a
-    /// renumbering-only no-op never moved this branch relative to its base, so a gate failure right
-    /// after one is not a rebase-caused break and keeps today's fail-hard contract.
-    /// <see cref="LastPreFinalPassRebaseWasNoOp"/> cannot answer this itself: the trailing-no-op
-    /// display guard in <see cref="Apply(Events.RunRebasedOntoBase)"/> deliberately leaves it
-    /// pointing at an earlier real rebase across a later no-op re-check, which would otherwise make
-    /// a renumbering-only no-op that lands after that earlier rebase's own gate already passed
-    /// look, wrongly, like the same real rebase is still ungated.
-    /// </summary>
-    public bool PreFinalPassRebaseAwaitingGateFromRealRebase { get; private set; }
 
     /// <summary>
     /// Whether a pre-final-pass rebase that needed the recovery session's own judgment has landed
@@ -1064,7 +1044,6 @@ public sealed class RunAggregate
         if (@event.RanFullScope)
         {
             PreFinalPassRebaseAwaitingGate = false;
-            PreFinalPassRebaseAwaitingGateFromRealRebase = false;
             // The Settling-gate repair cap's own confirmed-fixed signal (task: a pre-final-pass
             // rebase that applies cleanly but breaks the mandatory gate gets a repair lap inside
             // the same run instead of failing it): a full-scope pass only ever lands here when the
@@ -1089,18 +1068,17 @@ public sealed class RunAggregate
     /// identical reason. Failed-gate state still clears, the same as a real pass: a skip means
     /// nothing is currently failing.
     /// <para>
-    /// <see cref="PreFinalPassRebaseAwaitingGate"/> and
-    /// <see cref="PreFinalPassRebaseAwaitingGateFromRealRebase"/> are the one exception, and DO
-    /// clear here (independent pre-PR review, cycle 1, adversarial lens, medium): a classification
+    /// <see cref="PreFinalPassRebaseAwaitingGate"/> is the one exception, and DOES clear here
+    /// (independent pre-PR review, cycle 1, adversarial lens, medium): a classification
     /// of every changed path as non-executable means this branch's own diff carries no code at
     /// all, rebased or not, so the rebased tree's code is entirely the base's own — exactly the
-    /// fact that already earns a skip in place of a real gate. Leaving the pair set after a skip
+    /// fact that already earns a skip in place of a real gate. Leaving it set after a skip
     /// left <see cref="Hall9k.Daemon.Review.ReviewEngine.EligibleForSettlingGateRepair"/> reading
     /// true for the rest of the run: a later, unrelated mandatory-gate failure — one the rebase
     /// never caused — was then routed to the settling-gate repair lap instead of failing hard, and
     /// <see cref="Hall9k.Daemon.Review.ReviewEngine"/>'s own leg picker kept charging recovery
     /// attempts against <see cref="RunSessionLeg.RebaseRecovery"/> for the same stale reason. Only
-    /// a full-scope <see cref="VerificationPassed"/> can otherwise clear the pair; this is the
+    /// a full-scope <see cref="VerificationPassed"/> can otherwise clear it; this is the
     /// second, narrower way a rebase's own gate obligation gets discharged without one.
     /// </para>
     /// </summary>
@@ -1108,7 +1086,6 @@ public sealed class RunAggregate
     {
         _failedGates.Clear();
         PreFinalPassRebaseAwaitingGate = false;
-        PreFinalPassRebaseAwaitingGateFromRealRebase = false;
     }
 
     public void Apply(GateRetried @event) => GateRetries++;
@@ -2126,27 +2103,11 @@ public sealed class RunAggregate
         // recovery session merely claimed to — is exactly when this branch's own commits have not
         // been gated at their new, possibly-rebased position (see PreFinalPassRebaseAwaitingGate's
         // own doc): worth an extra full gate to confirm even when the claim behind it turns out to
-        // be false, since that gate is what would catch the false claim in the first place. A
-        // no-op rebase that still committed a Decisions Log renumbering earns the same gate for
-        // the same reason — the renumbering commit moved this branch's tip too — without needing
-        // WasNoOp itself to lie about whether origin's base actually moved (independent pre-PR
-        // review, cycle 5, adversarial lens: the earlier `wasNoOp: !renumberCommitted` shape broke
-        // the trailing-no-op guard just below, which reads WasNoOp for its own, unrelated purpose).
-        //
-        // FromRealRebase carries an earlier still-ungated real rebase forward across exactly this
-        // renumbering-only no-op, rather than resetting to false the way a bare `!WasNoOp` would
-        // (independent pre-PR review, cycle 5, both lenses): a recovered rebase's own re-entry
-        // lands here twice in a row — once as the real, non-no-op rebase itself, then again as the
-        // mechanical renumbering-only no-op DecisionsLogRenumberer commits on the very next
-        // Settling entry, before any gate has run over either landing — so resetting on the second
-        // landing would make a recovered rebase permanently ineligible for the Settling-gate
-        // repair lap. Once an earlier real rebase HAS been gated clean, PreFinalPassRebaseAwaitingGate
-        // is already false when a later, unrelated renumbering-only no-op arrives, so the carry-
-        // forward term is false and this correctly resolves to `!WasNoOp` alone.
-        if (!@event.WasNoOp || @event.DecisionsLogRenumbered)
+        // be false, since that gate is what would catch the false claim in the first place. A no-op
+        // never earns it: nothing moved this branch's tip, so the tip is exactly what an earlier
+        // gate already covered.
+        if (!@event.WasNoOp)
         {
-            PreFinalPassRebaseAwaitingGateFromRealRebase = !@event.WasNoOp
-                || (PreFinalPassRebaseAwaitingGate && PreFinalPassRebaseAwaitingGateFromRealRebase);
             PreFinalPassRebaseAwaitingGate = true;
         }
 
