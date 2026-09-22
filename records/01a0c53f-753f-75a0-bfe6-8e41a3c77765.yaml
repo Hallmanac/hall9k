@@ -1,0 +1,24 @@
+hall9k-task-record: 1
+task-id: 01a0c53f-753f-75a0-bfe6-8e41a3c77765
+project: hall9k
+type: chore
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#557
+objective: |-
+  The release workflow survives a duplicate run for one tag: a concurrency group per ref serializes runs, and the publish step skips creation when a published release for the tag already exists, so a second run for the same tag ends green and leaves the release and its four assets untouched instead of failing on 'a release with the same tag name already exists'
+criteria:
+  - .github/workflows/release.yml declares a top-level concurrency group keyed by the workflow and the ref with cancel-in-progress false, so two runs for one tag run one after the other
+  - The Create release step first asks gh release view for the tag; when a published release exists (isDraft false) the step prints that it is skipping and ends with exit 0 without touching the release or its assets; otherwise it creates the release exactly as today. Either way the release carries the same four assets (checksums.txt, linux-x64 tar.gz, osx-arm64 tar.gz, win-x64 zip) with their original ids and digests
+  - No change to the build matrix, the asset names, the checksums step, or the tag pattern; the workflow file is the only file touched
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/a3c77765-the-release-workflow-survives
+published: 2026-09-22 12:13:38Z
+context: |-
+  Evidence, 2026-09-21 14:29 to 14:32 EDT: one annotated tag push (v0.10.27, pushed by the Mac project window at 14:28 with a single git push origin v0.10.27) produced two Release runs one second apart, 35638658982 (success, created the release and uploaded all four assets, published 18:31:34Z) and 35638661235 (its builds succeeded, then publish-release failed at 18:32:34Z with 'a release with the same tag name already exists: v0.10.27'). A challenge session on 2026-09-22 confirmed the duplicate is GitHub's own double delivery of one ref transition (both check suites carry the identical before/after pair; the remote tag is one annotated object), not a re-push from the Mac. The release itself was complete; the red run is only the second run's non-idempotent gh release create. The publish step is at release.yml lines 156 to 166 on main at 4e3e0eae.
+
+  Shape, ruled by Brian 2026-09-22: a guard at the top of the existing create step (skip with exit 0 when a published release exists), NOT an upsert with gh release upload --clobber. A second run's archives are never byte-identical to the first run's (file mtimes, gzip header), so re-uploading would rewrite every checksum and digest under a release the owner has already told other nodes to update from, and a node running h9k update inside the re-upload window would miss the archive or fail its checksum. The check is for a published release (isDraft false), so a draft left by a run that died mid-publish is not mistaken for a finished release. A gh release view failure from a network blip reads as absent and falls through to create, which then behaves exactly as today. The workflow's contents: write permission already covers the guard.
+
+  Proof: there is no workflow lint in this repository's gates and a pull request touching only release.yml never exercises it (tags only). The pull-request description shows the guarded step script run locally under a stub gh on PATH taking both branches: exit 0 with the skip line when the stub reports a published release, and the create command invoked when the stub reports none. Nothing is committed as a test. The post-merge proof belongs to the orchestrator, not this task: after the next tag cut publishes green, one deliberate gh run rerun of that Release run must end green with the four assets' ids and digests unchanged.
