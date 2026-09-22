@@ -6,6 +6,8 @@ using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
+using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -208,9 +210,14 @@ public sealed class TaskWorkCommand : Hall9kAsyncCommand<TaskWorkCommand.Setting
         // unsynthesized document into its own "Starting context" screen (Decisions Log #36) —
         // so an operator's session gets the real context rather than none at all.
         string? blockerContext = await LoadBlockerContextAsync(session, taskDetails, cancellationToken);
+        // The same lesson section a headless dispatch composes (idea d805fd8b, piece 5), through
+        // the same Domain read: an interactive claim cuts its own worktree outside dispatch, so it
+        // gets no rendered lessons.md there, which makes the injected section the only route this
+        // session's own lessons take.
+        InjectedLessons lessons = await LessonPromptFeed.LoadAsync(session, project.Id, cancellationToken);
         string prompt = WorkPromptBuilder.Build(
             taskDetails, project, branch, worktreePath, resumesPreviousWork, blockerContext, taskDetails.RetryReason,
-            isInteractive: true, requiresSelfRegistration: !settings.DirectLaunch);
+            isInteractive: true, requiresSelfRegistration: !settings.DirectLaunch, lessons: lessons);
 
         // The same settings file every headless spawn writes (ClaudeExecutor), so the
         // platform-imposed overrides — no co-authored-by trailers (PLAN.md §6.6), and command-tool

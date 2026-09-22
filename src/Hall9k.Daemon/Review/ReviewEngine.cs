@@ -10,6 +10,8 @@ using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Daemon.ProjectHomes;
+using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
@@ -2126,7 +2128,8 @@ public sealed class ReviewEngine(
             interactiveSessionAddress: context.Run.RegisteredInteractiveSessionName,
             interactiveModeEnabledOverride: interactiveModeEnabled,
             priorHumanFixes: context.PriorHumanFixes,
-            commandTimeout: _options.VerifyGateTimeout);
+            commandTimeout: _options.VerifyGateTimeout,
+            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // Every lens is review work, so they resolve the same role in the chain (log #33) — except
         // the mandatory FinalFullPass, which resolves its own knob (task: completing the per-stage
@@ -2208,7 +2211,8 @@ public sealed class ReviewEngine(
             // it: this pass's full-diff fallback range is a three-dot diff, and a force-pushed
             // parent moves origin/<parent> out from under it.
             baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
-            priorHumanFixes: context.PriorHumanFixes, commandTimeout: _options.VerifyGateTimeout);
+            priorHumanFixes: context.PriorHumanFixes, commandTimeout: _options.VerifyGateTimeout,
+            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
         ExecutorMode executorMode = context.Run.ExecutorMode;
         // A Verify pass resolves its own knob rather than the plain Review chain (Brian's ruling,
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
@@ -2451,7 +2455,8 @@ public sealed class ReviewEngine(
                 context.Task, context.Project, context.Run.Branch, context.Task.PullRequestUrl!, commitStyle, findings,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
                 baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
-                commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill)
+                commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
+                lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken))
             : AgentPromptBuilder.BuildReviewFix(
                 context.Task, context.Project, context.Run.Branch, findings, cycle,
                 context.Run.RegisteredInteractiveSessionName, interactiveModeEnabledOverride: interactiveModeEnabled,
@@ -2459,7 +2464,8 @@ public sealed class ReviewEngine(
                 // own-changes boundary from this range, and on a stacked child that boundary is
                 // the recorded fork point rather than origin/<parent> for the same reason.
                 baseBranch: context.BaseBranch, baseCommit: context.Run.BaseCommit,
-                commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill);
+                commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
+                lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
         ExecutorMode mode = context.Run.ExecutorMode;
 
         // A retry of the very same round reuses whatever it already decided rather than asking
@@ -5658,7 +5664,8 @@ public sealed class ReviewEngine(
             commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
             assessmentGuidance: assessmentGuidance, baseCommit: baseCommit,
             precedesFirstReviewCycle: precedesFirstReviewCycle,
-            mechanicalRetryAttempted: mechanicalRetryAttempted);
+            mechanicalRetryAttempted: mechanicalRetryAttempted,
+            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         string artifactName = RebaseRecoveryArtifactName(sessionId);
@@ -6240,7 +6247,8 @@ public sealed class ReviewEngine(
             run.LastPreFinalPassRebaseFromCommit ?? RunRebasedOntoBase.UnreadableCommit,
             run.LastPreFinalPassRebaseOntoCommit ?? RunRebasedOntoBase.UnreadableCommit,
             run.LastPreFinalPassRebaseRecovered, gateOutput, humanGuidance,
-            commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill);
+            commandTimeout: _options.VerifyGateTimeout, voiceSkill: context.VoiceSkill,
+            lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
         string artifactName = SettlingGateRepairArtifactName(sessionId);
@@ -9130,6 +9138,35 @@ public sealed class ReviewEngine(
         await using IQuerySession query = store.QuerySession();
         TaskDetails? task = await query.LoadAsync<TaskDetails>(taskId, cancellationToken);
         return task?.InteractiveModeEnabled ?? false;
+    }
+
+    /// <summary>
+    /// This project's bounded lesson section for the review or fix prompt about to be composed
+    /// (idea d805fd8b, piece 5; backlog 55). Read fresh per dispatch, in its own session, the same
+    /// staleness reasoning <see cref="IsInteractiveModeEnabledAsync"/> documents: a review cycle
+    /// can start hours after <c>ReviewContext</c> was loaded, and a lesson the build session
+    /// recorded during that window is exactly the lesson the reviewer reading its diff wants.
+    /// <para>
+    /// Best-effort, like <c>RunLauncher</c>'s own copy: a failure here composes no section rather
+    /// than failing the pass, because the pass is the point and a prompt missing its lessons is a
+    /// worse review rather than no review.
+    /// </para>
+    /// </summary>
+    private async Task<InjectedLessons> LoadRecordedLessonsAsync(
+        Guid projectId, Guid runId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using IQuerySession query = store.QuerySession();
+            return await LessonPromptFeed.LoadAsync(query, projectId, cancellationToken);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogWarning(exception,
+                "Run {RunId}: could not read the project's recorded lessons, so this session's prompt "
+                + "carries no lesson section; h9k learn list still shows them", runId);
+            return InjectedLessons.None;
+        }
     }
 
     /// <summary>

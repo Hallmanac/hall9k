@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Prompts;
+using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Owner;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -480,7 +482,11 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
             // The contractor closes with a pull request summary the platform posts under the
             // owner's login, so it gets the owner's own voice skill exactly as a headless dispatch
             // does (#193).
-            voiceSkill: (await session.LoadAsync<OwnerDetails>(context.OwnerId, cancellationToken))?.VoiceSkill);
+            voiceSkill: (await session.LoadAsync<OwnerDetails>(context.OwnerId, cancellationToken))?.VoiceSkill,
+            // And the same lesson section (idea d805fd8b, piece 5): a delegated contractor is a
+            // build session on this project's own branch, so what this project's runs have learned
+            // applies to it exactly as it does to a dispatched one.
+            lessons: await LessonPromptFeed.LoadAsync(session, project.Id, cancellationToken));
 
         return new DelegationPlan(
             runId, run.WorktreePath, run.Branch, run.RunDirectory, resumesPreviousWork, model, prompt,
