@@ -59,6 +59,14 @@ public static class LessonsDocumentRenderer
             + "retired lesson is not deleted, only left out of this file: `h9k learn list --all` shows "
             + "those, and a lesson that has stopped earning its line retires with "
             + "`h9k learn retire <id> --reason \"<why>\"`.");
+        Line(document);
+        Line(document,
+            "Every live lesson is here, including ones a dispatched session's prompt is not given "
+            + "(idea d805fd8b, piece 5). A lesson recorded by an agent run on another node is rendered "
+            + "in this file for a reader and deliberately held out of the bounded section injected into "
+            + "prompts, until the security review in idea 7e403b80 rules on it; `h9k learn show <id>` "
+            + "says which side of that line a given lesson falls on, and why. So this file is the wider "
+            + "set, not a duplicate of what any session was told.");
 
         foreach (LearningDetails lesson in live)
         {
