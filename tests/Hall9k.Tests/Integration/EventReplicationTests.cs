@@ -127,6 +127,88 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
     }
 
     /// <summary>
+    /// Task 054d5ab0: the cursor records when it last got further into a sender's outbox, because
+    /// <c>h9k task take --force</c> prints that pair as the evidence an operator overrides a live
+    /// holder on. The stamp belongs to the advance, not to the sweep: a later tick that inspects
+    /// nothing new must leave it where the advance put it, or every idle sweep would tell the
+    /// operator this node had just heard from a node it has heard nothing from in days.
+    /// </summary>
+    [Fact]
+    public async Task The_inbox_cursor_records_when_it_last_got_further_into_a_senders_outbox()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        EventReplicationOutbox replicationOutbox = new(new ReplicationProjectResolver());
+        EventReplicationInbox replicationInbox = new(transport);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now, cts.Token);
+        }
+
+        await SeedQueuedTaskAsync(_postgres.Store, projectId, ownerId, Now.AddSeconds(1), cts.Token);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await replicationOutbox.QueuePendingAsync(session, nodeA, projectId, "owner-a-fingerprint", Now.AddSeconds(2), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(2), cts.Token);
+        }
+
+        DateTimeOffset theAdvance = Now.AddSeconds(3);
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", theAdvance, trustChain: null, cts.Token);
+            read.SenderIgnored.Should().BeFalse();
+            read.EventsApplied.Should().BeGreaterThan(0);
+        }
+
+        long seqAtTheAdvance;
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
+                EventReplicationStreamId.ForInboxCursor(nodeA, projectId), cts.Token);
+            cursor.Should().NotBeNull();
+            cursor!.HighestSeqInspected.Should().BeGreaterThan(0);
+            cursor.HighestSeqInspectedAt.Should().Be(
+                theAdvance, "this is the sweep that actually got further into the sender's outbox");
+            seqAtTheAdvance = cursor.HighestSeqInspected;
+        }
+
+        // An idle tick: the sender has sent nothing since, so there is nothing new to inspect.
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint",
+                Now.AddHours(30), trustChain: null, cts.Token);
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            EventReplicationInboxCursor? cursor = await session.LoadAsync<EventReplicationInboxCursor>(
+                EventReplicationStreamId.ForInboxCursor(nodeA, projectId), cts.Token);
+            cursor.Should().NotBeNull();
+            cursor!.HighestSeqInspected.Should().Be(seqAtTheAdvance, "nothing new arrived to inspect");
+            cursor.HighestSeqInspectedAt.Should().Be(
+                theAdvance, "a sweep that inspected nothing new heard nothing new, and must not say otherwise");
+        }
+    }
+
+    /// <summary>
     /// The disputed adversarial finding this fix resolves (independent pre-PR review, cycle 1,
     /// EventReplicationInbox.cs:174): a project's own id is minted per install (ProjectAddCommand),
     /// so the two stores here register the identical real-world project under two DIFFERENT local
