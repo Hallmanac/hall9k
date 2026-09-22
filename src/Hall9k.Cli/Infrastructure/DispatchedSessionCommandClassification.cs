@@ -32,14 +32,24 @@ internal enum DispatchedSessionAccess
 /// alongside each entry is the exact <c>h9k</c> command line it names, quoted back in a refusal.
 /// <para>
 /// Read-only verbs (<c>show</c>, <c>list</c>, <c>status</c>, <c>logs</c>, <c>decide list</c>/<c>show</c>,
-/// <c>learn list</c>/<c>show</c>, <c>messages</c>, <c>doctor</c>) observe nothing this refusal protects.
+/// <c>learn list</c>/<c>show</c>, <c>messages</c>, <c>doctor</c>, and every plain read under
+/// <c>project</c>, <c>owner</c>, <c>connection</c>, <c>config</c>, <c>daemon</c>, and
+/// <c>orchestrator</c> — <c>project show</c>/<c>list</c>/<c>members</c>/<c>prompt-addendum
+/// show</c>/<c>list</c>/<c>run-skill show</c>, <c>owner show</c>, <c>connection list</c>,
+/// <c>config show</c>, <c>daemon status</c>, <c>orchestrator status</c>/<c>node</c>/<c>project</c>/
+/// <c>launch-text show</c>) observe nothing this refusal protects, and a dispatched session's own
+/// prompts and skills point at several of them
+/// (independent pre-PR review, cycle 1: a wholesale block on those nouns had refused reads the
+/// platform itself tells a dispatched session to run).
 /// Allowed verbs (<c>learn record</c>/<c>retire</c>/<c>distill</c>, <c>decide record</c> — which already
 /// carries its own attendance refusal (Decisions Log, <c>DecisionDecider</c>) — the task-lifecycle reporting verbs
 /// <c>register-session</c>, <c>verify</c>, <c>deliver</c>, <c>handback</c>, <c>release</c>,
-/// <c>log-interaction</c>, <c>write-jira</c>, <c>run-local</c>, <c>pr reply-guard</c>,
+/// <c>log-interaction</c>, <c>write-jira</c>, <c>run-local</c>, <c>pr reply</c>, <c>pr reply-guard</c>,
 /// <c>orchestrator feed</c>, and <c>idea add</c>) are exactly what a dispatched session legitimately
-/// does with its own run, or the lightest, most reversible act this platform has (capturing a raw
-/// idea) — carved out explicitly rather than left to fall through a default.
+/// does with its own run — <c>pr reply</c> posts no lifecycle state of its own and is the only route a
+/// review-feedback follow-up has into a review thread at all (<c>PullRequestReplyCommand</c>'s own
+/// doc) — or the lightest, most reversible act this platform has (capturing a raw idea) — carved out
+/// explicitly rather than left to fall through a default.
 /// </para>
 /// <para>
 /// Two verbs outside that carve-out are refused even though nothing names them in the acceptance
@@ -147,7 +157,7 @@ internal static class DispatchedSessionCommandClassification
 
             // ---- pr ----
             [typeof(PullRequestResolveCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr resolve"),
-            [typeof(PullRequestReplyCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr reply"),
+            [typeof(PullRequestReplyCommand.Settings)] = (DispatchedSessionAccess.Allowed, "pr reply"),
             [typeof(PullRequestReplyGuardCommand.Settings)] = (DispatchedSessionAccess.Allowed, "pr reply-guard"),
             [typeof(PullRequestReviewCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr review"),
             [typeof(PullRequestApproveCommand.Settings)] = (DispatchedSessionAccess.Refused, "pr approve"),
@@ -163,8 +173,8 @@ internal static class DispatchedSessionCommandClassification
             [typeof(ProjectJoinCommand.Settings)] = (DispatchedSessionAccess.Refused, "project join"),
             [typeof(ProjectAssignKeyCommand.Settings)] = (DispatchedSessionAccess.Refused, "project assign-key"),
             [typeof(ProjectInitCommand.Settings)] = (DispatchedSessionAccess.Refused, "project init"),
-            [typeof(ProjectListCommand.Settings)] = (DispatchedSessionAccess.Refused, "project list"),
-            [typeof(ProjectShowCommand.Settings)] = (DispatchedSessionAccess.Refused, "project show"),
+            [typeof(ProjectListCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "project list"),
+            [typeof(ProjectShowCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "project show"),
             [typeof(ProjectSetCommand.Settings)] = (DispatchedSessionAccess.Refused, "project set"),
             [typeof(ProjectRemoveCommand.Settings)] = (DispatchedSessionAccess.Refused, "project remove"),
             [typeof(ProjectReactivateCommand.Settings)] = (DispatchedSessionAccess.Refused, "project reactivate"),
@@ -173,21 +183,21 @@ internal static class DispatchedSessionCommandClassification
             [typeof(ProjectInviteCommand.Settings)] = (DispatchedSessionAccess.Refused, "project invite"),
             [typeof(ProjectPullCommand.Settings)] = (DispatchedSessionAccess.Refused, "project pull"),
             [typeof(ProjectReconcileCommand.Settings)] = (DispatchedSessionAccess.Refused, "project reconcile"),
-            [typeof(ProjectMembersCommand.Settings)] = (DispatchedSessionAccess.Refused, "project members"),
+            [typeof(ProjectMembersCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "project members"),
             [typeof(ProjectMemberRemoveCommand.Settings)] = (DispatchedSessionAccess.Refused, "project member remove"),
             [typeof(ProjectPromptAddendumSetCommand.Settings)] =
                 (DispatchedSessionAccess.Refused, "project prompt-addendum set"),
             [typeof(ProjectPromptAddendumShowCommand.Settings)] =
-                (DispatchedSessionAccess.Refused, "project prompt-addendum show"),
+                (DispatchedSessionAccess.ReadOnly, "project prompt-addendum show"),
             [typeof(ProjectPromptAddendumListCommand.Settings)] =
-                (DispatchedSessionAccess.Refused, "project prompt-addendum list"),
+                (DispatchedSessionAccess.ReadOnly, "project prompt-addendum list"),
             [typeof(ProjectPromptAddendumRemoveCommand.Settings)] =
                 (DispatchedSessionAccess.Refused, "project prompt-addendum remove"),
-            [typeof(ProjectRunSkillShowCommand.Settings)] = (DispatchedSessionAccess.Refused, "project run-skill show"),
+            [typeof(ProjectRunSkillShowCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "project run-skill show"),
             [typeof(ProjectRunSkillSetCommand.Settings)] = (DispatchedSessionAccess.Refused, "project run-skill set"),
 
             // ---- owner (wholesale) ----
-            [typeof(OwnerShowCommand.Settings)] = (DispatchedSessionAccess.Refused, "owner show"),
+            [typeof(OwnerShowCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "owner show"),
             [typeof(OwnerSetCommand.Settings)] = (DispatchedSessionAccess.Refused, "owner set"),
 
             // ---- node (wholesale) ----
@@ -197,29 +207,29 @@ internal static class DispatchedSessionCommandClassification
 
             // ---- connection (wholesale) ----
             [typeof(ConnectionAddJiraCommand.Settings)] = (DispatchedSessionAccess.Refused, "connection add jira"),
-            [typeof(ConnectionListCommand.Settings)] = (DispatchedSessionAccess.Refused, "connection list"),
+            [typeof(ConnectionListCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "connection list"),
 
             // ---- config (wholesale) ----
-            [typeof(ConfigShowCommand.Settings)] = (DispatchedSessionAccess.Refused, "config show"),
+            [typeof(ConfigShowCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "config show"),
             [typeof(ConfigSetCommand.Settings)] = (DispatchedSessionAccess.Refused, "config set"),
 
             // ---- daemon (wholesale) ----
             [typeof(DaemonStartCommand.Settings)] = (DispatchedSessionAccess.Refused, "daemon start"),
             [typeof(DaemonStopCommand.Settings)] = (DispatchedSessionAccess.Refused, "daemon stop"),
-            [typeof(DaemonStatusCommand.Settings)] = (DispatchedSessionAccess.Refused, "daemon status"),
+            [typeof(DaemonStatusCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "daemon status"),
             [typeof(DaemonAutostartEnableCommand.Settings)] = (DispatchedSessionAccess.Refused, "daemon autostart enable"),
             [typeof(DaemonAutostartDisableCommand.Settings)] = (DispatchedSessionAccess.Refused, "daemon autostart disable"),
             [typeof(DaemonAutostartLaunchCommand.Settings)] = (DispatchedSessionAccess.Refused, "daemon autostart launch"),
 
             // ---- orchestrator (wholesale except feed) ----
-            [typeof(OrchestratorNodeCommand.Settings)] = (DispatchedSessionAccess.Refused, "orchestrator node"),
-            [typeof(OrchestratorProjectCommand.Settings)] = (DispatchedSessionAccess.Refused, "orchestrator project"),
+            [typeof(OrchestratorNodeCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "orchestrator node"),
+            [typeof(OrchestratorProjectCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "orchestrator project"),
             [typeof(OrchestratorRegisterCommand.Settings)] = (DispatchedSessionAccess.Refused, "orchestrator register"),
             [typeof(OrchestratorDeregisterCommand.Settings)] = (DispatchedSessionAccess.Refused, "orchestrator deregister"),
-            [typeof(OrchestratorStatusCommand.Settings)] = (DispatchedSessionAccess.Refused, "orchestrator status"),
+            [typeof(OrchestratorStatusCommand.Settings)] = (DispatchedSessionAccess.ReadOnly, "orchestrator status"),
             [typeof(OrchestratorFeedCommand.Settings)] = (DispatchedSessionAccess.Allowed, "orchestrator feed"),
             [typeof(OrchestratorLaunchTextShowCommand.Settings)] =
-                (DispatchedSessionAccess.Refused, "orchestrator launch-text show"),
+                (DispatchedSessionAccess.ReadOnly, "orchestrator launch-text show"),
             [typeof(OrchestratorLaunchTextSetCommand.Settings)] =
                 (DispatchedSessionAccess.Refused, "orchestrator launch-text set"),
             [typeof(OrchestratorMeasureCommand.Settings)] = (DispatchedSessionAccess.Refused, "orchestrator measure"),
