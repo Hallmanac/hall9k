@@ -55,6 +55,7 @@ public sealed class EventScopeRegistryTests
         // into prompt text, never a stream of its own: not one of these is ever appended anywhere,
         // so none of them has a scope to classify. The same exemption the orchestrator feed's own
         // read shapes have below, for the same reason.
+        "Hall9k.Domain.Features.Learning.HeldLessonCount",
         "Hall9k.Domain.Features.Learning.InjectedLesson",
         "Hall9k.Domain.Features.Learning.InjectedLessons",
         "Hall9k.Domain.Features.Learning.LessonInjectionCaps",

@@ -147,6 +147,26 @@ public sealed class OperatingSettings
     public const int DefaultInviteExpiryHours = 72;
 
     /// <summary>
+    /// How many recorded lessons a dispatched session's prompt may carry (idea d805fd8b, piece 5;
+    /// backlog 55). Null defers to <see cref="Hall9k.Domain.Features.Learning.LessonInjectionCaps.DefaultMaxLessons"/>.
+    /// Read fresh on every prompt composition rather than bound through <c>DaemonOptions</c>, the
+    /// same reasoning <see cref="InteractiveClaimStaleAfterDays"/> documents for itself: nothing
+    /// acts on it except the composition itself, so a change takes effect at the next dispatch
+    /// instead of the next daemon restart, and an interactive <c>h9k task work</c> claim, which
+    /// structurally cannot reach <c>DaemonOptions</c> (Reference graph: Cli to Domain plus
+    /// Connectors), resolves it through the identical code path a headless dispatch does.
+    /// </summary>
+    public int? LessonPromptMaxLessons { get; set; }
+
+    /// <summary>
+    /// How many characters of lesson text that same section may carry; null defers to
+    /// <see cref="Hall9k.Domain.Features.Learning.LessonInjectionCaps.DefaultMaxCharacters"/>. Two
+    /// caps rather than one because they fail differently; see
+    /// <see cref="Hall9k.Domain.Features.Learning.LessonInjectionCaps"/>'s own doc.
+    /// </summary>
+    public int? LessonPromptMaxCharacters { get; set; }
+
+    /// <summary>
     /// This node's override of the conformance review track's cycle cap (Decisions Log #63);
     /// null defers to <see cref="DefaultMaxComplianceReviewCycles"/>. Task &gt; project &gt; node &gt;
     /// compiled default is the resolution order every one of these four caps shares.
