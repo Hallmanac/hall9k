@@ -48,21 +48,48 @@ internal static class PublishedFacts
     };
 
     /// <summary>
-    /// Who holds a HeldElsewhere row's claim, and since when (idea 202383dc, M2a). A foreign
-    /// node's own friendly name never replicates (<c>NodeDetails</c> is node-scoped), so the
-    /// claiming owner's cross-node root fingerprint is what names the holder — truncated to a
-    /// short, readable prefix the same way a task or run id is shortened elsewhere on this board —
-    /// falling back to the bare node id on a claim recorded before that fingerprint existed.
+    /// Who holds a HeldElsewhere row's claim, and since when (idea 202383dc, M2a). The holder is
+    /// the node, never the owner: <see cref="TaskListItem.ClaimedByNodeId"/> is the node the claim
+    /// actually sits on, shortened the same way a node id reads elsewhere on this board
+    /// (<see cref="TaskListCommand.ShortId"/>). A foreign node's own friendly name never
+    /// replicates (<c>NodeDetails</c> is node-scoped), so the fact says "node" plus the short id
+    /// rather than inventing a name for it. The owning login rides alongside, resolved by the
+    /// claiming owner's cross-node root fingerprint (<paramref name="ownersByFingerprint"/>) when
+    /// this install knows it, falling back to the fingerprint's own short prefix — the identical
+    /// "known by fingerprint only" shape <see cref="AssigneeDisplay"/> already reports — never
+    /// standing in for the node id itself the way the original rendering did (Windows field
+    /// report, 2026-09-19: "held by c8f5c85900da" named the owner root fingerprint as if it were
+    /// the node).
     /// </summary>
-    private static string HeldElsewhereFact(TaskListItem task, DateTimeOffset now)
+    private static string HeldElsewhereFact(
+        TaskListItem task, IReadOnlyDictionary<string, string>? ownersByFingerprint, DateTimeOffset now)
     {
-        string holder = task.ClaimedByOwnerRootFingerprint.IsNotBlank()
-            ? task.ClaimedByOwnerRootFingerprint![..Math.Min(12, task.ClaimedByOwnerRootFingerprint!.Length)]
-            : task.ClaimedByNodeId?.ToString() ?? "an unknown node";
+        string holderNode = task.ClaimedByNodeId is { } claimedByNodeId
+            ? $"node {TaskListCommand.ShortId(claimedByNodeId)}"
+            : "an unknown node";
+        string owner = OwnerDisplay(task.ClaimedByOwnerRootFingerprint, ownersByFingerprint);
         string since = task.ClaimedAt is { } claimedAt
             ? TaskStatusComposer.RelativeAge(now - claimedAt)
             : "an unknown time";
-        return $"held by {holder} since {since}";
+        return $"held by {holderNode} (owner {owner}) since {since}";
+    }
+
+    /// <summary>
+    /// The owning login when this install can resolve the claiming owner's cross-node root
+    /// fingerprint, falling back to the fingerprint's own short prefix — the same truncation
+    /// <see cref="AssigneeDisplay"/> already uses for a foreign root fingerprint known by
+    /// fingerprint alone, never the full 64 hex characters.
+    /// </summary>
+    private static string OwnerDisplay(
+        string? ownerRootFingerprint, IReadOnlyDictionary<string, string>? ownersByFingerprint)
+    {
+        if (ownerRootFingerprint.IsBlank())
+        {
+            return "an unknown owner";
+        }
+
+        return ownersByFingerprint?.GetValueOrDefault(ownerRootFingerprint)
+            ?? ownerRootFingerprint[..Math.Min(12, ownerRootFingerprint.Length)];
     }
 
     /// <summary>
@@ -93,13 +120,20 @@ internal static class PublishedFacts
     /// complete — or null when nothing is holding it that way. Read off what the dispatcher
     /// published, the identical reasoning <paramref name="heldByTracker"/> gives its own hold.
     /// </param>
+    /// <param name="ownersByFingerprint">
+    /// Owner names by root fingerprint (idea f72138e1) — the same lookup
+    /// <see cref="TaskStatusContext.OwnersByFingerprint"/> carries, threaded through so a
+    /// HeldElsewhere row's own held-by fact can name the claiming owner's login when this install
+    /// knows it, rather than the bare fingerprint alone.
+    /// </param>
     public static IReadOnlyList<string> Compose(
         TaskListItem task,
         LifecycleState state,
         QueueHold? held = null,
         TrackerClaimDecision? heldByTracker = null,
         DateTimeOffset now = default,
-        TaskHolderClaimHold? heldByLedgerHolder = null)
+        TaskHolderClaimHold? heldByLedgerHolder = null,
+        IReadOnlyDictionary<string, string>? ownersByFingerprint = null)
     {
         if (state != LifecycleState.Published)
         {
@@ -130,7 +164,9 @@ internal static class PublishedFacts
             // platform will never attempt (independent pre-PR review, cycle 1, both lenses).
             return
             [
-                .. state == LifecycleState.HeldElsewhere ? (string[])[HeldElsewhereFact(task, now)] : [],
+                .. state == LifecycleState.HeldElsewhere
+                    ? (string[])[HeldElsewhereFact(task, ownersByFingerprint, now)]
+                    : [],
                 .. task.QueuePriorityMarked ? (string[])[QueuePriorityFact] : [],
                 .. task.EffectivePreApproval.MergesAutomatically
                     && state != LifecycleState.Done

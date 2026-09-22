@@ -978,6 +978,7 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
         "Done" => $"[dim](true closeout: {DoneReason(row.Type, row.PullRequestUrl)})[/]",
         "Failed" => "[dim](a waypoint, not an ending — log #27)[/]",
         "Archived" => "[dim](walked away from)[/]",
+        "HeldElsewhere" => "[dim](a Claimed task another node currently holds)[/]",
         _ => "[dim](this build does not recognize the recorded state)[/]",
     };
 
