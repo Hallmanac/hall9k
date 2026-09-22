@@ -16,7 +16,11 @@ namespace Hall9k.Domain.Infrastructure.Storage;
 /// lean node or project orchestrator window), the platform-owned launch anchor and settings file
 /// plus whatever the orchestrator-recipe-generator skill writes beside them, and
 /// <c>prompt-addenda/</c> (idea b9b09779, piece 6), the daemon's own local materialized copy of
-/// this project's ledger-stored prompt addenda. Beside those eight,
+/// this project's ledger-stored prompt addenda. Two more generated files sit at the root beside
+/// <c>AGENTS.md</c>, <c>decisions.md</c> and <c>lessons.md</c> (idea d805fd8b, piece 2, named by
+/// <see cref="KnowledgeDocumentPaths"/> because the same two land in every dispatched worktree
+/// too) — projections of the Decision and Learning streams, written by the render sweep and
+/// hand-maintained by nobody. Beside those eight,
 /// the skill also seeds a plain file directly at this root, <c>journal.md</c> (see
 /// <see cref="RecipeJournalFile"/> for why it sits here rather than under <c>recipes/</c>), its
 /// sibling <c>sessions.md</c>, which no platform code path names, and a <c>notes/</c> directory
