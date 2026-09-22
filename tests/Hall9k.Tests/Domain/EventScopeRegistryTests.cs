@@ -49,6 +49,13 @@ public sealed class EventScopeRegistryTests
         "Hall9k.Domain.Features.Connection.CredentialKind",
         "Hall9k.Domain.Features.Connection.CredentialReference",
         "Hall9k.Domain.Features.Decision.DecisionStatus",
+        // The one-time import's own working shapes (idea d805fd8b, piece 3): one hand-written rule
+        // read out of the markdown that used to hold it, and the set of events one import call has
+        // decided to append. Neither is ever appended to a stream itself — what the import appends
+        // is DecisionRecorded, which is classified — so neither has a scope to classify. The same
+        // exemption MessageEnvelopeV1 and PartialReplicatedStreamRepairPlan have, for the same reason.
+        "Hall9k.Domain.Features.Decision.LegacyDecisionEntry",
+        "Hall9k.Domain.Features.Decision.LegacyImportPlan",
         "Hall9k.Domain.Features.Epic.EpicState",
         "Hall9k.Domain.Features.Learning.LearningStatus",
         // The prompt feed (idea d805fd8b, piece 5) is a read over the Learning streams composed

@@ -13,6 +13,19 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      The one-time decision import's frozen input (idea d805fd8b, piece 3). Embedded rather than
+      read off disk because the same change that adds the import deletes this markdown from
+      PLAN.md and AGENTS.md, so there is no checkout left to read it from; the logical names are
+      spelled out so a move of the files does not silently rename the resources.
+    -->
+    <EmbeddedResource Include="Features/Decision/Legacy/v0-decisions-log.md"
+                      LogicalName="Hall9k.Domain.Legacy.v0-decisions-log.md" />
+    <EmbeddedResource Include="Features/Decision/Legacy/agents-standing-rules.md"
+                      LogicalName="Hall9k.Domain.Legacy.agents-standing-rules.md" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="Hall9k.Tests" />
   </ItemGroup>
 
