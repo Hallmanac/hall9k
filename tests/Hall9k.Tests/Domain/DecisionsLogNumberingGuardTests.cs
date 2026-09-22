@@ -57,8 +57,16 @@ public sealed class DecisionsLogNumberingGuardTests
         "— the mechanical pre-final-pass rebase step assigns the real number once the branch is " +
         "current with main, and no agent session ever picks one by hand.";
 
+    /// <summary>
+    /// §16 stopped being a log (idea d805fd8b, piece 3): every entry it carried is an event in the
+    /// decision store, and the section is a pointer at the rendered <c>decisions.md</c>. So the
+    /// one thing left worth asserting about the real file is the inverse of what this guard used
+    /// to assert, that nobody has started appending entries to it again by hand. The duplicate
+    /// and placeholder rules below still hold against fixtures, because the renumbering machinery
+    /// they guard is still shipped; it goes with the placeholder convention it serves.
+    /// </summary>
     [Fact]
-    public void Every_decision_number_in_the_v0_Decisions_Log_is_unique()
+    public void PLAN_md_carries_no_decisions_log_entries_now_that_the_store_holds_them()
     {
         string planPath = PlanMarkdownPath();
         File.Exists(planPath).Should().BeTrue($"PLAN.md should exist at '{planPath}'");
@@ -71,7 +79,15 @@ public sealed class DecisionsLogNumberingGuardTests
         scan.SectionEnd.Should().BeGreaterThan(scan.SectionStart,
             $"PLAN.md should still carry a '{SectionEndHeadingPrefix}' heading closing the Decisions Log");
 
-        AssertWellFormed(scan);
+        scan.LineNumbersByDecisionNumber.Should().BeEmpty(
+            "a numbered entry back in PLAN.md is a decision the store does not have and the fleet " +
+            "never sees: record it with h9k decide \"<one claim>\" instead, and cite it by the id in " +
+            "its heading in decisions.md");
+        scan.Placeholders.Should().BeEmpty(
+            "the placeholder convention exists to reserve a number in this section, and this section " +
+            "no longer carries numbers: h9k decide mints the citation key at recording time");
+        scan.UnboldedEntryLookingLines.Should().BeEmpty(
+            "a line shaped like a decision entry in this section reads as one to everybody scanning the file");
     }
 
     [Fact]

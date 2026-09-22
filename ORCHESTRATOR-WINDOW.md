@@ -42,14 +42,14 @@ h9k task publish <id> --assign                                      # the gate, 
 
 Three things are outside the law, because they are not platform features:
 
-- **The planning docs.** Appending a decision to PLAN.md §16, amending SLICE-1.md: this is the
-  window's own work product, and it is what a task is authored *from*. The in-tree `backlog/` is
+- **The planning docs.** Amending SLICE-1.md or PLAN.md: this is the window's own work product,
+  and it is what a task is authored *from*. The in-tree `backlog/` is
   a dogfood-era archive (see `backlog/README.md`) rather than a live target — a new backlog-shaped
   item goes through `h9k idea add` / `h9k task add` and renders into the project home instead
-  (backlog 48). AGENTS.md's own Working agreements placeholder rule (`PLACEHOLDER-<shortid>`) is
-  for a task's branch, never this window: an orchestrator entry lands straight on `main`, with no
-  branch and no rebase step ever coming along behind it to assign a number later, so it takes the
-  log's next real number by hand, same as before that convention existed.
+  (backlog 48). A decision is no longer one of these: PLAN.md §16 became the decision store
+  (idea d805fd8b), so this window records one with `h9k decide "<one claim>" --origin "<the
+  incident behind it>"`, which is a platform command like any other and needs no branch, no
+  number and no rebase behind it.
 - **Reading anything.** Inspecting the tree, the streams, the logs, a PR diff.
 - **Unbreaking the platform when the platform is what is broken.** A daemon that will not start
   cannot dispatch the task that fixes it. Do the smallest thing that restores dispatch, then task
@@ -196,12 +196,12 @@ Before assigning a batch, estimate each task's likely file footprint and decide:
 - **Serialize with `--blocked-by`** when they would rewrite the same file. The recurring shape in
   this repo is the **shared append point**: a new project setting touches the same six-file chain
   every time (`ProjectSettingsChanged`, `ProjectDecider`, `ProjectAggregate`, `ProjectDetails`,
-  `ProjectSetCommand`, the CLI registration), and every task that teaches something appends to
-  AGENTS.md. Those conflicts are mechanical to resolve and expensive to discover at merge. Two
-  tasks appending a PLAN.md §16 decision no longer belongs on this list: each writes its own entry
-  under a placeholder derived from its task's own short id (`PLACEHOLDER-<shortid>`), so two
-  branches can never claim the same number — the mechanical pre-final-pass rebase step assigns
-  the real one at merge time (Decisions Log #162).
+  `ProjectSetCommand`, the CLI registration). Those conflicts are mechanical to resolve and
+  expensive to discover at merge, and a task that teaches something no longer adds to them,
+  because what it learned is an event rather than a paragraph in AGENTS.md. Two
+  tasks recording a decision no longer belong on this list at all: a decision is an event in the
+  store now rather than a line at a markdown file's tail (idea d805fd8b), so two branches can
+  neither collide over a number nor conflict over a log.
 - **Run alone** for a wide rewrite that touches a layer rather than a slice.
 
 A collision guess costs latency; a miss costs a rebase conflict. Both are survivable, so prefer

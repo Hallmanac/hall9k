@@ -36,7 +36,8 @@ Organize the current changes in this repository into cohesive, buildable commits
 
 ## Verifying a recompose (when this skill is the recompose step)
 
-AGENTS.md's checkpoint-commit workflow records a pre-reset tip (`git rev-parse HEAD`), then
+The checkpoint-commit workflow (a decision in `decisions.md`, and spelled out in full in every
+dispatched session's own prompt) records a pre-reset tip (`git rev-parse HEAD`), then
 resets to the branch's own fork point (`git merge-base origin/<base> HEAD` — ordinarily an
 earlier, separate commit from the pre-reset tip; if the branch carries no checkpoint commits
 of its own yet, the fork point and the pre-reset tip are the same commit and the reset is a

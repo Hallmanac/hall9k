@@ -19,9 +19,10 @@ Then:
 
 | Document | What it owns |
 |---|---|
-| [PLAN.md](../PLAN.md) | The vision, the architecture, and the **v0 Decisions Log** in §16. Every numbered decision cited anywhere in this repository lives there with its reasoning. |
+| [PLAN.md](../PLAN.md) | The vision and the architecture. Its §16 Decisions Log became platform data (idea d805fd8b): every entry was imported into the decision store keeping its own number as a legacy citation, and the section now points at the rendered `decisions.md`. |
+| `decisions.md` | Not a file in this repository: the daemon renders it from the decision store into the project home and into every dispatched worktree. Every binding decision lives there, including the git and working rules AGENTS.md used to carry. `h9k decide list` reads the same records from anywhere. |
 | [TASK-MODEL.md](../TASK-MODEL.md) | The domain reference: event streams, aggregates, projections, the state machines, and the value-object type discipline. |
-| [AGENTS.md](../AGENTS.md) | The contributor and agent guide: coding standards, git rules, and build/test/run — kept under 200 lines so a dispatched session's context stays cheap. `CLAUDE.md` defers to it. |
+| [AGENTS.md](../AGENTS.md) | The contributor and agent guide: what the project is, build/test/run, the coding standards, and the CLI command standards, kept short so a dispatched session's context stays cheap. Its git rules and working agreements are decisions in the store now, and the two sections point there. `CLAUDE.md` defers to it. |
 | [ORCHESTRATOR-WINDOW.md](../ORCHESTRATOR-WINDOW.md) | The orchestrator-window role: the review rhythm, the recovery levers, the needs-you relay. Only an interactive session loads it; a headless dispatched session never does. |
 | [SLICE-1.md](../SLICE-1.md) | The current build breakdown with acceptance criteria per slice. |
 | [HALL9K-P2P-DESIGN.md](../HALL9K-P2P-DESIGN.md) | The peer-to-peer layer: identity, discovery, NAT traversal. Design only; nothing is built. |
@@ -35,4 +36,4 @@ a house convention rather than a flourish: a rulebook is an accumulation of docu
 a reader who knows the scar knows when the rule stops applying.
 
 If one of these pages disagrees with the code, the code is right and the page is a bug. If it
-disagrees with `PLAN.md` §16, the decision log is right.
+disagrees with a decision in `decisions.md`, the decision is right.

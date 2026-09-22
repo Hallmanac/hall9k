@@ -631,13 +631,16 @@ Start here, in this order:
 
 Below that sit the documents the new docs point into rather than replace:
 
-- **[PLAN.md](PLAN.md)** is the vision, the architecture, and the v0 Decisions Log in §16. Every
-  binding decision lives there, numbered, with its reasoning. When a doc here cites "#24" or
-  "log #66", that is where to look.
+- **[PLAN.md](PLAN.md)** is the vision and the architecture. Its v0 Decisions Log in §16 is
+  platform data now (idea d805fd8b): every entry was imported into the decision store keeping its
+  own number, so when a doc here cites "#24" or "log #66", the place to look is the rendered
+  `decisions.md` in this project's home, or `h9k decide list` from anywhere.
 - **[TASK-MODEL.md](TASK-MODEL.md)** is the domain reference: event streams, aggregates,
   projections, the state machines, and the type discipline.
-- **[AGENTS.md](AGENTS.md)** is the contributor and agent guide: coding standards, git rules, and
-  the build/test/run commands, kept under 200 lines so a dispatched session's context stays cheap.
+- **[AGENTS.md](AGENTS.md)** is the contributor and agent guide: what the project is, the
+  build/test/run commands, the coding standards and the CLI command standards, kept short so a
+  dispatched session's context stays cheap. Its git rules and its working agreements are decisions
+  in the store, and the two sections point there.
   `CLAUDE.md` defers to it so every agent runtime shares one source of truth.
 - **[ORCHESTRATOR-WINDOW.md](ORCHESTRATOR-WINDOW.md)** is the orchestrator-window role an
   interactive session takes on in this repo — the review rhythm, the recovery levers, and the

@@ -67,7 +67,7 @@ each with its own required `--reason`.
 
 ### Decisions and lessons
 
-`h9k decide "<statement>" | list | show | supersede` and `h9k learn "<statement>" | list | show | retire | distill`
+`h9k decide "<statement>" | list | show | supersede | import` and `h9k learn "<statement>" | list | show | retire | distill`
 
 Both branches have the same shape: the bare positional form always writes and never reads, and
 every read lives behind a subcommand. Recording prints the record's id, and that id is the
@@ -82,6 +82,15 @@ A decision recorded from inside a run that is not human-attended is refused and 
 learn`, because agents record lessons and humans record decisions. Neither terminal verb deletes:
 `h9k decide supersede <id> --reason "…"` and `h9k learn retire <id> --reason "…"` append, and
 `--all` on either `list` brings the ended ones back into view.
+
+`h9k decide import` is the one-time migration that put this repository's own markdown rulebooks
+into the store: every PLAN.md §16 Decisions Log entry and every AGENTS.md standing rule, each
+recorded keeping the citation it already had, so a reference written anywhere as "Decisions Log
+#62" still resolves by searching `decisions.md` for that text. It refuses on a node where event
+replication has not switched on (idea 202383dc, M2a), naming the milestone, because an event
+written before that point never rides an outbox and the whole rulebook would sit in one install's
+store forever. Running it twice is safe: the citations already recorded are what a second run
+skips, so an interrupted first run is finished rather than duplicated.
 
 Lessons also ride into the prompt of every implementation, follow-up, review and fix session, as
 a bounded section under "What this project's earlier runs already learned": this project's active
