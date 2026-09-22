@@ -187,6 +187,12 @@ public static class OrchestratorFeedDescription
     /// A received message, named by who sent it and what kind it is. A handoff carries no body of
     /// its own — the note travels on the task's stream and this envelope is only the nudge (see
     /// <see cref="MessageKind.Handoff"/>) — so quoting a body there would quote nothing.
+    /// <para>
+    /// A note's line is the one place the feed does open with an id, against the rule the rest of
+    /// this table keeps: the clip below is all a feed item has room for, and the id is what
+    /// <c>h9k message show</c> takes to print the rest. Everything else here is about a task the
+    /// group heading already names, so it has somewhere to send a reader and a note does not.
+    /// </para>
     /// </summary>
     private static string MessageLine(MessageReceived received)
     {
@@ -195,9 +201,18 @@ public static class OrchestratorFeedDescription
         // nothing friendlier to print.
         string from = ShortFingerprint(received.FromOwnerFingerprint)
             ?? $"node {DomainId.Short(received.FromNodeId)}";
-        return MessageKind.Parse(received.Kind) == MessageKind.Handoff
-            ? $"{from} says a task's handoff note changed"
-            : $"a message from {from}: {Quote(received.Body)}";
+        if (MessageKind.Parse(received.Kind) == MessageKind.Handoff)
+        {
+            return $"{from} says a task's handoff note changed";
+        }
+
+        // Recomputed rather than read off the stream: Of() is handed the event's data alone and
+        // never the stream it came from, and MessageStreamId.ForMessage is a pure function of
+        // exactly these three fields, all of which this event carries. So this is the note's own
+        // id rather than a second one that resembles it.
+        string shortId = DomainId.Short(
+            MessageStreamId.ForMessage(received.FromNodeId, received.ProjectId, received.Seq));
+        return $"{shortId} a message from {from}: {Quote(received.Body)}";
     }
 
     /// <summary>

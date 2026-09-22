@@ -222,8 +222,12 @@ public sealed class OrchestratorFeedTests : IClassFixture<PostgresFixture>, IAsy
         OrchestratorFeedRead feed = await reader.ReadUndrainedAsync(
             read, projectId, OrchestratorFeedLevel.Actionable, PastTheSettlingWindow, cts.Token);
 
+        // The line opens with the note's own id, which is what h9k message show takes to print the
+        // rest of a body the feed only quotes the first 160 characters of.
+        string shortId = DomainId.Short(MessageStreamId.ForMessage(fromNodeId, projectId, 1));
         feed.Items.Should().ContainSingle()
-            .Which.Description.Should().Be("a message from abcdef012345: are you still on the stacked pair?");
+            .Which.Description.Should().Be(
+                $"{shortId} a message from abcdef012345: are you still on the stacked pair?");
     }
 
     /// <summary>
