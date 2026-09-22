@@ -696,8 +696,9 @@ h9k decide "<statement>" --owner                  # a cross-project habit rather
 h9k decide "<statement>" --task <id>              # from inside a run: carries that run and task as provenance
 h9k decide list [--project <n>|--owner] [--all]   # binding by default; --all brings superseded ones back
 h9k decide show <id>                              # claim, scope, origin, provenance, what it replaced, what replaced it
+h9k decide show "Decisions Log #162"              # an imported decision by the citation it kept; "§16 #162" names the same one
 h9k decide supersede <id> --reason "<why>"        # terminal, appends, never deletes; --by <id> names the successor
-h9k decide import [--project <n>]                 # the one-time migration of PLAN.md §16 and AGENTS.md's standing rules; refused unless M2a replication is on, safe to repeat
+h9k decide import [--project <n>]                 # the one-time migration of PLAN.md §16 and AGENTS.md's standing rules; refused unless M2a replication is on, safe to repeat, refused if one is already in flight
 h9k learn "<statement>"                           # record a run-earned lesson; live immediately, no gate
 h9k learn "<statement>" --task <id>               # from inside a run: carries that run and task as provenance
 h9k learn "<statement>" --owner                   # a habit that holds wherever you work
@@ -727,12 +728,16 @@ statement rides in every prompt everywhere.
 
 `h9k decide import` is the one-time migration that filled hall9k's own store: every PLAN.md §16
 entry and every AGENTS.md standing rule, each recorded keeping the citation it already had, so a
-reference written anywhere as "Decisions Log #62" still resolves by searching `decisions.md` for
-that text. Two things govern it. It **refuses on a node where replication has not switched on**
-(idea 202383dc, M2a) and says so, because an event written before a node's own switch-on point
-never rides an outbox and nothing would ever backfill it. And it is **idempotent through those
-citations**, so a second run records only what the first one missed rather than minting a second
-copy of the rulebook.
+reference written anywhere as "Decisions Log #62" still resolves: by searching `decisions.md` for
+that text, or by naming it, since `h9k decide show` takes the citation itself ("Decisions Log #62"
+or "§16 #62") as well as an id. Three things govern it. It **refuses on a node where replication
+has not switched on** (idea 202383dc, M2a) and says so, because an event written before a node's
+own switch-on point never rides an outbox and nothing would ever backfill it. It is **idempotent
+through those citations**, so a later run records only what the earlier one missed rather than
+minting a second copy of the rulebook. And **two runs at once are refused rather than merged**, by
+an advisory lock it holds for its own transaction: overlapping runs would each read an empty set of
+citations and each record the whole rulebook under its own ids, which nothing in this store can
+delete.
 
 **You read them as files, and you never write them as files** (idea d805fd8b, piece 2). The
 daemon renders `decisions.md` and `lessons.md` from those streams into the project home's root on
@@ -741,7 +746,9 @@ at dispatch, on that repository's own `info/exclude` so a projection is never un
 session is told to commit and can never reach authored history. Read them; change them with
 `h9k decide` and `h9k learn`. An edit to either file is gone on the next render, and the header
 at the top of each says so and names the command. Only binding decisions and live lessons appear
-there — a superseded or retired record is still in the store, one `--all` away. The render is
+there — a superseded or retired record is still in the store, one `--all` away, and a superseded
+decision that kept a citation from before this store is named at the foot of `decisions.md`
+without its statement, so an old reference still lands. The render is
 deterministic (explicit `\n`, UTC and invariant timestamps, an order derived from the records
 themselves, no per-install id anywhere in the bytes), so two nodes holding the same history render
 byte-identical files. A file at either name that the platform did not render, which its own

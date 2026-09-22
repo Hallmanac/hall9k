@@ -412,22 +412,29 @@ themselves, and no per-install coordinate anywhere in the bytes — so two nodes
 history render byte-identical files. Only project-scoped records are rendered: an owner-scoped
 one is a cross-project habit belonging to the owner rather than to any project's home. A file at
 either name that the platform did not render (a repository that tracks its own `decisions.md`)
-is never overwritten, and the skip is logged. Every prompt template that used to point a session
+is never overwritten, and the skip is logged. Only binding decisions and live lessons are
+rendered, with one exception: a superseded decision that kept a citation from before this store
+is named at the foot of `decisions.md`, by citation and id and without its statement, so a
+reference written elsewhere lands somewhere rather than on nothing. Every prompt template that used to point a session
 at a hand-maintained decisions log now points at these two files instead.
 
 `h9k decide import` is the one-time migration that filled the store: every entry PLAN.md's §16
 Decisions Log carried and every standing rule AGENTS.md's Git rules and Working agreements
 sections carried, recorded as a decision keeping the citation it already had, so a reference
-written anywhere as "Decisions Log #62" resolves by searching `decisions.md` for that text. It
-refuses on a node where event replication has not switched on (idea 202383dc, M2a), because an
-event written before that point never rides an outbox and would strand the whole rulebook in one
-install's store, and it is idempotent through those citations, so a second run records only what
-the first one missed. One entry is recorded and superseded in the same act: §16 #162, the
-placeholder-numbering convention, is the rule this very change retires, and it is imported anyway
-because thirteen places in this repository cite it and a citation whose entry was never imported
-resolves to nothing. Superseding it in the same transaction keeps it out of the rendered
-`decisions.md` agents read as the rulebook while leaving it one `h9k decide show` away. The two
-sections it read are kept verbatim at
+written anywhere as "Decisions Log #62" resolves by searching `decisions.md` for that text or by
+naming it directly: `h9k decide show "Decisions Log #62"` takes the citation, in that spelling or
+as "§16 #62". It refuses on a node where event replication has not switched on (idea 202383dc,
+M2a), because an event written before that point never rides an outbox and would strand the whole
+rulebook in one install's store, and it is idempotent through those citations, so a later run
+records only what the earlier one missed. Two runs at once are refused rather than merged, by an
+advisory lock the import holds for its own transaction, because each would otherwise record the
+whole rulebook under its own ids and nothing in this store deletes. One entry is recorded and
+superseded in the same act: §16 #162, the placeholder-numbering convention, is the rule this very
+change retires, and it is imported anyway because a dozen places in this repository cite it and a
+citation whose entry was never imported resolves to nothing. Superseding it in the same
+transaction keeps the rule out of the rulebook `decisions.md` carries; the citation is still
+answered, named at the foot of that file as ended and readable in full with `h9k decide show`. The
+two sections it read are kept verbatim at
 `src/Hall9k.Domain/Features/Decision/Legacy/`, embedded in `Hall9k.Domain` as the import's frozen
 input, since the same change that added the import is the one that emptied the markdown. PLAN.md
 §16 and AGENTS.md's two rule sections are pointers now; AGENTS.md's build, coding-standard and
