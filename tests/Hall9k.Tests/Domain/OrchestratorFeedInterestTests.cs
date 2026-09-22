@@ -194,6 +194,25 @@ public sealed class OrchestratorFeedInterestTests
         OrchestratorFeedInterest.Admits(refused, OrchestratorFeedLevel.Actionable).Should().BeTrue();
     }
 
+    /// <summary>
+    /// Task: a run stream whose first event is a reconstruction. A peer's own daemon rebuilt
+    /// nothing, so a replicated copy of a teammate's reconstruction must not page this node's
+    /// window — but this node's own reconstruction, which it minted itself, still does.
+    /// </summary>
+    [Fact]
+    public void A_replicated_reconstruction_is_not_actionable_but_this_nodes_own_is()
+    {
+        object reconstructed = new RunRecordReconstructed(
+            Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), "https://example.com/pr/1", 1, At);
+
+        OrchestratorFeedInterest.Admits(
+            typeof(RunRecordReconstructed), reconstructed, OrchestratorFeedLevel.Actionable, isReplicated: true)
+            .Should().BeFalse();
+        OrchestratorFeedInterest.Admits(
+            typeof(RunRecordReconstructed), reconstructed, OrchestratorFeedLevel.Actionable, isReplicated: false)
+            .Should().BeTrue();
+    }
+
     [Fact]
     public void An_unrecognized_level_reads_as_wide_as_the_default_rather_than_silencing_the_feed()
     {

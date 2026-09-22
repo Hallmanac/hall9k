@@ -85,7 +85,7 @@ public static class OrchestratorFeedSelection
                 stillSettled = false;
             }
 
-            if (!OrchestratorFeedInterest.Admits(candidate.EventType, candidate.Data, level))
+            if (!OrchestratorFeedInterest.Admits(candidate.EventType, candidate.Data, level, candidate.IsReplicated))
             {
                 continue;
             }

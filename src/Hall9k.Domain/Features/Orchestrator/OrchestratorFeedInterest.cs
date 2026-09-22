@@ -21,14 +21,19 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// cannot leave a dangling entry behind.
 /// </para>
 /// <para>
-/// <b>Two entries also read their own payload</b> (<see cref="Admits(object)"/>), and both only
-/// ever decide whether the event is an item at all — never which band it lands in, which stays
-/// the table's alone. <see cref="MessageReceived"/> is admitted only for a message from a person
-/// or another node's window, never for the JSON payloads the daemon's own reactors exchange
-/// (<see cref="MessageKind.MechanicalKindValues"/>) — the identical rule <c>h9k messages</c> and
-/// <c>h9k status</c>'s own unread count already apply. <see cref="PullRequestAutoMergeAttempted"/>
+/// <b>Three entries also read something beyond the type</b> (<see cref="Admits(object)"/>), and
+/// all three only ever decide whether the event is an item at all — never which band it lands in,
+/// which stays the table's alone. <see cref="MessageReceived"/> is admitted only for a message
+/// from a person or another node's window, never for the JSON payloads the daemon's own reactors
+/// exchange (<see cref="MessageKind.MechanicalKindValues"/>) — the identical rule <c>h9k messages</c>
+/// and <c>h9k status</c>'s own unread count already apply. <see cref="PullRequestAutoMergeAttempted"/>
 /// is admitted only for an attempt that failed: a pre-approved merge the daemon completed on its
 /// own asks nothing of anybody, and "a merge that stays failed" is the actionable half.
+/// <see cref="RunRecordReconstructed"/> is admitted only when THIS node minted it: a peer's own
+/// daemon rebuilt nothing, so a replicated copy of a teammate's reconstruction is never this
+/// node's own thing to act on — and with it now travelling project-scoped, a backlog of them
+/// landing at once (task: a run stream whose first event is a reconstruction) must not page this
+/// node's own window for work it never touched.
 /// </para>
 /// </summary>
 public static class OrchestratorFeedInterest
@@ -164,11 +169,14 @@ public static class OrchestratorFeedInterest
 
     /// <summary>
     /// Whether a project reading at <paramref name="level"/> is handed this event. The type's own
-    /// band decides, and <see cref="Admits(object)"/> is the payload gate the two exceptions named
-    /// on this class need — applied here too, so no caller can reach one without the other.
+    /// band decides, and <see cref="Admits(object)"/> is the payload gate the exceptions named on
+    /// this class need — applied here too, so no caller can reach one without the other. Never
+    /// knows whether this event was replicated, so <see cref="RunRecordReconstructed"/>'s own
+    /// origin gate always reads local here — the overload <see cref="OrchestratorFeedSelection"/>
+    /// actually calls threads that through explicitly.
     /// </summary>
     public static bool Admits(object eventData, OrchestratorFeedLevel level) =>
-        Admits(eventData.GetType(), eventData, level);
+        Admits(eventData.GetType(), eventData, level, isReplicated: false);
 
     /// <summary>
     /// The same answer for an event whose recorded type is known apart from its payload, which is
@@ -178,14 +186,25 @@ public static class OrchestratorFeedInterest
     /// admission a single decision with one expression of it rather than two to keep in step.
     /// </summary>
     public static bool Admits(Type eventType, object eventData, OrchestratorFeedLevel level) =>
-        BandOf(eventType) is { } band && level.Admits(band) && Admits(eventData);
+        Admits(eventType, eventData, level, isReplicated: false);
+
+    /// <summary>The overload that actually knows whether this event arrived by replication —
+    /// <see cref="OrchestratorFeedSelection.SelectAsync"/>'s own caller, which reads it off the
+    /// candidate rather than guessing.</summary>
+    public static bool Admits(Type eventType, object eventData, OrchestratorFeedLevel level, bool isReplicated) =>
+        BandOf(eventType) is { } band && level.Admits(band) && Admits(eventData, isReplicated);
 
     /// <summary>
-    /// The payload gate for the two entries whose admission is not decided by type alone. Every
-    /// other event returns true: this never narrows a band, it only answers "is this particular
-    /// record a feed item at all".
+    /// The payload gate for the entries whose admission is not decided by type alone, read as
+    /// though this event were this node's own (never replicated) — every caller that cannot know
+    /// otherwise goes through here. Every other event returns true: this never narrows a band, it
+    /// only answers "is this particular record a feed item at all".
     /// </summary>
-    public static bool Admits(object eventData) => eventData switch
+    public static bool Admits(object eventData) => Admits(eventData, isReplicated: false);
+
+    /// <summary>The same gate, told whether this event arrived by replication — the one payload
+    /// question that is not about the event's own data at all.</summary>
+    public static bool Admits(object eventData, bool isReplicated) => eventData switch
     {
         // A message from a person, or from another node's own window — never the JSON the
         // daemon's claim reactors post to each other. The kinds that are never recorded as a
@@ -195,6 +214,10 @@ public static class OrchestratorFeedInterest
         // A merge the daemon completed itself asks nothing of anybody; one GitHub refused is the
         // actionable half.
         PullRequestAutoMergeAttempted attempted => !attempted.Succeeded,
+        // A peer's own daemon rebuilt this run, not this node's — never this node's own thing to
+        // act on, and never worth paging this node's window over (task: a run stream whose first
+        // event is a reconstruction — 14 replays landing on restart must not page the window).
+        RunRecordReconstructed => !isReplicated,
         _ => true,
     };
 }

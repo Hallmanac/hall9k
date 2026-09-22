@@ -14,9 +14,18 @@ namespace Hall9k.Domain.Features.Orchestrator;
 /// The stream this event was appended to — what a caller's own scope lookup keys on, and what
 /// lets it cache one answer per stream rather than one per event.
 /// </param>
+/// <param name="IsReplicated">
+/// Whether this node received this event by replication (it carries
+/// <c>Hall9k.Domain.Features.Replication.ReplicationEventHeaders.OriginEventId</c>) rather than
+/// producing it itself. Read by <see cref="OrchestratorFeedInterest"/>'s own origin-filtered
+/// entries — <c>RunRecordReconstructed</c> is Actionable on the node that actually rebuilt the
+/// run, but a peer's own copy of that same fact rebuilt nothing and must not page that peer's
+/// window, especially when a whole backlog of them lands at once.
+/// </param>
 public sealed record OrchestratorFeedCandidate(
     long Sequence,
     DateTimeOffset At,
     Type EventType,
     object Data,
-    Guid StreamId);
+    Guid StreamId,
+    bool IsReplicated);
