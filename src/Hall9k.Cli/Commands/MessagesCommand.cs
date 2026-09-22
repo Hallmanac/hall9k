@@ -12,7 +12,8 @@ namespace Hall9k.Cli.Commands;
 /// <summary>Lists this node's own received messages — unread (received, not yet handled) by
 /// default; <c>--all</c> includes ones already handled too (idea 202383dc, M1b); <c>--project</c>
 /// narrows to one project's own copy (idea 202383dc, M2) — otherwise every eligible project's
-/// received messages show together.</summary>
+/// received messages show together. The body column is a sixty-character taste of each note;
+/// <c>h9k message show &lt;id&gt;</c> is where the whole of one is read.</summary>
 public sealed class MessagesCommand : Hall9kAsyncCommand<MessagesCommand.Settings>
 {
     public sealed class Settings : CommandSettings
@@ -86,7 +87,9 @@ public sealed class MessagesCommand : Hall9kAsyncCommand<MessagesCommand.Setting
                 message.SentAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm") ?? string.Empty,
                 message.About is { Length: > 0 } about ? about.EscapeMarkup() : "[dim]—[/]",
                 TaskListCommand.Truncate(message.Body ?? string.Empty, 60).EscapeMarkup(),
-                message.HandledAt is not null ? "[dim]handled[/]" : $"h9k message handle {shortId}");
+                message.HandledAt is not null
+                    ? $"[dim]handled[/] · h9k message show {shortId}"
+                    : $"h9k message show {shortId} · h9k message handle {shortId}");
         }
 
         AnsiConsole.Write(table);

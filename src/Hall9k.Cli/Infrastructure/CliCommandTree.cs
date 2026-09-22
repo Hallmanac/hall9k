@@ -1738,9 +1738,9 @@ public static class CliCommandTree
         {
             message.SetDescription(
                 "Node-to-node notes over the message transport (idea 202383dc, M1a/M1b) — the daemon's "
-                + "own sweep sends and receives on its own cadence; see h9k messages to read what "
-                + "arrived. Retires notes/node-mailbox.md's GitHub-issue workaround for node-to-node "
-                + "traffic.");
+                + "own sweep sends and receives on its own cadence; see h9k messages for what arrived "
+                + "and h9k message show <id> for one note in full. Retires notes/node-mailbox.md's "
+                + "GitHub-issue workaround for node-to-node traffic.");
             message.AddCommand<MessageSendCommand>("send")
                 .WithDescription(
                     "Queue a note in this node's own store — never touches git directly; the daemon's "
@@ -1748,6 +1748,13 @@ public static class CliCommandTree
                     + "there is something to send).")
                 .WithExample("message", "send", "--to", "node:0b8f8e2e-9e2b-4f2a-8c2e-2f8b8e2e9e2b", "\"Rebased onto main, pushing now\"")
                 .WithExample("message", "send", "--to", "project", "--about", "28b19893", "\"Picking this one up\"");
+            message.AddCommand<MessageShowCommand>("show")
+                .WithDescription(
+                    "Print one received note in full — sender, project, kind, times, and the whole "
+                    + "body, which h9k messages clips at sixty characters and the orchestrator feed "
+                    + "at a hundred and sixty. Reading is not handling: this never marks it read.")
+                .WithExample("message", "show", "28b19893")
+                .WithExample("message", "show", "28b19893", "--project", "hall9k");
             message.AddCommand<MessageHandleCommand>("handle")
                 .WithDescription("Mark a received message handled — an explicit act, never implied by h9k messages having printed it.")
                 .WithExample("message", "handle", "28b19893");

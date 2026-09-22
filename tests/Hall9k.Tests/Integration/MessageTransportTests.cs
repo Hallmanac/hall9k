@@ -1212,9 +1212,33 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
             await inbox.ReadFromAsync(readSession, RepositoryPath, nodeA, ProjectId, nodeB, ownerB, Now.AddSeconds(1), cancellationToken: cts.Token);
         }
 
+        string shortId = TaskListCommand.ShortId(MessageStreamId.ForMessage(nodeA, ProjectId, 1));
+
+        // h9k message show <id>: the same MessageIdResolver path h9k message handle takes, run
+        // first because a read must never be what marks a note handled — the assertion below is
+        // that the note is still unread and its stream still has nothing on it but the receive.
+        await using (IQuerySession showSession = _postgres.Store.QuerySession())
+        {
+            MessageShowCommand.Settings showSettings = new() { Id = shortId };
+            int exitCode = await MessageShowCommand.RunAsync(showSession, showSettings, cts.Token);
+            exitCode.Should().Be(ExitCodes.Ok);
+        }
+
+        await using (IQuerySession afterShowSession = _postgres.Store.QuerySession())
+        {
+            MessageDetails? shown = await afterShowSession.LoadAsync<MessageDetails>(
+                MessageStreamId.ForMessage(nodeA, ProjectId, 1), cts.Token);
+            shown!.HandledAt.Should().BeNull("showing a note must not be what marks it handled");
+            shown.Body.Should().Be("pick this up");
+
+            IReadOnlyList<JasperFx.Events.IEvent> afterShow = await afterShowSession.Events.FetchStreamAsync(
+                MessageStreamId.ForMessage(nodeA, ProjectId, 1), token: cts.Token);
+            afterShow.Should().NotContain(
+                @event => @event.Data is MessageHandled, "h9k message show appends nothing at all");
+        }
+
         // h9k message handle <id>: MessageHandleCommand.RunAsync itself, including its
         // already-handled early return and its own append onto the same stream id.
-        string shortId = TaskListCommand.ShortId(MessageStreamId.ForMessage(nodeA, ProjectId, 1));
         await using (IDocumentSession handleSession = _postgres.Store.LightweightSession())
         {
             MessageHandleCommand.Settings handleSettings = new() { Id = shortId };

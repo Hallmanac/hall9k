@@ -6,8 +6,9 @@ namespace Hall9k.Cli.Commands;
 
 /// <summary>Resolves a message's own short id (<see cref="TaskListCommand.ShortId"/> of its stream
 /// id) back to the full <see cref="MessageDetails"/> row, scoped to messages this node has actually
-/// received — <c>h9k message handle</c> is the only caller, and handling a message this node never
-/// received makes no sense. Mirrors <see cref="TaskIdResolver"/>'s own fragment-match shape.
+/// received — <c>h9k message handle</c> and <c>h9k message show</c> are the callers, and neither
+/// handling nor reading a message this node never received makes any sense. Mirrors
+/// <see cref="TaskIdResolver"/>'s own fragment-match shape.
 /// <paramref name="projectId"/> (idea 202383dc, M2), when given, narrows the fragment-match
 /// candidate set to one project — useful when the identical short fragment matches messages from
 /// more than one project.</summary>
