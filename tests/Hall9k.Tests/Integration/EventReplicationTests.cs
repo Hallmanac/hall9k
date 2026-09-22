@@ -27,6 +27,7 @@ using Hall9k.Tests.Fakes;
 using JasperFx;
 using JasperFx.Events;
 using Marten;
+using Marten.Events;
 using Microsoft.Extensions.Logging;
 using Weasel.Core;
 using Xunit;
@@ -3066,6 +3067,105 @@ public sealed class EventReplicationTests : IClassFixture<PostgresFixture>, IAsy
                 "no headless document — a later sweep must not auto-vivify what the first sweep already refused");
             (await session.LoadAsync<ReplicatedEventRecord>(followUpOriginEventId, cts.Token)).Should().NotBeNull(
                 "the follow-up is recorded too, so it is never retried either");
+        }
+    }
+
+    /// <summary>
+    /// A second genesis for a stream that already exists locally — the shape two nodes racing
+    /// <c>CloseoutEngine.TasksWithMissingRunRecordsAsync</c>'s own fleet-wide (never node-scoped)
+    /// candidate set produces once <see cref="RunRecordReconstructed"/> travels: this receiver
+    /// already carries its own, genuinely dispatched, run stream for <c>runId</c>, and a replicated
+    /// <see cref="RunRecordReconstructed"/> for the identical run id — minted independently by a
+    /// peer who never saw this stream's real genesis — must never land in its middle. Left unguarded,
+    /// <c>RunAggregate.Apply(RunRecordReconstructed)</c> would overwrite <c>NodeId</c>, <c>OwnerId</c>,
+    /// <c>DispatchedAt</c>, <c>PullRequestUrl</c> and <c>PullRequestNumber</c> and reset <c>State</c>
+    /// back to Dispatched on a run this receiver already completed (independent pre-PR review, cycle
+    /// 1, adversarial lens, medium).
+    /// </summary>
+    [Fact]
+    public async Task A_replicated_second_genesis_for_a_stream_that_already_exists_here_is_discarded()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        Guid nodeA = DomainId.New();
+        Guid ownerId = DomainId.New();
+        Guid projectId = DomainId.New();
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+
+        FakeLedger ledger = new();
+        await SeedNodeFileAsync(ledger, nodeA, cts.Token);
+        InMemoryMessageTransport transport = new(ledger);
+        ListLogger<EventReplicationInbox> logger = new();
+        EventReplicationInbox replicationInbox = new(transport, logger);
+        MessageOutbox messageOutbox = new(transport);
+        (LedgerCommitter committer, LedgerSigningKey signingKey) = Signing("node-a");
+
+        await using DocumentStore storeB = OpenStoreB();
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            session.Events.StartStream<NodeAggregate>(nodeA, new NodeRegistered(nodeA, ownerId, "node-a", "macOS", Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // The receiver's own genuine history for this run — a real dispatch, already completed —
+        // started locally, never through replication, the same way node B's own two-node case
+        // would have produced it.
+        Guid receiverNodeId = DomainId.New();
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            session.Events.StartStream<RunAggregate>(
+                runId,
+                new RunDispatched(
+                    runId, taskId, receiverNodeId, ownerId, 1, DomainId.New(), "/worktrees/task-run", "task/run",
+                    ExecutorMode.Subscription, Now, DispatchingNodeId: receiverNodeId));
+            session.Events.Append(runId, new RunCompleted(runId, Now.AddSeconds(1)));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        // Node A independently reconstructs the identical run id, never having seen its real
+        // genesis — crafted directly as a wire record rather than through CloseoutEngine, the same
+        // shortcut the poison-event tests above already take for a record whose shape is what
+        // matters, not how it was minted.
+        Guid secondGenesisOriginEventId = DomainId.New();
+        JsonSerializerOptions jsonOptions = new(JsonSerializerDefaults.Web);
+        RunRecordReconstructed reconstructed = new(
+            runId, taskId, nodeA, ownerId, "https://github.com/x/y/pull/9", 9, Now.AddSeconds(2));
+        EventReplicationCodec.ReplicatedEventRecord secondGenesisRecord = new(
+            runId, typeof(RunRecordReconstructed).FullName!, JsonSerializer.Serialize(reconstructed, jsonOptions),
+            secondGenesisOriginEventId, OriginSequence: 1, nodeA, "owner-a-fingerprint", Now.AddSeconds(2), projectId);
+
+        await using (IDocumentSession session = _postgres.Store.LightweightSession())
+        {
+            await MessageOutbox.QueueAsync(
+                session, nodeA, projectId, "owner-a-fingerprint", MessageAudience.Project, about: null,
+                MessageKind.Events, EventReplicationCodec.EncodeBatch([secondGenesisRecord]), Now.AddSeconds(3), cts.Token);
+            await messageOutbox.FlushAsync(
+                session, RepositoryPath, nodeA, projectId, "shared-project-key", adoptUnassigned: false, committer,
+                signingKey, Now.AddSeconds(3), cts.Token);
+        }
+
+        await using (IDocumentSession session = storeB.LightweightSession())
+        {
+            EventReplicationReadResult read = await replicationInbox.ReadFromAsync(
+                session, RepositoryPath, nodeA, projectId, DomainId.New(), "owner-b-fingerprint", Now.AddSeconds(4),
+                trustChain: null, cts.Token);
+            read.EventsApplied.Should().Be(0, "a second genesis for a stream that already exists here is discarded, not appended");
+        }
+
+        await using (IQuerySession session = storeB.QuerySession())
+        {
+            StreamState? state = await session.Events.FetchStreamStateAsync(runId, cts.Token);
+            state.Should().NotBeNull();
+            state!.Version.Should().Be(2, "still exactly RunDispatched then RunCompleted — nothing appended past them");
+
+            RunDetails? run = await session.LoadAsync<RunDetails>(runId, cts.Token);
+            run.Should().NotBeNull();
+            run!.State.Should().Be(RunState.Completed, "the second genesis never reset this run back to Dispatched");
+            run.NodeId.Should().Be(receiverNodeId, "the receiver's own real dispatch, never overwritten by the peer's stray reconstruction");
+
+            (await session.LoadAsync<ReplicatedEventRecord>(secondGenesisOriginEventId, cts.Token)).Should().NotBeNull(
+                "recorded as handled so a later sweep never retries the identical second genesis again");
         }
     }
 

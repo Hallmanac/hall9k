@@ -765,6 +765,41 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             }
         }
 
+        // A second genesis for a stream that already has one, most reachably from
+        // RunRecordReconstructed: CloseoutEngine.TasksWithMissingRunRecordsAsync is deliberately
+        // fleet-wide rather than node-scoped (its own doc), so two nodes can each independently
+        // decide the identical run id needs reconstructing — one legitimately, because that run's
+        // own RunDispatched genuinely never existed, the other only because RunDispatched (or an
+        // earlier reconstruction) simply had not replicated here yet when this node's own sweep
+        // ran. Both mint a genesis-shaped event under their own origin, so the ordinary per-origin
+        // ordering check below never catches it: this receiver has no prior sequence recorded for
+        // that SECOND origin on this stream at all. Refused outright rather than appended, because
+        // Marten only ever appends — landing a second genesis mid-stream would silently overwrite
+        // RunAggregate.Apply(RunRecordReconstructed)'s own NodeId, OwnerId, DispatchedAt,
+        // PullRequestUrl and PullRequestNumber and reset State back to Dispatched on a run that may
+        // already be Completed here (independent pre-PR review, cycle 1, adversarial lens, medium).
+        // This node's own already-applied genesis is authoritative; nothing about a second one ever
+        // resolves by holding it for later, so it is discarded rather than held.
+        if (streamExists && AggregateGenesisEventTypes.IsGenesis(eventType))
+        {
+            logger?.LogWarning(
+                "Replicated event {OriginEventId} (origin {OriginNodeId} sequence {OriginSequence}) of type "
+                + "{EventType} from sender {SenderNodeId} is a second genesis for stream {StreamId}, which "
+                + "already exists here — discarded rather than appended into the middle of it",
+                record.OriginEventId, record.OriginNodeId, record.OriginSequence, record.EventTypeName,
+                senderNodeId, effectiveStreamId);
+            session.Store(new ReplicatedEventRecord
+            {
+                Id = record.OriginEventId,
+                StreamId = effectiveStreamId,
+                ProjectId = projectId,
+                AppliedAt = now,
+                Applied = false,
+            });
+            await session.SaveChangesAsync(cancellationToken);
+            return 0;
+        }
+
         // An event is only ever APPENDED to a local stream — Marten has no way to put one before
         // what is already there — so a record that belongs earlier than an event this stream
         // already holds from the same origin cannot be applied at all: doing it anyway replays the
