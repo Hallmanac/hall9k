@@ -821,6 +821,10 @@ otherwise, in the same shape on every machine:
 ```
 <home>/
 ├── AGENTS.md   generated from the project's facts; never hand-maintained
+├── decisions.md  rendered from the Decision streams: what this project has decided, and what
+│               superseded what; never hand-maintained (`h9k decide`)
+├── lessons.md  rendered from the Learning streams: what this project's runs have learned, each
+│               with the provenance it was recorded under; never hand-maintained (`h9k learn`)
 ├── repo/       <name>.git (bare clone) · dev/ (a worktree on the primary branch) · wt-*/
 ├── ideas/
 ├── tasks/      _archive/ holds terminal tasks (closed out or abandoned); moved back if reopened
@@ -852,6 +856,15 @@ its own sweep — nothing needs to be told to re-render — and the render is on
 then apply the edit with `h9k task revise <id> --file <path>` (`h9k idea revise <id> "<text>"` for
 an idea, which has no `--file` form). A direct edit that is never applied is silently overwritten
 the next time the daemon sweeps, which the file's own header line says.
+
+The same sweep renders `decisions.md` and `lessons.md` at the home's root, from the Decision and
+Learning streams rather than from any file anyone edits, and the daemon writes the identical two
+files into every worktree it cuts at dispatch, on the repository's own exclude list there so a
+projection can never be committed into authored history. A session is pointed at them instead of
+at a hand-maintained decisions log: a superseded decision and a retired lesson drop out of the
+render without being deleted (`h9k decide list --all`, `h9k learn list --all` still show them),
+and the render is deterministic, so two nodes holding the same history render byte-identical
+files. A file at either name that the platform did not render is never overwritten.
 
 The same sweep moves a task's whole directory into `tasks/_archive/` the moment it goes
 terminal — true closeout (merged, and the closeout monitor observed it) or abandoned — and moves

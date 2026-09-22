@@ -330,6 +330,9 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │                               window arms at start-up, plus their offset and gh-streak state
 ├── projects/<name>/            a project's home, unless the project records another location
 │   ├── AGENTS.md               rendered from the project's facts; never hand-maintained
+│   ├── decisions.md            rendered from the Decision streams (`h9k decide`); the same file
+│   │                           is written into every worktree at dispatch, gitignored there
+│   ├── lessons.md              rendered from the Learning streams (`h9k learn`), alongside it
 │   ├── repo/                   <name>.git (bare) · dev/ (primary branch) · wt-*/ (dispatch)
 │   ├── ideas/<id>-<slug>/      idea.md (rendered) + workspace/, when captured with this home (below)
 │   ├── tasks/<id>-<slug>/      task.md (rendered) + workspace/ for refinement material, plus:

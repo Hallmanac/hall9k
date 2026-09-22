@@ -137,6 +137,14 @@ public static class ProjectAgentsDocument
         document.AppendLine("```");
         document.AppendLine($"{home}");
         document.AppendLine("├── AGENTS.md   this file; generated, never hand-maintained");
+        // Both on one entry with a continuation line, unlike every other top-level name here:
+        // "decisions.md" is already as wide as the description column itself, so there is no
+        // padding left to align it by and the two names read better together than one of them
+        // does a column out of line with the rest.
+        document.AppendLine(
+            $"├── {KnowledgeDocumentPaths.DecisionsFileName}, {KnowledgeDocumentPaths.LessonsFileName}");
+        document.AppendLine("│                what this project has decided and what its runs have learned,");
+        document.AppendLine("│                rendered from the store (h9k decide, h9k learn); never hand-maintained");
         if (repoMaterialised)
         {
             document.AppendLine("├── repo/       the code");
