@@ -1087,7 +1087,7 @@ public sealed class AgentPromptBuilderTests : IDisposable
         prompt.Should().Contain("about the review, not the diff");
         prompt.Should().Contain("never against this task's");
         prompt.Should().NotContain(
-            "Judge the work against the objective, the acceptance criteria, and the repo's own",
+            "Judge the work against the objective, the acceptance criteria, this project's own",
             "the ordinary conformance instruction still names the task's own criteria as the standard");
     }
 

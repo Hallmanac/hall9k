@@ -271,6 +271,7 @@ public static class WorkPromptBuilder
             AppendFragment(prompt, file, "worktree-plain", ("Branch", branch));
         }
 
+        AppendRecordedDecisionsAndLessons(prompt, worktreePath);
         AppendFragment(prompt, file, "implement-objective");
         AppendFragment(prompt, file, "commit-clear-messages");
         if (isInteractive)
@@ -1706,6 +1707,32 @@ public static class WorkPromptBuilder
     }
 
     /// <summary>
+    /// The decisions and lessons the daemon rendered into this worktree at dispatch (idea
+    /// d805fd8b, piece 2), as a working rule rather than a location on a list: what binds here is
+    /// something a session has to have read before it decides, and both files are the platform's
+    /// to write and nobody's to commit.
+    /// <para>
+    /// Conditional on the files actually being there, because not every worktree a prompt is
+    /// built for got them: a checkout whose repository exclude list could not be resolved is left
+    /// without them on purpose (<c>RunLauncher</c>, which would otherwise leave a session two
+    /// untracked files it is told to commit), and an interactive claim cuts its own worktree
+    /// without going through dispatch at all. Both cases still see the home's own copies, which
+    /// <see cref="AppendProjectHome"/> names.
+    /// </para>
+    /// </summary>
+    private static void AppendRecordedDecisionsAndLessons(StringBuilder prompt, string worktreePath)
+    {
+        if (worktreePath.IsBlank()
+            || !File.Exists(KnowledgeDocumentPaths.DecisionsFileIn(worktreePath))
+            || !File.Exists(KnowledgeDocumentPaths.LessonsFileIn(worktreePath)))
+        {
+            return;
+        }
+
+        AppendFragment(prompt, $"{TemplateDirectory}/build.md", "recorded-decisions-and-lessons");
+    }
+
+    /// <summary>
     /// Names the project's home and what is in it, so a dispatched session is told where
     /// everything lives instead of hunting for it. Silent for a project with no home, and for a
     /// home this node cannot see: an agent sent to a directory that is not there learns nothing
@@ -1732,6 +1759,20 @@ public static class WorkPromptBuilder
         }
 
         AppendFragment(prompt, file, "skills-line", ("SkillsDirectory", ProjectHomePaths.SkillsDirectory(home)));
+
+        // Named only once they are actually on disk, the same observation the AGENTS.md line
+        // above makes about itself (idea d805fd8b, piece 2). The render sweep writes both into
+        // every home it can see, but a home materialised since the last sweep has neither yet,
+        // and telling a session to read a file that is not there is a wasted tool call and a
+        // claim about this machine nobody observed.
+        string decisions = KnowledgeDocumentPaths.DecisionsFileIn(home);
+        string lessons = KnowledgeDocumentPaths.LessonsFileIn(home);
+        if (File.Exists(decisions) && File.Exists(lessons))
+        {
+            AppendFragment(prompt, file, "decisions-and-lessons-lines",
+                ("DecisionsFile", decisions), ("LessonsFile", lessons));
+        }
+
         AppendFragment(prompt, file, "tasks-line", ("TasksDirectory", ProjectHomePaths.TasksDirectory(home)));
         AppendFragment(prompt, file, "ideas-line", ("IdeasDirectory", ProjectHomePaths.IdeasDirectory(home)));
 

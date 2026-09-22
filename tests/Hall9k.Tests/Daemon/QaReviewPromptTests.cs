@@ -97,7 +97,7 @@ public sealed class QaReviewPromptTests : IDisposable
         prompt.Should().Contain("**met**, **not met**, or **not verifiable from the code alone**");
         prompt.Should().Contain("The project's own stated conventions.");
         prompt.Should().Contain("The writing conventions");
-        prompt.Should().Contain("The decision log");
+        prompt.Should().Contain("This project's recorded decisions");
         prompt.Should().Contain("The acceptance criteria on whatever this pull request is linked to");
     }
 

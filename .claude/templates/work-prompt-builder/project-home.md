@@ -7,6 +7,12 @@ The project's home is `{{Home}}`. It has the same shape on every machine:
   Generated from the project's registration, so it is current by construction.
 ===skills-line===
 - `{{SkillsDirectory}}` — this project's skill docs.
+===decisions-and-lessons-lines===
+- `{{DecisionsFile}}` and `{{LessonsFile}}` — what this project has decided and what its runs have
+  learned, as the platform recorded them. Both are rendered from the event store and rewritten
+  whenever it changes, so an edit to either is gone on the next sweep: `h9k decide "<one claim>"`
+  records a decision, `h9k learn "<what you learned>"` records a lesson, and both print the id you
+  cite it by.
 ===tasks-line===
 - `{{TasksDirectory}}` — one directory per task, holding `task.md` and its `workspace/`; a closed-out or abandoned task's directory moves under `_archive/` inside it. Empty until one exists here.
 ===ideas-line===
