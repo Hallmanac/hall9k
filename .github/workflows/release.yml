@@ -10,6 +10,14 @@ on:
   push:
     tags: ["v*"]
 
+# GitHub occasionally delivers one tag push as two runs (double delivery of a single ref
+# transition, not a second push). Serializing runs for the same ref, rather than canceling
+# the first, lets the second run's own Create release guard below see the first run's
+# published release instead of racing it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     strategy:
@@ -154,12 +162,26 @@ jobs:
           cat hall9k-*.sha256 > checksums.txt
           rm hall9k-*.sha256
 
+      # A second run for the same tag (the double-delivery race the concurrency group above
+      # serializes rather than prevents) must not re-run `gh release create`: it would fail
+      # loudly on "a release with the same tag name already exists", or, with --clobber, would
+      # re-upload archives that are never byte-identical run to run (mtimes, gzip headers),
+      # rewriting checksums and digests under a release nodes may already be updating from. A
+      # published release (isDraft false) means the first run finished, so this run has nothing
+      # left to do. A `gh release view` failure — no release yet, or a network blip — falls
+      # through to create, exactly as before this guard existed.
       - name: Create release
         working-directory: release-assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
+          if is_draft=$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq '.isDraft' 2>/dev/null) \
+            && [ "$is_draft" = "false" ]; then
+            echo "Release ${GITHUB_REF_NAME} is already published; skipping creation."
+            exit 0
+          fi
+
           gh release create "${GITHUB_REF_NAME}" \
             --title "${GITHUB_REF_NAME}" \
             --generate-notes \
