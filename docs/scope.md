@@ -893,8 +893,9 @@ queued since the last flush into one commit, on a cadence that tightens the mome
 something to send or read (15 to 25 seconds, jittered) and relaxes when idle (30 to 45 seconds,
 jittered), with an immediate re-probe the tick right after this node's own push. The same sweep
 periodically squashes this node's own outbox down to envelopes younger than a 48-hour retention
-window, never another node's ref. `h9k messages [--all] [--project <PROJECT>]` and `h9k message
-handle <id> [--project <PROJECT>]` read and act on what arrived; `h9k status` names the unread
+window, never another node's ref. `h9k messages [--all] [--project <PROJECT>]`,
+`h9k message show <id> [--project <PROJECT>]` and `h9k message handle <id> [--project <PROJECT>]`
+read and act on what arrived; `h9k status` names the unread
 count and any sender this node's inbox has had to ignore because that sender's node file does not
 vouch for their outbox.
 

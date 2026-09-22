@@ -414,6 +414,8 @@ h9k message send --to <AUDIENCE> --project <PROJECT> "<text>"         # name, fr
 h9k messages                                                          # this node's own received messages across every eligible project, unread (received, not yet handled) by default
 h9k messages --all                                                    # include already-handled messages too
 h9k messages --project <PROJECT>                                      # only one project's own received messages
+h9k message show <id>                                                 # one received note in full: sender, project, kind, about, times, handled state, and the whole body (h9k messages clips it at 60 characters, the orchestrator feed at 160); reading is not handling
+h9k message show <id> --project <PROJECT>                             # narrows the id fragment match when it is ambiguous across projects
 h9k message handle <id>                                               # mark a received message handled: an explicit act, never implied by h9k messages having printed it
 h9k message handle <id> --project <PROJECT>                           # narrows the id fragment match when it is ambiguous across projects
 ```

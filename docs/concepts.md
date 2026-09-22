@@ -995,7 +995,11 @@ of the one before, set per project with
 A message from a person is admitted at **every** level, including the narrowest — a colleague or
 another node's window asking something is never filtered out by a reading preference. The
 daemon's own machine traffic (the JSON its claim reactors post to each other) is not a message
-from a person and never appears, the same exclusion `h9k messages` already applies.
+from a person and never appears, the same exclusion `h9k messages` already applies. A note's own
+feed line is the one that opens with an id, because it is also the one the line cannot finish: the
+body is quoted to a hundred and sixty characters, and the id in front of it is what
+`h9k message show <id>` takes to print the rest. Every other line is about a task the group
+heading already names.
 
 An event type the table does not name is not in the feed at all. That is deliberate: the feed is
 what an orchestrator would want to know, not a mirror of the log, so a new event type ships

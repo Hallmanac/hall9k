@@ -603,7 +603,7 @@ own channels can see, honestly — best-effort by construction, not enforcement.
 
 ### Messages: node-to-node notes
 
-`h9k message send <text> --to <audience> [--about <id>] [--project <PROJECT>]` · `h9k messages [--project <PROJECT>]` · `h9k message handle <id> [--project <PROJECT>]`
+`h9k message send <text> --to <audience> [--about <id>] [--project <PROJECT>]` · `h9k messages [--project <PROJECT>]` · `h9k message show <id> [--project <PROJECT>]` · `h9k message handle <id> [--project <PROJECT>]`
 
 The successor to `notes/node-mailbox.md`'s GitHub-issue workaround (idea 202383dc, M1b): `send`
 queues an envelope in this node's own store (no git, no network wait) and the daemon's own
@@ -614,11 +614,17 @@ id: `h9k status` prints only its short form; `h9k project join` prints the full 
 node an owner reads from with `owner:<fingerprint>`, or the whole project with the literal word
 `project`; `h9k owner show` prints a root fingerprint.
 `--about <id>` carries a task or idea id through as-is for the reader to act on. `messages` lists
-what has arrived; `handle <id>` marks one handled: an explicit act, never implied by `messages`
-having merely printed it. Project-scoped end to end (idea 202383dc, M2): a node registered to
+what has arrived, clipping each body to sixty characters; `message show <id>` prints one note in
+full — sender, project, kind, about-task, times, whether it is handled, and the whole body on its
+own lines, written plain to stdout so its line structure survives a caller that is not a terminal.
+Reading is not handling, so `show` never marks anything: `handle <id>` is the explicit act, never
+implied by `messages` or `show` having merely printed the note. The orchestrator feed's own line
+for a received note opens with the same id, so a window goes from the courier's delivery straight
+to the full text. Project-scoped end to end (idea 202383dc, M2): a node registered to
 several projects sends and reads each one's messages through its own repository, `--project`
 names which one (defaulting to this node's only eligible project when there is exactly one), and
-`messages`/`message handle` both take `--project` to filter or disambiguate (see [scope.md](scope.md)).
+`messages`, `message show` and `message handle` all take `--project` to filter or disambiguate
+(see [scope.md](scope.md)).
 
 ### Recovery
 
