@@ -31,7 +31,7 @@ public static class LegacyKnowledgeSource
     /// </summary>
     public const string DecisionsLogResource = "Hall9k.Domain.Legacy.v0-decisions-log.md";
 
-    /// <summary>AGENTS.md's Git rules and Working agreements sections verbatim, as of commit 06471890, less the one bullet that file's own header comment records.</summary>
+    /// <summary>AGENTS.md's Git rules and Working agreements sections verbatim, as of commit cba329cb (the same commit the log snapshot was taken at, and the one that file's own header comment names), less the one bullet that header records.</summary>
     public const string StandingRulesResource = "Hall9k.Domain.Legacy.agents-standing-rules.md";
 
     public static string DecisionsLog() => Read(DecisionsLogResource);

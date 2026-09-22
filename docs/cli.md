@@ -86,11 +86,15 @@ learn`, because agents record lessons and humans record decisions. Neither termi
 `h9k decide import` is the one-time migration that put this repository's own markdown rulebooks
 into the store: every PLAN.md §16 Decisions Log entry and every AGENTS.md standing rule, each
 recorded keeping the citation it already had, so a reference written anywhere as "Decisions Log
-#62" still resolves by searching `decisions.md` for that text. It refuses on a node where event
+#62" still resolves two ways: by searching `decisions.md` for that text, and through `h9k decide
+show "Decisions Log #62"`, which takes the citation itself and is the only route to an entry the
+file leaves out for no longer binding. It refuses on a node where event
 replication has not switched on (idea 202383dc, M2a), naming the milestone, because an event
 written before that point never rides an outbox and the whole rulebook would sit in one install's
-store forever. Running it twice is safe: the citations already recorded are what a second run
-skips, so an interrupted first run is finished rather than duplicated.
+store forever. Running it again is safe: the citations already recorded are what the later run
+skips, so an interrupted first run is finished rather than duplicated. Two runs at once are
+refused rather than merged, by an advisory lock the import holds for its own transaction: each
+would otherwise record the whole rulebook under its own ids.
 
 Lessons also ride into the prompt of every implementation, follow-up, review and fix session, as
 a bounded section under "What this project's earlier runs already learned": this project's active

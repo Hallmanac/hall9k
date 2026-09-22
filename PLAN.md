@@ -526,7 +526,9 @@ import`), so a reference written anywhere in this repository as **Decisions Log 
 resolves: search `decisions.md` for that text, and the heading carrying it names the id that
 replaces it. A reference written as **§16 #62** or **PLAN.md §16 #62** names the same entry, and
 the text to search for is the `Decisions Log #62` form, since that is the citation the import
-carried across. The section's own 267 entries, exactly as they read the day they were imported, are
+carried across. `h9k decide show` also takes a citation in either spelling, which is how to read
+one of the few entries the rendered file leaves out for no longer binding: those are named at the
+foot of it, without their statements, rather than restated as rules. The section's own 267 entries, exactly as they read the day they were imported, are
 kept at `src/Hall9k.Domain/Features/Decision/Legacy/v0-decisions-log.md`, which is the import's
 frozen input as well as its archive.
 
