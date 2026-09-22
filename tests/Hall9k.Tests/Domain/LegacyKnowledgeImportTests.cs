@@ -255,6 +255,12 @@ public sealed class LegacyKnowledgeImportTests
     /// places in this repository cite <c>Decisions Log #162</c> and a citation whose entry was never
     /// imported resolves to nothing. So it is imported keeping that citation and superseded behind
     /// it on the same stream.
+    /// <para>
+    /// The single retirement is asserted against the real sources, which is also what proves
+    /// nothing else is retired on the way in: a rule that merely reads as dated, or one whose
+    /// machinery this change happens to leave standing, is imported binding and left for a human
+    /// to supersede deliberately. The import is a migration, not a place to re-decide 280 rules.
+    /// </para>
     /// </summary>
     [Fact]
     public void The_placeholder_numbering_decision_is_imported_and_retired_in_the_same_act()
@@ -273,22 +279,6 @@ public sealed class LegacyKnowledgeImportTests
         retirement.SupersededAt.Should().Be(Noon, "one import is one act, retirements included");
         retirement.Reason.Should().Contain("DecisionsLogNumberingGuardTests");
         retirement.Reason.Should().Contain("h9k decide");
-    }
-
-    /// <summary>
-    /// Nothing else is retired on the way in. A rule that merely reads as dated, or one whose
-    /// machinery this change happens to leave standing, is imported binding and left for a human to
-    /// supersede deliberately: the import is a migration, not a place to re-decide 280 rules.
-    /// </summary>
-    [Fact]
-    public void Every_other_entry_in_both_real_sources_is_imported_still_binding()
-    {
-        LegacyImportPlan plan = Plan([.. DecisionsLog(), .. StandingRules()], []);
-
-        HashSet<Guid> retired = [.. plan.Retirements.Select(retirement => retirement.Id)];
-        plan.ToRecord.Where(recorded => !retired.Contains(recorded.Id))
-            .Should().HaveCount(plan.ToRecord.Count - 1);
-        retired.Should().HaveCount(1);
     }
 
     /// <summary>
