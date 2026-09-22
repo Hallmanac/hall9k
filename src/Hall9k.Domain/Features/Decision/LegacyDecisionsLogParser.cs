@@ -18,12 +18,13 @@ namespace Hall9k.Domain.Features.Decision;
 /// </para>
 /// <para>
 /// <b>Placeholder entries are read too</b>, under their own token (<c>Decisions Log
-/// PLACEHOLDER-6df5f975</c>). A branch that has not yet reached its mechanical renumbering step
-/// is carrying a real decision under a token rather than a number, and dropping it because it is
-/// unnumbered would lose the decision outright. The token is the honest citation for it: it is
-/// the text the rest of the repository cites it by at that moment. The frozen snapshot carries
-/// no such entry, because main assigned its one placeholder entry #265 before this branch
-/// merged; the handling stays, because which entries a snapshot catches mid-flight is not this
+/// PLACEHOLDER-6df5f975</c>). A branch that had not yet reached the mechanical renumbering step
+/// was carrying a real decision under a token rather than a number, and dropping it because it
+/// was unnumbered would lose the decision outright. The token is the honest citation for it: it
+/// is the text the rest of the repository cited it by at that moment. The frozen snapshot carries
+/// no such entry, because main assigned its one placeholder entry #265 before this branch merged,
+/// and nothing can mint another now that the renumbering step itself is gone (idea d805fd8b,
+/// piece 4); the handling stays, because which entries a snapshot catches mid-flight is not this
 /// parser's own assumption to make.
 /// </para>
 /// <para>

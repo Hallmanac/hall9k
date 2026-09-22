@@ -277,7 +277,7 @@ public sealed class LegacyKnowledgeImportTests
             + "nearest plausible successor would be a guess");
         retirement.SupersededByOwnerId.Should().Be(Owner);
         retirement.SupersededAt.Should().Be(Noon, "one import is one act, retirements included");
-        retirement.Reason.Should().Contain("DecisionsLogNumberingGuardTests");
+        retirement.Reason.Should().Contain("no tail for a branch to append its own entry to");
         retirement.Reason.Should().Contain("h9k decide");
     }
 
