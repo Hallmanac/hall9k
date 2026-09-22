@@ -7,8 +7,17 @@ namespace Hall9k.Domain.Features.Learning;
 /// Where a lesson stands (idea d805fd8b, piece 1). Retirement is the only ending this piece
 /// ships, and it is an explicit act carrying a reason: no lesson is ever retired on age or on
 /// absence of reinforcement, because a lesson that works suppresses its own evidence
-/// (IDEA-learning-capture, "Staleness"). A third value, Superseded, arrives with distillation
-/// (backlog 55) and is a static instance here, not a schema change.
+/// (IDEA-learning-capture, "Staleness").
+/// <para>
+/// Distillation shipped without adding the third value, Superseded, that this doc used to
+/// promise (idea d805fd8b, piece 5). A merged-away lesson retires like any other, with a reason
+/// naming the lesson that absorbed it, which is one of the three endings retirement was already
+/// documented to carry, and the survivor cites it back
+/// (<see cref="LearningRecorded.DistilledFrom"/>), so the merge is recorded from both ends
+/// already. A second terminal value would have split "live" across two clauses in the renderer,
+/// the prompt feed, and <c>h9k learn list</c> to record nothing the reason string does not. It
+/// stays a static instance away if that trade ever turns out wrong.
+/// </para>
 /// </summary>
 [JsonConverter(typeof(LearningStatusJsonConverter))]
 public sealed record LearningStatus

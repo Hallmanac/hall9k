@@ -1,3 +1,4 @@
+using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 
@@ -32,6 +33,77 @@ public static class LearningDecider
         RequireScope(scope, scopeId);
 
         return new LearningRecorded(id, scope, scopeId, statement.Trim(), provenance, recordedAt);
+    }
+
+    /// <summary>
+    /// A lesson merged out of others, which must cite them (idea d805fd8b, piece 5; backlog 55).
+    /// The citation is the whole point of the entry point existing: distillation is the one act in
+    /// this slice that produces a claim no single run earned, so a distilled lesson that cites
+    /// nothing is indistinguishable from an agent inventing doctrine and calling it a merge. Every
+    /// rule <see cref="Record"/> holds still holds here, and this adds three:
+    /// <list type="bullet">
+    /// <item>at least one source, so the merge is checkable against what it merged;</item>
+    /// <item>no source repeated, since a citation list is a set and a repeat is a mistake rather
+    /// than emphasis;</item>
+    /// <item>no source that is this lesson itself, which would make the claim its own evidence.</item>
+    /// </list>
+    /// <para>
+    /// What this cannot do, and does not pretend to: nothing forces a session that merged two
+    /// lessons to come through here rather than through <see cref="Record"/> with a freshly typed
+    /// claim. The platform has no way to read intent off a sentence. So the guarantee is narrower
+    /// than "every merged lesson cites its sources" and exactly this: a lesson that CLAIMS to be a
+    /// distillation carries citations somebody can check, or it does not exist. The distillation
+    /// task's own instructions are what ask for the claim; this is what makes the claim mean
+    /// something.
+    /// </para>
+    /// </summary>
+    public static LearningRecorded RecordDistilled(
+        Guid id,
+        KnowledgeScope scope,
+        Guid scopeId,
+        string statement,
+        IReadOnlyList<Guid> distilledFrom,
+        RecordedProvenance provenance,
+        DateTimeOffset recordedAt)
+    {
+        if (distilledFrom.Count == 0)
+        {
+            throw new DomainValidationException(
+                "A distilled lesson has to cite the lessons it was merged out of: h9k learn "
+                + "\"<the merged claim>\" --distilled-from <id> --distilled-from <id>. Without the "
+                + "citations nobody reading it later can check the merge against what it merged, and "
+                + "a merge nobody can check is a new claim wearing a merge's clothes. If this really "
+                + "is something this run learned on its own rather than a merge, record it as one: "
+                + "h9k learn \"<what you learned>\".");
+        }
+
+        if (distilledFrom.Contains(id))
+        {
+            throw new DomainValidationException(
+                $"A distilled lesson cannot cite itself ({DomainId.Short(id)}) as a source. Cite the "
+                + "lessons it merges; h9k learn list shows them.");
+        }
+
+        Guid[] repeated = [.. distilledFrom.GroupBy(source => source)
+            .Where(group => group.Count() > 1)
+            .Select(group => group.Key)];
+        if (repeated.Length > 0)
+        {
+            throw new DomainValidationException(
+                "A distilled lesson's sources are a set, so each one is cited once: "
+                + string.Join(", ", repeated.Select(DomainId.Short))
+                + (repeated.Length == 1 ? " appears" : " appear") + " more than once.");
+        }
+
+        if (distilledFrom.Contains(Guid.Empty))
+        {
+            throw new DomainValidationException(
+                "An empty id is not a lesson this cites: pass the id of each lesson being merged, "
+                + "which h9k learn list shows.");
+        }
+
+        LearningRecorded recorded = Record(id, scope, scopeId, statement, provenance, recordedAt);
+        return recorded with { DistilledFrom = [.. distilledFrom] };
     }
 
     /// <summary>

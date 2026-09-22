@@ -126,6 +126,134 @@ public sealed class LearningLifecycleTests
         act.Should().Throw<DomainConflictException>().WithMessage("*already retired*");
     }
 
+    /// <summary>
+    /// The citation guard (idea d805fd8b, piece 5): distillation is the one act here that produces
+    /// a claim no single run earned, so a distilled lesson that cites nothing is indistinguishable
+    /// from an agent inventing doctrine and calling it a merge.
+    /// </summary>
+    [Fact]
+    public void A_distilled_lesson_records_the_lessons_it_was_merged_out_of()
+    {
+        Guid firstSource = DomainId.New();
+        Guid secondSource = DomainId.New();
+
+        LearningRecorded recorded = LearningDecider.RecordDistilled(
+            DomainId.New(), KnowledgeScope.Project, Project,
+            "A worktree's local base-branch ref is routinely stale; name origin/ in every range",
+            [firstSource, secondSource], RecordedProvenance.FromShell(Owner), Now);
+
+        recorded.DistilledFrom.Should().Equal(firstSource, secondSource);
+    }
+
+    [Fact]
+    public void An_ordinary_lesson_cites_nothing_rather_than_an_empty_list()
+    {
+        LearningRecorded recorded = LearningDecider.Record(
+            DomainId.New(), KnowledgeScope.Project, Project, "What this run learned",
+            RecordedProvenance.FromShell(Owner), Now);
+
+        recorded.DistilledFrom.Should().BeNull(
+            "an empty list would read as a distillation that cited nothing, which the decider refuses");
+    }
+
+    [Fact]
+    public void A_distilled_lesson_with_no_sources_is_refused_and_named_as_a_new_claim()
+    {
+        Action act = () => LearningDecider.RecordDistilled(
+            DomainId.New(), KnowledgeScope.Project, Project, "A claim with no evidence behind it",
+            [], RecordedProvenance.FromShell(Owner), Now);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage("*--distilled-from*")
+            .WithMessage("*merge nobody can check*");
+    }
+
+    [Fact]
+    public void A_distilled_lesson_cannot_be_its_own_source()
+    {
+        Guid id = DomainId.New();
+
+        Action act = () => LearningDecider.RecordDistilled(
+            id, KnowledgeScope.Project, Project, "Its own evidence", [id],
+            RecordedProvenance.FromShell(Owner), Now);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*cannot cite itself*");
+    }
+
+    [Fact]
+    public void A_repeated_source_is_refused_and_named()
+    {
+        Guid source = DomainId.New();
+
+        Action act = () => LearningDecider.RecordDistilled(
+            DomainId.New(), KnowledgeScope.Project, Project, "A merge", [source, source],
+            RecordedProvenance.FromShell(Owner), Now);
+
+        act.Should().Throw<DomainValidationException>()
+            .WithMessage($"*{DomainId.Short(source)}*")
+            .WithMessage("*more than once*");
+    }
+
+    [Fact]
+    public void An_empty_source_id_is_refused_rather_than_recorded_as_a_citation_of_nothing()
+    {
+        Action act = () => LearningDecider.RecordDistilled(
+            DomainId.New(), KnowledgeScope.Project, Project, "A merge", [DomainId.New(), Guid.Empty],
+            RecordedProvenance.FromShell(Owner), Now);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*empty id*");
+    }
+
+    /// <summary>Every rule <see cref="LearningDecider.Record"/> holds still holds on the distilled path.</summary>
+    [Fact]
+    public void A_distilled_lesson_still_needs_a_claim_and_a_scope()
+    {
+        Guid source = DomainId.New();
+
+        Action blankStatement = () => LearningDecider.RecordDistilled(
+            DomainId.New(), KnowledgeScope.Project, Project, "   ", [source],
+            RecordedProvenance.FromShell(Owner), Now);
+        Action noScopeId = () => LearningDecider.RecordDistilled(
+            DomainId.New(), KnowledgeScope.Project, Guid.Empty, "A merge", [source],
+            RecordedProvenance.FromShell(Owner), Now);
+
+        blankStatement.Should().Throw<DomainValidationException>().WithMessage("*One claim*");
+        noScopeId.Should().Throw<DomainValidationException>().WithMessage("*project*");
+    }
+
+    [Fact]
+    public void The_aggregate_carries_the_citations_forward()
+    {
+        Guid source = DomainId.New();
+        LearningAggregate learning = new();
+
+        learning.Apply(LearningDecider.RecordDistilled(
+            DomainId.New(), KnowledgeScope.Project, Project, "A merge", [source],
+            RecordedProvenance.FromShell(Owner), Now));
+
+        learning.DistilledFrom.Should().Equal(source);
+    }
+
+    /// <summary>
+    /// Merging does not end what it merged: retirement stays the one terminal act and it stays
+    /// explicit, so a source left live keeps riding in prompts until somebody says why it should
+    /// not. That is the trade distillation shipped without a Superseded status for.
+    /// </summary>
+    [Fact]
+    public void A_merged_source_is_still_active_until_it_is_explicitly_retired()
+    {
+        LearningAggregate source = Recorded("One of two overlapping claims");
+        LearningDecider.RecordDistilled(
+            DomainId.New(), KnowledgeScope.Project, Project, "The merged claim", [source.Id],
+            RecordedProvenance.FromShell(Owner), Now);
+
+        source.Status.Should().Be(LearningStatus.Active);
+
+        source.Apply(LearningDecider.Retire(source, "Absorbed into the merged claim", Owner, Now.AddMinutes(1)));
+
+        source.Status.Should().Be(LearningStatus.Retired);
+    }
+
     private static LearningAggregate Recorded(string statement)
     {
         LearningAggregate learning = new();
