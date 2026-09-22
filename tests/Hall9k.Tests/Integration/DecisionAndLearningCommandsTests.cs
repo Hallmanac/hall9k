@@ -5,6 +5,7 @@ using Hall9k.Daemon;
 using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Domain.Features.Decision;
 using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
@@ -15,10 +16,12 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Hall9k.Tests.TestSupport;
+using JasperFx.Events;
 using Marten;
 using Xunit;
 
@@ -100,11 +103,11 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
         await LearnCommand.RunAsync(
             session,
             new LearnCommand.Settings { Statement = "Prefer a fake over a real process", Owner = true },
-            node.OwnerId, Now, CancellationToken.None);
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
         await LearnCommand.RunAsync(
             session,
             new LearnCommand.Settings { Statement = "Docker before dotnet test", Project = project.Name },
-            node.OwnerId, Now.AddMinutes(1), CancellationToken.None);
+            node.OwnerId, node.NodeId, Now.AddMinutes(1), CancellationToken.None);
         await session.SaveChangesAsync(CancellationToken.None);
 
         IReadOnlyList<LearningDetails> mine = await LearningListCommand.QueryAsync(
@@ -207,7 +210,7 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
         (LearningRecorded recorded, _) = await LearnCommand.RunAsync(
             session,
             new LearnCommand.Settings { Statement = "The old lesson", Project = project.Name },
-            node.OwnerId, Now, CancellationToken.None);
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
         await session.SaveChangesAsync(CancellationToken.None);
 
         await LearningRetireCommand.RunAsync(
@@ -268,7 +271,7 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
         (LearningRecorded recorded, ResolvedKnowledgeScope scope) = await LearnCommand.RunAsync(
             session,
             new LearnCommand.Settings { Statement = "What this run learned", Task = DomainId.Short(taskId) },
-            node.OwnerId, Now, CancellationToken.None);
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
         await session.SaveChangesAsync(CancellationToken.None);
 
         scope.ScopeId.Should().Be(project.Id, "the run's own project is the default scope");
@@ -321,7 +324,7 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
         (LearningRecorded staysHome, _) = await LearnCommand.RunAsync(
             session,
             new LearnCommand.Settings { Statement = "A habit of mine", Owner = true },
-            node.OwnerId, Now, CancellationToken.None);
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
         await session.SaveChangesAsync(CancellationToken.None);
 
         ReplicationProjectResolver resolver = new();
@@ -416,11 +419,11 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
         await LearnCommand.RunAsync(
             session,
             new LearnCommand.Settings { Statement = "This project's runs learned this", Project = project.Name },
-            node.OwnerId, Now, CancellationToken.None);
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
         await LearnCommand.RunAsync(
             session,
             new LearnCommand.Settings { Statement = "A habit of mine everywhere", Owner = true },
-            node.OwnerId, Now, CancellationToken.None);
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
         await session.SaveChangesAsync(CancellationToken.None);
 
         await using IQuerySession query = _postgres.Store.QuerySession();
@@ -431,6 +434,184 @@ public sealed class DecisionAndLearningCommandsTests : IClassFixture<PostgresFix
         documents.Decisions.Should().NotContain("Another project decided that");
         documents.Lessons.Should().Contain("This project's runs learned this");
         documents.Lessons.Should().NotContain("A habit of mine everywhere");
+    }
+
+    /// <summary>
+    /// The prompt feed's own query seam (idea d805fd8b, piece 5), which the pure composer tests
+    /// cannot reach: the section carries this project's active lessons PLUS this owner's, and
+    /// neither another project's nor a retired one. This is where it deliberately differs from the
+    /// rendered documents above, which are one project's file and leave an owner's cross-project
+    /// habits out.
+    /// </summary>
+    [Fact]
+    public async Task The_prompt_feed_carries_this_projects_active_lessons_and_this_owners()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedProjectAsync(CancellationToken.None);
+        (_, ProjectDetails elsewhere) = await SeedProjectAsync(CancellationToken.None);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings { Statement = "This project's own lesson", Project = project.Name },
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
+        await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings { Statement = "Another project's lesson", Project = elsewhere.Name },
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
+        await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings { Statement = "A habit of mine everywhere", Owner = true },
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
+        (LearningRecorded doomed, _) = await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings { Statement = "A lesson about to retire", Project = project.Name },
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
+        await session.SaveChangesAsync(CancellationToken.None);
+
+        await LearningRetireCommand.RunAsync(
+            session,
+            new LearningRetireCommand.Settings { Learning = doomed.Id.ToString(), Reason = "Wrong" },
+            node.OwnerId, Now.AddMinutes(1), CancellationToken.None);
+        await session.SaveChangesAsync(CancellationToken.None);
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        InjectedLessons section = await LessonPromptFeed.ComposeAsync(
+            query, project.Id, node.OwnerId, node.NodeId, LessonInjectionCaps.Default, CancellationToken.None);
+
+        section.Lessons.Select(lesson => lesson.Statement).Should()
+            .BeEquivalentTo(["This project's own lesson", "A habit of mine everywhere"]);
+        section.ActiveInScope.Should().Be(2, "the retired one is not part of the active inventory");
+    }
+
+    /// <summary>
+    /// The citation half of distillation through the command seam: <c>--distilled-from</c> resolves
+    /// each source against the store, so a reference to nothing is refused by name here rather than
+    /// recorded as a citation pointing nowhere, and the merge is readable back off the row.
+    /// </summary>
+    [Fact]
+    public async Task A_distilled_lesson_cites_resolvable_sources_and_refuses_one_that_names_nothing()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedProjectAsync(CancellationToken.None);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (LearningRecorded first, _) = await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings { Statement = "Docker has to be up before the integration tier", Project = project.Name },
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
+        (LearningRecorded second, _) = await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings { Statement = "The integration tier needs a container runtime", Project = project.Name },
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
+        await session.SaveChangesAsync(CancellationToken.None);
+
+        (LearningRecorded merged, _) = await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings
+            {
+                Statement = "The integration tier needs Docker running first",
+                Project = project.Name,
+                DistilledFrom = [DomainId.Short(first.Id), DomainId.Short(second.Id)],
+            },
+            node.OwnerId, node.NodeId, Now.AddMinutes(1), CancellationToken.None);
+        await session.SaveChangesAsync(CancellationToken.None);
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        LearningDetails row = (await query.LoadAsync<LearningDetails>(merged.Id, CancellationToken.None))!;
+        row.DistilledFrom.Should().BeEquivalentTo([first.Id, second.Id]);
+
+        Func<Task> namesNothing = async () => await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings
+            {
+                Statement = "A merge of something that is not there",
+                Project = project.Name,
+                DistilledFrom = ["zzzzzzzz"],
+            },
+            node.OwnerId, node.NodeId, Now.AddMinutes(2), CancellationToken.None);
+
+        await namesNothing.Should().ThrowAsync<DomainNotFoundException>();
+
+        // A well-formed id parses without ever touching the store, so the fragment case above
+        // proves nothing about it: this is the one that ships a citation pointing at nothing if
+        // the resolution skips the existence check (cycle-1 pre-PR review, adversarial lens).
+        Func<Task> namesNoLesson = async () => await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings
+            {
+                Statement = "A merge citing an id nothing was ever recorded under",
+                Project = project.Name,
+                DistilledFrom = [DomainId.New().ToString()],
+            },
+            node.OwnerId, node.NodeId, Now.AddMinutes(3), CancellationToken.None);
+
+        (await namesNoLesson.Should().ThrowAsync<DomainNotFoundException>())
+            .WithMessage("*nothing to cite*");
+    }
+
+    /// <summary>
+    /// The provenance mark's other half, through the real session rather than a fixture row: a
+    /// lesson an agent run on this node records has to project THIS node, so it reaches a prompt.
+    /// The inline projection reads the node off the event's own metadata, and Marten applies
+    /// inline projections before it calls any session listener, so the origin stamping listener's
+    /// pass lands too late for this row and the append has to carry the node itself
+    /// (<see cref="EventRecordingNode.StampAtAppend"/>; cycle-1 pre-PR review, both lenses, where
+    /// every agent-recorded lesson on this node projected a null node and was held out of every
+    /// prompt).
+    /// </summary>
+    [Fact]
+    public async Task A_lesson_a_run_on_this_node_records_projects_this_node_and_reaches_a_prompt()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedProjectAsync(CancellationToken.None);
+        (Guid taskId, _) = await SeedDispatchedRunAsync(node, project, CancellationToken.None);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (LearningRecorded recorded, _) = await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings
+            {
+                Statement = "The gate's own filter excludes the docker tier",
+                Task = DomainId.Short(taskId),
+            },
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
+        await session.SaveChangesAsync(CancellationToken.None);
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        LearningDetails row = (await query.LoadAsync<LearningDetails>(recorded.Id, CancellationToken.None))!;
+        row.RecordedOnNodeId.Should().Be(
+            node.NodeId, "the row is what the prompt feed and h9k learn show both read the node off");
+
+        LessonProvenanceMark mark = LessonProvenanceMark.Of(row.Provenance, row.RecordedOnNodeId, node.NodeId);
+        mark.Should().Be(LessonProvenanceMark.AgentOnThisNode);
+
+        InjectedLessons section = await LessonPromptFeed.ComposeAsync(
+            query, project.Id, node.OwnerId, node.NodeId, LessonInjectionCaps.Default, CancellationToken.None);
+        section.Lessons.Select(lesson => lesson.Statement).Should()
+            .Contain("The gate's own filter excludes the docker tier");
+        section.HeldForProvenance.Should().Be(0, "this node's own agent-recorded lesson is not held back");
+    }
+
+    /// <summary>
+    /// The metadata the listener writes is unchanged by the append stamping above: the persisted
+    /// event still carries this node's id, so everything that reads origin off <c>mt_events</c>
+    /// (replication's outbox filter, the partial-stream repair planner) reads what it always did.
+    /// </summary>
+    [Fact]
+    public async Task The_recorded_lesson_event_still_carries_this_nodes_origin_metadata()
+    {
+        (NodeContext node, ProjectDetails project) = await SeedProjectAsync(CancellationToken.None);
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        (LearningRecorded recorded, _) = await LearnCommand.RunAsync(
+            session,
+            new LearnCommand.Settings { Statement = "A claim typed at a shell", Project = project.Name },
+            node.OwnerId, node.NodeId, Now, CancellationToken.None);
+        await session.SaveChangesAsync(CancellationToken.None);
+
+        await using IQuerySession query = _postgres.Store.QuerySession();
+        IReadOnlyList<IEvent> events = await query.Events.FetchStreamAsync(
+            recorded.Id, token: CancellationToken.None);
+        events.Should().ContainSingle().Which
+            .Headers![EventOriginStampingListener.NodeIdHeader].Should().Be(node.NodeId.ToString());
     }
 
     private async Task<(NodeContext Node, ProjectDetails Project)> SeedProjectAsync(CancellationToken cancellationToken)

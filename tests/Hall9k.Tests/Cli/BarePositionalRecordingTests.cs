@@ -123,4 +123,30 @@ public sealed class BarePositionalRecordingTests
         inTheTree.Should().NotBeEmpty($"h9k {branch} has to have subcommands for this to mean anything");
         BarePositionalRecording.Branches[branch].Should().BeEquivalentTo(inTheTree);
     }
+
+    /// <summary>
+    /// The record subcommand's own description is where a human learns which statements the bare
+    /// positional form cannot carry, so it has to name every reserved word rather than whichever
+    /// ones existed when it was written. Origin: adding <c>h9k learn distill</c> put a fifth
+    /// reserved word in the branch and left that sentence listing four (self-review, this branch),
+    /// which is the same registration-and-prose drift the test above guards for the reserved list
+    /// itself.
+    /// </summary>
+    [Theory]
+    [InlineData("decide")]
+    [InlineData("learn")]
+    public void The_record_subcommands_description_names_every_word_it_cannot_record(string branch)
+    {
+        // Read off the rendered help a caller actually sees, with its word wrapping flattened
+        // first: the shipped width breaks that sentence across lines, and a raw Contains against
+        // the wrapped text would fail on where the break happens rather than on what it says.
+        string help = string.Join(' ', CommandTreeHelpTests
+            .Help([branch, "record"])
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+
+        foreach (string reserved in BarePositionalRecording.Branches[branch])
+        {
+            help.Should().Contain(reserved, $"h9k {branch} \"{reserved}\" cannot be recorded as a statement");
+        }
+    }
 }
