@@ -44,25 +44,13 @@ every conflicting branch (PLAN.md Decisions Log #131). That is the after-push ha
 half runs earlier still, immediately before the mandatory full pass just mentioned: the run fetches
 the base branch and, if it moved, rebases onto it right there in its own worktree, so the mandatory
 gate and pass read the rebased tree and the pull request that opens afterward is mergeable on
-arrival. A no-op rebase and a clean rebase both still run one mechanical step first: reassigning
-the log's own tail placeholder (PLAN.md §16, Decisions Log #162) its real number
-and rewriting every citation of it, committed on its own before the mandatory gate reruns. Beyond
-that step, neither costs anything extra; a conflict dispatches straight to the narrow recovery
-session inside the same run (never a task reopen) — with exactly one exception. When the only thing
-the rebase conflicts on is that the base and this branch each appended an entry at the end of §16's
-Decisions Log, the rebase resolves it on the spot, keeping the base's entries first and this
-branch's placeholder after them, and carries on: the numbering convention already decided that
-answer, so there is nothing left to judge (PLAN.md §16, Decisions Log #250). The
-shape is read narrowly — one conflicted file, one hunk, whole numbered entries on the base's side
-sitting at the log's tail, this task's own placeholder with its placement note on the branch's —
-and every near miss of it, along with every other conflict, parks exactly as before. Both halves
-still ship and both now decline on their own, because §16 carries no numbered entries any more:
-the renumbering step refuses a section with no number space to read rather than minting #1 over a
-citation the import has already given away, and the conflict shape needs whole numbered entries on
-the base's side that an emptied section cannot offer. A branch cut before that landed, still
-carrying its own §16 entry, therefore reaches the mandatory gate with the entry intact and is
-failed there by name, with the message pointing at `h9k decide`. Retiring both is the remaining
-piece of idea d805fd8b. This run's own
+arrival. A no-op rebase and a clean rebase cost nothing extra; a conflict dispatches straight to
+the narrow recovery session inside the same run (never a task reopen), with no exception at all
+now that the Decisions Log has left this repository (idea d805fd8b). The one shape the rebase used
+to resolve in place was two branches each appending an entry at the tail of §16's log, and the
+machinery for it (the renumberer, the placeholder value object, the tail-append resolver, and the
+numbering guard test) is gone with the log, so Brian's 2026-09-04 ruling that a git conflict is
+itself the evidence judgment is required holds without exception again. This run's own
 one read-only stack assessment (PLAN.md §16, Decisions Log #205) gets its say only at that
 session's own two park points: a dispute it cannot honestly resolve, or the exhaustion of its own
 round cap, never on the first conflict the session is about to attempt. It reaches a structured
@@ -330,9 +318,8 @@ The parent's post-delivery churn is absorbed at **two checkpoints** rather than 
 (#146): a child still in flight catches up to its parent's current head immediately before its own
 first review cycle and immediately before the mandatory final full pass, and nowhere in between.
 Each catch-up is mechanical — the same replay, plus the gates, no review cycle — spending the same
-rebase budget and parking past the same cap. A conflict at a checkpoint runs the same Decisions Log
-tail-append resolver the before-push rebase does, and if that is all it was, the replay simply
-continues; anything else first dispatches that same one read-only stack assessment, the branch is
+rebase budget and parking past the same cap. A conflict at a checkpoint first dispatches that same
+one read-only stack assessment, the branch is
 restored, and only an undecidable verdict parks for a human outright. A replay verdict whose own
 mechanical retry also conflicts earns a guided fix session instead, one whose own completion still
 routes the run through the review cycles a checkpoint before cycle one exists to precede
@@ -476,11 +463,12 @@ retire what it merged: that stays the explicit act with its own reason, which is
 shipped without a second terminal status. `h9k status` names the lever for each project whose
 active lessons have passed the count cap, and goes no further than naming it.
 
-What these pieces do **not** yet do: retire the Decisions Log renumberer and its placeholder
-value object. That is the last piece of idea d805fd8b still outstanding. The renumberer does
-still ship, so an in-flight branch that appended a placeholder before §16 was emptied reaches it
-on its own rebase, and it declines there rather than minting #1 over a citation the import has
-already handed out. Two smaller limits are deliberate rather than pending. A review or
+The Decisions Log renumberer, its placeholder value object, the tail-append conflict resolver and
+the numbering guard test are all gone (idea d805fd8b): nothing assigns a log entry a number any
+more, and no prompt tells a session to append one. An in-flight branch that appended a placeholder
+before §16 was emptied therefore carries it through to merge as ordinary prose, and the decision it
+states belongs in the store, recorded by its owner with `h9k decide`. Two smaller limits are
+deliberate rather than pending. A review or
 fix session dispatched into a worktree cut earlier reads whatever `lessons.md` was written there
 at that worktree's original dispatch, while its injected section is always read fresh. And the
 section reaches the twelve prompts that do implementation, follow-up, review or fix work on a

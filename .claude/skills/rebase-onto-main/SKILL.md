@@ -47,62 +47,20 @@ this skill is not needed; GitHub merges it fine as-is.
      lines, and picking either would silently drop real work. See "When a conflict is not
      yours to resolve" below.
 
-   **PLAN.md's §16 carries no numbered entries any more, so check that first.** The section is
-   a pointer at the rendered `decisions.md` now (idea d805fd8b): every decision is an event in
-   the store, cited by the id in its own heading. A branch cut before that landed can still
-   bring its own §16 entry into this rebase, and neither shape below applies to it. Take the
-   base's side for the section, and do not hand-number the entry or leave it for
-   `DecisionsLogRenumberer`: that step declines a section with no number space to read rather
-   than minting #1 over a citation the import has already given away, so nothing will ever
-   number it, and `DecisionsLogNumberingGuardTests` fails the mandatory gate while the entry is
-   still there. The decision itself belongs in the store, and `h9k decide` refuses a decision
-   recorded from inside an unattended run, so say so in your handoff and let the owner record
-   it rather than trying to type it yourself. The two shapes below apply only where the base's
-   own §16 still carries numbered entries.
-
-   **PLAN.md's own §16 v0 Decisions Log tail is a conflict of two different shapes, and only
-   one of them is left for the mechanical step.** Either way, it is always **keep both**: this
-   branch's own entry stays exactly as written, ordered after whatever main gained. Which shape
-   decides whether you also renumber it yourself, right here:
-
-   - **This branch's own tail entry carries `PLACEHOLDER-<shortid>`.** Never renumber it by
-     hand. The mechanical pre-final-pass rebase step (`DecisionsLogRenumberer`, invoked
-     automatically once this rebase lands, no agent session) assigns the real number — a
-     hand-picked one here would just be a second, competing guess for it to untangle.
-   - **This branch's own tail entry already carries a real, hand-picked number that collides
-     with an entry main gained** (a branch cut before the placeholder convention shipped).
-     Whether you renumber it yourself here depends on which of this skill's two invocation paths
-     put you in front of this conflict — they leave the run in different states, and
-     `DecisionsLogRenumberer`'s transition-shape check reads that state, not just the diff:
-
-     - **Dispatched as this skill's own documented precondition** — a standalone follow-up
-       because GitHub reports the PR `CONFLICTING` against its base (the case the precondition
-       above describes). Renumber it yourself, right here, the same way the pre-convention
-       repository always did: give it the log's next free number and append a hand-written
-       "Renumbering placement note" (PLAN.md's own §16 already carries about twenty of these;
-       match their style) recording the old number, the collision, and which citations elsewhere
-       in the repository moved with it. Do NOT leave this one for `DecisionsLogRenumberer` on
-       this path — its transition-shape check reads against this branch's own fork point, but by
-       the time it runs your own `git rebase origin/<base>` in step 2 has already landed, so the
-       branch's merge-base against `origin/<base>` is now `origin/<base>`'s own tip, which
-       already contains the number your entry collided with. A standalone follow-up's run
-       carries no prior pre-final-pass rebase-recovery event, so the check has nothing else to
-       read and falls back to that freshly-advanced merge-base, sees "already taken at the fork
-       point" — the signature of a genuine hand-numbering mistake, not a parallel merge — and
-       declines. Left unrenumbered, the duplicate only fails `DecisionsLogNumberingGuardTests`
-       at the mandatory final pass, and nothing mechanical will ever fix it from there.
-     - **Invoked from inside an active run's own pre-final-pass rebase-recovery session**
-       (`ReviewEngine`'s `EnsureRebasedBeforeFinalPassAsync` hit this same conflict mid-run and
-       dispatched you to resolve it, rather than this being a standalone follow-up). Do NOT
-       renumber by hand here — leave it for `DecisionsLogRenumberer`. This path is not the one
-       the paragraph above describes: the run already carries a recorded
-       `LastPreFinalPassRebaseFromCommit` from before this conflict, which `RunAggregate`'s own
-       trailing-no-op guard keeps pointing at the branch's TRUE original fork point across this
-       re-entry, and the check reads that instead of the freshly-advanced merge-base — so it
-       correctly sees the collision as a parallel merge, not a hand-numbering mistake, and
-       renumbers on its own once this rebase lands. Hand-renumbering here would race the
-       mechanical step and hand citation-rewriting to judgment instead of the sweep the
-       "no agent renumbers it" rule exists to guarantee.
+   **PLAN.md's §16 carries no numbered entries any more.** The section is a pointer at the
+   rendered `decisions.md` now (idea d805fd8b): every decision is an event in the store, cited
+   by the id in its own heading, and the renumbering machinery that once assigned a tail entry
+   its number is gone along with the log itself. A branch cut before that landed can still bring
+   its own §16 entry into this rebase. Take the base's side for the section and do not
+   hand-number the entry: nothing numbers it any more, and the number is not what a citation
+   resolves against. The decision itself belongs in the store, and `h9k decide` refuses a
+   decision recorded from inside an unattended run, so say so in your handoff and let the owner
+   record it rather than trying to type it yourself. Watch for the degenerate case: when the
+   replayed commit held nothing but that entry (a hand-written "log this branch's own decision",
+   or one of the old mechanical `chore: assign Decisions Log #N` commits), taking the base's side
+   leaves the commit empty and `git rebase --continue` drops it without saying so. That is the
+   right outcome, but it is a commit that disappeared, so confirm it against `git log` and name it
+   in your summary rather than reporting the replay as untouched.
 
    Land a resolved conflict inside the commit being replayed (`git add <files>` then
    `git rebase --continue`), never as a separate "resolve conflict" commit. The mapping
