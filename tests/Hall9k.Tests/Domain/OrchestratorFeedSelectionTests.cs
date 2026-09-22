@@ -48,6 +48,28 @@ public sealed class OrchestratorFeedSelectionTests
         read.DrainableThroughSequence.Should().Be(42, "a drain on an empty read must not rewind the cursor");
     }
 
+    /// <summary>
+    /// Task: a run stream whose first event is a reconstruction rather than a dispatch. A peer's
+    /// own daemon rebuilt nothing, so a replicated copy of a teammate's reconstruction raises no
+    /// item here — but this node's own reconstruction still does, at the Actionable band it always
+    /// has.
+    /// </summary>
+    [Fact]
+    public async Task A_replicated_reconstruction_raises_no_item_but_a_local_one_does()
+    {
+        object reconstructed = new RunRecordReconstructed(
+            Guid.NewGuid(), TaskId, Guid.NewGuid(), Guid.NewGuid(), null, null, At);
+        OrchestratorFeedCandidate[] candidates =
+        [
+            Candidate(5, reconstructed, isReplicated: true),
+            Candidate(6, reconstructed, isReplicated: false),
+        ];
+
+        OrchestratorFeedRead read = await Read(candidates, OrchestratorFeedLevel.Actionable, startedFrom: 0);
+
+        read.Items.Should().ContainSingle().Which.Sequence.Should().Be(6);
+    }
+
     [Fact]
     public async Task An_event_too_new_to_have_settled_is_shown_but_not_drained_past()
     {
@@ -197,8 +219,9 @@ public sealed class OrchestratorFeedSelectionTests
     /// way: the tests that are about the window say so by passing their own instant.</summary>
     private static readonly DateTimeOffset Settled = At.AddDays(1);
 
-    private static OrchestratorFeedCandidate Candidate(long sequence, object data, DateTimeOffset? at = null) =>
-        new(sequence, at ?? At.AddMinutes(sequence), data.GetType(), data, TaskId);
+    private static OrchestratorFeedCandidate Candidate(
+        long sequence, object data, DateTimeOffset? at = null, bool isReplicated = false) =>
+        new(sequence, at ?? At.AddMinutes(sequence), data.GetType(), data, TaskId, isReplicated);
 
     private static Task<OrchestratorFeedRead> Read(
         IReadOnlyList<OrchestratorFeedCandidate> candidates, OrchestratorFeedLevel level, long startedFrom) =>

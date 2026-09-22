@@ -1,6 +1,7 @@
 using Hall9k.Connectors.Replication;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Orchestrator;
+using Hall9k.Domain.Features.Replication;
 using Hall9k.Domain.Features.Tasks.Projections;
 using JasperFx.Events;
 using Marten;
@@ -149,7 +150,9 @@ public sealed class OrchestratorFeedReader(ReplicationProjectResolver ownership)
         Dictionary<Guid, ReplicationOwnership> resolved = [];
         return await OrchestratorFeedSelection.SelectAsync(
             [.. raw.Select(e =>
-                new OrchestratorFeedCandidate(e.Sequence, e.Timestamp, e.EventType, e.Data, e.StreamId))],
+                new OrchestratorFeedCandidate(
+                    e.Sequence, e.Timestamp, e.EventType, e.Data, e.StreamId,
+                    e.GetHeader(ReplicationEventHeaders.OriginEventId) is not null))],
             projectId,
             level,
             startedFrom,
