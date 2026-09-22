@@ -49,7 +49,12 @@ public sealed class DispatchedSessionTreeTests
         CommandApp app = new();
         app.Configure(config =>
         {
-            CliCommandTree.Configure(config);
+            // Never the real process environment (Configure's single-arg overload): this test
+            // process can itself inherit HALL9K_DISPATCHED_RUN_ID from a dispatched session running
+            // this very suite, which would let DispatchedSessionInterceptor — registered ahead of
+            // this class's own interceptor below, in Spectre's own registration order — throw before
+            // CaptureSettingsType ever runs (independent pre-PR review, cycle 1, conformance finding).
+            CliCommandTree.Configure(config, _ => null);
             config.SetInterceptor(interceptor);
             config.UseStrictParsing();
         });
