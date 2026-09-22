@@ -14,6 +14,10 @@ public sealed class LearningAggregate
     /// <summary>The project this lesson applies to, or the owner whose habit it is — read under <see cref="Scope"/>.</summary>
     public Guid ScopeId { get; private set; }
     public string Statement { get; private set; } = string.Empty;
+
+    /// <summary>The lessons this one was merged out of, or null when it was recorded on its own; see <see cref="LearningRecorded.DistilledFrom"/>.</summary>
+    public IReadOnlyList<Guid>? DistilledFrom { get; private set; }
+
     public RecordedProvenance? Provenance { get; private set; }
     public DateTimeOffset RecordedAt { get; private set; }
     public LearningStatus Status { get; private set; } = LearningStatus.Unknown;
@@ -26,6 +30,7 @@ public sealed class LearningAggregate
         Scope = @event.Scope;
         ScopeId = @event.ScopeId;
         Statement = @event.Statement;
+        DistilledFrom = @event.DistilledFrom;
         Provenance = @event.Provenance;
         RecordedAt = @event.RecordedAt;
         Status = LearningStatus.Active;
