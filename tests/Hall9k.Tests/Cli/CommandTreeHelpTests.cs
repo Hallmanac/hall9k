@@ -328,7 +328,7 @@ public sealed class CommandTreeHelpTests
         return examples;
     }
 
-    private static string Help(string[] path)
+    internal static string Help(string[] path)
     {
         StringWriter writer = new();
         IAnsiConsole console = AnsiConsole.Create(new AnsiConsoleSettings

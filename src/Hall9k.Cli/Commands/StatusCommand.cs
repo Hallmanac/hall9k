@@ -3,6 +3,8 @@ using Hall9k.Cli.DaemonControl;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Cli.Orchestrator;
 using Hall9k.Connectors.Replication;
+using Hall9k.Domain.Features.Learning;
+using Hall9k.Domain.Features.Learning.Queries;
 using Hall9k.Domain.Features.Courier;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
@@ -82,6 +84,7 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
         await WriteFleetReconcilesAsync(session, cancellationToken);
         await WriteUnverifiedLedgerWritesAsync(session, cancellationToken);
         await WriteMergedWithoutCopilotReviewAsync(session, cancellationToken);
+        await WriteLessonsOverCapAsync(session, cancellationToken);
 
         // A headless TaskListItem — its own genesis event never arrived, so Marten auto-vivified
         // it from a tail event with no project, no objective, and a default added time — is never
@@ -343,6 +346,65 @@ public sealed class StatusCommand : Hall9kAsyncCommand<StatusCommand.Settings>
             AnsiConsole.MarkupLineInterpolated($"[dim]identity: unavailable ({exception.Message})[/]");
         }
     }
+
+    /// <summary>
+    /// Names the distillation lever for each project whose active lessons have outgrown what a
+    /// prompt carries (idea d805fd8b, piece 5; backlog 55). This is as far as the platform goes on
+    /// its own: it says the inventory passed the cap and leaves the call to a person, because
+    /// merging two claims into one is a judgment about meaning and nothing here is in a position
+    /// to make it.
+    /// <para>
+    /// Compared against the count cap alone, never the character cap: the count is a property of
+    /// the project's inventory and answers the same way whoever asks, while whether a particular
+    /// lesson fitted inside the character budget depends on what else was live at the moment some
+    /// prompt was composed. A line here about the second would be a claim about a past
+    /// composition, and the section in that prompt already announced its own truncation.
+    /// </para>
+    /// <para>
+    /// Counts every live project-scoped lesson whatever its provenance, including the ones held
+    /// out of prompts: an inventory that has outgrown the cap has outgrown it for a reader of
+    /// <c>lessons.md</c> too, and distillation is what shrinks it either way.
+    /// </para>
+    /// </summary>
+    private static async Task WriteLessonsOverCapAsync(IQuerySession session, CancellationToken cancellationToken)
+    {
+        try
+        {
+            OperatingSettings configured =
+                (await PlatformConfigFile.TryReadOperatingSettingsAsync(cancellationToken)).Settings;
+            LessonInjectionCaps caps = LessonInjectionCaps.Resolve(
+                configured.LessonPromptMaxLessons, configured.LessonPromptMaxCharacters);
+            IReadOnlyList<ProjectDetails> projects = await session.Query<ProjectDetails>()
+                .Where(project => !project.IsArchived)
+                .ToListAsync(cancellationToken);
+            foreach (ProjectDetails project in projects.OrderBy(project => project.Name, StringComparer.OrdinalIgnoreCase))
+            {
+                int active = await LessonPromptFeed.CountActiveProjectLessonsAsync(
+                    session, project.Id, cancellationToken);
+                if (LessonsOverCapLine(project.Name, active, caps.MaxLessons) is { } line)
+                {
+                    AnsiConsole.MarkupLine(line);
+                }
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            AnsiConsole.MarkupLineInterpolated($"[dim]lesson inventory: unavailable ({exception.Message})[/]");
+        }
+    }
+
+    /// <summary>
+    /// The one line, or null when this project's lessons still fit. Separated from the query above
+    /// so the threshold and the wording are provable without a database, the same split
+    /// <see cref="FleetReconcileLine"/> already uses.
+    /// </summary>
+    internal static string? LessonsOverCapLine(string projectName, int activeLessons, int maxLessons) =>
+        activeLessons <= maxLessons
+            ? null
+            : $"[yellow]{projectName.EscapeMarkup()}[/] [dim]{activeLessons} active lessons, over the "
+              + $"{maxLessons} a prompt carries, so {activeLessons - maxLessons} never reach one. "
+              + $"h9k learn distill --project {projectName.EscapeMarkup()} (or retire what is done: "
+              + "h9k learn list)[/]";
 
     /// <summary>
     /// One line per registered, non-archived project this install has no recognized membership on

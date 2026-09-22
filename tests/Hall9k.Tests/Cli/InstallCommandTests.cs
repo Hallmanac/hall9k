@@ -300,6 +300,7 @@ public sealed class InstallCommandTests : IDisposable
             ReviewLapPromptBuilder.TemplateDirectory, WorkPromptBuilder.TemplateDirectory,
             AgentPromptBuilder.TemplateDirectory, MentionFollowUpPromptBuilder.TemplateDirectory,
             DesignReviewPromptBuilder.TemplateDirectory, QaReviewPromptBuilder.TemplateDirectory,
+            LearningDistillCommand.TemplatePackage,
         })
         {
             string templatePackage = Path.Combine(directory, "templates", templateDirectory);

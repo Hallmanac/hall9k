@@ -549,6 +549,13 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             // QaReviewPromptBuilder's own package, a literal for the same reason (piece 2 of the
             // same idea): every pr-review run whose assignee declared the QA persona needs it.
             "qa-review-prompt-builder",
+            // h9k learn distill's own prose, which unlike the six above is a CLI command's rather
+            // than a builder's, so the package name comes off the command itself. Named here for
+            // the identical reason: without it the command fails at first use with "No prompt
+            // template found", which is a runtime surprise rather than the loud, nothing-swapped
+            // refusal this check exists to give (independent pre-PR review, cycle 3, conformance
+            // lens).
+            LearningDistillCommand.TemplatePackage,
         })
         {
             string requiredTemplatePackage = Path.Combine(fromRelease, "templates", templateDirectory);

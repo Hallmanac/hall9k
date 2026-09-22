@@ -44,6 +44,31 @@ internal static class LearningIdResolver
         };
     }
 
+    /// <summary>
+    /// Resolves a reference that is about to be RECORDED as a citation, so it has to name a lesson
+    /// that exists. <see cref="ResolveAsync"/>'s full-id fast path deliberately does not query,
+    /// and every other caller is fine with that because it goes on to load the lesson and gets
+    /// "No lesson &lt;id&gt;" from the load. A citation is never loaded: it is written onto an
+    /// event and read back by a person much later, so a well-formed id that names nothing would
+    /// ship as a merge pointing at nothing and there is no second chance to catch it
+    /// (adversarial pre-PR review, cycle 1).
+    /// <para>
+    /// Checked against <see cref="LearningDetails"/> rather than by replaying the stream: the row
+    /// is what <c>h9k learn show</c> and <c>h9k learn list</c> will read the citation back
+    /// through, so it is the existence that actually matters to whoever checks the merge.
+    /// </para>
+    /// </summary>
+    public static async Task<Guid> ResolveRecordedAsync(
+        IQuerySession session, string idOrFragment, CancellationToken cancellationToken)
+    {
+        Guid learningId = await ResolveAsync(session, idOrFragment, cancellationToken);
+        return await session.LoadAsync<LearningDetails>(learningId, cancellationToken) is not null
+            ? learningId
+            : throw new DomainNotFoundException(
+                $"No lesson {learningId}, so there is nothing to cite it as a source. See what has "
+                + "been recorded: h9k learn list");
+    }
+
     /// <summary>Loads the aggregate behind a reference, for the commands that decide on state.</summary>
     public static async Task<LearningAggregate> LoadAsync(
         IDocumentSession session, string idOrFragment, CancellationToken cancellationToken)

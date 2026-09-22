@@ -49,7 +49,7 @@ internal static class BarePositionalRecording
         new Dictionary<string, string[]>(StringComparer.Ordinal)
         {
             ["decide"] = [RecordSubcommand, "list", "show", "supersede"],
-            ["learn"] = [RecordSubcommand, "list", "show", "retire"],
+            ["learn"] = [RecordSubcommand, "list", "show", "retire", "distill"],
         };
 
     public static string[] Normalise(string[] args)

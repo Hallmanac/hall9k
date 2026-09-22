@@ -928,7 +928,7 @@ public static class CliCommandTree
                 .WithDescription(
                     "Record a lesson. h9k learn \"…\" reaches this same command with the statement as "
                     + "its argument; spell the subcommand out when the statement itself is the word "
-                    + "list, show, retire, or record.")
+                    + "list, show, retire, distill, or record.")
                 .WithExample("learn", "record",
                     "\"Integration tests need Docker running before dotnet test\"")
                 .WithExample("learn", "record", "\"Prefer a fake over a real process when proving a timing rule\"",
@@ -958,6 +958,21 @@ public static class CliCommandTree
                     + "age or on silence: a lesson that works suppresses its own evidence.")
                 .WithExample("learn", "retire", "28b19893", "--reason",
                     "\"Graduated: the gate now fails the build for it\"");
+            learn.AddCommand<LearningDistillCommand>("distill")
+                .WithDescription(
+                    "Author the task that merges this scope's lessons into fewer, better ones. Creates "
+                    + "an ordinary Research task DRAFT and stops there: nothing dispatches until you "
+                    + "publish and assign it, because the daemon never distils on its own judgment. "
+                    + "Merging two claims into one is a judgment about meaning, and a wrong merge is "
+                    + "worse than two lessons that overlap: the overlap costs a prompt line, a bad "
+                    + "merge replaces two things somebody observed with one thing nobody did. The "
+                    + "task's instructions are merge-and-cite only, and the citation half is enforced "
+                    + "rather than requested: h9k learn --distilled-from is refused outright if the "
+                    + "citations resolve to nothing. h9k status names this lever when a project's "
+                    + "active lessons pass the prompt count cap (h9k config show).")
+                .WithExample("learn", "distill")
+                .WithExample("learn", "distill", "--project", "hall9k")
+                .WithExample("learn", "distill", "--owner");
         });
 
         config.AddBranch("idea", idea =>
