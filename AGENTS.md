@@ -17,7 +17,7 @@ here instead. Then, in order of need:
 - `PLAN.md` — vision and architecture (§16, the hand-maintained decisions log, became the store above)
 - `TASK-MODEL.md` — the domain model: streams, events, aggregates, type discipline
 - `SLICE-1.md` — the current build breakdown and acceptance criteria
-- `HALL9K-P2P-DESIGN.md` — the peer-to-peer layer: identity, discovery, NAT traversal (design only, nothing built; Decisions Log #38-#58)
+- `HALL9K-P2P-DESIGN.md` — the peer-to-peer layer: identity, discovery, NAT traversal. The network half (mDNS, hole punching, a relay, QUIC) is design only; the identity half shipped instead, over the existing git ledger (Decisions Log #38-#58)
 - `README.md` + `docs/` — the newcomer's on-ramp (concepts, CLI map, operations, and `docs/scope.md`,
   which is the honest works-today / designed-but-unbuilt / never-doing inventory). Written from this
   file and the five above, so when behaviour changes here, `docs/` is downstream and needs the edit too.
