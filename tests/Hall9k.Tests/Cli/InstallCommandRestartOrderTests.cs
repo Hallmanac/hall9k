@@ -155,10 +155,16 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
     }
 
     [Fact]
-    public async Task A_failing_child_relays_its_exit_code_and_stops_the_rest_of_the_plan()
+    public async Task A_failing_child_fails_the_install_rather_than_the_post_restart_probe_passing_it()
     {
-        List<string> commandLines = [];
-
+        // Which steps run, and that the plan stops at the first failure, belong to
+        // DaemonRestartHandoffTests and are proved there through the same seam; the one thing
+        // only this level can prove is what FinishAsync does with the code that comes back
+        // (cycle-1 conformance review, which found the rest of this test duplicated that class).
+        // It relays it, rather than falling through to the post-restart probe — which would find
+        // this very test process alive under the pid file, read Running, and call a restart that
+        // never finished a success. BusinessRule rather than Error says so unambiguously: the
+        // probe's own failure path returns Error.
         int exitCode = await InstallCommand.FinishAsync(
             _staging,
             skillsSource: null,
@@ -167,19 +173,14 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
             noRestart: false,
             now: true,
             linkOntoPath: false,
-            restartChildRunner: (_, arguments, _) =>
-            {
-                commandLines.Add($"h9k {string.Join(' ', arguments)}");
-                return Task.FromResult(
-                    arguments[0] == "doctor"
-                        ? RestartStepResult.Exited(ExitCodes.Error)
-                        : RestartStepResult.Exited(ExitCodes.Ok));
-            },
+            restartChildRunner: (_, arguments, _) => Task.FromResult(
+                arguments[0] == "doctor"
+                    ? RestartStepResult.Exited(ExitCodes.BusinessRule)
+                    : RestartStepResult.Exited(ExitCodes.Ok)),
             cancellationToken: CancellationToken.None);
 
-        exitCode.Should().Be(ExitCodes.Error);
-        commandLines.Should().Equal(
-            ["h9k daemon stop", "h9k doctor --yes"],
-            "the plan stops at the first failure rather than starting a daemon against a schema nothing repaired");
+        exitCode.Should().Be(
+            ExitCodes.BusinessRule,
+            "a restart that failed partway is not the success the still-live pid file would otherwise report");
     }
 }
