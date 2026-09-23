@@ -88,6 +88,44 @@ source copy first, the install's own canonical copy otherwise — the builder as
 from templates itself, whichever process hosts it, and hands a session the finished string, never a
 path into either copy.
 
+### What a project adds: addenda, lessons, and the run skill
+
+The templates are the platform's own judgment, shipped for everyone. Three further inputs belong to
+one project, and each rides into a session's prompt without ever replacing a line of the platform's
+prose.
+
+- **Prompt addenda** are a team's own house guidance for one shipped prompt builder: how this
+  project wants a pull request described, say, or what its reviewers should always check. An
+  addendum is set once (`h9k project prompt-addendum set <project> <builder> --file <path>`) for
+  `work`, `review-lap`, `agent`, or `mention-follow-up`, and from then on it is spliced into that
+  builder's every prompt after its rules section. It lives on the project's ledger
+  (`refs/hall9k/ledger/prompt-addenda`), so every member's node composes the same prompt; the CLI
+  only records that you set one, and the daemon is the sole writer of the ledger. An addendum that
+  runs past the length cap is refused unless you accept it with `--over-cap "<reason>"`, and the
+  prompt then says so under its heading.
+- **Lessons** are what earlier runs learned, recorded with `h9k learn`. Every implementation,
+  follow-up, review, and fix prompt carries a bounded section of this project's active lessons,
+  newest first, and the section announces what it held back rather than truncating silently. A
+  lesson an agent recorded on somebody else's node stays out of the prompt until the security review
+  in idea 7e403b80 rules on it. The two caps (`h9k config set --lesson-prompt-max-lessons` and
+  `--lesson-prompt-max-characters`) bound what a prompt pays for; retiring a lesson or running
+  `h9k learn distill` is what shrinks the inventory itself.
+- **The run skill** is the project's own answer to "how do I stand this up locally", written down
+  once so that a review session, `h9k task run-local`, or an orchestrator on any member's machine
+  never has to guess. It lives on the ledger too (`refs/hall9k/ledger/run-skill`) and always has the
+  same six sections, from prerequisites to the steps only a person can do. Its first line says which
+  of three shapes it is. A **pointer** run skill says the repository already documents launching
+  the product, so it points at those files by path and adds only what they leave out. A
+  **full-text** one holds the whole procedure, because the repository documents none of it. A
+  **none-discoverable** one records that the repository gave the survey nothing to read. Registration
+  asks for one, a discovery session composes it from the repository read-only, and the daemon writes
+  it to the ledger; `h9k project set <project> --discover-run-skill` asks again when the launch story
+  has changed. Anything the session could not determine, such as a secret or a login, goes under
+  human steps rather than being guessed. A project with no run skill drives nothing, whatever its
+  [drive settings](#reviewing-a-pull-request-that-is-not-yours-personas) say.
+
+The commands are in [cli.md](cli.md#prompt-addenda) and [cli.md](cli.md#the-run-skill).
+
 ## Ideas and tasks
 
 An **idea** is anything entering the funnel, captured with no ceremony: one command, one
@@ -110,13 +148,60 @@ idea reaches one of its two terminal states only by an explicit, separate human 
 the note's first sentence as the objective and concluding in the same breath, for the common case
 where a single idea deserved a single task and nothing more is coming.
 
-A task always maps to at most one external work item: a GitHub issue or a Jira card. **Content
-belongs to the external system; everything operational belongs to the task.** The task carries
-the agent-facing context, the run history, the dependencies, the pull requests, the token
-economics, and the conversation.
+A task maps to one primary external work item: a GitHub issue or a Jira card. **Content belongs to
+the external system; everything operational belongs to the task.** The task carries the
+agent-facing context, the run history, the dependencies, the pull requests, the token economics,
+and the conversation.
+
+**A task can link both trackers, and then one of them is primary.** A team that keeps the same work
+in a GitHub issue and a Jira card can hand `h9k task add` both (`--from-issue` and `--from-jira`
+together). The **primary** reference is the one that keeps every consequential behavior: the
+claim gate, the branch-name key, publish, the closeout comment or close, and every write to a
+tracker. The **secondary** is shown on `h9k status` and `h9k task show` and linked, but it never
+gates a claim and is never written to. Which one is primary is `--primary-tracker github|jira` on
+that `h9k task add`, or a project default set with `h9k project set --primary-tracker
+github|jira|none`; a task adopting both with neither is refused rather than guessed at. The dual
+shape can only be set when the task is added, so `h9k task link-issue` and `h9k task link-jira`
+still record one reference each and never add a secondary to a published task.
+
+### Task types
+
+`--type` says what kind of work a task is: `feature`, `bugfix`, `refactor`, `chore`, `research`,
+`content`, `pr-review`, or `spike`. Most of them steer the wording of the prompts a session reads.
+`pr-review` is set for you by `--from-pr` and is covered under [the pre-PR review
+loop](#reviewing-a-pull-request-that-is-not-yours-personas). Two of the types change how the
+pipeline itself runs.
+
+**A spike answers one stated question under a stated budget, and never merges.**
+`h9k task add --type spike --kind research|experiment|prototype --exit-criterion "<sentence>"` cuts
+one, with no pull request and one review cycle instead of the full loop. The kind decides two things
+at once: whether the project's gates run, and what becomes of the branch when the spike concludes. A
+`research` spike reads and measures, writes no code, runs no gates, and keeps its branch local as the
+record. An `experiment` spike runs and measures expecting its code to be thrown away, runs no gates,
+and deletes its branch locally once its findings are copied out. A `prototype` spike builds enough to
+demonstrate the exit criterion, runs the ordinary gates, and pushes its branch to origin afterward as
+evidence for a later task or another node to start from. The optional budget (`--max-turns`,
+`--max-tokens`, `--max-wall-clock`) applies to the build session alone: crossing it ends the session
+and records a budget-exhausted verdict with whatever findings were already written, and it is never a
+failure. Exactly one review pass judges the findings document and the branch against the exit
+criterion; only on a first not-met verdict does one fix lap and one final review follow, and that
+verdict stands either way, so a spike never parks for a human. A spike cut from an idea copies its
+findings into the idea's own workspace under `spikes/<task-id>/findings.md`.
+
+**A content task is documentation, skill markdown, prompt templates, or any other non-compiled
+work.** `h9k task add --type content` (or `h9k task revise <id> --type content` while it is a
+Draft) dispatches with a reduced review by default: only the conformance lens ever opens, on every
+cycle including the mandatory final pass, and no `--accept-reduced-review` is needed because the type
+itself is the acknowledgment. An explicit `--review-stage-composition` on the task or its project
+still overrides that default. Its gates are governed by [the non-executable-path
+skip](#verification-gates): a content task also turns that skip into a hard guarantee, so if its diff
+ever touches a single path outside the project's non-executable set, the run fails before any gate
+runs and names every offending path. That is what keeps a type with a light review from carrying
+compiled code past it.
 
 Depth: [PLAN.md §3](../PLAN.md) for the funnel, [TASK-MODEL.md §10](../TASK-MODEL.md) for the
-idea slice, [PLAN.md §4.1](../PLAN.md) for what the task entity carries.
+idea slice, [PLAN.md §4.1](../PLAN.md) for what the task entity carries, and
+[scope.md](scope.md#spikes) for the spike and content-task text in full.
 
 ## The task lifecycle
 
@@ -138,11 +223,14 @@ h9k task draft        ->  Draft       refused from Queued/Blocked onward (unassi
 The edit-after-the-fact path is therefore `unassign → draft → revise → publish → assign`, each
 step an explicit act. Revision is Draft-only because every later state carries a promise that
 editing would break: Published promises the task satisfies the contract and may be assigned at
-any moment, and an assigned task promises a node may read it at any moment. The one exception is
+any moment, and an assigned task promises a node may read it at any moment. The main exception is
 `--queue-first`/`--clear-queue-first`: a scheduling fact rather than part of the readiness
 contract, so a call that names only it is let through in any live state except Abandoned —
 Queued, Blocked, a currently Claimed task (for its next turn in the queue), even a Done one (for
 the follow-up run a later reopen might dispatch) — see [PLAN.md Decisions Log #127](../PLAN.md).
+Two more fields stay editable past Draft. `--clear-interactive-mode` clears a task's interactive-mode
+flag in any live state when nothing else is revised in the same call, and a spike's own kind, exit
+criterion, and budget can still be revised while the spike is Draft or Published.
 
 **The readiness contract** is enforced once, at publish, as an invariant of that state rather
 than a toll booth at creation. It wants an outcome-phrased objective and at least one checkable
@@ -516,6 +604,26 @@ the node's own serialized host-coupled slot, so the recorded failure reason says
 comparison was skipped because it would run a second host-coupled suite outside the node's
 serialized host gate, rather than paying for an answer nobody could trust anyway.
 
+**A diff with no code in it skips the verification gates.** Before any gate runs, the runner
+classifies every path the run's branch changed against its base, deletions and renames included,
+against the project's **non-executable-path set**. When every changed path is in the set, the
+project's gates (its build and its test, for most projects) are skipped outright, and a `VerificationSkipped` fact is recorded naming each path
+and the rule it matched; `h9k task show` prints it in the Gates column exactly where a pass would
+appear, because paying a full build-and-test cycle to prove that a documentation edit cannot break
+the build is the cost the skip exists to remove. The compiled default set is any `*.md` file,
+`docs/`, `.claude/skills/`, and `.claude/commands/`, with `.claude/templates/`, `AGENTS.md`, and
+`PLAN.md` carved back out, because rendered prompt source has its own golden tests and the two
+doctrine files are checked by this platform's own tests. A project can add globs to that set
+(`h9k project set <project> --non-executable-path <glob>`, repeatable, and `default` clears the
+project's own additions), where a glob ending in `/` matches anything under it from the repository
+root, one with no `/` matches a file name at any depth, and anything else matches the whole path.
+It can never remove or narrow a compiled rule, so a glob starting with `!` is refused, and
+`h9k project show` lists the effective set. A diff with one path outside the set, or one that mixes code with content,
+runs the gates in full, as it always did. The classification runs again at every entry into the
+gates (first delivery, an intermediate review pass, every follow-up lap), so a fix lap on a
+content-only branch never pays for them either, and a skip is never used as the base for scoping the
+next gate that does run. A [content task](#task-types) turns this from a default into a refusal.
+
 Gates are deterministic and cheap to trust, which is why they come first. Everything after them
 is judgment.
 
@@ -687,7 +795,75 @@ intended, and runs the touched tests in the foreground, waiting for them to fini
 concludes — so a half-applied fix or a fix-introduced regression is caught by its own author
 instead of costing a separate verify lap.
 
+**Which stages a run gets is itself a setting: the review stage composition.** `full-pipeline` is
+everything described above and the default. `adversarial-only` and `conformance-only` each keep one
+lens; `skip-final-pass` drops the mandatory final pass; `none` runs no pre-PR review at all. It
+resolves task, then project, then node, then the compiled default, once at each run's dispatch, and
+is then frozen for that run, so a change reaches a task's next run and never the one in flight.
+Every value that removes a load-bearing guarantee is refused at set time unless you pass
+`--accept-reduced-review`, which prints the consequence you are accepting. A [content
+task](#task-types) is the one type that arrives with a reduced composition (`conformance-only`) by
+default, without needing that acknowledgment.
+
 Depth: [TASK-MODEL.md §3.1](../TASK-MODEL.md), Decisions Log #24, #59, #62, #63, #88, #90, #92, #93, #113.
+
+### Reviewing a pull request that is not yours: personas
+
+Everything above reviews a run's own diff. A **`pr-review` task** does the same job for a pull
+request somebody else wrote, whether GitHub requested your review or you adopted it with
+`h9k task add --from-pr`: a read-only session in a detached checkout of the pull request's head
+reviews it and parks a findings report for you to walk. Nothing is posted to the pull request
+without your explicit go, and never under any login but your own.
+
+**A persona is the lens the review is read through.** Each member declares the personas they hold
+with `h9k owner set --persona engineer|qa|designer` (repeatable, and `--clear-personas` declares
+none). A pull request assigned to that member still mints one pr-review task, and the task runs one
+review session per declared persona on its single worktree and branch, reported in one findings
+report with a section per persona. Declaring none is the ordinary case and reads as the engineer's
+review, which is the code, logic, and functionality review that existed before personas did. The set
+is fixed, because each persona maps to its own prompt and criteria in the platform's registry.
+
+- **The QA review reads the change through blast radius, not correctness.** Its report opens with a
+  plain-language map: what the diff changes, what sits next to it through a shared code path or data
+  shape, and the user-facing flows that cross either. Each entry is graded as covered by a named
+  existing test, owed a new automated end-to-end test the review specifies, or owed a human
+  walk-through it writes out step by step, and every later finding cites its entry. The session runs
+  the project's end-to-end tests on the review worktree and reports pass, fail, or absent with
+  evidence.
+- **The designer review answers seven lenses, in the same order every time:** user experience,
+  conformance to the proposed design, motion, CSS practice, accessibility, look and feel, and the
+  design system. A lens the change does not touch says so in one line. The proposed design is a
+  Figma link, an image set, or a prototype named on the linked task or issue or in the pull
+  request; when none is named, the conformance lens reports `no reference supplied` rather than
+  judging against imagination.
+
+**Whether a review may run the product is a per-project consent.** Both personas can launch the
+running product on the review worktree, walk the changed flows through browser automation, and put a
+screenshot beside each finding it supports in a `Driven` section of the report, on an ephemeral port
+the session reports and then tears down. That starts a real process on this machine, so it is a
+project setting with a deliberate default for each. `h9k project set <project> --design-review-drive
+on|off` defaults to **on**, because a design review that never looks at the running product is
+judging markup. `h9k project set <project> --qa-review-drive on|off` defaults to **off**; with it
+off, anything the QA verdict needs the running product for comes back as a walk-through for a person.
+Either way, a project with no [run skill](#what-a-project-adds-addenda-lessons-and-the-run-skill)
+drives nothing, because nothing records how to start it, and the report says which of the two
+reasons applied instead of leaving a reader to assume the product was seen. `h9k project show`
+prints each setting with its origin.
+
+**A review ends with an offer to run the branch locally, and `h9k task run-local` takes it up.**
+Whenever the project has a run skill, both reports close by offering that the reviewer walk the
+branch in person. The review never acts on the offer: the reviewer answers it in their orchestrator
+window, and the window runs `h9k task run-local <task>`, since the report's closing block already
+names the task, run, branch, and worktree. The command follows the run skill as an ordered plan on
+that worktree. A step with a command runs; a step with none stops the launch and prints what the
+skill says to do, and `--continue` resumes at the next step. A launch command with somewhere to put a
+port gets an ephemeral one, so a review never seizes a port you were already using. When the product
+is up it prints the address and the human steps. It refuses, with a sentence, when the worktree is
+gone, when the project has no run skill, or when a launch of the same task is already up. `--stop`
+ends it, and so does the daemon when the task closes out or the worktree is removed, so a launch is
+never left running.
+
+The option lists are in [cli.md](cli.md#projects-owners-connections).
 
 ## Closeout
 
@@ -1102,8 +1278,9 @@ owner.
 
 **Agents have no identity of their own.** They act as the owner's git and `gh` identity, and the
 work is authored by the human: no bot accounts, no `Co-Authored-By` trailers. The audit trail
-lives in Hall9k, not in commit cosmetics. Personas (reviewer, implementer, fix) are roles, which
-are prompt templates and tool policies, not accounts.
+lives in Hall9k, not in commit cosmetics. Roles (reviewer, implementer, fix) are prompt templates
+and tool policies, not accounts. The [review personas](#reviewing-a-pull-request-that-is-not-yours-personas)
+a member declares are the same kind of thing: a lens chosen for a review, never an identity.
 
 A **connection** is an external account this install can reach: provider, account, and a
 *reference* to where the credential lives (`env:`, `keychain:`, `file:`). The secret itself never
