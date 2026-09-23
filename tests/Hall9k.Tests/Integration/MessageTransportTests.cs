@@ -1357,8 +1357,8 @@ public sealed class MessageTransportTests : IClassFixture<PostgresFixture>, IAsy
         await using IDocumentSession first = _postgres.Store.LightweightSession();
         await using IDocumentSession second = _postgres.Store.LightweightSession();
 
-        Marten.Events.StreamState fence1 = (await first.Events.FetchStreamStateAsync(streamId, cts.Token))!;
-        Marten.Events.StreamState fence2 = (await second.Events.FetchStreamStateAsync(streamId, cts.Token))!;
+        JasperFx.Events.StreamState fence1 = (await first.Events.FetchStreamStateAsync(streamId, cts.Token))!;
+        JasperFx.Events.StreamState fence2 = (await second.Events.FetchStreamStateAsync(streamId, cts.Token))!;
 
         MessageAggregate view1 = (await first.Events.AggregateStreamAsync<MessageAggregate>(
             streamId, version: fence1.Version, token: cts.Token))!;

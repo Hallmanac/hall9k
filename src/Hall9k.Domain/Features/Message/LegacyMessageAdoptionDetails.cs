@@ -17,7 +17,7 @@ public sealed class LegacyMessageAdoptionDetails
     public DateTimeOffset AssignedAt { get; set; }
 }
 
-public sealed class LegacyMessageAdoptionDetailsProjection : SingleStreamProjection<LegacyMessageAdoptionDetails, Guid>
+public sealed partial class LegacyMessageAdoptionDetailsProjection : SingleStreamProjection<LegacyMessageAdoptionDetails, Guid>
 {
     public LegacyMessageAdoptionDetails Create(IEvent<LegacyMessageAdoptionAssigned> @event) => new()
     {

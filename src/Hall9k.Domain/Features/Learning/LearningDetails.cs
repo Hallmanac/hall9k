@@ -75,7 +75,7 @@ public sealed class LearningDetails
     public DateTimeOffset? RetiredAt { get; set; }
 }
 
-public sealed class LearningDetailsProjection : SingleStreamProjection<LearningDetails, Guid>
+public sealed partial class LearningDetailsProjection : SingleStreamProjection<LearningDetails, Guid>
 {
     public LearningDetails Create(IEvent<LearningRecorded> @event) => new()
     {

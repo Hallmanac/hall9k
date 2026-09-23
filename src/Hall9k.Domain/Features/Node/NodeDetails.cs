@@ -64,7 +64,7 @@ public sealed class NodeDetails
     public Guid? LaunchHoldLastProbedRunId { get; set; }
 }
 
-public sealed class NodeDetailsProjection : SingleStreamProjection<NodeDetails, Guid>
+public sealed partial class NodeDetailsProjection : SingleStreamProjection<NodeDetails, Guid>
 {
     public NodeDetails Create(IEvent<NodeRegistered> @event) => new()
     {

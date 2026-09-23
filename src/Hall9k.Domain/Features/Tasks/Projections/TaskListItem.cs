@@ -361,7 +361,7 @@ public sealed class TaskListItem
     public TaskRank Rank => TaskRankResolution.Resolve(FollowUpBranch, PullRequestUrl, RetryPending);
 }
 
-public sealed class TaskListItemProjection : SingleStreamProjection<TaskListItem, Guid>
+public sealed partial class TaskListItemProjection : SingleStreamProjection<TaskListItem, Guid>
 {
     public TaskListItem Create(IEvent<TaskAdded> @event) => new()
     {

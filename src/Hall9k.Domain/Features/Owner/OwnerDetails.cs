@@ -39,7 +39,7 @@ public sealed class OwnerDetails
     public Dictionary<Guid, DateTimeOffset> VouchedNodes { get; set; } = [];
 }
 
-public sealed class OwnerDetailsProjection : SingleStreamProjection<OwnerDetails, Guid>
+public sealed partial class OwnerDetailsProjection : SingleStreamProjection<OwnerDetails, Guid>
 {
     public OwnerDetails Create(IEvent<OwnerRegistered> @event) => new()
     {

@@ -23,7 +23,7 @@ public sealed class UnverifiedLedgerWriteDetails
     public DateTimeOffset? ResolvedAt { get; set; }
 }
 
-public sealed class UnverifiedLedgerWriteDetailsProjection : SingleStreamProjection<UnverifiedLedgerWriteDetails, Guid>
+public sealed partial class UnverifiedLedgerWriteDetailsProjection : SingleStreamProjection<UnverifiedLedgerWriteDetails, Guid>
 {
     public UnverifiedLedgerWriteDetails Create(IEvent<UnverifiedLedgerWriteObserved> @event) => new()
     {

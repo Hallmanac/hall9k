@@ -1,14 +1,12 @@
 <Project>
   <ItemGroup>
     <!-- Domain / persistence -->
-    <PackageVersion Include="Marten" Version="8.38.1" />
-    <PackageVersion Include="WolverineFx" Version="5.41.0" />
-    <PackageVersion Include="WolverineFx.Marten" Version="5.41.0" />
+    <PackageVersion Include="Marten" Version="9.39.0" />
+    <PackageVersion Include="WolverineFx" Version="6.39.1" />
+    <PackageVersion Include="WolverineFx.Marten" Version="6.39.1" />
     <PackageVersion Include="UUIDNext" Version="4.2.3" />
 
     <!-- CLI -->
-    <!-- Referenced (unshipped) by Spectre.Console.Cli; present so JasperFx runtime codegen can resolve it -->
-    <PackageVersion Include="NJsonSchema" Version="11.4.0" />
     <PackageVersion Include="Spectre.Console.Cli" Version="0.55.0" />
     <!-- A project's own key (idea 202383dc, M2): Cysharp's Ulid, chosen by Brian 2026-09-17 for
          speed over UUIDNext for this one generated-once-at-genesis id; every other id in this

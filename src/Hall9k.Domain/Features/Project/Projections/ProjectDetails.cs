@@ -225,7 +225,7 @@ public sealed class ProjectDetails
         && (RunSkillDiscoveryDispatchedAt is not { } dispatched || dispatched < requested);
 }
 
-public sealed class ProjectDetailsProjection : SingleStreamProjection<ProjectDetails, Guid>
+public sealed partial class ProjectDetailsProjection : SingleStreamProjection<ProjectDetails, Guid>
 {
     public ProjectDetails Create(IEvent<ProjectRegistered> @event) => new()
     {

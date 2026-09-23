@@ -29,7 +29,7 @@ public sealed class InviteDetails
     /// stream directly by whatever needs to recompute a proof, never through this projection.</summary>
 }
 
-public sealed class InviteDetailsProjection : SingleStreamProjection<InviteDetails, Guid>
+public sealed partial class InviteDetailsProjection : SingleStreamProjection<InviteDetails, Guid>
 {
     public InviteDetails Create(IEvent<InviteMinted> @event) => new()
     {

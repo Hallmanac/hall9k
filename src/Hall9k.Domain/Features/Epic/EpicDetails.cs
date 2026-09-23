@@ -22,7 +22,7 @@ public sealed class EpicDetails
     public Guid AddedByOwnerId { get; set; }
 }
 
-public sealed class EpicDetailsProjection : SingleStreamProjection<EpicDetails, Guid>
+public sealed partial class EpicDetailsProjection : SingleStreamProjection<EpicDetails, Guid>
 {
     public EpicDetails Create(IEvent<EpicAdded> @event) => new()
     {

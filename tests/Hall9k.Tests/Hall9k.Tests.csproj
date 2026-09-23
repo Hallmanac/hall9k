@@ -14,8 +14,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- JasperFx.Events 1.36 adds its own StreamState, ambiguous with Marten.Events.StreamState -->
-    <Using Include="Marten.Events.StreamState" Alias="StreamState" />
+    <!-- StreamState moved from Marten.Events to JasperFx.Events under Marten 9 (migration guide, "Events.IEvent moves"); this alias keeps every call site unchanged. -->
+    <Using Include="JasperFx.Events.StreamState" Alias="StreamState" />
   </ItemGroup>
 
   <ItemGroup>

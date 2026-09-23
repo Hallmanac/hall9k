@@ -1,3 +1,4 @@
+using JasperFx.Events;
 using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Marten;

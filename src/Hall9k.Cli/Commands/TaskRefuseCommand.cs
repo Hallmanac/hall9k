@@ -1,3 +1,4 @@
+using JasperFx.Events;
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Connectors.Identity;

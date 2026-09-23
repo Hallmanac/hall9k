@@ -89,7 +89,7 @@ public sealed class RunListItem
     public bool LooksReconstructed => IsReconstructed || LeaseGeneration == 0;
 }
 
-public sealed class RunListItemProjection : SingleStreamProjection<RunListItem, Guid>
+public sealed partial class RunListItemProjection : SingleStreamProjection<RunListItem, Guid>
 {
     public RunListItem Create(IEvent<RunDispatched> @event) => new()
     {

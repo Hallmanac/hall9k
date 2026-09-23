@@ -1,3 +1,4 @@
+using JasperFx.Events;
 using Hall9k.Domain.Features.Learning;
 using Marten;
 using Marten.Events;

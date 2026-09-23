@@ -1,3 +1,4 @@
+using ExistingStreamIdCollisionException = Marten.Exceptions.ExistingStreamIdCollisionException;
 using System.ComponentModel;
 using Hall9k.Cli.Infrastructure;
 using Hall9k.Domain.Features.Orchestrator;
