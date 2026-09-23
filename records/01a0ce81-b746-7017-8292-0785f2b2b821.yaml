@@ -1,0 +1,25 @@
+hall9k-task-record: 1
+task-id: 01a0ce81-b746-7017-8292-0785f2b2b821
+project: hall9k
+type: content
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#571
+objective: |-
+  Every user doc (README.md, docs/README.md, docs/getting-started.md, docs/INSTALL.md, docs/concepts.md, docs/cli.md, docs/operations.md, docs/scope.md) says only what v0.10.44 actually does: each item marked WRONG in notes/docs-gap-inventory-2026-09-23.md section B is corrected, and no doc still describes the retired log waiters, an unbuilt multi-node story, a seven-state task list, a project that cannot be deregistered, or a placeholder id that resolves nowhere
+criteria:
+  - |-
+    No user doc describes the retired log waiters: the waiter paragraphs in README.md, docs/operations.md, docs/cli.md, and docs/getting-started.md are replaced by the orchestrator feed and courier as the only watch, matching what the v0.10.44 recipe generator actually writes (#521).
+  - Every state list and count in docs/concepts.md matches the code's task states, including Waiting and HeldElsewhere, and its table of contents lists every section on the page.
+  - |-
+    No user doc says multi-node, event replication, the learnings loop, or h9k run kill is unbuilt: docs/scope.md's 'designed but unbuilt' sections and header date, the README.md and docs/README.md lines, and HALL9K-P2P-DESIGN.md's status line all say what shipped and when. AGENTS.md and PLAN.md are outside the content path set and are not touched.
+  - |-
+    docs/getting-started.md says a project can be archived and purged, with the commands (#336, #338); the placeholder id PLACEHOLDER-d4e64dfa is gone from all four docs that cite it (#554, #555); the closeout branch-deletion bullet (#341), the verify-gate timeout default (thirty minutes), the docs index page count, and the INSTALL.md and operations.md notes on the Marten 9 upgrade, the templates directory, and the patch cadence (#568, #569) all match v0.10.44.
+  - Every item marked WRONG in notes/docs-gap-inventory-2026-09-23.md section B is either fixed or listed in the pull request description with the reason it was left; no SILENT item is written in this task and no design-history file (PLAN.md, TASK-MODEL.md, ORCHESTRATOR-WINDOW.md) is rewritten.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/f2b2b821-every-user-doc-readme-md-docs
+published: 2026-09-23 13:44:38Z
+context: |-
+  Docs refresh, task 1 of 3 (Brian, 2026-09-23; walked, criteria batched). The inventory at notes/docs-gap-inventory-2026-09-23.md (project home, also readable from the worktree at ../../notes if the home is mounted; if not, the orchestrator pastes it into the run's workspace) is the source of truth for what is wrong, with PR numbers; its section A groups the 115 PRs merged since 2026-09-12. Verify each fix against the installed CLI's own --help text and the v0.10.44 source, never against memory. Tasks 2 (the distributed team) and 3 (review pipeline, task types, configuration) are stacked on this one and cover every SILENT item; leave those for them. Writing conventions: no em dashes (U+2014), full sentences, no AI attribution. Content task: docs only; the diff must stay inside the project's non-executable path set.
