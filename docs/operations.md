@@ -43,7 +43,9 @@ The mechanism, in short:
 - **`h9k update`** is the one-command path for a machine that already has `h9k`: it fetches the
   latest release for the platform via `gh`, verifies the checksum, republishes binaries and the
   skill set through the same `--from-release` finish, and offers to restart a running daemon —
-  no repo checkout, no .NET SDK, on the machine that runs it.
+  no repo checkout, no .NET SDK, on the machine that runs it. A CLI call made between the
+  republished binary and that restart fails once against a schema the new binary reads as stale,
+  with the doctor's own message pointing at `h9k doctor --yes`; taking the restart offer clears it.
 - Installing this way registers no background service and no autostart, exactly as a local
   `h9k install` does (Decisions Log #31, S1-12).
 
