@@ -53,7 +53,7 @@ One line per branch. Ask `--help` for the rest.
 
 ### Ideas: capture and discovery
 
-`h9k idea add | list | show | revise | assign | promote | conclude | archive`
+`h9k idea add | list | show | revise | assign | promote | conclude | archive | scope | share | set-private`
 
 Capture is one command with one argument and an optional project. Revision has no ceremony,
 because nothing dispatches from an idea and there is no promise an edit could break. There is no
@@ -121,18 +121,18 @@ whose active lessons have passed the count cap.
 
 ### Tasks: development and dispatch
 
-`h9k task add | revise | set-session-cap | set-review-caps | publish | assign | unassign | draft | list | show | pull | log-interaction`
+`h9k task add | revise | set-session-cap | set-review-caps | publish | assign | unassign | draft | list | show | pull | log-interaction | scope | share | set-private | handoff | take | grant | refuse`
 
 `add` creates a Draft. `revise` is Draft-only, with one exception: `--queue-first`/
 `--clear-queue-first` sets or clears a task-level scheduling marker — the next free dispatch slot
 takes this task regardless of assignment age — and is settable in any live state except Abandoned
 (Decisions Log #127). `publish` is the readiness gate. `assign` is the
-dispatch trigger. `assign <id> --node <id-or-fragment>` narrows that to one of the owner's own
-nodes — only that node's own dispatcher claims the task, and every other node of the same owner
-stands down without a forced take; run with no owner argument against a task already assigned, it
+dispatch trigger. `assign <id> --node <id-or-fragment>` narrows that to one node of the owner's
+fleet: only that node's own dispatcher claims the task, and every other node of the fleet stands
+down without a forced take; run with no owner argument against a task already assigned, it
 changes only the placement. A bare `--node` with nothing named clears an existing placement, and a
 forced takeover or cooperative grant that moves a placed task to another node records that node as
-the new placement on its own (idea 202383dc: an owner can place a task on one of their own nodes).
+the new placement on its own (idea 202383dc: an owner can place a task on one node of their fleet).
 The path back for an edit is `unassign → draft → revise → publish → assign`.
 `set-session-cap <id> <cap>` overrides how many agent sessions this task's own run may hold
 simultaneously — settable any time, even mid-run — in place of the node's global default.
@@ -626,9 +626,95 @@ names which one (defaulting to this node's only eligible project when there is e
 `messages`, `message show` and `message handle` all take `--project` to filter or disambiguate
 (see [scope.md](scope.md)).
 
+### The distributed team: identity, fleet, and holding
+
+Every command that involves more than one machine or more than one person, in one place, one
+sentence each, in the order a newcomer meets them. The model behind them is
+[Identity, fleet, and team](concepts.md#identity-fleet-and-team); the prose for the commands that
+also appear elsewhere on this page stays where it is.
+
+**Joining, identity, and membership**
+
+| Command | What it is for |
+|---|---|
+| `h9k project join <project>` | Generates this node's signing key the first time it runs, writes this node's identity into the project's ledger, and establishes your owner root when the project has no owner yet. |
+| `h9k project join <project> --owner <fingerprint>` | Claims an existing owner root instead of establishing a new one, unverified until a node already enrolled under that root vouches for this one. |
+| `h9k project join <project> --invite <secret>` | Proves you hold a single-use secret from `h9k node invite` or `h9k project invite`, so the minting node's daemon vouches you in with no further prompt. |
+| `h9k project join <project> --from-project <name>` | Names the registered project whose ledger already vouches for this node, so the vouch is carried into a brand-new project's ledger without the root-holding node ever touching it. |
+| `h9k project add --invite <token>` | Registers a project and finishes the join in the same call with an invite, which is the flow when the project belongs to someone else. |
+| `h9k project assign-key <project>` | Backfills the project's generated key on a ledger that predates it, once, before the first `project invite` on an adopted project. |
+| `h9k project members <project>` | Lists the members the ledger currently shows, each with its root fingerprint, its role (owner or member), its fleet of nodes, and whether it verified. |
+| `h9k project member remove <project> <fingerprint>` | Removes a member by deleting its file from the members ref, refused unless this node's own root holds the owner role. |
+| `h9k project invite <project> --role owner\|member` | Mints a single-use invite secret, printed once, for a new project member, whose role is `member` unless `--role` says otherwise. |
+| `h9k node invite` | Mints a single-use invite secret, printed once, that lets a new machine of yours join your fleet on every non-archived project you are registered to. |
+| `h9k node vouch <node-id>` | Vouches a node into your fleet by writing its id and public key into every non-archived project you are registered to, and prints its key fingerprint. |
+| `h9k node revoke <node-id>` | Revokes a node from your fleet, effective at the next ledger read on any machine, and undone by vouching for the same node id again. |
+| `h9k owner show [owner]` | Prints an owner's id, which is their root fingerprint and the value `--owner` and `--to owner:` take, along with their projects, linked GitHub accounts, this node's key path and public key, and every preference their work runs by. |
+| `h9k owner set [owner]` | Changes an owner's standing preferences; its `--rerequest-review`, `--voice-skill`, `--clear-voice-skill`, `--persona`, and `--clear-personas` options are described under [Projects, owners, connections](#projects-owners-connections). |
+
+**Keeping the fleet's stores whole**
+
+| Command | What it is for |
+|---|---|
+| `h9k project reconcile <project>` | Asks every node of your own fleet for everything it holds of the project, which is the lever for a reconcile that `h9k status` reports stalled. |
+| `h9k project pull <project> --since <sequence>\|all` | Asks the project's other members for history this node's own catch-up would never ask for by itself, with `--since` required so that you choose how far back. |
+| `h9k task pull <task-id> --project <project>` | Asks the project's other members for one task's whole event stream when this node does not hold it. |
+| `h9k task pull <task-id> --again` | Closes a request that is still outstanding as superseded and asks afresh. |
+
+**Messages between nodes**
+
+| Command | What it is for |
+|---|---|
+| `h9k message send <text> --to node:<node-id>\|owner:<fingerprint>\|project` | Queues a note for one node, for every node an owner reads from, or for the whole project, and the daemon's next sweep sends it. |
+| `h9k message send <text> --about <id>` | Carries a task or idea id through with the note for the reader to act on. |
+| `h9k message send <text> --project <project>` | Names the project the note belongs to, required when more than one project is registered on this node. |
+| `h9k messages` | Lists this node's received messages that are still unread. |
+| `h9k messages --all` | Includes the messages already handled alongside the unread ones. |
+| `h9k messages --project <project>` | Lists only one project's received messages, where every project's show together by default. |
+| `h9k message show <id> --project <project>` | Prints one received note in full without marking it read, and `--project` only matters when a short id matches in more than one project. |
+| `h9k message handle <id> --project <project>` | Marks a received note handled, which nothing else ever does for you, and takes the same `--project` narrowing as `message show`. |
+
+**Who holds a task**
+
+| Command | What it is for |
+|---|---|
+| `h9k task assign <id> [owner] --node [node]` | Places an assigned task on one node of the owner's fleet so only that node claims it, and a bare `--node` clears the placement. |
+| `h9k task take <id> --reason "..."` | Asks the node that holds a task to hand it over, and the project's take policy decides how that node answers. |
+| `h9k task take <id> --force --reason "..."` | Overrides the holder on your own judgment when it has gone quiet, refused unless your root holds the owner role. |
+| `h9k task grant <id>` | Grants a cooperative take request that the holder's take policy parked for a person. |
+| `h9k task refuse <id> --reason "..."` | Refuses a parked take request and tells the requester why. |
+| `h9k task handoff <id> --text "..."` | Leaves a note for whoever holds the task next, from the current holder only. |
+| `h9k task handoff <id> --file <path>` | Reads that note from a file instead of the command line. |
+| `h9k task handoff <id> --to <owner>` | Sends the nudge that a note was left to one owner's fleet, by root fingerprint, instead of to the whole project. |
+| `h9k task release <id>` | Beyond its ordinary use, releases just the ledger holder of a task this node still names itself holder of but no longer claims, leaving the task's own state as it was. |
+| `h9k task list --state HeldElsewhere` | Lists the claimed tasks that another node holds, and `--state attention-heldelsewhere` selects the same group the status pane counts. |
+| `h9k project set <project> --take-policy auto\|ask` | Chooses whether this project's holder answers a cooperative take request itself (`auto`, the default) or parks it for its person (`ask`). |
+| `h9k project set <project> --take-timeout <minutes>\|default` | Sets how long a take request waits for an answer before `--force` is named as the way on, thirty minutes by default. |
+
+**How far an idea or task travels**
+
+| Command | What it is for |
+|---|---|
+| `h9k idea scope <id> private\|fleet\|team` | Sets how far an idea's events travel: only this node, every node you run, or every project member's fleet. |
+| `h9k idea share <id>` | Sets an idea's scope to `team`, the one door onto team scope an idea has. |
+| `h9k idea set-private <id> on\|off` | Keeps an idea on this node with `on` or returns it to fleet scope with `off`, and is kept as an older spelling of `idea scope`. |
+| `h9k task scope <id> private\|fleet\|team` | Sets how far a task's events travel, with `team` one-way once set. |
+| `h9k task share <id>` | Sets a task's scope to `team`, which lets a draft reach the team before it is published. |
+| `h9k task set-private <id> on\|off` | Keeps a task on this node with `on` or returns it to fleet scope with `off`, and is kept as an older spelling of `task scope`. |
+
+**Settings for messages and invites**
+
+| Command | What it is for |
+|---|---|
+| `h9k config set --message-poll-active-min <seconds>` | Sets the fast end of the message sweep's jittered cadence while this node has something to send or read, 15 seconds by default. |
+| `h9k config set --message-poll-active-max <seconds>` | Sets the slow end of that active cadence, 25 seconds by default, which may not fall below the floor. |
+| `h9k config set --message-poll-idle-min <seconds>` | Sets the fast end of the cadence for a node with nothing to send, read, or hold, 30 seconds by default. |
+| `h9k config set --message-poll-idle-max <seconds>` | Sets the slow end of that idle cadence, 45 seconds by default, which may not fall below the floor. |
+| `h9k config set --invite-expiry-hours <hours>` | Sets how long a newly minted invite stays valid, 72 hours by default. |
+
 ### Recovery
 
-`h9k run kill` · `h9k task retry | resolve | abandon` · `h9k pr resolve` · `h9k review resolve` ·
+`h9k run kill` · `h9k task retry | resolve | abandon | take` · `h9k pr resolve` · `h9k review resolve` ·
 `h9k review proceed` · `h9k review fixed`
 
 `h9k run kill <task-or-run-id> [--reason "…"]` is the run-level stop, distinct from `h9k task
@@ -637,8 +723,11 @@ records the run **Killed** (never **Failed**), while the task itself lands exact
 other run failure leaves it, **Failed**, with `retry`, `resolve`, and `abandon` all still open.
 Refused when `h9kd` is not running, since a stopped daemon supervises nothing.
 
-Eight levers, and picking the wrong one loses work. [operations.md](operations.md#the-recovery-levers)
-is the decision table. Two are interactive mode's own: `review proceed` is the bare-approval lever
+Nine levers, and picking the wrong one loses work. [operations.md](operations.md#the-recovery-levers)
+is the decision table. The ninth, `h9k task take`, is the only one that reaches across nodes: it is
+the way on for a task another node holds and cannot finish, cooperative first and `--force` when the
+holder has gone quiet ([Identity, fleet, and team](concepts.md#identity-fleet-and-team)). Two are
+interactive mode's own: `review proceed` is the bare-approval lever
 for a routine phase-boundary park, alongside `review resolve`'s redirect verbs, and `review fixed`
 is the newest — you did the fix yourself, in your own worktree, and the review agents check it the
 way they would check a fix session's. It applies at the review-verdict-to-fix boundary only (on
@@ -651,8 +740,8 @@ alongside your verdict, and that choice is the only way those words ever reach t
 
 ### Projects, owners, connections
 
-`h9k project add | init | join | assign-key | list | show | set | remove | cancel-purge | reactivate | rename | invite | pull` ·
-`h9k owner show | set` · `h9k node invite` · `h9k connection add jira | list`
+`h9k project add | init | join | assign-key | list | show | set | remove | cancel-purge | reactivate | rename | invite | pull | reconcile | members | member remove` ·
+`h9k owner show | set` · `h9k node invite | vouch | revoke` · `h9k connection add jira | list`
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
 recipe for a project that has none yet, and the repair path for one that is incomplete. `project
@@ -915,7 +1004,7 @@ it back out if it is ever reopened. `_archive`'s leading underscore sorts it to 
 editor's file explorer, ahead of every live task, so the one folder everything finished sorts
 into is out of the way at a glance rather than interleaved with what still needs attention.
 
-Going from nothing to a working project directory on a second machine:
+Going from nothing to a working project directory on a second machine (a second node of your own fleet, or a teammate's first node; see [Identity, fleet, and team](concepts.md#identity-fleet-and-team) for what joining involves):
 
 ```bash
 h9k install                                              # binaries, PATH, canonical skills
