@@ -163,21 +163,6 @@ public sealed class PostgresFixture : IAsyncLifetime
     /// creation, say — still builds one from <see cref="ConnectionString"/> directly; nothing here
     /// forbids it. What is gone is building one by default.
     /// </para>
-    /// <para>
-    /// Deliberately no <c>GeneratedCodeMode</c> here, unlike
-    /// <c>Hall9k.Cli.Infrastructure.CliStore</c>. That store sets <c>TypeLoadMode.Auto</c> because
-    /// h9k is execute-and-exit, so every invocation is a cold start and pays this bootstrap again;
-    /// <c>Auto</c> only avoids the work when pre-generated types are already compiled into the
-    /// store's application assembly, and the only pre-generated set this repository has
-    /// (<c>src/Hall9k.Cli/Internal/Generated</c>) holds document-storage providers and the event
-    /// storage — not one line of projection code, which is exactly what the ten inline projections
-    /// above make the store compile. Setting <c>Auto</c> on this store would therefore fall
-    /// straight through to dynamic generation and change nothing measurable, unless the test
-    /// project also turned on source-code writing and started generating sources into itself: a
-    /// build-order coupling this repository does not have, in exchange for one bootstrap per
-    /// Postgres-backed class per run (see the count paragraph on the type for why no number is
-    /// pinned here) that sharing the store already brought down from roughly 560.
-    /// </para>
     /// </summary>
     public DocumentStore Store => _store.Value;
 

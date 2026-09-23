@@ -48,9 +48,9 @@ jobs:
         shell: bash
         run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
 
-      # Self-contained (no PublishSingleFile — Wolverine/Marten's runtime codegen wants
-      # ordinary assembly loading, and a bare machine needs the runtime bundled either
-      # way): h9k and h9kd publish into the same directory, exactly as h9k install's
+      # Self-contained (no PublishSingleFile — Wolverine's assembly-scanning handler
+      # discovery wants ordinary assembly loading, and a bare machine needs the runtime
+      # bundled either way): h9k and h9kd publish into the same directory, exactly as h9k install's
       # local dotnet-publish path already does, so the payload shape backlog 42's
       # InstallCommand --from-release stages from matches what a developer's own
       # install produces.
