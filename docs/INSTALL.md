@@ -106,6 +106,25 @@ section](../README.md#register-a-project-only-with-the-users-own-repository)), a
 [docs/getting-started.md](getting-started.md): the first hour of settings worth setting
 deliberately, and the problems a fresh install hits first.
 
+Tell the user before registering, because registration is the first time Hall9k writes to the
+repository's own remote. `h9k project add` runs `h9k project join` behind the clone, and that join
+generates this node's signing key once under `~/.hall9k/keys/<node-id>/` (a secret, readable by the
+user's account alone, never sent anywhere), and pushes signed commits to new refs under
+`refs/hall9k/` on the remote, none of which are branches. It needs `gh` signed in: `h9k project add`
+refuses when no GitHub account is confirmed, and the join refuses, leaving the registration in place,
+when that account cannot push to the repository. On a project nobody owns yet, it makes the user
+the project's owner.
+
+When the project already has an owner, whether a teammate registered it or it is the user's own
+other machine, registration stays on this machine, writes nothing to the remote, names the owner,
+and asks for an invite. The owner mints one with `h9k project invite <name>` for a teammate, or
+`h9k node invite` for another machine of their own, which joins that owner's **fleet** (the
+owner's own nodes). The newcomer passes it with `h9k project add --invite <secret>` or `h9k
+project join <name> --invite <secret>`, and the minting node's daemon vouches the newcomer in
+within a minute or so. An agent doing the install stops and asks the user which case this is,
+and never invents an invite. The model behind all of it is in
+[concepts.md](concepts.md#identity-fleet-and-team).
+
 ## After bootstrap: staying current
 
 A machine that already has `h9k` never needs the bootstrap script again — the same binary
@@ -214,8 +233,8 @@ h9k uninstall --purge-data    # the only path that destroys the database too
 `h9k uninstall` takes the platform off a machine without taking the work with it. It stops
 a running daemon, unregisters autostart (a macOS LaunchAgent, or a Windows logon task),
 removes the PATH link, and removes everything under `~/.hall9k` that `h9k
-install` itself ever wrote — `bin/`, the skill set, the Postgres compose file, the daemon's
-log and pid files — and deletes `~/.hall9k` itself once that leaves it empty. `config.json`
+install` itself ever wrote (`bin/`, the skill set, the prompt-template set, the Postgres compose
+file, the daemon's log and pid files) and deletes `~/.hall9k` itself once that leaves it empty. `config.json`
 (an operator, `h9k install` itself when nothing was configured yet, or `h9k doctor`'s
 start-offer may have written it; uninstall keeps it regardless, since it is what lets a later
 `h9k install` reconnect to the surviving database instead of finding nothing configured all over
@@ -229,6 +248,12 @@ override file, not the platform config file itself), or where Postgres was alrea
 (`~/.hall9k/projects/<name>`, real git clones and worktrees), your credentials, and anything else
 you or another tool (`h9k install` included) put there are left alone too — none of that is the
 uninstall's to remove, and this command never guesses otherwise.
+
+That includes `~/.hall9k/keys/`, where each node's signing key lives. Uninstall does not remove it,
+and the vouch that put this machine in the owner's fleet lives in the project's ledger on the
+remote, so neither one goes away with the install. That is right for a reinstall and wrong for retiring a machine
+for good: delete the directory yourself, and run `h9k node revoke <node-id>` from another node of the
+fleet so the ledger stops trusting a key that is no longer under your control.
 
 **Your database survives by default.** The `hall9k-postgres` Docker container is stopped,
 never removed, and its data volume is never touched — the data lives in Docker, not in the

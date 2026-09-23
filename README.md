@@ -193,7 +193,7 @@ $ h9k task publish 2088f4fc --assign
 
 Task 2088f4fc published: Add rate limiting to the auth endpoints
 Task 2088f4fc assigned to Brian Hall — queued; the next dispatch cycle on one of
-their nodes claims it.
+their fleet's nodes claims it.
 ```
 
 ### Watch the pipeline
@@ -429,6 +429,33 @@ First use also registers your owner record (from `git config user.name` / `user.
 machine as a node, and a GitHub connection pointing at your `gh` login. Nothing to configure; it
 is idempotent.
 
+Registration is also the first time Hall9k writes to your repository's remote, so know what it
+does. `h9k project add` runs `h9k project join` right behind the clone, and that join:
+
+- generates this node's own signing key, once, under `~/.hall9k/keys/<node-id>/`. The private key
+  is a secret readable by your account alone, and it never enters the repository or an event;
+- pushes signed commits to a small set of new refs under `refs/hall9k/ledger/` on the repository's
+  own remote, which name this node and its owner. Later work adds more of them: one record per
+  published task, and this node's message outbox at `refs/hall9k/messages/<node-id>`. They are not
+  branches, no pull request involves them, and an ordinary clone does not fetch them, but they are
+  readable by anyone who can read the repository;
+- establishes you as the project's owner when nobody owns it yet, and otherwise stops and asks for
+  an invite (below);
+- needs `gh` signed in: `h9k project add` refuses when no GitHub account is confirmed, and the join
+  refuses, leaving the registration in place, when that account cannot push to the repository.
+
+Your **fleet** is your own set of machines: the node whose key established you as owner plus every
+node you vouch in. To put a second machine of yours in the fleet, run `h9k node invite` on the
+first, then on the second run `h9k project add --name <name> --repo-url <url>` followed by `h9k
+project join <name> --invite <secret>`. To bring a teammate onto a project you own, run `h9k
+project invite <name>` and give them the secret; they register the project the same way and join
+with it, and become a member with a root of their own. In both cases the minting node's daemon
+vouches the newcomer in within a minute or so, with nothing more to run. A project someone else
+already owns is never joined without an invite, so a registration against one prints the owner and
+the command to run once you have the secret. [Concepts](docs/concepts.md#identity-fleet-and-team)
+explains the model, and [the CLI reference](docs/cli.md#the-distributed-team-identity-fleet-and-holding)
+lists every command.
+
 Registration also turns on `--dangerously-skip-permissions` for every agent this project ever
 dispatches (Decisions Log #181): a project left with prompts live cannot answer one headless, so
 there is deliberately no flag to register with prompts left live. Revert it per project after the
@@ -623,11 +650,12 @@ for news.
 Start here, in this order:
 
 - **[docs/concepts.md](docs/concepts.md)** is the layer under the README: tasks, runs, the
-  lifecycle and the words the board shows, leases, the review loop, and closeout.
+  lifecycle and the words the board shows, leases, the review loop, closeout, and how identity,
+  a fleet of your own machines, and a team of members work across nodes.
 - **[docs/cli.md](docs/cli.md)** maps the command surface and explains why the `--help` tree,
   not a page in this repository, is its source of truth.
 - **[docs/operations.md](docs/operations.md)** is running the thing: the daemon's lifecycle,
-  configuration, what lands on disk, what `needs you` means, and the eight recovery levers.
+  configuration, what lands on disk, what `needs you` means, and the nine recovery levers.
 - **[docs/scope.md](docs/scope.md)** is the honest inventory: what works today, what is designed
   but unbuilt, and what the project deliberately will not do.
 
@@ -670,9 +698,10 @@ observation); the task dependency graph with context routing along its edges; id
 into any number of tasks, with promotion surviving as sugar over one-and-done; GitHub issue and
 Jira card adoption; per-project and per-owner settings; failed-task recovery; the attention pane;
 a pull request requesting the install's own GitHub login for review starting a `pr-review` task
-automatically; and, across nodes sharing an owner, identity (a signing key per node, an owner
-root, vouching), invites, node-to-node messaging, event replication so every node's store stays
-current, and cross-node task holding (`h9k task take`, `HeldElsewhere`).
+automatically; and, across an owner's fleet of nodes and a project's team of members, identity (a
+signing key per node, an owner root, vouching, membership roles), invites, node-to-node messaging,
+event replication so every node's store stays current, and cross-node task holding (`h9k task
+take`, `HeldElsewhere`), all carried over the project's own git remote rather than a server.
 
 **Designed but not built:** the mid-run question loop (`h9k ask` / `h9k answer`, Slice 2: the
 events are on the stream and the commands are not, so an agent that needs a decision today makes
