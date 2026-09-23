@@ -29,7 +29,3 @@ context: |-
   Suggested commit sequence: delete Internal/Generated and the codegen knobs; pins plus every compile fix; projections partial; daemon Wolverine changes; fixture and tests; docs. The task's decision entry records: append mode kept Rich and why; Wolverine Static with no handlers; Wolverine tables migrate at daemon start; rollback is by restore.
 
   Note to the orchestrator (not an instruction to this session; decision 13f11af2): draft 07ff4c03 (commit generated providers mechanically) is superseded by this task and is retired at closeout by the orchestrator. Two follow-ons are parked as ideas 6d158542 (remove Wolverine from the daemon) and dc1622cb (doctor diffs the Wolverine tables), not this task. No git or daemon integration tests; the container cap is an OOM guard.
-holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
-holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
-holder-node-name: Hallmamac-Max36
-holder-since: 2026-09-23 11:44:50Z
