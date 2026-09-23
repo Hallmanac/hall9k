@@ -12,7 +12,11 @@ https://raw.githubusercontent.com/Hallmanac/hall9k/main/docs/INSTALL.md
 ## What you get
 
 `h9k` (the CLI) and `h9kd` (the daemon it drives) as native binaries in `~/.hall9k/bin`, on
-your `PATH`, plus the canonical Claude skill set in `~/.hall9k/skills`. **Nothing is started
+your `PATH`, plus the canonical Claude skill set in `~/.hall9k/skills` and the canonical
+prompt-template set in `~/.hall9k/templates` — a sibling directory, never seeded into a project
+home, that the judgment-layer prose a prompt builder assembles into an agent session's prompt
+lives in. `--from-release` refuses a payload missing either set outright, naming what is
+missing, rather than installing an incomplete platform. **Nothing is started
 and nothing is registered as a background service or login item** — the daemon runs on
 demand (`h9k daemon start` / `stop`), and start-at-login is a separate, explicit opt-in
 (`h9k daemon autostart enable`).
@@ -112,11 +116,25 @@ h9k update
 
 This is `h9k install --from-release`'s download half, wired to the same idempotent finish:
 it fetches the latest release for your platform via `gh`, verifies the checksum, republishes
-the binaries and the canonical skill set, and offers to restart a running daemon onto the
-fresh binaries — no repo checkout, no .NET SDK, on the machine that runs it. `h9k update
+the binaries, the canonical skill set, and the canonical template set, and offers to restart a
+running daemon onto the fresh binaries — no repo checkout, no .NET SDK, on the machine that runs
+it. `h9k update
 --restart` skips the restart prompt; if a verification gate is live on the node it still waits
 for that gate to finish, up to thirty minutes, printing what it is waiting on, before it stops
-the daemon — pass `--now` too if you want the restart to proceed at once regardless.
+the daemon — pass `--now` too if you want the restart to proceed at once regardless. Every
+merged change has shipped as its own patch release (`v0.10.x`) since `v0.10.0`, so `h9k update`
+typically finds something new nearly every day; there is nothing to configure about that
+cadence, only an expectation to set.
+
+A restart onto a release that carries an event-store schema migration — Marten 9, for one, on
+the tag that first bumped it — needs nothing beyond this same restart: `h9kd` migrates its own
+schema objects on start, and a CLI call made in the window between the new binary landing and
+that restart fails once with a schema-mismatch error naming `h9k doctor --yes` as the fix, the
+same message any other schema drift produces. See
+[operations.md](operations.md#upgrading-the-event-store-marten-9-task-29b0ca1a) for exactly
+what such a migration moves and, when one is live, for the rollback: the previous tag's binary
+cannot open a store a migration has already touched, so a `pg_dump` taken before updating is the
+only way back.
 
 ## Connecting a database
 
@@ -252,7 +270,7 @@ worth knowing:
   admits readers, other writers and a delete, hand that handle to `h9kd` as its stdout and stderr,
   and close their own copy — so the daemon is the only writer left on its own log, its own
   rotation-safe takeover succeeds, and the 8 MB budget is enforced on the five-minute tick while
-  it runs (Decisions Log PLACEHOLDER-d4e64dfa). On the autostart path the vehicle for that handle is `h9k` itself,
+  it runs (Decisions Log #222). On the autostart path the vehicle for that handle is `h9k` itself,
   `h9k daemon autostart launch`, sitting between `cmd.exe` and `h9kd`: a handle cannot be passed
   through the VBScript command line the registration composes. The one thing that does not update
   itself is an existing registration's launch script — no `h9k install` and no `h9k update`
