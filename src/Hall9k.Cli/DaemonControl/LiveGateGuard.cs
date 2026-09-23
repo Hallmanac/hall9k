@@ -174,7 +174,9 @@ public static class LiveGateGuard
     /// wait, flag as override) — <paramref name="now"/> true skips the wait (and every call to
     /// <paramref name="findLiveGates"/> or <paramref name="delay"/>) entirely, restarting at once
     /// regardless of what is still running. What <c>h9k update --restart</c> and
-    /// <c>h9k install --restart</c> both call in their own shared restart path, before the stop.
+    /// <c>h9k install --restart</c> both call in their own shared restart path — before the binary
+    /// swap, and so before the stop, because this is the last moment that path can read the store
+    /// out of the release it is actually running (<c>InstallCommand.PrepareRestartAsync</c>).
     /// </summary>
     public static async Task WaitUnlessNowAsync(
         bool now,
