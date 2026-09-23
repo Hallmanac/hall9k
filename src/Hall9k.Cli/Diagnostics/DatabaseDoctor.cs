@@ -45,14 +45,22 @@ public static class DatabaseDoctor
     /// directory (<c>RunPaths.Root</c>), so re-resolving there could walk up for a project
     /// override file from the wrong place and land on a different answer than the one just
     /// checked.
+    /// <para>
+    /// <paramref name="recordConnectionStringIfUnconfigured"/> is the one remediation a caller can
+    /// withhold on its own (<c>h9k doctor --no-configure</c>): see
+    /// <see cref="DiagnoseNotConfiguredAsync"/> for why the restart hand-off withholds it.
+    /// </para>
     /// </summary>
     public static Task<string?> RunAsync(
-        bool offerFixes, bool assumeYes, CancellationToken cancellationToken, bool staleSchemaRepairedByCaller = false) =>
-        RunAsync(offerFixes, assumeYes, ExternalProcess.Runner, cancellationToken, staleSchemaRepairedByCaller);
+        bool offerFixes, bool assumeYes, CancellationToken cancellationToken, bool staleSchemaRepairedByCaller = false,
+        bool recordConnectionStringIfUnconfigured = true) =>
+        RunAsync(
+            offerFixes, assumeYes, ExternalProcess.Runner, cancellationToken, staleSchemaRepairedByCaller,
+            recordConnectionStringIfUnconfigured);
 
     internal static async Task<string?> RunAsync(
         bool offerFixes, bool assumeYes, ProcessRunner runner, CancellationToken cancellationToken,
-        bool staleSchemaRepairedByCaller = false)
+        bool staleSchemaRepairedByCaller = false, bool recordConnectionStringIfUnconfigured = true)
     {
         ConnectionStringResolution resolution = Hall9kDatabase.Resolve();
         if (resolution.Origin == ConnectionStringOrigin.PlatformConfigFileMalformed)
@@ -79,7 +87,8 @@ public static class DatabaseDoctor
         if (!resolution.IsConfigured)
         {
             resolution = await DiagnoseNotConfiguredAsync(
-                offerFixes, assumeYes, runner, ProbeDefaultConnectionStringAsync, cancellationToken);
+                offerFixes, assumeYes, runner, ProbeDefaultConnectionStringAsync, cancellationToken,
+                recordConnectionStringIfUnconfigured);
             if (resolution.Value is not { } configured)
             {
                 return null;
@@ -103,11 +112,25 @@ public static class DatabaseDoctor
     /// routing decision — and confirm it actually records the connection string, not merely that
     /// it avoids a docker mutation — with a fake answer instead of a real Postgres bound to the
     /// exact host and port that constant names.
+    /// <para>
+    /// Both fixes on this path end in the same write — <see cref="Hall9kDatabase.DefaultConnectionString"/>
+    /// recorded in the platform config file — and <paramref name="recordConnectionString"/> is how a
+    /// caller withholds it (<c>h9k doctor --no-configure</c>). The restart hand-off
+    /// (<see cref="Hall9k.Cli.Installation.DaemonRestartHandoff"/>) does exactly that, for the reason
+    /// Decisions Log #118 gives for <c>h9k update</c> never making this write itself: nothing
+    /// resolving <em>here</em> does not mean nothing is configured, only that this shell cannot see
+    /// it, and a daemon named by <c>HALL9K_CONNECTION_STRING</c> in the shell that started it — or by
+    /// a project override file somewhere else on disk — would be brought back up against a different
+    /// database, with the guessed default outranking both from then on (cycle-1 pre-PR review,
+    /// adversarial lens). The rest of <c>--yes</c>, including starting a stopped container for an
+    /// address that <em>is</em> configured, is untouched by this.
+    /// </para>
     /// </summary>
     internal static async Task<ConnectionStringResolution> DiagnoseNotConfiguredAsync(
         bool offerFixes, bool assumeYes, ProcessRunner runner,
         Func<CancellationToken, Task<ReachabilityReport>> alreadyRunningContainerProbe,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool recordConnectionString = true)
     {
         AnsiConsole.MarkupLine(
             "[yellow]No connection string is configured.[/] That is the whole problem — nothing else has been checked yet.");
@@ -127,14 +150,29 @@ public static class DatabaseDoctor
                 + $"{Hall9kDatabase.EnvironmentVariableName} at it.[/]");
         }
 
-        if (offerFixes && containerConfirmed && container == PostgresContainerStatus.Running)
+        // Both remediations below end in the same write, so one flag withholds both, and a
+        // withheld fix names itself rather than looking like a machine with nothing to offer —
+        // the same rule the skipped prompts elsewhere in this file follow.
+        bool offerToRecord = offerFixes && recordConnectionString;
+        if (offerFixes && !recordConnectionString)
+        {
+            AnsiConsole.MarkupLine(
+                $"[dim]Not recording one either: this run was asked not to (h9k doctor --no-configure), because "
+                + $"nothing resolving here does not mean nothing is configured — a {Hall9kDatabase.EnvironmentVariableName} "
+                + $"set in another shell, or a {Hall9kDatabase.ProjectOverrideFileName} under a directory this run never "
+                + $"looked in, is invisible from here and would be outranked forever by a default written now. Set "
+                + $"{Hall9kDatabase.EnvironmentVariableName} where this can see it, or run h9k doctor --yes yourself to "
+                + "record the default deliberately.[/]");
+        }
+
+        if (offerToRecord && containerConfirmed && container == PostgresContainerStatus.Running)
         {
             if (await OfferAndRecordAlreadyRunningContainerAsync(assumeYes, alreadyRunningContainerProbe, cancellationToken) is { } recorded)
             {
                 return recorded;
             }
         }
-        else if (runtime == ContainerRuntimeStatus.Running && offerFixes
+        else if (runtime == ContainerRuntimeStatus.Running && offerToRecord
             && await OfferAndStartAsync(Hall9kDatabase.DefaultConnectionString, containerConfirmed, container, assumeYes, runner, cancellationToken))
         {
             await Hall9kDatabase.WriteConfiguredConnectionStringAsync(Hall9kDatabase.DefaultConnectionString, cancellationToken);

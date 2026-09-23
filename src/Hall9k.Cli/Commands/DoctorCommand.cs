@@ -24,13 +24,27 @@ public sealed class DoctorCommand : Hall9kAsyncCommand<DoctorCommand.Settings>
             + "the connection string that points at it, non-interactively — the shape a script or a "
             + "dispatched agent needs, since there is no terminal there to answer a prompt.")]
         public bool Yes { get; init; }
+
+        [CommandOption("--no-configure")]
+        [Description(
+            "Repair, but never record a connection string: with nothing configured, diagnose and stop "
+            + "rather than writing Hall9k's default into the platform config file. What --yes does for "
+            + "an address that IS configured — starting a stopped hall9k-postgres, creating or updating "
+            + "the schema — is unaffected. h9k update --restart and h9k install --restart pass this to "
+            + "the doctor step they run between the stop and the start, because a daemon whose database "
+            + "is named by HALL9K_CONNECTION_STRING in another shell, or by a .hall9k-connection file "
+            + "elsewhere on disk, would otherwise come back up against a guessed default that outranks "
+            + "both from then on (Decisions Log #118).")]
+        public bool NoConfigure { get; init; }
     }
 
     protected override async Task<int> ExecuteAsync(Settings settings, CancellationToken cancellationToken)
     {
         await ToolDoctor.RunAsync(cancellationToken);
 
-        if (await DatabaseDoctor.RunAsync(offerFixes: true, settings.Yes, cancellationToken) is null)
+        if (await DatabaseDoctor.RunAsync(
+            offerFixes: true, settings.Yes, cancellationToken,
+            recordConnectionStringIfUnconfigured: !settings.NoConfigure) is null)
         {
             return ExitCodes.Error;
         }

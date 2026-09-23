@@ -65,6 +65,20 @@ public delegate Task<RestartStepResult> RestartChildRunner(
 /// <c>Postgres is healthy</c>). Wolverine's own envelope tables stay the daemon's start-time
 /// migration through <c>IntegrateWithWolverine</c>, as docs/operations.md already describes.
 /// </para>
+/// <para>
+/// <c>--no-configure</c> rides with that <c>--yes</c> because a restart may repair but may never
+/// guess. <c>--yes</c> on its own would, with nothing resolving, write Hall9k's default connection
+/// string into the platform config file unasked — and nothing resolving in the shell that ran the
+/// update is not evidence that nothing is configured: the daemon being restarted may have been
+/// started from a shell carrying <c>HALL9K_CONNECTION_STRING</c>, or under a project override file
+/// this process never walked past, either of which the written default would outrank from then on.
+/// That is the same reason <c>h9k update</c> disables its own install-time write of that default
+/// (Decisions Log #118); withholding it here keeps the restart honest, at the cost of failing at
+/// this step, with the operator told which one, rather than bringing the daemon back up against a
+/// database nobody chose (cycle-1 pre-PR review, adversarial lens). Every other remediation
+/// <c>--yes</c> carries — starting a stopped <c>hall9k-postgres</c>, creating or updating the
+/// schema at an address that IS configured — is untouched.
+/// </para>
 /// </summary>
 public static class DaemonRestartHandoff
 {
@@ -85,7 +99,7 @@ public static class DaemonRestartHandoff
     public static IReadOnlyList<RestartStep> PlanSteps() =>
     [
         new RestartStep("stop the daemon still running on the previous binaries", ["daemon", "stop"]),
-        new RestartStep("bring the store schema current", ["doctor", "--yes"]),
+        new RestartStep("bring the store schema current", ["doctor", "--yes", "--no-configure"]),
         new RestartStep("start the daemon on the new binaries", ["daemon", "start"]),
     ];
 

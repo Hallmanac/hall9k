@@ -107,4 +107,33 @@ public sealed class DatabaseDoctorNotConfiguredTests : IDisposable
             call => call.Count > 0 && call[0] == "volume",
             "--yes has to reach the actual start attempt without anybody confirming it first");
     }
+
+    [Fact]
+    public async Task No_configure_stops_yes_short_of_the_start_that_only_exists_to_be_recorded()
+    {
+        // The same docker fake and the same --yes as the test above. On the nothing-configured
+        // path, starting Hall9k's own Postgres is only ever the first half of writing the default
+        // connection string that points at it, so withholding the write withholds the start too
+        // rather than leaving a container running for an address nobody will record (cycle-1
+        // pre-PR review, adversarial lens).
+        List<IReadOnlyList<string>> calls = [];
+        ProcessRunner runner = (_, arguments, _, _) =>
+        {
+            calls.Add(arguments);
+            bool recognized = arguments.Count > 0 && arguments[0] is "info" or "ps";
+            return Task.FromResult(recognized
+                ? new ProcessResult(0, string.Empty, string.Empty)
+                : new ProcessResult(1, string.Empty, "docker volume ls failed"));
+        };
+
+        string? resolved = await DatabaseDoctor.RunAsync(
+            offerFixes: true, assumeYes: true, runner, CancellationToken.None,
+            recordConnectionStringIfUnconfigured: false);
+
+        resolved.Should().BeNull("the doctor may repair what is configured, but it may not invent one");
+        calls.Should().NotContain(
+            call => call.Count > 0 && call[0] == "volume",
+            "the start attempt is never reached once the write it exists to enable is withheld");
+        File.Exists(Hall9kDatabase.ConfigFile).Should().BeFalse();
+    }
 }

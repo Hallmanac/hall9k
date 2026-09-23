@@ -119,13 +119,24 @@ split matters:
   actually read the store, since the binary and the schema it was built for still match. `--now`
   skips it exactly as before.
 - **After the swap**, in a child process of the newly installed `h9k`, in this order:
-  `h9k daemon stop`, then `h9k doctor --yes`, then `h9k daemon start`. The old process does nothing
-  in those three steps but launch them and relay the exit code. `doctor --yes` is what brings a
-  stale store schema current between the stop and the start, so an update that carries a schema
-  change ends with the new daemon running on a current schema rather than with a stack trace (see
-  [the doctor check](#the-doctor-check)). Because it is `doctor --yes`, it will **start a stopped
-  `hall9k-postgres` container without asking** — inside `--restart` that is deliberate: the restart
-  cannot repair a schema it cannot reach.
+  `h9k daemon stop`, then `h9k doctor --yes --no-configure`, then `h9k daemon start`. The old
+  process does nothing in those three steps but launch them and relay the exit code. The doctor
+  step is what brings a stale store schema current between the stop and the start, so an update
+  that carries a schema change ends with the new daemon running on a current schema rather than
+  with a stack trace (see [the doctor check](#the-doctor-check)). Because it is `--yes`, it will
+  **start a stopped `hall9k-postgres` container without asking** — inside `--restart` that is
+  deliberate: the restart cannot repair a schema it cannot reach.
+
+  `--no-configure` is the limit on that. A plain `h9k doctor --yes` with **nothing** configured
+  will record Hall9k's default connection string in the platform config file, and a restart may
+  not make that call: nothing resolving in the shell that ran the update is not evidence that
+  nothing is configured, since the daemon being restarted may have been started from a shell
+  carrying `HALL9K_CONNECTION_STRING`, or under a `.hall9k-connection` file somewhere this process
+  never walked past — and a default written now outranks both from then on. That is the same
+  reason `h9k update` never makes install's own first-time write of that default (Decisions
+  Log #118). So on a machine where nothing resolves, the restart stops at the doctor step, names
+  it, and leaves `h9k daemon start` to you once you have pointed the shell at the right database.
+  Everything `--yes` does for an address that **is** configured is unaffected.
 
 The point of no return is the stop signal the first child sends. A failure before it (the gate
 wait, the swap, launching the child at all) leaves the old daemon running and says so; a failure
@@ -233,11 +244,11 @@ Then, four questions, answered in order, stopping at the first one that fails (D
    starts — the path an OS autostart manager takes after a reboot, bypassing the doctor check
    entirely — so restarting the daemon (`h9k daemon start`, or `h9k update`/`h9k install`'s own
    restart offer) fixes a stale schema as a side effect even without running `h9k doctor --yes`
-   first. `h9k update --restart` and `h9k install --restart` go further and run `h9k doctor --yes`
-   themselves, between the stop and the start, so the repair is reported rather than silent and the
-   daemon comes up on a schema that is already current; the hand order those two automate,
-   `h9k daemon stop`, then `h9k doctor --yes`, then `h9k daemon start`, is still the fallback when
-   a restart fails partway through.
+   first. `h9k update --restart` and `h9k install --restart` go further and run
+   `h9k doctor --yes --no-configure` themselves, between the stop and the start, so the repair is
+   reported rather than silent and the daemon comes up on a schema that is already current; the
+   hand order those two automate, `h9k daemon stop`, then `h9k doctor --yes`, then
+   `h9k daemon start`, is still the fallback when a restart fails partway through.
 4. **Only if nothing was configured** — what is available: a running container runtime, a native
    Postgres already on 5432, a **stopped** `hall9k-postgres` container from a previous session
    ("your database exists, it is just not running"), or — the nicest possible finding — a
@@ -294,8 +305,8 @@ schema change produces; taking the restart clears it. There is no extra operator
 restart that `h9k update`, `h9k install`, or a plain `h9k daemon start` already performs.
 
 `h9k update --restart` and `h9k install --restart` handle this migration end to end on their own:
-the stop, `h9k doctor --yes`, and the start all run in the newly installed binary, in that order,
-and the doctor's `Schema updated` line is the evidence the store moved (see
+the stop, `h9k doctor --yes --no-configure`, and the start all run in the newly installed binary,
+in that order, and the doctor's `Schema updated` line is the evidence the store moved (see
 [How `--restart` restarts](#the-daemon-lifecycle)). If one of those three steps fails, the command
 says which, and the same three commands run by hand — `h9k daemon stop`, `h9k doctor --yes`,
 `h9k daemon start` — are the fallback.

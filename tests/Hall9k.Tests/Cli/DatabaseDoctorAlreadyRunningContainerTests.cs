@@ -144,6 +144,32 @@ public sealed class DatabaseDoctorAlreadyRunningContainerTests : IDisposable
         Hall9kDatabase.ConnectionStringStateAndValueInConfigFile().Value.Should().Be(Hall9kDatabase.DefaultConnectionString);
     }
 
+    [Fact]
+    public async Task No_configure_leaves_even_a_confirmed_running_container_unrecorded_and_says_why()
+    {
+        // The same machine as the test above — hall9k-postgres confirmed Running, answering at
+        // the default address, --yes set — differing only in the one remediation a restart may
+        // not make. Nothing resolving in this process is not evidence that nothing is configured,
+        // so the hand-off h9k update --restart runs asks the doctor to repair without guessing
+        // (cycle-1 pre-PR review, adversarial lens; Decisions Log #118).
+        RecordingProcessRunner runner = RecordingProcessRunner.Succeeding("running\n");
+
+        ConnectionStringResolution resolution = ConnectionStringResolution.NotConfigured;
+        string output = await ScopedAnsiConsoleCapture.CaptureAsync(async () =>
+        {
+            resolution = await DatabaseDoctor.DiagnoseNotConfiguredAsync(
+                offerFixes: true, assumeYes: true, runner.Runner, _ => Task.FromResult(Reachable()),
+                CancellationToken.None, recordConnectionString: false);
+        });
+
+        resolution.IsConfigured.Should().BeFalse("the write is exactly what this run was told to withhold");
+        File.Exists(Hall9kDatabase.ConfigFile).Should().BeFalse(
+            "a default written here would outrank the environment variable or project override this "
+            + "process cannot see, for every later command as well as this one");
+        output.Should().Contain("--no-configure",
+            "a withheld fix names itself, the same as a skipped prompt does");
+    }
+
     private static ReachabilityReport Reachable() =>
         new(ReachabilityStatus.Reachable, string.Empty, "localhost", 5432, "hall9k");
 
