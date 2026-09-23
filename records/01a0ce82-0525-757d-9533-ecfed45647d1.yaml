@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a0ce82-0525-757d-9533-ecfed45647d1
+project: hall9k
+type: content
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#573
+objective: |-
+  The user docs cover every review-pipeline, task-type, and configuration feature the v0.10.44 binary has: spikes, content tasks, the non-executable-path skip, dual trackers with a primary, the review personas and their drive settings, run-local, prompt addenda, run skill pointers, the courier, and the orchestrator-model and default-model settings, so that after this task no command or flag in h9k --help is absent from docs/cli.md and no setting the binary reads is absent from docs/operations.md
+criteria:
+  - docs/concepts.md explains spikes and content tasks, the non-executable-path skip, dual trackers with a primary, the review personas including the QA and designer reviews with their drive settings, run-local, prompt addenda, and run skill pointers, each in the section where a reader would look for it.
+  - docs/cli.md lists every remaining command and flag from the inventory's missing list (spike, content, scope and share, members, orchestrator-model, default-model, primary-tracker, and the rest), and after this task no command or flag in h9k --help or its groups is absent from the page.
+  - docs/operations.md's configuration and environment tables list every setting and variable the v0.10.44 binary reads, with its default, and the orchestrator-model and default-model settings are explained.
+  - README.md and docs/getting-started.md introduce the courier where they introduce the orchestrator window.
+  - Every item marked SILENT in notes/docs-gap-inventory-2026-09-23.md section B that belongs to this theme is either covered or listed in the pull request description with the reason it was left; no design-history file (PLAN.md, TASK-MODEL.md, ORCHESTRATOR-WINDOW.md) is rewritten.
+dependencies: [01a0ce81-e16a-7332-89d0-d681949daeb2]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/d45647d1-the-user-docs-cover-every-revi
+published: 2026-09-23 13:44:46Z
+context: |-
+  Docs refresh, task 3 of 3 (Brian, 2026-09-23; walked, criteria batched), STACKED on task 2 (the distributed team), which is stacked on task 1, so it builds on both branches. The inventory at notes/docs-gap-inventory-2026-09-23.md (project home) section B lists every SILENT item in this theme with PR numbers; its section D lists three facts the inventory could not settle (which PR moved the gate timeout; which PRs introduced --orchestrator-model, --default-model, and daemon start --binary): settle them from git log on the branch, not from memory. Verify against the installed CLI's --help and the v0.10.44 source. Writing conventions: no em dashes (U+2014), full sentences, no AI attribution. Content task: docs only; the diff must stay inside the project's non-executable path set.
