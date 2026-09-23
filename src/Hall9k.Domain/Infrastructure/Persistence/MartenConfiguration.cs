@@ -47,6 +47,16 @@ public static class MartenConfiguration
         opts.UseSystemTextJsonForSerialization(enumStorage: EnumStorage.AsString, casing: Casing.CamelCase);
         opts.AutoCreateSchemaObjects = autoCreate;
 
+        // Task 29b0ca1a (Marten 9 security upgrade): Marten 9 flips five defaults — append mode to
+        // QuickWithServerTimestamps (was Rich), bigint event columns on, identity map for aggregates
+        // on, advanced async tracking on, and Npgsql's internal logger silenced. RestoreV8Defaults()
+        // holds this store to the V8-era value of all five, unchanged from what the fleet runs today:
+        // Rich append mode (every fence site here follows FetchStreamStateAsync, which the Marten docs
+        // call out as needing Rich), int event columns, no identity map, no async tracking (this store
+        // runs only inline projections), and Npgsql logging left alone. Opting into Quick append is a
+        // separate later task, not this security upgrade.
+        opts.RestoreV8Defaults();
+
         // Idea 202383dc, ruled 2026-09-12: every event carries its origin (owner root
         // fingerprint, node id) as event metadata, stamped by this one listener — see
         // EventOriginStampingListener for how it learns its own node's identity.

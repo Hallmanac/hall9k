@@ -29,6 +29,7 @@ using Hall9k.Domain.Features.Orchestrator;
 using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using JasperFx;
+using JasperFx.CodeGeneration;
 using Marten;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
@@ -283,14 +284,27 @@ builder.Services.AddSingleton<CourierEngine>();
 builder.Services.AddSingleton<RunSkillSweepEngine>();
 builder.Services.AddSingleton<LocalLaunchSweepEngine>();
 
+// Wolverine 6 (task 29b0ca1a, Marten 9 security upgrade): the message tables
+// (wolverine_outgoing_envelopes, wolverine_incoming_envelopes, wolverine_dead_letters, ...)
+// inherit AutoCreate from AddMartenEventStore above, which is CreateOnly for the same reason
+// EventStoreSchemaGuard exists — an install whose schema predates this table set must not have
+// them altered by every ordinary command. IntegrateWithWolverine's own AutoCreate override is
+// what migrates them at daemon start instead, the one place that is allowed to.
 builder.Services.AddMartenEventStore(connectionString, AutoCreate.CreateOnly)
-    .IntegrateWithWolverine();
+    .IntegrateWithWolverine(x => x.AutoCreate = AutoCreate.CreateOrUpdate);
 
 builder.UseWolverine(opts =>
 {
     opts.Discovery.IncludeAssembly(typeof(IDomainAssemblyMarker).Assembly);
     opts.Policies.AutoApplyTransactions();
     opts.Durability.Mode = DurabilityMode.Solo;
+
+    // Wolverine 6 moved runtime code generation to the opt-in WolverineFx.RuntimeCompilation
+    // package (not referenced here) and refuses to start in the default TypeLoadMode.Dynamic
+    // without it. Static boots cleanly because the daemon defines no handlers (Wolverine logs
+    // "found no handlers" at start) — there is nothing for it to generate code for — and it
+    // drops the Microsoft.CodeAnalysis (Roslyn) DLLs from the install.
+    opts.CodeGeneration.TypeLoadMode = TypeLoadMode.Static;
 });
 
 builder.Services.AddHostedService<DispatchLoop>();
