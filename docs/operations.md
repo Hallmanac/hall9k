@@ -45,7 +45,9 @@ The mechanism, in short:
   skill set through the same `--from-release` finish, and offers to restart a running daemon —
   no repo checkout, no .NET SDK, on the machine that runs it. A CLI call made between the
   republished binary and that restart fails once against a schema the new binary reads as stale,
-  with the doctor's own message pointing at `h9k doctor --yes`; taking the restart offer clears it.
+  with the doctor's own message pointing at `h9k doctor --yes`; taking the restart offer clears it,
+  because the restart runs `h9k doctor --yes` itself between the stop and the start (see
+  [How `--restart` restarts](#the-daemon-lifecycle)).
 - Installing this way registers no background service and no autostart, exactly as a local
   `h9k install` does (Decisions Log #31, S1-12).
 
@@ -107,6 +109,28 @@ human running `stop` has already made that call. `h9k update --restart` and
 `h9k install --restart` make the opposite call by default: they wait for a live gate to finish
 on its own, up to thirty minutes, printing what they are waiting on, before stopping the daemon;
 `--now` restarts at once instead, the same as a plain `h9k daemon stop` would.
+
+**How `--restart` restarts.** The process running `h9k update --restart` (and
+`h9k install --restart`, the same finish path) is the *old* binary, and it keeps executing its own
+code after the new files land at the old paths. So the restart is split across the swap, and the
+split matters:
+
+- **Before the swap**, in the old binary: the live-gate wait above. That is the only moment it can
+  actually read the store, since the binary and the schema it was built for still match. `--now`
+  skips it exactly as before.
+- **After the swap**, in a child process of the newly installed `h9k`, in this order:
+  `h9k daemon stop`, then `h9k doctor --yes`, then `h9k daemon start`. The old process does nothing
+  in those three steps but launch them and relay the exit code. `doctor --yes` is what brings a
+  stale store schema current between the stop and the start, so an update that carries a schema
+  change ends with the new daemon running on a current schema rather than with a stack trace (see
+  [the doctor check](#the-doctor-check)). Because it is `doctor --yes`, it will **start a stopped
+  `hall9k-postgres` container without asking** — inside `--restart` that is deliberate: the restart
+  cannot repair a schema it cannot reach.
+
+The point of no return is the stop signal the first child sends. A failure before it (the gate
+wait, the swap, launching the child at all) leaves the old daemon running and says so; a failure
+after it names the step that failed and lists only the steps that never started, so finishing by
+hand does not mean re-running work that already succeeded. Either way the command exits non-zero.
 
 On Windows, `stop` has no SIGTERM to send an arbitrary process, so it asks gracefully instead: it
 writes a small stop-request file the running `h9kd` polls for and honors itself
@@ -209,7 +233,11 @@ Then, four questions, answered in order, stopping at the first one that fails (D
    starts — the path an OS autostart manager takes after a reboot, bypassing the doctor check
    entirely — so restarting the daemon (`h9k daemon start`, or `h9k update`/`h9k install`'s own
    restart offer) fixes a stale schema as a side effect even without running `h9k doctor --yes`
-   first.
+   first. `h9k update --restart` and `h9k install --restart` go further and run `h9k doctor --yes`
+   themselves, between the stop and the start, so the repair is reported rather than silent and the
+   daemon comes up on a schema that is already current; the hand order those two automate,
+   `h9k daemon stop`, then `h9k doctor --yes`, then `h9k daemon start`, is still the fallback when
+   a restart fails partway through.
 4. **Only if nothing was configured** — what is available: a running container runtime, a native
    Postgres already on 5432, a **stopped** `hall9k-postgres` container from a previous session
    ("your database exists, it is just not running"), or — the nicest possible finding — a
@@ -264,6 +292,13 @@ second mechanism. A CLI call made in the window between the binary landing and t
 once with the same `SchemaMigrationException` and the doctor's stale-schema message any other
 schema change produces; taking the restart clears it. There is no extra operator step beyond the
 restart that `h9k update`, `h9k install`, or a plain `h9k daemon start` already performs.
+
+`h9k update --restart` and `h9k install --restart` handle this migration end to end on their own:
+the stop, `h9k doctor --yes`, and the start all run in the newly installed binary, in that order,
+and the doctor's `Schema updated` line is the evidence the store moved (see
+[How `--restart` restarts](#the-daemon-lifecycle)). If one of those three steps fails, the command
+says which, and the same three commands run by hand — `h9k daemon stop`, `h9k doctor --yes`,
+`h9k daemon start` — are the fallback.
 
 **Rollback.** The previous tag's binary (Marten 8) cannot open a store this migration has already
 touched — its own `h9k doctor --yes` cannot repair it either, since the schema it would need to

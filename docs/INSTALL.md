@@ -137,6 +137,13 @@ what such a migration moves and, when one is live, for the rollback: the previou
 cannot open a store a migration has already touched, so a `pg_dump` taken before updating is the
 only way back.
 
+The restart also brings the store schema current when the release carries a schema change: the
+newly installed binary runs `h9k daemon stop`, `h9k doctor --yes`, and `h9k daemon start` in that
+order, so the update finishes with the daemon up on a current schema rather than leaving you to
+run those three by hand. Because `h9k doctor --yes` is one of them, a `--restart` will start a
+stopped `hall9k-postgres` container without asking — see
+[operations.md](operations.md#the-daemon-lifecycle).
+
 ## Connecting a database
 
 `h9k` needs a Postgres connection string; nothing is *started* automatically, and nothing
