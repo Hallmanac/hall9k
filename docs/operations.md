@@ -93,12 +93,22 @@ appearing, whichever comes first.
 **A stopped daemon costs latency, never correctness.** Commands still land in Postgres while it
 is down, and startup catches up on everything that happened meanwhile, in a fixed order: adopt
 live runs, sweep expired leases, then claim new work. It says what it caught up on, both to the
-terminal and in the log:
+terminal and in the log. `h9k daemon start` first prints an `h9kd started` line with the pid and
+the log path, then waits up to thirty seconds for the daemon's catch-up line and prints it. If the
+line has not landed by then (Postgres still coming up is the usual reason) it prints `Still
+catching up` instead and returns, the line lands in the log when it arrives, and `h9k daemon status`
+shows progress; a daemon that dies during startup is reported as such, with the log's failure line.
 
 ```
 Catch-up complete — adopted 1 run(s), failed 0 orphaned run(s), requeued 0 expired
 lease(s); closeout sweep inspected 0 pull request(s) and observed 0 merge(s)
 ```
+
+The catch-up itself is the start of the dispatch loop, after it has brought older projections up
+to date: it adopts live runs, sweeps expired leases, runs one closeout sweep at once rather than
+waiting for that monitor's first tick, and only then starts claiming. If the closeout sweep cannot
+reach `gh` or the network, which is common right after a wake or a boot, the line says the sweep
+failed and that the monitor retries on its normal cadence.
 
 **Stopping the daemon does not stop the agents.** They are detached processes by design, so they
 keep working and the next start adopts them. `h9k daemon stop` says so. A live verification gate
@@ -160,6 +170,35 @@ nodes send, under the project's take policy. The **invite sweep**, every twenty 
 marks the invite spent. If the daemon is down they simply run late: nothing is lost, and a message
 is sent or an invite honored on the first sweep after `h9k daemon start`.
 
+Everything the daemon runs is a loop of its own, and each takes its cadence from a daemon option
+you can read in the [Configuration](#configuration) tables. None of them needs a human to start it,
+and each simply runs late while the daemon is down:
+
+| Loop | What it does | Cadence |
+|---|---|---|
+| Dispatch | Resumes stranded review and closeout pipelines, adopts `h9k task start` sessions, sweeps expired leases, re-evaluates blocked tasks, claims eligible work, and launches it | `Hall9k__PollInterval`, 5s, woken sooner by a database doorbell |
+| Lease heartbeat | Refreshes the leases of the runs this node holds | `Hall9k__HeartbeatInterval`, 15s |
+| Closeout monitor | Polls every open pull request this node opened and acts on what it finds | `Hall9k__PullRequestPollInterval`, 3m, backing off up to `Hall9k__PullRequestPollBackoffMaxInterval` |
+| Auto-pr-review monitor | Asks `gh` which pull requests now request this install's own login as a reviewer | `Hall9k__AutoPrReviewPollInterval`, 3m, with its own backoff |
+| Token-budget retry | Retries runs parked on token-budget exhaustion | `Hall9k__TokenBudgetRetryInterval`, 1h |
+| Launch-hold probe | While a node-wide launch hold stands, relaunches the oldest held run to see whether launching works again | `Hall9k__PollInterval`, with a backoff from `Hall9k__SessionErrorRetryBackoff` up to `Hall9k__LaunchHoldProbeBackoffMaxInterval` |
+| Takeover watch | Stops a live run that a forced takeover elsewhere has superseded | `Hall9k__PollInterval` |
+| Spike budget watch | Ends a spike run that has passed its wall-clock or token budget | `Hall9k__PollInterval` |
+| Claim-request watch | Answers the cooperative take requests other nodes send, under the project's take policy | `Hall9k__PollInterval` |
+| Card publication | Runs the publication sessions that `h9k task push-to-jira` and a project's `jira` backlog policy request | `Hall9k__CardPublicationPollInterval`, 30s, woken sooner by a doorbell |
+| Jira write retry | Retries a Jira write that is stuck on a rejected credential | `Hall9k__JiraWriteRetryInterval`, 5m |
+| Project home render | Re-renders `task.md` and `idea.md` in every project home, and moves finished tasks into `tasks/_archive/` | `Hall9k__ProjectHomeRenderPollInterval`, 20s, woken sooner by a doorbell |
+| Project purge | Carries out an archived project's purge once its 24-hour grace period has passed | `Hall9k__ProjectPurgeSweepPollInterval`, 15m |
+| Message sweep | Pushes this node's outbox, reads the others', applies replicated events, and answers and sends catch-up asks | The four `--message-poll-*` settings, jittered |
+| Invite sweep | Matches a newcomer's proof against the invites this node minted | `Hall9k__InviteSweepPollInterval`, 20s |
+| Prompt-addenda sweep | Pushes new prompt addenda to the ledger and rewrites each builder's addendum file on disk | `Hall9k__PromptAddendaSweepPollInterval`, 30s |
+| Orchestrator presence sweep | Records the registered orchestrator windows of this node that have gone away | `Hall9k__OrchestratorPresenceSweepPollInterval`, 15s |
+| Courier sweep | Spawns the feed courier for a project whose feed has undrained items and whose window is live | `Hall9k__CourierSweepPollInterval`, 10s |
+| Run-skill sweep | Answers a run-skill discovery request and pushes a newly recorded run skill to the ledger | `Hall9k__RunSkillSweepPollInterval`, 60s |
+| Local-launch sweep | Brings down a reviewer's local launch when its task closes out, its worktree is released, or its process dies | `Hall9k__LocalLaunchSweepPollInterval`, 20s |
+| Log rotation | Keeps `h9kd.log` inside its size budget by copying it aside to `h9kd.log.1` and truncating it in place | Every five minutes, fixed |
+| Stop-request watch (Windows only) | Honors the stop-request file that `h9k daemon stop` writes | Every 250 milliseconds, fixed |
+
 Start-at-login works on macOS (a launchd LaunchAgent) and Windows (a Task Scheduler logon task):
 
 ```bash
@@ -167,8 +206,8 @@ h9k daemon autostart enable
 h9k daemon autostart disable
 ```
 
-`enable` snapshots the enabling shell's `PATH` (plus any `HALL9K_*` variables that are actually
-set) into the registration, because the service manager starts from its own minimal environment
+`enable` snapshots the enabling shell's `PATH` (plus whichever of `HALL9K_HOME`,
+`HALL9K_CONNECTION_STRING`, and `HALL9K_CLAUDE_PATH` are actually set) into the registration, because the service manager starts from its own minimal environment
 (or, on Windows, from none of its own at all) and the daemon resolves `claude`, `gh`, and `git`
 through `PATH`. It reports any of those three that the captured environment cannot resolve, at
 enable time, where you can still fix it. Move a tool afterwards and you re-run `enable`. Only
@@ -579,41 +618,158 @@ lives on the repository](#one-setting-that-lives-on-the-repository-not-in-hall9k
 
 ### Environment
 
+Three variables are yours to set, and both binaries read them:
+
 | Variable | Effect |
 |---|---|
-| `HALL9K_CONNECTION_STRING` | The Postgres connection string — highest-precedence of the three homes in [§Postgres](#postgres); unset by default, and `h9k doctor` is what teaches the fix rather than a silent guess |
+| `HALL9K_CONNECTION_STRING` | The Postgres connection string, and the highest-precedence of the three homes in [§Postgres](#postgres); unset by default, and `h9k doctor` is what teaches the fix rather than a silent guess |
 | `HALL9K_HOME` | Relocates the whole on-disk layout away from `~/.hall9k` |
 | `HALL9K_CLAUDE_PATH` | Pins the `claude` binary instead of resolving it through `PATH` |
 
+Hall9k also reads a few variables that belong to the tools it drives or to the development loop.
+None of them is set by default, and none is needed on an ordinary install:
+
+| Variable | Effect |
+|---|---|
+| `PATH`, `PATHEXT` | `PATH` is how `claude`, `gh`, and `git` are found (`HALL9K_CLAUDE_PATH` pins only the first). On Windows, `PATHEXT` supplies the extensions to try when resolving them. |
+| `GH_TOKEN`, `GITHUB_TOKEN` | Read in that order, the way `gh` itself reads them. When either is set, Hall9k uses it as the token for the GitHub calls it makes on a project's behalf, in place of asking `gh` for a token for that project's own login. |
+| `ConnectionStrings__hall9k` | Injected into the daemon by the Aspire AppHost in the `dotnet run --project src/Hall9k.AppHost` dev loop, where it outranks `HALL9K_CONNECTION_STRING`. You do not set it on an installed machine. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | When set, the daemon exports its OpenTelemetry data to that OTLP endpoint (the Aspire dashboard's, in the dev loop). Unset, nothing is exported. |
+
 Daemon options bind from configuration in the usual .NET way, so each is also an environment
-variable under the `Hall9k__` prefix — and, for the settings worth tuning per machine, from the
-platform config file too (see [Daemon operating settings](#daemon-operating-settings) below). The
-ones worth knowing:
+variable under the `Hall9k__` prefix, and each also binds from the key of the same name in the
+`"hall9k"` section of the platform config file (see [Daemon operating settings](#daemon-operating-settings)
+below; the file spells keys in camelCase, and matching ignores case). The tables below list every
+one of them, grouped by what it governs, with its default. Three things apply to all of them:
+
+- A duration is written the .NET way, `hh:mm:ss` or `d.hh:mm:ss` (for example
+  `Hall9k__LeaseTimeout=00:02:00`), and a bare number means **days**. The tables print durations
+  in the short form (`60s`, `30m`) only so they read quickly.
+- Only some options have an `h9k config set` flag, and the [config-file keys table](#every-key-in-the-hall9k-section)
+  below is the complete list of which. Every option not named there has none: set it with an
+  environment variable, or by hand in the `"hall9k"` section of `~/.hall9k/config.json`.
+- A value the daemon cannot parse is refused when it starts, rather than quietly replaced by the
+  default, for every option except the five whose parsing the daemon does itself (the run ceiling,
+  the per-run session cap, the legacy session ceiling, the spend budget, and its period), where an
+  unusable value falls back to the default and is logged.
+
+**Dispatch and leases**
 
 | Option | Default | What it governs |
 |---|---|---|
-| `Hall9k__MaxConcurrentTaskRuns` | 1 | The node's ceiling, counted directly in **task runs** (Decisions Log #111) — every value is meaningful. Retires `Hall9k__MaxConcurrentAgentSessions`, still read as a fallback (see below). |
-| `Hall9k__SessionCapPerRun` | 3 | How many agent sessions one run may hold simultaneously — a global default, overridable per task at any time with `h9k task set-session-cap`, even mid-run. A cap of 1 serializes the two review lenses instead of dispatching them together. |
+| `Hall9k__MaxConcurrentTaskRuns` | 1 | The node's ceiling, counted directly in **task runs** (Decisions Log #111), so every value is meaningful. Retires `Hall9k__MaxConcurrentAgentSessions`, still read as a fallback (see below). |
+| `Hall9k__MaxConcurrentAgentSessions` (legacy) | 3 | Retired by Decisions Log #111 and read only as a fallback, converted to runs, at a level that does not set `Hall9k__MaxConcurrentTaskRuns` (explained below). Nothing in the daemon's own admission reads it directly. |
+| `Hall9k__SessionCapPerRun` | 3 | How many agent sessions one run may hold simultaneously; a global default, overridable per task at any time with `h9k task set-session-cap`, even mid-run. A cap of 1 serializes the two review lenses instead of dispatching them together. |
+| `Hall9k__SpendBudgetTokens` | unbudgeted | The node's periodic token-spend budget (backlog: spend-governor step three, Decisions Log #120): once the current period's recorded spend reaches it, the dispatcher declines to claim further queued work until the period rolls; a non-negative whole number of tokens, or absent for no budget |
+| `Hall9k__SpendPeriod` | week | The window `Hall9k__SpendBudgetTokens` resets on, `day` or `week` |
+| `Hall9k__PollInterval` | 5s | The dispatch loop's fallback sweep interval, since a database doorbell usually wakes it sooner. It is also the poll cadence of the launch-hold probe, the takeover watch, the spike budget watch, and the claim-request watch. |
+| `Hall9k__HeartbeatInterval` | 15s | How often the daemon refreshes the heartbeats of the leases this node holds; agents know nothing about leases. |
 | `Hall9k__LeaseTimeout` | 60s | How long a lease survives without a heartbeat before the sweep requeues it |
-| `Hall9k__VerifyGateTimeout` | 30m | Per gate, and the same value sizes every headless dispatched session's own foreground command timeout (`ClaudeSettingsFile`), so raising this also raises how long a session's own `dotnet test`-shaped command may run before Claude Code's Bash tool would otherwise kill it. Three surfaces do not move with it: an interactive `h9k task work` claim, `h9k task verify` run against one, and `h9k task start` — all three are CLI commands, and nothing on the CLI side reads this option today, so each always runs its own gates against the fixed 30-minute default regardless of what this is set to. |
+| `Hall9k__VerifyGateTimeout` | 30m | Per gate, and the same value sizes every headless dispatched session's own foreground command timeout (`ClaudeSettingsFile`), so raising this also raises how long a session's own `dotnet test`-shaped command may run before Claude Code's Bash tool would otherwise kill it. Three surfaces do not move with it: an interactive `h9k task work` claim, `h9k task verify` run against one, and `h9k task start`; all three are CLI commands, and nothing on the CLI side reads this option today, so each always runs its own gates against the fixed 30-minute default regardless of what this is set to. |
+| `Hall9k__TokenBudgetRetryInterval` | 1h | How often the daemon retries runs parked on token-budget exhaustion. The subscription window resets on its own clock, so a patient poll is the whole mechanism. |
+| `Hall9k__SessionErrorRetryBackoff` | 90s | How long a session that reported an error result waits before its leg is redispatched fresh, sized to outlast a provider-side overload burst. It is also where the launch-hold probe's backoff starts. |
+| `Hall9k__LaunchFailureMaxDuration` | 2s | How quickly a session must have exited, on one turn and zero tokens, to be read as this node failing to launch sessions at all rather than as an agent failing. |
+| `Hall9k__LaunchHoldProbeBackoffMaxInterval` | 15m | The ceiling the launch-hold probe's doubling backoff may reach. Each probe relaunches the oldest held run, so every attempt costs a real session. |
+
+**Closeout and pull requests**
+
+| Option | Default | What it governs |
+|---|---|---|
 | `Hall9k__PullRequestPollInterval` | 3m | How often the closeout monitor polls an open pull request |
 | `Hall9k__PullRequestPollBackoffMaxInterval` | 30m | The ceiling the poll interval backs off to when every attempted inspection in a sweep fails (e.g. `gh` rate-limited); resets on the next successful sweep |
+| `Hall9k__AutoPrReviewPollInterval` | 3m | How often the auto-pr-review poll asks `gh` which open pull requests, in a registered project's repository, request this install's own login as a reviewer. It runs on its own timer, so trouble on one poll never widens the other. |
+| `Hall9k__AutoPrReviewPollBackoffMaxInterval` | 30m | The ceiling the auto-pr-review poll backs off to while its `gh` calls keep failing. |
 | `Hall9k__MaxAutomaticCloseoutRuns` | 6 | The lifetime ceiling: automatic closeout actions a pull request may spend across every obstruction before closeout parks and asks for you, whatever it grants along the way |
-| `Hall9k__MaxCloseoutLapsPerObstruction` | 2 | The progress cap: consecutive automatic laps closeout may spend on the SAME obstruction (the same failing check, the same unresolved threads) before parking — a lap that clears its obstruction resets this one, and a human re-engaging with the pull request grants one more lap past it |
+| `Hall9k__MaxCloseoutLapsPerObstruction` | 2 | The progress cap: consecutive automatic laps closeout may spend on the SAME obstruction (the same failing check, the same unresolved threads) before parking; a lap that clears its obstruction resets this one, and a human re-engaging with the pull request grants one more lap past it |
+| `Hall9k__MaxMechanicalResolutionAttempts` | 3 | For a pre-approved task, how many times a merge that GitHub refuses for a mechanical reason is retried without an agent before the run parks with an itemized reason. A manual `h9k pr resolve` refills it. |
+| `Hall9k__MaxStackReplayRuns` | 12 | For a stacked child, how many mechanical replays onto a moved parent head (or onto the base branch once the parent merged) it gets before it parks. It is its own budget, higher than the closeout ceiling, because a parent under review legitimately moves once per lap; a manual `h9k pr resolve` resets it. |
+| `Hall9k__CopilotReviewSettleWindow` | 24h | How long a pre-approved task's pull request waits for a requested Copilot review to arrive before the run parks instead of waiting forever. |
+| `Hall9k__ChecksRegistrationSettleWindow` | 15m | How long a pre-approved task's merge gate waits, after the head was last pushed, for GitHub to report a first check run before it reads an empty list as "no CI configured". |
+| `Hall9k__MaxReviewRerequestsAfterFixes` | 2 | How many countersign re-requests one task's pull request may draw before it settles on the internal review, the thread replies, and CI (Decisions Log #62). |
+| `Hall9k__DefaultReviewRerequest` | disabled | Whether closeout asks reviewers for another pass after fixes push |
+| `Hall9k__DefaultCommitStyle` | narrative | How follow-up runs land review fixes when a project sets no style of its own: `narrative` folds each fix into its owning commit, `append` stacks fix commits on top. `h9k project set --commit-style` overrides it per project. |
+
+**Review**
+
+| Option | Default | What it governs |
+|---|---|---|
 | `Hall9k__MaxComplianceReviewCycles` | 3 | The conformance track's cap |
 | `Hall9k__MaxAdversarialReviewCycles` | 4 | The adversarial track's cap |
 | `Hall9k__AdversarialSeverityGateFromCycle` | 4 | From this cycle, only a `high` re-triggers the adversarial loop |
 | `Hall9k__MaxFinalFullPassRounds` | 2 | The mandatory full-read pass immediately before settle's own cap: however many times it has run for this run, hitting this count without ever settling parks the run for a human |
-| `Hall9k__LifetimeReviewCycleBudget` | 20 | The task-lifetime ceiling on review cycles, counted across every run and follow-up a task has had — immune to the per-run resets a stranding, retry, or follow-up round gives the three caps above; generous, so it only catches genuine pathology |
-| `Hall9k__DefaultReviewRerequest` | disabled | Whether closeout asks reviewers for another pass after fixes push |
-| `Hall9k__DefaultModel`, `Hall9k__ModelByRole__*` | | The node's model policy, per role (build, review, fix, synthesis, refinement, publication), plus `Hall9k__ModelByRole__ReviewVerify` and `Hall9k__ModelByRole__ReviewFinalFullPass` — not extra roles, but narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass respectively, each blank falling through to whatever review resolves |
-| `Hall9k__SpendBudgetTokens` | unbudgeted | The node's periodic token-spend budget (backlog: spend-governor step three, Decisions Log #120) — once the current period's recorded spend reaches it, the dispatcher declines to claim further queued work until the period rolls; a non-negative whole number of tokens, or absent for no budget |
-| `Hall9k__SpendPeriod` | week | The window `Hall9k__SpendBudgetTokens` resets on, `day` or `week` |
+| `Hall9k__LifetimeReviewCycleBudget` | 20 | The task-lifetime ceiling on review cycles, counted across every run and follow-up a task has had, immune to the per-run resets a stranding, retry, or follow-up round gives the three caps above; generous, so it only catches genuine pathology |
+| `Hall9k__MaxSettlingGateRepairRounds` | 1 | How many repair sessions the Settling phase may dispatch in a row when a clean rebase breaks the mandatory gate, before the run parks. It is deliberately not on the task, project, node chain, and it has no `h9k config set` flag. |
+| `Hall9k__ReviewStageComposition` | full-pipeline | The node level of which pre-PR review stages a run gets (`full-pipeline`, `adversarial-only`, `conformance-only`, `skip-final-pass`, or `none`; see [the composition](#daemon-operating-settings) below). A word the daemon does not recognize reads silently as `full-pipeline`. |
+
+**Auxiliary sessions**
+
+These are the narrow, bounded sessions the daemon spawns beside a run's build and review sessions.
+Each is capped twice, by turns and by wall clock, because a turn cap alone does nothing about one
+turn that hangs.
+
+| Option | Default | What it governs |
+|---|---|---|
+| `Hall9k__BlockerSynthesisThreshold` | 3 | How many immediate blockers a claimed task may have before their handoffs are condensed by a synthesis session rather than passed through raw (Decisions Log #36). |
+| `Hall9k__BlockerSynthesisTimeout` | 5m | How long a dispatch waits for that synthesis session before it ends it and starts on the raw handoffs; the wait is on the critical path of every other claim. |
+| `Hall9k__UncommittedWorkRecoveryMaxTurns` | 20 | The turn cap of the one automatic session that commits finished work a session left uncommitted. |
+| `Hall9k__UncommittedWorkRecoveryTimeout` | 15m | The wall-clock ceiling on that same recovery session. |
+| `Hall9k__StackAssessmentMaxTurns` | 15 | The turn cap of the read-only assessment session dispatched before a stacked checkpoint would park on a git shape. |
+| `Hall9k__StackAssessmentTimeout` | 10m | The wall-clock ceiling on that assessment session. |
+| `Hall9k__RunSkillDiscoveryMaxTurns` | 25 | The turn cap of a run-skill discovery session, which reads several files before it writes anything. |
+| `Hall9k__RunSkillDiscoveryTimeout` | 15m | The wall-clock ceiling on that discovery session. |
+
+**Messages and replication**
+
+| Option | Default | What it governs |
+|---|---|---|
 | `Hall9k__MessageActivePollMinSeconds`, `Hall9k__MessageActivePollMaxSeconds` | 15, 25 | The message sweep's cadence, whole seconds, while this node has something unsent or unread or holds work; each tick is a random draw from the range (`h9k config set --message-poll-active-min` and `--message-poll-active-max`) |
 | `Hall9k__MessageIdlePollMinSeconds`, `Hall9k__MessageIdlePollMaxSeconds` | 30, 45 | The same range once there is nothing to send, read, or hold (`--message-poll-idle-min` and `--message-poll-idle-max`). Each pair must keep its minimum at or below its maximum |
 | `Hall9k__MessageRetention` | 48h | How long this node keeps the envelopes it has already sent in its own outbox before its next squash drops them. A node that was away longer asks for its missing history instead of reading it. Never another node's outbox. No `h9k config set` option; set it here or in the config file's `hall9k` section |
 | `Hall9k__EventCatchUpRequestTimeout` | 5m | How long a catch-up request waits for the peer it is currently asking before moving on to the next ranked candidate; an earlier request is never retracted, so a late answer still applies harmlessly. No `h9k config set` option |
 | `Hall9k__InviteSweepPollInterval` | 20s | How often the invite sweep looks for a newcomer's proof against an invite this node minted. No `h9k config set` option |
+
+**Orchestrator windows and the feed courier**
+
+| Option | Default | What it governs |
+|---|---|---|
+| `Hall9k__OrchestratorPresenceSweepPollInterval` | 15s | How often the daemon checks this node's registered orchestrator windows against the process table and records the ones that are gone. |
+| `Hall9k__CourierSweepPollInterval` | 10s | How often the courier sweep checks each project for the courier's four spawn conditions: undrained feed items, a live orchestrator window, no courier already running, and the batching wait elapsed. |
+| `Hall9k__CourierQuietThreshold` | 10m | How long a project's feed must have produced nothing new for the courier's batching wait to fall to zero. The wait grows with recent activity, up to the project's own `--courier-max-wait`. |
+| `Hall9k__CourierDaySpawnCap` | 500 | The most couriers one project may spawn in a UTC day, a storm guard for a feed that keeps producing urgent items, which bypass the batching wait. |
+| `Hall9k__CourierTimeout` | 3m | The wall-clock ceiling on one courier session. |
+| `Hall9k__CourierMaxTurns` | 8 | The turn cap a courier session is spawned with; its whole job is one `SendMessage` call and a closing line. |
+
+**Run skill, prompt addenda, local launches, and project homes**
+
+| Option | Default | What it governs |
+|---|---|---|
+| `Hall9k__PromptAddendaSweepPollInterval` | 30s | How often the daemon pushes a project's new prompt-addendum events to the ledger and rewrites each builder's addendum file on disk from the ledger. |
+| `Hall9k__RunSkillSweepPollInterval` | 60s | How often the daemon answers an outstanding run-skill discovery request and pushes a newly recorded run skill to the ledger. |
+| `Hall9k__RunSkillCheckoutGrace` | 30m | How long a discovery request stays outstanding while the project still has no checkout with files in it, before the "nothing to read" failure is recorded. It is generous because it waits on a clone. |
+| `Hall9k__LocalLaunchSweepPollInterval` | 20s | How often the daemon checks whether a reviewer's local launch (`h9k task run-local`) should come down because its task closed out, its worktree was released, or its process died. |
+| `Hall9k__ProjectHomeRenderPollInterval` | 20s | The backstop cadence of the sweep that re-renders `task.md` and `idea.md` in every project home. Most commands ring a doorbell that wakes it sooner. |
+| `Hall9k__ProjectPurgeSweepPollInterval` | 15m | How often the daemon looks for an archived project whose 24-hour purge grace period has passed. The first sweep runs at startup, so a purge that came due while the daemon was down fires on the next start. |
+
+**Jira and publication**
+
+| Option | Default | What it governs |
+|---|---|---|
+| `Hall9k__CardPublicationTimeout` | 15m | How long a card-publication session gets before the daemon stops waiting and ends it, so a hung session cannot hold the publication queue forever. |
+| `Hall9k__CardPublicationPollInterval` | 30s | How often the daemon looks for publication requests; the doorbell usually gets there first, and this covers a request made while the daemon was down. |
+| `Hall9k__ForeignPublicationCeiling` | 1h | How long a publication session dispatched by another node may stand before this node ends the request, since a process id means nothing off the machine that issued it. |
+| `Hall9k__JiraWriteRetryInterval` | 5m | How often the daemon retries a Jira write stuck on a rejected credential. Nothing observes the moment a connection is fixed, so a patient poll is the whole mechanism. |
+| `Hall9k__PendingJiraWriteCeiling` | 30m | How long a Jira write may sit pending with no outstanding authentication problem before it is ended on the clock alone. |
+
+**Models**
+
+Which model runs what is explained in [Which model runs what](#which-model-runs-what) below.
+
+| Option | Default | What it governs |
+|---|---|---|
+| `Hall9k__DefaultModel` | `claude-opus-5[1m]` | The bottom of the agent-model chain: the model every agent session runs on unless something more specific says otherwise (`h9k config set --default-model`). |
+| `Hall9k__ModelByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication` | blank | The node's model for each role, or blank for no opinion (`--model-build`, `--model-review`, `--model-fix`, `--model-synthesis`, `--model-refinement`, `--model-publication`). |
+| `Hall9k__ModelByRole__ReviewVerify`, `Hall9k__ModelByRole__ReviewFinalFullPass` | blank | Not extra roles, but narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass respectively, each blank falling through to whatever review resolves (`--model-review-verify`, `--model-review-finalpass`). |
+| `Hall9k__ModelByRole__Courier` | blank | The node's model for the feed courier (`--model-courier`). Blank does not mean the platform default: a courier's own floor is `claude-sonnet-5`. |
 
 Before Decisions Log #111, the ceiling was set in agent sessions and spent in runs, so there was a
 conversion between the number you configured and the number of tasks in flight. That conversion is
@@ -653,11 +809,29 @@ not a per-row fact: `h9k status` names it once, on the Queued section's own head
 current period's recorded spend has reached a budget the daemon has confirmed it is enforcing —
 `h9k task show` and `h9k task list` never mention it at all.
 
+### Variables the platform sets and reads for its own sessions
+
+You do not set any of these yourself. Hall9k puts them into the environment of the sessions it
+starts, or reads them from a session that Claude Code started, and each is listed so that a
+variable you find in a session's environment is not a mystery. Setting one by hand in your own
+shell changes how Hall9k treats that shell, and in one case (the last row) can misdirect output.
+
+| Variable | Set by | What reads it and why |
+|---|---|---|
+| `HALL9K_DISPATCHED_RUN_ID` | The daemon on every headless session it spawns, and `h9k task start` and `h9k task delegate` on the sessions they launch | It marks a dispatched, detached session and is inherited by everything that session runs. The CLI reads it and refuses the verbs that drive a task's, an idea's, or a project's own lifecycle (for example `h9k task abandon`, `h9k task retry`, `h9k review resolve`, `h9k project set`), saying so and pointing the agent at its closing summary instead. A person's own claim (`h9k task work`, a pasted prompt, `--direct-launch`) never carries it. |
+| `HALL9K_DISPATCHED_TASK_ID` | The same places, alongside the run id, whenever the session belongs to a task | It only lets that refusal name the task. A session with no task of its own (card publication, the courier, run-skill discovery) does not carry it. |
+| `HALL9K_INTERACTIVE_RUN_ID` | `h9k task work --direct-launch`, on the Claude Code session it launches | It carries the claiming run's id, so `h9k task deliver` and `h9k task handback` run from inside that session recognise themselves instead of refusing as a second terminal, and so commands that record a statement can name the run it came from. It is distinct from the dispatched-run variable: it names a person's attached claim, never a headless one. |
+| `HALL9K_DETACHED_SESSION` | `h9k task start` and `h9k task delegate`, on the wrapper shell of the headless session they launch | It carries that session's name, so a command that records something can tell the caller is an unattended headless session and not a person attached to the task's claim. |
+| `HALL9K_VERIFY_GATE_WAIT_DIR` | The daemon's verification runner, and `h9k task verify`, on each gate's process tree | It names a directory where the test suite's cross-process container gate (Decisions Log #132) writes a one-line diagnostic while it queues for a Postgres permit. The daemon reads it when a gate hits its timeout, to tell a gate that starved for a permit (infrastructure) from a test that hung. |
+| `CLAUDE_PID` | Claude Code itself, inherited by every Bash-tool child | `h9k task register-session` reads it as the process identity of a pasted session, and the interactive-claim guards read it to recognise a self-registered session asking about itself. The command refuses to record anything when it is absent. |
+| `CLAUDE_CODE_SESSION_ID` | Claude Code itself | `h9k task register-session` reads it as the session's id. An absent or unparsable value gets a freshly minted id instead of a refusal, since nothing downstream keys liveness off it. |
+| `HALL9K_DAEMON_APPEND_ONLY_LOG` | Internal: only the Windows launcher, on the environment it builds for `h9kd` | It tells `h9kd` that its standard handles already point at the append handle its launcher opened onto `h9kd.log`, so `h9kd` swaps in UTF-8 replacement handles onto that log, and then clears the variable from its own environment so its children do not inherit it. Never set it by hand: from a terminal it would silently redirect that terminal's own console output into the installed daemon's log. It is deliberately not a supported override. |
+
 ### Daemon operating settings
 
-The concurrency ceiling, the model-by-role policy, the four review-cycle caps, the review stage
-composition, the periodic spend budget and its period, and the four message-poll cadences are durable, not just environment
-variables (backlog 59): they also
+The concurrency ceiling, the default model and the model-by-role policy, the four review-cycle
+caps, the review stage composition, the periodic spend budget and its period, and the four
+message-poll cadences are durable, not just environment variables (backlog 59): they also
 load from the `"hall9k"` section of the platform config file
 (`~/.hall9k/config.json`, the same file [§Postgres](#postgres) uses for `connectionString`),
 deliberately outside `bin/` — an update replaces `bin/` wholesale, and these settings belong to
@@ -666,7 +840,7 @@ the machine, not the build. Precedence, highest first:
 1. An environment variable under the `Hall9k__` prefix — this shell, this invocation.
 2. The platform config file — a durable per-machine setting, written by hand or by `h9k config
    set`.
-3. The built-in default (the values in the table above).
+3. The built-in default (the values in the tables above).
 
 An environment variable therefore stays a one-off override rather than the only way to set
 anything, which is what makes this durable for the case an environment variable structurally
@@ -674,23 +848,39 @@ cannot reach: a daemon started by autostart (a launchd `LaunchAgent` or a Window
 logon task) has no operator shell to export anything into, so before backlog 59 it always ran on
 built-in defaults no matter what the operator had configured by hand.
 
+Every option in the tables above binds this way, not only the ones `h9k config set` has a flag for.
+The flags cover the operating settings an operator changes most; a setting with no flag, such as
+`Hall9k__PollInterval` or `Hall9k__CourierDaySpawnCap`, is set by hand under the same name in the
+`"hall9k"` section (`"pollInterval": "00:00:10"`), and `h9k config show` reports only the flagged
+ones.
+
 The same config file also carries `interactiveClaimStaleAfterDays` (backlog 59, Decisions Log
 #103): how long an [interactive claim](#working-a-task-interactively) can sit untouched before
 `h9k status` nudges about it, three days by default. It has no environment-variable tier and no
 daemon-startup binding — there is no daemon-side reclaim to configure, ever, so `h9k status`
 resolves it fresh from the config file on every render rather than off a process that started
-once.
+once. Four more keys are file-only in the same way: `inviteExpiryHours` and the two
+`lessonPromptMax...` caps, which the CLI reads fresh when it mints an invite or composes a prompt,
+and `orchestratorModel`, which the CLI reads when it renders the orchestrator recipe. The
+[table of keys](#every-key-in-the-hall9k-section) below says which is which.
 
 ```bash
 h9k config show                                             # every setting, and where it came from
 h9k config set --max-concurrent-task-runs 2                 # the node's run ceiling
 h9k config set --session-cap-per-run 1                      # the per-run session cap's global default
 h9k task set-session-cap 28b19893 1                         # override the cap for one task, even mid-run
+h9k config set --default-model "claude-opus-5[1m]"          # the bottom of the agent-model chain; 'default' clears it
+h9k config set --orchestrator-model sonnet                  # the model the orchestrator window runs on; 'default' clears it
 h9k config set --model-review sonnet --model-fix haiku      # per-role model overrides
+h9k config set --model-build sonnet --model-synthesis haiku # the build session, and the blocker-handoff condenser
+h9k config set --model-refinement haiku --model-publication haiku   # the draft-refinement and tracker-card sessions
 h9k config set --model-review-verify sonnet                 # Verify-shape passes only; defaults to --model-review
 h9k config set --model-review-finalpass sonnet              # the mandatory FinalFullPass only; defaults to --model-review
+h9k config set --model-courier haiku                        # the feed courier; 'default' returns it to its claude-sonnet-5 floor
 h9k config set --interactive-claim-stale-after-days 5       # the interactive-claim nudge threshold
 h9k config set --max-compliance-review-cycles 5 --lifetime-review-cycle-budget 40   # the node's review-cycle caps
+h9k config set --max-adversarial-review-cycles 5 --max-final-full-pass-rounds 3     # and the other two
+h9k config set --max-concurrent-agent-sessions 4            # the legacy ceiling, still written and read as a fallback
 h9k config set --review-stage-composition adversarial-only --accept-reduced-review   # which pre-PR review stages a run gets
 h9k config set --spend-budget 5000000 --spend-period week   # the periodic token-spend budget and its window
 h9k config set --spend-budget none                          # clear it back to unbudgeted
@@ -760,18 +950,138 @@ above and nothing is already listening on `localhost:5432` (Decisions Log #118) 
 leaves it alone the same as update does; a missing file is created (with defaults, and only the
 settings you asked to change) the first time `h9k config set` needs it, and it says so.
 
+#### Every key in the `hall9k` section
+
+The section is plain JSON, every key is optional, and `h9k config set` leaves a key it does not
+know about untouched when it writes, so a hand-edited setting survives:
+
+```json
+{
+  "connectionString": "Host=localhost;Port=5432;…",
+  "hall9k": {
+    "maxConcurrentTaskRuns": 2,
+    "defaultModel": "claude-opus-5[1m]",
+    "orchestratorModel": "sonnet",
+    "modelByRole": { "build": "sonnet", "review": "claude-opus-5[1m]", "reviewVerify": "sonnet" },
+    "maxComplianceReviewCycles": 3,
+    "messageIdlePollMinSeconds": 120,
+    "pollInterval": "00:00:10"
+  }
+}
+```
+
+The keys `h9k config set` writes are these. A key with an environment variable is a `Hall9k__`
+option from the tables above, so the environment outranks the file; a key with none is read from
+the file alone.
+
+| Key | `h9k config set` flag | Environment variable | Default |
+|---|---|---|---|
+| `connectionString` (top level, beside `"hall9k"`) | none; written by `h9k install`, by `h9k doctor`, or by hand | `HALL9K_CONNECTION_STRING` | none |
+| `maxConcurrentTaskRuns` | `--max-concurrent-task-runs` | `Hall9k__MaxConcurrentTaskRuns` | 1 |
+| `maxConcurrentAgentSessions` (legacy) | `--max-concurrent-agent-sessions` | `Hall9k__MaxConcurrentAgentSessions` | 3, converted to 1 run |
+| `sessionCapPerRun` | `--session-cap-per-run` | `Hall9k__SessionCapPerRun` | 3 |
+| `defaultModel` | `--default-model` | `Hall9k__DefaultModel` | `claude-opus-5[1m]` |
+| `orchestratorModel` | `--orchestrator-model` | none | falls back to `defaultModel`, then `claude-opus-5[1m]` |
+| `modelByRole.build`, `.review`, `.fix` | `--model-build`, `--model-review`, `--model-fix` | `Hall9k__ModelByRole__Build`, `__Review`, `__Fix` | blank |
+| `modelByRole.synthesis`, `.refinement`, `.publication` | `--model-synthesis`, `--model-refinement`, `--model-publication` | `Hall9k__ModelByRole__Synthesis`, `__Refinement`, `__Publication` | blank |
+| `modelByRole.reviewVerify`, `.reviewFinalFullPass` | `--model-review-verify`, `--model-review-finalpass` | `Hall9k__ModelByRole__ReviewVerify`, `__ReviewFinalFullPass` | blank |
+| `modelByRole.courier` | `--model-courier` | `Hall9k__ModelByRole__Courier` | blank, with a floor of `claude-sonnet-5` |
+| `maxComplianceReviewCycles` | `--max-compliance-review-cycles` | `Hall9k__MaxComplianceReviewCycles` | 3 |
+| `maxAdversarialReviewCycles` | `--max-adversarial-review-cycles` | `Hall9k__MaxAdversarialReviewCycles` | 4 |
+| `maxFinalFullPassRounds` | `--max-final-full-pass-rounds` | `Hall9k__MaxFinalFullPassRounds` | 2 |
+| `lifetimeReviewCycleBudget` | `--lifetime-review-cycle-budget` | `Hall9k__LifetimeReviewCycleBudget` | 20 |
+| `reviewStageComposition` | `--review-stage-composition`, with `--accept-reduced-review` for a value that drops a review guarantee | `Hall9k__ReviewStageComposition` | `full-pipeline` |
+| `spendBudgetTokens` | `--spend-budget` (`none` clears it) | `Hall9k__SpendBudgetTokens` | unbudgeted |
+| `spendPeriod` | `--spend-period` | `Hall9k__SpendPeriod` | `week` |
+| `messageActivePollMinSeconds`, `messageActivePollMaxSeconds` | `--message-poll-active-min`, `--message-poll-active-max` | `Hall9k__MessageActivePollMinSeconds`, `__MessageActivePollMaxSeconds` | 15, 25 |
+| `messageIdlePollMinSeconds`, `messageIdlePollMaxSeconds` | `--message-poll-idle-min`, `--message-poll-idle-max` | `Hall9k__MessageIdlePollMinSeconds`, `__MessageIdlePollMaxSeconds` | 30, 45 |
+| `interactiveClaimStaleAfterDays` | `--interactive-claim-stale-after-days` | none | 3 |
+| `inviteExpiryHours` | `--invite-expiry-hours` | none | 72 |
+| `lessonPromptMaxLessons` | `--lesson-prompt-max-lessons` | none | 15 |
+| `lessonPromptMaxCharacters` | `--lesson-prompt-max-characters` | none | 4000 |
+| `launchTexts` | none; `h9k orchestrator launch-text set` writes it | none | none; `launch-text show` prints a computed default |
+
+Every other `Hall9k__` option in the tables above has no flag and no dedicated key in this table.
+Its file key is its option name without the prefix, in camelCase, with a duration written as a
+string (`"leaseTimeout": "00:02:00"`).
+
+#### Which model runs what
+
+Hall9k runs two kinds of session on a model, and each has its own chain that you can change without
+touching the other.
+
+**Agent sessions** are everything the daemon spawns: the build, review, fix, synthesis,
+refinement, publication, and courier sessions. Each resolves its model at dispatch, most specific
+first, and the resolved value is recorded on the dispatch event as an observed fact of the run:
+
+1. The task's own override (`h9k task add --model`, `h9k task revise --model`).
+2. The node's default for that session's role (`h9k config set --model-<role>`).
+3. The project's model (`h9k project set <name> --model`).
+4. The node's `--default-model` (`Hall9k__DefaultModel`).
+5. The platform fallback, `claude-opus-5[1m]`, which is what applies when nothing above is set.
+
+A model is an exact id (`claude-opus-5`, `claude-sonnet-5`, or a context variant such as
+`claude-opus-5[1m]`) or a tier alias (`fable`, `opus`, `sonnet`, `haiku`); an exact id is the
+stabler choice, because an alias is re-pointed as new models ship. The word `default` is never a
+model name. Passed to a node or project option, it clears that level, so the levels around it decide.
+`--default-model` is the bottom of the chain and exists so the platform never inherits whatever
+your personal Claude Code default happens to be that day (Decisions Log #33); clearing it puts the
+platform fallback back. Note that step 2 outranks step 3: a node that sets a model for a role wins
+over a project's `--model` for that role's sessions. Two review passes have a narrower node-level
+knob than the review role. `--model-review-verify` sets a Verify-shape pass and
+`--model-review-finalpass` sets the mandatory final full pass; each sits under the task's override
+and above `--model-review`, and left blank each falls through to whatever the review role resolves.
+
+The feed courier is the one role with a floor of its own. Its chain is the node's
+`--model-courier`, then the project's `--model`, then `claude-sonnet-5`. It never reaches
+`--default-model`, and it has no task level because a courier runs with no task. That floor is why
+`--model-courier default` does not clear to the platform default the way every other
+`--model-<role> default` does: it removes the override and leaves the courier on the deliberately
+cheap `claude-sonnet-5`, unless the project sets a `--model` of its own.
+
+**The orchestrator window** is the interactive Claude Code session you launch from a node's or a
+project's home. It runs on the model its `recipes/settings.json` is rendered for, and that has its
+own chain, deliberately not the one above, so changing the model dispatched agents run on does not
+silently move your own window, and the reverse. For a project's window, most specific first:
+
+1. The project's `--orchestrator-model` (`h9k project set <name> --orchestrator-model <model>`).
+2. The project's `--model`, which is what every window followed before the orchestrator override
+   existed.
+3. The node's `--orchestrator-model` (`h9k config set --orchestrator-model <model>`).
+4. The node's `--default-model`, as recorded in the config file.
+5. The platform fallback, `claude-opus-5[1m]`.
+
+The node's own window (the one in `~/.hall9k`) uses only steps 3 to 5. Two details are worth
+knowing. The node levels are read from the config file alone, because the orchestrator model has no
+environment variable, so an exported `Hall9k__DefaultModel` moves your agents but never your
+window. And a project's `--model` outranks the node's `--orchestrator-model` for that project's
+window, so give a project its own `--orchestrator-model` when you want its window pinned. `default`
+clears either override.
+
+`h9k config show` prints the node's resolved orchestrator model and where it came from, and
+`h9k project show` prints a project's, naming whether the project's own override, the project's
+`--model`, or the node's resolution decided. The file is re-rendered whenever the answer could have
+changed: by `h9k install` and `h9k update` for the node's own `recipes/settings.json`; by
+`h9k config set` when it is given `--default-model` or `--orchestrator-model`; by `h9k project add`
+and `h9k project init` for a project's; and by `h9k project set` when it is given `--model` or
+`--orchestrator-model`. A project window that follows the node is caught up at its next
+`h9k project init`, since `h9k config set` re-renders the node's file alone.
+
 ### Per project and per owner
 
 Settings resolve most-specific-wins, and each chain always ends somewhere explicit. The review
 re-request policy resolves **project over owner over the node default**. The agent model resolves
-**task override, then this node's per-role default, then the project default, then the platform
-fallback**, and the resolved value is recorded on the dispatch event as an observed fact of the
-run.
+**task override, then this node's per-role default, then the project default, then the node's
+`--default-model`** (which is the platform fallback, `claude-opus-5[1m]`, until you change it), and
+the resolved value is recorded on the dispatch event as an observed fact of the run.
+[Which model runs what](#which-model-runs-what) has the whole story, including the separate chain
+for the orchestrator window.
 
 ```bash
 h9k project set myproject --verify "build=dotnet build" --verify "test=dotnet test"
 h9k project set myproject --verify-gate-filter "test=Category=RequiresDocker"
 h9k project set myproject --model claude-opus-5
+h9k project set myproject --orchestrator-model sonnet       # the model this project's orchestrator window runs on; 'default' clears it
 h9k project set myproject --commit-style narrative
 h9k project set myproject --max-parallel-tasks 2
 h9k project set myproject --priority high
@@ -779,11 +1089,23 @@ h9k project set myproject --skip-permissions true
 h9k project set myproject --link "api-conventions=https://…"
 h9k project set myproject --jira PROJ
 h9k project set myproject --backlog github-issues
+h9k project set myproject --backlog-routing "triage,backend"   # routing guidance: the label list for github-issues, free text for jira
+h9k project set myproject --primary-tracker github          # which reference wins when a task adopts both a GitHub issue and a Jira card; 'none' clears it
+h9k project set myproject --claim-gate tracker-assignee     # a linked card's own assignee is what hands out work; 'off' is the default
+h9k project set myproject --auto-pr-review first            # off, normal (the default), first, or now: what a review request assigned to you starts
 h9k project set myproject --rerequest-review on
 h9k project set myproject --branch-template "{key}-{slug}"
 h9k project set myproject --writing-conventions "Plain sentences. No em dashes. No AI attribution."
 h9k project set myproject --take-policy ask                 # park a member's cooperative take request for a person instead of answering it
 h9k project set myproject --take-timeout 60                 # minutes a take request waits before --force is named; 'default' restores 30
+h9k project set myproject --non-executable-path "assets/**/*.png"   # add a glob to the paths whose diffs skip the verification gates; 'default' clears your additions
+h9k project set myproject --design-review-drive off         # the designer persona reads the diff only; on is the default
+h9k project set myproject --qa-review-drive on              # the QA persona may drive the running product; off is the default
+h9k project set myproject --discover-run-skill              # ask the daemon to rediscover how to stand the project up locally
+h9k project set myproject --orchestrator-feed actionable    # how much history the orchestrator feed carries; transitions is the default
+h9k project set myproject --courier-max-wait 120            # ceiling in seconds on the feed courier's batching wait; the default is 60
+h9k project set myproject --close-linked-issue never        # whether true closeout closes a task's GitHub issue; when-all-tasks-close is the default
+h9k project set myproject --never-close-labels epic,adr     # labels that force 'never' for an issue that carries one
 
 h9k owner set --rerequest-review on
 h9k owner set --voice-skill my-voice
@@ -816,6 +1138,18 @@ review starts a real process on this machine on every pull request, not just the
 watching. With it off, anything the review would have needed the running product for comes back as
 a walk-through for a person. A project with no run skill drives nothing whatever the setting says.
 
+The designer persona's review has the matching setting, `--design-review-drive on|off`, and its
+default is the opposite: **on**. A design review that never looks at the running product is judging
+markup rather than an experience, so with the setting on it starts the app on the review's own
+worktree from the run skill, on an ephemeral port it reports, walks the changed user-facing flows,
+screenshots what it finds, runs an automated accessibility audit on each screen, and tears the app
+down again. Like the QA setting, it starts a real process on this machine, so a project that does
+not want that for every design review turns it `off`, and the report then says the product was not
+seen rather than leaving a reader to assume it was. With no run skill the review is static whatever the setting says, and the report names which of
+the two reasons applied. `h9k project set <project> --discover-run-skill` asks the daemon to
+compose the run skill again after the repository's launch story changes; the answer arrives on the
+daemon's next run-skill sweep, not in that command.
+
 Both the QA and the design review end by offering to run the branch locally so you can walk it
 yourself, whenever the project has a run skill. The review never acts on that offer. You answer it
 in your orchestrator window, and the window runs `h9k task run-local <task>` — the report's own
@@ -823,6 +1157,26 @@ closing block carries the task, run and worktree, so you name nothing. It follow
 that review's own checkout, stops and tells you whenever a step needs you (`--continue` resumes),
 takes an ephemeral port where the launch command has somewhere to put one, and prints the address.
 `--stop` ends it, and it comes down on its own when the task closes out or the worktree is removed.
+
+A task can link to both a GitHub issue and a Jira card. When `h9k task add` is handed both to
+adopt, one of them is the **primary** and the other the secondary. The primary keeps the claim
+gate, the branch key, publish, the closeout close, and every tracker write; the secondary is shown
+and linked and gates and writes nothing. `--primary-tracker github|jira|none` sets the project's
+default choice, and `h9k task add --primary-tracker` overrides it for one task. A task that adopts
+both with neither set is refused, because nothing would say which reference wins.
+
+`--non-executable-path <glob>` adds to the set of paths that need no build or test. Before any
+verification gate runs, the daemon classifies every path the run's branch changed against its base
+(deletions and renames included), and when every one of them matches the set, the project's gates
+are skipped outright and a fact is recorded naming each path and the rule it matched. A diff of
+nothing but prose then does not pay for a full build and test cycle to prove it cannot break the
+build. The set starts from a compiled default that no command can remove: `*.md` anywhere, `docs/`,
+`.claude/skills/`, and `.claude/commands/`, with `.claude/templates/`, `AGENTS.md`, and `PLAN.md`
+carved back out, because they are prompt source and doctrine files that this platform's own tests
+check. Your additions only widen it. Repeating the option replaces the whole list of your
+additions, `default` clears them, and a glob starting with `!` is refused. A glob ending in `/`
+matches everything under that directory from the repository root, a glob with no `/` matches by
+file name at any depth, and anything else matches against the full path.
 
 `h9k project show <name>` prints every setting a project runs by, alongside how it is registered.
 Ask `h9k project set --help` for the current list and what each value means.
@@ -874,9 +1228,11 @@ h9k project set myproject --max-parallel-tasks 0        # pause it; nothing unpa
 h9k project set myproject --max-parallel-tasks default  # uncapped again
 ```
 
-`--max-parallel` survives as a quiet alias of the same setting, so old muscle memory and scripts
-keep working; it now writes the runs-denominated cap, and the command says so when it is used. A
-value recorded under the old session-denominated `--max-parallel`, which nothing ever enforced, is
+`--max-parallel` survives as a hidden alias of the same setting, so old muscle memory and scripts
+keep working: it does not appear in `h9k project set --help`, it accepts the same values (a number,
+`0`, or `default`), it writes the runs-denominated cap, and the command says so when it is used.
+Passing it together with `--max-parallel-tasks` is refused if the two values disagree. A value
+recorded under the old session-denominated `--max-parallel`, which nothing ever enforced, is
 **retired rather than converted** — carrying its number into a setting that *is* enforced would
 throttle a project on a number nobody chose under enforcement. `h9k project show` and
 `h9k project set` both name that retirement wherever a project still carries one, and such a
