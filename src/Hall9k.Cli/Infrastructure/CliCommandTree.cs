@@ -635,9 +635,12 @@ public static class CliCommandTree
                 + "what it can along the way (starting Hall9k's own Postgres, creating the schema). The "
                 + "database check is the same one any other command runs automatically the moment it "
                 + "cannot reach a database, available here on demand (Decisions Log #58, #73). --yes "
-                + "remediates non-interactively, for a script or a dispatched agent.")
+                + "remediates non-interactively, for a script or a dispatched agent; --no-configure "
+                + "withholds the one remediation that guesses, recording no connection string where "
+                + "none resolves (Decisions Log #118).")
             .WithExample("doctor")
-            .WithExample("doctor", "--yes");
+            .WithExample("doctor", "--yes")
+            .WithExample("doctor", "--yes", "--no-configure");
 
         config.AddCommand<InstallCommand>("install")
             .WithDescription(

@@ -138,10 +138,13 @@ cannot open a store a migration has already touched, so a `pg_dump` taken before
 only way back.
 
 The restart also brings the store schema current when the release carries a schema change: the
-newly installed binary runs `h9k daemon stop`, `h9k doctor --yes`, and `h9k daemon start` in that
-order, so the update finishes with the daemon up on a current schema rather than leaving you to
-run those three by hand. Because `h9k doctor --yes` is one of them, a `--restart` will start a
-stopped `hall9k-postgres` container without asking — see
+newly installed binary runs `h9k daemon stop`, `h9k doctor --yes --no-configure`, and
+`h9k daemon start` in that order, so the update finishes with the daemon up on a current schema
+rather than leaving you to run those three by hand. Because that middle step is `doctor --yes`, a
+`--restart` will start a stopped `hall9k-postgres` container without asking; because it is also
+`--no-configure`, it will never write a connection string on a machine where none resolves, so a
+daemon whose database is named by `HALL9K_CONNECTION_STRING` in some other shell cannot come back
+up against a guessed default instead. The restart fails at that step and says so — see
 [operations.md](operations.md#the-daemon-lifecycle).
 
 ## Connecting a database

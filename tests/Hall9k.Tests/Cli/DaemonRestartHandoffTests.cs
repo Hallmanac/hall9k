@@ -50,7 +50,7 @@ public sealed class DaemonRestartHandoffTests
 
         steps.Select(step => step.CommandLine).Should().Equal(
             "h9k daemon stop",
-            "h9k doctor --yes",
+            "h9k doctor --yes --no-configure",
             "h9k daemon start");
     }
 
@@ -63,7 +63,7 @@ public sealed class DaemonRestartHandoffTests
             Binary, RunningBefore, runner.RunAsync, CancellationToken.None);
 
         exitCode.Should().Be(ExitCodes.Ok);
-        runner.CommandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes", "h9k daemon start");
+        runner.CommandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
         runner.Binaries.Should().AllBe(Binary, "every step of the restart runs in the release that was just installed");
     }
 
@@ -77,7 +77,7 @@ public sealed class DaemonRestartHandoffTests
 
         exitCode.Should().Be(ExitCodes.Error);
         runner.CommandLines.Should().Equal(
-            ["h9k daemon stop", "h9k doctor --yes"],
+            ["h9k daemon stop", "h9k doctor --yes --no-configure"],
             "a schema the doctor could not bring current is not a schema to start the daemon against");
     }
 
@@ -107,7 +107,7 @@ public sealed class DaemonRestartHandoffTests
             Binary, RunningBefore, "the swap placed no h9k there", DaemonRestartHandoff.PlanSteps());
         message.Should().Contain("Nothing has been stopped")
             .And.Contain($"pid {RunningBefore.ProcessId}")
-            .And.Contain("h9k daemon stop, then h9k doctor --yes, then h9k daemon start",
+            .And.Contain("h9k daemon stop, then h9k doctor --yes --no-configure, then h9k daemon start",
                 "a failure before the stop signal has the whole hand recovery still ahead of it");
     }
 
@@ -119,7 +119,7 @@ public sealed class DaemonRestartHandoffTests
         string message = DaemonRestartHandoff.DescribeFailedStep(steps, failedIndex: 1, RestartStepResult.Exited(ExitCodes.Error));
 
         message.Should().Contain("step 2 of 3")
-            .And.Contain("h9k doctor --yes")
+            .And.Contain("h9k doctor --yes --no-configure")
             .And.Contain("Still to do by hand")
             .And.Contain("h9k daemon start");
         message.Should().NotContain(

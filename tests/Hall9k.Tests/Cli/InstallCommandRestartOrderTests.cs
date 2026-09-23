@@ -87,7 +87,7 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
         swapHadHappenedAtTheGateCheck.Should().BeFalse(
             "the gate query opens a Marten store, which after the swap would be the new release's store opened "
             + "inside a process running the old one");
-        commandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes", "h9k daemon start");
+        commandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
         swapHadHappenedAtEachChild.Should().AllBeEquivalentTo(
             true, "every step from the stop onward runs in the binary the swap put in place");
     }
@@ -120,7 +120,7 @@ public sealed class InstallCommandRestartOrderTests : IDisposable
 
         exitCode.Should().Be(ExitCodes.Ok);
         gateWasChecked.Should().BeFalse("--now is the override that skips the wait entirely, and it still means that");
-        commandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes", "h9k daemon start");
+        commandLines.Should().Equal("h9k daemon stop", "h9k doctor --yes --no-configure", "h9k daemon start");
     }
 
     [Fact]
