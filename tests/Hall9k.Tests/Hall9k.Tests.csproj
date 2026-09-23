@@ -14,6 +14,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- JasperFx.Events 1.36 adds its own StreamState, ambiguous with Marten.Events.StreamState -->
+    <Using Include="Marten.Events.StreamState" Alias="StreamState" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\Hall9k.Domain\Hall9k.Domain.csproj" />
     <ProjectReference Include="..\..\src\Hall9k.Cli\Hall9k.Cli.csproj" />
     <ProjectReference Include="..\..\src\Hall9k.Daemon\Hall9k.Daemon.csproj" />

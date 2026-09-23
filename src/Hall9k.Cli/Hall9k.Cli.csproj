@@ -16,6 +16,8 @@
 
   <ItemGroup>
     <Using Include="Hall9k.Domain.Infrastructure.Extensions" />
+    <!-- JasperFx.Events 1.36 adds its own StreamState, ambiguous with Marten.Events.StreamState -->
+    <Using Include="Marten.Events.StreamState" Alias="StreamState" />
     <InternalsVisibleTo Include="Hall9k.Tests" />
   </ItemGroup>
 

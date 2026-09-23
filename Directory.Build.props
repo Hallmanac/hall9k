@@ -12,4 +12,12 @@
          carried no <Version> of its own and silently diverged from h9k's 0.1.0). -->
     <Version>0.1.0</Version>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- GHSA-rfx3-98h7-v3xp (Marten, task 29b0ca1a removes this once the Marten 9 upgrade lands):
+         the three LINQ sinks were fixed in Marten 8.37.4, already covered by the 8.38.1 pin above;
+         the two tenant DDL sinks do not exist on the 8.0 branch at all, and hall9k has no tenancy
+         and serializes with System.Text.Json, so no reachable sink remains on this branch. -->
+    <NuGetAuditSuppress Include="https://github.com/advisories/GHSA-rfx3-98h7-v3xp" />
+  </ItemGroup>
 </Project>
