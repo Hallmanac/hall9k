@@ -68,11 +68,13 @@ public delegate Task<RestartStepResult> RestartChildRunner(
 /// </summary>
 public static class DaemonRestartHandoff
 {
-    private static readonly string CliFileName = OperatingSystem.IsWindows() ? "h9k.exe" : "h9k";
-
     /// <summary>Where the just-swapped <c>h9k</c> lives — the same absolute path this process was
-    /// itself launched from on an installed machine, now holding the new release's bytes.</summary>
-    public static string InstalledCliPath => Path.Combine(DaemonRuntime.BinDirectory, CliFileName);
+    /// itself launched from on an installed machine, now holding the new release's bytes. The name
+    /// comes from <see cref="Commands.InstallCommand.BinaryFileName"/>, the same function the swap
+    /// itself names the file with, so the two cannot drift into this hand-off launching a path the
+    /// swap never wrote (cycle-1 pre-PR review, conformance lens).</summary>
+    public static string InstalledCliPath =>
+        Path.Combine(DaemonRuntime.BinDirectory, Commands.InstallCommand.BinaryFileName("h9k"));
 
     /// <summary>
     /// The child sequence, in order, stopping at the first failure. <c>doctor --yes</c> sits
