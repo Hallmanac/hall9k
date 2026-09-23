@@ -1,0 +1,22 @@
+hall9k-task-record: 1
+task-id: 01a0ce81-e16a-7332-89d0-d681949daeb2
+project: hall9k
+type: content
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#572
+objective: |-
+  A newcomer can learn hall9k's distributed-team model from the user docs alone: docs/concepts.md gains one section covering identity, fleet, membership, invites, the ledger and message refs on the project remote, and cross-node task holding; docs/cli.md, docs/operations.md, README.md, docs/getting-started.md, and docs/INSTALL.md carry the commands, settings, on-disk and on-remote side effects, and the word fleet wherever more than one machine is meant
+criteria:
+  - docs/concepts.md has one new section a newcomer can read top to bottom that explains signing keys and the owner root, membership roles with vouch and revoke, invites and GitHub attestation, the ledger and message refs on the project remote, and cross-node holding (holder, HeldElsewhere, take, grant, refuse, handoff, placement, scope); every claim in it is checkable against the CLI's --help text or the v0.10.44 code.
+  - The word fleet means an owner's own nodes wherever the docs speak of more than one machine, and the older phrasings are gone.
+  - docs/cli.md lists every command and flag in this theme that h9k --help and its groups print (owner, node, members, vouch, revoke, invite, message, messages, take, grant, refuse, handoff, scope, share, assign --node, and their flags), with one sentence each, and nothing it lists is absent from --help.
+  - docs/operations.md says what registration and joining write on disk (the keys directory) and on the remote (the refs), documents the take-policy, take-timeout, and message poll settings in its settings blocks, and shows the needs-you rows this theme adds.
+  - README.md, docs/getting-started.md, and docs/INSTALL.md describe the registration side effects and the invite flow where a first-time reader meets them, and the existing docs/concepts.md sections on leases and the shape of the system are amended, not contradicted.
+dependencies: [01a0ce81-b746-7017-8292-0785f2b2b821]
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/949daeb2-a-newcomer-can-learn-hall9k-s
+published: 2026-09-23 13:44:42Z
+context: |-
+  Docs refresh, task 2 of 3 (Brian, 2026-09-23; walked, criteria batched), STACKED on task 1 (correct what is wrong) so it builds on that branch and never edits the same paragraphs at once. The inventory at notes/docs-gap-inventory-2026-09-23.md (project home) section B lists every SILENT item in this theme with PR numbers; section A groups the PRs. Verify every claim against the installed CLI's --help and the v0.10.44 source, never against memory; the domain code for identity and the ledger is under src/Hall9k.Domain and src/Hall9k.Daemon (fleet, ledger, messaging). Writing conventions: no em dashes (U+2014), full sentences, no AI attribution. Content task: docs only; the diff must stay inside the project's non-executable path set. Task 3 (review pipeline, task types, configuration) is stacked on this one; leave its items.
