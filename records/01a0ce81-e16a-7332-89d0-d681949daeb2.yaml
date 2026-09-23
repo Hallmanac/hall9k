@@ -20,3 +20,7 @@ origin-branch: task/949daeb2-a-newcomer-can-learn-hall9k-s
 published: 2026-09-23 13:44:42Z
 context: |-
   Docs refresh, task 2 of 3 (Brian, 2026-09-23; walked, criteria batched), STACKED on task 1 (correct what is wrong) so it builds on that branch and never edits the same paragraphs at once. The inventory at notes/docs-gap-inventory-2026-09-23.md (project home) section B lists every SILENT item in this theme with PR numbers; section A groups the PRs. Verify every claim against the installed CLI's --help and the v0.10.44 source, never against memory; the domain code for identity and the ledger is under src/Hall9k.Domain and src/Hall9k.Daemon (fleet, ledger, messaging). Writing conventions: no em dashes (U+2014), full sentences, no AI attribution. Content task: docs only; the diff must stay inside the project's non-executable path set. Task 3 (review pipeline, task types, configuration) is stacked on this one; leave its items.
+holder-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+holder-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+holder-node-name: Hallmamac-Max36
+holder-since: 2026-09-23 14:13:52Z
