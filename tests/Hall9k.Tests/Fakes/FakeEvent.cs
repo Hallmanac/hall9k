@@ -27,6 +27,11 @@ public sealed class FakeEvent<T>(T data) : IEvent<T> where T : notnull
     public string? UserName { get; set; } = string.Empty;
     public bool IsSkipped { get; set; }
 
+    private readonly List<EventTag> _tags = [];
+    public IReadOnlyList<EventTag> Tags => _tags;
+    void IEvent.AddTag<TTag>(TTag tag) => _tags.Add(new EventTag(typeof(TTag), tag!));
+    public void AddTag(EventTag tag) => _tags.Add(tag);
+
     public void SetHeader(string key, object value)
     {
         Headers ??= new Dictionary<string, object>();
