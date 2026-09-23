@@ -4,6 +4,9 @@ obj/
 artifacts/
 *.user
 
+# Marten runtime codegen output, pre-Marten-9 (no longer written; ignored defensively)
+src/Hall9k.Cli/Internal/Generated/
+
 # IDE
 .idea/
 .vs/

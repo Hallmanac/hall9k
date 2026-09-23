@@ -27,10 +27,9 @@ namespace Hall9k.Cli.Diagnostics;
 /// database section diagnoses next, not a reason to skip the tool check that runs before it. That
 /// read is bounded to <see cref="ProjectReadTimeout"/> and never creates schema itself (it opens
 /// through <see cref="CliStore.Open(string, JasperFx.AutoCreate)"/> with
-/// <see cref="AutoCreate.None"/>, and only after confirming the schema is already there, so the
-/// same pre-generated storage code every other command reuses answers this read too instead of a
-/// fresh dynamic compile): the database section below is the one place <c>h9k doctor</c> is
-/// allowed to write to an unconfigured database, and only after asking.
+/// <see cref="AutoCreate.None"/>, and only after confirming the schema is already there): the
+/// database section below is the one place <c>h9k doctor</c> is allowed to write to an
+/// unconfigured database, and only after asking.
 /// </para>
 /// <para>
 /// <em>Which</em> database and <em>which</em> platform config file that read lands on is not this
