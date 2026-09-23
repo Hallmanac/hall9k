@@ -44,7 +44,7 @@ public sealed class DecisionDetails
     public DateTimeOffset? SupersededAt { get; set; }
 }
 
-public sealed class DecisionDetailsProjection : SingleStreamProjection<DecisionDetails, Guid>
+public sealed partial class DecisionDetailsProjection : SingleStreamProjection<DecisionDetails, Guid>
 {
     public DecisionDetails Create(IEvent<DecisionRecorded> @event) => new()
     {

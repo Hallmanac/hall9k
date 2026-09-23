@@ -35,7 +35,7 @@ public sealed class ConnectionDetails
     public DateTimeOffset? GitHubIdentityObservedAt { get; set; }
 }
 
-public sealed class ConnectionDetailsProjection : SingleStreamProjection<ConnectionDetails, Guid>
+public sealed partial class ConnectionDetailsProjection : SingleStreamProjection<ConnectionDetails, Guid>
 {
     public ConnectionDetails Create(IEvent<ConnectionRegistered> @event) => new()
     {

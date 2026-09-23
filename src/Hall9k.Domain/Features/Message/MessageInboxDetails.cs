@@ -23,7 +23,7 @@ public sealed class MessageInboxDetails
     public DateTimeOffset? IgnoredAt { get; set; }
 }
 
-public sealed class MessageInboxDetailsProjection : SingleStreamProjection<MessageInboxDetails, Guid>
+public sealed partial class MessageInboxDetailsProjection : SingleStreamProjection<MessageInboxDetails, Guid>
 {
     public MessageInboxDetails Create(IEvent<InboxCursorAdvanced> @event) => new()
     {

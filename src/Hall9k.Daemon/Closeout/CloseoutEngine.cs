@@ -1,3 +1,4 @@
+using ExistingStreamIdCollisionException = Marten.Exceptions.ExistingStreamIdCollisionException;
 using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;

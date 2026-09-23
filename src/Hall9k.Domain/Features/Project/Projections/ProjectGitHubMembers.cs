@@ -40,7 +40,7 @@ public sealed class ProjectGitHubMembers
     public Dictionary<long, ProjectGitHubMemberView> Members { get; set; } = [];
 }
 
-public sealed class ProjectGitHubMembersProjection : SingleStreamProjection<ProjectGitHubMembers, Guid>
+public sealed partial class ProjectGitHubMembersProjection : SingleStreamProjection<ProjectGitHubMembers, Guid>
 {
     public ProjectGitHubMembers Create(IEvent<ProjectGitHubAccessObserved> @event) => Upsert(new(), @event.Data);
 

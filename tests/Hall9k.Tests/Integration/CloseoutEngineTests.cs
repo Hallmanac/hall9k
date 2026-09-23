@@ -1,3 +1,4 @@
+using JasperFx.Events;
 using System.Diagnostics;
 using FluentAssertions;
 using Hall9k.Connectors.Processes;

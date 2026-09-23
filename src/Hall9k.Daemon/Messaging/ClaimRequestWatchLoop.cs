@@ -1,3 +1,4 @@
+using JasperFx.Events;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Trust;

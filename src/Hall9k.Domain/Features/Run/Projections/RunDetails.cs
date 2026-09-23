@@ -1035,7 +1035,7 @@ public sealed record LegacyUncommittedWorkRecoveryShape(
     IReadOnlyList<string> StrandedFiles, string Reason, DateTimeOffset AttemptedAt, bool? RecoveredCleanly,
     IReadOnlyList<string> DiscardedFiles, DateTimeOffset? CompletedAt = null);
 
-public sealed class RunDetailsProjection : SingleStreamProjection<RunDetails, Guid>
+public sealed partial class RunDetailsProjection : SingleStreamProjection<RunDetails, Guid>
 {
     public RunDetails Create(IEvent<RunDispatched> @event) => new()
     {

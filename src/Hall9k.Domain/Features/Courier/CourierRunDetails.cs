@@ -22,7 +22,7 @@ public sealed class CourierRunDetails
     public string Outcome { get; set; } = string.Empty;
 }
 
-public sealed class CourierRunDetailsProjection : SingleStreamProjection<CourierRunDetails, Guid>
+public sealed partial class CourierRunDetailsProjection : SingleStreamProjection<CourierRunDetails, Guid>
 {
     public CourierRunDetails Create(IEvent<CourierRunDispatched> @event) => new()
     {

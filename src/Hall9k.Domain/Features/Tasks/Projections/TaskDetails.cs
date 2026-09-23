@@ -535,7 +535,7 @@ public sealed class TaskDetails
     public long? LatestMentionCommentDatabaseId { get; set; }
 }
 
-public sealed class TaskDetailsProjection : SingleStreamProjection<TaskDetails, Guid>
+public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskDetails, Guid>
 {
     public TaskDetails Create(IEvent<TaskAdded> @event) => new()
     {

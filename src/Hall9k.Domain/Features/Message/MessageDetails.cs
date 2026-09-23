@@ -47,7 +47,7 @@ public sealed class MessageDetails
 /// flushes, but a stream that somehow skipped its own <see cref="MessageQueued"/> should still read
 /// as something rather than fail the projection outright.
 /// </summary>
-public sealed class MessageDetailsProjection : SingleStreamProjection<MessageDetails, Guid>
+public sealed partial class MessageDetailsProjection : SingleStreamProjection<MessageDetails, Guid>
 {
     public MessageDetails Create(IEvent<MessageQueued> @event) => new()
     {

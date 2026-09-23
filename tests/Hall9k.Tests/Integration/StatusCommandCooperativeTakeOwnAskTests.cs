@@ -1,3 +1,4 @@
+using JasperFx.Events;
 using FluentAssertions;
 using Hall9k.Cli.Commands;
 using Hall9k.Connectors.Messaging;

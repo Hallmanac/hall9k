@@ -34,7 +34,7 @@ public sealed class OrchestratorPresenceDetails
     public DateTimeOffset? LostAt { get; set; }
 }
 
-public sealed class OrchestratorPresenceDetailsProjection : SingleStreamProjection<OrchestratorPresenceDetails, Guid>
+public sealed partial class OrchestratorPresenceDetailsProjection : SingleStreamProjection<OrchestratorPresenceDetails, Guid>
 {
     public OrchestratorPresenceDetails Create(IEvent<OrchestratorLaunched> @event) => new()
     {

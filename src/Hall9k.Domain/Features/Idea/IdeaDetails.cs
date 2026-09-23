@@ -85,7 +85,7 @@ public sealed class IdeaDetails
     }
 }
 
-public sealed class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, Guid>
+public sealed partial class IdeaDetailsProjection : SingleStreamProjection<IdeaDetails, Guid>
 {
     public IdeaDetails Create(IEvent<IdeaCaptured> @event) => new()
     {
