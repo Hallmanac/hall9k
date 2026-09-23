@@ -1599,6 +1599,7 @@ miss in the sections above.
 | `h9k idea promote --project <project>` | Names the project the one task belongs to, required unless the idea is already assigned to one. |
 | `h9k pr review --project <project>` | Names the project whose repository the pull request belongs to, and is optional when exactly one project is registered. |
 | `h9k doctor --yes` | Remediates without asking, by starting Hall9k's own Postgres and creating the schema, which is what a script or a dispatched agent wants. |
+| `h9k doctor --no-configure` | Repairs without ever recording a connection string, so with nothing configured it diagnoses and stops instead of writing Hall9k's default into the platform config file. It leaves what `--yes` does for an address that is configured, starting a stopped `hall9k-postgres` and creating or updating the schema, unchanged. `h9k update --restart` and `h9k install --restart` pass it to the doctor step they run, so a database named by `HALL9K_CONNECTION_STRING` in another shell is not overridden by a guessed default. |
 | `h9k uninstall --yes` | Skips the `--purge-data` confirmation prompt, which is required in a non-interactive session and has no effect without `--purge-data`. |
 | `h9k install --now`, `h9k update --now` | With `--restart`, restarts the daemon at once instead of waiting for a live verification gate to finish, though `h9k daemon stop`'s own warning still prints. |
 
