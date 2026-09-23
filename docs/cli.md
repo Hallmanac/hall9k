@@ -1,8 +1,9 @@
 # The `h9k` command surface
 
-**The `--help` tree is the reference, and this page is the map.** Nothing here duplicates an
-option list, on purpose: a duplicated one goes stale, and the copy in the terminal is the one
-that is true.
+**The `--help` tree is the reference, and this page is the map.** Nothing here reproduces an
+option's full description, on purpose: a duplicated one goes stale, and the copy in the terminal is
+the one that is true. What the page does is name every command and every flag the tree prints, with
+a sentence on what it is for, so that the map has no gaps against the territory.
 
 ```bash
 h9k --help
@@ -49,7 +50,7 @@ One line per branch. Ask `--help` for the rest.
 |---|---|
 | `h9k status` | The attention pane: what needs you, what has gone quiet, what is running. Bounded on purpose. Beneath the spend lines it prints a throughput block for the current spend period — tasks merged, median and p90 claim-to-merge, first-pass merge share, laps per merged task, and the share of task time spent queued or waiting on a human — so speed and efficiency read in the same glance as cost. Under five merged tasks it prints the count and says there are too few to summarize rather than a median of two. Each queued row also says how long it has waited for its present slot, and the queued section's own heading carries the period's total queue time. |
 | `h9k task show <id>` | One task in full: contract, dependencies, external reference, conversation, its own passage in time (how long it queued, built, sat in gates, cycled through review, waited on a human, and waited for its merge, plus lap, cycle, and session counts), every run and its outcome, each run's own gate wall-clock durations, a flag when one materially exceeds the project's recent recorded average for that gate, and each run's own worktree path, branch and live agent sessions. The second command of any investigation. |
-| `h9k logs <id>` | A run's transcript, rendered from its stream-json (`--raw` for the stream-json itself). The log dive `h9k status` is meant to save you. |
+| `h9k logs <id>` | A run's transcript, rendered from its stream-json (`--raw` for the stream-json itself, and `--run <run-id>` for an earlier run than the task's latest). The log dive `h9k status` is meant to save you. |
 
 ### Ideas: capture and discovery
 
@@ -63,7 +64,9 @@ them — each cut needing its own objective and requiring a project, supplied on
 assigned to the idea. `promote` survives as sugar over cutting exactly one task (the note's first
 sentence becomes the objective) and concluding in the same breath. Cutting a task never ends the
 idea; only an explicit `conclude` (something came of discovery) or `archive` (nothing did) does,
-each with its own required `--reason`.
+each with its own required `--reason`. `h9k idea list` shows twenty rows, newest first, and
+`--limit <N>` changes that; `--unassigned` shows only the ideas that have no project yet, the ones
+still deciding where they belong.
 
 ### Decisions and lessons
 
@@ -81,7 +84,13 @@ record carries that run and task, leave it off at a shell and both are recorded 
 A decision recorded from inside a run that is not human-attended is refused and pointed at `h9k
 learn`, because agents record lessons and humans record decisions. Neither terminal verb deletes:
 `h9k decide supersede <id> --reason "…"` and `h9k learn retire <id> --reason "…"` append, and
-`--all` on either `list` brings the ended ones back into view.
+`--all` on either `list` brings the ended ones back into view, and `--limit <N>` on `decide list` and
+`learn list` changes how many of the newest rows they show, twenty by default. `h9k decide
+supersede <id> --by <decision>` names the decision that replaced it when one is already recorded,
+and leaves the flag off for a decision that was simply overruled, so the record says so rather than
+pointing at the nearest plausible successor. `h9k decide record "<statement>"` and `h9k learn record
+"<statement>"` are the spelled-out forms of the bare positional ones, for a statement that is itself
+the name of a subcommand.
 
 `h9k decide import` is the one-time migration that put this repository's own markdown rulebooks
 into the store: every PLAN.md §16 Decisions Log entry and every AGENTS.md standing rule, each
@@ -121,12 +130,13 @@ whose active lessons have passed the count cap.
 
 ### Tasks: development and dispatch
 
-`h9k task add | revise | set-session-cap | set-review-caps | publish | assign | unassign | draft | list | show | pull | log-interaction | scope | share | set-private | handoff | take | grant | refuse`
+`h9k task add | revise | set-session-cap | set-review-caps | set-pre-approved | publish | assign | unassign | draft | list | show | pull | log-interaction | scope | share | set-private | handoff | take | grant | refuse | run-local`
 
-`add` creates a Draft. `revise` is Draft-only, with one exception: `--queue-first`/
+`add` creates a Draft. `revise` is Draft-only, with a few exceptions, the main one being `--queue-first`/
 `--clear-queue-first` sets or clears a task-level scheduling marker — the next free dispatch slot
 takes this task regardless of assignment age — and is settable in any live state except Abandoned
-(Decisions Log #127). `publish` is the readiness gate. `assign` is the
+(Decisions Log #127). `--clear-interactive-mode` is another, and so are a spike's kind, exit
+criterion, and budget while it is Draft or Published. `publish` is the readiness gate. `assign` is the
 dispatch trigger. `assign <id> --node <id-or-fragment>` narrows that to one node of the owner's
 fleet: only that node's own dispatcher claims the task, and every other node of the fleet stands
 down without a forced take; run with no owner argument against a task already assigned, it
@@ -221,6 +231,65 @@ scalar, so a double-quoted objective or criterion is stored without its quote ch
 `|` block scalar arrives as the multi-line text it denotes. The numbered [`backlog/`](../backlog) files are
 written in that format; the `IDEA-` notes beside them are earlier-stage prose with no
 frontmatter, so they are read and authored from rather than fed to `--file`.
+
+### Task types, budgets, and pre-approval
+
+`h9k task add --type <TYPE>` names what kind of work a task is: `feature`, `bugfix`, `refactor`,
+`chore`, `research`, `content`, `pr-review` (set for you by `--from-pr`), or `spike`. Two of the types
+change how the pipeline runs, and each has its own flags; what the types mean is in
+[concepts.md](concepts.md#task-types).
+
+| Command | What it is for |
+|---|---|
+| `h9k task add --type spike --kind research\|experiment\|prototype` | Cuts a spike, which answers one stated question and never opens a pull request, where the kind decides whether the gates run and what becomes of the branch. |
+| `h9k task add --exit-criterion "<sentence>"` | States the one checkable sentence a spike's single review pass judges its findings and branch against, required for a spike and refused on any other type. |
+| `h9k task add --max-turns <N>` | Caps a spike's build session at that many turns, and crossing it records a budget-exhausted verdict rather than a failure. |
+| `h9k task add --max-tokens <N>` | Caps a spike's build session by cumulative token spend, with the same budget-exhausted outcome. |
+| `h9k task add --max-wall-clock <DURATION>` | Caps a spike's build session by elapsed time, given as a .NET duration such as `00:30:00`, with the same budget-exhausted outcome. |
+| `h9k task revise --kind`, `--exit-criterion`, `--max-turns`, `--max-tokens`, `--max-wall-clock` | Change a spike's kind, exit criterion, or budget while it is a Draft or a Published spike, which is the one place a published task can still be edited. |
+| `h9k task revise --clear-budget` | Drops a spike's turn, token, and wall-clock limits entirely. |
+| `h9k task add --type content` | Cuts a documentation, skill, or prompt-template task that dispatches with a conformance-only review and fails at the gates if its diff leaves the project's non-executable-path set. |
+| `h9k task revise <id> --type content` | Changes a Draft's type to content or to any other ordinary type, but never to `pr-review`, which only `--from-pr` can attach. |
+| `h9k project set <project> --non-executable-path <glob>\|default` | Adds a glob to the set of paths whose diffs skip the verification gates, layered on the compiled defaults, with `default` clearing the project's own additions, where a glob ending in `/` matches anything under it from the repository root, one with no `/` matches a file name at any depth, anything else matches the whole path (`assets/**/*.png`), and a `!` prefix is refused. |
+| `h9k task revise --clear-dependencies` | Drops every `--blocked-by` edge so nothing blocks the task. |
+| `h9k task revise --clear-interactive-mode` | Clears the task's interactive-mode flag directly, for the cases where neither `handback` nor `release` has an active interactive claim to act on. |
+
+**A task can link both a GitHub issue and a Jira card, and one of them is primary.** Passing
+`--from-issue` and `--from-jira` together to `h9k task add` adopts both. `--primary-tracker
+github|jira` on that command picks which reference keeps the claim gate, the branch key, publish,
+the closeout comment or close, and every tracker write; the other becomes a secondary that is shown
+and linked and gates and writes nothing. A project default (`h9k project set <project>
+--primary-tracker github|jira|none`, where `none` clears it) answers when the flag is left off, and
+a task adopting both with neither is refused. The flag is ignored, never refused, when only one
+tracker is named. See [concepts.md](concepts.md#ideas-and-tasks).
+
+**Pre-approval lets the daemon merge a task's pull request itself.** `h9k task publish --pre-approved
+[on|after-human-review|off]` (and the same option on `h9k task add` for an adopted issue) gives a task
+standing pre-approval, and `h9k task set-pre-approved <id> on|off|after-human-review` changes it later
+on any live task whose pull request has not merged, without the unassign, draft, revise, publish
+ceremony a readiness change would otherwise need. `on` merges the moment GitHub's own gates read
+satisfied; `after-human-review` holds the same merge until a human reviewer has been requested and
+every requested reviewer has approved the current head; `off` returns the merge to you. Hall9k
+stores no reviewer setting and requests no reviews, so you add the reviewers in GitHub. Every
+existing human waypoint still stops the pipeline as it would for an unflagged task. The full
+behavior is under [Closeout in concepts.md](concepts.md#closeout).
+
+Smaller flags on the same commands:
+
+| Command | What it is for |
+|---|---|
+| `h9k task add --context "<text>"` | Sets the agent-facing context, meaning the pointers, constraints, and boundaries the session reads, and `h9k task revise --context` replaces it. |
+| `h9k task add --model <model>` | Sets this task's own model, which outranks every other level of the model chain, and `h9k task revise --model` changes it, with `default` clearing the override. |
+| `h9k task publish --no-assign` | Publishes and stops, without offering to assign, which is the form a script wants because an interactive terminal is otherwise asked about single-owner assignment. |
+| `h9k task release <id> --unassign` | Takes a claim straight to Published in one atomic act, so the dispatcher never sees the task claimable between a release and an `unassign`. |
+| `h9k task release <id> --keep-interactive` | Preserves the interactive-mode flag across the release, so the next headless run still parks at each phase boundary for a recorded `h9k review proceed`. |
+| `h9k task deliver <id> --handoff "<text>"` | States what the run hands down to a dependent task or a resuming session, and is prompted for on an interactive terminal when omitted. |
+| `h9k task resolve <id> --pr <url>` | Records where the work landed, and when it names a real pull request on the project's repository it enrolls that pull request in closeout's orphan sweep. |
+| `h9k task list --limit <N>` | Shows that many rows, newest first, twenty by default, with a footer saying how many were held back. |
+| `h9k task set-review-caps <id> --max-compliance-review-cycles <N\|default>` | Overrides this one task's conformance-track cycle cap, live if need be, which is also the takeover lever for a task observed grinding. |
+| `h9k task set-review-caps <id> --max-adversarial-review-cycles <N\|default>` | Overrides this task's adversarial-track cycle cap in the same way. |
+| `h9k task set-review-caps <id> --max-final-full-pass-rounds <N\|default>` | Overrides this task's cap on consecutive mandatory final-full-pass rounds. |
+| `h9k task set-review-caps <id> --lifetime-review-cycle-budget <N\|default>` | Overrides this task's lifetime ceiling on review cycles counted across every run and follow-up. |
 
 ### Stacked pull requests
 
@@ -494,6 +563,8 @@ refusal says which of the two it was.
 
 `h9k epic add | list | show | link-jira | close`
 
+`h9k epic add --title "<name>"` requires the title, which is the epic's name.
+
 An epic is a first-class named grouping of tasks (Decisions Log #100): its own id, title, and
 Open/Closed state. Membership is optional and no-ceremony — a task joins or leaves at
 `h9k task add --epic` / `h9k task revise --epic`/`--clear-epic` rather than through an epic
@@ -738,9 +809,17 @@ a disagreement with their changes-requested finding, or a decline or route of a 
 opened — it takes `--post-reply-as-written`, `--post-reply "<text>"`, or `--post-nothing`
 alongside your verdict, and that choice is the only way those words ever reach the reviewer.
 
+`h9k pr resolve <task>` dispatches a follow-up lap onto a done task's existing pull request branch and
+resets the closeout monitor's automatic retry budget. The flag says which problem the lap is for:
+`--checks` dispatches the fix-the-CI prompt when the pull request's checks are failing, and
+`--rebase` dispatches the rebase-onto-main prompt when its branch conflicts with its base, which is
+for when you see the conflict before the closeout monitor's next inspection does. With neither, the
+lap resolves review comments. `h9k task resolve <id> --pr <url>` is the attestation exit from a
+Failed task, and `--pr` records where the work landed.
+
 ### Projects, owners, connections
 
-`h9k project add | init | join | assign-key | list | show | set | remove | cancel-purge | reactivate | rename | invite | pull | reconcile | members | member remove` ·
+`h9k project add | init | join | assign-key | list | show | set | remove | cancel-purge | reactivate | rename | invite | pull | reconcile | members | member remove | prompt-addendum | run-skill` ·
 `h9k owner show | set` · `h9k node invite | vouch | revoke` · `h9k connection add jira | list`
 
 `project add` registers a project **and creates its home directory**; `project init` is the same
@@ -943,6 +1022,34 @@ this project's ledger chain live to learn the fleet, the same read `project memb
 everything after that read is local, and the daemon's next sweep sends the asks. Each ask restarts
 that peer's exchange, so the counts `h9k status` then shows for it are this exchange's rather than a
 previous one's, including how many streams are still held tail-only.
+
+### Project settings the prose above only names
+
+`h9k project set` carries most of a project's standing choices, and the paragraphs above explain the
+ones with behavior worth a story. These rows are the remaining flags of `project add`, `project set`,
+and `project run-skill set`, and what each one does, so that nothing those pages print is absent from
+this one.
+
+| Command | What it is for |
+|---|---|
+| `h9k project add --home <path>` | Puts the project's home directory somewhere other than `~/.hall9k/projects/<name>`, on any drive. |
+| `h9k project add --base-branch <branch>` | Names the branch task branches are cut from and `repo/dev` is checked out on, `main` by default. |
+| `h9k project add --repo <path>` | Registers against a repository that already exists on this machine instead of cloning one, which leaves the home's `repo/` unmaterialized and is rarely what you want. |
+| `h9k project add --no-home` | Registers the project without creating a home directory, for a project whose files live somewhere the recipe should not touch, so it requires `--repo`; `h9k project init` gives it a home later. |
+| `h9k project set --repo <path>` | Points the daemon at the local repository it cuts worktrees from, which ordinarily follows the home and needs setting by hand only after a relocation moved the clone. |
+| `h9k project set --verify <name=command>` | Sets a verification gate, repeatable, replacing the whole list, and each gate is run once against a clean checkout of the base branch before it is accepted. |
+| `h9k project set --verify-gate-filter <name=filter\|none>` | Marks one `dotnet test` gate host-coupled, so it runs only at a run's first verification and its final full pass and is serialized against other runs' copies on the node. |
+| `h9k project set --accept-broken-gate` | Records a `--verify` gate that fails on a clean base anyway, with a loud warning, instead of refusing the whole command. |
+| `h9k project set --model <model>` | Sets the model this project's sessions run on unless a task or the node's per-role default says otherwise, with `default` clearing it. |
+| `h9k project set --orchestrator-model <model>` | Sets the model this project's orchestrator window runs on, independent of `--model`, with `default` clearing it back to the node's own resolution. |
+| `h9k project set --commit-style narrative\|append\|default` | Chooses whether review fixes are folded into their owning commits or stacked on top, with `default` clearing the project's override. |
+| `h9k project set --link <name=url>` | Adds a context link injected into agent prompts, repeatable, and replaces the whole list. |
+| `h9k project set --skip-permissions <bool>` | Turns off the `--dangerously-skip-permissions` every new registration already records, since a headless agent cannot answer a permission prompt. |
+| `h9k project set --max-compliance-review-cycles <N\|default>` | Overrides the conformance-track cycle cap for this project, sitting between the task and node levels. |
+| `h9k project set --max-adversarial-review-cycles <N\|default>` | Overrides the adversarial-track cycle cap for this project. |
+| `h9k project set --max-final-full-pass-rounds <N\|default>` | Overrides the cap on consecutive mandatory final-full-pass rounds for this project. |
+| `h9k project set --lifetime-review-cycle-budget <N\|default>` | Overrides the task-lifetime review-cycle budget for this project. |
+| `h9k project run-skill set <project> --against-commit <sha>` | Records the commit a hand-written run skill was written against, which is left unknown rather than defaulted to whatever `HEAD` happens to be here. |
 
 ### The project home
 
@@ -1265,6 +1372,19 @@ connection registered yet when it was first published, and also the way to get a
 hand before publishing, which the gate recognizes as a publication already pending rather than
 demanding an attestation for it.
 
+`h9k connection add jira --site <url> --email <address>` registers the Jira Cloud connection: the
+site must be `https`, because every request carries the API token in an `Authorization` header, and
+the token is only usable with the account whose email it belongs to. The token itself is named one of
+three ways, or prompted for when none is given: `--token <token>` stores it under
+`~/.hall9k/credentials` readable by you alone, and lands in your shell history; `--token-env
+<variable>` records the name of an environment variable and never copies the value, with the catch
+that `h9kd` inherits the environment it was started in, so a variable exported after `h9k daemon
+start` is invisible to the daemon until it restarts; and `--keychain <service>` names a macOS
+keychain item you already created and is macOS only. `h9k task write-jira --op create|update|comment`
+says what a Jira write does, and a transition or a close is refused whatever is passed; `--issue
+<key>` names the item to update or comment on, is optional when the task already carries a linked
+item, and takes precedence over it when both are present.
+
 ### Install and the daemon
 
 `h9k install` · `h9k update` · `h9k uninstall [--purge-data]` · `h9k daemon start | stop | status` ·
@@ -1281,6 +1401,19 @@ else `install` itself wrote under `~/.hall9k` — but leaves a registered projec
 credentials, and the `hall9k-postgres` Docker container's data volume untouched by default, so a
 later `install` reconnects to it. `--purge-data` is the only path that destroys the volume too,
 and it asks first.
+
+| Command | What it is for |
+|---|---|
+| `h9k install --repo <path>` | Publishes from a hall9k repository checkout, meaning the directory holding `Hall9k.slnx`, taken as given and never searched upward. |
+| `h9k install --from-release <dir>` | Installs from an already-downloaded, already-extracted release payload (binaries, `skills/`, `templates/`, and a `VERSION` file) instead of building, which is what the bootstrap scripts and `h9k update` use. |
+| `h9k install --restart` | Restarts a running daemon onto the fresh binaries without asking. |
+| `h9k install --no-restart` | Leaves a running daemon on its current binaries, and it picks up the new ones at its next start. |
+| `h9k update --repo <owner/repo>` | Names the GitHub repository releases are fetched from. |
+| `h9k update --restart` | Restarts a running daemon onto the fresh binaries without asking, the same as on `install`. |
+| `h9k update --no-restart` | Leaves a running daemon on its current binaries until its next start. |
+| `h9k daemon start --binary <path>` | Starts an explicit `h9kd` binary directly, rather than through a registered autostart job, where a relative path is resolved against the current directory and must exist. |
+| `h9k daemon autostart launch --binary <path>` | Names the installed `h9kd` this launch starts, which is the one `autostart enable` recorded and is never resolved afresh. |
+| `h9k daemon autostart launch --log <path>` | Names the log `h9kd`'s standard output and error are appended to, `~/.hall9k/h9kd.log` by default. |
 
 Covered in [operations.md](operations.md#the-daemon-lifecycle) and [INSTALL.md](INSTALL.md).
 
@@ -1319,6 +1452,52 @@ whatever a running daemon last confirmed, so raising a spent budget still needs 
 the queue moves again. `show` resolves and names each setting's origin (environment variable,
 config file, or built-in default); `set` merges a change into the file. See
 [operations.md](operations.md#daemon-operating-settings).
+
+The rest of what `h9k config set` takes, one sentence each. The message-poll and invite-expiry options
+are in [the distributed-team tables](#the-distributed-team-identity-fleet-and-holding), and the two
+lesson-prompt caps are under [Decisions and lessons](#decisions-and-lessons).
+[operations.md](operations.md#every-key-in-the-hall9k-section) has the config-file key, the
+environment variable that outranks it, and the default for every one of them.
+
+| Command | What it is for |
+|---|---|
+| `h9k config set --max-concurrent-task-runs <N>` | Sets how many task runs may be live on this node at once, which is the node's own admission ceiling. |
+| `h9k config set --max-concurrent-agent-sessions <N>` | Is the retired session-denominated ceiling, still writable and still read as a fallback that converts to `floor(n/2)` runs, minimum one, when the run-denominated setting is absent. |
+| `h9k config set --session-cap-per-run <N>` | Sets the global default for how many agent sessions one run may hold at once, which `h9k task set-session-cap` overrides per task. |
+| `h9k config set --default-model <model>` | Sets the platform default every agent session runs on unless a more specific level says otherwise, with `default` clearing it back to the built-in `claude-opus-5[1m]`. |
+| `h9k config set --orchestrator-model <model>` | Sets the model the node's orchestrator window runs on, independent of `--default-model`, with `default` clearing it. |
+| `h9k config set --model-build <model>` | Sets this node's model for the Build role, the session that writes the feature. |
+| `h9k config set --model-review <model>` | Sets this node's model for the Review role, the independent reviewer over a run's diff. |
+| `h9k config set --model-review-verify <model>` | Sets a narrower override for the Verify-shape review pass, which falls through to `--model-review` when unset. |
+| `h9k config set --model-review-finalpass <model>` | Sets a narrower override for the mandatory final full pass, which falls through to `--model-review` when unset. |
+| `h9k config set --model-fix <model>` | Sets this node's model for the Fix role, the session that applies review findings. |
+| `h9k config set --model-synthesis <model>` | Sets this node's model for condensing a fan-in of blocker handoffs. |
+| `h9k config set --model-refinement <model>` | Sets this node's model for the future draft-refinement role, which is configurable before it exists. |
+| `h9k config set --model-publication <model>` | Sets this node's model for writing a task up as an external tracker card. |
+| `h9k config set --model-courier <model>` | Sets this node's model for the feed courier, where `default` does not clear to the platform default because the courier's own floor is `claude-sonnet-5`. |
+| `h9k config set --max-compliance-review-cycles <N>` | Sets this node's cycle cap for the conformance review track, with no clearing word, so the way back is the compiled default's own number. |
+| `h9k config set --max-adversarial-review-cycles <N>` | Sets this node's cycle cap for the adversarial track, with the same resolution order and the same lack of a clearing word. |
+| `h9k config set --max-final-full-pass-rounds <N>` | Sets this node's cap on consecutive mandatory final-full-pass rounds. |
+| `h9k config set --lifetime-review-cycle-budget <N>` | Sets this node's task-lifetime review-cycle budget, counted across every run and follow-up a task has had. |
+| `h9k config set --spend-budget <tokens\|none>` | Sets the node's periodic token-spend budget, past which the dispatcher declines further claims until the period rolls, and `none` clears it. |
+| `h9k config set --spend-period day\|week` | Sets the window the spend budget resets on, `week` by default, in UTC with the week starting on Monday. |
+| `h9k config set --review-stage-composition <value>` | Sets the node's review stage composition, one of `full-pipeline`, `adversarial-only`, `conformance-only`, `skip-final-pass`, or `none`. |
+| `h9k config set --accept-reduced-review` | Acknowledges the consequence of a composition that removes a load-bearing review guarantee, which those values require. |
+| `h9k config set --interactive-claim-stale-after-days <days>` | Sets how many days an interactive claim can sit untouched before `h9k status` nudges about it, three by default, read fresh on every render. |
+
+**Two of these settings decide which model runs what, and they are deliberately independent.**
+`--default-model` is the bottom of the agent-dispatch chain: a session's model is the task's own
+`--model`, then this node's per-role default, then the project's `--model`, then the default model,
+which ships as `claude-opus-5[1m]`. `--orchestrator-model` is a separate lever for the
+window you talk to, not for the sessions it dispatches. It is the model that `recipes/settings.json`
+is rendered for, so raising or lowering the model dispatched agents run on never moves your own
+window, and the reverse. A window's model resolves as the project's `--orchestrator-model`, then the
+project's `--model`, then the node's `--orchestrator-model`, then the node's `--default-model`, then
+the platform fallback, and `default` clears an override at whichever level it was set. `h9k config
+set` re-renders the node's own `recipes/settings.json` on the spot, and `h9k project set` does the
+same for that project's file, but a project window that defers to the node is caught up only the next
+time `h9k project init` runs or that project's own model changes. `h9k config show` and `h9k project
+show` print the resolved value and where it came from.
 
 The node ceiling has a per-project counterpart in the same denomination:
 `h9k project set <project> --max-parallel-tasks <N|default>` (Decisions Log #140) caps how many of
@@ -1369,6 +1548,16 @@ written instead by the `orchestrator-recipe-generator` skill, which `h9k install
 `h9k project add`/`init` publish and seed. See
 [README's Orchestrator windows](../README.md#orchestrator-windows) for the full picture.
 
+A window that is already open does not have to run `feed` again to stay current: the daemon's
+**feed courier** spawns a short-lived, cheap-model session that delivers a project's undrained feed
+items into the live window and exits, once the feed has something to say, a window is registered
+live for the project on this node, no courier is already running, and a batching wait has elapsed.
+Urgent items (a park, a dispute, daemon trouble, a message from a person) go at once. Two settings
+tune it: `h9k project set <project> --courier-max-wait <seconds>|default` is that project's ceiling
+on the batching wait (sixty seconds by default), and `h9k config set --model-courier <model>` is the
+node's model for the role, which bottoms out at `claude-sonnet-5` and does not clear to the platform
+default. The mechanism is in [concepts.md's The feed courier](concepts.md#the-feed-courier).
+
 `register`/`deregister`/`status` are how the platform knows whether a window is actually up for a
 project on this node. A window registers itself as the anchor's first start-up step, naming its
 session, process id, and agent CLI; the recipe's restart and close steps deregister it, naming
@@ -1386,6 +1575,32 @@ The daemon's presence sweep records a registered window whose process is gone as
 write, so no window ever leaves the stream without an ending. `status`
 and the `h9k status` header print the same line: the live window's session, CLI, process id and
 age, or "none live" with the last shutdown or loss time.
+
+### Flags that repeat across commands
+
+A few flags carry the same meaning wherever they appear, and a handful of one-off flags are easy to
+miss in the sections above.
+
+| Command | What it is for |
+|---|---|
+| `h9k task register-session\|verify\|deliver\|delegate\|handback\|release --force` | Proceeds even though the claim's interactive session was recorded on another machine this one cannot check, which attests that you confirmed by hand that it has exited. |
+| `h9k task handback --reason "<why>"` | Records why a headless agent is finishing the task, on the stream and in the follow-up's context. |
+| `h9k task unassign --reason "<why>"` | Records why the task is being taken back, and leaves it unknown when omitted rather than inferring one. |
+| `h9k project remove --reason "<why>"` | Records why a project is being archived, and leaves it unknown when omitted. |
+| `h9k epic close --reason "<why>"` | States why the epic is done, which is required because closing without a reason is exactly the automatic close this platform never does. |
+| `h9k epic list --state open\|closed\|all` | Filters epics by their state, and shows only the open ones by default. |
+| `h9k task revise --objective "<sentence>"` | Replaces the objective with one outcome-phrased sentence, on a Draft. |
+| `h9k task revise --criteria "<criterion>"` | Replaces the whole acceptance-criteria set, repeating the option for each criterion. |
+| `h9k task revise --stacked-on-pull-request <number>` | Declares the stacked edge against a teammate's pull request instead of a local task, the same as on `task add`. |
+| `h9k task write-jira --file <path>` | Names the JSON payload a card-authoring session composed, whose `format` may be `markdown` or `plain` and never `html`. |
+| `h9k learn record "<claim>" --distilled-from <id>` | Records a merged lesson with the lessons it absorbed, repeatable, and the decider refuses a citation that resolves to nothing. |
+| `h9k decide import --project <project>` | Names the project whose rulebook is being imported, defaulting to the project of the run you are importing from. |
+| `h9k idea assign --project <project>` | Sets the project an idea belongs to when capture did not know it, or changes it when discovery says otherwise. |
+| `h9k idea promote --project <project>` | Names the project the one task belongs to, required unless the idea is already assigned to one. |
+| `h9k pr review --project <project>` | Names the project whose repository the pull request belongs to, and is optional when exactly one project is registered. |
+| `h9k doctor --yes` | Remediates without asking, by starting Hall9k's own Postgres and creating the schema, which is what a script or a dispatched agent wants. |
+| `h9k uninstall --yes` | Skips the `--purge-data` confirmation prompt, which is required in a non-interactive session and has no effect without `--purge-data`. |
+| `h9k install --now`, `h9k update --now` | With `--restart`, restarts the daemon at once instead of waiting for a live verification gate to finish, though `h9k daemon stop`'s own warning still prints. |
 
 ## Identifiers
 
