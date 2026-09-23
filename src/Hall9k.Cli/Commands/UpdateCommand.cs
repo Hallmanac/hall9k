@@ -28,7 +28,7 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         public string? Repository { get; init; }
 
         [CommandOption("--restart")]
-        [Description("Restart a running daemon onto the fresh binaries without asking")]
+        [Description("Restart a running daemon onto the fresh binaries without asking — the newly installed h9k then runs h9k daemon stop, h9k doctor --yes and h9k daemon start in that order, so an update carrying a schema change ends with the daemon up on a current schema; doctor --yes will start a stopped hall9k-postgres container to get there")]
         public bool Restart { get; init; }
 
         [CommandOption("--no-restart")]

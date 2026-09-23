@@ -48,7 +48,7 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         public string? FromRelease { get; init; }
 
         [CommandOption("--restart")]
-        [Description("Restart a running daemon onto the fresh binaries without asking")]
+        [Description("Restart a running daemon onto the fresh binaries without asking — the newly installed h9k then runs h9k daemon stop, h9k doctor --yes and h9k daemon start in that order, so an update carrying a schema change ends with the daemon up on a current schema; doctor --yes will start a stopped hall9k-postgres container to get there")]
         public bool Restart { get; init; }
 
         [CommandOption("--no-restart")]
@@ -160,6 +160,22 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
     /// staged binaries into place, write Hall9k's own Postgres definition, republish the
     /// canonical skill set, put h9k on the PATH, report the version placed, and — if a
     /// daemon was already running — offer the restart.
+    /// <para>
+    /// The restart straddles the swap deliberately, and the two halves are not interchangeable.
+    /// The decision and the live-gate wait (<see cref="PrepareRestartAsync"/>) run BEFORE it, in
+    /// this process, whose loaded assemblies still match what is on disk — that is the only moment
+    /// the gate check can actually read the store, since after the swap the store it would open
+    /// belongs to a release this process is not running. Everything from the stop onward runs
+    /// AFTER it, in a child process of the newly installed binary
+    /// (<see cref="DaemonRestartHandoff"/>), which is the release that owns the new schema.
+    /// </para>
+    /// <para>
+    /// <paramref name="liveGateFinder"/> and <paramref name="restartChildRunner"/> are test seams
+    /// in the same style as <paramref name="portListeningProbe"/>: they default to the real store
+    /// query and the real child spawn, and a unit test substitutes fakes so the planned child
+    /// sequence and its stop-at-first-failure behaviour can be asserted with no migration, no
+    /// daemon, and no process.
+    /// </para>
     /// </summary>
     internal static async Task<int> FinishAsync(
         string staging,
@@ -173,6 +189,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         string? connectionStringStartDirectory = null,
         Func<CancellationToken, Task<bool>>? portListeningProbe = null,
         string? currentDirectoryOverride = null,
+        Func<CancellationToken, Task<IReadOnlyList<LiveGate>?>>? liveGateFinder = null,
+        RestartChildRunner? restartChildRunner = null,
         CancellationToken cancellationToken = default)
     {
         // The actual last point before staging becomes ~/.hall9k/bin, run for every caller —
@@ -318,6 +336,24 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             }
         }
 
+        // The last thing this process does that needs the store, and so the last thing that can
+        // run at all once the swap below has happened: the restart decision and, with it, the wait
+        // for a live verification gate to finish. Waiting here rather than after the swap is not a
+        // tidiness preference — it is the only placement that works. After the swap the gate query
+        // would open a Marten store out of the NEW release's assemblies inside a process running
+        // the old one, which is the load-time crash this whole path exists to stop (see
+        // DaemonRestartHandoff), and on the platforms where it degrades instead of crashing it
+        // degrades to "could not check", which would mean every schema-changing update waits for
+        // nothing and --now stops meaning anything. Before the swap the check works, against the
+        // schema this binary was built for.
+        bool restartAfterSwap = false;
+        if (runningBefore is not null)
+        {
+            restartAfterSwap = await PrepareRestartAsync(
+                restart, noRestart, now, runningBefore,
+                liveGateFinder ?? LiveGateGuard.FindOnThisNodeAsync, cancellationToken);
+        }
+
         // Deliberately last: h9k update runs from the very binaries this call is about to
         // replace, and the runtime resolves an assembly's first load lazily by absolute
         // path — so anything this process still had to load after an earlier swap would
@@ -370,9 +406,21 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         AnsiConsole.MarkupLine(OrchestratorPointer.ForNode());
 
-        return runningBefore is null
-            ? ExitCodes.Ok
-            : await OfferRestartAsync(restart, noRestart, now, runningBefore, cancellationToken);
+        if (runningBefore is null)
+        {
+            return ExitCodes.Ok;
+        }
+
+        if (!restartAfterSwap)
+        {
+            AnsiConsole.MarkupLine(
+                "[dim]Left running — it picks up the new binaries at its next start "
+                + "(h9k daemon stop && h9k doctor --yes && h9k daemon start, or re-run install with --restart).[/]");
+            return ExitCodes.Ok;
+        }
+
+        return await RestartThroughNewBinaryAsync(
+            runningBefore, restartChildRunner ?? DaemonRestartHandoff.RunInstalledCliAsync, cancellationToken);
     }
 
     /// <summary>
@@ -2050,47 +2098,62 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         }
     }
 
-    private static async Task<int> OfferRestartAsync(
-        bool restartRequested, bool noRestartRequested, bool now, DaemonProcessDescriptor runningBefore,
+    /// <summary>
+    /// The pre-swap half of the restart: resolve whether one is happening at all, and — when it
+    /// is — wait out any live verification gate. Returns whether the post-swap hand-off should
+    /// run. Everything here is the last work this process does that reaches the store, for the
+    /// reason spelled out at the call site.
+    /// </summary>
+    private static async Task<bool> PrepareRestartAsync(
+        bool restartRequested,
+        bool noRestartRequested,
+        bool now,
+        DaemonProcessDescriptor runningBefore,
+        Func<CancellationToken, Task<IReadOnlyList<LiveGate>?>> findLiveGates,
         CancellationToken cancellationToken)
     {
         AnsiConsole.MarkupLineInterpolated(
-            $"[yellow]h9kd is running (pid {runningBefore.ProcessId}) on the previous binaries.[/]");
+            $"[yellow]h9kd is running (pid {runningBefore.ProcessId}) on the binaries this install is about to replace.[/]");
 
+        // The question is asked here, ahead of the swap, because its answer decides whether the
+        // gate wait below runs at all and the wait cannot happen after the swap. An operator who
+        // walks away from this prompt leaves ~/.hall9k/bin exactly as it was rather than
+        // half-updated — the swap has not run yet — and re-running the command is idempotent.
         bool restart = (NoRestart: noRestartRequested, Restart: restartRequested) switch
         {
             { NoRestart: true } => false,
             { Restart: true } => true,
             _ => AnsiConsole.Profile.Capabilities.Interactive
-                && AnsiConsole.Confirm("Restart it onto the fresh install now?"),
+                && AnsiConsole.Confirm("Restart it onto the new binaries once they are in place?"),
         };
         if (!restart)
         {
-            AnsiConsole.MarkupLine(
-                "[dim]Left running — it picks up the new binaries at its next start "
-                + "(h9k daemon stop && h9k daemon start, or re-run install with --restart).[/]");
-            return ExitCodes.Ok;
+            return false;
         }
 
         // A live verification gate is the daemon's own action, not an agent session, so a
         // restart the OPERATOR did not explicitly rush waits for it rather than orphaning it
         // outright — --now is the explicit override for whoever wants the restart at once
         // regardless (Brian, 2026-09-20: wait, flag as override). h9k daemon stop's own
-        // warning still fires right below, whichever way this goes.
+        // warning still fires later, inside the child, whichever way this goes.
         await LiveGateGuard.WaitUnlessNowAsync(
-            now, LiveGateGuard.FindOnThisNodeAsync, Task.Delay, LiveGateGuard.VerifyGateLimit, cancellationToken);
+            now, findLiveGates, Task.Delay, LiveGateGuard.VerifyGateLimit, cancellationToken);
+        return true;
+    }
 
-        IDaemonAutostart autostart = DaemonAutostart.ForCurrentPlatform();
-        int stopped = await DaemonLifecycle.StopAsync(autostart, cancellationToken);
-        if (stopped != ExitCodes.Ok)
+    /// <summary>
+    /// The post-swap half: hand the stop, the schema repair and the start to the release that was
+    /// just installed, and relay what it reports. This process contributes nothing to those three
+    /// steps beyond launching them, because it is the wrong release to run any of them.
+    /// </summary>
+    private static async Task<int> RestartThroughNewBinaryAsync(
+        DaemonProcessDescriptor runningBefore, RestartChildRunner runChild, CancellationToken cancellationToken)
+    {
+        int handoff = await DaemonRestartHandoff.RunAsync(
+            DaemonRestartHandoff.InstalledCliPath, runningBefore, runChild, cancellationToken);
+        if (handoff != ExitCodes.Ok)
         {
-            return stopped;
-        }
-
-        int started = await DaemonLifecycle.StartAsync(autostart, binaryOverride: null, cancellationToken);
-        if (started != ExitCodes.Ok)
-        {
-            return started;
+            return handoff;
         }
 
         // h9k daemon start itself returns 0 both when it confirms the new pid and when
@@ -2101,6 +2164,10 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // caller gating on this command's exit code (h9k install --restart in a script or
         // CI step) needs the two told apart: an unconfirmed restart is not the success this
         // command is claiming otherwise.
+        //
+        // Safe to ask here, post-swap, unlike the gate query: this reads the pid file and the
+        // process table through System.Diagnostics.Process, which DaemonProcess.Probe at the top
+        // of FinishAsync already loaded out of the release this process actually started under.
         if (DaemonProcess.ProbeBootStatus().State != DaemonBootState.Running)
         {
             await Console.Error.WriteLineAsync(
