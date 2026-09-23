@@ -108,6 +108,72 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   h9k project set <name> --auto-pr-review normal
   ```
 
+- **Review personas, `h9k owner set --persona engineer|qa|designer`.** A member's declared
+  personas decide how a pull request assigned to them is reviewed: the `pr-review` task runs one
+  review session per persona, `qa` reviewing through the lens of blast radius and running the
+  project's end-to-end tests, `designer` answering seven design lenses. Declaring none reads as the
+  engineer's review, and repeating the flag replaces the whole declaration
+  (`--clear-personas` declares none).
+
+  ```bash
+  h9k owner set --persona engineer --persona qa
+  ```
+
+- **The two review-drive settings, `--design-review-drive on|off` and `--qa-review-drive on|off`.**
+  These are consent to launch a real process on this machine: with a drive setting on, a persona's
+  review of a pull request stands the project's product up from its run skill, drives it through
+  browser automation, and tears it down again, on every pull request that persona reviews. The
+  designer's setting ships `on` and the QA setting ships `off`; a project with no run skill drives
+  nothing whatever either says, and `h9k task run-local <task>` is how a reviewer stands a reviewed
+  branch up by hand. Set the designer's to `off` on a project whose product should not be launched
+  unattended.
+
+  ```bash
+  h9k project set <name> --design-review-drive off
+  h9k project set <name> --qa-review-drive on
+  ```
+
+- **Documentation-only work, `h9k task add --type content`.** A content task is for documentation,
+  skill markdown, prompt templates, or other non-compiled work: it dispatches with a reduced,
+  conformance-only review by default and refuses at the gates, naming every offending path, if its
+  diff touches anything outside the project's non-executable-path set.
+
+  ```bash
+  h9k task add --project <name> --type content --objective "<outcome>" --criteria "<check>"
+  ```
+
+- **The non-executable-path set, `--non-executable-path <glob>|default`.** Before any gate runs,
+  the daemon classifies every path a run's branch changed, and when all of them match this set the
+  verification gates (build and test, for most projects) are skipped outright and the skip is
+  recorded with each path and the rule it matched; this applies to any task type, not only
+  `content`. The compiled set is `*.md` anywhere,
+  `docs/`, `.claude/skills/`, and `.claude/commands/`, with `.claude/templates/`, `AGENTS.md`, and
+  `PLAN.md` carved back out of the markdown rule. A project's own globs only widen it, are layered
+  on top of the compiled set, and repeating the flag replaces the project's whole list of them;
+  `default` clears them.
+
+  ```bash
+  h9k project set <name> --non-executable-path "assets/**/*.png"
+  ```
+
+- **A bounded question, `h9k task add --type spike`.** A spike answers one stated question and
+  never opens a pull request. It needs `--kind research|experiment|prototype` (research and
+  experiment run no gates; prototype runs them and pushes its branch as evidence) and an
+  `--exit-criterion`, one checkable sentence its review (one pass and at most one fix lap) judges
+  the findings against.
+  Its budget is optional: `--max-turns`, `--max-tokens`, and `--max-wall-clock` (a .NET timespan
+  such as `00:30:00`), where crossing one records the run as budget-exhausted rather than failed.
+
+  ```bash
+  h9k task add --project <name> --type spike --kind research \
+      --objective "<the question>" --exit-criterion "<how the answer is judged>" --max-wall-clock 00:30:00
+  ```
+
+  The [concepts page](concepts.md#task-types) explains both task types, its section on
+  [personas](concepts.md#reviewing-a-pull-request-that-is-not-yours-personas) covers the review
+  personas and the drive settings, and [the CLI reference](cli.md#task-types-budgets-and-pre-approval)
+  lists every `task add` option.
+
 ## Running more than one task
 
 - **The node ceiling.** How many task runs may be live on this machine at once, counted directly
@@ -175,7 +241,23 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   ```
 
   Resolution is task override, then this node's per-role default, then the project's own
-  `--model`, then the platform fallback.
+  `--model`, then the node's `--default-model`, which is the platform fallback until you change it.
+- **The platform default, `--default-model`, and the orchestrator window's own model,
+  `--orchestrator-model`.** `--default-model` is the model every agent session runs on unless a
+  more specific level says otherwise, and it is what the chain above bottoms out at (the platform
+  fallback is `claude-opus-5[1m]`); `default` clears an override back to that fallback.
+  `--orchestrator-model` is the model the orchestrator window itself runs on, deliberately
+  independent of the dispatch model, so raising or lowering what dispatched agents run on never
+  moves the window you are sitting in, and the reverse. It is set on the node with
+  `h9k config set` and per project with `h9k project set`, where the project's own value wins and
+  `default` clears it back to the node's resolution.
+
+  ```bash
+  h9k config set --default-model claude-opus-5
+  h9k config set --orchestrator-model sonnet
+  h9k project set <name> --orchestrator-model sonnet
+  ```
+
 - **The shape of spend.** Prints the current period's recorded spend, by model, whether or not a
   budget is set; a node-level budget paces dispatch rather than reducing total spend. `h9k status`
   prints a throughput block right beneath it, for the same period: tasks merged, median and p90
@@ -314,6 +396,15 @@ An orchestrator window is the standing, disposable session that reads this board
 between the moments you sit down at it yourself. See the README's own [Orchestrator
 windows](../README.md#orchestrator-windows) section for what it is and how to start one; nothing
 here repeats it.
+
+A live window is kept current by the **feed courier**: a short-lived, cheap-model session the
+daemon spawns to deliver a project's undrained feed items into it, urgent ones at once and routine
+ones batched, so nothing polls the daemon's log or the feed. The window's own start-up step,
+`h9k orchestrator feed --project <name> --drain`, still catches it up on whatever happened while
+none was live. The README's [feed courier
+passage](../README.md#orchestrator-windows) says when one is spawned and how to tune it
+(`h9k project set <name> --courier-max-wait`, `h9k config set --model-courier`), and
+[concepts.md](concepts.md#the-feed-courier) has the delivery model.
 
 When a command here fails, start with `h9k status`: the attention pane names the cause underneath
 the row and the exact command that clears it. [docs/operations.md](operations.md#the-recovery-levers)

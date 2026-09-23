@@ -98,9 +98,9 @@ deeper dives live in [docs/](docs/).
 ### Register a project
 
 Registration takes a name and a repository URL, and builds the project's home directory: a
-generated `AGENTS.md`, the repository cloned with a working worktree, and folders for ideas,
-tasks, and skills. The location is yours (`--home` puts it on any drive); the shape is the
-platform's. The [install section](#register-a-project-only-with-the-users-own-repository)
+generated `AGENTS.md`, the rendered `decisions.md` and `lessons.md`, the repository cloned with a
+working worktree, and folders for ideas, tasks, and skills. The location is yours (`--home` puts
+it on any drive); the shape is the platform's. The [install section](#register-a-project-only-with-the-users-own-repository)
 covers it in full, including what first use sets up.
 
 ```
@@ -269,6 +269,34 @@ this at: `normal`, the default for every project, joins the ordinary dispatch qu
 ```bash
 h9k project set demo --auto-pr-review normal
 ```
+
+How that review looks depends on who the pull request was assigned to. Each member declares the
+review **personas** they hold with `h9k owner set --persona engineer|qa|designer` (repeatable, and
+repeating replaces the whole declaration; `--clear-personas` declares none), and the `pr-review`
+task runs one review session per declared persona on its single worktree. Declaring none is the
+ordinary case and reads as the engineer's review of code, logic, and functionality. The **QA**
+persona reviews for compliance and functionality through the lens of blast radius: it maps what the
+change touches and what sits close enough to be worth re-testing, then runs the project's
+end-to-end tests on the review worktree. The **designer** persona answers seven fixed lenses
+(user experience, conformance to the proposed design, motion, CSS practice, accessibility, look and
+feel, and the project's design system).
+
+Two project settings decide whether those reviews may go beyond reading the diff and start the
+running product on this machine, drive it through browser automation, and tear it down again. This
+is consent to launch a real process on every reviewed pull request, so it is a per-project choice:
+`--design-review-drive` defaults to `on` and `--qa-review-drive` defaults to `off`. A project with
+no run skill on its ledger drives nothing whatever either says, because nothing records how to
+start its product. When a report offers to run the branch, `h9k task run-local <task>` is how a
+reviewer stands the reviewed branch up by that same run skill, on an ephemeral port it prints.
+
+```bash
+h9k owner set --persona engineer --persona qa
+h9k project set demo --qa-review-drive on
+h9k task run-local 28b19893
+```
+
+See [docs/concepts.md](docs/concepts.md#reviewing-a-pull-request-that-is-not-yours-personas) for
+what each persona reads and how the drive settings and `run-local` fit together.
 
 ---
 
@@ -462,10 +490,13 @@ there is deliberately no flag to register with prompts left live. Revert it per 
 fact with `h9k project set <name> --skip-permissions false`.
 
 `project add` also creates the project's **home directory**, `~/.hall9k/projects/<name>`, which
-is the same shape on every machine: a generated `AGENTS.md`, `repo/` (a bare clone with a `dev/`
-worktree on the primary branch, and the task worktrees dispatch cuts beside it), `ideas/`,
-`tasks/`, `skills/` seeded from the install's set, and a generated `.claude/` adapter. Point an
-editor at it and you browse the code, the worktrees and the work together; start a Claude session
+is the same shape on every machine: a generated `AGENTS.md`, the rendered `decisions.md` and
+`lessons.md` (what the project's decisions and its runs' lessons say, never hand-edited), `repo/`
+(a bare clone with a `dev/` worktree on the primary branch, and the task worktrees dispatch cuts
+beside it), `ideas/`, `tasks/`, `skills/` seeded from the install's set, a daemon-owned
+`prompt-addenda/` directory (one file per prompt builder that has an addendum set, overwritten
+from the ledger on every sweep, so never edited by hand), and a generated `.claude/` adapter.
+Point an editor at it and you browse the code, the worktrees and the work together; start a Claude session
 in it and its `AGENTS.md` tells it the rest. For a project this database already knows about,
 `h9k project init <name>` creates or repairs the same shape. Both are idempotent, both are
 platform code with no agent in them, and `--home <path>` puts the directory wherever you want it.
@@ -547,6 +578,30 @@ so nothing is buffered and nothing is lost by not reading it; `--drain` moves th
 (`h9k project set <name> --orchestrator-feed actionable|transitions|everything`), and a message
 from a person shows up at every level. See
 [docs/concepts.md](docs/concepts.md#the-orchestrator-feed) for what each level holds.
+
+That start-up drain catches a window up once. What keeps a window that is already open current is
+the **feed courier**: a short-lived, cheap-model agent session the daemon itself spawns to deliver
+a project's undrained feed items into that project's live orchestrator window and then exit, so no
+window ever polls `h9kd.log` or asks the feed for news on its own. The daemon checks every project
+on a short sweep and spawns a courier only when all four of these hold: the feed has undrained
+items at that project's own level, an orchestrator window is live for the project on this node, no
+courier for that project is already running, and a batching wait has elapsed since the last
+delivery. Urgent items skip the wait and dispatch at once (a park, a dispute, daemon trouble, or a
+message from a person); routine movement batches, so a burst of activity becomes one delivery
+rather than many. The daemon, not the courier, advances the feed cursor, and only after the
+courier reports that the send landed, so a courier that fails leaves the same items for the next
+one or for the next manual `--drain`. Two settings tune it:
+
+```bash
+h9k project set demo --courier-max-wait 120         # ceiling on the batching wait, in seconds; default 60
+h9k project set demo --courier-max-wait default     # back to the platform default
+h9k config set --model-courier claude-sonnet-5      # this node's model for the courier role
+```
+
+`--model-courier default` does not clear to the platform default the way every other role's does:
+the courier's own floor is `claude-sonnet-5`, so clearing the override still leaves it on a
+deliberately inexpensive model. See
+[docs/concepts.md](docs/concepts.md#the-feed-courier) for the full delivery model.
 
 `h9k orchestrator node` and `h9k orchestrator project [PROJECT]` print that window's daemon
 liveness, its launch text, its recipe and journal paths, and its last measured turn-one cost.
