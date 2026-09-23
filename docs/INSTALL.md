@@ -15,8 +15,9 @@ https://raw.githubusercontent.com/Hallmanac/hall9k/main/docs/INSTALL.md
 your `PATH`, plus the canonical Claude skill set in `~/.hall9k/skills` and the canonical
 prompt-template set in `~/.hall9k/templates` — a sibling directory, never seeded into a project
 home, that the judgment-layer prose a prompt builder assembles into an agent session's prompt
-lives in. `--from-release` refuses a payload missing either set outright, naming what is
-missing, rather than installing an incomplete platform. **Nothing is started
+lives in. `--from-release` refuses a payload missing either binary or any required
+prompt-template package outright, naming what is missing, rather than installing an incomplete
+platform. **Nothing is started
 and nothing is registered as a background service or login item** — the daemon runs on
 demand (`h9k daemon start` / `stop`), and start-at-login is a separate, explicit opt-in
 (`h9k daemon autostart enable`).
