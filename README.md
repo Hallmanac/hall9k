@@ -578,17 +578,17 @@ correctly once the skill is loaded; the gap is purely in whether the slash comma
 from there in the first place. Wherever it runs from, the orchestrator window this recipe
 launches always runs from the project home itself, never the worktree, because that is
 the directory the platform's own launch line `cd`s into. It discovers the machine (operating
-system, your shell, which file-size command reads a byte offset for the recipe's own background
-log waiter (`stat -f %z`, `stat -c %s`, or PowerShell's `(Get-Item).Length`), where `h9kd.log` is
-and what time zone it prints, which agent CLIs are on `PATH`) and, for a project,
+system, your shell, where `h9kd.log` lives and what time zone it prints, which agent CLIs are on
+`PATH`) and, for a project,
 the project's own facts from `h9k project show` (its home, whether its code lives in the home
 directory or a `repo/dev` worktree, its verify gates, base branch, commit style, linked trackers,
-and the other projects sharing this node's ceiling). From that it writes
+and the other projects sharing this node's ceiling). No recipe it writes arms `tail -F`, a
+byte-offset log waiter, or the `Monitor` tool for any watch: the daemon's own feed courier
+delivers a project's undrained feed items straight into a live orchestrator window instead, so
+nothing here has to poll `h9kd.log` for news. From that it writes
 `recipes/orchestrator.md` and, for a project, `recipes/idea-discovery.md` and
-`recipes/task-refinement.md`, seeds `journal.md`, `sessions.md`,
-`notes/prototype-feedback.md`, and the background waiter script(s) the recipe's own start-up
-sequence arms (`notes/waiters/log-waiter.sh`/`.ps1`, plus one more of the same shape per
-non-`h9kd.log` source a recipe polls) at the home's own root when none exist yet, stores a per-agent-CLI
+`recipes/task-refinement.md`, and seeds `journal.md`, `sessions.md`, and
+`notes/prototype-feedback.md` at the home's own root when none exist yet, stores a per-agent-CLI
 launch text explicitly, even when the discovered machine needs no change from the platform's own
 computed default (`h9k orchestrator measure` refuses to run against a line nothing ever asked to
 store), and finishes by running `h9k orchestrator measure` and printing the launch line to paste
@@ -610,9 +610,11 @@ the line is the last thing to do, not something to keep working from.
 `<recipe>.new` beside the current file, and the launch anchor's own start-up step is what compares
 the two, reports what changed and what would be lost, and asks whether to adopt it (keeping a
 dated `.prev` of what it replaced), keep the current file, or merge them by hand. `journal.md`,
-`sessions.md`, `notes/prototype-feedback.md`, and the background waiter scripts (and their offset
-and gh-streak state files) are never regenerated once they exist — they are
-the window's own live state, not generated content.
+`sessions.md`, and `notes/prototype-feedback.md` are never regenerated once they exist — they are
+the window's own live state, not generated content. The generator writes nothing under
+`notes/waiters/`: an earlier version of this skill seeded byte-offset log-waiter scripts there,
+retired now that the daemon's own feed courier delivers proactively instead of a window polling
+for news.
 
 ---
 
@@ -648,7 +650,9 @@ Below that sit the documents the new docs point into rather than replace:
   one at it instead.
 - **[SLICE-1.md](SLICE-1.md)** is the current build breakdown and its acceptance criteria.
 - **[HALL9K-P2P-DESIGN.md](HALL9K-P2P-DESIGN.md)** is the peer-to-peer layer: identity,
-  discovery, NAT traversal. Design only; nothing is built.
+  discovery, NAT traversal. The network half (mDNS, hole punching, a relay, QUIC) is design only;
+  the identity half shipped instead, over the existing git ledger rather than this document's own
+  transport.
 - **[backlog/](backlog/)** is the dogfood-era archive: one file per pre-cutover piece of work. The
   numbered ones carry an objective and acceptance criteria in the frontmatter `h9k task add --file`
   reads; the `IDEA-` notes beside them are earlier-stage prose. [docs/scope.md](docs/scope.md)
@@ -666,12 +670,16 @@ observation); the task dependency graph with context routing along its edges; id
 into any number of tasks, with promotion surviving as sugar over one-and-done; GitHub issue and
 Jira card adoption; per-project and per-owner settings; failed-task recovery; the attention pane;
 a pull request requesting the install's own GitHub login for review starting a `pr-review` task
-automatically.
+automatically; and, across nodes sharing an owner, identity (a signing key per node, an owner
+root, vouching), invites, node-to-node messaging, event replication so every node's store stays
+current, and cross-node task holding (`h9k task take`, `HeldElsewhere`).
 
 **Designed but not built:** the mid-run question loop (`h9k ask` / `h9k answer`, Slice 2: the
 events are on the stream and the commands are not, so an agent that needs a decision today makes
 the most reasonable call and records the assumption); `h9k watch --notify`; a Linux systemd
-autostart unit; multi-node and peer-to-peer; formal triage and discovery flows.
+autostart unit; node discovery and gossip (the network layer under the peer-to-peer design, mDNS
+and NAT traversal, distinct from the identity and replication that already ship over the git
+ledger); formal triage and discovery flows.
 
 **Deliberately not doing:** hosted SaaS, a kanban UI, two-way content sync with Jira or GitHub,
 bulk backlog mirroring, and merging your pull requests by default.

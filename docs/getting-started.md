@@ -9,7 +9,7 @@ machine and project, not a step to run as typed: several of these settings are n
 to every project sharing this machine, and some have no `default` word to clear them back once
 set. Read each item's own reasoning before deciding whether, and to what value, to run it.
 
-Last reconciled against the tree on 2026-09-12.
+Last reconciled against the tree on 2026-09-23.
 
 Assumes `h9k doctor` and `h9k daemon status` both read clean, and a project has been registered
 against the user's own repository (never this one):
@@ -198,18 +198,16 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   failure as a regression, check the VM's own available memory and the number of containers
   currently held, and lower `--max-parallel-tasks` on the affected project rather than re-running
   blind.
-- **A dead registered project makes the sweep warn on every tick.** The auto-pr-review sweep
-  resolves every registered project's repository unconditionally, on every cycle, before anything
-  that branches on that project's own setting runs; a project whose repository no longer exists
-  makes that resolution fail and log a warning each time, harmless but noisy. `--auto-pr-review
-  off` does not silence it: the resolution that fails happens before the setting is ever
-  consulted, not after. There is no dedicated deregistration command yet, and no lever quiets a
-  repository that is genuinely gone or moved: `project set --repo` only updates the daemon's local
-  clone path, not the GitHub URL recorded at registration, and nothing mutates that URL
-  afterward. Re-registering under the same name is refused (`project add` rejects a name that
-  already exists), and registering the same repository under a new name leaves the dead project
-  still registered, still warning every tick — there is no way through today short of editing the
-  event store by hand, which is outside what this guide covers.
+- **A dead registered project is archived, not force-deleted.** `h9k project remove <name>
+  --reason "<why>"` archives it, reversibly: the dispatcher stops claiming its tasks, the
+  auto-pr-review and project-home render sweeps skip it, and `h9k project list` hides it by
+  default (`h9k project reactivate` undoes it in place). Neither the repository nor the home
+  directory on disk is touched. Add `--purge` to also schedule a permanent hard delete of the
+  project's database footprint twenty-four hours out — its own stream, every task, run, idea, and
+  epic stream it owns — cancellable any time before it fires with `h9k project cancel-purge`.
+  `h9k project add` under a name that already names an archived project offers
+  `--reactivate-archived` or `--rename-archived-to <name>` to free the name, both answerable
+  non-interactively.
 
 ### Windows
 
@@ -221,14 +219,16 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   Get-Content -Path 'C:\Users\<you>\.hall9k\h9kd.log' -Wait -Tail 0
   ```
 
-  The orchestrator recipe itself never tails the log at all: its own start-up step arms a silent
-  background waiter (`recipes/orchestrator.md`'s own contract) that polls the log's byte size
-  instead, so there is no follow pipeline for a Windows session to leave running or orphaned.
+  The orchestrator recipe itself never tails or polls the log at all: no recipe this platform
+  generates arms `tail -F`, a byte-offset log waiter, or the `Monitor` tool for any watch, on
+  Windows or anywhere else — the daemon's own feed courier delivers a project's undrained feed
+  items straight into a live orchestrator window instead, so there is no follow pipeline for a
+  Windows session to leave running or orphaned.
   Use a literal path, not `$HOME`, for either one: the Bash tool on this platform runs Git Bash
   even when the rest of the session targets PowerShell, and a path composed under Git Bash's own
   `$HOME` expands to a `/c/...`-style path that `pwsh` cannot open, and dies at once.
 - **If you registered autostart before the launcher opened the daemon's log for it (Decisions Log
-  PLACEHOLDER-d4e64dfa), re-run `h9k daemon autostart enable` once.** The
+  #222), re-run `h9k daemon autostart enable` once.** The
   daemon's log used to reach it through a shell redirect, `cmd.exe /c "h9kd < NUL >> h9kd.log
   2>&1"`, and cmd.exe holds an append redirect's target with `FILE_SHARE_READ` only for the whole
   run: readers welcome, a second writer refused. So `h9kd` could never take its own log over with a

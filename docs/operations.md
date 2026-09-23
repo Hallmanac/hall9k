@@ -240,7 +240,7 @@ the daemon for exactly that reason — it has to work while the daemon is down.
 
 ### Upgrading the event store (Marten 9, task 29b0ca1a)
 
-The 2026-09-22 security release moved hall9k from Marten 8 to Marten 9.39.0 (WolverineFx and
+The 2026-09-23 security release moved hall9k from Marten 8 to Marten 9.39.0 (WolverineFx and
 WolverineFx.Marten to 6.39.1 alongside it), which changes what an installed store's schema looks
 like. What actually moves, on an install whose schema predates this tag:
 
@@ -361,8 +361,6 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │                               orchestrator-recipe-generator skill, never regenerated
 ├── sessions.md                 seeded alongside it: the registry of sessions this window has spawned
 ├── notes/prototype-feedback.md seeded alongside it: dated feedback about this node's own generated recipes
-├── notes/waiters/               seeded alongside it: the background log waiter script(s) this
-│                               window arms at start-up, plus their offset and gh-streak state
 ├── projects/<name>/            a project's home, unless the project records another location
 │   ├── AGENTS.md               rendered from the project's facts; never hand-maintained
 │   ├── decisions.md            rendered from the Decision streams (`h9k decide`); the same file
@@ -378,10 +376,8 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 │   ├── .claude/skills/         symlinks into the line above: the Claude Code adapter
 │   ├── journal.md              seeded once by the same skill: this window's own live state
 │   ├── sessions.md             seeded alongside it: the registry of sessions this window has spawned
-│   ├── notes/prototype-feedback.md  seeded alongside it: dated feedback about this project's own
-│   │                           generated recipes
-│   └── notes/waiters/          seeded alongside it: this window's own background waiter script(s)
-│                               and their offset and gh-streak state
+│   └── notes/prototype-feedback.md  seeded alongside it: dated feedback about this project's own
+│                               generated recipes
 ├── ideas/<idea-id>/workspace/  the fallback for an idea captured with no project, or a project
 │                               with no home yet: permanent, never relocated after capture
 ├── postgres/docker-compose.yml Hall9k's own Postgres definition (h9k install writes it, §Postgres)
@@ -403,12 +399,14 @@ Everything hangs off `~/.hall9k` (or `HALL9K_HOME`):
 
 `recipes/orchestrator.md` sets the orchestrator window's default operator voice (plain
 language, one idea per paragraph, a scenario before any criteria walk), which never surfaces a
-routine monitor event: no reply to a routine one, ever, and what happened rolls into one
-summary about every three hours grouped by task, while anything actionable is still reported at
-once. The recipe's own start-up step arms this as a silent background waiter, never the `Monitor`
-tool: a one-shot Bash `run_in_background` loop polls the daemon log by byte offset, drops routine
-daemon-log lines into `notes/monitor-tally.log` for that summary to read back, and exits only on
-an actionable line, which the window acts on and silently re-arms. `Monitor` expires every thirty
+routine event: no reply to a routine one, ever, and anything actionable is reported at once. The
+recipe's own start-up step arms nothing to watch for this, and never the `Monitor` tool either:
+once this window registers its presence, the daemon spawns a short-lived, cheap-model feed
+courier the moment this project's feed has undrained items and this window is live, delivering
+them straight into the session through `SendMessage` — a park, a dispute, daemon trouble, or a
+message from a person arrives at once, everything else arrives batched on a wait that shortens
+the quieter the project's feed gets — so nothing here polls `h9kd.log` by byte offset or reads it
+as a log at all. `Monitor` was never the answer either: it expires every thirty
 minutes and would otherwise wake the window on every expiry and every re-arm; those events,
 expiries, and re-arms are never surfaced to the operator either.
 
@@ -499,7 +497,7 @@ ones worth knowing:
 | `Hall9k__MaxConcurrentTaskRuns` | 1 | The node's ceiling, counted directly in **task runs** (Decisions Log #111) — every value is meaningful. Retires `Hall9k__MaxConcurrentAgentSessions`, still read as a fallback (see below). |
 | `Hall9k__SessionCapPerRun` | 3 | How many agent sessions one run may hold simultaneously — a global default, overridable per task at any time with `h9k task set-session-cap`, even mid-run. A cap of 1 serializes the two review lenses instead of dispatching them together. |
 | `Hall9k__LeaseTimeout` | 60s | How long a lease survives without a heartbeat before the sweep requeues it |
-| `Hall9k__VerifyGateTimeout` | 15m | Per gate, and the same value sizes every headless dispatched session's own foreground command timeout (`ClaudeSettingsFile`), so raising this also raises how long a session's own `dotnet test`-shaped command may run before Claude Code's Bash tool would otherwise kill it. Three surfaces do not move with it: an interactive `h9k task work` claim, `h9k task verify` run against one, and `h9k task start` — all three are CLI commands, and nothing on the CLI side reads this option today, so each always runs its own gates against the fixed 15-minute default regardless of what this is set to. |
+| `Hall9k__VerifyGateTimeout` | 30m | Per gate, and the same value sizes every headless dispatched session's own foreground command timeout (`ClaudeSettingsFile`), so raising this also raises how long a session's own `dotnet test`-shaped command may run before Claude Code's Bash tool would otherwise kill it. Three surfaces do not move with it: an interactive `h9k task work` claim, `h9k task verify` run against one, and `h9k task start` — all three are CLI commands, and nothing on the CLI side reads this option today, so each always runs its own gates against the fixed 30-minute default regardless of what this is set to. |
 | `Hall9k__PullRequestPollInterval` | 3m | How often the closeout monitor polls an open pull request |
 | `Hall9k__PullRequestPollBackoffMaxInterval` | 30m | The ceiling the poll interval backs off to when every attempted inspection in a sweep fails (e.g. `gh` rate-limited); resets on the next successful sweep |
 | `Hall9k__MaxAutomaticCloseoutRuns` | 6 | The lifetime ceiling: automatic closeout actions a pull request may spend across every obstruction before closeout parks and asks for you, whatever it grants along the way |
@@ -841,7 +839,7 @@ The **needs-you** section of `h9k status` is the whole point of the pane. What i
 in it is the **cause line underneath**, not the Status column: that column keeps the lifecycle
 word (a run that stopped before pushing still reads `Working`, one that stopped with its pull
 request open reads `Delivered`, work nothing has claimed reads `Published`, a failed run reads
-`Failed`). There is no needs-a-human word in the eight, and `--state NeedsHuman` is refused, so
+`Failed`). There is no needs-a-human word in the nine, and `--state NeedsHuman` is refused, so
 read the line beneath the row rather than grepping the column for a state.
 
 Each cause is quoted from a record rather than inferred, and each carries the lever that clears

@@ -16,7 +16,12 @@ summary that gets you there knowing what you are looking at.
 - [Verification gates](#verification-gates)
 - [The pre-PR review loop](#the-pre-pr-review-loop)
 - [Closeout](#closeout)
+- [Catching a node up](#catching-a-node-up)
+- [The orchestrator's presence](#the-orchestrators-presence)
+- [The orchestrator feed](#the-orchestrator-feed)
+- [The feed courier](#the-feed-courier)
 - [Owners, nodes, and connections](#owners-nodes-and-connections)
+- [Replication scopes](#replication-scopes)
 
 ---
 
@@ -151,10 +156,14 @@ Neither the persisted task states nor the run states are what a human reads. One
 answering four questions at once (where is the work, what is happening right now, does it want
 me, and why), so the display is three separate surfaces composed from the underlying records.
 
-**State** is the lifecycle in seven words: `Draft`, `Published`, `Working`, `Delivered`, `Done`,
-`Failed`, `Archived`. `Queued` and `Blocked` both render as `Published`, with the difference
-moved onto the row's facts line, and the persisted `Abandoned` renders as `Archived`.
-`Delivered` means pushed with the merge not yet observed.
+**State** is the lifecycle in nine words: `Draft`, `Published`, `Working`, `Delivered`, `Waiting`,
+`HeldElsewhere`, `Done`, `Failed`, `Archived`. `Queued` and `Blocked` both render as `Published`,
+with the difference moved onto the row's facts line, and the persisted `Abandoned` renders as
+`Archived`. `Delivered` means pushed with the merge not yet observed. `Waiting` is a pr-review
+task whose posted review is waiting on its author (PLAN.md #160). `HeldElsewhere` is a
+Claimed task another node currently holds (idea 202383dc, M2a); see [Owners, nodes, and
+connections](#owners-nodes-and-connections) for the holder mechanics and `h9k task take` as the
+lever.
 **`Done` renders only at true closeout**, which is the same bar the dependency rule uses, so the
 board and the blocker rule agree on the word.
 
@@ -670,7 +679,11 @@ is the only honest owner once the task itself is lease-free.
 Per poll, in priority order:
 
 - **Merged.** The run completes, dependents unblock, the retained worktree is removed, and the
-  branch is deleted locally, remotely, and in remote-tracking refs.
+  branch is deleted locally and in remote-tracking refs. The remote deletion itself is skipped
+  where the repository's own `delete_branch_on_merge` setting already owns it (checked via `gh`
+  before anything is deleted) — closeout leaves that deletion to GitHub, because a raw ref
+  deletion there closes a stacked child instead of retargeting it
+  ([docs/operations.md](operations.md#one-setting-that-lives-on-the-repository-not-in-hall9k)).
 - **Closed without merge.** The run fails honestly. The worktree goes; the branch stays, because
   it still holds unmerged work.
 - **Copilot's review state, recorded every sweep the pull request is still open.** Landed,

@@ -7,7 +7,7 @@ Hall9k has been building Hall9k since the pipeline first ran end to end. Anythin
 but unbuilt" names the file that holds the design, so you can read it rather than take this
 page's word for it.
 
-Last reconciled against the tree on 2026-09-19.
+Last reconciled against the tree on 2026-09-23.
 
 ---
 
@@ -1272,7 +1272,7 @@ wrinkle: nothing but `h9k daemon autostart enable` rewrites a registration's lau
 machine that was already registered before this landed keeps launching the old way, and the
 daemon's own start-up warning says so and names that command.
 
-See `SLICE-1.md` S1-14, Decisions Log #3, #78, #85, #217, PLACEHOLDER-d4e64dfa.
+See `SLICE-1.md` S1-14, Decisions Log #3, #78, #85, #217, #222.
 
 ### Token visibility and exhaustion
 
@@ -1284,13 +1284,6 @@ clock-bound condition that should hold and resume.
 
 See [`backlog/36-token-visibility.md`](../backlog/36-token-visibility.md) and
 [`backlog/40-token-exhaustion.md`](../backlog/40-token-exhaustion.md).
-
-### Killing a run without killing its task
-
-Stopping a session while keeping the work, then requeuing or holding on the human's word, is
-designed. `Killed` is a reserved run state with no command behind it.
-
-See [`backlog/38-kill-run.md`](../backlog/38-kill-run.md).
 
 ### Watching and peeking
 
@@ -1321,13 +1314,6 @@ requesting an auxiliary session with declared capabilities is designed and unbui
 
 See [`backlog/29-slim-agent-profile.md`](../backlog/29-slim-agent-profile.md) and
 [`backlog/30-auxiliary-sessions.md`](../backlog/30-auxiliary-sessions.md).
-
-### The learnings loop
-
-Recording run-earned lessons as event-sourced platform data and injecting each project's active
-lessons into every dispatch. Today those lessons are written by hand into `AGENTS.md`.
-
-See [`backlog/16-learnings-loop.md`](../backlog/16-learnings-loop.md).
 
 ### Sequencing the ready set automatically
 
@@ -1384,11 +1370,17 @@ Decisions Log): `h9k project join [--from-project <name>]` writes a verbatim cop
 root file plus a bundle embedding the source vouch and the raw bytes of both signed commits, and
 `GitLedgerChainReader` verifies the bundle entirely offline against the embedded evidence, with no
 fetch of the source project ever reaching the target — the root-holding node never has to touch
-the new project at all. **Still not built**: no node discovery, no gossip, no event
-replication (M2a, the one thing a message is deliberately never trusted with) — M2's own
-project-scoped outbox streams (above) are what M2a builds replication on, rather than retrofitting
-project scoping into it later. **Two known, accepted
-limits.** A force-push over a ledger ref still rewrites trust history along with everything else in
+the new project at all. Event replication (M2a, the one thing a message was deliberately never
+trusted with) shipped on top of M2's own project-scoped outbox streams described above rather than
+retrofitting project scoping into it later: every project-scoped event now rides an outbox to
+every node, a node that finds a gap in a sender's sequence (or a squash) catches up instead of
+stalling, an explicit catch-up ask is served from below the answering node's own switch-on point,
+a brand-new node's first sync brings a project whole from genesis with its tasks, runs, and ideas,
+and ideas and tasks each carry a `private`, `fleet`, or `team` replication scope. **Still not
+built**: no node discovery and no gossip, which is the reachability half of
+[HALL9K-P2P-DESIGN.md](../HALL9K-P2P-DESIGN.md) rather than the trust half above.
+
+**Two known, accepted limits.** A force-push over a ledger ref still rewrites trust history along with everything else in
 it; nothing here detects or prevents that rewrite before the later relay replaces git as the carrier:
 every ledger and chain fetch is a forced update with no ancestry check, so a rewritten trust ref is
 accepted silently. Separately, because a membership write is judged against the owner chain's own

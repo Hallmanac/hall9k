@@ -1,6 +1,6 @@
 # Hall9k documentation
 
-The on-ramp. Five pages, each answering a different question, none of them trying to be the deep
+The on-ramp. Six pages, each answering a different question, none of them trying to be the deep
 reference: where a subject has a deep document already, these pages point into it.
 
 Start at the [repository README](../README.md) for the pitch, a real session, and installation.
@@ -25,7 +25,7 @@ Then:
 | [AGENTS.md](../AGENTS.md) | The contributor and agent guide: what the project is, build/test/run, the coding standards, and the CLI command standards, kept short so a dispatched session's context stays cheap. Its git rules and working agreements are decisions in the store now, and the two sections point there. `CLAUDE.md` defers to it. |
 | [ORCHESTRATOR-WINDOW.md](../ORCHESTRATOR-WINDOW.md) | The orchestrator-window role: the review rhythm, the recovery levers, the needs-you relay. Only an interactive session loads it; a headless dispatched session never does. |
 | [SLICE-1.md](../SLICE-1.md) | The current build breakdown with acceptance criteria per slice. |
-| [HALL9K-P2P-DESIGN.md](../HALL9K-P2P-DESIGN.md) | The peer-to-peer layer: identity, discovery, NAT traversal. Design only; nothing is built. |
+| [HALL9K-P2P-DESIGN.md](../HALL9K-P2P-DESIGN.md) | The peer-to-peer layer: identity, discovery, NAT traversal. The network half (mDNS, hole punching, a relay, QUIC) is design only; the identity half shipped instead, over the existing git ledger. |
 | [backlog/](../backlog) | The dogfood-era archive: one file per pre-cutover piece of work. The numbered ones carry an objective and acceptance criteria in the frontmatter `h9k task add --file` reads; the `IDEA-` notes beside them are earlier-stage prose. New work is captured with `h9k idea add` / `h9k task add` and renders into the project home instead (backlog 48). |
 
 ## A note on how these are written

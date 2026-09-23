@@ -878,9 +878,10 @@ otherwise, in the same shape on every machine:
 ├── journal.md  seeded once by the orchestrator-recipe-generator skill; the window's own live
 │               state, never regenerated
 ├── sessions.md seeded alongside it: the registry of sessions this window has spawned
-└── notes/      seeded alongside it: prototype-feedback.md holds dated recipe feedback; waiters/
-              holds the background waiter script(s) this window arms at start-up, plus their
-              offset and gh-streak state
+└── notes/      seeded alongside it: prototype-feedback.md holds dated recipe feedback. No
+              recipe this platform generates arms a byte-offset log waiter, `tail -F`, or the
+              `Monitor` tool — the daemon's own feed courier delivers a project's undrained feed
+              items into a live orchestrator window instead, so nothing under notes/ polls for news
 ```
 
 Creating it is platform code end to end: the directories, the bare clone with its fetch refspec
@@ -1183,7 +1184,7 @@ demanding an attestation for it.
 `h9k daemon autostart launch` is the one command in this section nobody types: it is the vehicle
 the Windows logon task runs, and it exists to open `h9kd.log` with an append handle the daemon can
 inherit, since a handle cannot be passed through the VBScript command line the registration
-composes (Decisions Log PLACEHOLDER-d4e64dfa). See [INSTALL.md](INSTALL.md) for the Windows mechanics around it,
+composes (Decisions Log #222). See [INSTALL.md](INSTALL.md) for the Windows mechanics around it,
 including the one-time `h9k daemon autostart enable` an already-registered machine needs.
 
 `uninstall` takes the platform off the machine — binaries, PATH link, autostart, and everything

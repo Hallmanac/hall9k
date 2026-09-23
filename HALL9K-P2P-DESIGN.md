@@ -1,8 +1,16 @@
 # Hall9k — Peer-to-Peer Layer Design
 
-**Status: designed, not built.** This is the complete design for roadmap item #5's "true P2P"
-branch, consolidated from four design sessions (2026-08-18 and 2026-08-19). Nothing described here
-exists in code today.
+**Status: the network layer below is designed, not built; the identity layer shipped instead,
+over a different transport.** This is the complete design for roadmap item #5's "true P2P"
+branch, consolidated from four design sessions (2026-08-18 and 2026-08-19). Reachability (§7
+discovery, §9-§10 NAT traversal: mDNS, hole punching, a relay, QUIC) is still exactly as
+described below: unbuilt. Trust (§2-§5) shipped a different way — idea 202383dc's identity core
+carries the two-tier key hierarchy this document designs (an owner root key, one signing key per
+node) over the project's own git ledger rather than this document's own transport, with vouching,
+revocation, invites, and every node-to-node message and replicated event signed against it (see
+`docs/scope.md`'s own "Multi-node and peer-to-peer" section for what actually shipped, and
+PLAN.md §16 Decisions Log #190 onward). The mechanics below remain the reference for whichever
+transport node discovery and reachability eventually use.
 
 This document is the **single reference**. It supersedes `P2P-DESIGN.md`,
 `OWNER-KEY-LIFECYCLE.md`, and `TRANSPORT-AND-WIRE-PROTOCOL.md`, which should be deleted once this
