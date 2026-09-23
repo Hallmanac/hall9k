@@ -224,7 +224,7 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   Windows or anywhere else — the daemon's own feed courier delivers a project's undrained feed
   items straight into a live orchestrator window instead, so there is no follow pipeline for a
   Windows session to leave running or orphaned.
-  Use a literal path, not `$HOME`, for either one: the Bash tool on this platform runs Git Bash
+  Use a literal path, not `$HOME`, in that command: the Bash tool on this platform runs Git Bash
   even when the rest of the session targets PowerShell, and a path composed under Git Bash's own
   `$HOME` expands to a `/c/...`-style path that `pwsh` cannot open, and dies at once.
 - **If you registered autostart before the launcher opened the daemon's log for it (Decisions Log

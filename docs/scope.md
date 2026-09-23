@@ -1389,12 +1389,12 @@ write the revoked node ever signed, and a later re-vouch of that node restores t
 — accepted as the correct behavior of the walked latest-of-vouch-or-revocation model, not a design
 gap.
 
-The peer-to-peer branch has a full design (identity as a two-tier key hierarchy, mDNS on the LAN,
-hole punching, a relay on 443, QUIC throughout) in
-[HALL9K-P2P-DESIGN.md](../HALL9K-P2P-DESIGN.md) and Decisions Log #38 to #58. Having a design does
-not decide the branch; it removes "we do not know what it would look like" as a reason to avoid
-it. The first step when multi-machine actually arrives is to evaluate several daemons against one
-shared Postgres, which the lease model already makes safe.
+The peer-to-peer branch's reachability half is still only a design (mDNS on the LAN, hole
+punching, a relay on 443, QUIC throughout), written down in
+[HALL9K-P2P-DESIGN.md](../HALL9K-P2P-DESIGN.md) and Decisions Log #38 to #58. Its identity half,
+the two-tier key hierarchy, is what the paragraphs above describe as built, carried over the
+project's own git ledger instead of that document's own transport. Having a design does not decide
+the remaining branch; it removes "we do not know what it would look like" as a reason to avoid it.
 
 ---
 
