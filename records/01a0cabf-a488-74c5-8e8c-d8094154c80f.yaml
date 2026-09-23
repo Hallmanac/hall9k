@@ -1,0 +1,29 @@
+hall9k-task-record: 1
+task-id: 01a0cabf-a488-74c5-8e8c-d8094154c80f
+project: hall9k
+type: chore
+pre-approved: on
+external-reference: github:Hallmanac/hall9k#566
+objective: |-
+  The install and build no longer warn about GHSA-vmw2-qwm8-x84c, GHSA-q939-rpr3-3284, or GHSA-mggc-4xg6-vcxf: Marten moves to 8.38.1 with WolverineFx and WolverineFx.Marten to 5.41.0, and Testcontainers.PostgreSql to 4.15.0, all within their current major versions
+criteria:
+  - The four PackageVersion lines in Directory.Packages.props read Marten 8.38.1, WolverineFx 5.41.0, WolverineFx.Marten 5.41.0 and Testcontainers.PostgreSql 4.15.0, and no other PackageVersion line changes (transitive versions move with them under CentralPackageTransitivePinningEnabled and are not constrained). A forced restore prints no NU1903 or NU1904 for GHSA-vmw2-qwm8-x84c, GHSA-q939-rpr3-3284 or GHSA-mggc-4xg6-vcxf, and dotnet list Hall9k.slnx package --vulnerable --include-transitive names only Marten for GHSA-rfx3-98h7-v3xp.
+  - |-
+    dotnet build and the full dotnet test pass. Source changes are limited to what the new packages force: the StreamState ambiguity introduced by JasperFx.Events 1.36 is resolved by one global using alias (a Using item with Alias in the csproj) in each affected project (Cli, Connectors, Daemon, Tests) rather than per-file edits, and FakeEvent<T> implements the Tags and AddTag members IEvent gained. Anything further the session finds necessary is named in the PR description with the upstream change that forced it.
+  - |-
+    The PR description names the schema delta Marten 8.38.1 applies to a database created by 8.17.0 (the mt_upsert_* function bodies, mt_jsonb_patch, the two new mt_jsonb_* functions) and states the verified upgrade path: h9k doctor --yes and the daemon's EventStoreSchemaGuard bring it current, and until one of them runs the CLI refuses with the stale-schema doctor message. EventStoreSchemaGuardTests and DatabaseDoctorTests pass unchanged. No operator step is added beyond the daemon restart install already performs; docs/operations.md gains one sentence saying a CLI call between the binary swap and the daemon restart fails once with the doctor's message.
+  - Directory.Build.props carries a NuGetAuditSuppress item for https://github.com/advisories/GHSA-rfx3-98h7-v3xp with a comment stating the reason (the three LINQ sinks were fixed in Marten 8.37.4, the two tenant DDL sinks do not exist on the 8.0 branch, hall9k has no tenancy and serializes with System.Text.Json) and naming task 29b0ca1a as the one that removes it. A forced restore then prints no NU19xx warning at all, while dotnet list package --vulnerable still lists the advisory.
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a00d41-5b80-753d-a3f1-070b25e490e4
+origin-node-name: Hallmamac-Max36
+origin-branch: task/4154c80f-the-install-and-build-no-longe
+published: 2026-09-23 04:46:55Z
+context: |-
+  Origin: a colleague installing h9k with h9k install --repo saw four NuGet audit warnings during dotnet publish (2026-09-22). This task is the in-major cut; the Marten 9 upgrade (29b0ca1a, stacked on this task) clears the last advisory and removes the suppression this task adds.
+
+  Verified by a challenge session on 2026-09-22 against origin/main 7acdadfc5 (full verdict in the task's journal.md in the project home): the bump does not compile as pinned because JasperFx.Events 1.36.2 adds its own StreamState, ambiguous with Marten.Events.StreamState in 42 src files and 7 test files (every FetchStreamStateAsync fence); one global using alias per csproj is the verified five-file fix. IEvent gained Tags, AddTag<TTag>() and AddTag(EventTag), so tests/Hall9k.Tests/Fakes/FakeEvent.cs needs those members. Weasel moves 8.4.2 to 8.15.1 and rewrites every mt_upsert_<doc> function body, drops and recreates mt_jsonb_patch, and adds mt_jsonb_append_key_value and mt_jsonb_remove_key; a database created by 8.17.0 opened by the bumped CLI under CreateOnly refuses reads until h9k doctor --yes or a daemon start runs EventStoreSchemaGuard, after which reads and writes work. Wolverine 5.9.2 to 5.41.0 left the eight wolverine_* tables byte-identical under a daemon-shaped host. Testcontainers 4.15.0 resolves SSH.NET 2026.0.0 with nothing pinning lower; hall9k uses only PostgreSqlBuilder with a random host port. No Marten advisory sink is reachable in src (no full-text search calls, no dictionary indexer or ContainsKey inside a Where, no tenancy, System.Text.Json).
+
+  Brian's rulings (2026-09-22): suppress the residual GHSA-rfx3 warning as criterion 4 states; use the four project-level aliases; leave the four generated providers already missing on main alone (Marten 9 deletes the whole folder); leave TASK-MODEL.md and SLICE-1.md as historical slice records; rollout is the next patch tag, with the seconds-long refusal window covered by the operations sentence in criterion 3, not a new mechanism.
+
+  Verification note: the audit report needs nuget.org, which the build worktree and both CI legs reach inside dotnet build. Commit shape: pins plus the forced compile fixes in one commit, or chore pins then fix compile; either is fine. The PR description carries a short security section: the three advisories cleared, the residual one and why it is suppressed. Memory for the tests: one more Testcontainers database is fine, one more container is not (the cap is an OOM guard). No git or daemon integration tests.
