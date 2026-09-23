@@ -234,9 +234,42 @@ a passing doctor in one command after the installer (`h9k doctor --yes`, then a 
 check names that and stops even with `--yes` — starting Docker Desktop is a machine-level action
 and always yours.
 
-The check runs a raw Npgsql connection attempt, never a Wolverine host or a Marten codegen pass,
-so it survives the thin-CLI rule even run before every database-touching command. It lives in the
-CLI rather than the daemon for exactly that reason — it has to work while the daemon is down.
+The check runs a raw Npgsql connection attempt, never a Wolverine host, so it survives the
+thin-CLI rule even run before every database-touching command. It lives in the CLI rather than
+the daemon for exactly that reason — it has to work while the daemon is down.
+
+### Upgrading the event store (Marten 9, task 29b0ca1a)
+
+The 2026-09-22 security release moved hall9k from Marten 8 to Marten 9.39.0 (WolverineFx and
+WolverineFx.Marten to 6.39.1 alongside it), which changes what an installed store's schema looks
+like. What actually moves, on an install whose schema predates this tag:
+
+- Every `mt_doc_*` table's own `mt_version` column widens from `integer` to `bigint` (twenty
+  tables, one per registered projection) — automatic and data-preserving, not a rewrite.
+- `mt_quick_append_events`, `mt_jsonb_patch` and `mt_safe_unaccent` are dropped and recreated with
+  new signatures.
+- `mt_streams` gains `compacted_version` and loses its `snapshot`/`snapshot_version` columns.
+- `mt_events` gains a `bdata` column.
+- `mt_event_progression` gains several new columns.
+- The `wolverine_*` envelope and durability tables (outgoing, incoming, dead-letter, node
+  assignment, and the rest) are brought current the same way, but by Wolverine's own integration
+  rather than by `EventStoreSchemaGuard` — `IntegrateWithWolverine` is what is allowed to alter
+  them (see below).
+
+A daemon restart is the whole upgrade, exactly as [the doctor check](#the-doctor-check) above
+already describes for an ordinary schema change: `h9kd` runs `EventStoreSchemaGuard` for Marten's
+own objects and, because `Program.cs` configures `IntegrateWithWolverine(x => x.AutoCreate =
+AutoCreate.CreateOrUpdate)`, migrates the Wolverine tables in the same start rather than needing a
+second mechanism. A CLI call made in the window between the binary landing and that restart fails
+once with the same `SchemaMigrationException` and the doctor's stale-schema message any other
+schema change produces; taking the restart clears it. There is no extra operator step beyond the
+restart that `h9k update`, `h9k install`, or a plain `h9k daemon start` already performs.
+
+**Rollback.** The previous tag's binary (Marten 8) cannot open a store this migration has already
+touched — its own `h9k doctor --yes` cannot repair it either, since the schema it would need to
+restore no longer exists to diff against. The only way back to a pre-upgrade tag is restoring a
+`pg_dump` taken before this upgrade ran; take one before updating a store you might need to roll
+back.
 
 ### Where the connection string lives
 
