@@ -21,6 +21,7 @@ summary that gets you there knowing what you are looking at.
 - [The orchestrator feed](#the-orchestrator-feed)
 - [The feed courier](#the-feed-courier)
 - [Owners, nodes, and connections](#owners-nodes-and-connections)
+- [Identity, fleet, and team](#identity-fleet-and-team)
 - [Replication scopes](#replication-scopes)
 
 ---
@@ -37,11 +38,20 @@ One machine is one **node**. A node runs three things:
   closeout monitor.
 - **Postgres**, in a container. Event streams via Marten, messaging via Wolverine.
 
-There is no socket and no local HTTP API between the CLI and the daemon. **The database is the
-bus.** The CLI writes to Postgres and rings a `NOTIFY` doorbell; the daemon listens, and also
-polls on an interval because a doorbell is not a delivery guarantee. Anything the CLI writes is
-durable whether or not a daemon is listening, which is why a stopped daemon costs latency and
-never correctness.
+There is no socket and no local HTTP API between the CLI and the daemon. **Inside one node, the
+database is the bus.** The CLI writes to Postgres and rings a `NOTIFY` doorbell; the daemon listens,
+and also polls on an interval because a doorbell is not a delivery guarantee. Anything the CLI
+writes is durable whether or not a daemon is listening, which is why a stopped daemon costs latency
+and never correctness.
+
+Between nodes there is a second store, and it is git. A registered project's own remote carries a
+ledger under `refs/hall9k/ledger/*` (identity, membership, one record per task, and who holds it)
+and a message outbox per node under `refs/hall9k/messages/<node-id>`. The daemon on each node
+writes to its own outbox and reads everyone else's, and every project-scoped event replicates over
+those outboxes, so a person's several machines (their **fleet**) and a project's several people
+(its **team**) converge without a server. Nothing on the database side is shared: each node keeps
+its own Postgres, and the ledger is what lets two of them agree. See [Identity, fleet, and
+team](#identity-fleet-and-team).
 
 Above all of it sits the **orchestrator window**: an interactive Claude Code session acting as
 the conversational surface over `h9k`. It is stateless and disposable, because every fact lives
@@ -161,9 +171,8 @@ me, and why), so the display is three separate surfaces composed from the underl
 with the difference moved onto the row's facts line, and the persisted `Abandoned` renders as
 `Archived`. `Delivered` means pushed with the merge not yet observed. `Waiting` is a pr-review
 task whose posted review is waiting on its author (PLAN.md #160). `HeldElsewhere` is a
-Claimed task another node currently holds (idea 202383dc, M2a); see [Owners, nodes, and
-connections](#owners-nodes-and-connections) for the holder mechanics and `h9k task take` as the
-lever.
+Claimed task another node currently holds (idea 202383dc, M2a); see [Identity, fleet, and
+team](#identity-fleet-and-team) for the holder mechanics and `h9k task take` as the lever.
 **`Done` renders only at true closeout**, which is the same bar the dependency rule uses, so the
 board and the blocker rule agree on the word.
 
@@ -404,8 +413,13 @@ Completed | Failed | Killed | Superseded`. The agent process finishing enters `V
 `Completed`: the agent finishing is not the run finishing. `Completed` arrives only when the
 merge is observed.
 
-One task can have several runs: a retry after a failure, and a follow-up dispatched onto an open
-pull request. `h9k task show` lists them all with their outcomes, and `h9k logs <task>` renders
+One task can have several runs: a retry after a failure, a follow-up dispatched onto an open
+pull request, and, after another node forcibly takes the task, a run on that node that resumes the
+first one's branch. The run the takeover left behind is stopped and recorded as superseded by
+takeover, a kind of `Killed` and never `Failed`, with its transcript kept; and if the branch it was
+working on never left the machine that held it, the new run starts clean from the base branch
+rather than pretending to resume (see [Identity, fleet, and team](#identity-fleet-and-team)).
+`h9k task show` lists them all with their outcomes, and `h9k logs <task>` renders
 the newest by default, with `--run` for an earlier one.
 
 Depth: [TASK-MODEL.md §3](../TASK-MODEL.md), [PLAN.md §6.3](../PLAN.md).
@@ -417,8 +431,14 @@ Agents know nothing about leases.
 
 The claim itself is a `TaskClaimed` event appended with optimistic concurrency on the stream, so
 two claimants racing produce one winner and one concurrency exception. The stream version is the
-lock; there is no claim table and no advisory lock. That is multi-daemon-safe from the first day,
-which is the entire down-payment on the multi-node future.
+lock; there is no claim table and no advisory lock. That is multi-daemon-safe against one database
+from the first day.
+
+Across nodes, the lease is not what decides who has a task. The task's record in the project ledger
+names a **holder**, that record is the truth about who has the task, and a node writes itself in
+before it claims (see [Identity, fleet, and team](#identity-fleet-and-team)). The lease below is how
+a holding node keeps its own claim honest against its own daemon restarting, and everything described
+here holds unchanged within one node.
 
 Each task carries a **generation counter**, a fencing token. Every claim increments it, every run
 records the generation it was dispatched under, and any state change arriving from a
@@ -841,7 +861,7 @@ so; the tail is still held and still replays if the genesis ever turns up, but a
 the fleet can serve does not become servable by being asked for a fourth time. This is the mechanism
 that lets a freed or truncated stream finish on its own.
 
-**The nodes of one owner's fleet reconcile with each other.** An owner's own nodes are not peers in
+**The nodes of one owner's fleet reconcile with each other.** The nodes of one fleet are not peers in
 the ordinary sense: every one of them is supposed to hold every fleet- and team-scoped event of
 each project it registers, so that any one of them can answer a new teammate's bootstrap in full.
 So on every sweep, for each node of this owner's own fleet that this node has no reconcile record
@@ -881,7 +901,7 @@ above names one stream and comes from the sweep: it asks a peer to complete hist
 partly arrived here, which is the case the switch-on point was never meant to strand, and it can
 reach exactly that one stream and nothing else. A fleet sibling's reconcile comes from the sweep too
 and names a bound of zero, which is the whole of the answering node's own log. What earns it that
-reach is not the naming on its own but who is asking: another node of the same owner is entitled to
+reach is not the naming on its own but who is asking: another node of the same fleet is entitled to
 everything this one holds for the project, and withholding it is what split the fleet in the first
 place. What never bends, however specific the ask or however closely related the asker: a
 currently-private task
@@ -1072,7 +1092,7 @@ Depth: [PLAN.md §16](../PLAN.md), Decisions Log #245.
 ## Owners, nodes, and connections
 
 **Every node belongs to a human.** Not to an agent, not to a service. Whatever autonomy agents
-gain, a person is responsible for every run their nodes perform, and the chain is queryable: this
+gain, a person is responsible for every run their fleet performs, and the chain is queryable: this
 pull request came from this run, on this node, belonging to this human.
 
 An owner record exists even when there is exactly one, because "the user implied by context" is
@@ -1102,13 +1122,13 @@ a pre-existing card) both read the key back through Jira before recording anythi
 or an operator's claim is an argument that gets checked, never a fact that gets accepted.
 
 **An assignment names an owner, not a node.** `h9k task assign <id> <owner>` puts the task in the
-queue every one of that owner's nodes reads from (Decisions Log #34) — the first free dispatcher
-of that owner claims it, wherever it runs, exactly as if only one node existed. `--node
+queue every node of that owner's fleet reads from (Decisions Log #34), and the first free dispatcher
+in that fleet claims it, wherever it runs, exactly as if only one node existed. `--node
 <id-or-fragment>` narrows that to one specific node of the owner's own fleet: only that node's
-dispatcher claims it, and every other node of the same owner skips it, logging why once a sweep
+dispatcher claims it, and every other node of the fleet skips it, logging why once a sweep
 rather than silently. Placement is advisory to dispatch alone — it never changes whose work the
-task is, and it never touches the ledger holder a claim writes; it only narrows *which* of the
-owner's own nodes gets to claim it. The owner's fleet is the owner's own root node, the one whose
+task is, and it never touches the ledger holder a claim writes; it only narrows *which* node of the
+fleet gets to claim it. The owner's fleet is the owner's own root node, the one whose
 key established it in this project's ledger, plus every node currently vouched into it — the root
 never needs `h9k node vouch` against itself, since the ledger already names its own node without
 one. A node outside both sets is refused outright (`h9k node vouch` first), and `--node` with
@@ -1138,6 +1158,211 @@ request already outstanding (`h9k task push-to-jira`, run by hand while still a 
 too, since that session mints its card regardless of the flag.
 
 Depth: [PLAN.md §6.2, §6.6, §10](../PLAN.md), Decisions Log #65, #95, #96, #97.
+
+## Identity, fleet, and team
+
+Everything above describes one node, one machine with its own database. Two facts push past that.
+A person usually has more than one machine, and a project usually has more than one person. This
+section is how Hall9k stays one system across both, with no server in the middle: each node proves
+who it is with a signing key, the people and machines a project trusts are recorded in files on the
+project's own git remote, and a task always has exactly one node that holds it.
+
+Four words carry the whole model, and this page uses each in exactly one sense:
+
+- A **node** is one machine's install: one `h9k`, one `h9kd`, one database.
+- An **owner** is the human a node belongs to. An owner's identity is one **root**, defined below.
+- An owner's **fleet** is the owner's own nodes, and only those. When the docs say fleet they mean
+  "the machines of one person", never "everybody on the project".
+- A project's **team** is its members, each of whom brings their own fleet.
+
+**Every node has a signing key.** The first time a command needs to sign something, usually
+`h9k project add` running `h9k project join` behind it, the node generates an ed25519 key with
+`ssh-keygen` under `~/.hall9k/keys/<node-id>/id_ed25519` and never generates another. The private
+key file is readable by your account alone (mode 0600 on macOS and Linux), it is never written to a
+project's ledger or to an event, and it is a secret of the same class as `credentials/`. What the
+platform publishes is the public half, and a **fingerprint** of it: the lowercase hex SHA-256 of the
+key, sixty-four characters, chosen over OpenSSH's own fingerprint format because that format's `/`
+and `+` cannot appear in a git ref name and this one has to. Every write a node makes to the
+project's ledger is a git commit signed with that key, so any other node can check who wrote it.
+
+**An owner is one root.** The first node to join a project that has no owner yet establishes a
+**root**: it writes `owners/<fingerprint>/root.yaml`, using its own key, and that fingerprint
+becomes the owner id everywhere in Hall9k, which is why `h9k owner show` prints a long hex string
+as the owner's id and `--to owner:<fingerprint>` takes the same string. The node whose key
+established the root is the owner's **root node**. The root has no separate vouch entry, since it is
+what vouches for everything else, so it counts as a member of the fleet without one.
+
+**The fleet is the root node plus every node vouched into it.** Adding a second machine of your own
+is a **vouch**: `h9k node vouch <node-id>`, run on a node already in the fleet, writes the new
+node's id and public key into `owners/<root>/nodes/<node-id>.yaml` on every non-archived project you
+are registered to. `h9k node revoke <node-id>` writes `owners/<root>/revoked/<node-id>.yaml`
+instead, and whichever of the two came latest, in the order of the ref's own commits, wins, so
+vouching again undoes a revocation made by mistake. Only a node that is itself currently in the
+fleet may vouch or revoke, and the command refuses before it pushes anything when this one is not.
+Because trust is recomputed at every read rather than remembered, a revocation reaches every other
+node the next time it reads the ledger, and it also voids every membership write the revoked node
+ever signed, until a later vouch of the same node restores them.
+
+**A project's members have one of two roles.** Membership is one file per person, at
+`members/<root-fingerprint>.yaml` on `refs/hall9k/ledger/members`, and the role in it is `owner` or
+`member`, with nothing in between. The first join on a project writes the genesis entry, and it is
+unconditionally an owner. An owner-role member may mint member invites, remove a member
+(`h9k project member remove <project> <fingerprint>`, which deletes the file rather than marking it),
+and can never remove the last owner. `h9k project members <project>` lists what the ledger shows
+right now, recomputed on every run rather than cached: each root fingerprint, the login this install
+knows for it when there is one, the role, that root's fleet, and whether it verified. A member who
+is not an owner can do everything a member's own work needs and cannot change who else is on the
+team. A project also has its own generated **project key** (a twenty-six-character ULID written into
+the genesis entry, deliberately not derived from anyone's fingerprint), and a project whose ledger
+predates that key gets one, once, from `h9k project assign-key`.
+
+**Invites are how anyone new is admitted, and the secret never touches the ledger.** There are two.
+`h9k node invite` is for another machine of yours: it prints a secret once and records only the
+secret's hash, in `owners/<root>/invites/<invite-id>.yaml` on every non-archived project you belong
+to. `h9k project invite <project> [--role owner|member]` is for another person: the same, in one
+project, refused unless your root is an owner there, and the new member's role is `member` unless
+you say otherwise. Both expire after 72 hours by default (`h9k config set --invite-expiry-hours`)
+and both are single use. The person on the other end runs `h9k project join <project> --invite
+<secret>`, which writes an HMAC of the secret and their own key fingerprint into their own node file
+as proof that they hold the secret, and then nobody has to do anything else: the daemon on the node
+that minted the invite notices the proof on its next invite sweep (every twenty seconds by default),
+vouches the node in or adds the member, and marks the invite spent. A newcomer who registers a
+project somebody else already owns does not need to know any of this up front. `h9k project add`
+registers it locally, writes nothing to the remote, names the owner, and asks for an invite,
+straight away in a terminal or by printing the exact command to run once you have one.
+
+**GitHub confirms the person, and the ledger never records the account.** Registration reads the
+GitHub account `gh` is signed in as, and `h9k project add` refuses when there is none, because
+a Jira connection tracks cards and says nothing about who may write to a repository. Joining
+additionally checks, before it generates a key or writes a byte, that the account can push to the
+project's repository, since a node cannot write a ledger ref it has no push access to. The same
+round trip records this install's own role and, when that role includes push, the repository's
+collaborators, as read-only observations in the local database. Hall9k never calls a GitHub endpoint
+that would change a permission. None of this is a signed claim that a fingerprint belongs to a
+GitHub account: the trust between people is the invite, and GitHub is what tells this node that the
+person running it is allowed to touch the repository at all.
+
+**The ledger is a set of refs on the project's own remote.** Nothing here needs a Hall9k server,
+because your git host already carries the project. Hall9k adds refs under `refs/hall9k/` to the
+same `origin` your branches live on. They are not branches, nothing merges them, an ordinary `git
+clone` or `git fetch` does not bring them down, and every one of them is signed, plain text, and
+readable by anyone who can read the repository:
+
+| Ref | What it holds | Who writes it |
+|---|---|---|
+| `refs/hall9k/ledger/owners/<fingerprint>` | An owner's `root.yaml`, and under it the vouches, revocations, carried vouches, and invites | The owner's own nodes |
+| `refs/hall9k/ledger/nodes/<node-id>` | One node's own file, announcing its id, its public key, and the owner it claims | That node alone |
+| `refs/hall9k/ledger/members` | One file per member, with the role | Owner-role members, and the invite sweep |
+| `refs/hall9k/ledger/records` | One `records/<task-id>.yaml` per task: its contract, its state, and who holds it | The node that publishes the task, and the node that holds it |
+| `refs/hall9k/ledger/prompt-addenda` | The project's prompt addenda | The daemon only |
+| `refs/hall9k/ledger/run-skill` | The project's run skill | The daemon only |
+| `refs/hall9k/messages/<node-id>` | One node's outbox: numbered message envelopes | That node alone, one writer per outbox |
+
+Messages are how nodes talk to each other, and events ride them. `h9k message send` queues a note
+addressed to `node:<node-id>`, to `owner:<fingerprint>`, or to `project`; the daemon's message sweep
+pushes it to the sender's outbox ref on a jittered cadence (15 to 25 seconds while there is
+something to send or read, 30 to 45 when idle, both adjustable with `h9k config set
+--message-poll-*`), and every other node reads the outboxes it is entitled to on its own sweep.
+A receiver accepts a message only from a sender whose key is currently trusted for that exact node
+id in this project, and records what it ignored. Messages are signed and not encrypted, so a
+`fleet`-scoped item's text is addressed to your fleet but readable on the remote by anyone who can
+read the repository (see [Replication scopes](#replication-scopes)). A sender rewrites its own outbox
+as a fresh commit that drops what it already sent beyond the retention window (48 hours by default,
+`Hall9k__MessageRetention`), which is why a node that was away longer asks for its missing history
+instead of reading it, as [Catching a node up](#catching-a-node-up) describes. This is also why "the
+database is the bus" is true only inside one node: across nodes, the bus is these refs.
+
+**Trust is recomputed on every read.** A node never remembers who is trusted; it reads the owner
+refs and the members ref and replays them, oldest first, accepting each vouch or membership write
+only if its signer was already trusted when the replay reached it. A stranger who pushes a
+self-consistent root and node file to the repository is simply not a member, so everything they
+wrote is ignored, recorded rather than silently dropped, and reported: `h9k project members` prints
+an "Unverifiable writes ignored" block and `h9k status` names each one. The one thing this cannot
+protect against is a force-push over a ledger ref by someone with push access, which rewrites the
+history the replay reads. Git gives push access no finer lock than the ref itself.
+
+**A node can carry a vouch into a project the root has never touched.** A node already vouched under
+your root on one project can join a brand-new project's ledger with no `--owner` and no `--invite`:
+`h9k project join <new-project> [--from-project <source>]` writes the root file and a bundle
+carrying the source vouch and the signed commits behind it, which every other node verifies offline
+without fetching the source project. It is refused when no source vouch exists, when the node's key
+is revoked on the source, or when the new project already has a root for that owner.
+
+**A task has one holder, and the ledger record says who.** Once a task is published, its record on
+`refs/hall9k/ledger/records` carries a **holder**: the node currently responsible for it. A node
+writes itself into the record before it claims the task, and if that write fails no run launches
+(a fetch, push, or signing failure holds the claim and it retries on the next sweep). The holder is
+cleared at true closeout, on `h9k task abandon`, when the holder's own run lease expires, when the
+holder grants a take request, and by `h9k task release` in the window after a task's work is
+delivered but before its pull request merges. The holder is the truth about who has a task; the lease
+described under [Leases](#leases) is how the holding node keeps its own claim honest, not how two
+nodes decide between themselves. The write that sets a holder is conditional on the value the
+writer just read, so two nodes racing for one task never both win, and the loser is told who did.
+From any other node the task reads as `HeldElsewhere` in the Status column and in `h9k task show`,
+which names the holding node and how long it has held the task, and `--state HeldElsewhere` or
+`--state attention-heldelsewhere` selects them. The other node's dispatcher leaves the task alone,
+and a task still waiting in the queue whose holder is another node says so in its facts line until
+the holder clears. `h9k status` only counts held-elsewhere tasks in its header, since nothing about
+them is asked of you.
+
+**Asking for a task is `take`, and the holder's project decides how it answers.** `h9k task take
+<id> --reason "..."` asks the holder. A task nobody holds has nothing to negotiate and is
+claimed through the ordinary lock on this node's next dispatch sweep; a task this node already
+holds says so; and a task another node holds gets a claim request sent to that node. The
+project's take policy (`h9k project set <project> --take-policy auto|ask`) says how it answers.
+Under `auto`, the default, the holder's node grants at once when no run of that task is live there,
+releasing the holder and reassigning the task to the requester's owner so the requester's dispatch
+claims it, and refuses, naming when the live run started, when one is. Under `ask` the request is
+parked for the holder's person, who answers with `h9k task grant <id>`, or with `h9k task refuse <id>
+--reason "..."` which tells the requester why. `grant` is refused while a run of the task is live on
+the holder's node, under either policy, and names `h9k run kill` as the way to stop it first. A
+request nobody answers within the project's take timeout (30 minutes, `h9k project set <project>
+--take-timeout`) is not resolved for you: nothing expires, and the requester's `h9k status` and
+`h9k task show` change their wording to name `--force` as the way on. Both sides see the request in
+`h9k status` while it stands.
+
+**Forcing it is a person's judgment about a node that has gone quiet.** `h9k task take <id> --force
+--reason "..."` overrides the holder unilaterally, requires that your own root hold the owner role in
+the project, and prints the evidence it has (who holds the task, since when, and how far this node
+has read that node's outbox and as of when) before it acts, because Hall9k cannot tell "offline"
+from "slow" and does not pretend to. It only works on a task that carries a ledger holder: an
+interactive claim (`h9k task work`) never writes one. Like the ledger write it makes, it is
+conditional, so if two people force the same task at once the loser is told who got there first. If
+the previous holder still has a live run, it is stopped the next time the takeover reaches that node
+and recorded as superseded by takeover, never as a failure, with its transcript kept and no pull
+request action following from it. The new holder resumes the old run's branch only if that run
+pushed it. A branch that never left the other machine exists nowhere else, so the next run starts
+clean from the base branch with none of that work in it.
+
+**A handoff note travels with the task.** `h9k task handoff <id> --text "..."` (or `--file`), run on
+the node that holds the task, leaves a note for whoever holds it next: what is done, what is half
+done, what to watch. It is written into the task's record, shown by `h9k task show`, delivered as a
+nudge (a message, never the note itself) to the project or, with `--to`, to one owner's fleet, and put
+ahead of the agent's own context in the first run that resumes the task's branch on a new node. It
+is capped at four thousand characters, and is for work still in flight, unlike the closeout handoff
+a merge gives a dependent task.
+
+**Placement chooses among the nodes of your fleet, and it never moves ownership.** `h9k task assign <id>
+[owner] --node <node>` narrows a task to one node of the owner's fleet: only that node's dispatcher
+claims it, and the others stand down without a forced take. A node outside the fleet is refused (vouch
+it first), and a bare `--node` clears the placement. A forced take or a grant that moves a placed task
+rewrites the placement to the new holder in the same step.
+
+**Scope decides how far an idea's or task's events travel.** `private` never leaves the node,
+`fleet` reaches every node you run, and `team` reaches every member's fleet and cannot be narrowed
+again. See [Replication scopes](#replication-scopes) for the rules.
+
+**What a first session looks like.** On a fresh second machine you run `h9k install`, then `h9k
+project add --name demo --repo-url <url>`. Because the ledger already names an owner, registration
+stops at the invite. On the first machine, `h9k node invite` prints a secret. Back on the second, `h9k
+project join demo --invite <secret>`, and within a minute or so, once the first machine's daemon
+sweep has matched the proof, the new node is vouched into your fleet and `h9k project members demo`
+on either machine shows it. Adding a colleague is the same with `h9k project invite demo` instead, and they become a member
+with their own root.
+
+Depth: `h9k decide list` carries the decisions behind idea 202383dc, the distributed-team chain, and
+[The distributed team](cli.md#the-distributed-team-identity-fleet-and-holding) in cli.md is the
+command reference.
 
 ## Replication scopes
 
