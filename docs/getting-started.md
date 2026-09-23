@@ -25,6 +25,38 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   answer; turn it back off with `h9k project set <name> --skip-permissions false` if the
   project's own risk profile calls for prompts left live. Everything else in this section is a
   follow-up `h9k project set` on that same project.
+- **Know what registration writes to the user's repository.** `h9k project add` runs `h9k project
+  join` behind the clone, which generates this node's signing key once under
+  `~/.hall9k/keys/<node-id>/` (a secret, readable by the user's account alone) and pushes signed
+  commits to new `refs/hall9k/` refs on the repository's own remote. They are not branches and an
+  ordinary clone does not fetch them, but anyone who can read the repository can read them. It
+  needs `gh` signed in: registration refuses without a confirmed GitHub account, and the join
+  refuses, leaving the registration in place, when that account cannot push to the repository.
+  Tell the user this before registering, since it is the first time Hall9k writes anywhere they
+  did not put it.
+- **Joining a project somebody else owns, or adding a second machine of the user's own.** When the
+  project already has an owner, registration writes nothing to the remote, names the owner, and
+  asks for an invite. The owner mints it on their own node: `h9k project invite <name>` for a
+  teammate, who becomes a member, or `h9k node invite` for another of the owner's own machines,
+  which joins the owner's **fleet**. Either way the newcomer finishes with the secret, and the
+  minting node's daemon vouches them in within a minute or so, so the newcomer then needs to wait
+  rather than run anything else. Never invent an invite; ask the user which case this is.
+
+  ```bash
+  h9k project join <name> --invite <secret>
+  ```
+
+- **Whether a teammate's node may take a task from this one without asking, `--take-policy auto|ask`.**
+  When another member runs `h9k task take <id>` for a task this node holds, `auto` (the default)
+  hands it over the moment no run of it is live here, and `ask` parks every request for a person to
+  answer with `h9k task grant <id>` or `h9k task refuse <id> --reason "..."`. It is a project
+  setting, and it decides whether unattended work can move to somebody else's machine without
+  the user hearing about it first, so `ask` is the safer choice on a project with more than one
+  member.
+
+  ```bash
+  h9k project set <name> --take-policy ask
+  ```
 - **`--backlog none|github-issues|jira`.** Under `github-issues` or `jira`, `h9k task publish`
   refuses a draft with no linked external item unless it is published `--no-existing-item` (mint
   one) or `--untracked` (deliberately skip tracking); leave `none` (the default) for a project
@@ -285,6 +317,6 @@ here repeats it.
 
 When a command here fails, start with `h9k status`: the attention pane names the cause underneath
 the row and the exact command that clears it. [docs/operations.md](operations.md#the-recovery-levers)
-is the fuller reference for the eight recovery levers and the two review-lap verdict commands, and
+is the fuller reference for the nine recovery levers and the two review-lap verdict commands, and
 [operations.md#what-needs-you-means](operations.md#what-needs-you-means) is what every cause line
 on the pane actually means.
