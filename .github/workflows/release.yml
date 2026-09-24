@@ -31,6 +31,11 @@ jobs:
             rid: osx-arm64
           - os: windows-latest
             rid: win-x64
+          # Windows ARM64 (Parallels on Apple silicon, Surface-class laptops): a self-contained
+          # publish is purely managed, so the x64 runner cross-publishes it and no ARM runner
+          # is needed. h9k update and install.ps1 pick this asset on an ARM64 machine.
+          - os: windows-latest
+            rid: win-arm64
           - os: ubuntu-latest
             rid: linux-x64
     runs-on: ${{ matrix.os }}
@@ -112,14 +117,14 @@ jobs:
       # payload doubles its entry count with files no consumer (h9k install --from-release,
       # h9k update, the bootstrap scripts) expects or reads.
       - name: Archive (tar.gz)
-        if: matrix.rid != 'win-x64'
+        if: ${{ !startsWith(matrix.rid, 'win-') }}
         shell: bash
         env:
           COPYFILE_DISABLE: "1"
         run: |
           tar -czf "hall9k-${{ matrix.rid }}.tar.gz" -C "dist/${{ matrix.rid }}" .
       - name: Archive (zip)
-        if: matrix.rid == 'win-x64'
+        if: ${{ startsWith(matrix.rid, 'win-') }}
         shell: pwsh
         run: |
           Compress-Archive -Path "dist/${{ matrix.rid }}/*" -DestinationPath "hall9k-${{ matrix.rid }}.zip"
