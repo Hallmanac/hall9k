@@ -70,13 +70,13 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "'default'. 'default' clears the override, so the built-in shipped default decides.")]
         public string? DefaultModel { get; init; }
 
-        [CommandOption("--effort <low|medium|high|xhigh|max>")]
+        [CommandOption("--effort <low|medium|high|xhigh>")]
         [Description(
-            "The reasoning effort level every dispatched agent session runs at (DaemonOptions.Effort), written into "
+            "The reasoning effort level every headless agent session runs at, whether the daemon dispatched it or h9k task start or h9k task delegate launched it (DaemonOptions.Effort), written into "
             + "each session's settings file as effortLevel, as one node-wide level rather than per role. A headless session "
             + "ignores the owner's own user-level effortLevel and honors only that file, and Claude Opus 5.5 defaults "
             + "to medium where earlier Opus models defaulted to high, so this is how an operator asks for high. "
-            + "Accepts low, medium, high, xhigh or max. 'default' clears it, leaving the key out so each model's own "
+            + "Accepts low, medium, high or xhigh (Claude Code's effortLevel key has no max; max is session-only). 'default' clears it, leaving the key out so each model's own "
             + "default decides again.")]
         public string? Effort { get; init; }
 
@@ -742,7 +742,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
 
     /// <summary>
     /// The level <paramref name="input"/> names, or null for the clearing word 'default'. Anything else
-    /// is refused here with the five accepted names quoted, so an unrecognized word never reaches the
+    /// is refused here with the four accepted names quoted, so an unrecognized word never reaches the
     /// config file, whether it arrives through <see cref="Validate"/> or a direct <see cref="Apply"/>.
     /// </summary>
     private static AgentEffort? VetEffort(string input)

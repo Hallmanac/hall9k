@@ -1,8 +1,10 @@
 namespace Hall9k.Domain.Shared.ValueObjects;
 
 /// <summary>
-/// The reasoning effort level a dispatched Claude Code session runs at: the five names the
-/// <c>effortLevel</c> settings key accepts. A closed vocabulary rather than a pass-through string,
+/// The reasoning effort level a dispatched Claude Code session runs at: the four names the
+/// <c>effortLevel</c> settings key accepts (never <c>max</c>: the installed Claude Code narrows the key to
+/// low, medium, high and xhigh and silently drops anything else, so <c>max</c> is session-only and only the
+/// <c>--effort</c> flag and <c>CLAUDE_CODE_EFFORT_LEVEL</c> take it). A closed vocabulary rather than a pass-through string,
 /// because the value is written into a generated JSON settings file and an unrecognized word must
 /// never reach it. Unknown means "not set", which leaves the key out of the file so the model's own
 /// default decides.
@@ -13,16 +15,15 @@ public sealed record AgentEffort
     public static readonly AgentEffort Medium = new("medium");
     public static readonly AgentEffort High = new("high");
     public static readonly AgentEffort ExtraHigh = new("xhigh");
-    public static readonly AgentEffort Max = new("max");
 
-    /// <summary>Not recognized or not set. Serializes as an empty string.</summary>
+    /// <summary>Not recognized or not set.</summary>
     public static readonly AgentEffort Unknown = new("");
 
     /// <summary>The clearing word <c>h9k config set --effort</c> accepts; it is never a level.</summary>
     public const string ClearingWord = "default";
 
-    /// <summary>The five accepted names, in ascending order, for messages that quote them.</summary>
-    public static IReadOnlyList<AgentEffort> All { get; } = [Low, Medium, High, ExtraHigh, Max];
+    /// <summary>The four accepted names, in ascending order, for messages that quote them.</summary>
+    public static IReadOnlyList<AgentEffort> All { get; } = [Low, Medium, High, ExtraHigh];
 
     public string Value { get; }
 
@@ -34,11 +35,10 @@ public sealed record AgentEffort
         "medium" => Medium,
         "high" => High,
         "xhigh" => ExtraHigh,
-        "max" => Max,
         _ => Unknown,
     };
 
-    /// <summary>The five accepted names as a comma-separated list, for messages that quote them.</summary>
+    /// <summary>The four accepted names as a comma-separated list, for messages that quote them.</summary>
     public static string DescribeAccepted() => string.Join(", ", All.Select(effort => effort.Value));
 
     public bool IsWellFormed => this != Unknown;

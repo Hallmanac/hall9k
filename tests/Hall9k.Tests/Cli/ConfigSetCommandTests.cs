@@ -302,7 +302,6 @@ public sealed class ConfigSetCommandTests
     [InlineData("medium", "medium")]
     [InlineData("high", "high")]
     [InlineData("xhigh", "xhigh")]
-    [InlineData("max", "max")]
     [InlineData(" High ", "high")]
     public void Applying_an_effort_stores_its_canonical_name(string input, string stored)
     {
@@ -334,8 +333,9 @@ public sealed class ConfigSetCommandTests
     [Theory]
     [InlineData("ludicrous")]
     [InlineData("extra-high")]
+    [InlineData("max")]
     [InlineData("")]
-    public void Any_other_effort_is_refused_naming_the_five_accepted_names(string input)
+    public void Any_other_effort_is_refused_naming_the_four_accepted_names(string input)
     {
         ConfigSetCommand.Settings settings = new() { Effort = input };
         OperatingSettings operating = new() { Effort = "medium" };
@@ -344,7 +344,7 @@ public sealed class ConfigSetCommandTests
         Action apply = () => ConfigSetCommand.Apply(settings, operating, []);
 
         validate.Should().Throw<DomainValidationException>()
-            .WithMessage("*low, medium, high, xhigh, max*");
+            .WithMessage("*low, medium, high, xhigh*");
         apply.Should().Throw<DomainValidationException>();
         operating.Effort.Should().Be("medium", "a refused value must never reach the config file");
     }

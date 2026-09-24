@@ -191,7 +191,7 @@ public static class OperatingSettingsResolver
 
     /// <summary>
     /// The effort level dispatched sessions run at, mirroring what the daemon binds: an environment
-    /// variable outranks the config file, and a value that is not one of the five accepted names is
+    /// variable outranks the config file, and a value that is not one of the four accepted names is
     /// treated as absent at the level that supplied it (it never falls through to the file, exactly as
     /// <see cref="ResolveString"/> does for a model), so nothing unrecognized reaches a settings file.
     /// Unlike every other string setting here there is no compiled fallback: unset resolves to null.

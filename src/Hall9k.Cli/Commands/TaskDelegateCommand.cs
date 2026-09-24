@@ -12,6 +12,7 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Bootstrap;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
@@ -116,7 +117,12 @@ public sealed class TaskDelegateCommand : Hall9kAsyncCommand<TaskDelegateCommand
         // own settings file exactly. Session-scoped for the identical truncation reason as the
         // stream/prompt files above.
         string settingsFile = RunPaths.SessionSettingsFile(resolvedRunDirectory, plan.SessionFileKey);
-        string settingsContent = ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout);
+        // The node's configured effort level rides in it too, exactly as h9k task start's does: this
+        // contractor is headless and honors only this file, so it runs at the level a dispatcher-launched
+        // session on this node would.
+        OperatingSettingsReport effortSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
+        string settingsContent = ClaudeSettingsFile.Build(
+            ClaudeSettingsFile.DefaultCommandTimeout, effort: AgentEffort.FromInput(effortSettings.Effort.Value));
         await File.WriteAllTextAsync(settingsFile, settingsContent, cancellationToken);
 
         // Fetched here, before the RunDetails reload below, not immediately before the append —

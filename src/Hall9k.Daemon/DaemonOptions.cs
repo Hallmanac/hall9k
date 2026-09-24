@@ -758,13 +758,13 @@ public sealed class DaemonOptions
 
     /// <summary>
     /// The reasoning effort level every dispatched session runs at: <c>low</c>, <c>medium</c>,
-    /// <c>high</c>, <c>xhigh</c> or <c>max</c>, written into each session's generated settings file
+    /// <c>high</c> or <c>xhigh</c>, written into each session's generated settings file
     /// as <c>effortLevel</c>. Unset as shipped, which leaves the key out and the model's own default
     /// in force. It has to travel in that file because a headless session ignores the owner's
     /// user-level <c>effortLevel</c> and honors the <c>--settings</c> file it is handed, so a model
     /// whose own default is medium (Claude Opus 5.5) would otherwise ignore a high the operator asked
     /// for. One node-wide level; per-role effort is deliberately not offered. Bound at startup like
-    /// <see cref="DefaultModel"/>; a value outside the five names is treated as unset, never written.
+    /// <see cref="DefaultModel"/>; a value outside the four names is treated as unset, never written.
     /// </summary>
     public string? Effort { get; set; }
 
