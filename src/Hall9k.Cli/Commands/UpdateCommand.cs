@@ -81,8 +81,8 @@ public sealed class UpdateCommand(ProcessRunner? gh = null) : Hall9kAsyncCommand
         if (rid is null)
         {
             await Console.Error.WriteLineAsync(
-                "h9k update has no release for this platform — release.yml builds osx-arm64, win-x64, "
-                + "and linux-x64 only. Build from source instead: h9k install --repo <path>.");
+                $"h9k update has no release for this platform — release.yml builds {string.Join(", ", ReleasePlatform.SupportedRids)} "
+                + "only. Build from source instead: h9k install --repo <path>.");
             return ExitCodes.Error;
         }
 
