@@ -196,7 +196,13 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         // VerifyGateTimeout to read here — DefaultCommandTimeout mirrors its default, held to it
         // by ClaudeSettingsFileTests, exactly as h9k task work's own settings file already does.
         string settingsFile = RunPaths.SettingsFile(resolvedRunDirectory);
-        string settingsContent = ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout);
+        // The node's configured effort level rides in it too, read through the same resolver the
+        // daemon's own binding mirrors, so this headless build runs at the level a dispatcher-launched
+        // one on this node would (a headless session honors only this file, not the owner's own
+        // user-level effortLevel).
+        OperatingSettingsReport effortSettings = await OperatingSettingsResolver.ResolveAsync(cancellationToken);
+        string settingsContent = ClaudeSettingsFile.Build(
+            ClaudeSettingsFile.DefaultCommandTimeout, effort: AgentEffort.FromInput(effortSettings.Effort.Value));
         await File.WriteAllTextAsync(settingsFile, settingsContent, cancellationToken);
 
         AnsiConsole.MarkupLineInterpolated($"[dim]Worktree: {worktreePath}[/]");

@@ -37,7 +37,6 @@ public sealed class ClaudeExecutorEffortTests : IDisposable
     [InlineData("medium")]
     [InlineData("high")]
     [InlineData("xhigh")]
-    [InlineData("max")]
     public async Task A_configured_effort_lands_in_the_settings_file_the_session_is_handed(string level)
     {
         using JsonDocument settings = await SpawnAndReadSettingsAsync(new DaemonOptions { Effort = level });
@@ -58,6 +57,7 @@ public sealed class ClaudeExecutorEffortTests : IDisposable
     [InlineData("")]
     [InlineData("default")]
     [InlineData("ludicrous")]
+    [InlineData("max")]
     [InlineData("high\", \"includeCoAuthoredBy\": true, \"x\": \"")]
     public async Task An_unset_or_unrecognized_effort_leaves_the_key_out_entirely(string? level)
     {
@@ -65,7 +65,7 @@ public sealed class ClaudeExecutorEffortTests : IDisposable
 
         settings.RootElement.TryGetProperty("effortLevel", out _).Should().BeFalse();
         settings.RootElement.GetProperty("includeCoAuthoredBy").GetBoolean().Should().BeFalse(
-            "a value that is not one of the five names must never reach, let alone rewrite, the generated file");
+            "a value that is not one of the four names must never reach, let alone rewrite, the generated file");
     }
 
     private async Task<JsonDocument> SpawnAndReadSettingsAsync(DaemonOptions options)

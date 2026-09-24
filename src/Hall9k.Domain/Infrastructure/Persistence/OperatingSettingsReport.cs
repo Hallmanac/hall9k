@@ -177,7 +177,7 @@ public sealed record ConfigFileReadResult(
 /// </param>
 /// <param name="Effort">
 /// The reasoning effort level dispatched sessions run at, resolved the environment-then-file way
-/// <see cref="DefaultModel"/> is. Null when nothing sets one (or a set value is not one of the five
+/// <see cref="DefaultModel"/> is. Null when nothing sets one (or a set value is not one of the four
 /// accepted names), meaning the generated settings file carries no <c>effortLevel</c> and the model's
 /// own default decides.
 /// </param>

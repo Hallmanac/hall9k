@@ -383,11 +383,11 @@ public sealed class OperatingSettingsResolverTests : IDisposable
     public async Task An_effort_environment_variable_outranks_the_config_file()
     {
         await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.Effort = "low", CancellationToken.None);
-        Environment.SetEnvironmentVariable("Hall9k__Effort", "max");
+        Environment.SetEnvironmentVariable("Hall9k__Effort", "xhigh");
 
         OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
 
-        report.Effort.Value.Should().Be("max");
+        report.Effort.Value.Should().Be("xhigh");
         report.Effort.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
         report.Effort.Source.Should().Be("Hall9k__Effort");
     }
@@ -403,7 +403,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.Effort.Origin.Should().Be(SettingOrigin.Default);
         report.UnusableEnvironmentVariables.Should().ContainSingle(
             warning => warning.Contains(Hall9kDatabase.ConfigFile) && warning.Contains("ludicrous")
-                && warning.Contains("low, medium, high, xhigh, max"));
+                && warning.Contains("low, medium, high, xhigh"));
     }
 
     [Fact]
