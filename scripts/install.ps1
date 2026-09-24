@@ -138,4 +138,10 @@ finally {
 }
 
 Write-Host ""
-Write-Host "Done. Open a new terminal so h9k resolves on your PATH."
+$defaultHomeDir = Join-Path $env:USERPROFILE ".hall9k"
+if ([System.IO.Path]::GetFullPath($hall9kHomeDir).TrimEnd('\', '/') -ieq [System.IO.Path]::GetFullPath($defaultHomeDir).TrimEnd('\', '/')) {
+    Write-Host "Done. Open a new terminal so h9k resolves on your PATH."
+}
+else {
+    Write-Host "Done. HALL9K_HOME is redirected, so h9k was not added to your PATH: run $hall9kHomeDir\bin\h9k.exe directly, or add $hall9kHomeDir\bin to your PATH if this relocation is permanent."
+}
