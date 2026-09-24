@@ -9,8 +9,9 @@ namespace Hall9k.Tests.Cli;
 /// <summary>
 /// An install or update run under a redirected home must leave the operator's real h9k link alone
 /// (origin incident, hall9k-3f, 2026-09-23: a scratch run under HALL9K_HOME retargeted
-/// ~/.local/bin/h9k at a scratch bin that was then deleted). The temporary profile and empty PATH
-/// keep even a regression inside a directory this test owns.
+/// ~/.local/bin/h9k at a scratch bin that was then deleted). On Unix the temporary profile and
+/// empty PATH keep even a regression inside a directory this test owns; the Windows registry write
+/// has no such seam, so there the test relies on the redirected home alone.
 /// </summary>
 public sealed class InstallCommandRedirectedHomeTests : IDisposable
 {
@@ -64,6 +65,13 @@ public sealed class InstallCommandRedirectedHomeTests : IDisposable
         string home, string defaultHome, bool ignoreCase, bool expected)
     {
         PlatformPaths.IsRedirected(NativePath(home), NativePath(defaultHome), ignoreCase).Should().Be(expected);
+    }
+
+    [Fact]
+    public void An_empty_home_reads_as_redirected_instead_of_throwing()
+    {
+        PlatformPaths.IsRedirected(string.Empty, Path.Combine(Path.GetTempPath(), ".hall9k"), ignoreCase: false)
+            .Should().BeTrue();
     }
 
     [Fact]

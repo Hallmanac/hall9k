@@ -28,6 +28,29 @@ ASSUME_YES=0
 # name a directory nothing was actually written to.
 HALL9K_HOME_DIR="${HALL9K_HOME:-$HOME/.hall9k}"
 
+# Whether HALL9K_HOME points anywhere but the default, which is when `h9k install` leaves the
+# operator's h9k link on the PATH alone (PlatformPaths.IsHomeRedirected, the same comparison: full
+# paths, trailing separators ignored). A variable set to the empty string counts as redirected,
+# because that is how the binary reads it.
+home_is_redirected() {
+  [ "${HALL9K_HOME+set}" = set ] || return 1
+  [ -n "$HALL9K_HOME" ] || return 0
+  case "$HALL9K_HOME" in
+    /*) redirected_home="$HALL9K_HOME" ;;
+    *) redirected_home="$PWD/$HALL9K_HOME" ;;
+  esac
+  default_home="$HOME/.hall9k"
+  while [ "${redirected_home%/}" != "$redirected_home" ]; do redirected_home="${redirected_home%/}"; done
+  while [ "${default_home%/}" != "$default_home" ]; do default_home="${default_home%/}"; done
+  [ "$redirected_home" != "$default_home" ]
+}
+
+if home_is_redirected; then
+  PATH_CLAUSE="leave your PATH alone (HALL9K_HOME is redirected)"
+else
+  PATH_CLAUSE="add h9k to your PATH"
+fi
+
 for arg in "$@"; do
   case "$arg" in
     -y|--yes) ASSUME_YES=1 ;;
@@ -86,7 +109,7 @@ fi
 echo "Checksum verified."
 
 if [ "$ASSUME_YES" -ne 1 ]; then
-  PROMPT="This will place h9k and h9kd in $HALL9K_HOME_DIR/bin, add h9k to your PATH, and publish Hall9k's skills to $HALL9K_HOME_DIR/skills. Nothing is started or registered as a background service. Continue? [y/N] "
+  PROMPT="This will place h9k and h9kd in $HALL9K_HOME_DIR/bin, $PATH_CLAUSE, and publish Hall9k's skills to $HALL9K_HOME_DIR/skills. Nothing is started or registered as a background service. Continue? [y/N] "
   # A curl-pipe leaves stdin consumed by the pipe, so the prompt is read from the
   # controlling terminal directly when one exists, the same trick well-behaved
   # curl-to-shell installers use.
@@ -120,7 +143,9 @@ echo "Running h9k doctor…"
 "$H9K" doctor || true
 
 echo
-if command -v h9k >/dev/null 2>&1; then
+if home_is_redirected; then
+  echo "Done. HALL9K_HOME is redirected, so h9k was not added to your PATH: run $H9K directly, or add $HALL9K_HOME_DIR/bin to your PATH if this relocation is permanent."
+elif command -v h9k >/dev/null 2>&1; then
   echo "Done. h9k is on your PATH."
 else
   echo "Done. h9k did not land on a directory already on your PATH — see the warning above, or run it directly at $H9K."

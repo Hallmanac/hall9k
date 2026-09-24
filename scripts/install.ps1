@@ -39,6 +39,13 @@ $ErrorActionPreference = "Stop"
 # name a directory nothing was actually written to.
 $hall9kHomeDir = if ($env:HALL9K_HOME) { $env:HALL9K_HOME } else { Join-Path $env:USERPROFILE ".hall9k" }
 
+# Whether HALL9K_HOME points anywhere but the default, which is when `h9k install` leaves the
+# operator's h9k on the PATH alone (PlatformPaths.IsHomeRedirected, the same comparison: full
+# paths, trailing separators ignored, case-insensitive on Windows).
+$defaultHomeDir = Join-Path $env:USERPROFILE ".hall9k"
+$homeIsRedirected = [System.IO.Path]::GetFullPath($hall9kHomeDir).TrimEnd('\', '/') -ine [System.IO.Path]::GetFullPath($defaultHomeDir).TrimEnd('\', '/')
+$pathClause = if ($homeIsRedirected) { "leave your PATH alone (HALL9K_HOME is redirected)" } else { "add h9k to your PATH" }
+
 function Fail($message) {
     Write-Error "hall9k install: $message"
     exit 1
@@ -104,7 +111,7 @@ try {
     Write-Host "Checksum verified."
 
     if (-not $Yes) {
-        $reply = Read-Host "This will place h9k and h9kd in $hall9kHomeDir\bin, add h9k to your PATH, and publish Hall9k's skills to $hall9kHomeDir\skills. Nothing is started or registered as a background service. Continue? [y/N]"
+        $reply = Read-Host "This will place h9k and h9kd in $hall9kHomeDir\bin, $pathClause, and publish Hall9k's skills to $hall9kHomeDir\skills. Nothing is started or registered as a background service. Continue? [y/N]"
         if ($reply -notmatch '^(y|yes)$') {
             Fail "Cancelled — nothing was changed. Re-run with -Yes to skip this prompt."
         }
@@ -138,10 +145,9 @@ finally {
 }
 
 Write-Host ""
-$defaultHomeDir = Join-Path $env:USERPROFILE ".hall9k"
-if ([System.IO.Path]::GetFullPath($hall9kHomeDir).TrimEnd('\', '/') -ieq [System.IO.Path]::GetFullPath($defaultHomeDir).TrimEnd('\', '/')) {
-    Write-Host "Done. Open a new terminal so h9k resolves on your PATH."
+if ($homeIsRedirected) {
+    Write-Host "Done. HALL9K_HOME is redirected, so h9k was not added to your PATH: run $hall9kHomeDir\bin\h9k.exe directly, or add $hall9kHomeDir\bin to your PATH if this relocation is permanent."
 }
 else {
-    Write-Host "Done. HALL9K_HOME is redirected, so h9k was not added to your PATH: run $hall9kHomeDir\bin\h9k.exe directly, or add $hall9kHomeDir\bin to your PATH if this relocation is permanent."
+    Write-Host "Done. Open a new terminal so h9k resolves on your PATH."
 }
