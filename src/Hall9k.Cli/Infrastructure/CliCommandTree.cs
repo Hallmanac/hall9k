@@ -760,6 +760,7 @@ public static class CliCommandTree
                 .WithExample("config", "set", "--max-concurrent-task-runs", "2")
                 .WithExample("config", "set", "--session-cap-per-run", "1")
                 .WithExample("config", "set", "--orchestrator-model", "sonnet")
+                .WithExample("config", "set", "--effort", "high")
                 .WithExample("config", "set", "--model-review", "sonnet", "--model-fix", "haiku")
                 .WithExample("config", "set", "--model-review-verify", "sonnet")
                 .WithExample("config", "set", "--model-review-finalpass", "sonnet")
