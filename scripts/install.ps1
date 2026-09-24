@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Hall9k bootstrap install (backlog 42): fetches the latest GitHub release for Windows
-    x64, verifies its checksum, asks consent, and hands off to the release's own
+    (x64 or ARM64), verifies its checksum, asks consent, and hands off to the release's own
     `h9k install --from-release` for the actual placement — binaries into
     ~/.hall9k/bin, h9k onto the PATH, the canonical skill set into ~/.hall9k/skills,
     Hall9k's own Postgres definition written (never started). Finishes by running
@@ -52,11 +52,16 @@ if ($LASTEXITCODE -ne 0) {
     Fail "gh is not authenticated — run gh auth login first (needed to read this repository's releases)."
 }
 
-$arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
-if ($arch -ne [System.Runtime.InteropServices.Architecture]::X64) {
-    Fail "no release for Windows on $arch — release.yml builds win-x64 only."
+# The machine-scope PROCESSOR_ARCHITECTURE, not RuntimeInformation.OSArchitecture: it reads the
+# machine's own architecture (AMD64 or ARM64) the same under Windows PowerShell 5.1 and
+# PowerShell 7, native or emulated, whereas 5.1's .NET Framework OSArchitecture is not
+# guaranteed to report Arm64.
+$arch = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Machine")
+$rid = switch ($arch) {
+    "AMD64" { "win-x64" }
+    "ARM64" { "win-arm64" }
+    default { Fail "no release for Windows on ${arch}: release.yml builds win-x64 and win-arm64 only." }
 }
-$rid = "win-x64"
 $archiveName = "hall9k-$rid.zip"
 
 $workDir = Join-Path ([System.IO.Path]::GetTempPath()) ("h9k-install-" + [System.IO.Path]::GetRandomFileName())
