@@ -16,7 +16,8 @@ namespace Hall9k.Tests.Cli;
 /// </summary>
 public sealed class OperatingSettingsRenderingTests
 {
-    private static OperatingSettingsReport ReportWithOneRole(string role, string? model) =>
+    private static OperatingSettingsReport ReportWithOneRole(
+        string role, string? model, string? effort = null, SettingOrigin effortOrigin = SettingOrigin.Default) =>
         new(
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
             false,
@@ -35,7 +36,30 @@ public sealed class OperatingSettingsRenderingTests
             new ResolvedSetting<long?>(null, SettingOrigin.Default, null),
             new ResolvedSetting<string>(OperatingSettings.DefaultSpendPeriod, SettingOrigin.Default, null),
             new ResolvedSetting<string>(
-                Hall9k.Domain.Features.Run.ReviewStageComposition.FullPipeline.Value, SettingOrigin.Default, null));
+                Hall9k.Domain.Features.Run.ReviewStageComposition.FullPipeline.Value, SettingOrigin.Default, null),
+            new ResolvedSetting<string?>(
+                effort, effortOrigin, effortOrigin == SettingOrigin.PlatformConfigFile ? Hall9kDatabase.ConfigFile : null));
+
+    [Fact]
+    public void An_unset_effort_says_the_models_own_default_decides()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.Build), null);
+
+        OperatingSettingsRendering.Rows(report).Single(r => r.Label == "effort").Value
+            .Should().Be("not set (default), so sessions run at the model's own default");
+    }
+
+    [Fact]
+    public void A_configured_effort_prints_with_its_origin_the_way_default_model_does()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(
+            nameof(RoleModelSettings.Build), null, "high", SettingOrigin.PlatformConfigFile);
+
+        IReadOnlyList<(string Label, string Value)> rows = OperatingSettingsRendering.Rows(report);
+
+        rows.Single(r => r.Label == "effort").Value.Should().Be($"high (config: {Hall9kDatabase.ConfigFile})");
+        rows.Single(r => r.Label == "default-model").Value.Should().EndWith("(default)");
+    }
 
     [Fact]
     public void An_unset_review_verify_role_falls_through_to_review_rather_than_the_generic_default()

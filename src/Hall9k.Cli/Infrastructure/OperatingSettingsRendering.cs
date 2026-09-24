@@ -45,6 +45,7 @@ public static class OperatingSettingsRendering
             ("session-cap-per-run", $"{report.SessionCapPerRun.Value} ({report.SessionCapPerRun.DescribeOrigin()})"),
             ("max-concurrent-agent-sessions (retired)", DescribeMaxConcurrentAgentSessions(report)),
             ("default-model", $"{report.DefaultModel.Value} ({report.DefaultModel.DescribeOrigin()})"),
+            ("effort", DescribeEffort(report)),
             ("max-compliance-review-cycles",
                 $"{report.MaxComplianceReviewCycles.Value} ({report.MaxComplianceReviewCycles.DescribeOrigin()})"),
             ("max-adversarial-review-cycles",
@@ -75,6 +76,15 @@ public static class OperatingSettingsRendering
 
         return rows;
     }
+
+    /// <summary>
+    /// The effort row's value: "not set" reads as no <c>effortLevel</c> in the settings file, which
+    /// leaves each model's own default in force (Claude Opus 5.5 defaults to medium).
+    /// </summary>
+    private static string DescribeEffort(OperatingSettingsReport report) =>
+        report.Effort.Value is { } level
+            ? $"{level} ({report.Effort.DescribeOrigin()})"
+            : $"not set ({report.Effort.DescribeOrigin()}), so sessions run at the model's own default";
 
     /// <summary>
     /// The spend-budget-tokens row's value: "not set" reads as unbudgeted dispatch — the

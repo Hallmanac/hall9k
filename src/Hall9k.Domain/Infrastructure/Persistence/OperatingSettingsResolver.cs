@@ -98,11 +98,13 @@ public static class OperatingSettingsResolver
         ResolvedSetting<string> reviewStageComposition =
             ResolveReviewStageComposition(configured.ReviewStageComposition, unusableEnvironmentVariables);
 
+        ResolvedSetting<string?> effort = ResolveEffort(configured.Effort, unusableEnvironmentVariables);
+
         return new OperatingSettingsReport(
             concurrency, read.MaxConcurrentAgentSessionsIsFabricatedZero, maxConcurrentTaskRuns, convertedFromLegacy,
             shadowsConfigFileValue, sessionCapPerRun, defaultModel, roles, read.Problem, unusableEnvironmentVariables,
             maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds, lifetimeReviewCycleBudget,
-            spendBudgetTokens, spendPeriod, reviewStageComposition);
+            spendBudgetTokens, spendPeriod, reviewStageComposition, effort);
     }
 
     /// <summary>
@@ -185,6 +187,50 @@ public static class OperatingSettingsResolver
         }
 
         return new ResolvedSetting<long?>(null, SettingOrigin.Default, null);
+    }
+
+    /// <summary>
+    /// The effort level dispatched sessions run at, mirroring what the daemon binds: an environment
+    /// variable outranks the config file, and a value that is not one of the five accepted names is
+    /// treated as absent at the level that supplied it (it never falls through to the file, exactly as
+    /// <see cref="ResolveString"/> does for a model), so nothing unrecognized reaches a settings file.
+    /// Unlike every other string setting here there is no compiled fallback: unset resolves to null.
+    /// </summary>
+    private static ResolvedSetting<string?> ResolveEffort(string? configured, List<string> unusable)
+    {
+        string environmentVariable = $"{EnvironmentPrefix}Effort";
+        if (GetEnvironmentVariable(environmentVariable) is { } fromEnvironment)
+        {
+            AgentEffort fromEnvironmentEffort = AgentEffort.FromInput(fromEnvironment);
+            if (fromEnvironmentEffort.IsWellFormed)
+            {
+                return new ResolvedSetting<string?>(
+                    fromEnvironmentEffort.Value, SettingOrigin.EnvironmentVariable, environmentVariable);
+            }
+
+            unusable.Add(
+                $"{environmentVariable} is set to \"{fromEnvironment}\", which is not one of {AgentEffort.DescribeAccepted()} "
+                + "and is treated as absent, so dispatched sessions carry no effortLevel and run at the model's own "
+                + "default (it does not fall through to the config file's value).");
+            return new ResolvedSetting<string?>(null, SettingOrigin.Default, null);
+        }
+
+        if (configured is { Length: > 0 } value)
+        {
+            AgentEffort configuredEffort = AgentEffort.FromInput(value);
+            if (configuredEffort.IsWellFormed)
+            {
+                return new ResolvedSetting<string?>(
+                    configuredEffort.Value, SettingOrigin.PlatformConfigFile, Hall9kDatabase.ConfigFile);
+            }
+
+            unusable.Add(
+                $"{Hall9kDatabase.ConfigFile} sets effort to \"{value}\", which is not one of {AgentEffort.DescribeAccepted()} "
+                + "and is treated as absent, so dispatched sessions carry no effortLevel and run at the model's own "
+                + "default.");
+        }
+
+        return new ResolvedSetting<string?>(null, SettingOrigin.Default, null);
     }
 
     /// <summary>
