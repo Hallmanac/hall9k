@@ -12,7 +12,7 @@ https://raw.githubusercontent.com/Hallmanac/hall9k/main/docs/INSTALL.md
 ## What you get
 
 `h9k` (the CLI) and `h9kd` (the daemon it drives) as native binaries in `~/.hall9k/bin`, on
-your `PATH`, plus the canonical Claude skill set in `~/.hall9k/skills` and the canonical
+your `PATH` (unless `HALL9K_HOME` redirects the install, which leaves your `PATH` alone), plus the canonical Claude skill set in `~/.hall9k/skills` and the canonical
 prompt-template set in `~/.hall9k/templates` — a sibling directory, never seeded into a project
 home, that the judgment-layer prose a prompt builder assembles into an agent session's prompt
 lives in. `--from-release` refuses a payload missing either binary or any required
@@ -58,7 +58,9 @@ Both scripts do the same five things, in order:
    downloaded archive instead of a local `dotnet publish`. This is what places the binaries,
    writes Hall9k's own Postgres definition (not started), writes the matching connection
    string to `config.json` when nothing else resolved and nothing is already listening on
-   `localhost:5432`, publishes the skill set, and puts `h9k` on your `PATH`.
+   `localhost:5432`, publishes the skill set, and puts `h9k` on your `PATH`. Under a redirected `HALL9K_HOME`
+   (a scratch install) it skips that last step and prints a line saying so; run
+   `$HALL9K_HOME/bin/h9k` directly, or add that directory to your `PATH` by hand.
 5. Run **`h9k doctor`** — so the bootstrap ends by telling you exactly what still needs
    attention (usually: starting Hall9k's own Postgres) rather than declaring victory silently.
 

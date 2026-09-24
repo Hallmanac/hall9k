@@ -315,14 +315,16 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
 
         // linkOntoPath defaults true for both real callers; a test passes false to skip
         // it, because this step mutates the REAL process PATH and home directory (a
-        // real symlink in a real /opt/homebrew/bin or ~/.local/bin) — there is no safe
-        // way to redirect it without redirecting those two env vars process-wide, which
-        // would race any concurrently running test that shells out to git/gh/docker via
-        // PATH (origin incident: an early version of UpdateCommandTests did exactly
-        // that and broke GitWorktreeManagerTests intermittently by wiping PATH out from
-        // under them). LinkOntoPath and ComputeUserPath already have direct unit
-        // coverage with fake paths in InstallCommandTests, so skipping this step in a
-        // higher-level test loses no coverage.
+        // real symlink in a real /opt/homebrew/bin or ~/.local/bin) — redirecting it by
+        // setting those two env vars process-wide would race any concurrently running
+        // test that shells out to git/gh/docker via PATH (origin incident: an early
+        // version of UpdateCommandTests did exactly that and broke
+        // GitWorktreeManagerTests intermittently by wiping PATH out from under them).
+        // The pathVariable and userProfileDirectory parameters are the safe seam for the
+        // non-Windows link, and the Windows registry write has none, so a test that
+        // passes true must run under a redirected home, where this step skips both.
+        // LinkOntoPath and ComputeUserPath have direct unit coverage with fake paths in
+        // InstallCommandTests, so a higher-level test that passes false loses nothing.
         if (linkOntoPath && PlatformPaths.IsHomeRedirected)
         {
             // A scratch install under a redirected HALL9K_HOME must never retarget the operator's

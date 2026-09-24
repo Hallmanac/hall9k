@@ -35,10 +35,14 @@ public static class PlatformPaths
     /// The comparison behind <see cref="IsHomeRedirected"/>: both sides as full paths with a
     /// trailing separator ignored, so <c>HALL9K_HOME</c> naming exactly the default is not a
     /// redirect. A relative path resolves against the working directory, as every other reader of
-    /// <see cref="Home"/> resolves it, and a symlinked default reads as redirected.
+    /// <see cref="Home"/> resolves it, and a symlinked default reads as redirected. A home of the
+    /// empty string, which a set-but-empty <c>HALL9K_HOME</c> yields on Unix, is not the default
+    /// either (it lays the tree out under the working directory), so it reads as redirected
+    /// rather than reaching <see cref="Path.GetFullPath(string)"/>, which rejects it.
     /// </summary>
     internal static bool IsRedirected(string home, string defaultHome, bool ignoreCase) =>
-        !string.Equals(
+        home.Length == 0
+        || !string.Equals(
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(home)),
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(defaultHome)),
             ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
