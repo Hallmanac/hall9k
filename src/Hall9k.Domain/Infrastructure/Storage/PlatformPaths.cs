@@ -20,7 +20,28 @@ public static class PlatformPaths
 
     public static string Home => HomeOverride.Value
         ?? Environment.GetEnvironmentVariable("HALL9K_HOME")
-        ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".hall9k");
+        ?? DefaultHome;
+
+    private static string DefaultHome =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".hall9k");
+
+    /// <summary>
+    /// Whether <see cref="Home"/> is anywhere other than the default. Resolved from the same
+    /// sources <see cref="Home"/> is, so the test-only override counts as a redirect too.
+    /// </summary>
+    public static bool IsHomeRedirected => IsRedirected(Home, DefaultHome, ignoreCase: OperatingSystem.IsWindows());
+
+    /// <summary>
+    /// The comparison behind <see cref="IsHomeRedirected"/>: both sides as full paths with a
+    /// trailing separator ignored, so <c>HALL9K_HOME</c> naming exactly the default is not a
+    /// redirect. A relative path resolves against the working directory, as every other reader of
+    /// <see cref="Home"/> resolves it, and a symlinked default reads as redirected.
+    /// </summary>
+    internal static bool IsRedirected(string home, string defaultHome, bool ignoreCase) =>
+        !string.Equals(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(home)),
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(defaultHome)),
+            ignoreCase ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
 
     /// <summary>
     /// Test-only flow-scoped override of <see cref="Home"/>, reachable only through

@@ -191,6 +191,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         string? currentDirectoryOverride = null,
         Func<CancellationToken, Task<IReadOnlyList<LiveGate>?>>? liveGateFinder = null,
         RestartChildRunner? restartChildRunner = null,
+        string? pathVariable = null,
+        string? userProfileDirectory = null,
         CancellationToken cancellationToken = default)
     {
         // The actual last point before staging becomes ~/.hall9k/bin, run for every caller —
@@ -321,7 +323,17 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
         // under them). LinkOntoPath and ComputeUserPath already have direct unit
         // coverage with fake paths in InstallCommandTests, so skipping this step in a
         // higher-level test loses no coverage.
-        if (linkOntoPath)
+        if (linkOntoPath && PlatformPaths.IsHomeRedirected)
+        {
+            // A scratch install under a redirected HALL9K_HOME must never retarget the operator's
+            // real h9k link (or, on Windows, their user PATH) at a directory about to be deleted.
+            string callable = OperatingSystem.IsWindows()
+                ? $"h9k from {DaemonRuntime.BinDirectory}"
+                : Path.Combine(DaemonRuntime.BinDirectory, "h9k");
+            AnsiConsole.MarkupLineInterpolated(
+                $"[yellow]PATH link skipped[/]: the home is redirected to {PlatformPaths.Home}; call {callable} directly, or add {DaemonRuntime.BinDirectory} to your PATH if this relocation is permanent");
+        }
+        else if (linkOntoPath)
         {
             if (OperatingSystem.IsWindows())
             {
@@ -331,8 +343,8 @@ public sealed class InstallCommand : Hall9kAsyncCommand<InstallCommand.Settings>
             {
                 LinkOntoPath(
                     Path.Combine(DaemonRuntime.BinDirectory, "h9k"),
-                    Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+                    pathVariable ?? Environment.GetEnvironmentVariable("PATH") ?? string.Empty,
+                    userProfileDirectory ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
             }
         }
 
