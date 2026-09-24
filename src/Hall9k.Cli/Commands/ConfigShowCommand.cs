@@ -191,6 +191,7 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
         || report.MaxConcurrentTaskRuns.Origin == SettingOrigin.EnvironmentVariable
         || report.SessionCapPerRun.Origin == SettingOrigin.EnvironmentVariable
         || report.DefaultModel.Origin == SettingOrigin.EnvironmentVariable
+        || report.Effort.Origin == SettingOrigin.EnvironmentVariable
         || report.ModelByRole.Any(role => role.Model.Origin == SettingOrigin.EnvironmentVariable)
         || report.MaxComplianceReviewCycles.Origin == SettingOrigin.EnvironmentVariable
         || report.MaxAdversarialReviewCycles.Origin == SettingOrigin.EnvironmentVariable

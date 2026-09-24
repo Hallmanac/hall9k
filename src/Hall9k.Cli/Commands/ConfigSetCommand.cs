@@ -70,6 +70,16 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "'default'. 'default' clears the override, so the built-in shipped default decides.")]
         public string? DefaultModel { get; init; }
 
+        [CommandOption("--effort <low|medium|high|xhigh|max>")]
+        [Description(
+            "The reasoning effort level every dispatched agent session runs at (DaemonOptions.Effort), written into "
+            + "each session's settings file as effortLevel, as one node-wide level rather than per role. A headless session "
+            + "ignores the owner's own user-level effortLevel and honors only that file, and Claude Opus 5.5 defaults "
+            + "to medium where earlier Opus models defaulted to high, so this is how an operator asks for high. "
+            + "Accepts low, medium, high, xhigh or max. 'default' clears it, leaving the key out so each model's own "
+            + "default decides again.")]
+        public string? Effort { get; init; }
+
         [CommandOption("--orchestrator-model <MODEL>")]
         [Description(
             "This node's orchestrator-window override (task: an operator starts a lean node or project "
@@ -333,6 +343,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 || settings.LessonPromptMaxLessons is not null || settings.LessonPromptMaxCharacters is not null)
             && settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
+            && settings.Effort is null
             && settings.OrchestratorModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null
@@ -369,6 +380,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
     {
         if (settings.MaxConcurrentAgentSessions is null && settings.MaxConcurrentTaskRuns is null
             && settings.SessionCapPerRun is null && settings.DefaultModel is null
+            && settings.Effort is null
             && settings.OrchestratorModel is null
             && settings.ModelBuild is null && settings.ModelReview is null && settings.ModelReviewVerify is null
             && settings.ModelReviewFinalPass is null
@@ -438,6 +450,11 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 + "for the whole period, and stays paused every period after that — it does not lift itself when "
                 + "the period rolls, so change it by hand (or clear it with 'none') when you are done throttling. "
                 + "A negative value is not a token count at all.");
+        }
+
+        if (settings.Effort is { } effort)
+        {
+            VetEffort(effort);
         }
 
         if (settings.SpendPeriod is { } spendPeriod
@@ -596,6 +613,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         }
 
         ApplyModel("default-model", settings.DefaultModel, value => operating.DefaultModel = value, changed);
+        ApplyEffort(settings.Effort, operating, changed);
         ApplyModel("orchestrator-model", settings.OrchestratorModel, value => operating.OrchestratorModel = value, changed);
         ApplyModel("model (build)", settings.ModelBuild, value => operating.ModelByRole.Build = value, changed);
         ApplyModel("model (review)", settings.ModelReview, value => operating.ModelByRole.Review = value, changed);
@@ -720,6 +738,41 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
                 changed.Add($"review-stage-composition consequence: {consequence}");
             }
         }
+    }
+
+    /// <summary>
+    /// The level <paramref name="input"/> names, or null for the clearing word 'default'. Anything else
+    /// is refused here with the five accepted names quoted, so an unrecognized word never reaches the
+    /// config file, whether it arrives through <see cref="Validate"/> or a direct <see cref="Apply"/>.
+    /// </summary>
+    private static AgentEffort? VetEffort(string input)
+    {
+        AgentEffort effort = AgentEffort.FromInput(input);
+        if (effort.IsWellFormed)
+        {
+            return effort;
+        }
+
+        if (string.Equals(input.Trim(), AgentEffort.ClearingWord, StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        throw new DomainValidationException(
+            $"--effort must be one of {AgentEffort.DescribeAccepted()}, or '{AgentEffort.ClearingWord}' "
+            + "to clear it so each model's own default decides again. It is the reasoning effort level written "
+            + "into every dispatched session's settings file as effortLevel.");
+    }
+
+    private static void ApplyEffort(string? input, OperatingSettings operating, List<string> changed)
+    {
+        if (input is null)
+        {
+            return;
+        }
+
+        operating.Effort = VetEffort(input)?.Value;
+        changed.Add($"effort = {operating.Effort ?? "(cleared)"}");
     }
 
     /// <summary>

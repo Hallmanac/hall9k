@@ -297,6 +297,68 @@ public sealed class ConfigSetCommandTests
         operating.OrchestratorModel.Should().BeNull("a refused value must never reach the config file");
     }
 
+    [Theory]
+    [InlineData("low", "low")]
+    [InlineData("medium", "medium")]
+    [InlineData("high", "high")]
+    [InlineData("xhigh", "xhigh")]
+    [InlineData("max", "max")]
+    [InlineData(" High ", "high")]
+    public void Applying_an_effort_stores_its_canonical_name(string input, string stored)
+    {
+        ConfigSetCommand.Settings settings = new() { Effort = input };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Validate(settings);
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.Effort.Should().Be(stored);
+        changed.Should().ContainSingle().Which.Should().Be($"effort = {stored}");
+    }
+
+    [Fact]
+    public void The_word_default_clears_an_existing_effort()
+    {
+        ConfigSetCommand.Settings settings = new() { Effort = "default" };
+        OperatingSettings operating = new() { Effort = "high" };
+        List<string> changed = [];
+
+        ConfigSetCommand.Validate(settings);
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.Effort.Should().BeNull();
+        changed.Should().ContainSingle().Which.Should().Contain("cleared");
+    }
+
+    [Theory]
+    [InlineData("ludicrous")]
+    [InlineData("extra-high")]
+    [InlineData("")]
+    public void Any_other_effort_is_refused_naming_the_five_accepted_names(string input)
+    {
+        ConfigSetCommand.Settings settings = new() { Effort = input };
+        OperatingSettings operating = new() { Effort = "medium" };
+
+        Action validate = () => ConfigSetCommand.Validate(settings);
+        Action apply = () => ConfigSetCommand.Apply(settings, operating, []);
+
+        validate.Should().Throw<DomainValidationException>()
+            .WithMessage("*low, medium, high, xhigh, max*");
+        apply.Should().Throw<DomainValidationException>();
+        operating.Effort.Should().Be("medium", "a refused value must never reach the config file");
+    }
+
+    [Fact]
+    public void An_effort_alone_is_a_change_and_is_not_an_immediately_effective_one()
+    {
+        ConfigSetCommand.Settings settings = new() { Effort = "high" };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().NotThrow("--effort is a real change, not the 'Nothing to change' no-op");
+    }
+
     [Fact]
     public void A_not_well_formed_default_model_is_refused_the_same_way_project_set_refuses_it()
     {
