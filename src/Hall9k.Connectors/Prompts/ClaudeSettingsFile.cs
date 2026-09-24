@@ -1,3 +1,5 @@
+using Hall9k.Domain.Shared.ValueObjects;
+
 namespace Hall9k.Connectors.Prompts;
 
 /// <summary>
@@ -81,12 +83,22 @@ public static class ClaudeSettingsFile
     /// of session that works an open pull request's threads; false everywhere else, so a fresh
     /// build session's settings are byte-for-byte what they were.
     /// </param>
-    public static string Build(TimeSpan commandTimeout, bool guardReviewThreadReplies = false)
+    /// <param name="effort">
+    /// The node's configured reasoning effort level, written as <c>effortLevel</c>. A headless
+    /// session ignores the owner's user-level <c>effortLevel</c> and honors this file, so this is the
+    /// one place the level can be carried. Null, or a value outside <see cref="AgentEffort.All"/>,
+    /// leaves the key out, so the file is byte-for-byte what it is without one. The key is preferred
+    /// over the <c>CLAUDE_CODE_EFFORT_LEVEL</c> environment variable, which hard-locks the level so a
+    /// session cannot lower it.
+    /// </param>
+    public static string Build(
+        TimeSpan commandTimeout, bool guardReviewThreadReplies = false, AgentEffort? effort = null)
     {
         long defaultMilliseconds = (long)commandTimeout.TotalMilliseconds;
         long maxMilliseconds = defaultMilliseconds * 2;
         string hooks = guardReviewThreadReplies ? $", {ReviewThreadReplyGuardHook}" : string.Empty;
-        return $$$"""{"includeCoAuthoredBy": false, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}{{{hooks}}}}""";
+        string effortLevel = effort is { IsWellFormed: true } ? $", \"effortLevel\": \"{effort.Value}\"" : string.Empty;
+        return $$$"""{"includeCoAuthoredBy": false{{{effortLevel}}}, "env": {"BASH_DEFAULT_TIMEOUT_MS": "{{{defaultMilliseconds}}}", "BASH_MAX_TIMEOUT_MS": "{{{maxMilliseconds}}}"}{{{hooks}}}}""";
     }
 
     /// <summary>
