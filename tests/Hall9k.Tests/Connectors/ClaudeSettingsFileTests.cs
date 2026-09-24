@@ -3,6 +3,7 @@ using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon;
+using Hall9k.Domain.Shared.ValueObjects;
 using Xunit;
 
 namespace Hall9k.Tests.Connectors;
@@ -89,6 +90,36 @@ public sealed class ClaudeSettingsFileTests
         // ask for more than the default on a day the suite runs long, whatever the default is.
         ReadTimeout(document, "BASH_MAX_TIMEOUT_MS").Should().Be(TimeSpan.FromMinutes(60),
             "the stock 10-minute cap made foreground compliance impossible on days the suite exceeded it");
+    }
+
+    [Fact]
+    public void Without_an_effort_the_file_is_byte_for_byte_what_it_was_before_the_knob_existed()
+    {
+        string expected =
+            "{\"includeCoAuthoredBy\": false, \"env\": {\"BASH_DEFAULT_TIMEOUT_MS\": \"1800000\", "
+            + "\"BASH_MAX_TIMEOUT_MS\": \"3600000\"}}";
+
+        ClaudeSettingsFile.Build(TimeSpan.FromMinutes(30)).Should().Be(expected);
+        ClaudeSettingsFile.Build(TimeSpan.FromMinutes(30), effort: null).Should().Be(expected);
+        ClaudeSettingsFile.Build(TimeSpan.FromMinutes(30), effort: AgentEffort.Unknown).Should().Be(expected);
+    }
+
+    [Fact]
+    public void Every_accepted_effort_is_written_as_effort_level_and_keeps_the_file_well_formed()
+    {
+        foreach (AgentEffort effort in AgentEffort.All)
+        {
+            using JsonDocument plain = JsonDocument.Parse(
+                ClaudeSettingsFile.Build(ClaudeSettingsFile.DefaultCommandTimeout, effort: effort));
+            using JsonDocument guarded = JsonDocument.Parse(ClaudeSettingsFile.Build(
+                ClaudeSettingsFile.DefaultCommandTimeout, guardReviewThreadReplies: true, effort: effort));
+
+            plain.RootElement.GetProperty("effortLevel").GetString().Should().Be(effort.Value);
+            guarded.RootElement.GetProperty("effortLevel").GetString().Should().Be(effort.Value);
+            guarded.RootElement.TryGetProperty("hooks", out _).Should().BeTrue("the guard hook is unaffected");
+            plain.RootElement.GetProperty("env").TryGetProperty("CLAUDE_CODE_EFFORT_LEVEL", out _).Should().BeFalse(
+                "the env variable hard-locks the level so a session cannot lower it; the settings key is preferred");
+        }
     }
 
     /// <summary>
