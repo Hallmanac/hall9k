@@ -1,0 +1,21 @@
+hall9k-task-record: 1
+task-id: 01a0d518-39eb-7338-a696-16d48a56f013
+project: hall9k
+type: feature
+pre-approved: off
+external-reference: github:Hallmanac/hall9k#583
+objective: A dispatched session runs at the effort level the node configures, so a model whose own default is medium (Claude Opus 5.5) builds, fixes and reviews at high when the operator asks for high
+criteria:
+  - h9k config set --effort <low|medium|high|xhigh|max> stores the level in config.json under hall9k; h9k config show and h9k daemon status print it with its origin the way default-model is printed; the word default clears it; any other value is rejected with the five accepted names
+  - When the level is set, ClaudeSettingsFile.Build writes effortLevel with that value into every dispatched session's settings file (build, fix, review, verify, final pass, synthesis, publication, courier, pr-review alike); when it is not set the key is absent and the file is byte-for-byte what it is today, so existing ClaudeSettingsFileTests still pass unchanged
+  - A running daemon binds the level at startup like every other DaemonOptions value; h9k config set --effort prints the same restart note default-model prints
+  - |-
+    The docs page that lists h9k config set's model knobs gains the effort knob beside them, with one sentence saying why it exists: a headless session ignores the owner's user-level effortLevel and honors the --settings file, and Claude Opus 5.5 defaults to medium where earlier Opus models defaulted to high
+dependencies: []
+origin-owner-fingerprint: c8f5c85900dac9911ce1ada43484dc7bf91a2a3e86efa8812d9f84cfd25bf2ac
+origin-node: 01a04de3-7a23-75c0-8a06-9314ef6ab27d
+origin-node-name: HALL-AGELESSRX
+origin-branch: task/8a56f013-a-dispatched-session-runs-at-t
+published: 2026-09-24 20:31:57Z
+context: |-
+  Evidence gathered 2026-09-24 on this Windows node (Claude Code 2.1.282, model claude-opus-5-5[1m]): two plain claude -p runs with effortLevel high in ~/.claude/settings.json recorded effort medium in their transcripts; three runs whose --settings file carried effortLevel high, modelSettings.<model>.effortLevel high, or env CLAUDE_CODE_EFFORT_LEVEL high all recorded effort high, as did --effort high. So the daemon's generated settings file (Hall9k.Connectors/Prompts/ClaudeSettingsFile.cs, Build) is the one place the level can be carried, and Hall9k.Daemon/Execution/ClaudeExecutor.cs Arguments already passes that file. Follow the DaemonOptions.DefaultModel pattern (Decisions Log #33) for the knob. One node-wide level; per-role effort is out of scope. Prefer effortLevel in the file over the env variable, which hard-locks and cannot be lowered by a session. No em dashes in anything authored
