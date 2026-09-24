@@ -365,7 +365,7 @@ one.
 ### Install a release
 
 A bootstrap script fetches the latest release for your platform (macOS arm64, Windows x64,
-Linux x64), verifies its checksum, asks consent, and finishes by running `h9k doctor`. Run the
+Windows ARM64, Linux x64), verifies its checksum, asks consent, and finishes by running `h9k doctor`. Run the
 plain form at an interactive terminal; run the non-interactive form anywhere else. The
 non-interactive form is the one an agent should use, since there is no terminal at a pipe's
 other end to answer a consent prompt.

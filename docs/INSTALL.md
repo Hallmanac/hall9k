@@ -28,7 +28,9 @@ demand (`h9k daemon start` / `stop`), and start-at-login is a separate, explicit
   repository, and reading them (a private repo especially) needs a logged-in `gh`. Nothing
   else is required: no repo checkout, no .NET SDK, no Docker (Docker is only needed later,
   for Postgres, and `h9k doctor` teaches that at the moment it matters).
-- macOS (arm64), Windows (x64), or Linux (x64). Other platforms are not built by `release.yml`.
+- macOS (arm64), Windows (x64 or ARM64), or Linux (x64). Other platforms are not built by `release.yml`.
+  On Windows ARM64 (for example Windows in Parallels on an Apple silicon Mac) `install.ps1` picks the
+  `win-arm64` release by itself, and `h9k update` does the same afterward.
 
 ## One-line bootstrap
 

@@ -21,7 +21,7 @@ means, and how to get out of trouble.
 ## Installing on a bare machine
 
 A tagged commit on `main` becomes a GitHub release carrying `h9k` and `h9kd` binaries for macOS
-arm64, Windows x64, and Linux x64 (`.github/workflows/release.yml`, backlog 42) — built alongside
+arm64, Windows x64, Windows ARM64, and Linux x64 (`.github/workflows/release.yml`, backlog 42) — built alongside
 `ci.yml` rather than replacing it, and only on a version tag. A machine with no repo checkout and
 no .NET SDK bootstraps from that release directly; see [docs/INSTALL.md](INSTALL.md) for the full
 walkthrough (it is written to be followed by an AI agent as much as by a human) and the
@@ -52,7 +52,7 @@ The mechanism, in short:
   `h9k install` does (Decisions Log #31, S1-12).
 
 **Platform note.** Release binaries are self-contained (no .NET runtime needed on the target
-machine) for all three platforms. The daemon lifecycle (`h9k daemon start|stop|status`) runs on
+machine) for all four platforms. The daemon lifecycle (`h9k daemon start|stop|status`) runs on
 macOS, Windows, and Linux; `h9k daemon autostart enable|disable` runs on macOS and Windows (a
 Linux systemd user unit is unbuilt) — see [The daemon lifecycle](#the-daemon-lifecycle) below for
 what each platform's mechanism is.
