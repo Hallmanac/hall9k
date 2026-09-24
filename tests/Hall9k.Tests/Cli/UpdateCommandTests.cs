@@ -58,7 +58,7 @@ public sealed class UpdateCommandTests : IDisposable
         if (ReleasePlatform.CurrentRid() is null)
         {
             // No release build target for this platform (release.yml covers osx-arm64,
-            // win-x64, linux-x64) — nothing to stage a fake download for.
+            // win-x64, win-arm64, linux-x64) — nothing to stage a fake download for.
             return;
         }
 
