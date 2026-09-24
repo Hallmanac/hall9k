@@ -626,6 +626,11 @@ Three variables are yours to set, and both binaries read them:
 | `HALL9K_HOME` | Relocates the whole on-disk layout away from `~/.hall9k` |
 | `HALL9K_CLAUDE_PATH` | Pins the `claude` binary instead of resolving it through `PATH` |
 
+A redirected `HALL9K_HOME` relocates everything on disk and also makes `h9k install` and `h9k update`
+skip the `PATH` link, printing one line that says so. That is what lets a scratch run under a
+temporary home leave the live `h9k` command alone. If you relocate an install permanently, add its
+`bin` directory (`$HALL9K_HOME/bin`) to your `PATH` by hand.
+
 Hall9k also reads a few variables that belong to the tools it drives or to the development loop.
 None of them is set by default, and none is needed on an ordinary install:
 
