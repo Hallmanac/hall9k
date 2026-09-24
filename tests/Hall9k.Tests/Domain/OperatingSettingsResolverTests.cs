@@ -31,6 +31,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         "Hall9k__MaxConcurrentTaskRuns",
         "Hall9k__SessionCapPerRun",
         "Hall9k__DefaultModel",
+        "Hall9k__Effort",
         "Hall9k__ModelByRole__Build",
         "Hall9k__ModelByRole__Review",
         "Hall9k__ModelByRole__ReviewVerify",
@@ -356,6 +357,67 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.DefaultModel.Origin.Should().Be(SettingOrigin.Default);
         report.UnusableEnvironmentVariables.Should().ContainSingle(
             warning => warning.Contains("Hall9k__DefaultModel") && warning.Contains("not a real model"));
+    }
+
+    [Fact]
+    public async Task Effort_is_unset_when_nothing_configures_it()
+    {
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.Effort.Value.Should().BeNull("with no effort configured the settings file carries no effortLevel");
+        report.Effort.Origin.Should().Be(SettingOrigin.Default);
+    }
+
+    [Fact]
+    public async Task Effort_written_to_the_config_file_is_reported_with_that_origin()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.Effort = "high", CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.Effort.Value.Should().Be("high");
+        report.Effort.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+    }
+
+    [Fact]
+    public async Task An_effort_environment_variable_outranks_the_config_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.Effort = "low", CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__Effort", "max");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.Effort.Value.Should().Be("max");
+        report.Effort.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+        report.Effort.Source.Should().Be("Hall9k__Effort");
+    }
+
+    [Fact]
+    public async Task An_unrecognized_effort_in_the_config_file_is_reported_and_treated_as_unset()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.Effort = "ludicrous", CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.Effort.Value.Should().BeNull();
+        report.Effort.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains(Hall9kDatabase.ConfigFile) && warning.Contains("ludicrous")
+                && warning.Contains("low, medium, high, xhigh, max"));
+    }
+
+    [Fact]
+    public async Task An_unrecognized_effort_in_the_environment_is_reported_and_does_not_fall_through_to_the_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.Effort = "high", CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__Effort", "ludicrous");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.Effort.Value.Should().BeNull("the daemon binds the environment value, finds it unusable and sends none");
+        report.Effort.Origin.Should().Be(SettingOrigin.Default);
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains("Hall9k__Effort") && warning.Contains("ludicrous"));
     }
 
     /// <summary>

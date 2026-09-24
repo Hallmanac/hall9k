@@ -127,6 +127,15 @@ public sealed class OperatingSettings
     [JsonConverter(typeof(LenientModelStringJsonConverter))]
     public string? DefaultModel { get; set; }
 
+    /// <summary>
+    /// The reasoning effort level every dispatched session runs at (<c>low</c>, <c>medium</c>,
+    /// <c>high</c>, <c>xhigh</c> or <c>max</c>). Null leaves <c>effortLevel</c> out of the generated
+    /// settings file, so the model's own default decides. Written into that file because a headless
+    /// session ignores the owner's user-level <c>effortLevel</c> and honors only the
+    /// <c>--settings</c> file it is handed. Binds to <c>DaemonOptions.Effort</c>.
+    /// </summary>
+    public string? Effort { get; set; }
+
     public RoleModelSettings ModelByRole { get; set; } = new();
 
     public int? InteractiveClaimStaleAfterDays { get; set; }
