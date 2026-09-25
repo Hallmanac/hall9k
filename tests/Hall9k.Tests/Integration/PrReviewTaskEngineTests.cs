@@ -1,7 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
-using Hall9k.Connectors.WorkItems;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Cli.Commands;
 using Hall9k.Daemon;
@@ -9,7 +8,6 @@ using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Closeout;
 using Hall9k.Daemon.Dispatch;
 using Hall9k.Daemon.Execution;
-using Hall9k.Daemon.ProjectHomes;
 using Hall9k.Daemon.Review;
 using Hall9k.Domain.Features.AutoPrReview;
 using Hall9k.Domain.Features.Node;
