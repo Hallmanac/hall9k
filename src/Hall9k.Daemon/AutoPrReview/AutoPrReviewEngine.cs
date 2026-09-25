@@ -20,6 +20,7 @@ using JasperFx.Events;
 using Marten;
 using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.AutoPrReview;
 
@@ -43,7 +44,20 @@ public sealed record AutoPrReviewSweepResult(
 /// pays no timeline subprocess at all).
 /// </summary>
 internal sealed record MintAttempt(
-    ReviewRequestOutcome Outcome, Guid? TaskId, string? Detail, ReviewRequestActor? Actor = null);
+    ReviewRequestOutcome Outcome, Guid? TaskId, string? Detail, ReviewRequestActor? Actor = null,
+    PeerHold? Hold = null);
+
+/// <summary>
+/// The fleet peer a review request is being held for and the moment this node stops waiting for it
+/// and mints itself if nothing covers the pull request by then.
+/// </summary>
+internal sealed record PeerHold(Guid LeaderNodeId, DateTimeOffset EndsAt)
+{
+    /// <summary>The words the row's detail and the one Info line say about the hold, in UTC because a log has no reader's clock.</summary>
+    public string Describe() =>
+        $"node {DomainId.Short(LeaderNodeId)} mints it first; this node mints at {EndsAt:yyyy-MM-dd HH:mm:ss}Z "
+        + "if no task covers it by then";
+}
 
 /// <summary>
 /// The words the once-per-pull-request Info line says about an outcome (Decisions Log #161), and
@@ -67,6 +81,43 @@ internal static class AutoPrReviewObservation
     public static bool IsReportable(
         ObservedReviewRequest? recorded, ReviewRequestOutcome outcome, Guid? taskId) =>
         recorded is null || recorded.Outcome != outcome || recorded.TaskId != taskId;
+
+    /// <summary>
+    /// Whether this node holds a review request for a fleet peer instead of minting for it now, and
+    /// if so which peer and until when. The node whose id sorts lowest among the owner's enrolled,
+    /// unrevoked nodes, this one included, mints at once; every other node holds until GitHub's own
+    /// requested-at time is older than <paramref name="hold"/>, so a peer's task has had the hold to
+    /// replicate. Null means mint now.
+    /// <para>
+    /// Everything that could make the fleet unknowable reads as leader, because that is what every
+    /// node did before this rule existed: a null <paramref name="enrolledNodeIds"/> (no chain
+    /// computed yet, or none naming this owner) and an enrolled set naming only this node both
+    /// answer null. A zero or negative hold means this node never defers, whatever its rank. The
+    /// measure is <paramref name="requestedAt"/> and never when this node first saw the request, so
+    /// a node that wakes late from sleep mints at once and nothing about the hold is persisted.
+    /// </para>
+    /// </summary>
+    public static PeerHold? DecideMintHold(
+        Guid thisNodeId, IReadOnlyCollection<Guid>? enrolledNodeIds, DateTimeOffset requestedAt,
+        DateTimeOffset now, TimeSpan hold)
+    {
+        if (hold <= TimeSpan.Zero || enrolledNodeIds is null)
+        {
+            return null;
+        }
+
+        // Guid ordering is the one PullRequestReviewDuplicateRule already orders task ids by: for the
+        // UUIDv7 ids this platform mints it is the ordering of the canonical string, so the lowest
+        // node id is the one every node reading the same chain names.
+        Guid leader = enrolledNodeIds.Append(thisNodeId).Min();
+        if (leader == thisNodeId)
+        {
+            return null;
+        }
+
+        DateTimeOffset endsAt = requestedAt + hold;
+        return now >= endsAt ? null : new PeerHold(leader, endsAt);
+    }
 
     /// <summary>
     /// The outcome to record now, given whatever was recorded before. A request this install
@@ -124,6 +175,9 @@ internal static class AutoPrReviewObservation
             { } known when known == ReviewRequestOutcome.HeldRequestTimeUnknown =>
                 "nothing was created: GitHub's own requested-at time could not be read, so nothing proves "
                 + "the request postdates this project's own cutoff — yours to take by hand",
+            { } known when known == ReviewRequestOutcome.HeldForPeer =>
+                "nothing was created yet: a fleet peer ranks first and mints it, so this node holds and mints "
+                + "only if nothing covers it when the hold ends",
             { } known when known == ReviewRequestOutcome.MintFailed =>
                 "nothing was created: the pull request could not be adopted",
             _ => $"an outcome this build does not recognise ({RelayedText.OneLine(outcome.Value)})",
@@ -169,7 +223,9 @@ public sealed class AutoPrReviewEngine(
     ProcessRunner processRunner,
     LaunchHoldEngine launchHold,
     ILogger<AutoPrReviewEngine> logger,
-    PullRequestReviewDuplicateConvergence? duplicateConvergence = null)
+    PullRequestReviewDuplicateConvergence? duplicateConvergence = null,
+    EnrolledNodeSnapshots? enrolledNodes = null,
+    IOptions<DaemonOptions>? options = null)
 {
     private static readonly string[] TerminalStates =
         [TaskState.Done.Value, TaskState.Abandoned.Value];
@@ -198,6 +254,14 @@ public sealed class AutoPrReviewEngine(
     private const int MaxImmediateLaunchesPerSweep = 1;
 
     private readonly GitHubReviewAssignments reviewAssignments = new(processRunner);
+
+    /// <summary>
+    /// The hold this node applies to a request a fleet peer ranks first for, read from the bound
+    /// <see cref="DaemonOptions"/> and so fixed for the daemon's life. A negative value, which only a
+    /// hand-edited file can produce, is zero: this node never defers.
+    /// </summary>
+    private TimeSpan MintHold => TimeSpan.FromSeconds(Math.Max(
+        0, (options?.Value ?? new DaemonOptions()).AutoPrReviewMintHoldSeconds));
 
     private int _immediateLaunchesThisSweep;
 
@@ -508,7 +572,7 @@ public sealed class AutoPrReviewEngine(
             OwnerFrom(repository), NameFrom(repository), candidate.Number, login,
             ReviewTimelineEventKind.Requested, project.RepositoryPath, cancellationToken);
 
-        if (actor.RequestedAt is null)
+        if (actor.RequestedAt is not { } requestedAt)
         {
             // Debug, not Info: a flaky graphql call and a pull request GraphQL genuinely cannot
             // resolve are indistinguishable from here, and the recorded row is the surface that
@@ -530,6 +594,16 @@ public sealed class AutoPrReviewEngine(
         if (!setting.IsOn)
         {
             return new MintAttempt(ReviewRequestOutcome.HeldSettingOff, null, null, actor);
+        }
+
+        // After the four questions above and before CreateOneAsync, so the gh pr view import is
+        // never paid while held. Speed (First, Now, Normal) is decided inside CreateOneAsync and
+        // stays blind to this. The fleet is the message sweep's own last chain read, never a fetch
+        // here.
+        if (AutoPrReviewObservation.DecideMintHold(
+            node.NodeId, enrolledNodes?.TryGet(project.Id), requestedAt, DateTimeOffset.UtcNow, MintHold) is { } peerHold)
+        {
+            return new MintAttempt(ReviewRequestOutcome.HeldForPeer, null, peerHold.Describe(), actor, peerHold);
         }
 
         try
@@ -605,6 +679,11 @@ public sealed class AutoPrReviewEngine(
         // tick's sentence with this tick's rediscovery.
         observed.OutcomeDetail = outcome == attempt.Outcome ? attempt.Detail : observed.OutcomeDetail;
         observed.TaskId = taskId;
+        // The hold's own facts live only as long as the outcome does. A tick that could not read
+        // the time keeps the recorded HeldForPeer (Settle) and so keeps what it recorded with it.
+        bool heldForPeer = outcome == ReviewRequestOutcome.HeldForPeer;
+        observed.HoldLeaderNodeId = heldForPeer ? attempt.Hold?.LeaderNodeId ?? observed.HoldLeaderNodeId : null;
+        observed.HoldEndsAt = heldForPeer ? attempt.Hold?.EndsAt ?? observed.HoldEndsAt : null;
 
         session.Store(observed);
         await session.SaveChangesAsync(cancellationToken);

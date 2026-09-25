@@ -36,6 +36,9 @@ public sealed record ReviewRequestOutcome
     /// <summary>Nothing was minted: GitHub's own requested-at time could not be read, so nothing proves the request is new.</summary>
     public static readonly ReviewRequestOutcome HeldRequestTimeUnknown = new("HeldRequestTimeUnknown");
 
+    /// <summary>Nothing was minted yet: another node of this owner's fleet ranks first and is expected to mint, and this node mints only if nothing covers the request by the end of its hold.</summary>
+    public static readonly ReviewRequestOutcome HeldForPeer = new("HeldForPeer");
+
     /// <summary>The mint was attempted and refused — a pull request that could not be imported, a race with GitHub itself.</summary>
     public static readonly ReviewRequestOutcome MintFailed = new("MintFailed");
 
@@ -69,6 +72,7 @@ public sealed record ReviewRequestOutcome
         "heldsettingoff" => HeldSettingOff,
         "heldbeforecutoff" => HeldBeforeCutoff,
         "heldrequesttimeunknown" => HeldRequestTimeUnknown,
+        "heldforpeer" => HeldForPeer,
         "mintfailed" => MintFailed,
         _ => Unknown,
     };

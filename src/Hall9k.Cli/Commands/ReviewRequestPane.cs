@@ -1,4 +1,5 @@
 using Hall9k.Domain.Features.AutoPrReview;
+using Hall9k.Domain.Features.Node;
 using Hall9k.Domain.Features.Project;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Tasks;
@@ -143,6 +144,7 @@ internal static class ReviewRequestPane
         }
 
         Dictionary<Guid, ProjectDetails> byId = projects.ToDictionary(project => project.Id);
+        IReadOnlyDictionary<Guid, string> leaderNames = await HoldLeaderNamesAsync(session, observed, cancellationToken);
         IReadOnlyList<TaskListItem> adopted = await session.Query<TaskListItem>()
             .Where(task => task.ExternalReference != null)
             .ToListAsync(cancellationToken);
@@ -168,7 +170,8 @@ internal static class ReviewRequestPane
 
             ReviewRequestRow row = Compose(
                 request, project.Name, settings[request.ProjectId],
-                Covering(request.Repository, request.Number, adopted, rowsByTask), now);
+                Covering(request.Repository, request.Number, adopted, rowsByTask), now,
+                request.HoldLeaderNodeId is { } leaderId ? leaderNames.GetValueOrDefault(leaderId) : null);
             // Two deciders that reached the same answer about one request have one thing to say,
             // and say it once (see this method's own remarks).
             if (alreadySaid.Add(row.Markup))
@@ -196,6 +199,30 @@ internal static class ReviewRequestPane
         }
 
         return new ReviewRequestPaneContents(settingLines, rendered);
+    }
+
+    /// <summary>
+    /// The machine name of every fleet node a row is being held for, where this store knows the
+    /// node at all. A peer this store has no registration for is simply absent, and its row names
+    /// the node by its short id alone rather than by a name nothing observed.
+    /// </summary>
+    private static async Task<IReadOnlyDictionary<Guid, string>> HoldLeaderNamesAsync(
+        IQuerySession session, IReadOnlyList<ObservedReviewRequest> observed, CancellationToken cancellationToken)
+    {
+        Guid[] leaderIds = [.. observed.Where(request => request.HoldLeaderNodeId is not null)
+            .Select(request => request.HoldLeaderNodeId.GetValueOrDefault())
+            .Distinct()];
+        if (leaderIds.Length == 0)
+        {
+            return new Dictionary<Guid, string>();
+        }
+
+        IReadOnlyList<NodeDetails> nodes = await session.Query<NodeDetails>()
+            .Where(node => leaderIds.Contains(node.Id))
+            .ToListAsync(cancellationToken);
+        return nodes
+            .Where(node => !node.MachineName.IsBlank())
+            .ToDictionary(node => node.Id, node => node.MachineName);
     }
 
     /// <summary>
@@ -252,7 +279,7 @@ internal static class ReviewRequestPane
     /// </summary>
     internal static ReviewRequestRow Compose(
         ObservedReviewRequest request, string projectName, AutoPrReviewSetting setting,
-        CoveringReview? covering, DateTimeOffset now)
+        CoveringReview? covering, DateTimeOffset now, string? holdLeaderName = null)
     {
         string pullRequest = $"{request.Repository.EscapeMarkup()}#{request.Number}";
         string project = projectName.EscapeMarkup();
@@ -332,6 +359,24 @@ internal static class ReviewRequestPane
                 request.Repository, request.Number,
                 $"{opening}{age}; what became of it was recorded by a newer build and cannot be read here",
                 byHand);
+        }
+
+        // Informational, never needs-you: the daemon is already handling it and nothing is asked of
+        // the operator, who only learns which node is expected to mint and when this one would.
+        if (outcome == ReviewRequestOutcome.HeldForPeer)
+        {
+            string leader = request.HoldLeaderNodeId is { } leaderId
+                ? holdLeaderName.IsBlank()
+                    ? $"node {DomainId.Short(leaderId)}"
+                    : $"node {holdLeaderName.EscapeMarkup()} ({DomainId.Short(leaderId)})"
+                : "a fleet peer";
+            string endsAt = request.HoldEndsAt is { } holdEndsAt
+                ? $"at {holdEndsAt.ToLocalTime():HH:mm}"
+                : "when the hold ends";
+            return Informational(
+                request.Repository, request.Number,
+                $"{opening}{age}; held for {leader}, which mints it first, and this node mints {endsAt} only if "
+                + "nothing covers it by then");
         }
 
         return Informational(

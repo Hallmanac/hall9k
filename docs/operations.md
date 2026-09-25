@@ -684,6 +684,7 @@ one of them, grouped by what it governs, with its default. Three things apply to
 | `Hall9k__PullRequestPollBackoffMaxInterval` | 30m | The ceiling the poll interval backs off to when every attempted inspection in a sweep fails (e.g. `gh` rate-limited); resets on the next successful sweep |
 | `Hall9k__AutoPrReviewPollInterval` | 3m | How often the auto-pr-review poll asks `gh` which open pull requests, in a registered project's repository, request this install's own login as a reviewer. It runs on its own timer, so trouble on one poll never widens the other. |
 | `Hall9k__AutoPrReviewPollBackoffMaxInterval` | 30m | The ceiling the auto-pr-review poll backs off to while its `gh` calls keep failing. |
+| `Hall9k__AutoPrReviewMintHoldSeconds` | 300 | Whole seconds this node holds a review request that a lower-ranked node of the same owner is expected to mint the pr-review task for (`h9k config set --auto-pr-review-mint-hold`). The node whose id sorts lowest among the owner's enrolled, unrevoked nodes mints on the first sweep; every other node mints only once GitHub's own requested-at time is older than this hold and nothing covers the pull request. `0` means this node never defers. Read once at daemon start |
 | `Hall9k__MaxAutomaticCloseoutRuns` | 6 | The lifetime ceiling: automatic closeout actions a pull request may spend across every obstruction before closeout parks and asks for you, whatever it grants along the way |
 | `Hall9k__MaxCloseoutLapsPerObstruction` | 2 | The progress cap: consecutive automatic laps closeout may spend on the SAME obstruction (the same failing check, the same unresolved threads) before parking; a lap that clears its obstruction resets this one, and a human re-engaging with the pull request grants one more lap past it |
 | `Hall9k__MaxMechanicalResolutionAttempts` | 3 | For a pre-approved task, how many times a merge that GitHub refuses for a mechanical reason is retried without an agent before the run parks with an itemized reason. A manual `h9k pr resolve` refills it. |
@@ -1003,6 +1004,7 @@ the file alone.
 | `spendPeriod` | `--spend-period` | `Hall9k__SpendPeriod` | `week` |
 | `messageActivePollMinSeconds`, `messageActivePollMaxSeconds` | `--message-poll-active-min`, `--message-poll-active-max` | `Hall9k__MessageActivePollMinSeconds`, `__MessageActivePollMaxSeconds` | 15, 25 |
 | `messageIdlePollMinSeconds`, `messageIdlePollMaxSeconds` | `--message-poll-idle-min`, `--message-poll-idle-max` | `Hall9k__MessageIdlePollMinSeconds`, `__MessageIdlePollMaxSeconds` | 30, 45 |
+| `autoPrReviewMintHoldSeconds` | `--auto-pr-review-mint-hold` | `Hall9k__AutoPrReviewMintHoldSeconds` | 300 |
 | `interactiveClaimStaleAfterDays` | `--interactive-claim-stale-after-days` | none | 3 |
 | `inviteExpiryHours` | `--invite-expiry-hours` | none | 72 |
 | `lessonPromptMaxLessons` | `--lesson-prompt-max-lessons` | none | 15 |

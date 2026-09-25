@@ -5,6 +5,7 @@ using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
 using Hall9k.Daemon;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Messaging;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
@@ -138,6 +139,51 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
         transport.ProbeCount.Should().Be(2, "the second sweep still probes every tick");
         transport.ReadCount.Should().Be(
             3, "node A's tip has not moved since the first sweep cached it, so the second sweep must skip all three reads");
+    }
+
+    /// <summary>
+    /// The chain this sweep already computes is what auto-pr-review ranks this node against: the
+    /// sweep writes the owner's enrolled, unrevoked nodes into the shared snapshot, so the engine
+    /// never fetches for itself. A revoked node is absent from it, and the root's own node, which has
+    /// no vouch entry, is present.
+    /// </summary>
+    [Fact]
+    public async Task The_sweep_hands_the_owners_enrolled_unrevoked_nodes_to_auto_pr_review_in_process()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        FakeLedger ledger = new();
+        InMemoryMessageTransport transport = new(ledger);
+        (NodeContext nodeB, Guid projectId) = await SeedOwnerAndProjectAsync(_postgres.Store, "snapshot", cts.Token);
+        Guid vouched = DomainId.New();
+        Guid revoked = DomainId.New();
+
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                ["owner-b-root-fingerprint"] = new TrustedOwner(
+                    "owner-b-root-fingerprint", "ssh-ed25519 AAAAFAKE owner-b-root",
+                    [new TrustedNode(vouched.ToString(), "ssh-ed25519 AAAAFAKEvouched test", "vouched-fingerprint", Now)],
+                    RootNodeId: nodeB.NodeId.ToString(),
+                    RevokedNodeIds: new HashSet<string> { revoked.ToString() }),
+            },
+            [],
+            ProjectKey: "shared-project-key");
+        EnrolledNodeSnapshots snapshots = new();
+
+        MessageSweepEngine engine = new(
+            _postgres.Store, nodeB, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            new FakeLedgerChainReader(trustChain), new MessageNodeIdentityResolver(new NodeKeyStore()),
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver(), new FakeLedger())),
+            new EventCatchUpCoordinator(),
+            enrolledNodes: snapshots);
+
+        snapshots.TryGet(projectId).Should().BeNull("no chain has been computed yet, which reads as leader");
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        snapshots.TryGet(projectId).Should().BeEquivalentTo([nodeB.NodeId, vouched]);
     }
 
     /// <summary>

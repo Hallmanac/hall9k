@@ -185,4 +185,127 @@ public sealed class AutoPrReviewObservationTests
         described.Should().Contain("does not recognise");
         described.Should().Contain("SomethingElseEntirely");
     }
+
+    // The mint hold: on a fleet exactly one node mints on the first sweep and every other node
+    // holds, measured off GitHub's own requested-at time so a node that wakes late mints at once.
+
+    private static readonly Guid Lowest = Guid.Parse("01a00d41-0000-7000-8000-000000000001");
+    private static readonly Guid Middle = Guid.Parse("01a04de3-0000-7000-8000-000000000002");
+    private static readonly Guid Highest = Guid.Parse("01a09999-0000-7000-8000-000000000003");
+    private static readonly DateTimeOffset RequestedAt = new(2026, 9, 24, 20, 0, 0, TimeSpan.Zero);
+    private static readonly TimeSpan Hold = TimeSpan.FromSeconds(300);
+
+    [Fact]
+    public void The_lowest_ranked_node_mints_at_once_on_the_first_sweep_that_sees_the_request()
+    {
+        PeerHold? hold = AutoPrReviewObservation.DecideMintHold(
+            Lowest, [Lowest, Middle, Highest], RequestedAt, RequestedAt.AddSeconds(5), Hold);
+
+        hold.Should().BeNull("the leader mints exactly as a single-node install always has");
+    }
+
+    [Fact]
+    public void A_follower_holds_for_the_leader_until_the_requested_at_time_is_older_than_the_hold()
+    {
+        PeerHold? hold = AutoPrReviewObservation.DecideMintHold(
+            Middle, [Lowest, Middle, Highest], RequestedAt, RequestedAt.AddSeconds(5), Hold);
+
+        hold.Should().Be(new PeerHold(Lowest, RequestedAt.AddSeconds(300)));
+    }
+
+    [Fact]
+    public void A_follower_still_holds_on_the_last_second_of_the_hold()
+    {
+        AutoPrReviewObservation.DecideMintHold(
+            Middle, [Lowest, Middle], RequestedAt, RequestedAt.AddSeconds(299), Hold)
+            .Should().NotBeNull();
+    }
+
+    [Fact]
+    public void A_follower_mints_once_the_requested_at_time_is_older_than_the_hold()
+    {
+        AutoPrReviewObservation.DecideMintHold(
+            Middle, [Lowest, Middle], RequestedAt, RequestedAt.AddSeconds(300), Hold)
+            .Should().BeNull("the leader had the whole hold to replicate a task and nothing covers the request");
+    }
+
+    [Fact]
+    public void A_follower_that_wakes_late_mints_at_once_because_the_hold_is_measured_off_the_request_and_not_the_sighting()
+    {
+        AutoPrReviewObservation.DecideMintHold(
+            Highest, [Lowest, Middle, Highest], RequestedAt, RequestedAt.AddHours(9), Hold)
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void An_explicit_zero_hold_means_this_node_never_defers_whatever_its_rank()
+    {
+        AutoPrReviewObservation.DecideMintHold(
+            Highest, [Lowest, Middle, Highest], RequestedAt, RequestedAt, TimeSpan.Zero)
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void A_single_node_owner_is_its_own_leader()
+    {
+        AutoPrReviewObservation.DecideMintHold(Highest, [Highest], RequestedAt, RequestedAt, Hold).Should().BeNull();
+    }
+
+    [Fact]
+    public void A_chain_that_names_no_node_at_all_reads_as_leader()
+    {
+        AutoPrReviewObservation.DecideMintHold(Highest, [], RequestedAt, RequestedAt, Hold).Should().BeNull();
+    }
+
+    [Fact]
+    public void A_chain_nobody_could_read_reads_as_leader()
+    {
+        AutoPrReviewObservation.DecideMintHold(Highest, null, RequestedAt, RequestedAt, Hold)
+            .Should().BeNull("no chain computed yet is today's behaviour, which is to mint");
+    }
+
+    [Fact]
+    public void A_node_the_chain_does_not_list_still_ranks_among_the_nodes_it_does()
+    {
+        // This node is not in the enrolled set (revoked, or not yet vouched) and is lower than the
+        // rest, so it is the leader by its own reading rather than deferring to a peer it outranks.
+        AutoPrReviewObservation.DecideMintHold(Lowest, [Middle, Highest], RequestedAt, RequestedAt, Hold)
+            .Should().BeNull();
+    }
+
+    [Fact]
+    public void A_held_request_is_reported_when_it_starts_and_again_only_when_it_ends_in_a_mint_or_a_covering_task()
+    {
+        ObservedReviewRequest held = new() { Outcome = ReviewRequestOutcome.HeldForPeer };
+        Guid task = DomainId.New();
+
+        AutoPrReviewObservation.IsReportable(null, ReviewRequestOutcome.HeldForPeer, null).Should().BeTrue();
+        AutoPrReviewObservation.IsReportable(held, ReviewRequestOutcome.HeldForPeer, null).Should().BeFalse();
+        AutoPrReviewObservation.IsReportable(held, ReviewRequestOutcome.TaskCreated, task).Should().BeTrue();
+        AutoPrReviewObservation.IsReportable(held, ReviewRequestOutcome.AlreadyCovered, task).Should().BeTrue();
+    }
+
+    [Fact]
+    public void A_tick_that_cannot_read_the_time_keeps_a_recorded_hold_rather_than_flipping_to_needs_you()
+    {
+        ObservedReviewRequest held = new()
+        {
+            Outcome = ReviewRequestOutcome.HeldForPeer,
+            RequestedAt = RequestedAt,
+        };
+
+        AutoPrReviewObservation.Settle(held, ReviewRequestOutcome.HeldRequestTimeUnknown, null)
+            .Should().Be(ReviewRequestOutcome.HeldForPeer);
+    }
+
+    [Fact]
+    public void The_held_outcome_survives_a_round_trip_through_a_stored_value_and_says_a_peer_mints_first()
+    {
+        ReviewRequestOutcome.FromInput("HeldForPeer").Should().Be(ReviewRequestOutcome.HeldForPeer);
+
+        string described = AutoPrReviewObservation.Describe(ReviewRequestOutcome.HeldForPeer, "detail", null);
+
+        described.Should().Contain("fleet peer ranks first");
+        described.Should().Contain("(detail)");
+    }
 }
