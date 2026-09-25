@@ -1092,6 +1092,100 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
     }
 
     /// <summary>
+    /// A live review a peer node minted and replication has since delivered covers the request
+    /// exactly as a local one does: the dedup reads the store, not who wrote to it, so nothing new
+    /// is minted for a request the fleet already holds a task for, and the recorded outcome names
+    /// the replicated task rather than a task of this node's own.
+    /// </summary>
+    [Fact]
+    public async Task A_live_review_replicated_in_from_another_node_already_covers_the_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        await using ReplicatedFleet fleet = await ReplicatedFleet.StartAsync(
+            postgres, "auto_pr_review_replicated_cover_peer", cleanPrimary: false, cts.Token);
+        DocumentStore store = fleet.A.Store;
+        NodeContext node = fleet.A.Node;
+        Guid projectId = DomainId.New();
+        Guid replicatedTaskId = DomainId.New();
+        const string repository = "acme/replicated-cover-test";
+        const int number = 8801;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-replicated-cover", repository, Now, Now.AddDays(-1),
+            Optional<AutoPrReviewSpeed>.None, cts.Token);
+        await fleet.SeedReviewAsync(
+            fleet.B, replicatedTaskId, Now, cts.Token, pullRequest: $"{repository}#{number}");
+        await fleet.ExchangeAsync(fleet.B, fleet.A, cts.Token);
+
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node), OneRequestedPullRequest(repository, number, Now.AddMinutes(5)),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            string reference = $"{WorkItemProvider.GitHubPullRequest.Value}:{repository}#{number}";
+            (await query.Query<TaskListItem>().Where(task => task.ExternalReference == reference).ToListAsync(cts.Token))
+                .Should().ContainSingle().Which.Id.Should().Be(replicatedTaskId, "nothing was minted beside the replicated task");
+
+            ObservedReviewRequest observed = (await query.LoadAsync<ObservedReviewRequest>(
+                ObservedReviewRequest.ComputeId(node.NodeId, projectId, repository, number, "brian"), cts.Token))!;
+            observed.Outcome.Should().Be(ReviewRequestOutcome.AlreadyCovered);
+            observed.TaskId.Should().Be(replicatedTaskId);
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// The auto-pr-review sweep runs the duplicate pass on its own, without any replication read
+    /// having triggered it: two live auto-created reviews of one pull request that both sit in
+    /// this node's store leave the sweep with one.
+    /// </summary>
+    [Fact]
+    public async Task The_sweep_abandons_the_younger_of_two_live_auto_created_reviews_of_one_pull_request()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        Guid older = Guid.Parse("01997b00-0000-7000-8000-0000000000a1");
+        Guid younger = Guid.Parse("01997b00-0001-7000-8000-0000000000b2");
+
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            foreach (Guid id in new[] { younger, older })
+            {
+                TaskAdded added = TaskDecider.Add(
+                    id, projectId, "Review pull request acme/sweep-duplicate-test#77", ["every finding is directed"],
+                    TaskType.PrReview, null, null,
+                    new ExternalReference(WorkItemProvider.GitHubPullRequest, "acme/sweep-duplicate-test#77"),
+                    Now, node.OwnerId);
+                List<object> events = [.. TaskSeed.Dispatchable(added, node.OwnerId, Now)];
+                events.Insert(1, new PullRequestReviewAssignmentObserved(
+                    id, "https://github.com/acme/sweep-duplicate-test/pull/77", "brian", "alice", Now, Now));
+                session.Events.StartStream<TaskAggregate>(id, [.. events]);
+            }
+
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        AutoPrReviewEngine engine = new(
+            store, node, NewLauncher(store, node), ScriptedGh("brian", "{}"),
+            new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance), NullLogger<AutoPrReviewEngine>.Instance);
+
+        await engine.PollOnceAsync(cts.Token);
+
+        await using IQuerySession query = store.QuerySession();
+        (await query.LoadAsync<TaskListItem>(younger, cts.Token))!.State.Should().Be(TaskState.Abandoned);
+        (await query.LoadAsync<TaskListItem>(older, cts.Token))!.State.Should().Be(TaskState.Queued);
+    }
+
+    /// <summary>
     /// The gh pr view subprocess the import always pays is skipped for the overwhelmingly common
     /// case — a live task already covers this pull request — via a cheap case-insensitive match
     /// against the reference guessed from the project's own repository casing, never gh's own

@@ -244,6 +244,64 @@ public sealed class MessageSweepEngineTests : IClassFixture<PostgresFixture>, IA
     }
 
     /// <summary>
+    /// A sweep that reads a peer's events and applies some of them runs the duplicate pass right
+    /// there, not on the auto-pr-review sweep's own later interval: the peer's older review of a
+    /// pull request this node already holds a younger review of arrives in this read, and the
+    /// younger one is abandoned before the same call returns.
+    /// </summary>
+    [Fact]
+    public async Task A_sweep_that_applied_replicated_events_abandons_the_local_younger_duplicate_within_the_same_call()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        await using ReplicatedFleet fleet = await ReplicatedFleet.StartAsync(
+            _postgres, "message_sweep_convergence_peer", cleanPrimary: true, cts.Token);
+        Guid older = Guid.Parse("01997c00-0000-7000-8000-0000000000a1");
+        Guid younger = Guid.Parse("01997c00-0001-7000-8000-0000000000b2");
+        await fleet.SeedReviewAsync(fleet.A, younger, Now, cts.Token);
+        await fleet.SeedReviewAsync(fleet.B, older, Now, cts.Token);
+        await fleet.PublishAsync(fleet.B, cts.Token);
+
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = fleet.A.Store.LightweightSession())
+        {
+            OwnerAggregate owner =
+                (await session.Events.AggregateStreamAsync<OwnerAggregate>(fleet.A.Node.OwnerId, token: cts.Token))!;
+            session.Events.Append(
+                fleet.A.Node.OwnerId, OwnerDecider.ClaimRoot(owner, "owner-a-root-fingerprint", verified: true, Now));
+            session.Events.StartStream<ProjectAggregate>(
+                projectId,
+                ProjectDecider.Register(
+                    projectId, fleet.A.Node.OwnerId, DomainId.New(), "sweep-convergence", ReplicatedFleet.RepositoryPath, null, null, Now));
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        TrustChain trustChain = new(
+            new Dictionary<string, TrustedOwner>
+            {
+                ["owner-b-root"] = new TrustedOwner(
+                    "owner-b-root", "ssh-ed25519 AAAAFAKE owner-b-root",
+                    [new TrustedNode(fleet.B.Node.NodeId.ToString(), "ssh-ed25519 AAAAFAKEnodeb test", "node-b-fingerprint", Now)]),
+            },
+            [new ProjectMember("owner-b-root", MembershipRole.Owner, Now)],
+            ProjectKey: "shared-project-key");
+        InMemoryMessageTransport transport = fleet.Transport;
+        MessageSweepEngine engine = new(
+            fleet.A.Store, fleet.A.Node, new MessageOutbox(transport), new MessageInbox(transport), transport,
+            new FakeLedgerChainReader(trustChain), new MessageNodeIdentityResolver(new NodeKeyStore()),
+            Options.Create(new DaemonOptions()), NullLogger<MessageSweepEngine>.Instance,
+            new EventReplicationOutbox(new ReplicationProjectResolver()), new EventReplicationInbox(transport),
+            new EventCatchUpInbox(transport, new EventCatchUpResponder(new ReplicationProjectResolver(), new FakeLedger())),
+            new EventCatchUpCoordinator(), fleet.A.Convergence);
+
+        await engine.SweepOnceAsync(cts.Token);
+
+        (await ReplicatedFleet.ItemAsync(fleet.A, older, cts.Token)).State.Should().Be(
+            TaskState.Queued, "the peer's older review was applied by this very sweep");
+        (await ReplicatedFleet.ItemAsync(fleet.A, younger, cts.Token)).State.Should().Be(
+            TaskState.Abandoned, "the pass ran right after the read that applied events, not a poll interval later");
+    }
+
+    /// <summary>
     /// Independent pre-PR review, cycle 4, conformance lens (low): <c>h9k message send --project</c>
     /// lets a message queue for a project not eligible for messaging (archived, or with no
     /// repository) with no eligibility check of its own, since queueing never touches git. Before
