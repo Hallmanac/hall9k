@@ -259,6 +259,7 @@ builder.Services.AddSingleton<IReviewConversationReader>(services =>
     new GitHubReviewThreads(services.GetRequiredService<ProcessRunner>()));
 builder.Services.AddSingleton<PrReviewFollowThroughEngine>();
 builder.Services.AddSingleton<CloseoutEngine>();
+builder.Services.AddSingleton<PullRequestReviewDuplicateConvergence>();
 builder.Services.AddSingleton<AutoPrReviewEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
 builder.Services.AddSingleton<JiraWriteRetryEngine>();

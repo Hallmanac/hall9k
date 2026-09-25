@@ -2,6 +2,7 @@ using Hall9k.Connectors.Identity;
 using Hall9k.Connectors.Ledger;
 using Hall9k.Connectors.Processes;
 using Hall9k.Connectors.WorkItems;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Node;
@@ -1553,6 +1554,21 @@ public sealed class DispatchEngine(
             return null;
         }
 
+        // The dispatcher's own guarantee that one review request never runs twice (the convergence
+        // pass makes the board agree, this is what keeps a younger twin from ever starting a run):
+        // an older live auto-created review of this owner on the same pull request means this task
+        // is the duplicate, however the sweeps happen to interleave. Debug rather than Information,
+        // because a refused task is retried every dispatch tick until the convergence pass abandons
+        // it, and that pass records the one line an operator needs.
+        if (await FindOlderLiveTwinAsync(session, task, ownerRootFingerprint, cancellationToken) is { } survivorId)
+        {
+            logger.LogDebug(
+                "Task {TaskId} is queued but task {SurvivorId} already holds the same GitHub review request "
+                + "(the smaller id survives), so the claim is refused and the duplicate pass abandons it",
+                taskId, survivorId);
+            return null;
+        }
+
         // Belt and suspenders (the same re-validate-right-before-claiming discipline this method
         // already gives the task's own state above): a fresh load on this method's own session,
         // not the archived-project set ReadQueueAsync already filtered the candidate list against
@@ -1673,6 +1689,34 @@ public sealed class DispatchEngine(
         await ReleaseHolderClaimHoldAsync(taskId, cancellationToken);
         await MirrorTrackerAssigneeBestEffortAsync(task, project, cancellationToken);
         return new ClaimedWork(taskId, runId, claimed.LeaseGeneration);
+    }
+
+    /// <summary>
+    /// The id of an older live auto-created pr-review task of this owner on the same external
+    /// reference, or null when this task has no such rival: the claim-time half of one review
+    /// request, one live task. Only an auto-created task is refused, the same set the convergence
+    /// pass abandons, so a review a person adopted by hand is never stranded behind one.
+    /// </summary>
+    private async Task<Guid?> FindOlderLiveTwinAsync(
+        IDocumentSession session, TaskAggregate task, string? ownerRootFingerprint, CancellationToken cancellationToken)
+    {
+        if (task.Type != TaskType.PrReview || task.ExternalReference is not { } reference
+            || await session.LoadAsync<TaskListItem>(task.Id, cancellationToken) is not { WasAutoPrReviewCreated: true })
+        {
+            return null;
+        }
+
+        IReadOnlyList<TaskListItem> sameReference = await PullRequestReviewDuplicateConvergence.ReadLiveAutoCreatedAsync(
+            session, reference.ToString(), cancellationToken);
+        Guid[] older =
+        [
+            .. sameReference
+                .Where(other => other.Id != task.Id
+                    && PullRequestReviewDuplicateRule.IsRival(other, node.OwnerId, ownerRootFingerprint)
+                    && PullRequestReviewDuplicateRule.IsYoungerThan(task.Id, other.Id))
+                .Select(other => other.Id),
+        ];
+        return older.Length == 0 ? null : PullRequestReviewDuplicateRule.SurvivorOf(older);
     }
 
     /// <summary>

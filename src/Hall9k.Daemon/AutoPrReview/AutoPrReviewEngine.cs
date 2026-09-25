@@ -19,6 +19,7 @@ using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Marten.Linq.MatchesSql;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Hall9k.Daemon.AutoPrReview;
 
@@ -167,10 +168,20 @@ public sealed class AutoPrReviewEngine(
     RunLauncher launcher,
     ProcessRunner processRunner,
     LaunchHoldEngine launchHold,
-    ILogger<AutoPrReviewEngine> logger)
+    ILogger<AutoPrReviewEngine> logger,
+    PullRequestReviewDuplicateConvergence? duplicateConvergence = null)
 {
     private static readonly string[] TerminalStates =
         [TaskState.Done.Value, TaskState.Abandoned.Value];
+
+    /// <summary>
+    /// The standing duplicate pass this sweep runs after every project has been read. Optional so a
+    /// test that never touches duplicates constructs this engine as it always has; production
+    /// injects the one instance the message sweep shares, so the two never race each other.
+    /// </summary>
+    private readonly PullRequestReviewDuplicateConvergence _duplicateConvergence =
+        duplicateConvergence ?? new PullRequestReviewDuplicateConvergence(
+            store, node, NullLogger<PullRequestReviewDuplicateConvergence>.Instance);
 
     /// <summary>
     /// At most one ceiling-exempt launch per sweep (Decisions Log #64's own origin OOM,
@@ -303,6 +314,22 @@ public sealed class AutoPrReviewEngine(
                 logger.LogWarning(
                     exception, "Auto-pr-review sweep failed for project {Project}; will retry next tick", project.Name);
             }
+        }
+
+        // After the project loop, and whether or not every project could be read: the pass reads
+        // only this node's own store, so a GitHub outage on one project must not leave a duplicate
+        // pair standing. It runs after minting so a twin minted earlier in this very sweep is seen.
+        try
+        {
+            await _duplicateConvergence.ConvergeAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception)
+        {
+            logger.LogWarning(exception, "Auto-pr-review's duplicate convergence pass failed; will retry next tick");
         }
 
         return new AutoPrReviewSweepResult(inspected, failed, created, recalled);

@@ -735,6 +735,18 @@ One live task per pull request; a withdrawn assignment concludes the task honest
 dispatches, or is recorded as an observation only once it has. No scheduling code of its own:
 every speed reuses a general dispatch lever, and the review itself is unchanged.
 
+That rule holds across every node of one owner's fleet too. Two nodes that both watch a project can
+each mint a task for the same review request before either sees the other's, because a peer's task
+arrives by replication a couple of minutes later. Once both are visible, the task with the smaller
+id survives (an id is a UUIDv7, so that is the older mint, and no wall clock is read, so nodes with
+skewed clocks still agree): the auto-pr-review sweep, and every replication read that applied events,
+abandon each younger duplicate as the owner with a reason naming the survivor, hand any mention the
+duplicate recorded to the survivor, and give back the lease and ledger holder this node held for it.
+The dispatcher also refuses to claim a review that has an older live auto-created twin of the same
+owner on its pull request, which is what keeps the younger twin from ever starting a run. A
+teammate's review of the same pull request is a different owner's work and is never touched, and a
+review a person adopted by hand is never abandoned by the platform.
+
 ### The claim gate
 
 `h9k project set <name> --claim-gate off|tracker-assignee` (default off, today's behaviour
