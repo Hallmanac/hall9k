@@ -260,6 +260,7 @@ builder.Services.AddSingleton<IReviewConversationReader>(services =>
 builder.Services.AddSingleton<PrReviewFollowThroughEngine>();
 builder.Services.AddSingleton<CloseoutEngine>();
 builder.Services.AddSingleton<PullRequestReviewDuplicateConvergence>();
+builder.Services.AddSingleton<EnrolledNodeSnapshots>();
 builder.Services.AddSingleton<AutoPrReviewEngine>();
 builder.Services.AddSingleton<CardPublicationEngine>();
 builder.Services.AddSingleton<JiraWriteRetryEngine>();

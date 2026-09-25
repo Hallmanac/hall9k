@@ -39,6 +39,54 @@ public sealed class ReviewRequestRowTests
     }
 
     [Fact]
+    public void A_request_held_for_a_fleet_peer_is_informational_and_names_the_leader_and_when_the_hold_ends()
+    {
+        Guid leader = Guid.Parse("01a00d41-0000-7000-8000-000000000001");
+        DateTimeOffset endsAt = Now.AddMinutes(4);
+        ObservedReviewRequest held = Observed(ReviewRequestOutcome.HeldForPeer, Now.AddMinutes(-1));
+        held.HoldLeaderNodeId = leader;
+        held.HoldEndsAt = endsAt;
+
+        ReviewRequestRow row = ReviewRequestPane.Compose(
+            held, "arx-platform", AutoPrReviewSetting.Unrecorded, covering: null, Now, holdLeaderName: "the-mac");
+
+        row.NeedsYou.Should().BeFalse("the daemon is handling it and nothing is asked of the operator");
+        row.Markup.Should().Contain("a review of acme/widgets#2033 was requested of brian");
+        row.Markup.Should().Contain($"held for node the-mac ({DomainId.Short(leader)})");
+        row.Markup.Should().Contain($"this node mints at {endsAt.ToLocalTime():HH:mm} only if nothing covers it by then");
+        row.Markup.Should().NotContain("h9k task add");
+    }
+
+    [Fact]
+    public void A_held_request_whose_leader_is_not_registered_here_names_the_node_by_its_short_id_alone()
+    {
+        Guid leader = Guid.Parse("01a00d41-0000-7000-8000-000000000001");
+        ObservedReviewRequest held = Observed(ReviewRequestOutcome.HeldForPeer, Now.AddMinutes(-1));
+        held.HoldLeaderNodeId = leader;
+        held.HoldEndsAt = Now.AddMinutes(4);
+
+        ReviewRequestRow row = ReviewRequestPane.Compose(
+            held, "arx-platform", AutoPrReviewSetting.Unrecorded, covering: null, Now);
+
+        row.Markup.Should().Contain($"held for node {DomainId.Short(leader)},");
+    }
+
+    [Fact]
+    public void A_task_covering_a_held_request_outranks_the_hold()
+    {
+        Guid taskId = DomainId.New();
+        ObservedReviewRequest held = Observed(ReviewRequestOutcome.HeldForPeer, Now.AddMinutes(-1));
+        held.HoldLeaderNodeId = Guid.NewGuid();
+        held.HoldEndsAt = Now.AddMinutes(4);
+
+        ReviewRequestRow row = ReviewRequestPane.Compose(
+            held, "arx-platform", AutoPrReviewSetting.Unrecorded,
+            new CoveringReview(taskId, Live: true, "Queued", AutoCreated: true), Now);
+
+        row.Markup.Should().Contain($"task {DomainId.Short(taskId)} is created and reviewing").And.NotContain("held for");
+    }
+
+    [Fact]
     public void An_on_project_with_a_live_task_is_informational_and_names_the_task()
     {
         Guid taskId = DomainId.New();

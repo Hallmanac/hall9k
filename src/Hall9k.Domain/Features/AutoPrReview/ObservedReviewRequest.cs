@@ -90,6 +90,18 @@ public sealed class ObservedReviewRequest
     public Guid? TaskId { get; set; }
 
     /// <summary>
+    /// The fleet node this install is holding the request for, set only while <see cref="Outcome"/>
+    /// is <see cref="ReviewRequestOutcome.HeldForPeer"/> and null otherwise.
+    /// </summary>
+    public Guid? HoldLeaderNodeId { get; set; }
+
+    /// <summary>
+    /// When that hold ends and this install mints if nothing covers the request by then: GitHub's
+    /// own requested-at time plus the hold. Set exactly when <see cref="HoldLeaderNodeId"/> is.
+    /// </summary>
+    public DateTimeOffset? HoldEndsAt { get; set; }
+
+    /// <summary>
     /// Keyed on the decider and the request together: the observing node and project, the pull
     /// request, and the login the review was requested of — repository and login lower-cased,
     /// because GitHub's own casing for an <c>owner/repo</c> (or for a login) is under no

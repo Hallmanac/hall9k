@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using Hall9k.Connectors.Processes;
+using Hall9k.Connectors.Trust;
 using Hall9k.Connectors.Worktrees;
 using Hall9k.Cli.Commands;
 using Hall9k.Daemon;
@@ -24,10 +25,12 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Infrastructure.Persistence;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using Hall9k.Tests.Fakes;
 using Marten;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Xunit;
@@ -3303,6 +3306,276 @@ public sealed class PrReviewTaskEngineTests(PostgresFixture postgres) : IClassFi
             await RowsForAsync(store, repository, number, Now.AddMinutes(10), cts.Token);
         rendered.Should().ContainSingle("both installs graded it the same way, so there is one thing to say");
         rendered.Single().NeedsYou.Should().BeTrue("the project recorded an explicit off — nothing started");
+    }
+
+    // -------------------------------------------------------------------------------------
+    // The fleet mint hold: exactly one node mints on the first sweep that sees a request and every
+    // other node holds it. These tests give the engine a snapshot in which a lower-ranked peer
+    // exists, and control the request's age through the scripted timeline's requestedAt, since the
+    // hold is measured off GitHub's own time and the engine reads the wall clock directly.
+    // -------------------------------------------------------------------------------------
+
+    /// <summary>A node id that sorts below every id this platform will ever mint.</summary>
+    private static readonly Guid LowerRankedPeer = Guid.Parse("00000000-0000-7000-8000-000000000001");
+
+    private static DateTimeOffset SecondsAgo(int seconds)
+    {
+        DateTimeOffset moment = DateTimeOffset.UtcNow.AddSeconds(-seconds);
+        return moment.AddTicks(-(moment.Ticks % TimeSpan.TicksPerSecond));
+    }
+
+    private static EnrolledNodeSnapshots FleetOfThisNodeAnd(Guid projectId, NodeContext node, Guid peer)
+    {
+        EnrolledNodeSnapshots snapshots = new();
+        snapshots.Record(
+            projectId,
+            new TrustChain(
+                new Dictionary<string, TrustedOwner>
+                {
+                    ["owner-root"] = new TrustedOwner(
+                        "owner-root", "ssh-ed25519 AAAAFAKE root",
+                        [
+                            new TrustedNode(peer.ToString(), "ssh-ed25519 AAAAFAKEpeer test", "peer-fingerprint", Now),
+                            new TrustedNode(node.NodeId.ToString(), "ssh-ed25519 AAAAFAKEself test", "self-fingerprint", Now),
+                        ]),
+                },
+                []),
+            "owner-root");
+        return snapshots;
+    }
+
+    private AutoPrReviewEngine NewHoldingEngine(
+        DocumentStore store, NodeContext node, ProcessRunner gh, ILogger<AutoPrReviewEngine> logger,
+        EnrolledNodeSnapshots snapshots, int? holdSeconds = null) => new(
+            store, node, NewLauncher(store, node), gh, new LaunchHoldEngine(store, NullLogger<LaunchHoldEngine>.Instance),
+            logger, enrolledNodes: snapshots,
+            options: Options.Create(holdSeconds is { } seconds
+                ? new DaemonOptions { AutoPrReviewMintHoldSeconds = seconds }
+                : new DaemonOptions()));
+
+    /// <summary>
+    /// The follower's whole story through PollOnceAsync: a fresh request is recorded as held for the
+    /// lower-ranked peer, nothing is minted and nothing asks the operator, the log says so exactly
+    /// once however many ticks pass, and once the hold is over with nothing covering the request the
+    /// same node mints and the log says that once too.
+    /// </summary>
+    [Fact]
+    public async Task A_follower_holds_a_fresh_request_for_the_leader_with_one_log_line_and_mints_when_its_hold_ends()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mint-hold-follower-test";
+        const int number = 9701;
+        DateTimeOffset requestedAt = SecondsAgo(30);
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mint-hold-follower", repository,
+            DateTimeOffset.UtcNow.AddDays(-2), DateTimeOffset.UtcNow.AddDays(-1), Optional<AutoPrReviewSpeed>.None, cts.Token);
+        EnrolledNodeSnapshots snapshots = FleetOfThisNodeAnd(projectId, node, LowerRankedPeer);
+        ListLogger<AutoPrReviewEngine> logger = new();
+        ProcessRunner gh = OneRequestedPullRequest(repository, number, requestedAt);
+
+        try
+        {
+            AutoPrReviewEngine follower = NewHoldingEngine(store, node, gh, logger, snapshots);
+            await follower.PollOnceAsync(cts.Token);
+            await follower.PollOnceAsync(cts.Token);
+
+            await using (IQuerySession query = store.QuerySession())
+            {
+                (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).CountAsync(cts.Token))
+                    .Should().Be(0, "a follower mints nothing while it holds");
+
+                ObservedReviewRequest held = (await query.LoadAsync<ObservedReviewRequest>(
+                    ObservedReviewRequest.ComputeId(node.NodeId, projectId, repository, number, "brian"), cts.Token))!;
+                held.Outcome.Should().Be(ReviewRequestOutcome.HeldForPeer);
+                held.TaskId.Should().BeNull();
+                held.HoldLeaderNodeId.Should().Be(LowerRankedPeer);
+                held.HoldEndsAt.Should().Be(requestedAt.AddSeconds(OperatingSettings.DefaultAutoPrReviewMintHoldSeconds));
+            }
+
+            logger.InformationLines.Where(line => line.Contains($"{repository}#{number}")).Should().ContainSingle(
+                "one line when the hold starts, and none for the second tick that changed nothing")
+                .Which.Should().Contain("fleet peer ranks first").And.Contain(DomainId.Short(LowerRankedPeer));
+
+            ReviewRequestRow row = (await RowForAsync(store, repository, number, DateTimeOffset.UtcNow, cts.Token))!;
+            row.NeedsYou.Should().BeFalse("nothing is asked of the operator while a peer is expected to mint");
+            row.Markup.Should().Contain($"held for node {DomainId.Short(LowerRankedPeer)}");
+            row.Markup.Should().Contain(
+                $"mints at {requestedAt.AddSeconds(OperatingSettings.DefaultAutoPrReviewMintHoldSeconds).ToLocalTime():HH:mm}");
+
+            // The hold is over: the same node, now told never to defer, sees the same standing
+            // request with nothing covering it and mints.
+            AutoPrReviewEngine minting = NewHoldingEngine(store, node, gh, logger, snapshots, holdSeconds: 0);
+            await minting.PollOnceAsync(cts.Token);
+
+            await using (IQuerySession query = store.QuerySession())
+            {
+                TaskListItem minted = (await query.Query<TaskListItem>()
+                    .Where(task => task.ProjectId == projectId).ToListAsync(cts.Token)).Single();
+                ObservedReviewRequest observed = (await query.LoadAsync<ObservedReviewRequest>(
+                    ObservedReviewRequest.ComputeId(node.NodeId, projectId, repository, number, "brian"), cts.Token))!;
+                observed.Outcome.Should().Be(ReviewRequestOutcome.TaskCreated);
+                observed.TaskId.Should().Be(minted.Id);
+                observed.HoldLeaderNodeId.Should().BeNull("the hold's facts do not outlive the hold");
+                observed.HoldEndsAt.Should().BeNull();
+            }
+
+            logger.InformationLines.Where(line => line.Contains($"{repository}#{number}")).Should().HaveCount(
+                2, "the hold starting and the hold ending in a mint, and nothing else")
+                .And.Subject.Last().Should().Contain("is created and reviewing");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    [Fact]
+    public async Task A_follower_mints_at_once_for_a_request_already_older_than_its_hold()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mint-hold-late-follower-test";
+        const int number = 9702;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mint-hold-late", repository,
+            DateTimeOffset.UtcNow.AddDays(-2), DateTimeOffset.UtcNow.AddDays(-1), Optional<AutoPrReviewSpeed>.None, cts.Token);
+        AutoPrReviewEngine follower = NewHoldingEngine(
+            store, node, OneRequestedPullRequest(repository, number, SecondsAgo(600)), new ListLogger<AutoPrReviewEngine>(),
+            FleetOfThisNodeAnd(projectId, node, LowerRankedPeer));
+
+        try
+        {
+            await follower.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).CountAsync(cts.Token))
+                .Should().Be(1, "the request is ten minutes old against a five minute hold, so nothing more is waited for");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    [Fact]
+    public async Task A_node_with_no_snapshot_mints_on_the_first_sweep_exactly_as_a_single_node_install_always_has()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+        Guid projectId = DomainId.New();
+        const string repository = "acme/mint-hold-no-fleet-test";
+        const int number = 9703;
+
+        await SeedProjectAsync(
+            store, node, projectId, "auto-pr-review-mint-hold-none", repository,
+            DateTimeOffset.UtcNow.AddDays(-2), DateTimeOffset.UtcNow.AddDays(-1), Optional<AutoPrReviewSpeed>.None, cts.Token);
+        AutoPrReviewEngine engine = NewHoldingEngine(
+            store, node, OneRequestedPullRequest(repository, number, SecondsAgo(5)), new ListLogger<AutoPrReviewEngine>(),
+            new EnrolledNodeSnapshots());
+
+        try
+        {
+            await engine.PollOnceAsync(cts.Token);
+
+            await using IQuerySession query = store.QuerySession();
+            (await query.Query<TaskListItem>().Where(task => task.ProjectId == projectId).CountAsync(cts.Token))
+                .Should().Be(1, "no chain read yet reads as leader");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(store, projectId, node.OwnerId, cts.Token);
+        }
+    }
+
+    /// <summary>
+    /// The incident this rule exists for, told across two real stores: both nodes of one owner watch
+    /// one project and both see the same review request within the hold. With replication replayed
+    /// between them the fleet ends with exactly one mint and one live task on both sides, and the
+    /// convergence layer never has a twin to abandon.
+    /// </summary>
+    [Fact]
+    public async Task Two_nodes_that_both_see_one_request_within_the_hold_end_with_one_mint_one_live_task_and_no_abandon()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        await using ReplicatedFleet fleet = await ReplicatedFleet.StartAsync(
+            postgres, "mint_hold_node_b", cleanPrimary: false, cts.Token);
+        const string repository = "acme/mint-hold-two-store-test";
+        const int number = 9801;
+        string pullRequest = $"{repository}#{number}";
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+
+        // Each node registers the project itself: a Project stream's identity event is never
+        // replicated (ReplicationProjectResolver), so on a real fleet both nodes have added it. The
+        // shared id here is only what scopes replication in this harness.
+        foreach (ReplicatedPeer peer in new[] { fleet.A, fleet.B })
+        {
+            await SeedProjectAsync(
+                peer.Store, peer.Node, fleet.ProjectId, "auto-pr-review-mint-hold-two-store", repository,
+                now.AddDays(-2), now.AddDays(-1), Optional<AutoPrReviewSpeed>.None, cts.Token);
+        }
+
+        ProcessRunner gh = OneRequestedPullRequest(repository, number, SecondsAgo(20));
+        ListLogger<AutoPrReviewEngine> loggerA = new();
+        ListLogger<AutoPrReviewEngine> loggerB = new();
+        AutoPrReviewEngine engineA = NewHoldingEngine(
+            fleet.A.Store, fleet.A.Node, gh, loggerA, FleetOfThisNodeAnd(fleet.ProjectId, fleet.A.Node, fleet.B.Node.NodeId));
+        AutoPrReviewEngine engineB = NewHoldingEngine(
+            fleet.B.Store, fleet.B.Node, gh, loggerB, FleetOfThisNodeAnd(fleet.ProjectId, fleet.B.Node, fleet.A.Node.NodeId));
+        bool aLeads = fleet.A.Node.NodeId.CompareTo(fleet.B.Node.NodeId) < 0;
+
+        try
+        {
+            // Both sweeps see the request before any replication has landed: the exact window that
+            // used to end in a twin.
+            AutoPrReviewSweepResult sweptA = await engineA.PollOnceAsync(cts.Token);
+            AutoPrReviewSweepResult sweptB = await engineB.PollOnceAsync(cts.Token);
+            (sweptA.TasksCreated + sweptB.TasksCreated).Should().Be(1, "exactly one node mints, whichever one ranks first");
+            (aLeads ? sweptA : sweptB).TasksCreated.Should().Be(1);
+
+            await fleet.ExchangeBothWaysAsync(cts.Token);
+            await engineA.PollOnceAsync(cts.Token);
+            await engineB.PollOnceAsync(cts.Token);
+            await fleet.ExchangeBothWaysAsync(cts.Token);
+
+            IReadOnlyList<Guid> liveOnA = await ReplicatedFleet.LiveReviewsAsync(fleet.A, pullRequest, cts.Token);
+            IReadOnlyList<Guid> liveOnB = await ReplicatedFleet.LiveReviewsAsync(fleet.B, pullRequest, cts.Token);
+            liveOnA.Should().ContainSingle("the fleet holds one live review");
+            liveOnB.Should().Equal(liveOnA, "both nodes agree on which one");
+
+            string reference = new ExternalReference(WorkItemProvider.GitHubPullRequest, pullRequest).ToString();
+            foreach (ReplicatedPeer peer in new[] { fleet.A, fleet.B })
+            {
+                await using IQuerySession query = peer.Store.QuerySession();
+                IReadOnlyList<TaskListItem> tasks = await query.Query<TaskListItem>()
+                    .Where(task => task.ExternalReference == reference)
+                    .ToListAsync(cts.Token);
+                tasks.Should().ContainSingle($"{peer.Name} never held a second task for the request");
+                (await query.Events.FetchStreamAsync(liveOnA.Single(), token: cts.Token))
+                    .Select(recorded => recorded.Data).OfType<TaskAbandoned>()
+                    .Should().BeEmpty($"{peer.Name} had no twin to abandon");
+            }
+
+            ReplicatedPeer follower = aLeads ? fleet.B : fleet.A;
+            await using IQuerySession followerQuery = follower.Store.QuerySession();
+            Guid projectId = fleet.ProjectId;
+            ObservedReviewRequest followerRow = (await followerQuery.LoadAsync<ObservedReviewRequest>(
+                ObservedReviewRequest.ComputeId(follower.Node.NodeId, projectId, repository, number, "brian"), cts.Token))!;
+            followerRow.Outcome.Should().Be(ReviewRequestOutcome.AlreadyCovered, "the leader's task replicated within the hold");
+            (aLeads ? loggerB : loggerA).InformationLines.Where(line => line.Contains(pullRequest)).Should().HaveCount(
+                2, "the follower's hold starting and then ending in a covering task");
+        }
+        finally
+        {
+            await TurnOffAutoPrReviewAsync(fleet.A.Store, fleet.ProjectId, fleet.A.Node.OwnerId, cts.Token);
+        }
     }
 
     private static async Task<IReadOnlyList<ReviewRequestRow>> RowsForAsync(

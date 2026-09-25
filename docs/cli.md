@@ -427,6 +427,21 @@ it only on the owner's explicit go, under their own login, in the exact thread t
 from. A comment id already handled never fires again, and a comment the install's own login wrote
 never counts. `--auto-pr-review off` silences mentions too; there is no separate switch.
 
+On a fleet, exactly one node mints the task for a review request. The node whose id sorts lowest
+among the owner's currently enrolled, unrevoked nodes mints on the first sweep that sees a request
+no live task covers, exactly as a single-node install always has. Every other node records the
+request as held for that leader and mints only on a later sweep where GitHub's own requested-at time
+is older than the hold and still nothing covers the pull request, so two nodes watching one project
+produce one task with no added delay instead of a twin the duplicate convergence pass must abandon.
+The hold is `h9k config set --auto-pr-review-mint-hold <seconds>`, 300 by default (the poll interval
+plus a two-minute replication allowance) and read once at daemon start; `0` means this node never
+defers and mints on the first sweep whatever its rank. A single-node owner, a node whose trust chain
+names only itself, and a node whose chain cannot be read all behave as the leader. While a request is
+held, `h9k status` shows an informational row naming the leader node and the clock time the hold ends,
+never a needs-you row, and `h9kd` logs one line when the hold starts and one when it ends in a mint or
+in a covering task. A node that ranks below a peer which does not watch the project should set the
+hold to `0`, since the peer never mints for it. Mentions are not held.
+
 One pr-review task per pull request per install stays waiting on it until it merges or closes,
 whether or not anything was ever posted to it (Decisions Log #178, amending #160):
 every review thread being resolved no longer ends the wait by itself, since a task that closed out
@@ -781,6 +796,7 @@ also appear elsewhere on this page stays where it is.
 | `h9k config set --message-poll-active-max <seconds>` | Sets the slow end of that active cadence, 25 seconds by default, which may not fall below the floor. |
 | `h9k config set --message-poll-idle-min <seconds>` | Sets the fast end of the cadence for a node with nothing to send, read, or hold, 30 seconds by default. |
 | `h9k config set --message-poll-idle-max <seconds>` | Sets the slow end of that idle cadence, 45 seconds by default, which may not fall below the floor. |
+| `h9k config set --auto-pr-review-mint-hold <seconds>` | Sets how long this node holds a GitHub review request that a lower-ranked node of the same owner is expected to mint the task for, 300 seconds by default. `0` means this node never defers. |
 | `h9k config set --invite-expiry-hours <hours>` | Sets how long a newly minted invite stays valid, 72 hours by default. |
 
 ### Recovery
@@ -1454,7 +1470,7 @@ config file, or built-in default); `set` merges a change into the file. See
 [operations.md](operations.md#daemon-operating-settings).
 
 The rest of what `h9k config set` takes, one sentence each. The message-poll and invite-expiry options
-are in [the distributed-team tables](#the-distributed-team-identity-fleet-and-holding), and the two
+(and `--auto-pr-review-mint-hold`) are in [the distributed-team tables](#the-distributed-team-identity-fleet-and-holding), and the two
 lesson-prompt caps are under [Decisions and lessons](#decisions-and-lessons).
 [operations.md](operations.md#every-key-in-the-hall9k-section) has the config-file key, the
 environment variable that outranks it, and the default for every one of them.
