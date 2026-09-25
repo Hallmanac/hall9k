@@ -17,7 +17,9 @@ namespace Hall9k.Tests.Cli;
 public sealed class OperatingSettingsRenderingTests
 {
     private static OperatingSettingsReport ReportWithOneRole(
-        string role, string? model, string? effort = null, SettingOrigin effortOrigin = SettingOrigin.Default) =>
+        string role, string? model, string? effort = null, SettingOrigin effortOrigin = SettingOrigin.Default,
+        int mintHold = OperatingSettings.DefaultAutoPrReviewMintHoldSeconds,
+        SettingOrigin mintHoldOrigin = SettingOrigin.Default) =>
         new(
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
             false,
@@ -38,7 +40,38 @@ public sealed class OperatingSettingsRenderingTests
             new ResolvedSetting<string>(
                 Hall9k.Domain.Features.Run.ReviewStageComposition.FullPipeline.Value, SettingOrigin.Default, null),
             new ResolvedSetting<string?>(
-                effort, effortOrigin, effortOrigin == SettingOrigin.PlatformConfigFile ? Hall9kDatabase.ConfigFile : null));
+                effort, effortOrigin, effortOrigin == SettingOrigin.PlatformConfigFile ? Hall9kDatabase.ConfigFile : null),
+            new ResolvedSetting<int>(
+                mintHold, mintHoldOrigin, mintHoldOrigin == SettingOrigin.PlatformConfigFile ? Hall9kDatabase.ConfigFile : null));
+
+    [Fact]
+    public void The_mint_hold_prints_in_whole_seconds_with_its_origin()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(
+            nameof(RoleModelSettings.Build), null, mintHold: 120, mintHoldOrigin: SettingOrigin.PlatformConfigFile);
+
+        OperatingSettingsRendering.Rows(report).Single(r => r.Label == "auto-pr-review-mint-hold").Value
+            .Should().Be($"120s (config: {Hall9kDatabase.ConfigFile})");
+    }
+
+    [Fact]
+    public void The_default_mint_hold_is_five_minutes_and_says_it_is_the_default()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.Build), null);
+
+        OperatingSettingsRendering.Rows(report).Single(r => r.Label == "auto-pr-review-mint-hold").Value
+            .Should().Be("300s (default)");
+    }
+
+    [Fact]
+    public void A_zero_mint_hold_says_this_node_never_defers()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(
+            nameof(RoleModelSettings.Build), null, mintHold: 0, mintHoldOrigin: SettingOrigin.PlatformConfigFile);
+
+        OperatingSettingsRendering.Rows(report).Single(r => r.Label == "auto-pr-review-mint-hold").Value
+            .Should().StartWith("0s, this node never defers");
+    }
 
     [Fact]
     public void An_unset_effort_says_the_models_own_default_decides()

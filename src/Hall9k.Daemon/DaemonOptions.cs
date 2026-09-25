@@ -129,6 +129,21 @@ public sealed class DaemonOptions
     public TimeSpan AutoPrReviewPollBackoffMaxInterval { get; set; } = TimeSpan.FromMinutes(30);
 
     /// <summary>
+    /// How long, in whole seconds, this node holds a GitHub review request that another node of the
+    /// same owner's fleet is expected to mint the pr-review task for. On a fleet exactly one node
+    /// mints on the first sweep that sees a request no live task covers: the node whose id sorts
+    /// lowest among the owner's currently enrolled, unrevoked nodes. Every other node records the
+    /// request as held and mints only on a later sweep where GitHub's own requested-at time is older
+    /// than this hold and still nothing covers the pull request, which is what lets the leader's
+    /// task replicate first. A single-node owner, a node whose chain names only itself, and a node
+    /// whose chain cannot be read all behave as the leader. Zero means this node never defers, so it
+    /// mints on the first sweep whatever its rank. Defaults to the auto-pr-review poll interval plus
+    /// a two-minute replication allowance. Whole seconds rather than a <see cref="TimeSpan"/> for the
+    /// reason <see cref="MessageActivePollMinSeconds"/> is, and bound once at startup like it.
+    /// </summary>
+    public int AutoPrReviewMintHoldSeconds { get; set; } = 300;
+
+    /// <summary>
     /// The message sweep's own active-cadence floor, in whole seconds (idea 202383dc, M1b; Brian's
     /// ruling 2026-09-13: 15 to 25 s active with jitter): the fast end of the range the sweep picks
     /// a jittered interval from whenever this node has an unflushed or unread envelope, or held

@@ -222,6 +222,18 @@ public sealed class OperatingSettings
     /// <summary>This node's override of the message sweep's idle-cadence ceiling; null defers to <see cref="DefaultMessageIdlePollMaxSeconds"/>.</summary>
     public int? MessageIdlePollMaxSeconds { get; set; }
 
+    /// <summary>Mirrors <c>DaemonOptions.AutoPrReviewMintHoldSeconds</c>'s shipped default: the three-minute auto-pr-review poll interval plus a two-minute replication allowance.</summary>
+    public const int DefaultAutoPrReviewMintHoldSeconds = 300;
+
+    /// <summary>
+    /// This node's override of how long it holds a review request a lower-ranked fleet peer is
+    /// expected to mint for, in whole seconds; null defers to
+    /// <see cref="DefaultAutoPrReviewMintHoldSeconds"/> and zero means this node never defers. See
+    /// <c>DaemonOptions.AutoPrReviewMintHoldSeconds</c>'s own doc for the rule and for why this is
+    /// an int rather than a duration.
+    /// </summary>
+    public int? AutoPrReviewMintHoldSeconds { get; set; }
+
     /// <summary>
     /// This node's review stage composition (task: the review pipeline's stage composition
     /// becomes configuration recorded per run) — the config-file record <c>h9k config set

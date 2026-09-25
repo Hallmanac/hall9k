@@ -58,6 +58,7 @@ public static class OperatingSettingsRendering
             ("spend-period", $"{report.SpendPeriod.Value} ({report.SpendPeriod.DescribeOrigin()})"),
             ("review-stage-composition",
                 $"{report.ReviewStageComposition.Value} ({report.ReviewStageComposition.DescribeOrigin()})"),
+            ("auto-pr-review-mint-hold", DescribeAutoPrReviewMintHold(report)),
         ];
 
         rows.AddRange(report.ModelByRole.Select(role => (
@@ -76,6 +77,15 @@ public static class OperatingSettingsRendering
 
         return rows;
     }
+
+    /// <summary>
+    /// The mint-hold row's value: zero says outright that this node never defers, since a bare "0s"
+    /// does not tell an operator whether the feature is off or the hold is.
+    /// </summary>
+    private static string DescribeAutoPrReviewMintHold(OperatingSettingsReport report) =>
+        report.AutoPrReviewMintHold.Value <= 0
+            ? $"0s, this node never defers a review request to a fleet peer ({report.AutoPrReviewMintHold.DescribeOrigin()})"
+            : $"{report.AutoPrReviewMintHold.Value}s ({report.AutoPrReviewMintHold.DescribeOrigin()})";
 
     /// <summary>
     /// The effort row's value: "not set" reads as no <c>effortLevel</c> in the settings file, which

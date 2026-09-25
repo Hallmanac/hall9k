@@ -100,11 +100,20 @@ public static class OperatingSettingsResolver
 
         ResolvedSetting<string?> effort = ResolveEffort(configured.Effort, unusableEnvironmentVariables);
 
+        ResolvedSetting<int> autoPrReviewMintHold = ResolveInt(
+            $"{EnvironmentPrefix}AutoPrReviewMintHoldSeconds",
+            configured.AutoPrReviewMintHoldSeconds,
+            OperatingSettings.DefaultAutoPrReviewMintHoldSeconds,
+            unusableEnvironmentVariables,
+            WarnIfNegativeMintHold,
+            "auto-pr-review-mint-hold",
+            unparseableValueFallsBackRatherThanCrashing: false);
+
         return new OperatingSettingsReport(
             concurrency, read.MaxConcurrentAgentSessionsIsFabricatedZero, maxConcurrentTaskRuns, convertedFromLegacy,
             shadowsConfigFileValue, sessionCapPerRun, defaultModel, roles, read.Problem, unusableEnvironmentVariables,
             maxComplianceReviewCycles, maxAdversarialReviewCycles, maxFinalFullPassRounds, lifetimeReviewCycleBudget,
-            spendBudgetTokens, spendPeriod, reviewStageComposition, effort);
+            spendBudgetTokens, spendPeriod, reviewStageComposition, effort, autoPrReviewMintHold);
     }
 
     /// <summary>
@@ -487,6 +496,22 @@ public static class OperatingSettingsResolver
             unusable.Add(
                 $"{source} sets max-concurrent-agent-sessions to {value}, which is below 1 — the daemon floors "
                 + "this to exactly one concurrent run rather than dispatching nothing.");
+        }
+    }
+
+    /// <summary>
+    /// A negative mint hold is not refused the way <c>h9k config set</c> refuses it on the write
+    /// path (a hand-edited file or an environment variable skips that gate). The engine reads
+    /// anything at or below zero as "never defers", so the value is reported as that rather than as
+    /// a healthy in-force hold.
+    /// </summary>
+    private static void WarnIfNegativeMintHold(string source, int value, List<string> unusable)
+    {
+        if (value < 0)
+        {
+            unusable.Add(
+                $"{source} sets auto-pr-review-mint-hold to {value}, which is negative, so the daemon treats it as "
+                + "zero, so this node never defers a review request to a fleet peer.");
         }
     }
 
