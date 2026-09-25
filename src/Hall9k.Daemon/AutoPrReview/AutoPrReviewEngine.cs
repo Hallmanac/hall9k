@@ -13,13 +13,11 @@ using Hall9k.Domain.Features.Tasks.Documents;
 using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
-using Hall9k.Domain.Infrastructure.Extensions;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Shared.Exceptions;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
-using Marten.Events;
 using Marten.Linq.MatchesSql;
 
 namespace Hall9k.Daemon.AutoPrReview;

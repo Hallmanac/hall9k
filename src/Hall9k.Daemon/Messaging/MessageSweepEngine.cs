@@ -1,7 +1,6 @@
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
-using Hall9k.Daemon;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
