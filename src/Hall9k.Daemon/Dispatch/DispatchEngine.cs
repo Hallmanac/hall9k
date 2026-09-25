@@ -1554,12 +1554,12 @@ public sealed class DispatchEngine(
             return null;
         }
 
-        // The dispatcher's own guarantee that one review request never runs twice (the convergence
-        // pass makes the board agree, this is what keeps a younger twin from ever starting a run):
-        // an older live auto-created review of this owner on the same pull request means this task
-        // is the duplicate, however the sweeps happen to interleave. Debug rather than Information,
-        // because a refused task is retried every dispatch tick until the convergence pass abandons
-        // it, and that pass records the one line an operator needs.
+        // The dispatcher's own guard against one review request running twice once both tasks are
+        // visible here (a twin already claimed before the older task replicated in is stopped by the
+        // convergence pass's abandon instead): an older live auto-created review of this owner on
+        // the same pull request means this task is the duplicate, however the sweeps interleave.
+        // Debug rather than Information, because a refused task is retried every dispatch tick until
+        // the convergence pass abandons it, and that pass records the one line an operator needs.
         if (await FindOlderLiveTwinAsync(session, task, ownerRootFingerprint, cancellationToken) is { } survivorId)
         {
             logger.LogDebug(
