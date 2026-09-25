@@ -1,6 +1,7 @@
 using Hall9k.Connectors.Messaging;
 using Hall9k.Connectors.Replication;
 using Hall9k.Connectors.Trust;
+using Hall9k.Daemon.AutoPrReview;
 using Hall9k.Domain.Features.Idea;
 using Hall9k.Domain.Features.Message;
 using Hall9k.Domain.Features.Node;
@@ -46,7 +47,8 @@ public sealed class MessageSweepEngine(
     EventReplicationOutbox eventOutbox,
     EventReplicationInbox eventInbox,
     EventCatchUpInbox eventCatchUpInbox,
-    EventCatchUpCoordinator eventCatchUpCoordinator)
+    EventCatchUpCoordinator eventCatchUpCoordinator,
+    PullRequestReviewDuplicateConvergence? duplicateConvergence = null)
 {
     /// <summary>Every sender outbox's tip as of this node's last probe, so a sweep that finds an
     /// unmoved tip skips reading it entirely. In-memory and per-process by design: a restart just
@@ -275,6 +277,7 @@ public sealed class MessageSweepEngine(
             return;
         }
 
+        bool appliedReplicatedEvents = false;
         foreach (MessageOutboxTip tip in toRead)
         {
             // Never recorded below on either read coming back not-vouched, stalled, ignored, or
@@ -330,6 +333,7 @@ public sealed class MessageSweepEngine(
                     now, trustChain, cancellationToken);
 
                 eventsReadComplete = !read.SenderIgnored;
+                appliedReplicatedEvents |= read.EventsApplied > 0;
 
                 if (read.StalledAtSeq is not null)
                 {
@@ -390,6 +394,23 @@ public sealed class MessageSweepEngine(
             if (notesReadComplete && eventsReadComplete && catchUpReadComplete)
             {
                 _lastKnownTips[(project.RepositoryPath, tip.SenderNodeId)] = tip.Tip;
+            }
+        }
+
+        // Right after a read that applied events rather than waiting for the auto-pr-review sweep's
+        // own interval: a peer's twin of a review task this node already holds arrives in exactly
+        // such a read, and the abandon should land within seconds of it, not minutes.
+        if (appliedReplicatedEvents && duplicateConvergence is not null)
+        {
+            try
+            {
+                await duplicateConvergence.ConvergeAsync(cancellationToken);
+            }
+            catch (Exception exception) when (exception is not OperationCanceledException)
+            {
+                logger.LogWarning(
+                    exception, "Duplicate review convergence after replicated events failed for project {ProjectId}; "
+                    + "the auto-pr-review sweep runs it again", project.Id);
             }
         }
 
