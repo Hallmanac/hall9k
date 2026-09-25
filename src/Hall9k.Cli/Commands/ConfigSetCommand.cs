@@ -256,6 +256,19 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             + "default 45). Must stay at or above --message-poll-idle-min.")]
         public int? MessagePollIdleMax { get; init; }
 
+        [CommandOption("--auto-pr-review-mint-hold <SECONDS>")]
+        [Description(
+            "How many whole seconds this node holds a GitHub review request that a fleet peer is expected to mint "
+            + "the pr-review task for (DaemonOptions.AutoPrReviewMintHoldSeconds, default 300: the three-minute "
+            + "auto-pr-review poll plus a two-minute replication allowance). On a fleet the node whose id sorts "
+            + "lowest among the owner's enrolled, unrevoked nodes mints on the first sweep that sees a request no "
+            + "live task covers, and every other node holds it until GitHub's own requested-at time is older than "
+            + "this hold and still nothing covers the pull request, so two nodes watching one project produce one "
+            + "task rather than a twin the convergence layer must abandon. 0 means this node never defers and "
+            + "mints on the first sweep whatever its rank; set it to 0 on a node that should mint for a project a "
+            + "lower-ranked peer does not watch. A single-node install is unaffected. Read once at daemon start.")]
+        public int? AutoPrReviewMintHold { get; init; }
+
         [CommandOption("--interactive-claim-stale-after-days <DAYS>")]
         [Description(
             "How many days an interactive claim (h9k task work) can sit untouched before h9k status nudges "
@@ -354,7 +367,8 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.LifetimeReviewCycleBudget is null && settings.SpendBudget is null
             && settings.SpendPeriod is null && settings.ReviewStageComposition is null
             && settings.MessagePollActiveMin is null && settings.MessagePollActiveMax is null
-            && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null;
+            && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null
+            && settings.AutoPrReviewMintHold is null;
 
         if (onlyImmediateEffectSettingsChanged)
         {
@@ -393,6 +407,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             && settings.ReviewStageComposition is null
             && settings.MessagePollActiveMin is null && settings.MessagePollActiveMax is null
             && settings.MessagePollIdleMin is null && settings.MessagePollIdleMax is null
+            && settings.AutoPrReviewMintHold is null
             && settings.InviteExpiryHours is null
             && settings.LessonPromptMaxLessons is null && settings.LessonPromptMaxCharacters is null)
         {
@@ -496,6 +511,14 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         if (settings.MessagePollIdleMax is { } idleMax && idleMax < 1)
         {
             throw new DomainValidationException("--message-poll-idle-max must be at least 1 second.");
+        }
+
+        // Zero is a value somebody meant (this node never defers), so only a negative is refused.
+        if (settings.AutoPrReviewMintHold is { } mintHold && mintHold < 0)
+        {
+            throw new DomainValidationException(
+                "--auto-pr-review-mint-hold must be zero or more whole seconds: 0 means this node never defers a "
+                + "review request to a fleet peer, and a negative hold is not a duration.");
         }
 
         OperatingSettings effectiveCurrent = current ?? new OperatingSettings();
@@ -650,6 +673,12 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         {
             operating.MessageIdlePollMaxSeconds = idleMax;
             changed.Add($"message-poll-idle-max = {idleMax}s");
+        }
+
+        if (settings.AutoPrReviewMintHold is { } mintHoldSeconds)
+        {
+            operating.AutoPrReviewMintHoldSeconds = mintHoldSeconds;
+            changed.Add($"auto-pr-review-mint-hold = {mintHoldSeconds}s");
         }
 
         if (settings.InteractiveClaimStaleAfterDays is { } staleAfterDays)

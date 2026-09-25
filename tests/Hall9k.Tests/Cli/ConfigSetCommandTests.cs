@@ -664,6 +664,40 @@ public sealed class ConfigSetCommandTests
         act.Should().NotThrow();
     }
 
+    [Fact]
+    public void A_zero_mint_hold_is_accepted_because_it_means_this_node_never_defers()
+    {
+        ConfigSetCommand.Settings settings = new() { AutoPrReviewMintHold = 0 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().NotThrow();
+    }
+
+    [Fact]
+    public void A_negative_mint_hold_is_refused()
+    {
+        ConfigSetCommand.Settings settings = new() { AutoPrReviewMintHold = -1 };
+
+        Action act = () => ConfigSetCommand.Validate(settings);
+
+        act.Should().Throw<DomainValidationException>().WithMessage("*--auto-pr-review-mint-hold*zero or more*");
+    }
+
+    [Fact]
+    public void The_mint_hold_alone_is_a_change_and_is_written_as_whole_seconds()
+    {
+        ConfigSetCommand.Settings settings = new() { AutoPrReviewMintHold = 0 };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Validate(settings);
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.AutoPrReviewMintHoldSeconds.Should().Be(0);
+        changed.Should().ContainSingle().Which.Should().Be("auto-pr-review-mint-hold = 0s");
+    }
+
     /// <summary>
     /// The lesson-prompt caps are refused here rather than silently accepted and clamped later
     /// (idea d805fd8b, piece 5). <c>LessonInjectionCaps.Resolve</c> clamps whatever it reads

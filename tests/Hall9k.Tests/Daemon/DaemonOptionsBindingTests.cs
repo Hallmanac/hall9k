@@ -359,5 +359,6 @@ public sealed class DaemonOptionsBindingTests
             new ResolvedSetting<string>(spendPeriod, SettingOrigin.Default, null),
             new ResolvedSetting<string>(
                 Hall9k.Domain.Features.Run.ReviewStageComposition.FullPipeline.Value, SettingOrigin.Default, null),
-            new ResolvedSetting<string?>(null, SettingOrigin.Default, null));
+            new ResolvedSetting<string?>(null, SettingOrigin.Default, null),
+            new ResolvedSetting<int>(OperatingSettings.DefaultAutoPrReviewMintHoldSeconds, SettingOrigin.Default, null));
 }

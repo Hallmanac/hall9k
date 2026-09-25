@@ -197,6 +197,7 @@ public sealed class ConfigShowCommand : Hall9kAsyncCommand<ConfigShowCommand.Set
         || report.MaxAdversarialReviewCycles.Origin == SettingOrigin.EnvironmentVariable
         || report.MaxFinalFullPassRounds.Origin == SettingOrigin.EnvironmentVariable
         || report.LifetimeReviewCycleBudget.Origin == SettingOrigin.EnvironmentVariable
+        || report.AutoPrReviewMintHold.Origin == SettingOrigin.EnvironmentVariable
         || report.SpendBudgetTokens.Origin == SettingOrigin.EnvironmentVariable
         || report.SpendPeriod.Origin == SettingOrigin.EnvironmentVariable;
 }

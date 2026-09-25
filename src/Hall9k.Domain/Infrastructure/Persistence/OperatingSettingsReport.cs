@@ -181,6 +181,11 @@ public sealed record ConfigFileReadResult(
 /// accepted names), meaning the generated settings file carries no <c>effortLevel</c> and the model's
 /// own default decides.
 /// </param>
+/// <param name="AutoPrReviewMintHold">
+/// How many whole seconds this node holds a review request a fleet peer is expected to mint for
+/// (<c>DaemonOptions.AutoPrReviewMintHoldSeconds</c>), resolved the environment-then-file-then-default
+/// way the review-cycle caps are. Zero means this node never defers.
+/// </param>
 public sealed record OperatingSettingsReport(
     ResolvedSetting<int> MaxConcurrentAgentSessions,
     bool MaxConcurrentAgentSessionsIsFabricatedZero,
@@ -199,4 +204,5 @@ public sealed record OperatingSettingsReport(
     ResolvedSetting<long?> SpendBudgetTokens,
     ResolvedSetting<string> SpendPeriod,
     ResolvedSetting<string> ReviewStageComposition,
-    ResolvedSetting<string?> Effort);
+    ResolvedSetting<string?> Effort,
+    ResolvedSetting<int> AutoPrReviewMintHold);

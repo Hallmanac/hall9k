@@ -44,6 +44,7 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         "Hall9k__MaxAdversarialReviewCycles",
         "Hall9k__MaxFinalFullPassRounds",
         "Hall9k__LifetimeReviewCycleBudget",
+        "Hall9k__AutoPrReviewMintHoldSeconds",
         "Hall9k__SpendBudgetTokens",
         "Hall9k__SpendPeriod",
     ];
@@ -357,6 +358,49 @@ public sealed class OperatingSettingsResolverTests : IDisposable
         report.DefaultModel.Origin.Should().Be(SettingOrigin.Default);
         report.UnusableEnvironmentVariables.Should().ContainSingle(
             warning => warning.Contains("Hall9k__DefaultModel") && warning.Contains("not a real model"));
+    }
+
+    [Fact]
+    public async Task The_mint_hold_defaults_to_the_poll_interval_plus_a_replication_allowance()
+    {
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.AutoPrReviewMintHold.Value.Should().Be(300);
+        report.AutoPrReviewMintHold.Origin.Should().Be(SettingOrigin.Default);
+    }
+
+    [Fact]
+    public async Task A_zero_mint_hold_in_the_config_file_is_reported_as_configured_zero_and_not_as_the_default()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.AutoPrReviewMintHoldSeconds = 0, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.AutoPrReviewMintHold.Value.Should().Be(0);
+        report.AutoPrReviewMintHold.Origin.Should().Be(SettingOrigin.PlatformConfigFile);
+    }
+
+    [Fact]
+    public async Task A_mint_hold_environment_variable_outranks_the_config_file()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.AutoPrReviewMintHoldSeconds = 60, CancellationToken.None);
+        Environment.SetEnvironmentVariable("Hall9k__AutoPrReviewMintHoldSeconds", "90");
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.AutoPrReviewMintHold.Value.Should().Be(90);
+        report.AutoPrReviewMintHold.Origin.Should().Be(SettingOrigin.EnvironmentVariable);
+    }
+
+    [Fact]
+    public async Task A_negative_mint_hold_in_the_config_file_is_reported_as_meaning_zero()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(s => s.AutoPrReviewMintHoldSeconds = -5, CancellationToken.None);
+
+        OperatingSettingsReport report = await OperatingSettingsResolver.ResolveAsync(CancellationToken.None);
+
+        report.UnusableEnvironmentVariables.Should().ContainSingle(
+            warning => warning.Contains("auto-pr-review-mint-hold") && warning.Contains("-5") && warning.Contains("zero"));
     }
 
     [Fact]
