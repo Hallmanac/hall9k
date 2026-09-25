@@ -187,6 +187,31 @@ public sealed class PullRequestReviewDuplicateConvergenceTests(PostgresFixture p
     }
 
     [Fact]
+    public async Task An_abandon_that_arrives_by_replication_still_releases_the_holder_after_the_finished_run_deleted_its_lease()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        await using ReplicatedFleet fleet = await StartFleetAsync(cts.Token);
+        await fleet.SeedReviewAsync(fleet.A, Larger, Now, cts.Token);
+        await fleet.SeedReviewAsync(fleet.B, Smaller, Now, cts.Token);
+        await fleet.ExchangeBothWaysAsync(cts.Token);
+
+        // B decides first. A claimed its twin, and the review run finished: the engine deletes the
+        // lease at finalization and leaves the ledger holder naming A.
+        (await fleet.B.Convergence.ConvergeAsync(cts.Token)).Should().Be(1);
+        await fleet.ClaimAsync(fleet.A, Larger, cts.Token);
+        await using (IDocumentSession session = fleet.A.Store.LightweightSession())
+        {
+            session.Delete<TaskLease>(Larger);
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        await fleet.ExchangeAsync(fleet.B, fleet.A, cts.Token);
+        (await fleet.A.Convergence.ConvergeAsync(cts.Token)).Should().Be(0, "it was not A's abandon to make");
+
+        await AssertGivenBackAsync(fleet.A, Larger, cts.Token);
+    }
+
+    [Fact]
     public async Task A_replicated_claim_on_the_loser_arriving_after_its_abandon_is_reconverged_on_the_next_pass()
     {
         using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));

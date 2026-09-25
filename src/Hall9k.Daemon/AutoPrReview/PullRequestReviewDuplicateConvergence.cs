@@ -31,7 +31,7 @@ namespace Hall9k.Daemon.AutoPrReview;
 /// auto-pr-review sweep and again right after a replication read that applied events, and it
 /// re-evaluates from the store each time: a lifecycle event that replicates in after the abandon
 /// is re-converged rather than resurrecting the duplicate. The dispatcher's claim-time refusal is
-/// the actual guarantee that the younger twin never starts a run; this pass makes the board agree.
+/// what stops a younger twin that is still queued once the older task is visible from ever starting a run; a twin already claimed before replication landed is stopped by this pass's abandon, which the abandoned-task check acts on at the run's next phase boundary.
 /// </para>
 /// </summary>
 public sealed class PullRequestReviewDuplicateConvergence(
@@ -234,10 +234,14 @@ public sealed class PullRequestReviewDuplicateConvergence(
     }
 
     /// <summary>
-    /// An auto-created review already Abandoned that this node still holds a lease for, whether
-    /// this node abandoned it or the abandon arrived by replication: the run behind it, if any, is
-    /// retired by the abandoned-task fence at its next phase boundary, but the lease and the ledger
-    /// holder it earned are this node's to give back now.
+    /// An auto-created review already Abandoned that this node still holds something of, whether
+    /// this node abandoned it or the abandon arrived by replication: a <see cref="TaskLease"/> row,
+    /// the ledger holder, or both. The run behind it, if any, is retired by the abandoned-task fence
+    /// at its next phase boundary, but the lease and the ledger holder it earned are this node's to
+    /// give back now. The two are looked for separately because a finished review run deletes its
+    /// own lease and keeps the holder (only <see cref="TaskHolderReleased"/> clears it, and the
+    /// follow-through and closeout engines act only on live tasks), so an abandon that replicates in
+    /// afterward finds no lease to lead the scan to the holder.
     /// </summary>
     private async Task ReleaseAbandonedTasksHeldHereAsync(IQuerySession query, CancellationToken cancellationToken)
     {
@@ -246,8 +250,15 @@ public sealed class PullRequestReviewDuplicateConvergence(
             .Where(lease => lease.NodeId == nodeId)
             .Select(lease => lease.Id)
             .ToListAsync(cancellationToken);
+        IReadOnlyList<Guid> claimedHere = await query.Query<TaskListItem>()
+            .Where(task => task.WasAutoPrReviewCreated && task.ClaimedByNodeId == nodeId)
+            .Where(task => task.MatchesSql(
+                "d.data ->> 'type' = ? AND d.data ->> 'state' = ?",
+                TaskType.PrReview.Value, TaskState.Abandoned.Value))
+            .Select(task => task.Id)
+            .ToListAsync(cancellationToken);
 
-        foreach (Guid taskId in leasedHere)
+        foreach (Guid taskId in leasedHere.Union(claimedHere))
         {
             cancellationToken.ThrowIfCancellationRequested();
             TaskListItem? item = await query.LoadAsync<TaskListItem>(taskId, cancellationToken);
@@ -268,8 +279,13 @@ public sealed class PullRequestReviewDuplicateConvergence(
                 continue;
             }
 
-            DateTimeOffset now = DateTimeOffset.UtcNow;
             bool holdsLedgerHolder = task.HolderNodeId == node.NodeId;
+            if (!holdsLedgerHolder && !leasedHere.Contains(taskId))
+            {
+                continue;
+            }
+
+            DateTimeOffset now = DateTimeOffset.UtcNow;
             if (holdsLedgerHolder)
             {
                 session.Events.Append(taskId, expectedVersion: fence.Version + 1, TaskDecider.ReleaseHolder(task, now));
@@ -280,11 +296,11 @@ public sealed class PullRequestReviewDuplicateConvergence(
             {
                 await session.SaveChangesAsync(cancellationToken);
                 logger.LogInformation(
-                    "Abandoned review task {TaskId} still held a lease on this node; released it", taskId);
+                    "Abandoned review task {TaskId} still held a lease or ledger holder on this node; released it", taskId);
             }
             catch (EventStreamUnexpectedMaxEventIdException)
             {
-                logger.LogDebug("Task {TaskId} moved while its lease was being released; the next pass retries", taskId);
+                logger.LogDebug("Task {TaskId} moved while its holder was being released; the next pass retries", taskId);
             }
         }
     }

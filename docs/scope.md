@@ -743,7 +743,9 @@ skewed clocks still agree): the auto-pr-review sweep, and every replication read
 abandon each younger duplicate as the owner with a reason naming the survivor, hand any mention the
 duplicate recorded to the survivor, and give back the lease and ledger holder this node held for it.
 The dispatcher also refuses to claim a review that has an older live auto-created twin of the same
-owner on its pull request, which is what keeps the younger twin from ever starting a run. A
+owner on its pull request, which keeps a younger twin that is still queued from starting a run once
+the older task is visible. A twin claimed before replication delivered the older task is stopped by
+the abandon instead, and its run ends at its next phase boundary. A
 teammate's review of the same pull request is a different owner's work and is never touched, and a
 review a person adopted by hand is never abandoned by the platform.
 
