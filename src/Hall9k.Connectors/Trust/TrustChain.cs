@@ -117,6 +117,15 @@ public sealed record TrustedOwner(
 public sealed record ProjectMember(string RootFingerprint, MembershipRole Role, DateTimeOffset IssuedAt);
 
 /// <summary>
+/// The GitHub account one node declares for itself in its own <c>node.yaml</c>, taken only from a
+/// file whose newest commit is signed by that file's own public key (<see cref="KeyFingerprint"/>).
+/// A claim, not proof: nothing here says the person behind the key controls the account.
+/// <see cref="DeclaredAt"/> is the committing time, used only to pick the newest login when one
+/// account id is declared under two names.
+/// </summary>
+public sealed record NodeGitHubDeclaration(string NodeId, string KeyFingerprint, DeclaredGitHubAccount Account, DateTimeOffset DeclaredAt);
+
+/// <summary>
 /// A vouch, revocation, or membership write the chain read found but could not verify — its signer
 /// traced back to no currently trusted key, so the file or event it names was never applied to
 /// <see cref="TrustChain.OwnerChains"/> or <see cref="TrustChain.Members"/>. Named here rather than
@@ -163,8 +172,34 @@ public sealed record TrustChain(
     IReadOnlyList<ProjectMember> Members,
     IReadOnlyList<UnverifiedLedgerWrite>? UnverifiedWrites = null,
     string? GenesisRootFingerprint = null,
-    string? ProjectKey = null)
+    string? ProjectKey = null,
+    IReadOnlyDictionary<string, NodeGitHubDeclaration>? NodeDeclarations = null)
 {
+    /// <summary>
+    /// Every node's verified GitHub declaration, keyed by node id: the file's newest commit was signed
+    /// by its own public key. Never null, on the same terms as <see cref="UnverifiedWrites"/>; a node
+    /// file written before the declaration existed simply has no entry.
+    /// </summary>
+    public IReadOnlyDictionary<string, NodeGitHubDeclaration> NodeDeclarations { get; init; } =
+        NodeDeclarations ?? new Dictionary<string, NodeGitHubDeclaration>();
+
+    /// <summary>
+    /// The distinct GitHub accounts declared across <paramref name="root"/>'s own nodes: distinct by
+    /// account id with the newest login per id (a renamed account is one entry), one entry per
+    /// account when two nodes declare two accounts. A declaration counts only for a node in this
+    /// root's fleet whose file carries the very key the chain vouched for that node id, so a file
+    /// someone else rewrote under their own key adds nothing here.
+    /// </summary>
+    public IReadOnlyList<DeclaredGitHubAccount> DeclaredAccountsOf(string root) =>
+        OwnerChains.TryGetValue(root, out TrustedOwner? owner)
+            ? [.. owner.FleetNodeIds()
+                .Select(nodeId => NodeDeclarations.GetValueOrDefault(nodeId.ToString()))
+                .OfType<NodeGitHubDeclaration>()
+                .Where(declaration => owner.ContainsForNode(declaration.KeyFingerprint, declaration.NodeId))
+                .GroupBy(declaration => declaration.Account.AccountId)
+                .Select(group => group.OrderByDescending(declaration => declaration.DeclaredAt).First().Account)]
+            : [];
+
     /// <summary>Never null, whatever a caller passed the primary constructor: a two-argument
     /// construction (every call site that predates this field) gets an empty list rather than a
     /// null every reader would otherwise have to guard against.</summary>

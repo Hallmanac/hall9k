@@ -115,4 +115,66 @@ public sealed class TrustChainTests
 
         owner.FleetNodeIds().Should().BeEmpty("h9k node revoke against the root's own node must actually drop it from the fleet");
     }
+
+    private static NodeGitHubDeclaration Declaration(
+        Guid nodeId, string keyFingerprint, long accountId, string login, int minutesAfterEpoch) =>
+        new(nodeId.ToString(), keyFingerprint, new DeclaredGitHubAccount(accountId, login), DateTimeOffset.UnixEpoch.AddMinutes(minutesAfterEpoch));
+
+    private static TrustChain WithDeclarations(params NodeGitHubDeclaration[] declarations) =>
+        BuildChain() with { NodeDeclarations = declarations.ToDictionary(declaration => declaration.NodeId) };
+
+    [Fact]
+    public void DeclaredAccountsOf_ListsTheAccountAVouchedNodeDeclaresWithItsOwnKey()
+    {
+        TrustChain chain = WithDeclarations(Declaration(VouchedNodeId, "node-fingerprint", 42, "octocat", 1));
+
+        chain.DeclaredAccountsOf("root-fingerprint").Should().Equal(new DeclaredGitHubAccount(42, "octocat"));
+    }
+
+    [Fact]
+    public void DeclaredAccountsOf_IsEmptyWhenNoNodeDeclaresAnything()
+    {
+        BuildChain().DeclaredAccountsOf("root-fingerprint").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void DeclaredAccountsOf_IgnoresADeclarationSignedByAKeyThatIsNotTheOneVouchedForThatNode()
+    {
+        // Someone overwrote the node's file under their own key: the declaration is self-signed, but
+        // the key is not the one the chain vouched for this node id.
+        TrustChain chain = WithDeclarations(Declaration(VouchedNodeId, "some-other-fingerprint", 42, "octocat", 1));
+
+        chain.DeclaredAccountsOf("root-fingerprint").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void DeclaredAccountsOf_IgnoresANodeOutsideThisRootsFleet()
+    {
+        TrustChain chain = WithDeclarations(Declaration(OtherNodeId, "node-fingerprint", 42, "octocat", 1));
+
+        chain.DeclaredAccountsOf("root-fingerprint").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void DeclaredAccountsOf_CollapsesARenamedAccountToItsNewestLoginAndKeepsTwoAccountsApart()
+    {
+        Guid rootNodeId = Guid.Parse("33333333-3333-3333-3333-333333333333");
+        TrustedNode node = new(VouchedNodeId.ToString(), "ssh-ed25519 AAAAnode node", "node-fingerprint", DateTimeOffset.UnixEpoch);
+        TrustedNode second = new(OtherNodeId.ToString(), "ssh-ed25519 AAAAsecond second", "second-fingerprint", DateTimeOffset.UnixEpoch);
+        TrustedOwner owner = new("root-fingerprint", "ssh-ed25519 AAAAroot root", [node, second], RootNodeId: rootNodeId.ToString());
+        TrustChain chain = new(
+            new Dictionary<string, TrustedOwner> { ["root-fingerprint"] = owner },
+            [new ProjectMember("root-fingerprint", MembershipRole.Owner, DateTimeOffset.UnixEpoch)])
+        {
+            NodeDeclarations = new[]
+            {
+                Declaration(rootNodeId, "root-fingerprint", 42, "old-name", 1),
+                Declaration(VouchedNodeId, "node-fingerprint", 42, "new-name", 5),
+                Declaration(OtherNodeId, "second-fingerprint", 77, "work-account", 3),
+            }.ToDictionary(declaration => declaration.NodeId),
+        };
+
+        chain.DeclaredAccountsOf("root-fingerprint").Should().BeEquivalentTo(
+            [new DeclaredGitHubAccount(42, "new-name"), new DeclaredGitHubAccount(77, "work-account")]);
+    }
 }

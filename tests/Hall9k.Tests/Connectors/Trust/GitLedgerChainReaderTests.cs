@@ -179,6 +179,132 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     [Fact]
+    public async Task A_root_nodes_self_signed_github_declaration_is_read_for_the_root()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner, github: new DeclaredGitHubAccount(42, "octocat"));
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.NodeDeclarations[owner.NodeId.ToString()].Account.Should().Be(new DeclaredGitHubAccount(42, "octocat"));
+        chain.DeclaredAccountsOf(owner.Fingerprint).Should().Equal(new DeclaredGitHubAccount(42, "octocat"));
+        chain.UnverifiedWrites.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_vouched_non_root_nodes_self_signed_github_declaration_is_read_for_its_owner()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+        GeneratedIdentity nodeB = GenerateIdentity();
+        string nodeBRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(nodeBRepo, nodeB, nodeB, owner.Fingerprint, new DeclaredGitHubAccount(7, "second-machine"));
+        await VouchAsync(ownerRepo, owner.Fingerprint, nodeB, owner);
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.NodeDeclarations.Should().ContainKey(nodeB.NodeId.ToString());
+        chain.DeclaredAccountsOf(owner.Fingerprint).Should().Equal(new DeclaredGitHubAccount(7, "second-machine"));
+    }
+
+    [Fact]
+    public async Task A_node_file_written_before_the_declaration_existed_reads_as_no_declaration_and_is_not_reported()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.NodeDeclarations.Should().BeEmpty();
+        chain.DeclaredAccountsOf(owner.Fingerprint).Should().BeEmpty();
+        chain.UnverifiedWrites.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Two_nodes_of_one_owner_declaring_different_accounts_are_two_entries_and_one_renamed_account_is_one()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner, github: new DeclaredGitHubAccount(42, "personal"));
+        GeneratedIdentity nodeB = GenerateIdentity();
+        GeneratedIdentity nodeC = GenerateIdentity();
+        string nodeBRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(nodeBRepo, nodeB, nodeB, owner.Fingerprint, new DeclaredGitHubAccount(99, "work"));
+        string nodeCRepo = _repo.CloneNode(hub);
+        // Same account id as the root node, under the name it was renamed to since.
+        await WriteNodeFileAsync(nodeCRepo, nodeC, nodeC, owner.Fingerprint, new DeclaredGitHubAccount(42, "personal-renamed"));
+        await VouchAsync(ownerRepo, owner.Fingerprint, nodeB, owner);
+        await VouchAsync(ownerRepo, owner.Fingerprint, nodeC, owner);
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.DeclaredAccountsOf(owner.Fingerprint).Should().BeEquivalentTo(
+            [new DeclaredGitHubAccount(42, "personal-renamed"), new DeclaredGitHubAccount(99, "work")]);
+        chain.UnverifiedWrites.Should().BeEmpty("two accounts on two nodes is never an error");
+    }
+
+    [Fact]
+    public async Task A_non_root_node_file_rewritten_by_a_key_other_than_its_own_yields_no_declaration_and_is_named()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        GeneratedIdentity nodeB = GenerateIdentity();
+        string nodeBRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(nodeBRepo, nodeB, nodeB, owner.Fingerprint);
+        await VouchAsync(ownerRepo, owner.Fingerprint, nodeB, owner);
+
+        // Anyone with push rewrites node B's file, keeping B's public key line, but signs it as themselves.
+        GeneratedIdentity stranger = GenerateIdentity();
+        string strangerRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(strangerRepo, nodeB, stranger, owner.Fingerprint, new DeclaredGitHubAccount(666, "forged"));
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.NodeDeclarations.Should().NotContainKey(nodeB.NodeId.ToString());
+        chain.DeclaredAccountsOf(owner.Fingerprint).Should().BeEmpty();
+        chain.UnverifiedWrites.Should().ContainSingle(
+            write => write.Kind == "node" && write.Identifier == nodeB.NodeId.ToString()
+                && write.Reason.Contains("GitHub account", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task A_root_node_file_rewritten_by_a_key_other_than_its_own_yields_no_declaration_and_is_named_once()
+    {
+        string hub = _repo.CreateHub();
+        (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+
+        GeneratedIdentity stranger = GenerateIdentity();
+        string strangerRepo = _repo.CloneNode(hub);
+        await WriteNodeFileAsync(strangerRepo, owner, stranger, github: new DeclaredGitHubAccount(666, "forged"));
+
+        TrustChain chain = await _chainReader.ComputeAsync(_repo.CloneNode(hub), CancellationToken.None);
+
+        chain.NodeDeclarations.Should().BeEmpty();
+        chain.UnverifiedWrites.Should().ContainSingle(write => write.Kind == "node" && write.Identifier == owner.NodeId.ToString());
+    }
+
+    [Fact]
+    public async Task A_second_clone_reads_the_declaration_another_clone_wrote_after_it_fetches()
+    {
+        string hub = _repo.CreateHub();
+        (string cloneA, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
+        await WriteNodeFileAsync(cloneA, owner, owner);
+        string cloneB = _repo.CloneNode(hub);
+        (await _chainReader.ComputeAsync(cloneB, CancellationToken.None)).NodeDeclarations.Should().BeEmpty();
+
+        // Clone A declares its account and pushes; clone B has not seen it yet.
+        await WriteNodeFileAsync(cloneA, owner, owner, github: new DeclaredGitHubAccount(42, "octocat"));
+
+        TrustChain chain = await _chainReader.ComputeAsync(cloneB, CancellationToken.None);
+
+        chain.DeclaredAccountsOf(owner.Fingerprint).Should().Equal(new DeclaredGitHubAccount(42, "octocat"));
+    }
+
+    [Fact]
     public async Task A_revoked_root_node_is_dropped_from_its_own_fleet()
     {
         // independent pre-PR review, cycle 1, conformance lens, medium: the root's own node has no
@@ -1223,7 +1349,8 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     }
 
     private async Task WriteNodeFileAsync(
-        string repositoryPath, GeneratedIdentity node, GeneratedIdentity signer, string? ownerFingerprint = null)
+        string repositoryPath, GeneratedIdentity node, GeneratedIdentity signer, string? ownerFingerprint = null,
+        DeclaredGitHubAccount? github = null)
     {
         string refName = $"refs/hall9k/ledger/nodes/{node.NodeId}";
         string path = $"nodes/{node.NodeId}/node.yaml";
@@ -1231,11 +1358,19 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         // defaults to this node's own fingerprint, the exact claim a plain "no --owner" join
         // records for the node establishing its own root — the shape every self-announcing root
         // test below relies on.
-        string content = BuildYaml(
+        List<(string Key, string Value)> fields =
+        [
             ("node_id", node.NodeId.ToString()),
             ("public_key", node.PublicKeyLine),
-            ("owner_fingerprint", ownerFingerprint ?? node.Fingerprint));
-        await WriteAsync(repositoryPath, refName, path, content, signer);
+            ("owner_fingerprint", ownerFingerprint ?? node.Fingerprint),
+        ];
+        if (github is not null)
+        {
+            fields.Add(("github_login", github.Login));
+            fields.Add(("github_account_id", github.AccountId.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        await WriteAsync(repositoryPath, refName, path, BuildYaml([.. fields]), signer);
     }
 
     private async Task WriteMemberFileAsync(

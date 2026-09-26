@@ -91,14 +91,16 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        unverified.AddRange(await AttachRootNodeIdsAsync(repositoryPath, ownerChains, cancellationToken));
+        (IReadOnlyList<UnverifiedLedgerWrite> nodeUnverified, IReadOnlyDictionary<string, NodeGitHubDeclaration> declarations) =
+            await AttachRootNodeIdsAsync(repositoryPath, ownerChains, cancellationToken);
+        unverified.AddRange(nodeUnverified);
 
         (IReadOnlyList<ProjectMember> members, IReadOnlyList<UnverifiedLedgerWrite> memberUnverified,
             string? genesisRootFingerprint, string? projectKey) =
             await ComputeMembersAsync(repositoryPath, ownerChains, cancellationToken);
         unverified.AddRange(memberUnverified);
 
-        return new TrustChain(ownerChains, members, unverified, genesisRootFingerprint, projectKey);
+        return new TrustChain(ownerChains, members, unverified, genesisRootFingerprint, projectKey, declarations);
     }
 
     /// <summary>Every <c>refs/hall9k/ledger/owners/&lt;fingerprint&gt;</c> ref origin currently
@@ -173,7 +175,7 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// it still fingerprints back to the root it originally established) while
     /// <c>RetireSelfRootEverywhereAsync</c> retires that self-created root by adding a
     /// <c>retired.yaml</c> beside its <c>root.yaml</c> — never removing <c>root.yaml</c> itself, so
-    /// the retired root still self-certifies above — and the rerun's own <c>WriteNodeFileAsync</c>
+    /// the retired root still self-certifies above — and the rerun's own <c>NodeFileWriter.WriteAsync</c>
     /// rewrites that node's <c>owner_fingerprint</c> to the real owner. Without this check, the
     /// retired root's chain would re-attach that node as its own root node forever, and
     /// <c>EventCatchUpCoordinator.ResolveMemberRole</c> would resolve the node's role against the
@@ -196,23 +198,25 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
     /// than node-id sort order (independent pre-PR review, cycle 3, both lenses, medium).
     /// </para>
     /// </summary>
-    private async Task<IReadOnlyList<UnverifiedLedgerWrite>> AttachRootNodeIdsAsync(
-        string repositoryPath, Dictionary<string, TrustedOwner> ownerChains, CancellationToken cancellationToken)
+    private async Task<(IReadOnlyList<UnverifiedLedgerWrite> Unverified, IReadOnlyDictionary<string, NodeGitHubDeclaration> Declarations)>
+        AttachRootNodeIdsAsync(
+            string repositoryPath, Dictionary<string, TrustedOwner> ownerChains, CancellationToken cancellationToken)
     {
         if (ownerChains.Count == 0)
         {
-            return [];
+            return ([], new Dictionary<string, NodeGitHubDeclaration>());
         }
 
         IReadOnlyList<string> nodeIds = await DiscoverNodeIdsAsync(repositoryPath, cancellationToken);
         if (nodeIds.Count == 0)
         {
-            return [];
+            return ([], new Dictionary<string, NodeGitHubDeclaration>());
         }
 
         await FetchRefsAsync(repositoryPath, NodesRefPrefix, cancellationToken);
 
         List<UnverifiedLedgerWrite> unverified = [];
+        Dictionary<string, NodeGitHubDeclaration> declarations = [];
         foreach (string nodeId in nodeIds)
         {
             string refName = $"{NodesRefPrefix}{nodeId}";
@@ -226,14 +230,44 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             string? content = await ReadAtCommitAsync(repositoryPath, tip, path, cancellationToken);
             string? publicKeyLine = content is null ? null : ExtractQuotedYamlValue(content, "public_key");
             string? ownerFingerprintLine = content is null ? null : ExtractQuotedYamlValue(content, "owner_fingerprint");
-            if (publicKeyLine is null || !TryFingerprint(publicKeyLine, out string fingerprint)
-                || !ownerChains.TryGetValue(fingerprint, out TrustedOwner? owner))
+            if (publicKeyLine is null || !TryFingerprint(publicKeyLine, out string fingerprint))
             {
-                // No key, an unparseable one, or a fingerprint that names no root this walk trusts.
+                // No key, or an unparseable one: nothing about this file can be attributed to anyone.
                 continue;
             }
 
-            IReadOnlyList<string> commits = await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken);
+            bool namesTrustedRoot = ownerChains.ContainsKey(fingerprint);
+            IReadOnlyList<string>? commits = null;
+
+            // The GitHub account this node declares for itself counts only when the commit that
+            // currently produces the file is signed by the file's own public key: anyone with push
+            // could otherwise rewrite another node's file and put any login in it. A root node's
+            // own file that fails this is already reported by the root check below, so it is not
+            // named twice.
+            if (content is not null && NodeFileWriter.ReadDeclaration(content) is { } account)
+            {
+                commits = await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken);
+                if (commits.Count > 0 && await IsSignedByAsync(repositoryPath, commits[0], publicKeyLine, cancellationToken))
+                {
+                    DateTimeOffset declaredAt = await CommitTimeAsync(repositoryPath, commits[0], cancellationToken);
+                    declarations[nodeId] = new NodeGitHubDeclaration(nodeId, fingerprint, account, declaredAt);
+                }
+                else if (!namesTrustedRoot)
+                {
+                    unverified.Add(new UnverifiedLedgerWrite(
+                        "node", nodeId, ownerFingerprintLine ?? fingerprint,
+                        $"commit {(commits.Count > 0 ? commits[0] : tip)} for {path} declares a GitHub account "
+                        + "but is not signed by that node file's own public key"));
+                }
+            }
+
+            if (!ownerChains.TryGetValue(fingerprint, out TrustedOwner? owner))
+            {
+                // A fingerprint that names no root this walk trusts.
+                continue;
+            }
+
+            commits ??= await CommitsTouchingPathAsync(repositoryPath, tip, path, cancellationToken);
             if (commits.Count > 0 && await IsSignedByAsync(repositoryPath, commits[0], owner.RootPublicKeyLine, cancellationToken))
             {
                 // Self-certification holds — but only actually attach when this node's own current
@@ -261,7 +295,16 @@ public sealed class GitLedgerChainReader(ProcessRunner? runner = null) : ILedger
             }
         }
 
-        return unverified;
+        return (unverified, declarations);
+    }
+
+    /// <summary>The committer time of <paramref name="commit"/>, only ever used to order two declarations of the same account against each other (a rename), never as a trust anchor.</summary>
+    private async Task<DateTimeOffset> CommitTimeAsync(string repositoryPath, string commit, CancellationToken cancellationToken)
+    {
+        string output = await RunGitCaptureOrThrowAsync(repositoryPath, ["log", "-1", "--format=%cI", commit], cancellationToken);
+        return DateTimeOffset.TryParse(output.Trim(), CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTimeOffset parsed)
+            ? parsed
+            : DateTimeOffset.MinValue;
     }
 
     /// <summary>
