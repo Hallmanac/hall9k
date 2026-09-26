@@ -277,6 +277,7 @@ builder.Services.AddSingleton<EventReplicationInbox>();
 builder.Services.AddSingleton<EventCatchUpResponder>();
 builder.Services.AddSingleton<EventCatchUpInbox>();
 builder.Services.AddSingleton<EventCatchUpCoordinator>();
+builder.Services.AddSingleton<NodeGitHubDeclarationOneShot>();
 builder.Services.AddSingleton<MessageSweepEngine>();
 builder.Services.AddSingleton<InviteSweepEngine>();
 builder.Services.AddSingleton<PromptAddendaSweepEngine>();

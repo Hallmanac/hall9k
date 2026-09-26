@@ -49,7 +49,8 @@ public sealed class MessageSweepEngine(
     EventCatchUpInbox eventCatchUpInbox,
     EventCatchUpCoordinator eventCatchUpCoordinator,
     PullRequestReviewDuplicateConvergence? duplicateConvergence = null,
-    EnrolledNodeSnapshots? enrolledNodes = null)
+    EnrolledNodeSnapshots? enrolledNodes = null,
+    NodeGitHubDeclarationOneShot? githubDeclaration = null)
 {
     /// <summary>Every sender outbox's tip as of this node's last probe, so a sweep that finds an
     /// unmoved tip skips reading it entirely. In-memory and per-process by design: a restart just
@@ -144,6 +145,12 @@ public sealed class MessageSweepEngine(
 
             // Handed to auto-pr-review in process, so its mint rank never costs a fetch of its own.
             enrolledNodes?.Record(project.Id, trustChain, identity.OwnerRootFingerprint);
+
+            // Once per process and project, for a node file that predates the GitHub declaration.
+            if (githubDeclaration is not null)
+            {
+                await githubDeclaration.RunOnceAsync(project, identity, cancellationToken);
+            }
 
             await PersistUnverifiedWritesAsync(project, trustChain, now, cancellationToken);
             await ReconcileRootVerificationAsync(project.Id, trustChain, now, cancellationToken);
