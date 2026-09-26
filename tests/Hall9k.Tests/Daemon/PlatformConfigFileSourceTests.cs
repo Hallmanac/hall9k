@@ -37,6 +37,16 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
         "Hall9k__ModelByRole__ReviewVerify",
         "Hall9k__ModelByRole__ReviewFinalFullPass",
         "Hall9k__ModelByRole__Fix",
+        "Hall9k__Effort",
+        "Hall9k__EffortByRole__Build",
+        "Hall9k__EffortByRole__Review",
+        "Hall9k__EffortByRole__ReviewVerify",
+        "Hall9k__EffortByRole__ReviewFinalFullPass",
+        "Hall9k__EffortByRole__Fix",
+        "Hall9k__EffortByRole__Synthesis",
+        "Hall9k__EffortByRole__Refinement",
+        "Hall9k__EffortByRole__Publication",
+        "Hall9k__EffortByRole__Courier",
         "Hall9k__MaxComplianceReviewCycles",
         "Hall9k__MaxAdversarialReviewCycles",
         "Hall9k__MaxFinalFullPassRounds",
@@ -106,6 +116,54 @@ public sealed class PlatformConfigFileSourceTests : IDisposable
         PlatformConfigFileSource.Insert(builder);
 
         Bind(builder).ModelByRole.Review.Should().Be("sonnet");
+    }
+
+    /// <summary>
+    /// Every role the config file can carry an effort for lands on the <c>DaemonOptions</c> slot of the same
+    /// name, so <c>h9k config show</c> and <c>h9k daemon status</c> never report a level the daemon does not
+    /// run on. Both sides are named after the same nine properties, which this holds true by binding each one.
+    /// </summary>
+    [Fact]
+    public async Task Effort_by_role_binds_every_role_from_the_config_file_beside_the_node_wide_effort()
+    {
+        await PlatformConfigFile.WriteOperatingSettingsAsync(
+            s =>
+            {
+                s.Effort = "low";
+                s.EffortByRole.Build = "medium";
+                s.EffortByRole.Review = "high";
+                s.EffortByRole.ReviewVerify = "xhigh";
+                s.EffortByRole.ReviewFinalFullPass = "low";
+                s.EffortByRole.Fix = "medium";
+                s.EffortByRole.Synthesis = "high";
+                s.EffortByRole.Refinement = "xhigh";
+                s.EffortByRole.Publication = "low";
+                s.EffortByRole.Courier = "medium";
+            },
+            CancellationToken.None);
+        ConfigurationBuilder builder = new();
+        builder.AddEnvironmentVariables();
+
+        PlatformConfigFileSource.Insert(builder);
+
+        DaemonOptions bound = Bind(builder);
+        bound.Effort.Should().Be("low");
+        (string Role, string Value)[] roles =
+        [
+            (nameof(RoleEffortDefaults.Build), bound.EffortByRole.Build),
+            (nameof(RoleEffortDefaults.Review), bound.EffortByRole.Review),
+            (nameof(RoleEffortDefaults.ReviewVerify), bound.EffortByRole.ReviewVerify),
+            (nameof(RoleEffortDefaults.ReviewFinalFullPass), bound.EffortByRole.ReviewFinalFullPass),
+            (nameof(RoleEffortDefaults.Fix), bound.EffortByRole.Fix),
+            (nameof(RoleEffortDefaults.Synthesis), bound.EffortByRole.Synthesis),
+            (nameof(RoleEffortDefaults.Refinement), bound.EffortByRole.Refinement),
+            (nameof(RoleEffortDefaults.Publication), bound.EffortByRole.Publication),
+            (nameof(RoleEffortDefaults.Courier), bound.EffortByRole.Courier),
+        ];
+        roles.Select(role => role.Value).Should().Equal(
+            "medium", "high", "xhigh", "low", "medium", "high", "xhigh", "low", "medium");
+        new RoleEffortSettings().AsPairs().Select(pair => pair.Role).Should().BeEquivalentTo(
+            roles.Select(role => role.Role), "the report and the daemon name the same nine slots");
     }
 
     /// <summary>

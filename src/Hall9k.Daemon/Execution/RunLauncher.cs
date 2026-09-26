@@ -236,8 +236,11 @@ public sealed class RunLauncher(
             // (Decisions Log #33), so they can never disagree. A pr-review task's primary
             // session IS a review lens (the adversarial one — PrReviewEngine dispatches the
             // conformance lens second), so it resolves the review role, never build.
-            AgentModel model = options.Value.ResolveModel(
-                isPrReview ? AgentRole.Review : AgentRole.Build, task.Model, project.Model);
+            AgentRole primaryRole = isPrReview ? AgentRole.Review : AgentRole.Build;
+            AgentModel model = options.Value.ResolveModel(primaryRole, task.Model, project.Model);
+            // Effort is not recorded on the run the way the model is, so it is resolved here for the
+            // spawn alone, over the same role.
+            AgentEffort effort = options.Value.ResolveEffort(primaryRole, task.Effort, project.Effort);
 
             // Resolved once, here, and frozen on RunDispatched for this run's whole lifetime
             // (task: the review pipeline's stage composition becomes configuration recorded per
@@ -740,7 +743,7 @@ public sealed class RunLauncher(
 
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
-                    runId, sessionId, worktree.Path, runDirectory, prompt, mode, model, project.SkipPermissions,
+                    runId, sessionId, worktree.Path, runDirectory, prompt, mode, model, effort, project.SkipPermissions,
                     UntrustedWorkingDirectory: isPrReview,
                     // Every follow-up kind, not only the review-feedback one (task: a
                     // review-feedback follow-up never answers a human reviewer in the owner's
@@ -860,6 +863,7 @@ public sealed class RunLauncher(
 
             Guid sessionId = DomainId.New();
             AgentModel model = options.Value.ResolveModel(AgentRole.Review, task.Model, project.Model);
+            AgentEffort effort = options.Value.ResolveEffort(AgentRole.Review, task.Effort, project.Effort);
             string sessionName = SessionRoleName.For(DomainId.Short(taskId), SessionRoleName.PrReviewMentionFollowUp);
 
             string? existingTaskDirectory = project.HomeDirectory.HasValue
@@ -919,7 +923,7 @@ public sealed class RunLauncher(
             SpawnedAgent agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
                     runId, sessionId, worktree.Path, runDirectory, prompt, ExecutorMode.Subscription, model,
-                    project.SkipPermissions, UntrustedWorkingDirectory: true)
+                    effort, project.SkipPermissions, UntrustedWorkingDirectory: true)
                 {
                     TaskId = taskId,
                     SessionName = sessionName,

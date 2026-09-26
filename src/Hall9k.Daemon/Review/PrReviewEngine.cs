@@ -601,6 +601,7 @@ public sealed class PrReviewEngine(
         string prompt = personaSession.BuildPrompt(new ReviewPersonaPromptRequest(
             task, project, run.Branch, baseBranch, _options.VerifyGateTimeout, drive, runSkill));
         AgentModel model = _options.ResolveModel(AgentRole.Review, task.Model, project.Model);
+        AgentEffort effort = _options.ResolveEffort(AgentRole.Review, task.Effort, project.Effort);
         // pr-review has no cycle loop — one pass per persona session — so every session name the
         // registry hands back reads as cycle 1 always, never RunDetails.ReviewCycle, which
         // pr-review never sets.
@@ -627,7 +628,7 @@ public sealed class PrReviewEngine(
 
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             runId, sessionId, run.WorktreePath, runDirectory, prompt, (ExecutorMode)run.ExecutorMode, model,
-            project.SkipPermissions, ConformanceArtifactName(sessionId), UntrustedWorkingDirectory: true)
+            effort, project.SkipPermissions, ConformanceArtifactName(sessionId), UntrustedWorkingDirectory: true)
         {
             TaskId = taskId,
             SessionName = sessionName,

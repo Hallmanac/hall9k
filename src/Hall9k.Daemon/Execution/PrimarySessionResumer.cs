@@ -7,7 +7,9 @@ using Hall9k.Domain.Features.Tasks;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using Hall9k.Domain.Infrastructure.Storage;
+using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
+using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Execution;
 
@@ -21,7 +23,7 @@ namespace Hall9k.Daemon.Execution;
 /// directly (<see cref="TokenBudgetRetryEngine"/> already depends on <see cref="RunSupervisor"/>
 /// to re-enter the review loop), so this sits underneath both.
 /// </summary>
-public sealed class PrimarySessionResumer(IExecutor executor)
+public sealed class PrimarySessionResumer(IExecutor executor, IOptions<DaemonOptions> options)
 {
     /// <summary>
     /// Spawns the resumed session and appends its <see cref="RunResumed"/> milestone to
@@ -62,6 +64,12 @@ public sealed class PrimarySessionResumer(IExecutor executor)
             ? run.SessionName
             : SessionRoleName.For(DomainId.Short(run.TaskId), sessionRole);
 
+        // Re-resolved rather than carried from the run: the model rides on the run because it is a
+        // recorded fact, but effort is only ever a settings-file line, and a resume rewrites that
+        // file, so the retry runs at whatever the chain says now, the way the original spawn did.
+        AgentEffort effort = options.Value.ResolveEffort(
+            task.Type == TaskType.PrReview ? AgentRole.Review : AgentRole.Build, task.Effort, project.Effort);
+
         // The spawn's own stdout redirect (ShellRedirection.Wrap's "> stream.jsonl") truncates
         // this same path from inside the freshly spawned shell, asynchronously, well after
         // Process.Start already returns — a monitor that reseeks to byte zero the moment this
@@ -82,7 +90,7 @@ public sealed class PrimarySessionResumer(IExecutor executor)
 
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             run.Id, DomainId.New(), run.WorktreePath, run.RunDirectory, prompt,
-            run.ExecutorMode, run.Model, project.SkipPermissions,
+            run.ExecutorMode, run.Model, effort, project.SkipPermissions,
             ResumeSessionId: run.SessionId, UntrustedWorkingDirectory: task.Type == TaskType.PrReview,
             // The same guard the original spawn carried (task: a review-feedback follow-up never
             // answers a human reviewer in the owner's name on its own). A resume rewrites the

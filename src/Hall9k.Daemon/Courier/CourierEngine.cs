@@ -335,6 +335,7 @@ public sealed class CourierEngine(
         string prompt = CourierPromptBuilder.Build(
             project.Name, feedLines, adapter.BuildDeliveryInstruction(presence.SessionName));
         AgentModel model = _options.ResolveCourierModel(project.Model);
+        AgentEffort effort = _options.ResolveEffort(AgentRole.Courier, taskEffort: null, project.Effort);
         Guid runId = DomainId.New();
 
         session.Events.StartStream(runId, new CourierRunDispatched(runId, project.Id, node.NodeId, model, now));
@@ -356,7 +357,7 @@ public sealed class CourierEngine(
             agent = await executor.SpawnAsync(
                 new AgentSpawnRequest(
                     runId, runId, RunPaths.GlobalDirectory(runId), RunPaths.GlobalDirectory(runId), prompt,
-                    ExecutorMode.Subscription, model, project.SkipPermissions,
+                    ExecutorMode.Subscription, model, effort, project.SkipPermissions,
                     // No recipe and no AGENTS.md (the acceptance criteria's own wording): dropping the
                     // checkout-scoped settings and doctrine files is exactly what this flag already
                     // does for a pull request's own untrusted head, and a courier's own artifact

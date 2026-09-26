@@ -2,7 +2,6 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Daemon.ProcessManagement;
 using Hall9k.Domain.Features.Run;
-using Hall9k.Domain.Shared.ValueObjects;
 using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Execution;
@@ -56,8 +55,7 @@ public sealed class ClaudeExecutor(
         // default (2026-09-02 finding): an operator who raises the option gets a foreground gate
         // run that survives it on every headless dispatch, with no constant to remember to bump.
         string settingsContent = ClaudeSettingsFile.Build(
-            options.Value.VerifyGateTimeout, request.GuardsReviewThreadReplies,
-            AgentEffort.FromInput(options.Value.Effort));
+            options.Value.VerifyGateTimeout, request.GuardsReviewThreadReplies, request.Effort);
         await File.WriteAllTextAsync(SettingsFile(request, runDirectory), settingsContent, cancellationToken);
 
         string command = $"\"{ClaudeBinary()}\" {string.Join(' ', Arguments(request, runDirectory))}";

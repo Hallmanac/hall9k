@@ -3713,7 +3713,7 @@ public sealed class RunSupervisorTests(PostgresFixture postgres) : IClassFixture
             store, new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processManager, resolvedOptions), processManager,
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), node,
             resolvedOptions, NullLogger<SpikeEngine>.Instance);
-        PrimarySessionResumer primarySessionResumer = new(resolvedExecutor);
+        PrimarySessionResumer primarySessionResumer = new(resolvedExecutor, resolvedOptions);
         return new RunSupervisor(store, node, processManager, verification, review, prReview, spike,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
             primarySessionResumer, launchHold, resolvedOptions, logger ?? NullLogger<RunSupervisor>.Instance);

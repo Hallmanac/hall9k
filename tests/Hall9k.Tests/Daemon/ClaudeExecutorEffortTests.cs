@@ -68,13 +68,34 @@ public sealed class ClaudeExecutorEffortTests : IDisposable
             "a value that is not one of the four names must never reach, let alone rewrite, the generated file");
     }
 
-    private async Task<JsonDocument> SpawnAndReadSettingsAsync(DaemonOptions options)
+    [Fact]
+    public async Task The_settings_file_carries_the_level_the_request_resolved_not_the_node_wide_option()
+    {
+        using JsonDocument settings = await SpawnAndReadSettingsAsync(
+            new DaemonOptions { Effort = "low" }, requestEffort: AgentEffort.ExtraHigh);
+
+        settings.RootElement.GetProperty("effortLevel").GetString().Should().Be(
+            "xhigh", "the dispatch site resolved task, project, role and node-wide already; the executor only maps the answer");
+    }
+
+    [Fact]
+    public async Task A_request_that_resolved_to_nothing_leaves_the_key_out_even_when_the_node_wide_option_is_set()
+    {
+        using JsonDocument settings = await SpawnAndReadSettingsAsync(
+            new DaemonOptions { Effort = "high" }, requestEffort: AgentEffort.Unknown);
+
+        settings.RootElement.TryGetProperty("effortLevel", out _).Should().BeFalse();
+    }
+
+    private async Task<JsonDocument> SpawnAndReadSettingsAsync(
+        DaemonOptions options, AgentEffort? requestEffort = null)
     {
         FakeProcessManager processes = new();
         ClaudeExecutor executor = new(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(options));
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), Path.GetTempPath(), runDirectory, "prompt",
-            ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+            ExecutorMode.Subscription, AgentModel.Sonnet, requestEffort ?? options.ResolveEffort(AgentRole.Build, null, null),
+            SkipPermissions: false)
         {
             SessionName = "test-build",
         };

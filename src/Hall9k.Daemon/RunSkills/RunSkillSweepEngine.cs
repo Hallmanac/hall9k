@@ -248,6 +248,7 @@ public sealed class RunSkillSweepEngine(
     {
         Guid sessionId = DomainId.New();
         AgentModel model = _options.ResolveModel(AgentRole.Synthesis, taskModel: null, project.Model);
+        AgentEffort effort = _options.ResolveEffort(AgentRole.Synthesis, taskEffort: null, project.Effort);
         string sessionName = SessionRoleName.For(DomainId.Short(project.Id), SessionRoleName.RunSkillDiscovery);
         string sessionDirectory = ProjectHomePaths.RunSkillDirectory(project.HomeDirectory.Value);
         string artifactName = DiscoveryArtifactName(sessionId);
@@ -276,7 +277,7 @@ public sealed class RunSkillSweepEngine(
                         // sentinel for that, and the executor only ever puts RunId in a log line
                         // and an error message, never in a path or a decision.
                         RunId: Guid.Empty, sessionId, worktreePath, sessionDirectory, prompt,
-                        ExecutorMode.Subscription, model, project.SkipPermissions,
+                        ExecutorMode.Subscription, model, effort, project.SkipPermissions,
                         SessionArtifactName: artifactName,
                         MaxTurns: _options.RunSkillDiscoveryMaxTurns)
                     {

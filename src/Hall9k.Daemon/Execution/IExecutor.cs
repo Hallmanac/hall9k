@@ -15,6 +15,12 @@ namespace Hall9k.Daemon.Execution;
 /// #33) and states the answer, so no spawn can quietly fall back to the human's personal
 /// Claude Code setting. On a resumed session it is the model that session already runs
 /// on, carried so the milestone can record it and never re-applied to the process.
+/// Effort is required beside it for the same reason: every caller resolves the chain
+/// (<c>DaemonOptions.ResolveEffort</c>: task, project, the node's role value, the node-wide value)
+/// and states the answer, so no site can forget it and a spawn never reads the node-wide level by
+/// default. <see cref="AgentEffort.Unknown"/> means nothing set one, and the executor then leaves the
+/// level out of the session's settings so the model's own default decides. It is vendor-neutral here;
+/// only the executor maps it to Claude Code's <c>effortLevel</c>.
 /// RunDirectory is the run's own directory (backlog 49) — resolved once at dispatch and
 /// carried here rather than rederived, exactly like WorktreePath.
 /// UntrustedWorkingDirectory is true only for a pr-review task's spawn (RunLauncher's
@@ -62,6 +68,7 @@ public sealed record AgentSpawnRequest(
     string Prompt,
     ExecutorMode Mode,
     AgentModel Model,
+    AgentEffort Effort,
     bool SkipPermissions,
     string? SessionArtifactName = null,
     Guid? ResumeSessionId = null,

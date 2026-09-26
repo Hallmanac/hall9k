@@ -31,7 +31,7 @@ public sealed class ClaudeExecutorIsolationTests
     {
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), "/tmp/pr-review-checkout", "/tmp/run", "prompt",
-            ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false,
+            ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false,
             UntrustedWorkingDirectory: true)
         {
             SessionName = "test-review-adversarial-1",
@@ -52,7 +52,7 @@ public sealed class ClaudeExecutorIsolationTests
     {
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", "/tmp/run", "prompt",
-            ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+            ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
         {
             SessionName = "test-build",
         };
@@ -68,7 +68,7 @@ public sealed class ClaudeExecutorIsolationTests
     {
         AgentSpawnRequest request = new(
             DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", "/tmp/run", "prompt",
-            ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+            ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
         {
             SessionName = "test-build",
         };
@@ -102,7 +102,7 @@ public sealed class ClaudeExecutorIsolationTests
             Guid runId = DomainId.New();
             AgentSpawnRequest request = new(
                 runId, DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
-                ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+                ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
             {
                 SessionName = "test-build",
             };
@@ -140,7 +140,7 @@ public sealed class ClaudeExecutorIsolationTests
             Guid taskId = DomainId.New();
             AgentSpawnRequest request = new(
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
-                ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+                ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
             {
                 TaskId = taskId,
                 SessionName = "test-build",
@@ -177,7 +177,7 @@ public sealed class ClaudeExecutorIsolationTests
 
             AgentSpawnRequest request = new(
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
-                ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+                ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
             {
                 SessionName = "test-build",
             };
@@ -216,7 +216,7 @@ public sealed class ClaudeExecutorIsolationTests
 
             AgentSpawnRequest request = new(
                 DomainId.New(), DomainId.New(), "/tmp/ordinary-worktree", runDirectory, "prompt",
-                ExecutorMode.Subscription, AgentModel.Sonnet, SkipPermissions: false)
+                ExecutorMode.Subscription, AgentModel.Sonnet, AgentEffort.Unknown, SkipPermissions: false)
             {
                 SessionName = "test-build",
             };

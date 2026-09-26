@@ -1485,6 +1485,20 @@ public sealed class ReviewEngine(
     }
 
     /// <summary>
+    /// The effort for one review pass, resolved beside its model: a Verify pass and the mandatory
+    /// FinalFullPass each read their own pass value and then review's, a Discovery pass reads review's,
+    /// and every one of them puts the task's and the project's own value above the node's.
+    /// </summary>
+    private AgentEffort ResolveReviewPassEffort(ReviewMode mode, ReviewContext context) => mode switch
+    {
+        _ when mode == ReviewMode.Verify =>
+            _options.ResolveVerifyReviewEffort(context.Task.Effort, context.Project.Effort),
+        _ when mode == ReviewMode.FinalFullPass =>
+            _options.ResolveFinalFullPassReviewEffort(context.Task.Effort, context.Project.Effort),
+        _ => _options.ResolveEffort(AgentRole.Review, context.Task.Effort, context.Project.Effort),
+    };
+
+    /// <summary>
     /// Where the stranded delta's own patch and commit list land: the task's own workspace when
     /// the project has a home, resolved against whatever directory is actually on disk right now
     /// rather than a freshly-computed slug — the identical reasoning RunLauncher's own run-directory
@@ -2137,10 +2151,11 @@ public sealed class ReviewEngine(
         AgentModel model = mode == ReviewMode.FinalFullPass
             ? _options.ResolveFinalFullPassReviewModel(context.Task.Model, context.Project.Model)
             : _options.ResolveModel(AgentRole.Review, context.Task.Model, context.Project.Model);
+        AgentEffort effort = ResolveReviewPassEffort(mode, context);
         string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.Review(lens, cycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, executorMode, model,
-            context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, lens),
+            effort, context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, lens),
             GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
             Environment = ReviewSessionEnvironment,
@@ -2218,11 +2233,12 @@ public sealed class ReviewEngine(
         // 2026-08-29): defaults to whatever Review itself would resolve to, so this is a no-op
         // until an install sets --model-review-verify.
         AgentModel model = _options.ResolveVerifyReviewModel(context.Task.Model, context.Project.Model);
+        AgentEffort effort = ResolveReviewPassEffort(ReviewMode.Verify, context);
         string sessionName = SessionRoleName.For(
             DomainId.Short(context.TaskId), SessionRoleName.ReviewVerify(cycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, executorMode, model,
-            context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, ReviewLens.Verify),
+            effort, context.Project.SkipPermissions, ReviewArtifactName(cycle, sessionId, ReviewLens.Verify),
             GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
             Environment = ReviewSessionEnvironment,
@@ -2293,6 +2309,9 @@ public sealed class ReviewEngine(
         // re-resolved here, or the milestone would record a model the session never ran on
         // (log #33). An older stream that recorded no model stays honestly Unknown.
         AgentModel model = verdictless.Model;
+        // Effort, unlike the model, is no recorded fact of the pass: it is only ever a line in the
+        // settings file the resumed spawn rewrites, so it resolves for the pass's own mode.
+        AgentEffort effort = ResolveReviewPassEffort(verdictless.Mode, context);
 
         // Checked immediately before the spawn (Copilot review, PR #30), not only by the
         // caller's once-per-iteration check: the reprompt is its own dispatch decision.
@@ -2306,7 +2325,7 @@ public sealed class ReviewEngine(
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, artifactId, context.Run.WorktreePath, context.Run.RunDirectory, prompt,
             context.Run.ExecutorMode, model,
-            context.Project.SkipPermissions, ReviewArtifactName(run.ReviewCycle, artifactId, verdictless.Lens),
+            effort, context.Project.SkipPermissions, ReviewArtifactName(run.ReviewCycle, artifactId, verdictless.Lens),
             ResumeSessionId: resumeSessionId, GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
             Environment = ReviewSessionEnvironment,
@@ -2517,10 +2536,13 @@ public sealed class ReviewEngine(
         }
 
         AgentModel model = escalated ? reviewModel : fixModel;
+        // An escalated fix session runs on the review model, so it takes review's effort with it.
+        AgentEffort effort = _options.ResolveEffort(
+            escalated ? AgentRole.Review : AgentRole.Fix, context.Task.Effort, context.Project.Effort);
         string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.Fix(cycle));
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
-            context.Project.SkipPermissions, FixArtifactName(cycle, sessionId),
+            effort, context.Project.SkipPermissions, FixArtifactName(cycle, sessionId),
             GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
             TaskId = context.TaskId,
@@ -3726,6 +3748,7 @@ public sealed class ReviewEngine(
     {
         Guid sessionId = DomainId.New();
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
+        AgentEffort effort = _options.ResolveEffort(AgentRole.Fix, context.Task.Effort, context.Project.Effort);
         string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), SessionRoleName.StackAssessment);
 
         int? pullRequestNumber = null;
@@ -3782,7 +3805,7 @@ public sealed class ReviewEngine(
             {
                 agent = await executor.SpawnAsync(new AgentSpawnRequest(
                     context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt,
-                    context.Run.ExecutorMode, model, context.Project.SkipPermissions,
+                    context.Run.ExecutorMode, model, effort, context.Project.SkipPermissions,
                     SessionArtifactName: SessionRoleName.StackAssessment, MaxTurns: _options.StackAssessmentMaxTurns,
                     GuardsReviewThreadReplies: context.Run.IsFollowUp)
                 {
@@ -4713,11 +4736,12 @@ public sealed class ReviewEngine(
             lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
+        AgentEffort effort = _options.ResolveEffort(AgentRole.Fix, context.Task.Effort, context.Project.Effort);
         string artifactName = RebaseRecoveryArtifactName(sessionId);
         string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), artifactName);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
-            context.Project.SkipPermissions, artifactName,
+            effort, context.Project.SkipPermissions, artifactName,
             GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
             TaskId = context.TaskId,
@@ -5269,11 +5293,12 @@ public sealed class ReviewEngine(
             lessons: await LoadRecordedLessonsAsync(context.Project.Id, context.RunId, cancellationToken));
         ExecutorMode mode = context.Run.ExecutorMode;
         AgentModel model = _options.ResolveModel(AgentRole.Fix, context.Task.Model, context.Project.Model);
+        AgentEffort effort = _options.ResolveEffort(AgentRole.Fix, context.Task.Effort, context.Project.Effort);
         string artifactName = SettlingGateRepairArtifactName(sessionId);
         string sessionName = SessionRoleName.For(DomainId.Short(context.TaskId), artifactName);
         SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
             context.RunId, sessionId, context.Run.WorktreePath, context.Run.RunDirectory, prompt, mode, model,
-            context.Project.SkipPermissions, artifactName,
+            effort, context.Project.SkipPermissions, artifactName,
             GuardsReviewThreadReplies: context.Run.IsFollowUp)
         {
             TaskId = context.TaskId,

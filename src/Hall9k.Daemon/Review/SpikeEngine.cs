@@ -435,12 +435,13 @@ public sealed class SpikeEngine(
         Guid sessionId = DomainId.New();
         string artifactName = $"{role}-{sessionId:N}";
         AgentModel model = _options.ResolveModel(modelRole, task.Model, project.Model);
+        AgentEffort effort = _options.ResolveEffort(modelRole, task.Effort, project.Effort);
         string sessionName = SessionRoleName.For(DomainId.Short(taskId), role);
 
         SpawnedAgent agent = await executor.SpawnAsync(
             new AgentSpawnRequest(
                 runId, sessionId, run.WorktreePath, runDirectory, prompt, (ExecutorMode)run.ExecutorMode, model,
-                project.SkipPermissions, artifactName)
+                effort, project.SkipPermissions, artifactName)
             {
                 TaskId = taskId,
                 SessionName = sessionName,
