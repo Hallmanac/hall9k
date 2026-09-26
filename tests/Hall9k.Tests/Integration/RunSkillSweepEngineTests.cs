@@ -9,6 +9,7 @@ using Hall9k.Daemon;
 using Hall9k.Daemon.Execution;
 using Hall9k.Daemon.RunSkills;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Features.Run;
@@ -201,6 +202,32 @@ public sealed class RunSkillSweepEngineTests : IClassFixture<PostgresFixture>, I
         stored.Content.Should().Be(afterSet.RunSkill.Content);
 
         (await engine.SweepOnceAsync(cts.Token)).Pushed.Should().Be(0, "nothing new to push");
+    }
+
+    /// <summary>
+    /// A replicated recording can land on the stream behind a newer one, because a catch-up answer
+    /// serves a pre-switch-on head after the tail. The projection keeps the newer skill, and the
+    /// sweep must not push the older one over it in the ledger.
+    /// </summary>
+    [Fact]
+    public async Task A_recording_stamped_older_than_the_applied_one_is_never_pushed_over_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, Guid projectId, _) = await SeedAsync(cts.Token);
+        FakeLedger ledger = new();
+        RunSkillSweepEngine engine = Engine(node, ledger, new ScriptedDiscoveryExecutor(string.Empty));
+        DateTimeOffset newerAt = DateTimeOffset.UtcNow.AddDays(-1);
+
+        await AppendAsync(projectId, RecordedAt("newer skill", newerAt), cts.Token);
+        (await engine.SweepOnceAsync(cts.Token)).Pushed.Should().Be(1);
+
+        await AppendAsync(projectId, RecordedAt("older skill", newerAt.AddDays(-30)), cts.Token);
+        (await engine.SweepOnceAsync(cts.Token)).Pushed.Should().Be(0, "the older recording lost on its own stamp");
+
+        (await LoadProjectAsync(projectId, cts.Token)).RunSkill!.Content.Should().Be("newer skill");
+        LedgerFile stored = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.RunSkill.RefspecSource, LedgerRefRegistry.RunSkillPath, cts.Token);
+        stored.Content.Should().Be("newer skill");
     }
 
     [Fact]
@@ -516,6 +543,16 @@ public sealed class RunSkillSweepEngineTests : IClassFixture<PostgresFixture>, I
         {
             File.Delete(file);
         }
+    }
+
+    private static ProjectRunSkillRecorded RecordedAt(string content, DateTimeOffset recordedAt) =>
+        new(Guid.Empty, content, RunSkillShape.FullText, "abc123", RunSkillAuthor.Hand, recordedAt, Guid.Empty);
+
+    private async Task AppendAsync(Guid projectId, object @event, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.Append(projectId, @event);
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private async Task<ProjectDetails> LoadProjectAsync(Guid projectId, CancellationToken cancellationToken)

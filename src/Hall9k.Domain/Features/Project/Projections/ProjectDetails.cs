@@ -166,6 +166,47 @@ public sealed class ProjectDetails
     public List<LaunchText> LaunchTexts { get; set; } = [];
     public DateTimeOffset RegisteredAt { get; set; }
     public DateTimeOffset? SettingsChangedAt { get; set; }
+
+    /// <summary>
+    /// The <c>ChangedAt</c> of the settings change that last wrote each team-scoped field, keyed by
+    /// the field's own property name. A team field is applied only when its change is not older than
+    /// the one recorded here, so a pre-switch-on head that a catch-up answer delivers after a newer
+    /// tail never overwrites the newer value, whatever order the two sit in the stream.
+    /// </summary>
+    public Dictionary<string, DateTimeOffset> TeamSettingStamps { get; set; } = [];
+
+    /// <summary>The stamp (<c>IssuedAt</c> or <c>RemovedAt</c>) of the vouch or removal that last decided each member fingerprint, kept for a removed one too so an older vouch arriving late cannot bring it back.</summary>
+    public Dictionary<string, DateTimeOffset> MemberStamps { get; set; } = [];
+
+    /// <summary>The stamp (<c>SetAt</c> or <c>RemovedAt</c>) of the change that last decided each prompt-builder key, kept for a removed one too, on the same terms as <see cref="MemberStamps"/>.</summary>
+    public Dictionary<string, DateTimeOffset> PromptAddendumStamps { get; set; } = [];
+
+    /// <summary>
+    /// Whether a change to one team-scoped field stamped <paramref name="changedAt"/> may be
+    /// applied, recording the stamp when it may. A change stamped the same as the applied one is
+    /// accepted, so an equal stamp keeps the append order it always had.
+    /// </summary>
+    public bool TryStampTeamSetting(string field, DateTimeOffset changedAt) =>
+        TryStamp(TeamSettingStamps, field, changedAt);
+
+    /// <summary>The same last-writer-by-stamp gate for one member fingerprint (<see cref="MemberStamps"/>).</summary>
+    public bool TryStampMember(string rootFingerprint, DateTimeOffset stamp) =>
+        TryStamp(MemberStamps, rootFingerprint, stamp);
+
+    /// <summary>The same last-writer-by-stamp gate for one prompt-builder key (<see cref="PromptAddendumStamps"/>).</summary>
+    public bool TryStampPromptAddendum(string builderKey, DateTimeOffset stamp) =>
+        TryStamp(PromptAddendumStamps, builderKey, stamp);
+
+    private static bool TryStamp(Dictionary<string, DateTimeOffset> stamps, string key, DateTimeOffset stamp)
+    {
+        if (stamps.TryGetValue(key, out DateTimeOffset applied) && stamp < applied)
+        {
+            return false;
+        }
+
+        stamps[key] = stamp;
+        return true;
+    }
     /// <summary>
     /// Whether this project is archived on this install (task: a project can be archived, listed
     /// as archived, reactivated, and renamed). Named for the purge follow-up to build on: the
@@ -243,7 +284,7 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
 
     public void Apply(IEvent<ProjectSettingsChanged> @event, ProjectDetails view)
     {
-        if (@event.Data.VerifyCommands.HasValue)
+        if (@event.Data.VerifyCommands.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.VerifyCommands), @event.Data.ChangedAt))
         {
             view.VerifyCommands = [.. @event.Data.VerifyCommands.Value ?? []];
         }
@@ -263,12 +304,12 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
             view.MaxParallelTasks = @event.Data.MaxParallelTasks.Value;
         }
 
-        if (@event.Data.ContextLinks.HasValue)
+        if (@event.Data.ContextLinks.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ContextLinks), @event.Data.ChangedAt))
         {
             view.ContextLinks = [.. @event.Data.ContextLinks.Value ?? []];
         }
 
-        if (@event.Data.CommitStyle.HasValue)
+        if (@event.Data.CommitStyle.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.CommitStyle), @event.Data.ChangedAt))
         {
             view.CommitStyle = @event.Data.CommitStyle.Value ?? CommitStyle.Unknown;
         }
@@ -283,12 +324,12 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
             view.OrchestratorModel = @event.Data.OrchestratorModel.Value ?? AgentModel.Unknown;
         }
 
-        if (@event.Data.ReviewRerequest.HasValue)
+        if (@event.Data.ReviewRerequest.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ReviewRerequest), @event.Data.ChangedAt))
         {
             view.ReviewRerequest = @event.Data.ReviewRerequest.Value ?? ReviewRerequestPolicy.Unknown;
         }
 
-        if (@event.Data.JiraProjectKey.HasValue)
+        if (@event.Data.JiraProjectKey.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.JiraProjectKey), @event.Data.ChangedAt))
         {
             view.JiraProjectKey = @event.Data.JiraProjectKey.Value ?? JiraProjectKey.None;
         }
@@ -303,7 +344,7 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
             view.RepositoryPath = @event.Data.RepositoryPath.Value;
         }
 
-        if (@event.Data.BacklogPolicy.HasValue)
+        if (@event.Data.BacklogPolicy.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.BacklogPolicy), @event.Data.ChangedAt))
         {
             view.BacklogPolicy = @event.Data.BacklogPolicy.Value ?? BacklogPolicy.None;
         }
@@ -313,54 +354,54 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
             view.PrimaryTracker = @event.Data.PrimaryTracker.Value ?? WorkItemProvider.Unknown;
         }
 
-        if (@event.Data.BacklogRoutingGuidance.HasValue)
+        if (@event.Data.BacklogRoutingGuidance.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.BacklogRoutingGuidance), @event.Data.ChangedAt))
         {
             view.BacklogRoutingGuidance = @event.Data.BacklogRoutingGuidance.Value.IsBlank()
                 ? null
                 : @event.Data.BacklogRoutingGuidance.Value;
         }
 
-        if (@event.Data.MaxComplianceReviewCycles.HasValue)
+        if (@event.Data.MaxComplianceReviewCycles.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.MaxComplianceReviewCycles), @event.Data.ChangedAt))
         {
             view.MaxComplianceReviewCycles = @event.Data.MaxComplianceReviewCycles.Value;
         }
 
-        if (@event.Data.MaxAdversarialReviewCycles.HasValue)
+        if (@event.Data.MaxAdversarialReviewCycles.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.MaxAdversarialReviewCycles), @event.Data.ChangedAt))
         {
             view.MaxAdversarialReviewCycles = @event.Data.MaxAdversarialReviewCycles.Value;
         }
 
-        if (@event.Data.MaxFinalFullPassRounds.HasValue)
+        if (@event.Data.MaxFinalFullPassRounds.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.MaxFinalFullPassRounds), @event.Data.ChangedAt))
         {
             view.MaxFinalFullPassRounds = @event.Data.MaxFinalFullPassRounds.Value;
         }
 
-        if (@event.Data.LifetimeReviewCycleBudget.HasValue)
+        if (@event.Data.LifetimeReviewCycleBudget.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.LifetimeReviewCycleBudget), @event.Data.ChangedAt))
         {
             view.LifetimeReviewCycleBudget = @event.Data.LifetimeReviewCycleBudget.Value;
         }
 
-        if (@event.Data.ReviewStageComposition.HasValue)
+        if (@event.Data.ReviewStageComposition.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ReviewStageComposition), @event.Data.ChangedAt))
         {
             view.ReviewStageComposition = @event.Data.ReviewStageComposition.Value;
         }
 
-        if (@event.Data.BranchNameTemplate.HasValue)
+        if (@event.Data.BranchNameTemplate.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.BranchNameTemplate), @event.Data.ChangedAt))
         {
             view.BranchNameTemplate = @event.Data.BranchNameTemplate.Value ?? BranchNameTemplate.Default;
         }
 
-        if (@event.Data.AutoPrReview.HasValue)
+        if (@event.Data.AutoPrReview.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.AutoPrReview), @event.Data.ChangedAt))
         {
             view.AutoPrReview = @event.Data.AutoPrReview.Value ?? AutoPrReviewSpeed.Off;
         }
 
-        if (@event.Data.DesignReviewDrive.HasValue)
+        if (@event.Data.DesignReviewDrive.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.DesignReviewDrive), @event.Data.ChangedAt))
         {
             view.DesignReviewDrive = @event.Data.DesignReviewDrive.Value;
         }
 
-        if (@event.Data.QaReviewDrive.HasValue)
+        if (@event.Data.QaReviewDrive.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.QaReviewDrive), @event.Data.ChangedAt))
         {
             view.QaReviewDrive = @event.Data.QaReviewDrive.Value;
         }
@@ -370,7 +411,7 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
             view.Priority = @event.Data.Priority.Value ?? ProjectPriority.Normal;
         }
 
-        if (@event.Data.ClaimGate.HasValue)
+        if (@event.Data.ClaimGate.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ClaimGate), @event.Data.ChangedAt))
         {
             view.ClaimGate = @event.Data.ClaimGate.Value ?? ClaimGate.Off;
         }
@@ -390,12 +431,12 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
             view.CourierMaxWaitSeconds = @event.Data.CourierMaxWaitSeconds.Value;
         }
 
-        if (@event.Data.TakePolicy.HasValue)
+        if (@event.Data.TakePolicy.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.TakePolicy), @event.Data.ChangedAt))
         {
             view.TakePolicy = @event.Data.TakePolicy.Value ?? TakePolicy.Auto;
         }
 
-        if (@event.Data.TakeTimeoutMinutes.HasValue)
+        if (@event.Data.TakeTimeoutMinutes.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.TakeTimeoutMinutes), @event.Data.ChangedAt))
         {
             view.TakeTimeoutMinutes = @event.Data.TakeTimeoutMinutes.Value;
         }
@@ -405,22 +446,22 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
             view.LaunchTexts = [.. @event.Data.LaunchTexts.Value ?? []];
         }
 
-        if (@event.Data.CloseLinkedIssue.HasValue)
+        if (@event.Data.CloseLinkedIssue.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.CloseLinkedIssue), @event.Data.ChangedAt))
         {
             view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value ?? CloseLinkedIssueRule.WhenAllTasksClose;
         }
 
-        if (@event.Data.NeverCloseLabels.HasValue)
+        if (@event.Data.NeverCloseLabels.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.NeverCloseLabels), @event.Data.ChangedAt))
         {
             view.NeverCloseLabels = [.. @event.Data.NeverCloseLabels.Value ?? []];
         }
 
-        if (@event.Data.WritingConventions.HasValue)
+        if (@event.Data.WritingConventions.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.WritingConventions), @event.Data.ChangedAt))
         {
             view.WritingConventions = @event.Data.WritingConventions.Value ?? WritingConventions.Default;
         }
 
-        if (@event.Data.NonExecutablePaths.HasValue)
+        if (@event.Data.NonExecutablePaths.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.NonExecutablePaths), @event.Data.ChangedAt))
         {
             view.NonExecutablePaths = [.. @event.Data.NonExecutablePaths.Value ?? []];
         }
@@ -431,119 +472,119 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
     /// <summary>Mirrors <see cref="ProjectAggregate.Apply(Events.ProjectTeamSettingsChanged)"/>.</summary>
     public void Apply(IEvent<ProjectTeamSettingsChanged> @event, ProjectDetails view)
     {
-        if (@event.Data.VerifyCommands.HasValue)
+        if (@event.Data.VerifyCommands.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.VerifyCommands), @event.Data.ChangedAt))
         {
             view.VerifyCommands = [.. @event.Data.VerifyCommands.Value ?? []];
         }
 
-        if (@event.Data.ReviewRerequest.HasValue)
+        if (@event.Data.ReviewRerequest.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ReviewRerequest), @event.Data.ChangedAt))
         {
             view.ReviewRerequest = @event.Data.ReviewRerequest.Value ?? ReviewRerequestPolicy.Unknown;
         }
 
-        if (@event.Data.JiraProjectKey.HasValue)
+        if (@event.Data.JiraProjectKey.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.JiraProjectKey), @event.Data.ChangedAt))
         {
             view.JiraProjectKey = @event.Data.JiraProjectKey.Value ?? JiraProjectKey.None;
         }
 
-        if (@event.Data.BacklogPolicy.HasValue)
+        if (@event.Data.BacklogPolicy.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.BacklogPolicy), @event.Data.ChangedAt))
         {
             view.BacklogPolicy = @event.Data.BacklogPolicy.Value ?? BacklogPolicy.None;
         }
 
-        if (@event.Data.BacklogRoutingGuidance.HasValue)
+        if (@event.Data.BacklogRoutingGuidance.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.BacklogRoutingGuidance), @event.Data.ChangedAt))
         {
             view.BacklogRoutingGuidance = @event.Data.BacklogRoutingGuidance.Value.IsBlank()
                 ? null
                 : @event.Data.BacklogRoutingGuidance.Value;
         }
 
-        if (@event.Data.MaxComplianceReviewCycles.HasValue)
+        if (@event.Data.MaxComplianceReviewCycles.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.MaxComplianceReviewCycles), @event.Data.ChangedAt))
         {
             view.MaxComplianceReviewCycles = @event.Data.MaxComplianceReviewCycles.Value;
         }
 
-        if (@event.Data.MaxAdversarialReviewCycles.HasValue)
+        if (@event.Data.MaxAdversarialReviewCycles.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.MaxAdversarialReviewCycles), @event.Data.ChangedAt))
         {
             view.MaxAdversarialReviewCycles = @event.Data.MaxAdversarialReviewCycles.Value;
         }
 
-        if (@event.Data.MaxFinalFullPassRounds.HasValue)
+        if (@event.Data.MaxFinalFullPassRounds.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.MaxFinalFullPassRounds), @event.Data.ChangedAt))
         {
             view.MaxFinalFullPassRounds = @event.Data.MaxFinalFullPassRounds.Value;
         }
 
-        if (@event.Data.LifetimeReviewCycleBudget.HasValue)
+        if (@event.Data.LifetimeReviewCycleBudget.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.LifetimeReviewCycleBudget), @event.Data.ChangedAt))
         {
             view.LifetimeReviewCycleBudget = @event.Data.LifetimeReviewCycleBudget.Value;
         }
 
-        if (@event.Data.ReviewStageComposition.HasValue)
+        if (@event.Data.ReviewStageComposition.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ReviewStageComposition), @event.Data.ChangedAt))
         {
             view.ReviewStageComposition = @event.Data.ReviewStageComposition.Value;
         }
 
-        if (@event.Data.BranchNameTemplate.HasValue)
+        if (@event.Data.BranchNameTemplate.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.BranchNameTemplate), @event.Data.ChangedAt))
         {
             view.BranchNameTemplate = @event.Data.BranchNameTemplate.Value ?? BranchNameTemplate.Default;
         }
 
-        if (@event.Data.AutoPrReview.HasValue)
+        if (@event.Data.AutoPrReview.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.AutoPrReview), @event.Data.ChangedAt))
         {
             view.AutoPrReview = @event.Data.AutoPrReview.Value ?? AutoPrReviewSpeed.Off;
         }
 
-        if (@event.Data.DesignReviewDrive.HasValue)
+        if (@event.Data.DesignReviewDrive.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.DesignReviewDrive), @event.Data.ChangedAt))
         {
             view.DesignReviewDrive = @event.Data.DesignReviewDrive.Value;
         }
 
-        if (@event.Data.QaReviewDrive.HasValue)
+        if (@event.Data.QaReviewDrive.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.QaReviewDrive), @event.Data.ChangedAt))
         {
             view.QaReviewDrive = @event.Data.QaReviewDrive.Value;
         }
 
-        if (@event.Data.ClaimGate.HasValue)
+        if (@event.Data.ClaimGate.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ClaimGate), @event.Data.ChangedAt))
         {
             view.ClaimGate = @event.Data.ClaimGate.Value ?? ClaimGate.Off;
         }
 
-        if (@event.Data.TakePolicy.HasValue)
+        if (@event.Data.TakePolicy.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.TakePolicy), @event.Data.ChangedAt))
         {
             view.TakePolicy = @event.Data.TakePolicy.Value ?? TakePolicy.Auto;
         }
 
-        if (@event.Data.TakeTimeoutMinutes.HasValue)
+        if (@event.Data.TakeTimeoutMinutes.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.TakeTimeoutMinutes), @event.Data.ChangedAt))
         {
             view.TakeTimeoutMinutes = @event.Data.TakeTimeoutMinutes.Value;
         }
 
-        if (@event.Data.CloseLinkedIssue.HasValue)
+        if (@event.Data.CloseLinkedIssue.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.CloseLinkedIssue), @event.Data.ChangedAt))
         {
             view.CloseLinkedIssue = @event.Data.CloseLinkedIssue.Value ?? CloseLinkedIssueRule.WhenAllTasksClose;
         }
 
-        if (@event.Data.NeverCloseLabels.HasValue)
+        if (@event.Data.NeverCloseLabels.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.NeverCloseLabels), @event.Data.ChangedAt))
         {
             view.NeverCloseLabels = [.. @event.Data.NeverCloseLabels.Value ?? []];
         }
 
-        if (@event.Data.WritingConventions.HasValue)
+        if (@event.Data.WritingConventions.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.WritingConventions), @event.Data.ChangedAt))
         {
             view.WritingConventions = @event.Data.WritingConventions.Value ?? WritingConventions.Default;
         }
 
-        if (@event.Data.ContextLinks.HasValue)
+        if (@event.Data.ContextLinks.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.ContextLinks), @event.Data.ChangedAt))
         {
             view.ContextLinks = [.. @event.Data.ContextLinks.Value ?? []];
         }
 
-        if (@event.Data.CommitStyle.HasValue)
+        if (@event.Data.CommitStyle.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.CommitStyle), @event.Data.ChangedAt))
         {
             view.CommitStyle = @event.Data.CommitStyle.Value ?? CommitStyle.Unknown;
         }
 
-        if (@event.Data.NonExecutablePaths.HasValue)
+        if (@event.Data.NonExecutablePaths.HasValue && view.TryStampTeamSetting(nameof(ProjectDetails.NonExecutablePaths), @event.Data.ChangedAt))
         {
             view.NonExecutablePaths = [.. @event.Data.NonExecutablePaths.Value ?? []];
         }
@@ -578,18 +619,42 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         view.PurgeAt = null;
     }
 
-    public void Apply(IEvent<MemberVouched> @event, ProjectDetails view) =>
-        view.Members[@event.Data.RootFingerprint] = @event.Data.Role;
+    // The four events below are last-writer by their own stamp rather than by append order: a
+    // replicated one can land behind a newer one already applied (a catch-up answer delivers a
+    // pre-switch-on head after the post-switch-on tail), and the projection must read the same
+    // whichever order they sit in.
+    public void Apply(IEvent<MemberVouched> @event, ProjectDetails view)
+    {
+        if (view.TryStampMember(@event.Data.RootFingerprint, @event.Data.IssuedAt))
+        {
+            view.Members[@event.Data.RootFingerprint] = @event.Data.Role;
+        }
+    }
 
-    public void Apply(IEvent<MemberRemoved> @event, ProjectDetails view) =>
-        view.Members.Remove(@event.Data.RootFingerprint);
+    public void Apply(IEvent<MemberRemoved> @event, ProjectDetails view)
+    {
+        if (view.TryStampMember(@event.Data.RootFingerprint, @event.Data.RemovedAt))
+        {
+            view.Members.Remove(@event.Data.RootFingerprint);
+        }
+    }
 
-    public void Apply(IEvent<ProjectPromptAddendumSet> @event, ProjectDetails view) =>
-        view.PromptAddenda[@event.Data.BuilderKey] = new ProjectPromptAddendum(
-            @event.Data.Content, @event.Data.OverCap, @event.Data.OverCapReason, @event.Data.SetAt, @event.Data.SetByOwnerId);
+    public void Apply(IEvent<ProjectPromptAddendumSet> @event, ProjectDetails view)
+    {
+        if (view.TryStampPromptAddendum(@event.Data.BuilderKey, @event.Data.SetAt))
+        {
+            view.PromptAddenda[@event.Data.BuilderKey] = new ProjectPromptAddendum(
+                @event.Data.Content, @event.Data.OverCap, @event.Data.OverCapReason, @event.Data.SetAt, @event.Data.SetByOwnerId);
+        }
+    }
 
-    public void Apply(IEvent<ProjectPromptAddendumRemoved> @event, ProjectDetails view) =>
-        view.PromptAddenda.Remove(@event.Data.BuilderKey);
+    public void Apply(IEvent<ProjectPromptAddendumRemoved> @event, ProjectDetails view)
+    {
+        if (view.TryStampPromptAddendum(@event.Data.BuilderKey, @event.Data.RemovedAt))
+        {
+            view.PromptAddenda.Remove(@event.Data.BuilderKey);
+        }
+    }
 
     public void Apply(IEvent<ProjectKeyAssigned> @event, ProjectDetails view) =>
         view.ProjectKey = @event.Data.ProjectKey;
@@ -605,6 +670,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
 
     public void Apply(IEvent<ProjectRunSkillRecorded> @event, ProjectDetails view)
     {
+        if (view.RunSkill is { } applied && @event.Data.RecordedAt < applied.RecordedAt)
+        {
+            return;
+        }
+
         view.RunSkill = new ProjectRunSkill(
             @event.Data.Content, RunSkillShape.FromInput(@event.Data.Shape), @event.Data.ComposedAgainstCommit,
             RunSkillAuthor.FromInput(@event.Data.Author), @event.Data.RecordedAt, @event.Data.RecordedByOwnerId);

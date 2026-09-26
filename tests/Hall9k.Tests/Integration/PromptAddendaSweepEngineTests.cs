@@ -7,6 +7,7 @@ using Hall9k.Connectors.Prompts;
 using Hall9k.Daemon;
 using Hall9k.Daemon.PromptAddenda;
 using Hall9k.Domain.Features.Project;
+using Hall9k.Domain.Features.Project.Events;
 using Hall9k.Domain.Features.Project.Handlers;
 using Hall9k.Domain.Features.Project.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
@@ -112,6 +113,35 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
             cts.Token);
         stored.Exists.Should().BeFalse();
         File.Exists(materializedFile).Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A replicated change can land on the stream behind a newer one for the same builder key,
+    /// because a catch-up answer serves a pre-switch-on head after the tail. The projection keeps
+    /// the newer text, and the sweep must not push the older one over it in the ledger.
+    /// </summary>
+    [Fact]
+    public async Task A_change_stamped_older_than_the_applied_one_is_never_pushed_over_it()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(2));
+        (NodeContext node, Guid projectId, _) = await SeedAsync(cts.Token);
+        FakeLedger ledger = new();
+        PromptAddendaSweepEngine engine = new(
+            _postgres.Store, node, ledger, new NodeKeyStore(), NullLogger<PromptAddendaSweepEngine>.Instance);
+        Guid ownerId = DomainId.New();
+
+        await AppendAsync(projectId, new ProjectPromptAddendumSet(
+            projectId, "work", "newer text", false, null, Now.AddDays(2), ownerId), cts.Token);
+        (await engine.SweepOnceAsync(cts.Token)).Pushed.Should().Be(1);
+
+        await AppendAsync(projectId, new ProjectPromptAddendumSet(
+            projectId, "work", "older text", false, null, Now, ownerId), cts.Token);
+        (await engine.SweepOnceAsync(cts.Token)).Pushed.Should().Be(0, "the older change lost on its own stamp");
+
+        LedgerFile stored = await ledger.ReadAsync(
+            RepositoryPath, LedgerRefRegistry.PromptAddenda.RefspecSource, LedgerRefRegistry.PromptAddendumPath("work"),
+            cts.Token);
+        stored.Content.Should().Be("newer text");
     }
 
     [Fact]
@@ -390,6 +420,13 @@ public sealed class PromptAddendaSweepEngineTests : IClassFixture<PostgresFixtur
 
         public Task<IReadOnlyList<LedgerEntry>> ReadAllAsync(string repositoryPath, string refName, string pathPrefix, CancellationToken cancellationToken) =>
             inner.ReadAllAsync(repositoryPath, refName, pathPrefix, cancellationToken);
+    }
+
+    private async Task AppendAsync(Guid projectId, object @event, CancellationToken cancellationToken)
+    {
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        session.Events.Append(projectId, @event);
+        await session.SaveChangesAsync(cancellationToken);
     }
 
     private async Task SetAsync(string builder, string content, string? overCapReason, CancellationToken cancellationToken)

@@ -477,8 +477,15 @@ public sealed class RunSkillSweepEngine(
             return 0;
         }
 
+        // A replicated recording can land on this stream behind a newer one (a catch-up answer
+        // serves a pre-switch-on head after the tail), so a recording stamped older than the one
+        // the projection applied is never pushed: it would overwrite the newer file in the ledger.
+        // The projection is read after the events, so it has applied every event scanned above.
+        ProjectDetails? applied = await session.LoadAsync<ProjectDetails>(project.Id, cancellationToken);
         int pushed = 0;
-        if (candidates.Select(candidate => candidate.Data).OfType<ProjectRunSkillRecorded>().LastOrDefault() is { } recorded)
+        if (candidates.Select(candidate => candidate.Data).OfType<ProjectRunSkillRecorded>()
+            .LastOrDefault(candidate => applied?.RunSkill is not { } current || candidate.RecordedAt >= current.RecordedAt)
+            is { } recorded)
         {
             (LedgerCommitter committer, LedgerSigningKey signingKey) = await IdentityAsync(session, project, cancellationToken);
             await WriteAsync(project.RepositoryPath, recorded, committer, signingKey, cancellationToken);

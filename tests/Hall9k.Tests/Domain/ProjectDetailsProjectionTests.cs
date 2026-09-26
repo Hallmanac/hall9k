@@ -297,4 +297,150 @@ public sealed class ProjectDetailsProjectionTests
             [.. NonExecutablePathDefaults.Rules, "assets/**/*.png"],
             "the project's own addition rides on top of the compiled defaults, never in place of them");
     }
+
+    private static ProjectDetails Registered(ProjectDetailsProjection projection) =>
+        projection.Create(new FakeEvent<ProjectRegistered>(new ProjectRegistered(
+            DomainId.New(), DomainId.New(), DomainId.New(), "hall9k", "/repos/hall9k.git", null, "main", Now)));
+
+    private static ProjectTeamSettingsChanged TeamChanged(
+        DateTimeOffset changedAt, Optional<ClaimGate> claimGate = default, Optional<int?> maxComplianceCycles = default) =>
+        new(DomainId.New(), changedAt, DomainId.New(), ClaimGate: claimGate, MaxComplianceReviewCycles: maxComplianceCycles);
+
+    /// <summary>
+    /// A replicated team change can be appended behind a newer one already applied: the ordinary
+    /// post-switch-on flush lands the tail first and a catch-up answer serves the older head
+    /// afterward. Each field keeps the value of the newest change that carried it, and an older
+    /// change still fills in a field the newer one never touched.
+    /// </summary>
+    [Fact]
+    public void An_older_team_change_arriving_second_never_overwrites_a_newer_field_but_fills_an_untouched_one()
+    {
+        ProjectDetailsProjection projection = new();
+        ProjectDetails view = Registered(projection);
+
+        projection.Apply(new FakeEvent<ProjectTeamSettingsChanged>(TeamChanged(
+            Now.AddDays(5), claimGate: Optional<ClaimGate>.Of(ClaimGate.Off))), view);
+        projection.Apply(new FakeEvent<ProjectTeamSettingsChanged>(TeamChanged(
+            Now, claimGate: Optional<ClaimGate>.Of(ClaimGate.TrackerAssignee),
+            maxComplianceCycles: Optional<int?>.Of(2))), view);
+
+        view.ClaimGate.Should().Be(ClaimGate.Off, "the newer stamp already decided this field");
+        view.MaxComplianceReviewCycles.Should().Be(2, "the newer change never carried this field");
+    }
+
+    [Fact]
+    public void Team_changes_read_the_same_in_either_arrival_order()
+    {
+        ProjectTeamSettingsChanged newer = TeamChanged(Now.AddDays(5), claimGate: Optional<ClaimGate>.Of(ClaimGate.Off));
+        ProjectTeamSettingsChanged older = TeamChanged(
+            Now, claimGate: Optional<ClaimGate>.Of(ClaimGate.TrackerAssignee), maxComplianceCycles: Optional<int?>.Of(2));
+        ProjectDetailsProjection projection = new();
+
+        ProjectDetails inOrder = Registered(projection);
+        projection.Apply(new FakeEvent<ProjectTeamSettingsChanged>(older), inOrder);
+        projection.Apply(new FakeEvent<ProjectTeamSettingsChanged>(newer), inOrder);
+
+        ProjectDetails reversed = Registered(projection);
+        projection.Apply(new FakeEvent<ProjectTeamSettingsChanged>(newer), reversed);
+        projection.Apply(new FakeEvent<ProjectTeamSettingsChanged>(older), reversed);
+
+        reversed.ClaimGate.Should().Be(inOrder.ClaimGate);
+        reversed.MaxComplianceReviewCycles.Should().Be(inOrder.MaxComplianceReviewCycles);
+    }
+
+    /// <summary>The node-scoped half writes the same fields, so it takes part in the same ordering.</summary>
+    [Fact]
+    public void An_older_team_change_never_overwrites_a_newer_local_settings_change()
+    {
+        ProjectDetailsProjection projection = new();
+        ProjectDetails view = Registered(projection);
+
+        projection.Apply(new FakeEvent<ProjectSettingsChanged>(new ProjectSettingsChanged(
+            view.Id,
+            VerifyCommands: Optional<IReadOnlyList<VerifyCommand>>.None,
+            SkipPermissions: Optional<bool>.None,
+            MaxParallelAgents: Optional<int>.None,
+            ContextLinks: Optional<IReadOnlyList<ContextLink>>.None,
+            ChangedAt: Now.AddDays(5), ChangedByOwnerId: DomainId.New(),
+            ClaimGate: Optional<ClaimGate>.Of(ClaimGate.Off))), view);
+        projection.Apply(new FakeEvent<ProjectTeamSettingsChanged>(TeamChanged(
+            Now, claimGate: Optional<ClaimGate>.Of(ClaimGate.TrackerAssignee))), view);
+
+        view.ClaimGate.Should().Be(ClaimGate.Off);
+    }
+
+    /// <summary>A removal stamped later than a vouch wins even when the vouch is applied second, and the reverse holds too.</summary>
+    [Fact]
+    public void A_member_is_last_writer_by_the_events_own_stamp_whatever_order_they_arrive_in()
+    {
+        ProjectDetailsProjection projection = new();
+        const string Fingerprint = "SHA256:member";
+        MemberVouched vouch = new(DomainId.New(), Fingerprint, ProjectMemberRole.Owner, Now);
+        MemberRemoved laterRemoval = new(vouch.ProjectId, Fingerprint, Now.AddHours(1));
+
+        ProjectDetails removalFirst = Registered(projection);
+        projection.Apply(new FakeEvent<MemberRemoved>(laterRemoval), removalFirst);
+        projection.Apply(new FakeEvent<MemberVouched>(vouch), removalFirst);
+        removalFirst.Members.Should().NotContainKey(Fingerprint, "the removal is the later fact, whichever arrived first");
+
+        ProjectDetails vouchFirst = Registered(projection);
+        projection.Apply(new FakeEvent<MemberVouched>(vouch), vouchFirst);
+        projection.Apply(new FakeEvent<MemberRemoved>(laterRemoval), vouchFirst);
+        vouchFirst.Members.Should().NotContainKey(Fingerprint);
+
+        ProjectDetails revouched = Registered(projection);
+        MemberVouched laterVouch = vouch with { IssuedAt = Now.AddHours(2) };
+        projection.Apply(new FakeEvent<MemberVouched>(laterVouch), revouched);
+        projection.Apply(new FakeEvent<MemberRemoved>(laterRemoval), revouched);
+        revouched.Members.Should().ContainKey(Fingerprint, "a vouch stamped after the removal stands");
+    }
+
+    [Fact]
+    public void A_vouch_for_one_fingerprint_is_never_ordered_against_another()
+    {
+        ProjectDetailsProjection projection = new();
+        ProjectDetails view = Registered(projection);
+
+        projection.Apply(new FakeEvent<MemberVouched>(
+            new MemberVouched(view.Id, "SHA256:newer", ProjectMemberRole.Owner, Now.AddDays(3))), view);
+        projection.Apply(new FakeEvent<MemberVouched>(
+            new MemberVouched(view.Id, "SHA256:older", ProjectMemberRole.Owner, Now)), view);
+
+        view.Members.Keys.Should().BeEquivalentTo(["SHA256:newer", "SHA256:older"]);
+    }
+
+    [Fact]
+    public void A_prompt_addendum_change_is_applied_only_when_its_stamp_is_not_older_than_the_applied_one()
+    {
+        ProjectDetailsProjection projection = new();
+        ProjectDetails view = Registered(projection);
+        Guid ownerId = DomainId.New();
+
+        projection.Apply(new FakeEvent<ProjectPromptAddendumSet>(new ProjectPromptAddendumSet(
+            view.Id, "builder", "newer text", false, null, Now.AddDays(2), ownerId)), view);
+        projection.Apply(new FakeEvent<ProjectPromptAddendumSet>(new ProjectPromptAddendumSet(
+            view.Id, "builder", "older text", false, null, Now, ownerId)), view);
+        view.PromptAddenda["builder"].Content.Should().Be("newer text");
+
+        projection.Apply(new FakeEvent<ProjectPromptAddendumRemoved>(
+            new ProjectPromptAddendumRemoved(view.Id, "builder", Now.AddDays(3), ownerId)), view);
+        projection.Apply(new FakeEvent<ProjectPromptAddendumSet>(new ProjectPromptAddendumSet(
+            view.Id, "builder", "stale text", false, null, Now.AddDays(1), ownerId)), view);
+        view.PromptAddenda.Should().NotContainKey("builder", "the removal is newer than the set that arrived after it");
+    }
+
+    [Fact]
+    public void A_run_skill_recording_is_applied_only_when_its_stamp_is_not_older_than_the_applied_one()
+    {
+        ProjectDetailsProjection projection = new();
+        ProjectDetails view = Registered(projection);
+        Guid ownerId = DomainId.New();
+
+        projection.Apply(new FakeEvent<ProjectRunSkillRecorded>(new ProjectRunSkillRecorded(
+            view.Id, "newer skill", "full-text", "abc123", "discovery-session", Now.AddDays(2), ownerId)), view);
+        projection.Apply(new FakeEvent<ProjectRunSkillRecorded>(new ProjectRunSkillRecorded(
+            view.Id, "older skill", "full-text", "abc123", "discovery-session", Now, ownerId)), view);
+
+        view.RunSkill!.Content.Should().Be("newer skill");
+    }
 }

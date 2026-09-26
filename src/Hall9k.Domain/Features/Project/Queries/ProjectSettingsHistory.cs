@@ -93,33 +93,43 @@ public sealed class ProjectSettingsHistory
     public bool WasRecorded<T>(Func<ProjectSettingsChanged, Optional<T>> setting) => LastRecorded(setting).HasValue;
 
     /// <summary>
-    /// The last value recorded for a setting that lives in BOTH halves of a settings change —
-    /// <see cref="ProjectSettingsChanged"/>, which stays node-scoped, and
+    /// The newest-stamped value recorded for a setting that lives in BOTH halves of a settings
+    /// change — <see cref="ProjectSettingsChanged"/>, which stays node-scoped, and
     /// <see cref="ProjectTeamSettingsChanged"/>, which is the half that actually replicates (idea
     /// 202383dc, M2a). <see cref="LastRecorded"/> reads only the first, which is right for a
     /// node-scoped setting and wrong for a team one: on a teammate's own node the local half was
     /// never written at all, so a team setting read through <see cref="LastRecorded"/> there
     /// resolves to its default however deliberately somebody set it. Both halves are appended in
-    /// the same commit on the originating node, so walking the merged list backwards finds the
-    /// same value from whichever half that node actually holds.
+    /// the same commit on the originating node with the same <c>ChangedAt</c>, so either half
+    /// finds the same value.
+    /// <para>
+    /// Newest by the event's own <c>ChangedAt</c>, not by stream position: a team change can be
+    /// appended behind a newer one already held, when a catch-up answer delivers a pre-switch-on
+    /// head after the post-switch-on tail, and a reader that took the last one appended would read
+    /// the older value there. A tie goes to the later one in the stream, which is the order this
+    /// read always had. This is the same rule <c>ProjectDetailsProjection</c> applies per field.
+    /// </para>
     /// </summary>
     public Optional<T> LastRecordedTeamField<T>(
         Func<ProjectSettingsChanged, Optional<T>> nodeHalf, Func<ProjectTeamSettingsChanged, Optional<T>> teamHalf)
     {
-        for (int index = everyChange.Count - 1; index >= 0; index--)
+        Optional<T> newest = Optional<T>.None;
+        DateTimeOffset newestStamp = default;
+        foreach (object recorded in everyChange)
         {
-            Optional<T> candidate = everyChange[index] switch
+            (Optional<T> candidate, DateTimeOffset stamp) = recorded switch
             {
-                ProjectSettingsChanged change => nodeHalf(change),
-                ProjectTeamSettingsChanged change => teamHalf(change),
-                _ => Optional<T>.None,
+                ProjectSettingsChanged change => (nodeHalf(change), change.ChangedAt),
+                ProjectTeamSettingsChanged change => (teamHalf(change), change.ChangedAt),
+                _ => (Optional<T>.None, default),
             };
-            if (candidate.HasValue)
+            if (candidate.HasValue && (!newest.HasValue || stamp >= newestStamp))
             {
-                return candidate;
+                newest = candidate;
+                newestStamp = stamp;
             }
         }
 
-        return Optional<T>.None;
+        return newest;
     }
 }
