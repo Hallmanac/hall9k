@@ -308,11 +308,17 @@ public static class CliCommandTree
             project.AddCommand<ProjectMembersCommand>("members")
                 .WithDescription(
                     "List this project's members as the ledger's own chain read currently sees them (idea "
-                    + "202383dc, T1): root fingerprint, this install's own login for that root when it is "
-                    + "known locally, role (owner or member), that root's own fleet (its own root node "
-                    + "plus every vouched node), and verified state. Recomputed fresh every run — a "
-                    + "revocation or a removal another node made shows up the moment this runs again, "
-                    + "never a local cache.")
+                    + "202383dc, T1): root fingerprint, the GitHub accounts that root's nodes declare for "
+                    + "themselves in their own signed node files (unknown when none does), role (owner or "
+                    + "member), that root's own fleet (its own root node plus every vouched node), and how "
+                    + "each declared account stands against the repository's collaborators: declared, push "
+                    + "confirmed; declared, read only; declared, not a collaborator; or declared, unchecked "
+                    + "here when this node lacks push and so holds no roster. A declaration is a claim, "
+                    + "never proof, so nothing here says verified. The collaborator roster is re-read "
+                    + "through gh first and, when gh cannot answer, the stored copy is used and its date "
+                    + "is printed under the table. The chain is recomputed fresh every run — a revocation "
+                    + "or a removal another node made shows up the moment this runs again, never a local "
+                    + "cache.")
                 .WithExample("project", "members", "hall9k");
             project.AddBranch("member", member =>
             {
