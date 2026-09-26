@@ -199,6 +199,15 @@ public sealed class PromptAddendaSweepEngine(
             return 0;
         }
 
+        // A replicated change can land on this stream behind a newer one for the same builder key (a
+        // catch-up answer serves a pre-switch-on head after the tail), so a change stamped older than
+        // the one the projection applied for its key is never pushed: it would overwrite the newer
+        // file in the ledger. The projection is read after the events, so it has applied every event
+        // scanned above.
+        ProjectDetails? applied = await session.LoadAsync<ProjectDetails>(project.Id, cancellationToken);
+        bool Superseded(string builderKey, DateTimeOffset stamp) =>
+            applied is not null && applied.PromptAddendumStamps.TryGetValue(builderKey, out DateTimeOffset newest) && stamp < newest;
+
         int pushed = 0;
         LedgerCommitter? committer = null;
         LedgerSigningKey? signingKey = null;
@@ -207,6 +216,9 @@ public sealed class PromptAddendaSweepEngine(
         {
             switch (candidate.Data)
             {
+                case ProjectPromptAddendumSet set when Superseded(set.BuilderKey, set.SetAt):
+                case ProjectPromptAddendumRemoved removed when Superseded(removed.BuilderKey, removed.RemovedAt):
+                    break;
                 case ProjectPromptAddendumSet set:
                     (committer, signingKey) = await EnsureIdentityAsync(session, project, committer, signingKey, cancellationToken);
                     await WriteAsync(project.RepositoryPath, set, committer, signingKey, cancellationToken);

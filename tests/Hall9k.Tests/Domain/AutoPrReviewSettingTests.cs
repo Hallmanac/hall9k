@@ -70,6 +70,28 @@ public sealed class AutoPrReviewSettingTests
         setting.Recorded.Should().BeTrue();
     }
 
+    /// <summary>
+    /// A teammate's node holds only the team half of a change, and that half can sit behind a
+    /// newer one when a catch-up answer delivers a pre-switch-on head after the tail. The daemon
+    /// reads the newest stamp either way.
+    /// </summary>
+    [Fact]
+    public void A_replicated_team_change_resolves_and_the_newest_stamp_wins_whatever_order_they_sit_in()
+    {
+        ProjectTeamSettingsChanged newer = new(
+            DomainId.New(), Now.AddDays(5), DomainId.New(), AutoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Off));
+        ProjectTeamSettingsChanged olderAppendedLater = new(
+            DomainId.New(), Now, DomainId.New(), AutoPrReview: Optional<AutoPrReviewSpeed>.Of(AutoPrReviewSpeed.Now));
+
+        AutoPrReviewSetting.From(ProjectSettingsHistory.FromEveryChange([newer])).Speed.Should().Be(AutoPrReviewSpeed.Off);
+
+        AutoPrReviewSetting setting = AutoPrReviewSetting.From(
+            ProjectSettingsHistory.FromEveryChange([newer, olderAppendedLater]));
+
+        setting.Speed.Should().Be(AutoPrReviewSpeed.Off);
+        setting.Recorded.Should().BeTrue();
+    }
+
     [Fact]
     public void A_recorded_choice_read_back_as_null_is_off_and_still_explicit()
     {

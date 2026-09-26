@@ -1,5 +1,4 @@
 using Hall9k.Domain.Features.Project.Queries;
-using Hall9k.Domain.Shared.ValueObjects;
 using Marten;
 
 namespace Hall9k.Domain.Features.Project;
@@ -38,7 +37,7 @@ public sealed record AutoPrReviewSetting(AutoPrReviewSpeed Speed, bool Recorded)
     public string OnOff => IsOn ? "on" : "off";
 
     public static AutoPrReviewSetting From(ProjectSettingsHistory history) =>
-        history.LastRecorded(change => change.AutoPrReview) is { HasValue: true } recorded
+        history.LastRecordedTeamField(change => change.AutoPrReview, change => change.AutoPrReview) is { HasValue: true } recorded
             ? new AutoPrReviewSetting(recorded.Value ?? AutoPrReviewSpeed.Off, Recorded: true)
             : Unrecorded;
 

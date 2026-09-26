@@ -151,6 +151,23 @@ public sealed class ReviewDriveSettingTests
         setting.Recorded.Should().BeTrue();
     }
 
+    /// <summary>
+    /// A pre-switch-on head a catch-up answer delivers behind a newer tail sits LATER in the
+    /// stream than the change that supersedes it, so a reader that took the last one appended
+    /// would resolve the older value. The newest stamp wins whatever position it holds.
+    /// </summary>
+    [Fact]
+    public void A_newer_team_change_wins_over_an_older_one_appended_after_it()
+    {
+        ProjectTeamSettingsChanged newer = TeamChanged(Now.AddDays(5), designDrive: false, qaDrive: true);
+        ProjectTeamSettingsChanged olderAppendedLater = TeamChanged(Now, designDrive: true, qaDrive: false);
+
+        ProjectSettingsHistory history = ProjectSettingsHistory.FromEveryChange([newer, olderAppendedLater]);
+
+        ReviewDriveSetting.From(ReviewPersona.Designer, history).Enabled.Should().BeFalse();
+        ReviewDriveSetting.From(ReviewPersona.Qa, history).Enabled.Should().BeTrue();
+    }
+
     [Fact]
     public void The_word_a_human_types_is_on_or_off_and_anything_else_is_refused_by_name()
     {
@@ -218,6 +235,13 @@ public sealed class ReviewDriveSettingTests
             ProjectHome.None, SkipPermissions: false));
         return project;
     }
+
+    private static ProjectTeamSettingsChanged TeamChanged(DateTimeOffset changedAt, bool designDrive, bool qaDrive) => new(
+        Guid.Empty,
+        changedAt,
+        Guid.Empty,
+        DesignReviewDrive: Optional<bool>.Of(designDrive),
+        QaReviewDrive: Optional<bool>.Of(qaDrive));
 
     private static ProjectSettingsChanged Changed(
         bool? drive = null, CommitStyle? commitStyle = null, bool? qaDrive = null) => new(
