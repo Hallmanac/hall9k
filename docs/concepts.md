@@ -1386,8 +1386,11 @@ ever signed, until a later vouch of the same node restores them.
 unconditionally an owner. An owner-role member may mint member invites, remove a member
 (`h9k project member remove <project> <fingerprint>`, which deletes the file rather than marking it),
 and can never remove the last owner. `h9k project members <project>` lists what the ledger shows
-right now, recomputed on every run rather than cached: each root fingerprint, the login this install
-knows for it when there is one, the role, that root's fleet, and whether it verified. A member who
+right now, recomputed on every run rather than cached: each root fingerprint, the GitHub account
+or accounts that root's nodes declare for themselves (`unknown` when none does), the role, that
+root's fleet, and how each declared account stands against the repository's collaborators
+(`declared, push confirmed`, `declared, read only`, `declared, not a collaborator`, or `declared,
+unchecked here`). A member who
 is not an owner can do everything a member's own work needs and cannot change who else is on the
 team. A project also has its own generated **project key** (a twenty-six-character ULID written into
 the genesis entry, deliberately not derived from anyone's fingerprint), and a project whose ledger
@@ -1408,16 +1411,25 @@ project somebody else already owns does not need to know any of this up front. `
 registers it locally, writes nothing to the remote, names the owner, and asks for an invite,
 straight away in a terminal or by printing the exact command to run once you have one.
 
-**GitHub confirms the person, and the ledger never records the account.** Registration reads the
+**Each node declares its own GitHub account, and GitHub says whether that account may push.** Registration reads the
 GitHub account `gh` is signed in as, and `h9k project add` refuses when there is none, because
 a Jira connection tracks cards and says nothing about who may write to a repository. Joining
 additionally checks, before it generates a key or writes a byte, that the account can push to the
 project's repository, since a node cannot write a ledger ref it has no push access to. The same
 round trip records this install's own role and, when that role includes push, the repository's
 collaborators, as read-only observations in the local database. Hall9k never calls a GitHub endpoint
-that would change a permission. None of this is a signed claim that a fingerprint belongs to a
-GitHub account: the trust between people is the invite, and GitHub is what tells this node that the
-person running it is allowed to touch the repository at all.
+that would change a permission. The ledger does record which account a node says it is: each node
+writes its own GitHub login and numeric account id into its own `node.yaml` as a self-declared
+claim, signed by that node's own key, and a declaration counts only when the newest commit on that
+file is signed by the very key the file names, so nobody with push can put a login in someone else's
+node file. A declaration is a claim and not proof that the person behind the key controls the
+account, which is the difference between *declared* and *verified*: the trust between people is
+still the invite, and a verified pairing (for example through a key registered on the GitHub
+account) is designed but not built. What `h9k project members` adds is a cross-check of each
+declared account against a freshly read collaborator roster, matching on the account id first and
+the login second. The roster is re-read through `gh` when it answers, and the stored copy is used,
+with its date printed under the table, when it does not. An install whose own account cannot push
+holds no roster and says `declared, unchecked here`.
 
 **The ledger is a set of refs on the project's own remote.** Nothing here needs a Hall9k server,
 because your git host already carries the project. Hall9k adds refs under `refs/hall9k/` to the
@@ -1532,9 +1544,11 @@ again. See [Replication scopes](#replication-scopes) for the rules.
 **What a first session looks like.** On a fresh second machine you run `h9k install`, then `h9k
 project add --name demo --repo-url <url>`. Because the ledger already names an owner, registration
 stops at the invite. On the first machine, `h9k node invite` prints a secret. Back on the second, `h9k
-project join demo --invite <secret>`, and within a minute or so, once the first machine's daemon
+project join demo --invite <secret>`, which also declares the second machine's GitHub login in its
+node file, and within a minute or so, once the first machine's daemon
 sweep has matched the proof, the new node is vouched into your fleet and `h9k project members demo`
-on either machine shows it. Adding a colleague is the same with `h9k project invite demo` instead, and they become a member
+on either machine shows it with the login it declared. A node that joined before declarations existed
+declares its login once, after its first daemon start following the update, with no action from you. Adding a colleague is the same with `h9k project invite demo` instead, and they become a member
 with their own root.
 
 Depth: `h9k decide list` carries the decisions behind idea 202383dc, the distributed-team chain, and

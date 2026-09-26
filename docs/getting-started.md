@@ -40,7 +40,11 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   teammate, who becomes a member, or `h9k node invite` for another of the owner's own machines,
   which joins the owner's **fleet**. Either way the newcomer finishes with the secret, and the
   minting node's daemon vouches them in within a minute or so, so the newcomer then needs to wait
-  rather than run anything else. Never invent an invite; ask the user which case this is.
+  rather than run anything else. The join also writes the newcomer's own GitHub login and account
+  id into their node file as a declaration, which `h9k project members <name>` shows beside their
+  root and checks against the repository's collaborators; a node that joined before declarations
+  existed writes its login once, after its first daemon start following the update. Never invent
+  an invite; ask the user which case this is.
 
   ```bash
   h9k project join <name> --invite <secret>

@@ -607,6 +607,9 @@ revocation rule the owner chain itself already applies. A stranger's own interna
 root and node file count for nothing anywhere in this project, because they were never made a
 member; an unverifiable write is recorded, and named by `h9k project members`, rather than silently
 dropped.
+Each node also declares its own GitHub login and numeric account id in its `node.yaml` (written at join, and
+once by the daemon for a node that joined earlier); the chain reader takes a declaration only from a node file
+whose newest commit is signed by that file's own public key, and a file failing that is named as unverifiable.
 A root's own node counts as part of its own fleet with no vouch entry of its own (a root never
 vouches itself): `GitLedgerChainReader` additionally scans every `refs/hall9k/ledger/nodes/*` ref
 this project has ever seen, and a node's self-announced `node.yaml` resolves as a given root's own
@@ -623,7 +626,7 @@ check upgraded to chain-level).
 ```bash
 h9k node vouch <node-id>              # vouch a node into this owner's own fleet, across every project this owner already joined; prints the vouched node's own key fingerprint
 h9k node revoke <node-id>             # revoke a node from this owner's own fleet; a later h9k node vouch for the identical id restores it
-h9k project members <name>            # this project's current members: root, login when known locally, role, that root's own fleet (its own root node plus every vouched node), verified state
+h9k project members <name>            # this project's current members: root, the GitHub account(s) its nodes declare in their own signed node files (unknown when none), role, that root's own fleet (its own root node plus every vouched node), and each declared account's standing against the collaborator roster re-read through gh (declared, push confirmed / read only / not a collaborator / unchecked here); a declaration is a claim, never verified
 h9k project member remove <name> <fingerprint>   # remove a root's project membership (deletes the file); refused unless this node's own root holds the owner role here
 ```
 
