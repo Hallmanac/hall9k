@@ -91,6 +91,9 @@ public sealed class TaskAggregate
     /// <summary>The task's model override, the most specific link in the resolution chain (Decisions Log #33).</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
 
+    /// <summary>The task's reasoning effort override, the most specific link in the effort chain; Unknown means the project, node role, and node-wide levels decide.</summary>
+    public AgentEffort Effort { get; private set; } = AgentEffort.Unknown;
+
     /// <summary>
     /// The owner's standing pre-approval (task: a task can be published pre-approved), three-valued
     /// since the mode that waits for human review landed. Anything other than
@@ -1127,6 +1130,11 @@ public sealed class TaskAggregate
         if (@event.Model.HasValue)
         {
             Model = @event.Model.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.Effort.HasValue)
+        {
+            Effort = @event.Effort.Value ?? AgentEffort.Unknown;
         }
 
         if (@event.EpicId.HasValue)

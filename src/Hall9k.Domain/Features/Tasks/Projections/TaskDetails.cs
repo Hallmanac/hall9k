@@ -224,6 +224,8 @@ public sealed class TaskDetails
     public int Revisions { get; set; }
     /// <summary>The task's model override; Unknown means the project, per-role, and platform links decide (Decisions Log #33).</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
+    /// <summary>The task's reasoning effort override; Unknown means the project, node role, and node-wide levels decide.</summary>
+    public AgentEffort Effort { get; set; } = AgentEffort.Unknown;
     /// <summary>This task's own session-cap override; null means the node's global default decides (Decisions Log #111).</summary>
     public int? SessionCap { get; set; }
     /// <summary>This task's own override of the conformance review track's cycle cap; null defers to the project or node (task: review cycle caps become settable).</summary>
@@ -701,6 +703,11 @@ public sealed partial class TaskDetailsProjection : SingleStreamProjection<TaskD
         if (@event.Data.Model.HasValue)
         {
             view.Model = @event.Data.Model.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.Data.Effort.HasValue)
+        {
+            view.Effort = @event.Data.Effort.Value ?? AgentEffort.Unknown;
         }
 
         if (@event.Data.EpicId.HasValue)

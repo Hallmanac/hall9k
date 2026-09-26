@@ -89,7 +89,8 @@ public static class ProjectDecider
         Optional<int?> courierMaxWaitSeconds = default,
         Optional<bool> designReviewDrive = default,
         Optional<bool> qaReviewDrive = default,
-        Optional<IReadOnlyList<string>> nonExecutablePaths = default)
+        Optional<IReadOnlyList<string>> nonExecutablePaths = default,
+        Optional<AgentEffort> effort = default)
     {
         if (repositoryPath.HasValue)
         {
@@ -476,7 +477,8 @@ public static class ProjectDecider
             CourierMaxWaitSeconds: courierMaxWaitSeconds,
             DesignReviewDrive: designReviewDrive,
             QaReviewDrive: qaReviewDrive,
-            NonExecutablePaths: normalizedNonExecutablePaths);
+            NonExecutablePaths: normalizedNonExecutablePaths,
+            Effort: effort);
     }
 
     /// <summary>
