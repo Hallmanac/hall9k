@@ -17,6 +17,7 @@ using Hall9k.Tests.Fakes;
 using JasperFx;
 using JasperFx.Events;
 using Marten;
+using Npgsql;
 using Weasel.Core;
 using Xunit;
 
@@ -96,7 +97,10 @@ public sealed class ProjectTeamHistoryCatchUpTests : IClassFixture<PostgresFixtu
     /// <summary>
     /// A node already stuck on v0.10.50 holds the refused tail and no head, with a reconcile record
     /// that is already complete. One explicit <c>h9k project reconcile</c> is the by-hand ask, and its
-    /// answer repairs it with nothing else typed.
+    /// answer repairs it with nothing else typed. That node's stored <see cref="ProjectDetails"/>
+    /// document predates the per-field stamps, so the daemon's startup backfill runs between the
+    /// upgrade and the reconcile: without it the older head would find no stamp to lose to and
+    /// overwrite the newer tail.
     /// </summary>
     [Fact]
     public async Task A_node_already_stuck_with_the_tail_and_no_head_is_repaired_by_one_by_hand_reconcile()
@@ -120,11 +124,17 @@ public sealed class ProjectTeamHistoryCatchUpTests : IClassFixture<PostgresFixtu
             await session.SaveChangesAsync(cts.Token);
         }
 
+        await StripStampsAsync(nodes, cts.Token);
         await using (IQuerySession session = nodes.StoreB.QuerySession())
         {
             ProjectDetails stuck = (await session.LoadAsync<ProjectDetails>(nodes.ProjectIdB, cts.Token))!;
             ProjectJoinStatus.NotJoined(stuck, MemberFingerprint).Should().BeTrue();
+            stuck.TeamSettingStamps.Should().BeEmpty("a document v0.10.50 wrote has no stamps at all");
         }
+
+        (await ProjectDetailsProjectionBackfill.RunAsync(nodes.StoreB, cts.Token)).Should().Contain(nodes.ProjectIdB);
+        (await ProjectDetailsProjectionBackfill.RunAsync(nodes.StoreB, cts.Token)).Should().BeEmpty(
+            "a rebuilt document carries the stamps, so the backfill terminates");
 
         await using (IDocumentSession session = nodes.StoreB.LightweightSession())
         {
@@ -182,6 +192,19 @@ public sealed class ProjectTeamHistoryCatchUpTests : IClassFixture<PostgresFixtu
         await using IQuerySession query = nodes.StoreB.QuerySession();
         IReadOnlyList<IEvent> taskStream = await query.Events.FetchStreamAsync(taskId, token: cts.Token);
         taskStream.Should().ContainSingle("nothing was appended behind the later origin event already held");
+    }
+
+    /// <summary>Rewrites node B's stored project document into the shape v0.10.50 wrote: the tail's values, none of the stamp dictionaries.</summary>
+    private async Task StripStampsAsync(Nodes nodes, CancellationToken cancellationToken)
+    {
+        await using NpgsqlConnection connection = new(_postgres.ConnectionString);
+        await connection.OpenAsync(cancellationToken);
+        await using NpgsqlCommand command = new(
+            $"update {nodes.StoreB.Options.DatabaseSchemaName}.mt_doc_projectdetails "
+            + "set data = data - 'teamSettingStamps' - 'memberStamps' - 'promptAddendumStamps' where id = @id",
+            connection);
+        command.Parameters.AddWithValue("id", nodes.ProjectIdB);
+        (await command.ExecuteNonQueryAsync(cancellationToken)).Should().Be(1);
     }
 
     /// <summary>What both repair tests assert: the answer left B reading joined, with A's newest settings.</summary>
