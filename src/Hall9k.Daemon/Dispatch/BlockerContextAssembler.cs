@@ -103,12 +103,13 @@ public sealed class BlockerContextAssembler(
             Guid sessionId = DomainId.New();
             string artifactName = $"context-synthesis-{sessionId.ToString("N")[..8]}";
             AgentModel model = _options.ResolveModel(AgentRole.Synthesis, task.Model, project.Model);
+            AgentEffort effort = _options.ResolveEffort(AgentRole.Synthesis, task.Effort, project.Effort);
             string sessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.Synthesis);
             SpawnedAgent agent = await executor.SpawnAsync(new AgentSpawnRequest(
                 runId, sessionId, worktreePath, runDirectory,
                 AgentPromptBuilder.BuildContextSynthesis(
                     task, blockerCount, raw, commandTimeout: _options.VerifyGateTimeout),
-                mode, model, project.SkipPermissions, artifactName)
+                mode, model, effort, project.SkipPermissions, artifactName)
             {
                 TaskId = task.Id,
                 SessionName = sessionName,

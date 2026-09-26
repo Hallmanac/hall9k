@@ -18,6 +18,7 @@ using Hall9k.Domain.Features.Tasks.Events;
 using Hall9k.Domain.Features.Tasks.Handlers;
 using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
+using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
 using Microsoft.Extensions.Options;
@@ -904,6 +905,17 @@ public sealed partial class VerificationRunner(
                 && run.LastFixEndedWaitingOnBackgroundGate,
             commandTimeout: options.Value.VerifyGateTimeout);
 
+        // The role of the leg whose session stranded the files: a recovery session commits that leg's
+        // own work, so it runs at the effort that leg's role would have, task and project values still
+        // above it. Its model is the run's recorded one, not a chain result, so only effort resolves here.
+        AgentRole recoveryRole = leg switch
+        {
+            _ when leg == RunSessionLeg.Build => AgentRole.Build,
+            _ when leg == RunSessionLeg.ReviewPass => AgentRole.Review,
+            _ => AgentRole.Fix,
+        };
+        AgentEffort effort = options.Value.ResolveEffort(recoveryRole, task.Effort, project.Effort);
+
         SpawnedAgent? unfinished = null;
         AgentResult? result;
         try
@@ -913,7 +925,7 @@ public sealed partial class VerificationRunner(
             {
                 agent = await executor.SpawnAsync(new AgentSpawnRequest(
                     run.Id, recoverySessionId, run.WorktreePath, run.RunDirectory, prompt, run.ExecutorMode, run.Model,
-                    project.SkipPermissions, SessionArtifactName: SessionRoleName.CommitRecovery,
+                    effort, project.SkipPermissions, SessionArtifactName: SessionRoleName.CommitRecovery,
                     MaxTurns: options.Value.UncommittedWorkRecoveryMaxTurns,
                     GuardsReviewThreadReplies: run.IsFollowUp)
                 {

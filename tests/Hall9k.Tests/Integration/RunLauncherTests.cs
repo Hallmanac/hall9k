@@ -1994,6 +1994,74 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
     }
 
     /// <summary>
+    /// Effort resolves at the dispatch site, beside the model, and rides the spawn request as a required
+    /// field: the project's own value outranks the node's value for the build role, which outranks the
+    /// node-wide one, and a launch with none of them carries <see cref="AgentEffort.Unknown"/> so the
+    /// executor leaves the level out of the settings file.
+    /// </summary>
+    [Theory]
+    [InlineData("low", "xhigh", "medium", "low")]
+    [InlineData(null, "xhigh", "medium", "xhigh")]
+    [InlineData(null, null, "medium", "medium")]
+    [InlineData(null, null, null, "")]
+    public async Task A_dispatched_build_spawns_at_the_resolved_effort(
+        string? projectEffort, string? nodeBuildEffort, string? nodeWideEffort, string expected)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(3));
+        DocumentStore store = postgres.Store;
+        NodeContext node = await NodeBootstrapSeed.NewNodeAsync(store, cts.Token);
+
+        Guid taskId = DomainId.New();
+        Guid runId = DomainId.New();
+        Guid projectId = DomainId.New();
+        await using (IDocumentSession session = store.LightweightSession())
+        {
+            ProjectRegistered registered = ProjectDecider.Register(
+                projectId, node.OwnerId, DomainId.New(), $"effort-{taskId:N}", "/tmp/effort-repo", null, "main", Now);
+            ProjectAggregate project = new();
+            project.Apply(registered);
+            ProjectSettingsChanged chose = ProjectDecider.ChangeSettings(
+                project,
+                Optional<IReadOnlyList<VerifyCommand>>.None,
+                Optional<bool>.None,
+                Optional<IReadOnlyList<ContextLink>>.None,
+                Now, node.OwnerId,
+                effort: projectEffort is null
+                    ? Optional<AgentEffort>.None
+                    : Optional<AgentEffort>.Of(AgentEffort.FromInput(projectEffort)));
+            session.Events.StartStream<ProjectAggregate>(registered.Id, registered, chose);
+
+            (TaskAggregate aggregate, object[] lifecycle) = TaskSeed.Start(
+                TaskDecider.Add(
+                    taskId, projectId, "Run at the resolved effort", ["the spawn says so"], TaskType.Chore,
+                    null, null, null, Now, node.OwnerId),
+                node.OwnerId, Now);
+            Hall9k.Domain.Features.Tasks.Events.TaskClaimed claimed =
+                TaskDecider.Claim(aggregate, node.NodeId, node.OwnerId, runId, Now);
+            session.Events.StartStream<TaskAggregate>(taskId, [.. lifecycle, claimed]);
+            session.Store(new TaskLease { Id = taskId, NodeId = node.NodeId, LeaseGeneration = 1, HeartbeatAt = Now });
+            await session.SaveChangesAsync(cts.Token);
+        }
+
+        CapturingExecutor executor = new();
+        StubWorktreeManager worktrees = new();
+        MergedInspector inspector = new();
+        DaemonOptions options = new()
+        {
+            Effort = nodeWideEffort,
+            EffortByRole = new RoleEffortDefaults { Build = nodeBuildEffort ?? string.Empty },
+        };
+        RunLauncher launcher = new(store, worktrees, executor,
+            NewSupervisor(store, node), NewContextAssembler(store), inspector,
+            NewCloseoutEngine(store, node, inspector, worktrees), NewPullRequestOpener(store), UnusedProcessRunner,
+            Options.Create(options), NullLogger<RunLauncher>.Instance);
+
+        await launcher.LaunchAsync(taskId, runId, node.NodeId, node.OwnerId, 1, cts.Token);
+
+        executor.Request!.Effort.Value.Should().Be(expected);
+    }
+
+    /// <summary>
     /// Regression for the over-cap addendum log line (verify pass, cycle 2, conformance lens): a
     /// fresh dispatch composes through <see cref="AgentPromptBuilder.Build"/>, a thin forward to
     /// <c>WorkPromptBuilder.Build</c>, which splices <see cref="PromptBuilderKey.Work"/> — never
@@ -3662,7 +3730,8 @@ public sealed class RunLauncherTests(PostgresFixture postgres) : IClassFixture<P
             new GitWorktreeManager(NullLogger<GitWorktreeManager>.Instance), node,
             Options.Create(new DaemonOptions()), NullLogger<SpikeEngine>.Instance);
         PrimarySessionResumer primarySessionResumer = new(
-            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())));
+            new ClaudeExecutor(NullLogger<ClaudeExecutor>.Instance, processes, Options.Create(new DaemonOptions())),
+            Options.Create(new DaemonOptions()));
         return new RunSupervisor(store, node, processes, verification, review, prReview, spike,
             new PullRequestOpener(store, NullLogger<PullRequestOpener>.Instance),
             primarySessionResumer, launchHold, Options.Create(new DaemonOptions()), NullLogger<RunSupervisor>.Instance);

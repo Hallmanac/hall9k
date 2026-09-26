@@ -778,10 +778,18 @@ public sealed class DaemonOptions
     /// in force. It has to travel in that file because a headless session ignores the owner's
     /// user-level <c>effortLevel</c> and honors the <c>--settings</c> file it is handed, so a model
     /// whose own default is medium (Claude Opus 5.5) would otherwise ignore a high the operator asked
-    /// for. One node-wide level; per-role effort is deliberately not offered. Bound at startup like
-    /// <see cref="DefaultModel"/>; a value outside the four names is treated as unset, never written.
+    /// for. The node-wide level, beneath every per-role value in <see cref="EffortByRole"/> and every
+    /// project's and task's own. Bound at startup like <see cref="DefaultModel"/>; a value outside the
+    /// four names is treated as unset, never written.
     /// </summary>
     public string? Effort { get; set; }
+
+    /// <summary>
+    /// Per-role effort levels, all empty as shipped: the same named shape as <see cref="ModelByRole"/>,
+    /// and resolved by <see cref="ResolveEffort"/> beneath a task's and a project's own value and above
+    /// <see cref="Effort"/>.
+    /// </summary>
+    public RoleEffortDefaults EffortByRole { get; set; } = new();
 
     /// <summary>
     /// Per-role model defaults, all empty as shipped: one configured model everywhere, no
@@ -887,6 +895,83 @@ public sealed class DaemonOptions
         AgentModel.Resolve(
             taskOverride: null, projectDefault: projectModel, roleDefault: ModelByRole.For(AgentRole.Courier),
             platformDefault: AgentModel.CourierDefault);
+
+    /// <summary>
+    /// The effective effort for a session (<see cref="AgentEffort.Resolve"/>): the task's own value, then
+    /// the project's, then this node's value for <paramref name="role"/>, then the node-wide
+    /// <see cref="Effort"/>, and <see cref="AgentEffort.Unknown"/> when nothing sets one, which leaves
+    /// <c>effortLevel</c> out of the settings file so the model's own default decides. Every dispatch site
+    /// resolves it here and carries the answer on <see cref="Hall9k.Daemon.Execution.AgentSpawnRequest"/>,
+    /// the way it does for the model, and the order is the same as <see cref="ResolveModel"/>'s.
+    /// </summary>
+    public AgentEffort ResolveEffort(AgentRole role, AgentEffort? taskEffort, AgentEffort? projectEffort) =>
+        AgentEffort.Resolve(taskEffort, projectEffort, EffortByRole.For(role), AgentEffort.FromInput(Effort));
+
+    /// <summary>
+    /// The effective effort for a <see cref="Hall9k.Domain.Features.Run.ReviewMode.Verify"/> pass: the
+    /// same chain as <see cref="ResolveEffort"/>, with the role value being
+    /// <see cref="RoleEffortDefaults.ReviewVerify"/> and then <see cref="RoleEffortDefaults.Review"/>, so a
+    /// verify pass with no value of its own falls through to review's before anything beneath the role,
+    /// matching <see cref="ResolveVerifyReviewModel"/>.
+    /// </summary>
+    public AgentEffort ResolveVerifyReviewEffort(AgentEffort? taskEffort, AgentEffort? projectEffort) =>
+        AgentEffort.Resolve(
+            taskEffort, projectEffort,
+            AgentEffort.FirstSet(AgentEffort.FromInput(EffortByRole.ReviewVerify), EffortByRole.For(AgentRole.Review)),
+            AgentEffort.FromInput(Effort));
+
+    /// <summary>
+    /// The effective effort for the mandatory <see cref="Hall9k.Domain.Features.Run.ReviewMode.FinalFullPass"/>:
+    /// <see cref="ResolveVerifyReviewEffort"/>'s twin over <see cref="RoleEffortDefaults.ReviewFinalFullPass"/>,
+    /// which likewise falls through to review's value.
+    /// </summary>
+    public AgentEffort ResolveFinalFullPassReviewEffort(AgentEffort? taskEffort, AgentEffort? projectEffort) =>
+        AgentEffort.Resolve(
+            taskEffort, projectEffort,
+            AgentEffort.FirstSet(
+                AgentEffort.FromInput(EffortByRole.ReviewFinalFullPass), EffortByRole.For(AgentRole.Review)),
+            AgentEffort.FromInput(Effort));
+}
+
+/// <summary>
+/// Node-level effort defaults per session role, named rather than held in a dictionary for the same
+/// reason <see cref="RoleModelDefaults"/> is. Blank means "no role opinion" and the chain falls through
+/// to <see cref="DaemonOptions.Effort"/>, then the model's own default. There is no interactive entry: an
+/// interactive claim is a person's own Claude Code session, which honors their user-level setting.
+/// </summary>
+public sealed class RoleEffortDefaults
+{
+    public string Build { get; set; } = string.Empty;
+
+    public string Review { get; set; } = string.Empty;
+
+    public string Fix { get; set; } = string.Empty;
+
+    public string Synthesis { get; set; } = string.Empty;
+
+    public string Refinement { get; set; } = string.Empty;
+
+    public string Publication { get; set; } = string.Empty;
+
+    public string Courier { get; set; } = string.Empty;
+
+    /// <summary>The Review role's effort for a Verify-shape pass; blank falls through to <see cref="Review"/>, read by <see cref="DaemonOptions.ResolveVerifyReviewEffort"/> rather than <see cref="For"/>.</summary>
+    public string ReviewVerify { get; set; } = string.Empty;
+
+    /// <summary>The Review role's effort for the mandatory FinalFullPass; blank falls through to <see cref="Review"/>, read by <see cref="DaemonOptions.ResolveFinalFullPassReviewEffort"/> rather than <see cref="For"/>.</summary>
+    public string ReviewFinalFullPass { get; set; } = string.Empty;
+
+    public AgentEffort For(AgentRole role) => role switch
+    {
+        _ when role == AgentRole.Build => AgentEffort.FromInput(Build),
+        _ when role == AgentRole.Review => AgentEffort.FromInput(Review),
+        _ when role == AgentRole.Fix => AgentEffort.FromInput(Fix),
+        _ when role == AgentRole.Synthesis => AgentEffort.FromInput(Synthesis),
+        _ when role == AgentRole.Refinement => AgentEffort.FromInput(Refinement),
+        _ when role == AgentRole.Publication => AgentEffort.FromInput(Publication),
+        _ when role == AgentRole.Courier => AgentEffort.FromInput(Courier),
+        _ => AgentEffort.Unknown,
+    };
 }
 
 /// <summary>

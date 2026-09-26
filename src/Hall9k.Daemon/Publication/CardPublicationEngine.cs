@@ -576,6 +576,7 @@ public sealed class CardPublicationEngine(
 
         Guid sessionId = DomainId.New();
         AgentModel model = _options.ResolveModel(AgentRole.Publication, aggregate.Model, project.Model);
+        AgentEffort effort = _options.ResolveEffort(AgentRole.Publication, aggregate.Effort, project.Effort);
         string prompt = AgentPromptBuilder.BuildCardPublication(
             current,
             project,
@@ -617,7 +618,7 @@ public sealed class CardPublicationEngine(
             // WorkItemPublicationDispatched records so the prompt and stream stay findable.
             new AgentSpawnRequest(
                 sessionId, sessionId, checkout, RunPaths.GlobalDirectory(sessionId), prompt,
-                ExecutorMode.Subscription, model, project.SkipPermissions)
+                ExecutorMode.Subscription, model, effort, project.SkipPermissions)
             {
                 TaskId = task.Id,
                 SessionName = SessionRoleName.For(DomainId.Short(task.Id), SessionRoleName.CardPublication),
