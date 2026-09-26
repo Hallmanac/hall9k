@@ -609,9 +609,14 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
             }
         }
 
-        bool wroteNodeFile = await WriteNodeFileAsync(
+        // The connection's own observed GitHub identity, declared in the node file as a claim the
+        // members table cross-checks against the collaborator roster. Null (never guessed) when the
+        // connection has none confirmed; the write then carries forward whatever the file already declares.
+        ProjectGitHubAccount? githubAccount = await ProjectGitHubClient.TryResolveAccountAsync(session, project, cancellationToken);
+        bool wroteNodeFile = await NodeFileWriter.WriteAsync(
             ledger, project.RepositoryPath, context.NodeId, key, claimedFingerprint,
             node.MachineName, node.OperatingSystem, node.KeyRegisteredAt ?? now, inviteProof,
+            githubAccount is null ? null : new DeclaredGitHubAccount(githubAccount.Id, githubAccount.Login),
             committer, signingKey, cancellationToken);
 
         // A node's own claim is install-wide (the Node stream), but node.yaml is only ever
@@ -1401,55 +1406,6 @@ public sealed class ProjectJoinCommand : Hall9kAsyncCommand<ProjectJoinCommand.S
     /// the no-owner deferral gate (<see cref="CheckGenesisDeferralAsync"/>) and the genesis write
     /// itself (<see cref="EnsureGenesisMemberFileAsync"/>) can never name it two different ways.</summary>
     private const string MembersRefName = "refs/hall9k/ledger/members";
-
-    private static async Task<bool> WriteNodeFileAsync(
-        ILedger ledger, string repositoryPath, Guid nodeId, NodeSigningKey key, string claimedOwnerFingerprint,
-        string machineName, string operatingSystem, DateTimeOffset joinedAt, string? inviteProof,
-        LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
-    {
-        string refName = $"refs/hall9k/ledger/nodes/{nodeId}";
-        string path = $"nodes/{nodeId}/node.yaml";
-
-        string content = BuildYaml(
-            ("node_id", nodeId.ToString()),
-            ("public_key", key.PublicKeyLine),
-            ("key_fingerprint", key.Fingerprint),
-            ("owner_fingerprint", claimedOwnerFingerprint),
-            ("machine_name", machineName),
-            ("operating_system", operatingSystem),
-            ("joined_at", joinedAt.ToString("o", CultureInfo.InvariantCulture)),
-            ("invite_proof", inviteProof));
-
-        // content depends only on this call's own arguments, never on what is currently on disk,
-        // so a Conflict — something else wrote node.yaml between the read and the write — is
-        // always safe to retry against a fresh tip. The caller above saves the local identity
-        // events on the strength of this file actually landing, so a lost Conflict silently
-        // treated as "nothing to write" would let that claim commit while node.yaml still held
-        // the old facts.
-        for (int attempt = 1; attempt <= MaxConflictRetries; attempt++)
-        {
-            LedgerFile current = await ledger.ReadAsync(repositoryPath, refName, path, cancellationToken);
-            if (current.Content == content)
-            {
-                return false;
-            }
-
-            LedgerWriteOutcome outcome = await ledger.WriteAsync(
-                new LedgerWriteRequest(
-                    repositoryPath, refName, path, content, current.BlobId,
-                    current.Exists ? "Update node facts" : "Join node", committer, signingKey),
-                cancellationToken);
-            if (outcome.Verdict == LedgerWriteVerdict.Written)
-            {
-                return true;
-            }
-        }
-
-        throw new DomainConflictException(
-            $"node.yaml for node {nodeId} kept changing out from under this join after "
-            + $"{MaxConflictRetries} attempts — something else is writing it at the same time. "
-            + "Re-run h9k project join once that settles.");
-    }
 
     /// <summary>
     /// A small, flat YAML document: every value double-quoted (a machine name or a comment on a
