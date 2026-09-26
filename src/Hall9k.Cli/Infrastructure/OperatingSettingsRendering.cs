@@ -194,26 +194,27 @@ public static class OperatingSettingsRendering
             && problem.Message.Contains("maxConcurrentAgentSessions", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
-    /// Every ordinary role falls through to the project or platform default, but
+    /// Every ordinary role falls through to the platform default alone (a project's own model sits
+    /// above every node role, so it is not a fallthrough of the node's setting), but
     /// <c>ReviewVerify</c> and <c>ReviewFinalFullPass</c> each sit underneath the plain Review
     /// chain rather than beside it (<c>DaemonOptions.ResolveVerifyReviewModel</c> /
     /// <c>ResolveFinalFullPassReviewModel</c>) — an unset knob resolves to whatever
-    /// <c>--model-review</c> itself resolves to, which can outrank the project or platform
-    /// default. Stating the generic fallthrough for either role would tell an operator running on
-    /// a configured <c>--model-review</c> that those passes run on the project or platform default
-    /// when they in fact run on that configured review model.
+    /// <c>--model-review</c> itself resolves to, which can outrank the platform default. Stating
+    /// the generic fallthrough for either role would tell an operator running on a configured
+    /// <c>--model-review</c> that those passes run on the platform default when they in fact run
+    /// on that configured review model.
     /// </summary>
     private static string FallthroughDescription(string role) => role switch
     {
         nameof(RoleModelSettings.ReviewVerify) or nameof(RoleModelSettings.ReviewFinalFullPass) =>
             "whatever --model-review itself resolves to",
-        // The courier's own floor beneath the project default is its own, never the platform
+        // The courier's own floor is its own, never the platform
         // default every other role falls through to (DaemonOptions.ResolveCourierModel's own
         // doc): stating the generic fallthrough here would tell an operator running with no
         // courier override that a courier runs on the platform's ordinary build/review tier when
         // it in fact runs on its own cheaper one.
-        nameof(RoleModelSettings.Courier) => $"the project default, or {AgentModel.CourierDefault} beneath that",
-        _ => "the project or platform default",
+        nameof(RoleModelSettings.Courier) => $"{AgentModel.CourierDefault}, the courier's own floor",
+        _ => "the platform default",
     };
 
     /// <summary>

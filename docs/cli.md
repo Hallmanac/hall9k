@@ -1056,7 +1056,7 @@ this one.
 | `h9k project set --verify <name=command>` | Sets a verification gate, repeatable, replacing the whole list, and each gate is run once against a clean checkout of the base branch before it is accepted. |
 | `h9k project set --verify-gate-filter <name=filter\|none>` | Marks one `dotnet test` gate host-coupled, so it runs only at a run's first verification and its final full pass and is serialized against other runs' copies on the node. |
 | `h9k project set --accept-broken-gate` | Records a `--verify` gate that fails on a clean base anyway, with a loud warning, instead of refusing the whole command. |
-| `h9k project set --model <model>` | Sets the model this project's sessions run on unless a task or the node's per-role default says otherwise, with `default` clearing it. |
+| `h9k project set --model <model>` | Sets the model this project's sessions run on unless a task says otherwise, outranking the node's per-role defaults, with `default` clearing it. |
 | `h9k project set --orchestrator-model <model>` | Sets the model this project's orchestrator window runs on, independent of `--model`, with `default` clearing it back to the node's own resolution. |
 | `h9k project set --commit-style narrative\|append\|default` | Chooses whether review fixes are folded into their owning commits or stacked on top, with `default` clearing the project's override. |
 | `h9k project set --link <name=url>` | Adds a context link injected into agent prompts, repeatable, and replaces the whole list. |
@@ -1504,7 +1504,7 @@ environment variable that outranks it, and the default for every one of them.
 
 **Two of these settings decide which model runs what, and they are deliberately independent.**
 `--default-model` is the bottom of the agent-dispatch chain: a session's model is the task's own
-`--model`, then this node's per-role default, then the project's `--model`, then the default model,
+`--model`, then the project's `--model`, then this node's per-role default, then the default model,
 which ships as `claude-opus-5[1m]`. `--orchestrator-model` is a separate lever for the
 window you talk to, not for the sessions it dispatches. It is the model that `recipes/settings.json`
 is rendered for, so raising or lowering the model dispatched agents run on never moves your own

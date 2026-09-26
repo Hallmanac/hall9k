@@ -117,14 +117,25 @@ public sealed class OperatingSettingsRenderingTests
     }
 
     [Fact]
-    public void An_unset_ordinary_role_falls_through_to_the_generic_project_or_platform_default()
+    public void An_unset_ordinary_role_falls_through_to_the_platform_default()
     {
         OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.Build), null);
 
         (string Label, string Value) row = OperatingSettingsRendering.Rows(report)
             .Single(r => r.Label == "model (build)");
 
-        row.Value.Should().Be("not set — falls through to the project or platform default");
+        row.Value.Should().Be("not set — falls through to the platform default");
+    }
+
+    [Fact]
+    public void An_unset_courier_falls_through_to_its_own_sonnet_floor()
+    {
+        OperatingSettingsReport report = ReportWithOneRole(nameof(RoleModelSettings.Courier), null);
+
+        (string Label, string Value) row = OperatingSettingsRendering.Rows(report)
+            .Single(r => r.Label == "model (courier)");
+
+        row.Value.Should().Be($"not set — falls through to {AgentModel.CourierDefault}, the courier's own floor");
     }
 
     /// <summary>

@@ -158,9 +158,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "otherwise (Decisions Log #33): a tier alias (fable, opus, sonnet, haiku) or an exact "
             + "model id (claude-opus-5, claude-sonnet-5, or a context variant like claude-opus-5[[1m]]); "
             + "anything 'claude -p --model' accepts, except the word 'default'. "
-            + "The chain is task override > the node's per-role default (DaemonOptions.ModelByRole) > "
-            + "this project value > the platform default (DaemonOptions.DefaultModel), so a node that "
-            + "sets a default for a role outranks this for that role's sessions. "
+            + "The chain is task override > this project value > the node's per-role default "
+            + "(DaemonOptions.ModelByRole) > the platform default (DaemonOptions.DefaultModel), the same "
+            + "order as effort (the further down, the higher the priority), so this outranks the node's "
+            + "per-role defaults, its review-pass knobs, and the courier's own default. "
             + "'default' is not a model name: it clears the project override so the levels above and "
             + "below decide. An exact id is the stabler choice: an alias is re-pointed as new models ship")]
         public string? Model { get; init; }
