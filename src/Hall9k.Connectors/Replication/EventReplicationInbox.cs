@@ -11,7 +11,6 @@ using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using JasperFx.Events.Daemon;
 using Marten;
-using Marten.Events;
 using Microsoft.Extensions.Logging;
 
 namespace Hall9k.Connectors.Replication;
@@ -60,7 +59,10 @@ public sealed record EventReplicationReadResult(bool SenderIgnored, int EventsAp
 /// (<see cref="OriginHighWaterAsync"/>). The shape that reaches that check is a stream this node
 /// holds only the post-switch-on TAIL of, whose pre-switch-on head an explicit pull then serves
 /// (task a56cf16e, Decisions Log #235) — applying that head would replay the stream backwards and
-/// leave the aggregate reading as it did at its creation.
+/// leave the aggregate reading as it did at its creation. The Project aggregate's own team-facing
+/// events are exempt (<see cref="ProjectStreamReplicationRules.IsProjectAggregateStreamEvent"/>):
+/// they land on this node's own Project stream, which no origin owns, and their readers order them
+/// by each event's own stamp instead, so no arrival order can leave one stale.
 /// </para>
 /// <para>
 /// Each record this class applies is saved on its own, rather than every record a read's own
@@ -669,7 +671,8 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // decision about THEIR OWN install's copy of the project is recorded as a fact without ever
         // acting on this receiver's own project (independent pre-PR review, cycle 3, conformance
         // lens — ProjectStreamReplicationRules.IsProjectLifecycleEvent's own doc).
-        Guid effectiveStreamId = ProjectStreamReplicationRules.IsProjectAggregateStreamEvent(eventType)
+        bool mergesOntoLocalProjectStream = ProjectStreamReplicationRules.IsProjectAggregateStreamEvent(eventType);
+        Guid effectiveStreamId = mergesOntoLocalProjectStream
             ? projectId
             : record.StreamId;
 
@@ -723,7 +726,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
             // than started: this is the recoverable twin of the permanently-failed guard just
             // above, since a genesis that simply has not arrived YET, unlike one that already
             // failed, may still show up in a later envelope and complete the story.
-            bool genesisRequired = !ProjectStreamReplicationRules.IsProjectAggregateStreamEvent(eventType)
+            bool genesisRequired = !mergesOntoLocalProjectStream
                 && !ProjectStreamReplicationRules.IsProjectLifecycleEvent(eventType);
             if (genesisRequired && !AggregateGenesisEventTypes.IsGenesis(eventType))
             {
@@ -823,9 +826,25 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         // pull says so up front rather than letting a human queue a pull that would corrupt the
         // stream. Compared per ORIGIN node, since two origins' own sequences say nothing about
         // each other's order.
-        Dictionary<Guid, long> originHighWater =
-            await OriginHighWaterAsync(session, effectiveStreamId, streamExists, originHighWaterByStream, cancellationToken);
-        if (originHighWater.TryGetValue(record.OriginNodeId, out long highestHeld) && record.OriginSequence < highestHeld)
+        //
+        // Not applied to an event that merges onto this node's own local Project stream
+        // (mergesOntoLocalProjectStream). Its stream id is this receiver's own, so the sender's
+        // sequences there are compared across two delivery paths, the ordinary post-switch-on
+        // outbox and a catch-up answer that lifts the switch-on exclusion, and the head that the
+        // answer serves after the tail would be refused on every reconcile with nothing able to
+        // repair it. Those events are order-tolerant instead: ProjectDetailsProjection and
+        // ProjectSettingsHistory resolve them by each event's own stamp, whatever order they sit in.
+        Dictionary<Guid, long>? originHighWater = null;
+        long highestHeld = 0;
+        if (!mergesOntoLocalProjectStream)
+        {
+            originHighWater =
+                await OriginHighWaterAsync(session, effectiveStreamId, streamExists, originHighWaterByStream, cancellationToken);
+        }
+
+        if (originHighWater is not null
+            && originHighWater.TryGetValue(record.OriginNodeId, out highestHeld)
+            && record.OriginSequence < highestHeld)
         {
             logger?.LogWarning(
                 "Replicated event {OriginEventId} (origin {OriginNodeId} sequence {OriginSequence}) belongs before "
@@ -955,7 +974,7 @@ public sealed class EventReplicationInbox(IMessageTransport transport, ILogger<E
         }
 
         streamsStartedThisRead.Add(effectiveStreamId);
-        if (record.OriginSequence > highestHeld)
+        if (originHighWater is not null && record.OriginSequence > highestHeld)
         {
             originHighWater[record.OriginNodeId] = record.OriginSequence;
         }
