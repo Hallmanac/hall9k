@@ -15,7 +15,6 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
-using Marten.Events;
 using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Publication;

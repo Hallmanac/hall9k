@@ -29,7 +29,6 @@ using Hall9k.Domain.Infrastructure.Storage;
 using Hall9k.Domain.Shared.ValueObjects;
 using JasperFx.Events;
 using Marten;
-using Marten.Events;
 using Marten.Linq.MatchesSql;
 using Microsoft.Extensions.Options;
 
