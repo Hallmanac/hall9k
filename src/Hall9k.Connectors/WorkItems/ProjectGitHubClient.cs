@@ -215,6 +215,20 @@ public sealed class ProjectGitHubClient(
     /// refusal message naming it), does not have to reimplement this resolution.
     /// </summary>
     public static async Task<ProjectGitHubAccount> ResolveAccountAsync(
+        IQuerySession session, ProjectDetails project, CancellationToken cancellationToken) =>
+        await TryResolveAccountAsync(session, project, cancellationToken)
+            ?? throw new DomainValidationException(
+                $"Project '{project.Name}' has no confirmed GitHub account to act as — gh reported no "
+                + "login for this install's own connection (h9k connection list shows what is "
+                + "registered, but only ever what was already recorded; it never calls gh). Run 'gh "
+                + "auth login' (gh auth status confirms it), then retry h9k project join.");
+
+    /// <summary>
+    /// <see cref="ResolveAccountAsync"/>'s own read, answering null instead of throwing when the
+    /// project's connection has no confirmed GitHub account: for a caller that treats an
+    /// unreadable identity as "nothing to declare" rather than a refusal.
+    /// </summary>
+    public static async Task<ProjectGitHubAccount?> TryResolveAccountAsync(
         IQuerySession session, ProjectDetails project, CancellationToken cancellationToken)
     {
         ConnectionDetails? connection = await session.LoadAsync<ConnectionDetails>(project.ConnectionId, cancellationToken);
@@ -223,11 +237,7 @@ public sealed class ProjectGitHubClient(
             && found.GitHubAccountId is { } accountId
             && found.GitHubLogin.IsNotBlank()
                 ? new ProjectGitHubAccount(accountId, found.GitHubLogin)
-                : throw new DomainValidationException(
-                    $"Project '{project.Name}' has no confirmed GitHub account to act as — gh reported no "
-                    + "login for this install's own connection (h9k connection list shows what is "
-                    + "registered, but only ever what was already recorded; it never calls gh). Run 'gh "
-                    + "auth login' (gh auth status confirms it), then retry h9k project join.");
+                : null;
     }
 
     private async Task<string> TokenAsync(string login, string workingDirectory, CancellationToken cancellationToken)

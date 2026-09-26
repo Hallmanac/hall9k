@@ -105,6 +105,23 @@ public sealed class ProjectJoinCommandTests : IClassFixture<PostgresFixture>, IA
         updatedProject.Members.Should().ContainKey(outcome.KeyFingerprint);
     }
 
+    /// <summary>A member's own GitHub login and account id, as the project's connection observed
+    /// them, land in the node file at join as a self-declared claim.</summary>
+    [Fact]
+    public async Task Join_writes_the_connections_observed_github_login_and_account_id_into_the_node_file()
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromMinutes(1));
+        ProjectDetails project = await SeedProjectAsync(cts.Token);
+        FakeLedger ledger = new();
+
+        await using IDocumentSession session = _postgres.Store.LightweightSession();
+        ProjectJoinCommand.JoinOutcome outcome = await ProjectJoinCommand.RunAsync(
+            session, project, claimedOwnerOverride: null, ledger, new NodeKeyStore(), GitHubAccessFakes.GrantingPush(), cts.Token);
+
+        LedgerWriteRequest nodeWrite = ledger.Writes.Single(w => w.RefName == $"refs/hall9k/ledger/nodes/{outcome.NodeId}");
+        nodeWrite.Content.Should().Contain("github_login: \"test-user\"").And.Contain("github_account_id: \"1\"");
+    }
+
     /// <summary>idea 202383dc, M2 (Brian's ruling 2026-09-17): the genesis members commit mints a
     /// fresh ULID and records it as this project's own key, and this install's own local Project
     /// stream picks it up in the same join — never a separate step.</summary>
