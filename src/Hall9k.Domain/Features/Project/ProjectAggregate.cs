@@ -58,6 +58,8 @@ public sealed class ProjectAggregate
     public CommitStyle CommitStyle { get; private set; } = CommitStyle.Unknown;
     /// <summary>The project's model default; Unknown defers to the platform chain (Decisions Log #33).</summary>
     public AgentModel Model { get; private set; } = AgentModel.Unknown;
+    /// <summary>The project's reasoning effort override; Unknown defers to the node's per-role and node-wide levels, then the model's own default.</summary>
+    public AgentEffort Effort { get; private set; } = AgentEffort.Unknown;
     /// <summary>
     /// This project's orchestrator-window override (task: an operator starts a lean node or
     /// project orchestrator window) — outranks <see cref="Model"/> for the project's
@@ -277,6 +279,11 @@ public sealed class ProjectAggregate
         if (@event.Model.HasValue)
         {
             Model = @event.Model.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.Effort.HasValue)
+        {
+            Effort = @event.Effort.Value ?? AgentEffort.Unknown;
         }
 
         if (@event.OrchestratorModel.HasValue)

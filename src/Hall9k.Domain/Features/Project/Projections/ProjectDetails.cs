@@ -42,6 +42,8 @@ public sealed class ProjectDetails
     public CommitStyle CommitStyle { get; set; } = CommitStyle.Unknown;
     /// <summary>The project's model default; Unknown defers to the platform chain (Decisions Log #33).</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
+    /// <summary>The project's reasoning effort override; Unknown defers to the node's per-role and node-wide levels, then the model's own default.</summary>
+    public AgentEffort Effort { get; set; } = AgentEffort.Unknown;
     /// <summary>
     /// This project's orchestrator-window override (task: an operator starts a lean node or
     /// project orchestrator window) — outranks <see cref="Model"/> for the project's
@@ -317,6 +319,11 @@ public sealed partial class ProjectDetailsProjection : SingleStreamProjection<Pr
         if (@event.Data.Model.HasValue)
         {
             view.Model = @event.Data.Model.Value ?? AgentModel.Unknown;
+        }
+
+        if (@event.Data.Effort.HasValue)
+        {
+            view.Effort = @event.Data.Effort.Value ?? AgentEffort.Unknown;
         }
 
         if (@event.Data.OrchestratorModel.HasValue)

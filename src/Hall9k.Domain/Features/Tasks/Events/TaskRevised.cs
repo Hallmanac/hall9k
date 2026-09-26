@@ -90,4 +90,12 @@ public sealed record TaskRevised(
     /// <summary>A spike's own exit criterion, absent leaves it alone. Settable on a Published spike, the same carve-out <see cref="SpikeKind"/> gets.</summary>
     Optional<string> ExitCriterion = default,
     /// <summary>A spike's own budget, absent leaves it alone, present-with-null clears it. Settable on a Published spike, the same carve-out <see cref="SpikeKind"/> gets.</summary>
-    Optional<TaskConstraints?> Constraints = default);
+    Optional<TaskConstraints?> Constraints = default,
+    /// <summary>
+    /// This task's own reasoning effort, the most specific link in the effort chain: it wins over the
+    /// project's value and the node's, on every node, because it travels with the task like
+    /// <see cref="Model"/> does. Absent leaves it alone; present with
+    /// <see cref="AgentEffort.Unknown"/> clears it so the levels beneath decide again. Draft-only like
+    /// <see cref="Model"/>.
+    /// </summary>
+    Optional<AgentEffort> Effort = default);

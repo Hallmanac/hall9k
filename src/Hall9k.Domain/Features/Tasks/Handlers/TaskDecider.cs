@@ -739,7 +739,8 @@ public static class TaskDecider
         Optional<string?> closeLinkedIssue = default,
         Optional<SpikeKind> spikeKind = default,
         Optional<string> exitCriterion = default,
-        Optional<TaskConstraints?> constraints = default)
+        Optional<TaskConstraints?> constraints = default,
+        Optional<AgentEffort> effort = default)
     {
         // Both markers are scheduling/mode facts, not part of the readiness contract, so they
         // are the two exceptions Revise's own Draft-only gate carves out (task 45136b29 for
@@ -754,7 +755,8 @@ public static class TaskDecider
             && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
             && !reviewStageComposition.HasValue && !stackedOnTaskId.HasValue
             && !stackedOnPullRequestNumber.HasValue && !closeLinkedIssue.HasValue
-            && !spikeKind.HasValue && !exitCriterion.HasValue && !constraints.HasValue;
+            && !spikeKind.HasValue && !exitCriterion.HasValue && !constraints.HasValue
+            && !effort.HasValue;
 
         // A spike's own kind, exit criterion, and budget are settable on a Published spike too
         // (task: a spike is a run, not a walk) — a third carve-out beside the two marker fields
@@ -764,7 +766,8 @@ public static class TaskDecider
             && !objective.HasValue && !acceptanceCriteria.HasValue && !agentContext.HasValue
             && !blockedBy.HasValue && !type.HasValue && !model.HasValue && !epicId.HasValue
             && !queuePriority.HasValue && !reviewStageComposition.HasValue && !clearInteractiveMode
-            && !stackedOnTaskId.HasValue && !stackedOnPullRequestNumber.HasValue && !closeLinkedIssue.HasValue;
+            && !stackedOnTaskId.HasValue && !stackedOnPullRequestNumber.HasValue && !closeLinkedIssue.HasValue
+            && !effort.HasValue;
         bool spikePublishedRevisionAllowed = onlySpikeFieldsChanging
             && task.Type == TaskType.Spike && task.State == TaskState.Published;
 
@@ -909,11 +912,11 @@ public static class TaskDecider
             && !queuePriority.HasValue && !normalizedComposition.HasValue && !clearInteractiveMode
             && !stackedOn.TaskId.HasValue && !stackedOn.PullRequestNumber.HasValue
             && !closeLinkedIssueForEvent.HasValue && !spikeKind.HasValue && !exitCriterion.HasValue
-            && !constraints.HasValue)
+            && !constraints.HasValue && !effort.HasValue)
         {
             throw new DomainValidationException(
                 "A revision needs something to revise. Pass --objective, --criteria, --context, " +
-                "--type, --model, --blocked-by, --clear-dependencies, --epic, --clear-epic, " +
+                "--type, --model, --effort, --blocked-by, --clear-dependencies, --epic, --clear-epic, " +
                 "--stacked-on, --stacked-on-pull-request, --clear-stacked-on, --queue-first, " +
                 "--clear-queue-first, --review-stage-composition, --clear-interactive-mode, " +
                 "--close-linked-issue, --kind, --exit-criterion, or a budget option.");
@@ -941,7 +944,8 @@ public static class TaskDecider
             closeLinkedIssueForEvent,
             spikeKind,
             normalizedExitCriterion,
-            constraints);
+            constraints,
+            effort);
     }
 
     /// <summary>What a revision records about the stacked edge, in both its forms.</summary>

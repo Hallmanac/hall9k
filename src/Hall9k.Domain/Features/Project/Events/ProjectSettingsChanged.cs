@@ -290,4 +290,11 @@ public sealed record ProjectSettingsChanged(
     /// one place that enforces it). Trailing and optional so every stream written before this
     /// setting existed replays byte-for-byte unchanged.
     /// </summary>
-    Optional<IReadOnlyList<string>> NonExecutablePaths = default);
+    Optional<IReadOnlyList<string>> NonExecutablePaths = default,
+    /// <summary>
+    /// This project's reasoning effort, stored beside <see cref="Model"/> because it is the same kind
+    /// of fact: node-scoped, so it is local to the node that set it and never replicates. It outranks
+    /// the node's per-role and node-wide values and is outranked only by a task's own. Absent leaves it
+    /// alone; present with <see cref="AgentEffort.Unknown"/> clears it.
+    /// </summary>
+    Optional<AgentEffort> Effort = default);
