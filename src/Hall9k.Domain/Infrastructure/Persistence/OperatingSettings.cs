@@ -352,7 +352,7 @@ public sealed class RoleModelSettings
     /// <summary>
     /// The feed courier (idea 89471598, piece 3) — delivers a project's orchestrator feed to its
     /// live orchestrator session and exits. Blank like every sibling above; its own non-blank
-    /// floor beneath the project and platform defaults is <c>AgentModel.CourierDefault</c>, read
+    /// floor beneath a project's model and this setting is <c>AgentModel.CourierDefault</c>, read
     /// by <c>DaemonOptions.ResolveCourierModel</c> rather than baked in here.
     /// </summary>
     [JsonConverter(typeof(LenientModelStringJsonConverter))]

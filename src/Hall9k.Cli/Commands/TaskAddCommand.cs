@@ -246,7 +246,7 @@ public sealed class TaskAddCommand : Hall9kAsyncCommand<TaskAddCommand.Settings>
             + "(claude-opus-5, claude-sonnet-5, or a context variant like claude-opus-5[[1m]]); anything "
             + "'claude -p --model' accepts, except the word 'default'. "
             + "Omit it — or pass 'default', which states no override rather than naming a model — and "
-            + "the node's per-role default, then the project default, then the platform default decide. "
+            + "the project default, then the node's per-role default, then the platform default decide. "
             + "Reach for it when THIS task is unusual, not to express a standing preference")]
         public string? Model { get; init; }
 

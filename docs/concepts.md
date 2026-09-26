@@ -1258,7 +1258,7 @@ publication, a task's own errand with no run of its own. A courier is neither: i
 project, not a task, so it opens its own stream and is recorded with its own model, its own
 token spend, and its own outcome, folded into `h9k status`'s spend line the same as any other
 role's. It is its own role in the model-by-role policy (`h9k config set --model-courier`); its
-own field ships blank exactly like every other role's ("ask the project or platform default"),
+own field ships blank exactly like every other role's ("ask the platform default"),
 but its *resolution* is the one deliberate exception — a blank courier bottoms out at
 `claude-sonnet-5`, cheap by construction, rather than falling all the way through to the platform
 default the way every other role's blank does.

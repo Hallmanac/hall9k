@@ -1025,8 +1025,8 @@ refinement, publication, and courier sessions. Each resolves its model at dispat
 first, and the resolved value is recorded on the dispatch event as an observed fact of the run:
 
 1. The task's own override (`h9k task add --model`, `h9k task revise --model`).
-2. The node's default for that session's role (`h9k config set --model-<role>`).
-3. The project's model (`h9k project set <name> --model`).
+2. The project's model (`h9k project set <name> --model`).
+3. The node's default for that session's role (`h9k config set --model-<role>`).
 4. The node's `--default-model` (`Hall9k__DefaultModel`).
 5. The platform fallback, `claude-opus-5[1m]`, which is what applies when nothing above is set.
 
@@ -1036,18 +1036,21 @@ stabler choice, because an alias is re-pointed as new models ship. The word `def
 model name. Passed to a node or project option, it clears that level, so the levels around it decide.
 `--default-model` is the bottom of the chain and exists so the platform never inherits whatever
 your personal Claude Code default happens to be that day (Decisions Log #33); clearing it puts the
-platform fallback back. Note that step 2 outranks step 3: a node that sets a model for a role wins
-over a project's `--model` for that role's sessions. Two review passes have a narrower node-level
-knob than the review role. `--model-review-verify` sets a Verify-shape pass and
-`--model-review-finalpass` sets the mandatory final full pass; each sits under the task's override
-and above `--model-review`, and left blank each falls through to whatever the review role resolves.
+platform fallback back. Note that step 2 outranks step 3, the same order as effort (the further down, the higher the
+priority): a project's `--model` wins over the node's model for any role's sessions. Two review
+passes have a narrower node-level knob than the review role. `--model-review-verify` sets a
+Verify-shape pass and `--model-review-finalpass` sets the mandatory final full pass; each sits under
+the task's override and the project's `--model` and above `--model-review`, and left blank each
+falls through to whatever the review role resolves.
 
-The feed courier is the one role with a floor of its own. Its chain is the node's
-`--model-courier`, then the project's `--model`, then `claude-sonnet-5`. It never reaches
+The feed courier is the one role with a floor of its own. Its chain is the project's
+`--model`, then the node's `--model-courier`, then `claude-sonnet-5`. It never reaches
 `--default-model`, and it has no task level because a courier runs with no task. That floor is why
 `--model-courier default` does not clear to the platform default the way every other
 `--model-<role> default` does: it removes the override and leaves the courier on the deliberately
-cheap `claude-sonnet-5`, unless the project sets a `--model` of its own.
+cheap `claude-sonnet-5`, unless the project sets a `--model` of its own. Because the project's model
+outranks the node's, a project `--model` chosen for builds also lifts the courier above a cheaper
+`--model-courier`.
 
 **The orchestrator window** is the interactive Claude Code session you launch from a node's or a
 project's home. It runs on the model its `recipes/settings.json` is rendered for, and that has its
@@ -1081,7 +1084,7 @@ and `h9k project init` for a project's; and by `h9k project set` when it is give
 
 Settings resolve most-specific-wins, and each chain always ends somewhere explicit. The review
 re-request policy resolves **project over owner over the node default**. The agent model resolves
-**task override, then this node's per-role default, then the project default, then the node's
+**task override, then the project default, then this node's per-role default, then the node's
 `--default-model`** (which is the platform fallback, `claude-opus-5[1m]`, until you change it), and
 the resolved value is recorded on the dispatch event as an observed fact of the run.
 [Which model runs what](#which-model-runs-what) has the whole story, including the separate chain

@@ -226,7 +226,7 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   ship and drifting silently is the whole problem this setting exists to close (Decisions Log
   #33). The courier's own field ships blank like every sibling role's — `h9k config show` prints
   it the same way — but its *resolution* is the one deliberate exception (idea 89471598, piece
-  3): where a blank Build or Review falls through to the project or platform default, a blank
+  3): where a blank Build or Review falls through to the platform default, a blank
   courier bottoms out at `claude-sonnet-5` instead, since a short-lived session that only relays
   a project's own feed to a live orchestrator window has no business defaulting to the same tier
   a build or review session does. `fable` is the human-interactive tier for a session a person is
@@ -240,8 +240,8 @@ h9k project add --name <name> --repo-url <the-user's-own-repo-url>
   h9k config set --model-review-verify sonnet
   ```
 
-  Resolution is task override, then this node's per-role default, then the project's own
-  `--model`, then the node's `--default-model`, which is the platform fallback until you change it.
+  Resolution is task override, then the project's own `--model`, then this node's per-role
+  default, then the node's `--default-model`, which is the platform fallback until you change it.
 - **The platform default, `--default-model`, and the orchestrator window's own model,
   `--orchestrator-model`.** `--default-model` is the model every agent session runs on unless a
   more specific level says otherwise, and it is what the chain above bottoms out at (the platform

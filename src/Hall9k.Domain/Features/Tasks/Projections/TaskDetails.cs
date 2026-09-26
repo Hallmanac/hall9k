@@ -222,7 +222,7 @@ public sealed class TaskDetails
     public Dictionary<Guid, string> DeadDependencyReasons { get; set; } = [];
     /// <summary>How many times the task has been revised; a draft's edit history at a glance.</summary>
     public int Revisions { get; set; }
-    /// <summary>The task's model override; Unknown means the per-role, project, and platform links decide (Decisions Log #33).</summary>
+    /// <summary>The task's model override; Unknown means the project, per-role, and platform links decide (Decisions Log #33).</summary>
     public AgentModel Model { get; set; } = AgentModel.Unknown;
     /// <summary>This task's own session-cap override; null means the node's global default decides (Decisions Log #111).</summary>
     public int? SessionCap { get; set; }

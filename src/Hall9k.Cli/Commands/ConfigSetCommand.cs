@@ -102,14 +102,15 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
         [Description(
             "This node's model for a Verify-shape review pass specifically (a middle cycle confirming a fix and "
             + "checking its blast radius, not the first pass or the mandatory final full pass) — a narrower knob "
-            + "under --model-review, not a new role. 'default' clears it, falling through to whatever --model-review "
+            + "under --model-review, not a new role, and like it below a project's own --model and a task's. 'default' clears it, falling through to whatever --model-review "
             + "itself resolves to.")]
         public string? ModelReviewVerify { get; init; }
 
         [CommandOption("--model-review-finalpass <MODEL>")]
         [Description(
             "This node's model for the mandatory FinalFullPass review specifically — the fresh, both-lenses read "
-            + "immediately before a run may settle — a narrower knob under --model-review, not a new role. 'default' "
+            + "immediately before a run may settle — a narrower knob under --model-review, not a new role, and like it "
+            + "below a project's own --model and a task's. 'default' "
             + "clears it, falling through to whatever --model-review itself resolves to.")]
         public string? ModelReviewFinalPass { get; init; }
 
@@ -134,7 +135,7 @@ public sealed class ConfigSetCommand : Hall9kAsyncCommand<ConfigSetCommand.Setti
             "This node's model for the Courier role (idea 89471598, piece 3) — delivers a project's "
             + "orchestrator feed to its live orchestrator session and exits. Unlike every other "
             + "--model-<role> option, 'default' here does not clear to the platform default: a "
-            + $"courier's own floor beneath the project and platform defaults is {AgentModel.CourierDefault}, "
+            + $"courier's own floor beneath a project's --model and this setting is {AgentModel.CourierDefault}, "
             + "cheap by design, so clearing this override still leaves a courier running on a "
             + "deliberately inexpensive model rather than falling through to the same tier a build or "
             + "review session runs on.")]
