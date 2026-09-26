@@ -20,7 +20,6 @@ using Hall9k.Domain.Features.Tasks.Projections;
 using Hall9k.Domain.Infrastructure.Ids;
 using JasperFx.Events;
 using Marten;
-using Marten.Events;
 using Microsoft.Extensions.Options;
 
 namespace Hall9k.Daemon.Execution;
