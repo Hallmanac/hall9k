@@ -359,6 +359,114 @@ public sealed class ConfigSetCommandTests
         act.Should().NotThrow("--effort is a real change, not the 'Nothing to change' no-op");
     }
 
+    public static TheoryData<string, Func<OperatingSettings, string?>> RoleEffortFlags => new()
+    {
+        { "--effort-build", operating => operating.EffortByRole.Build },
+        { "--effort-fix", operating => operating.EffortByRole.Fix },
+        { "--effort-review", operating => operating.EffortByRole.Review },
+        { "--effort-review-verify", operating => operating.EffortByRole.ReviewVerify },
+        { "--effort-review-finalpass", operating => operating.EffortByRole.ReviewFinalFullPass },
+        { "--effort-synthesis", operating => operating.EffortByRole.Synthesis },
+        { "--effort-refinement", operating => operating.EffortByRole.Refinement },
+        { "--effort-publication", operating => operating.EffortByRole.Publication },
+        { "--effort-courier", operating => operating.EffortByRole.Courier },
+    };
+
+    private static ConfigSetCommand.Settings SettingsFor(string flag, string value) => flag switch
+    {
+        "--effort-build" => new() { EffortBuild = value },
+        "--effort-fix" => new() { EffortFix = value },
+        "--effort-review" => new() { EffortReview = value },
+        "--effort-review-verify" => new() { EffortReviewVerify = value },
+        "--effort-review-finalpass" => new() { EffortReviewFinalpass = value },
+        "--effort-synthesis" => new() { EffortSynthesis = value },
+        "--effort-refinement" => new() { EffortRefinement = value },
+        "--effort-publication" => new() { EffortPublication = value },
+        "--effort-courier" => new() { EffortCourier = value },
+        _ => throw new ArgumentOutOfRangeException(nameof(flag), flag, null),
+    };
+
+    [Theory]
+    [MemberData(nameof(RoleEffortFlags))]
+    public void Every_role_effort_option_stores_its_level_in_its_own_slot_and_no_other(
+        string flag, Func<OperatingSettings, string?> read)
+    {
+        ConfigSetCommand.Settings settings = SettingsFor(flag, " XHigh ");
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Validate(settings);
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        read(operating).Should().Be("xhigh");
+        operating.EffortByRole.AsPairs().Count(pair => pair.Effort is not null).Should().Be(
+            1, "one option writes exactly one role");
+        operating.Effort.Should().BeNull("a per-role option never touches the node-wide level");
+        changed.Should().ContainSingle().Which.Should().EndWith("= xhigh");
+    }
+
+    [Theory]
+    [MemberData(nameof(RoleEffortFlags))]
+    public void The_word_default_clears_a_role_effort_and_leaves_the_others(
+        string flag, Func<OperatingSettings, string?> read)
+    {
+        OperatingSettings operating = new()
+        {
+            EffortByRole = new RoleEffortSettings
+            {
+                Build = "low", Fix = "low", Review = "low", ReviewVerify = "low", ReviewFinalFullPass = "low",
+                Synthesis = "low", Refinement = "low", Publication = "low", Courier = "low",
+            },
+        };
+        List<string> changed = [];
+
+        ConfigSetCommand.Apply(SettingsFor(flag, "default"), operating, changed);
+
+        read(operating).Should().BeNull();
+        operating.EffortByRole.AsPairs().Count(pair => pair.Effort == "low").Should().Be(8);
+        changed.Should().ContainSingle().Which.Should().Contain("cleared");
+    }
+
+    [Theory]
+    [MemberData(nameof(RoleEffortFlags))]
+    public void An_unrecognized_role_effort_is_refused_naming_the_flag_and_the_four_levels(
+        string flag, Func<OperatingSettings, string?> read)
+    {
+        ConfigSetCommand.Settings settings = SettingsFor(flag, "max");
+        OperatingSettings operating = new();
+
+        Action validate = () => ConfigSetCommand.Validate(settings);
+        Action apply = () => ConfigSetCommand.Apply(settings, operating, []);
+
+        validate.Should().Throw<DomainValidationException>()
+            .WithMessage($"{flag} must be one of low, medium, high, xhigh*");
+        apply.Should().Throw<DomainValidationException>();
+        read(operating).Should().BeNull("a refused value must never reach the config file");
+    }
+
+    [Fact]
+    public void A_role_effort_alone_is_a_change_and_is_not_an_immediately_effective_one()
+    {
+        Action act = () => ConfigSetCommand.Validate(new ConfigSetCommand.Settings { EffortCourier = "low" });
+
+        act.Should().NotThrow("--effort-courier is a real change, not the 'Nothing to change' no-op");
+    }
+
+    [Fact]
+    public void The_node_wide_effort_and_a_role_effort_can_be_set_in_one_call()
+    {
+        ConfigSetCommand.Settings settings = new() { Effort = "medium", EffortBuild = "high" };
+        OperatingSettings operating = new();
+        List<string> changed = [];
+
+        ConfigSetCommand.Validate(settings);
+        ConfigSetCommand.Apply(settings, operating, changed);
+
+        operating.Effort.Should().Be("medium");
+        operating.EffortByRole.Build.Should().Be("high");
+        changed.Should().Equal("effort = medium", "effort (build) = high");
+    }
+
     [Fact]
     public void A_not_well_formed_default_model_is_refused_the_same_way_project_set_refuses_it()
     {

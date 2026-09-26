@@ -3,6 +3,9 @@ namespace Hall9k.Domain.Infrastructure.Persistence;
 /// <summary>One role's configured model and where that value came from.</summary>
 public sealed record RoleModelSetting(string Role, ResolvedSetting<string?> Model);
 
+/// <summary>One role's configured reasoning effort and where that value came from; null when the role sets none.</summary>
+public sealed record RoleEffortSetting(string Role, ResolvedSetting<string?> Effort);
+
 /// <summary>
 /// The true consequence to state alongside a <see cref="ConfigFileProblem.Message"/>, an
 /// unpersisted in-process outcome rather than a value object: a document-level failure the
@@ -178,8 +181,13 @@ public sealed record ConfigFileReadResult(
 /// <param name="Effort">
 /// The reasoning effort level dispatched sessions run at, resolved the environment-then-file way
 /// <see cref="DefaultModel"/> is. Null when nothing sets one (or a set value is not one of the four
-/// accepted names), meaning the generated settings file carries no <c>effortLevel</c> and the model's
+/// accepted names), meaning the generated settings file carries no effort level and the model's
 /// own default decides.
+/// </param>
+/// <param name="EffortByRole">
+/// The node's reasoning effort for each session role, in the order <see cref="RoleEffortSettings.AsPairs"/>
+/// lists them, each resolved the environment-then-file way <see cref="Effort"/> is. A null value means the
+/// role sets none and falls through to <see cref="Effort"/>.
 /// </param>
 /// <param name="AutoPrReviewMintHold">
 /// How many whole seconds this node holds a review request a fleet peer is expected to mint for
@@ -205,4 +213,5 @@ public sealed record OperatingSettingsReport(
     ResolvedSetting<string> SpendPeriod,
     ResolvedSetting<string> ReviewStageComposition,
     ResolvedSetting<string?> Effort,
-    ResolvedSetting<int> AutoPrReviewMintHold);
+    ResolvedSetting<int> AutoPrReviewMintHold,
+    IReadOnlyList<RoleEffortSetting> EffortByRole);

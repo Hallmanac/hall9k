@@ -19,7 +19,8 @@ public sealed class OperatingSettingsRenderingTests
     private static OperatingSettingsReport ReportWithOneRole(
         string role, string? model, string? effort = null, SettingOrigin effortOrigin = SettingOrigin.Default,
         int mintHold = OperatingSettings.DefaultAutoPrReviewMintHoldSeconds,
-        SettingOrigin mintHoldOrigin = SettingOrigin.Default) =>
+        SettingOrigin mintHoldOrigin = SettingOrigin.Default,
+        IReadOnlyList<RoleEffortSetting>? effortByRole = null) =>
         new(
             new ResolvedSetting<int>(OperatingSettings.DefaultMaxConcurrentAgentSessions, SettingOrigin.Default, null),
             false,
@@ -42,7 +43,8 @@ public sealed class OperatingSettingsRenderingTests
             new ResolvedSetting<string?>(
                 effort, effortOrigin, effortOrigin == SettingOrigin.PlatformConfigFile ? Hall9kDatabase.ConfigFile : null),
             new ResolvedSetting<int>(
-                mintHold, mintHoldOrigin, mintHoldOrigin == SettingOrigin.PlatformConfigFile ? Hall9kDatabase.ConfigFile : null));
+                mintHold, mintHoldOrigin, mintHoldOrigin == SettingOrigin.PlatformConfigFile ? Hall9kDatabase.ConfigFile : null),
+            effortByRole ?? []);
 
     [Fact]
     public void The_mint_hold_prints_in_whole_seconds_with_its_origin()
@@ -92,6 +94,81 @@ public sealed class OperatingSettingsRenderingTests
 
         rows.Single(r => r.Label == "effort").Value.Should().Be($"high (config: {Hall9kDatabase.ConfigFile})");
         rows.Single(r => r.Label == "default-model").Value.Should().EndWith("(default)");
+    }
+
+    private static RoleEffortSetting EffortRole(
+        string role, string? value = null, SettingOrigin origin = SettingOrigin.Default) =>
+        new(role, new ResolvedSetting<string?>(
+            value, origin, origin switch
+            {
+                SettingOrigin.PlatformConfigFile => Hall9kDatabase.ConfigFile,
+                SettingOrigin.EnvironmentVariable => $"Hall9k__EffortByRole__{role}",
+                _ => null,
+            }));
+
+    private static IReadOnlyList<(string Label, string Value)> EffortRows(params RoleEffortSetting[] roles) =>
+        OperatingSettingsRendering.Rows(ReportWithOneRole(nameof(RoleModelSettings.Build), null, effortByRole: roles));
+
+    [Fact]
+    public void Each_role_gets_one_effort_line_directly_beneath_the_node_wide_line()
+    {
+        IReadOnlyList<(string Label, string Value)> rows = EffortRows(
+            EffortRole("Build"), EffortRole("Review"), EffortRole("ReviewVerify"), EffortRole("ReviewFinalFullPass"),
+            EffortRole("Courier"));
+
+        List<string> labels = [.. rows.Select(row => row.Label)];
+        int node = labels.IndexOf("effort");
+        labels.Skip(node).Take(6).Should().Equal(
+            "effort", "effort (build)", "effort (review)", "effort (review-verify)", "effort (review-finalpass)",
+            "effort (courier)");
+    }
+
+    [Fact]
+    public void A_role_effort_from_the_config_file_names_its_value_and_origin()
+    {
+        IReadOnlyList<(string Label, string Value)> rows = EffortRows(
+            EffortRole("Build", "xhigh", SettingOrigin.PlatformConfigFile));
+
+        rows.Single(r => r.Label == "effort (build)").Value.Should().Be($"xhigh (config: {Hall9kDatabase.ConfigFile})");
+    }
+
+    [Fact]
+    public void A_role_effort_from_the_environment_names_the_variable()
+    {
+        IReadOnlyList<(string Label, string Value)> rows = EffortRows(
+            EffortRole("Fix", "low", SettingOrigin.EnvironmentVariable));
+
+        rows.Single(r => r.Label == "effort (fix)").Value.Should().Be("low (env: Hall9k__EffortByRole__Fix)");
+    }
+
+    [Fact]
+    public void An_unset_ordinary_role_effort_falls_through_to_the_node_wide_level()
+    {
+        IReadOnlyList<(string Label, string Value)> rows = EffortRows(EffortRole("Build"));
+
+        rows.Single(r => r.Label == "effort (build)").Value.Should().Be(
+            "not set, falls through to the node-wide effort above, or the model's own default when that is not set either");
+    }
+
+    [Theory]
+    [InlineData("ReviewVerify", "effort (review-verify)")]
+    [InlineData("ReviewFinalFullPass", "effort (review-finalpass)")]
+    public void An_unset_pass_effort_falls_through_to_review_before_the_node_wide_level(string role, string label)
+    {
+        IReadOnlyList<(string Label, string Value)> rows = EffortRows(EffortRole(role));
+
+        rows.Single(r => r.Label == label).Value.Should().Be(
+            "not set, falls through to whatever --effort-review itself resolves to");
+    }
+
+    [Fact]
+    public void A_blank_role_effort_environment_variable_is_named_rather_than_read_as_silence()
+    {
+        IReadOnlyList<(string Label, string Value)> rows = EffortRows(
+            new RoleEffortSetting("Build", new ResolvedSetting<string?>(
+                string.Empty, SettingOrigin.EnvironmentVariable, "Hall9k__EffortByRole__Build")));
+
+        rows.Single(r => r.Label == "effort (build)").Value.Should().StartWith("(empty) (env: Hall9k__EffortByRole__Build)");
     }
 
     [Fact]

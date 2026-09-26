@@ -181,6 +181,7 @@ public static class PlatformConfigFile
             {
                 OperatingSettings settings = recovery.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
                 settings.ModelByRole ??= new();
+                settings.EffortByRole ??= new();
                 bool maxConcurrentAgentSessionsIsFabricatedZero = ApplyIntBinderQuirks(document, settings);
                 return ConfigFileReadResult.SettingIgnored(
                     settings, ShapeErrorMessage(current), maxConcurrentAgentSessionsIsFabricatedZero, affectsResolverOwnedKey);
@@ -508,7 +509,7 @@ public static class PlatformConfigFile
     /// (<c>"4"</c>) is read as the number, not refused: the daemon binds this section through
     /// <c>IConfiguration</c>, where every JSON leaf is already a string, so the two must agree
     /// on what a hand-quoted number means. <see cref="OperatingSettings.ModelByRole"/> is
-    /// normalized back to an empty instance here too: an explicit JSON <c>null</c> for that key
+    /// normalized back to an empty instance here too (as is <see cref="OperatingSettings.EffortByRole"/>): an explicit JSON <c>null</c> for that key
     /// deserializes to <c>null</c> since the property has a public setter, and every caller of
     /// this type dereferences it unconditionally.
     /// </summary>
@@ -540,6 +541,7 @@ public static class PlatformConfigFile
 
         OperatingSettings settings = section.Deserialize<OperatingSettings>(SerializerOptions) ?? new();
         settings.ModelByRole ??= new();
+        settings.EffortByRole ??= new();
         return settings;
     }
 
