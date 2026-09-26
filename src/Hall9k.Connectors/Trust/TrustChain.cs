@@ -186,7 +186,9 @@ public sealed record TrustChain(
     /// <summary>
     /// The distinct GitHub accounts declared across <paramref name="root"/>'s own nodes: distinct by
     /// account id with the newest login per id (a renamed account is one entry), one entry per
-    /// account when two nodes declare two accounts. A declaration counts only for a node in this
+    /// account when two nodes declare two accounts. A commit time has one-second resolution, so two
+    /// declarations of one id in the same second tie; the higher node id (a later-minted node) then
+    /// wins, so the answer never depends on the order the fleet lists its nodes in. A declaration counts only for a node in this
     /// root's fleet whose file carries the very key the chain vouched for that node id, so a file
     /// someone else rewrote under their own key adds nothing here.
     /// </summary>
@@ -197,7 +199,10 @@ public sealed record TrustChain(
                 .OfType<NodeGitHubDeclaration>()
                 .Where(declaration => owner.ContainsForNode(declaration.KeyFingerprint, declaration.NodeId))
                 .GroupBy(declaration => declaration.Account.AccountId)
-                .Select(group => group.OrderByDescending(declaration => declaration.DeclaredAt).First().Account)]
+                .Select(group => group
+                    .OrderByDescending(declaration => declaration.DeclaredAt)
+                    .ThenByDescending(declaration => declaration.NodeId, StringComparer.Ordinal)
+                    .First().Account)]
             : [];
 
     /// <summary>Never null, whatever a caller passed the primary constructor: a two-argument

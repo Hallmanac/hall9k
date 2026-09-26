@@ -171,6 +171,32 @@ public sealed class ProjectMembersCommandTests : IClassFixture<PostgresFixture>,
     }
 
     [Fact]
+    public async Task A_collaborator_removed_on_github_reads_not_a_collaborator_although_the_stored_mirror_still_holds_them()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+        TrustChain chain = ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(42, "octocat")));
+        await RunMembersAsync(project, chain, GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        (_, string output) = await RunMembersAsync(
+            project, chain, GitHubAccessFakes.GrantingPush(collaboratorsJson: """[{"id":43,"login":"reader","role_name":"read"}]"""));
+
+        output.Should().Contain("declared, not a collaborator").And.NotContain("push confirmed");
+        output.Should().NotContain("collaborator roster as of", "the list was read fresh in this very run");
+    }
+
+    [Fact]
+    public async Task When_gh_answers_but_the_collaborator_list_fails_the_stored_roster_is_dated_rather_than_called_fresh()
+    {
+        ProjectDetails project = await SeedProjectAsync(CancellationToken.None);
+        TrustChain chain = ChainDeclaring((RootNodeId, new DeclaredGitHubAccount(42, "octocat")));
+        await RunMembersAsync(project, chain, GitHubAccessFakes.GrantingPush(collaboratorsJson: CollaboratorsJson));
+
+        (_, string output) = await RunMembersAsync(project, chain, GitHubAccessFakes.GrantingPushWithFailingCollaboratorList());
+
+        output.Should().MatchRegex(@"collaborator roster as of \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z");
+    }
+
+    [Fact]
     public async Task When_gh_cannot_answer_and_nothing_was_ever_stored_the_account_reads_unchecked_and_the_gap_is_said()
     {
         ProjectDetails project = await SeedProjectAsync(CancellationToken.None);

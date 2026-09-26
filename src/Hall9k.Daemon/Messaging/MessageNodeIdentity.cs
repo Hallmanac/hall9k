@@ -10,7 +10,8 @@ namespace Hall9k.Daemon.Messaging;
 /// fingerprint an envelope's own <c>from-owner</c> field carries, and the committer/signing key an
 /// outbox write needs — the same triple <c>ProjectJoinCommand</c> builds inline for a ledger write,
 /// resolved here instead so the message sweep never duplicates that construction.</summary>
-public sealed record MessageNodeIdentity(string OwnerRootFingerprint, LedgerCommitter Committer, LedgerSigningKey SigningKey);
+public sealed record MessageNodeIdentity(
+    string OwnerRootFingerprint, LedgerCommitter Committer, LedgerSigningKey SigningKey, string PublicKeyLine);
 
 /// <summary>
 /// Resolves <see cref="MessageNodeIdentity"/> for this node (idea 202383dc, M1b). Null when this
@@ -36,6 +37,6 @@ public sealed class MessageNodeIdentityResolver(NodeKeyStore keyStore)
         LedgerCommitter committer = new(
             ownerName.IsNotBlank() ? ownerName : Environment.UserName,
             ownerEmail.IsNotBlank() ? ownerEmail : $"{nodeId}@hall9k.local");
-        return new MessageNodeIdentity(rootFingerprint, committer, new LedgerSigningKey(key.PrivateKeyPath));
+        return new MessageNodeIdentity(rootFingerprint, committer, new LedgerSigningKey(key.PrivateKeyPath), key.PublicKeyLine);
     }
 }

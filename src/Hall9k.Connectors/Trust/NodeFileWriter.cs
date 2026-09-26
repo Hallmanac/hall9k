@@ -24,6 +24,13 @@ public enum NodeFileRefreshOutcome
 
     /// <summary>The two declaration fields were added or changed and the commit landed.</summary>
     Written,
+
+    /// <summary>
+    /// The file names a different public key than the one this node would sign with (its key was
+    /// regenerated since the join), so nothing was written: a commit signed by another key than the
+    /// file's own would fail the file's self-signature rule and cost the node its attachment.
+    /// </summary>
+    SigningKeyDiffers,
 }
 
 /// <summary>
@@ -105,11 +112,13 @@ public static class NodeFileWriter
     /// changing only <c>github_login</c> and <c>github_account_id</c> and leaving every other line
     /// exactly as read (<c>invite_proof</c> included: the invite sweep on the minting node matches on
     /// it, so regenerating the file from arguments would erase a pending proof). Never creates a
-    /// node file: the invite sweep treats a new one as a join candidate.
+    /// node file: the invite sweep treats a new one as a join candidate. Writes only when the file's
+    /// own <c>public_key</c> is <paramref name="signingPublicKeyLine"/>, the key that will sign the commit.
     /// </summary>
     public static async Task<NodeFileRefreshOutcome> RefreshGitHubDeclarationAsync(
         ILedger ledger, string repositoryPath, Guid nodeId, DeclaredGitHubAccount account,
-        LedgerCommitter committer, LedgerSigningKey signingKey, CancellationToken cancellationToken)
+        string signingPublicKeyLine, LedgerCommitter committer, LedgerSigningKey signingKey,
+        CancellationToken cancellationToken)
     {
         string refName = RefName(nodeId);
         string path = NodePath(nodeId);
@@ -120,6 +129,11 @@ public static class NodeFileWriter
             if (!current.Exists)
             {
                 return NodeFileRefreshOutcome.NoNodeFile;
+            }
+
+            if (!NamesSameKey(GitLedgerChainReader.ExtractQuotedYamlValue(current.Content!, "public_key"), signingPublicKeyLine))
+            {
+                return NodeFileRefreshOutcome.SigningKeyDiffers;
             }
 
             if (ReadDeclaration(current.Content!) == account)
@@ -141,6 +155,19 @@ public static class NodeFileWriter
         throw new DomainConflictException(
             $"node.yaml for node {nodeId} kept changing out from under the GitHub declaration refresh after "
             + $"{MaxConflictRetries} attempts.");
+    }
+
+    /// <summary>Whether two public key lines carry the same key: the type and base64 fields, ignoring the trailing comment.</summary>
+    private static bool NamesSameKey(string? fileLine, string signingLine)
+    {
+        if (fileLine is null)
+        {
+            return false;
+        }
+
+        string[] file = fileLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        string[] signing = signingLine.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        return file.Length >= 2 && signing.Length >= 2 && file[0] == signing[0] && file[1] == signing[1];
     }
 
     /// <summary>The declaration a node file carries, or null when either field is absent or malformed (a file written before the declaration existed reads this way).</summary>

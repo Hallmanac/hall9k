@@ -45,7 +45,15 @@ public sealed class NodeGitHubDeclarationOneShot(
 
             NodeFileRefreshOutcome outcome = await NodeFileWriter.RefreshGitHubDeclarationAsync(
                 ledger, project.RepositoryPath, node.NodeId, new DeclaredGitHubAccount(account.Id, account.Login),
-                identity.Committer, identity.SigningKey, cancellationToken);
+                identity.PublicKeyLine, identity.Committer, identity.SigningKey, cancellationToken);
+            if (outcome == NodeFileRefreshOutcome.SigningKeyDiffers)
+            {
+                logger.LogWarning(
+                    "Project {ProjectId}: this node's node file names a different public key than the one this node now "
+                    + "signs with, so its GitHub declaration was not written; re-run h9k project join", project.Id);
+                return;
+            }
+
             logger.LogInformation(
                 "Project {ProjectId}: GitHub declaration in this node's node file: {Outcome}", project.Id, outcome);
         }

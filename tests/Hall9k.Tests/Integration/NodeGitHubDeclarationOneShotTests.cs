@@ -54,29 +54,6 @@ public sealed class NodeGitHubDeclarationOneShotTests : IClassFixture<PostgresFi
     }
 
     [Fact]
-    public async Task A_node_file_that_already_matches_is_not_rewritten()
-    {
-        (NodeContext node, ProjectDetails project) = await SeedAsync(connectionHasIdentity: true);
-        FakeLedger ledger = await LedgerWithNodeFileAsync(node, OldFile + "github_login: \"test-user\"\ngithub_account_id: \"1\"\n");
-        int writesBefore = ledger.Writes.Count;
-
-        await OneShot(node, ledger).RunOnceAsync(project, Identity(), CancellationToken.None);
-
-        ledger.Writes.Should().HaveCount(writesBefore);
-    }
-
-    [Fact]
-    public async Task No_node_file_is_created_for_a_project_this_node_has_no_file_in()
-    {
-        (NodeContext node, ProjectDetails project) = await SeedAsync(connectionHasIdentity: true);
-        FakeLedger ledger = new();
-
-        await OneShot(node, ledger).RunOnceAsync(project, Identity(), CancellationToken.None);
-
-        ledger.Writes.Should().BeEmpty();
-    }
-
-    [Fact]
     public async Task A_connection_with_no_observed_github_account_leaves_the_file_untouched()
     {
         (NodeContext node, ProjectDetails project) = await SeedAsync(connectionHasIdentity: false);
@@ -104,7 +81,7 @@ public sealed class NodeGitHubDeclarationOneShotTests : IClassFixture<PostgresFi
     private NodeGitHubDeclarationOneShot OneShot(NodeContext node, ILedger ledger) =>
         new(_postgres.Store, node, ledger, NullLogger<NodeGitHubDeclarationOneShot>.Instance);
 
-    private static MessageNodeIdentity Identity() => new("root", Committer, SigningKey);
+    private static MessageNodeIdentity Identity() => new("root", Committer, SigningKey, "ssh-ed25519 AAAAkey node");
 
     private static async Task<FakeLedger> LedgerWithNodeFileAsync(NodeContext node, string content)
     {

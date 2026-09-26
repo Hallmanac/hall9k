@@ -228,7 +228,11 @@ public sealed class GitLedgerChainReaderTests : IDisposable
     {
         string hub = _repo.CreateHub();
         (string ownerRepo, GeneratedIdentity owner) = await EstablishGenesisRootAsync(hub);
-        await WriteNodeFileAsync(ownerRepo, owner, owner, github: new DeclaredGitHubAccount(42, "personal"));
+        await WriteNodeFileAsync(ownerRepo, owner, owner);
+        // Pinned well before node C's write below: the newest-login rule reads the committer time,
+        // which has one-second resolution, so leaving both to the wall clock could tie them.
+        await RewriteNodeFileWithDeclarationAsync(
+            ownerRepo, owner, new DeclaredGitHubAccount(42, "personal"), new DateTimeOffset(2020, 1, 1, 0, 0, 0, TimeSpan.Zero));
         GeneratedIdentity nodeB = GenerateIdentity();
         GeneratedIdentity nodeC = GenerateIdentity();
         string nodeBRepo = _repo.CloneNode(hub);
@@ -1371,6 +1375,28 @@ public sealed class GitLedgerChainReaderTests : IDisposable
         }
 
         await WriteAsync(repositoryPath, refName, path, BuildYaml([.. fields]), signer);
+    }
+
+    /// <summary>
+    /// Adds a GitHub declaration to a self-owned node file already on the hub, as a self-signed commit
+    /// whose committer date is <paramref name="committedAt"/>, which <see cref="ILedger"/> writes cannot set.
+    /// </summary>
+    private async Task RewriteNodeFileWithDeclarationAsync(
+        string repositoryPath, GeneratedIdentity node, DeclaredGitHubAccount github, DateTimeOffset committedAt)
+    {
+        string refName = $"refs/hall9k/ledger/nodes/{node.NodeId}";
+        string path = $"nodes/{node.NodeId}/node.yaml";
+        await RunGitCaptureAsync(repositoryPath, ["fetch", "origin", $"+{refName}:{refName}"]);
+        string tip = await RunGitCaptureAsync(repositoryPath, ["rev-parse", "--verify", refName]);
+        string content = BuildYaml(
+            ("node_id", node.NodeId.ToString()),
+            ("public_key", node.PublicKeyLine),
+            ("owner_fingerprint", node.Fingerprint),
+            ("github_login", github.Login),
+            ("github_account_id", github.AccountId.ToString(CultureInfo.InvariantCulture)));
+        string tree = await BuildTreeWithFileAsync(repositoryPath, tip, path, content);
+        string commit = await CommitTreeAsync(repositoryPath, tree, [tip], node, "declare GitHub account", committerDate: committedAt);
+        await RunGitCaptureAsync(repositoryPath, ["push", "origin", $"{commit}:{refName}"]);
     }
 
     private async Task WriteMemberFileAsync(
