@@ -59,8 +59,8 @@ public sealed record ResolvedReviewCaps(
 /// &gt; compiled default (Brian's ruling, 2026-08-29) — the first strict hierarchy walker for an
 /// int setting in this codebase (<c>ReviewRerequestPolicy.Resolve</c> and
 /// <c>DaemonOptions.ResolveModel</c> are the nearest precedents, but neither resolves this
-/// strictly: the model chain puts the node's per-role default above the project, Decisions Log
-/// #33). <c>OperatingSettingsResolver</c> is the node level's own resolver for
+/// strictly: the model chain interposes the node's per-role table beneath the project, Decisions
+/// Log #33). <c>OperatingSettingsResolver</c> is the node level's own resolver for
 /// <c>h9k config show</c>/<c>h9k daemon status</c>, run once per CLI invocation against the
 /// platform config file directly; this type instead reads the node value already bound into the
 /// live <see cref="DaemonOptions"/>, because the daemon has no config-file-reading session

@@ -791,18 +791,48 @@ public sealed class DaemonOptions
     public RoleModelDefaults ModelByRole { get; set; } = new();
 
     /// <summary>
-    /// The effective model for a session: task override, then this node's role default, then
-    /// the project default, then the platform default (Decisions Log #33). Every level is
+    /// The effective model for a session: task override, then the project default, then this
+    /// node's role default, then the platform default (Decisions Log #33, its order flipped to
+    /// match the effort chain: the further down, the higher the priority). Every level is
     /// optional; the chain always ends somewhere explicit.
     /// </summary>
     public AgentModel ResolveModel(AgentRole role, AgentModel? taskModel, AgentModel? projectModel) =>
-        AgentModel.Resolve(taskModel, ModelByRole.For(role), projectModel, DefaultModel);
+        AgentModel.Resolve(
+            taskOverride: taskModel, projectDefault: projectModel, roleDefault: ModelByRole.For(role),
+            platformDefault: DefaultModel);
+
+    /// <summary>
+    /// The Review-role chain with one pass-specific node knob spliced in beneath the project's
+    /// model: task override, then project default, then <paramref name="passKnob"/>, then
+    /// <see cref="ResolveModel"/>'s own Review chain. A project's model is a blanket statement,
+    /// so it beats the pass knobs too (Brian's ruling, 2026-09-26).
+    /// </summary>
+    private AgentModel ResolveReviewPassModel(AgentModel? taskModel, AgentModel? projectModel, string passKnob)
+    {
+        AgentModel task = AgentModel.FromInput(taskModel);
+        if (task != AgentModel.Unknown)
+        {
+            return task;
+        }
+
+        AgentModel project = AgentModel.FromInput(projectModel);
+        if (project != AgentModel.Unknown)
+        {
+            return project;
+        }
+
+        AgentModel knob = AgentModel.FromInput(passKnob);
+        return knob != AgentModel.Unknown
+            ? knob
+            : ResolveModel(AgentRole.Review, taskModel, projectModel);
+    }
 
     /// <summary>
     /// The effective model for a <see cref="Hall9k.Domain.Features.Run.ReviewMode.Verify"/> pass
     /// specifically (Brian's ruling, 2026-08-29): a task override still wins, same as any other
-    /// pass, but underneath it sits <see cref="RoleModelDefaults.ReviewVerify"/> rather than the
-    /// full role chain — a knob deliberately independent of <see cref="AgentRole"/>, because
+    /// pass, and so does the project's own model (Brian's ruling, 2026-09-26: a project model is
+    /// a blanket statement, so it beats this knob too); underneath those sits
+    /// <see cref="RoleModelDefaults.ReviewVerify"/> rather than the full role chain — a knob deliberately independent of <see cref="AgentRole"/>, because
     /// Verify is still Review-role work (Decisions Log #33's session shape is unchanged), just a
     /// different pass shape with its own mechanical, confirm-the-fix-and-check-blast-radius
     /// profile. Left unset, this falls through to exactly what a Discovery pass on the same
@@ -810,26 +840,17 @@ public sealed class DaemonOptions
     /// sets it — independent of <see cref="ResolveFinalFullPassReviewModel"/>'s own knob, which
     /// resolves separately and never changes what this one resolves to (Decisions Log #130).
     /// </summary>
-    public AgentModel ResolveVerifyReviewModel(AgentModel? taskModel, AgentModel? projectModel)
-    {
-        AgentModel taskOverride = AgentModel.FromInput(taskModel);
-        if (taskOverride != AgentModel.Unknown)
-        {
-            return taskOverride;
-        }
-
-        AgentModel verifyDefault = AgentModel.FromInput(ModelByRole.ReviewVerify);
-        return verifyDefault != AgentModel.Unknown
-            ? verifyDefault
-            : ResolveModel(AgentRole.Review, taskModel, projectModel);
-    }
+    public AgentModel ResolveVerifyReviewModel(AgentModel? taskModel, AgentModel? projectModel) =>
+        ResolveReviewPassModel(taskModel, projectModel, ModelByRole.ReviewVerify);
 
     /// <summary>
     /// The effective model for the mandatory <see
     /// cref="Hall9k.Domain.Features.Run.ReviewMode.FinalFullPass"/> immediately before a run may
     /// settle (task: completing the per-stage model set #105 started for Verify) — the expensive
     /// full-branch read at 43 percent of all review input tokens per the 2026-09-01 architecture
-    /// review's measurement. A task override still wins, same as any other pass; underneath it sits
+    /// review's measurement. A task override still wins, same as any other pass, and so does the
+    /// project's own model (Brian's ruling, 2026-09-26: a project model is a blanket statement, so
+    /// it beats this knob too); underneath those sits
     /// <see cref="RoleModelDefaults.ReviewFinalFullPass"/> rather than the full role chain — a knob
     /// deliberately independent of <see cref="AgentRole"/>, because a FinalFullPass is still
     /// Review-role work (Decisions Log #33's session shape is unchanged), just a different pass
@@ -837,26 +858,15 @@ public sealed class DaemonOptions
     /// task/project would resolve to, so the knob is opt-in and changes nothing until an install
     /// sets it.
     /// </summary>
-    public AgentModel ResolveFinalFullPassReviewModel(AgentModel? taskModel, AgentModel? projectModel)
-    {
-        AgentModel taskOverride = AgentModel.FromInput(taskModel);
-        if (taskOverride != AgentModel.Unknown)
-        {
-            return taskOverride;
-        }
-
-        AgentModel finalPassDefault = AgentModel.FromInput(ModelByRole.ReviewFinalFullPass);
-        return finalPassDefault != AgentModel.Unknown
-            ? finalPassDefault
-            : ResolveModel(AgentRole.Review, taskModel, projectModel);
-    }
+    public AgentModel ResolveFinalFullPassReviewModel(AgentModel? taskModel, AgentModel? projectModel) =>
+        ResolveReviewPassModel(taskModel, projectModel, ModelByRole.ReviewFinalFullPass);
 
     /// <summary>
-    /// The effective model for a feed courier (idea 89471598, piece 3): the node's own
-    /// <see cref="RoleModelDefaults.Courier"/>, then the project's own <c>--model</c> — the same
-    /// node-default/project-override shape <see cref="ResolveModel"/> already gives Build and
-    /// Review — but bottoming out at <see cref="AgentModel.CourierDefault"/> rather than
-    /// <see cref="DefaultModel"/>. There is no task override parameter, unlike every other role's
+    /// The effective model for a feed courier (idea 89471598, piece 3): the project's own
+    /// <c>--model</c>, then the node's own <see cref="RoleModelDefaults.Courier"/>, the same
+    /// project-over-node shape <see cref="ResolveModel"/> gives Build and Review (so a project
+    /// model chosen for builds also lifts the courier above a cheaper node choice), but bottoming
+    /// out at <see cref="AgentModel.CourierDefault"/> rather than <see cref="DefaultModel"/>. There is no task override parameter, unlike every other role's
     /// own resolve method: a courier runs as a run with no task, so there is no task-level chain
     /// link to read in the first place.
     /// <para>
@@ -874,14 +884,16 @@ public sealed class DaemonOptions
     /// </para>
     /// </summary>
     public AgentModel ResolveCourierModel(AgentModel? projectModel) =>
-        AgentModel.Resolve(taskOverride: null, ModelByRole.For(AgentRole.Courier), projectModel, AgentModel.CourierDefault);
+        AgentModel.Resolve(
+            taskOverride: null, projectDefault: projectModel, roleDefault: ModelByRole.For(AgentRole.Courier),
+            platformDefault: AgentModel.CourierDefault);
 }
 
 /// <summary>
 /// Node-level model defaults per session role (Decisions Log #33). The roles are named
 /// rather than held in a dictionary so `h9kd --help`-shaped discovery, config binding, and
 /// this file itself all state exactly which sessions are configurable. Blank means "no role
-/// opinion" and the chain falls through to the project and platform defaults.
+/// opinion" and the chain falls through to the platform default.
 /// </summary>
 public sealed class RoleModelDefaults
 {
@@ -914,7 +926,7 @@ public sealed class RoleModelDefaults
 
     /// <summary>
     /// The Review role's model for a <see cref="Hall9k.Domain.Features.Run.ReviewMode.Verify"/>
-    /// pass specifically, underneath a task override but above <see cref="Review"/>'s own chain
+    /// pass specifically, underneath a task override and the project's model but above <see cref="Review"/>'s own chain
     /// (Brian's ruling, 2026-08-29): blank falls through to whatever <see cref="Review"/> itself
     /// resolves to, so this is not a seventh <see cref="AgentRole"/> — Verify is still Review-role
     /// work — it is a narrower override for one pass shape, read by
@@ -925,7 +937,7 @@ public sealed class RoleModelDefaults
     /// <summary>
     /// The Review role's model for the mandatory <see
     /// cref="Hall9k.Domain.Features.Run.ReviewMode.FinalFullPass"/> specifically, underneath a
-    /// task override but above <see cref="Review"/>'s own chain (task: completing the per-stage
+    /// task override and the project's model but above <see cref="Review"/>'s own chain (task: completing the per-stage
     /// model set #105 started for Verify): blank falls through to whatever <see cref="Review"/>
     /// itself resolves to, so this is not a seventh <see cref="AgentRole"/> — a FinalFullPass is
     /// still Review-role work — it is a narrower override for one pass shape, read by
