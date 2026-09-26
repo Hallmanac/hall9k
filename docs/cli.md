@@ -724,13 +724,13 @@ also appear elsewhere on this page stays where it is.
 
 | Command | What it is for |
 |---|---|
-| `h9k project join <project>` | Generates this node's signing key the first time it runs, writes this node's identity into the project's ledger, and establishes your owner root when the project has no owner yet. |
+| `h9k project join <project>` | Generates this node's signing key the first time it runs, writes this node's identity into the project's ledger (including the GitHub login and account id this install's connection observed, as a claim the node signs for itself), and establishes your owner root when the project has no owner yet. |
 | `h9k project join <project> --owner <fingerprint>` | Claims an existing owner root instead of establishing a new one, unverified until a node already enrolled under that root vouches for this one. |
 | `h9k project join <project> --invite <secret>` | Proves you hold a single-use secret from `h9k node invite` or `h9k project invite`, so the minting node's daemon vouches you in with no further prompt. |
 | `h9k project join <project> --from-project <name>` | Names the registered project whose ledger already vouches for this node, so the vouch is carried into a brand-new project's ledger without the root-holding node ever touching it. |
 | `h9k project add --invite <token>` | Registers a project and finishes the join in the same call with an invite, which is the flow when the project belongs to someone else. |
 | `h9k project assign-key <project>` | Backfills the project's generated key on a ledger that predates it, once, before the first `project invite` on an adopted project. |
-| `h9k project members <project>` | Lists the members the ledger currently shows, each with its root fingerprint, its role (owner or member), its fleet of nodes, and whether it verified. |
+| `h9k project members <project>` | Lists the members the ledger currently shows, each with its root fingerprint, its role (owner or member), the GitHub accounts its nodes declare, its fleet of nodes, and how each declared account stands against the collaborator roster (push confirmed, read only, not a collaborator, or unchecked here). |
 | `h9k project member remove <project> <fingerprint>` | Removes a member by deleting its file from the members ref, refused unless this node's own root holds the owner role. |
 | `h9k project invite <project> --role owner\|member` | Mints a single-use invite secret, printed once, for a new project member, whose role is `member` unless `--role` says otherwise. |
 | `h9k node invite` | Mints a single-use invite secret, printed once, that lets a new machine of yours join your fleet on every non-archived project you are registered to. |
