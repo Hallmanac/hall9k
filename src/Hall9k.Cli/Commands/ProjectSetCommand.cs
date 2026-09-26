@@ -166,6 +166,16 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             + "below decide. An exact id is the stabler choice: an alias is re-pointed as new models ship")]
         public string? Model { get; init; }
 
+        [CommandOption("--effort <low|medium|high|xhigh|default>")]
+        [Description(
+            "The reasoning effort every agent session on this project runs at, written into each session's "
+            + "settings file. The chain is task override (h9k task revise --effort) > this project value > the "
+            + "node's per-role value (h9k config set --effort-build and its siblings) > the node-wide value "
+            + "(h9k config set --effort) > the model's own default, so a project value beats the node's own role "
+            + "settings. Recorded on this node only: it never replicates to a teammate's, so each node sets its own. "
+            + "Accepts low, medium, high or xhigh. 'default' clears it so the levels beneath decide again")]
+        public string? Effort { get; init; }
+
         [CommandOption("--orchestrator-model <MODEL>")]
         [Description(
             "This project's orchestrator-window override (task: an operator starts a lean node or "
@@ -650,6 +660,10 @@ public sealed class ProjectSetCommand : Hall9kAsyncCommand<ProjectSetCommand.Set
             orchestratorModel: settings.OrchestratorModel is { } orchestratorModel
                 ? Optional<AgentModel>.Of(AgentModel.FromInput(orchestratorModel))
                 : Optional<AgentModel>.None,
+            // 'default' parses to Unknown, which is how this level is cleared, the same idiom --model uses.
+            effort: settings.Effort is { } effort
+                ? Optional<AgentEffort>.Of(EffortInput.Parse("--effort", effort))
+                : Optional<AgentEffort>.None,
             reviewRerequest: settings.RerequestReview is { } rerequestReview
                 ? Optional<ReviewRerequestPolicy>.Of(ReviewRerequestOption.Parse(rerequestReview))
                 : Optional<ReviewRerequestPolicy>.None,

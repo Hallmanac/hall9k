@@ -63,6 +63,16 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             + "per-role, the project's, and the platform's defaults")]
         public string? Model { get; init; }
 
+        [CommandOption("--effort <low|medium|high|xhigh|default>")]
+        [Description(
+            "Change this task's reasoning effort override, the most specific level of the effort chain: task > "
+            + "the project's (h9k project set --effort) > the node's per-role value (h9k config set --effort-build "
+            + "and its siblings) > the node-wide value (h9k config set --effort) > the model's own default. Unlike "
+            + "the project's and the node's, it is stored on the task and travels with it, so it wins on every node "
+            + "that runs the task. Accepts low, medium, high or xhigh; 'default' clears it so the levels beneath "
+            + "decide again")]
+        public string? Effort { get; init; }
+
         [CommandOption("--blocked-by <TASK>")]
         [Description(
             "Replace the whole dependency set: each task's id or an unambiguous fragment; repeat the "
@@ -392,6 +402,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
 
         if (namesCurrentEpic && task.EpicId is { } currentEpic && objective.IsBlank() && criteria.Count == 0
             && agentContext.IsBlank() && !dependencies.HasValue && type.IsBlank() && model.IsBlank()
+            && settings.Effort is null
             && !queuePriority.HasValue && settings.ReviewStageComposition is null
             && !settings.ClearInteractiveMode && settings.CloseLinkedIssue is null)
         {
@@ -430,7 +441,11 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
                 : budgetOptionPassed
                     ? Optional<TaskConstraints?>.Of(
                         TaskAddCommand.BuildConstraints(settings.MaxTurns, settings.MaxTokens, settings.MaxWallClock))
-                    : Optional<TaskConstraints?>.None);
+                    : Optional<TaskConstraints?>.None,
+            // 'default' parses to Unknown, which clears the override, the same idiom --model uses.
+            effort: settings.Effort is { } effort
+                ? Optional<AgentEffort>.Of(EffortInput.Parse("--effort", effort))
+                : Optional<AgentEffort>.None);
 
         session.Events.Append(taskId, revised);
         await session.SaveChangesAsync(cancellationToken);
@@ -446,7 +461,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
         bool markerFieldsOnly = (revised.QueuePriority.HasValue || revised.ClearInteractiveMode)
             && !revised.Objective.HasValue && !revised.AcceptanceCriteria.HasValue
             && !revised.AgentContext.HasValue && !revised.BlockedBy.HasValue && !revised.Type.HasValue
-            && !revised.Model.HasValue && !revised.EpicId.HasValue;
+            && !revised.Model.HasValue && !revised.EpicId.HasValue && !revised.Effort.HasValue;
         // A spike's kind, exit criterion, and budget are the third carve-out TaskDecider.Revise
         // lets through past Draft (task: a spike is a run, not a walk) — settable while the spike
         // is Published too, so this earns the identical own-confirmation treatment as the two
@@ -455,7 +470,7 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             && !revised.Objective.HasValue && !revised.AcceptanceCriteria.HasValue
             && !revised.AgentContext.HasValue && !revised.BlockedBy.HasValue && !revised.Type.HasValue
             && !revised.Model.HasValue && !revised.EpicId.HasValue && !revised.QueuePriority.HasValue
-            && !revised.ClearInteractiveMode;
+            && !revised.ClearInteractiveMode && !revised.Effort.HasValue;
         if (spikeFieldsOnly && task.State != TaskState.Draft)
         {
             AnsiConsole.MarkupLine($"[blue]Spike {shortId} revised[/]: {string.Join(", ", Changed(revised))}.");
@@ -685,6 +700,13 @@ public sealed class TaskReviseCommand : Hall9kAsyncCommand<TaskReviseCommand.Set
             yield return revised.Model.Value == AgentModel.Unknown
                 ? "model override cleared"
                 : $"model {revised.Model.Value?.Value.EscapeMarkup()}";
+        }
+
+        if (revised.Effort.HasValue)
+        {
+            yield return revised.Effort.Value == AgentEffort.Unknown
+                ? "effort override cleared"
+                : $"effort {revised.Effort.Value?.Value}";
         }
 
         if (revised.EpicId.HasValue)

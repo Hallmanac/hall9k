@@ -128,6 +128,11 @@ public sealed class TaskShowCommand : Hall9kAsyncCommand<TaskShowCommand.Setting
             header.AddRow("Model", $"{details.Model.Value.EscapeMarkup()} [dim](task override)[/]");
         }
 
+        if (details.Effort.IsWellFormed)
+        {
+            header.AddRow("Effort", $"{details.Effort.Value} [dim](task override, wins over the project's and the node's)[/]");
+        }
+
         if (details.SessionCap is { } sessionCap)
         {
             header.AddRow("Session cap", $"{sessionCap} [dim](task override — h9k task set-session-cap)[/]");
