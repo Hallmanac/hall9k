@@ -773,7 +773,9 @@ Which model runs what is explained in [Which model runs what](#which-model-runs-
 | Option | Default | What it governs |
 |---|---|---|
 | `Hall9k__DefaultModel` | `claude-opus-5[1m]` | The bottom of the agent-model chain: the model every agent session runs on unless something more specific says otherwise (`h9k config set --default-model`). |
-| `Hall9k__Effort` | unset | The reasoning effort level every headless agent session runs at (`low`, `medium`, `high` or `xhigh`; `max` is session-only in Claude Code and is refused), written into each session's settings file as `effortLevel` (`h9k config set --effort`). Unset leaves the key out, so each model's own default decides; that matters because a headless session ignores your user-level `effortLevel` and honors only that file, and Claude Opus 5.5 defaults to medium where earlier Opus models defaulted to high. |
+| `Hall9k__Effort` | unset | The node-wide reasoning effort level every headless agent session runs at (`low`, `medium`, `high` or `xhigh`; `max` is session-only in Claude Code and is refused), written into each session's settings file as `effortLevel` (`h9k config set --effort`). It is the level beneath every other one. Unset leaves the key out, so each model's own default decides; that matters because a headless session ignores your user-level `effortLevel` and honors only that file, and Claude Opus 5.5 defaults to medium where earlier Opus models defaulted to high. |
+| `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier` | blank | The node's effort for each role, or blank for no opinion (`--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier`). A role's value sits above `Hall9k__Effort` and below a project's or a task's own. |
+| `Hall9k__EffortByRole__ReviewVerify`, `Hall9k__EffortByRole__ReviewFinalFullPass` | blank | Narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass, each blank falling through to the review role's effort before the node-wide one (`--effort-review-verify`, `--effort-review-finalpass`). |
 | `Hall9k__ModelByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication` | blank | The node's model for each role, or blank for no opinion (`--model-build`, `--model-review`, `--model-fix`, `--model-synthesis`, `--model-refinement`, `--model-publication`). |
 | `Hall9k__ModelByRole__ReviewVerify`, `Hall9k__ModelByRole__ReviewFinalFullPass` | blank | Not extra roles, but narrower overrides for a Verify-shape review pass and the mandatory FinalFullPass respectively, each blank falling through to whatever review resolves (`--model-review-verify`, `--model-review-finalpass`). |
 | `Hall9k__ModelByRole__Courier` | blank | The node's model for the feed courier (`--model-courier`). Blank does not mean the platform default: a courier's own floor is `claude-sonnet-5`. |
@@ -878,7 +880,9 @@ h9k config set --session-cap-per-run 1                      # the per-run sessio
 h9k task set-session-cap 28b19893 1                         # override the cap for one task, even mid-run
 h9k config set --default-model "claude-opus-5[1m]"          # the bottom of the agent-model chain; 'default' clears it
 h9k config set --orchestrator-model sonnet                  # the model the orchestrator window runs on; 'default' clears it
-h9k config set --effort high                                # the effort level dispatched sessions run at; 'default' clears it
+h9k config set --effort high                                # the node-wide effort level dispatched sessions run at; 'default' clears it
+h9k config set --effort-build xhigh --effort-review high    # per-role effort, above the node-wide level; 'default' clears one
+h9k config set --effort-review-verify medium                # Verify-shape passes only; defaults to --effort-review
 h9k config set --model-review sonnet --model-fix haiku      # per-role model overrides
 h9k config set --model-build sonnet --model-synthesis haiku # the build session, and the blocker-handoff condenser
 h9k config set --model-refinement haiku --model-publication haiku   # the draft-refinement and tracker-card sessions
@@ -991,6 +995,8 @@ the file alone.
 | `defaultModel` | `--default-model` | `Hall9k__DefaultModel` | `claude-opus-5[1m]` |
 | `orchestratorModel` | `--orchestrator-model` | none | falls back to `defaultModel`, then `claude-opus-5[1m]` |
 | `effort` | `--effort` (`default` clears it) | `Hall9k__Effort` | unset, so each model's own default decides |
+| `effortByRole.build`, `.review`, `.fix`, `.synthesis`, `.refinement`, `.publication`, `.courier` | `--effort-build`, `--effort-review`, `--effort-fix`, `--effort-synthesis`, `--effort-refinement`, `--effort-publication`, `--effort-courier` (`default` clears one) | `Hall9k__EffortByRole__Build`, `__Review`, `__Fix`, `__Synthesis`, `__Refinement`, `__Publication`, `__Courier` | blank |
+| `effortByRole.reviewVerify`, `.reviewFinalFullPass` | `--effort-review-verify`, `--effort-review-finalpass` | `Hall9k__EffortByRole__ReviewVerify`, `__ReviewFinalFullPass` | blank, falling through to `effortByRole.review` |
 | `modelByRole.build`, `.review`, `.fix` | `--model-build`, `--model-review`, `--model-fix` | `Hall9k__ModelByRole__Build`, `__Review`, `__Fix` | blank |
 | `modelByRole.synthesis`, `.refinement`, `.publication` | `--model-synthesis`, `--model-refinement`, `--model-publication` | `Hall9k__ModelByRole__Synthesis`, `__Refinement`, `__Publication` | blank |
 | `modelByRole.reviewVerify`, `.reviewFinalFullPass` | `--model-review-verify`, `--model-review-finalpass` | `Hall9k__ModelByRole__ReviewVerify`, `__ReviewFinalFullPass` | blank |
