@@ -120,6 +120,11 @@ public sealed class DispatchLoop(
         // that field — so an install's existing lessons keep a null node forever and are described
         // as recorded on a node nobody observed, which the events themselves contradict.
         await BackfillLearningProjectionsAsync(stoppingToken);
+        // And for projects: the per-field stamps that let a pre-switch-on head arrive after the tail
+        // without overwriting it live only on the stored ProjectDetails document, which an Inline
+        // projection never rewrites, so an existing document has none and would accept the older
+        // head over the newer tail.
+        await BackfillProjectProjectionsAsync(stoppingToken);
         // A different repair than the two above, run right beside them for the identical reason:
         // a headless task or idea document an earlier build's own genesis-skip gap already
         // produced needs its own one-time fix the moment this build (carrying the guard that
@@ -428,6 +433,35 @@ public sealed class DispatchLoop(
                 "Re-projecting out-of-date lesson documents failed. Lessons last projected before the "
                 + "recording node landed will read as recorded on an unobserved node until this "
                 + "succeeds; the next daemon start retries it");
+        }
+    }
+
+    /// <summary>
+    /// The migration the team-history catch-up needs, run at startup for the same reason the
+    /// backfills above are: a project document written before its per-field stamps existed has
+    /// none, so a pre-switch-on head delivered after the tail would overwrite newer team settings
+    /// and prompt addenda. A failure is logged rather than fatal, and the next start tries again.
+    /// </summary>
+    private async Task BackfillProjectProjectionsAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            IReadOnlyList<Guid> rebuilt = await ProjectDetailsProjectionBackfill.RunAsync(store, cancellationToken);
+            if (rebuilt.Count > 0)
+            {
+                logger.LogInformation(
+                    "Re-projected {Count} project(s) whose documents were written before per-field "
+                    + "team stamps existed — without them an older replicated change would overwrite "
+                    + "a newer team setting",
+                    rebuilt.Count);
+            }
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            logger.LogError(exception,
+                "Re-projecting out-of-date project documents failed. Projects last projected before "
+                + "per-field team stamps existed can take an older replicated change over a newer one "
+                + "until this succeeds; the next daemon start retries it");
         }
     }
 
