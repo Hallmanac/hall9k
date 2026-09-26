@@ -640,7 +640,7 @@ public sealed class TaskStartCommand : Hall9kAsyncCommand<TaskStartCommand.Setti
         string? buildRoleDefault = operatingSettings.ModelByRole
             .First(role => role.Role == nameof(RoleModelSettings.Build)).Model.Value;
         AgentModel model = AgentModel.Resolve(
-            taskOverride: taskDetails.Model, roleDefault: buildRoleDefault, projectDefault: project.Model,
+            taskOverride: taskDetails.Model, projectDefault: project.Model, roleDefault: buildRoleDefault,
             platformDefault: operatingSettings.DefaultModel.Value);
         if (!model.IsWellFormed)
         {

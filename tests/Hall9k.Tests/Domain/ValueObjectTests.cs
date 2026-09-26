@@ -125,9 +125,11 @@ public sealed class ValueObjectTests
     {
         AgentModel.FromInput("default").Should().Be(AgentModel.Unknown);
         AgentModel.FromInput(" DEFAULT ").Should().Be(AgentModel.Unknown);
-        AgentModel.Resolve(AgentModel.FromInput("default"), AgentModel.Unknown, AgentModel.Fable, "claude-opus-5")
+        AgentModel.Resolve(
+                taskOverride: AgentModel.FromInput("default"), projectDefault: AgentModel.Fable,
+                roleDefault: AgentModel.Unknown, platformDefault: "claude-opus-5")
             .Should().Be(AgentModel.Fable, "a cleared task override defers instead of spawning on the human's setting");
-        AgentModel.Resolve(null, null, null, "default")
+        AgentModel.Resolve(taskOverride: null, projectDefault: null, roleDefault: null, platformDefault: "default")
             .Value.Should().Be(AgentModel.PlatformFallback, "even a node configured with the word lands somewhere explicit");
     }
 
@@ -147,15 +149,23 @@ public sealed class ValueObjectTests
     [Fact]
     public void AgentModel_resolution_prefers_the_most_specific_level_and_always_ends_explicit()
     {
-        AgentModel.Resolve(AgentModel.Haiku, AgentModel.Sonnet, AgentModel.Fable, "claude-opus-5")
+        AgentModel.Resolve(
+                taskOverride: AgentModel.Haiku, projectDefault: AgentModel.Fable, roleDefault: AgentModel.Sonnet,
+                platformDefault: "claude-opus-5")
             .Should().Be(AgentModel.Haiku, "a task override beats every other level");
-        AgentModel.Resolve(AgentModel.Unknown, AgentModel.Sonnet, AgentModel.Fable, "claude-opus-5")
-            .Should().Be(AgentModel.Sonnet, "the role default beats the project default");
-        AgentModel.Resolve(AgentModel.Unknown, AgentModel.Unknown, AgentModel.Fable, "claude-opus-5")
-            .Should().Be(AgentModel.Fable, "the project default beats the platform default");
-        AgentModel.Resolve(AgentModel.Unknown, AgentModel.Unknown, AgentModel.Unknown, "claude-opus-5")
+        AgentModel.Resolve(
+                taskOverride: AgentModel.Unknown, projectDefault: AgentModel.Fable, roleDefault: AgentModel.Sonnet,
+                platformDefault: "claude-opus-5")
+            .Should().Be(AgentModel.Fable, "the project default beats the node's role default");
+        AgentModel.Resolve(
+                taskOverride: AgentModel.Unknown, projectDefault: AgentModel.Unknown, roleDefault: AgentModel.Sonnet,
+                platformDefault: "claude-opus-5")
+            .Should().Be(AgentModel.Sonnet, "the node's role default beats the platform default");
+        AgentModel.Resolve(
+                taskOverride: AgentModel.Unknown, projectDefault: AgentModel.Unknown, roleDefault: AgentModel.Unknown,
+                platformDefault: "claude-opus-5")
             .Value.Should().Be("claude-opus-5", "the chain bottoms out at the configured platform default");
-        AgentModel.Resolve(null, null, null, null)
+        AgentModel.Resolve(taskOverride: null, projectDefault: null, roleDefault: null, platformDefault: null)
             .Value.Should().Be(AgentModel.PlatformFallback,
                 "even a blanked-out platform default lands somewhere explicit, never on inheritance");
     }

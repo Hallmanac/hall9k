@@ -66,7 +66,7 @@ public sealed class ModelPolicyTests
     }
 
     [Fact]
-    public void The_chain_runs_task_then_role_then_project_then_platform()
+    public void The_chain_runs_task_then_project_then_role_then_platform()
     {
         DaemonOptions options = new()
         {
@@ -77,9 +77,11 @@ public sealed class ModelPolicyTests
         options.ResolveModel(AgentRole.Review, AgentModel.Fable, AgentModel.Haiku)
             .Should().Be(AgentModel.Fable, "the task override is the most specific level");
         options.ResolveModel(AgentRole.Review, AgentModel.Unknown, AgentModel.Haiku)
-            .Should().Be(AgentModel.Sonnet, "the role default outranks the project default");
-        options.ResolveModel(AgentRole.Build, AgentModel.Unknown, AgentModel.Haiku)
-            .Should().Be(AgentModel.Haiku, "with no role opinion, the project default decides");
+            .Should().Be(AgentModel.Haiku, "the project default outranks the node's role default");
+        options.ResolveModel(AgentRole.Review, AgentModel.Unknown, AgentModel.Unknown)
+            .Should().Be(AgentModel.Sonnet, "with no project model, the node's role default decides");
+        options.ResolveModel(AgentRole.Build, AgentModel.Unknown, AgentModel.Unknown)
+            .Value.Should().Be("claude-opus-5", "with no opinion at any level above it, the platform default decides");
     }
 
     /// <summary>
@@ -99,7 +101,7 @@ public sealed class ModelPolicyTests
 
         options.ResolveVerifyReviewModel(taskModel: null, projectModel: null).Should().Be(AgentModel.Sonnet);
         options.ResolveVerifyReviewModel(taskModel: null, projectModel: AgentModel.Haiku).Should().Be(
-            AgentModel.Sonnet, "Review's own configured override still outranks the project default underneath it");
+            AgentModel.Haiku, "the project's model outranks Review's own configured override");
     }
 
     [Fact]
@@ -144,7 +146,7 @@ public sealed class ModelPolicyTests
 
         options.ResolveFinalFullPassReviewModel(taskModel: null, projectModel: null).Should().Be(AgentModel.Sonnet);
         options.ResolveFinalFullPassReviewModel(taskModel: null, projectModel: AgentModel.Haiku).Should().Be(
-            AgentModel.Sonnet, "Review's own configured override still outranks the project default underneath it");
+            AgentModel.Haiku, "the project's model outranks Review's own configured override");
     }
 
     [Fact]
@@ -170,6 +172,31 @@ public sealed class ModelPolicyTests
         options.ResolveFinalFullPassReviewModel(taskModel: AgentModel.Fable, projectModel: null)
             .Should().Be(
                 AgentModel.Fable, "a task-level override is the most specific level for every pass, FinalFullPass included");
+    }
+
+    /// <summary>
+    /// Brian's ruling, 2026-09-26 (option a): a project's model is a blanket statement, so it
+    /// beats the node's pass knobs and the node's role table alike, with only a task above it.
+    /// </summary>
+    [Fact]
+    public void A_project_model_beats_a_node_role_value_and_both_review_pass_knobs()
+    {
+        DaemonOptions options = new()
+        {
+            ModelByRole = new RoleModelDefaults
+            {
+                Build = "sonnet", Review = "sonnet", ReviewVerify = "haiku", ReviewFinalFullPass = "fable",
+            },
+        };
+
+        options.ResolveModel(AgentRole.Build, taskModel: null, projectModel: AgentModel.Opus)
+            .Should().Be(AgentModel.Opus, "the project's model outranks the node's role value");
+        options.ResolveVerifyReviewModel(taskModel: null, projectModel: AgentModel.Opus)
+            .Should().Be(AgentModel.Opus, "the project's model outranks the Verify knob");
+        options.ResolveFinalFullPassReviewModel(taskModel: null, projectModel: AgentModel.Opus)
+            .Should().Be(AgentModel.Opus, "the project's model outranks the FinalFullPass knob");
+        options.ResolveVerifyReviewModel(taskModel: AgentModel.Fable, projectModel: AgentModel.Opus)
+            .Should().Be(AgentModel.Fable, "a task's model still outranks the project's");
     }
 
     [Fact]
@@ -207,7 +234,7 @@ public sealed class ModelPolicyTests
     }
 
     [Fact]
-    public void A_project_default_outranks_the_couriers_own_floor_but_not_the_node_role_default()
+    public void A_project_default_outranks_both_the_couriers_own_floor_and_the_node_role_default()
     {
         DaemonOptions options = new();
 
@@ -215,7 +242,7 @@ public sealed class ModelPolicyTests
 
         options.ModelByRole.Courier = "haiku";
         options.ResolveCourierModel(projectModel: AgentModel.Opus).Should().Be(
-            AgentModel.Haiku, "the node's own per-role default is more specific than the project's");
+            AgentModel.Opus, "the project's model is more specific than the node's per-role default");
     }
 
     [Fact]

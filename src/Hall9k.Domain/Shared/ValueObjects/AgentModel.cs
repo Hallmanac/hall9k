@@ -99,20 +99,21 @@ public sealed record AgentModel
             char.IsAsciiLetterOrDigit(character) || character is '.' or '_' or '-' or ':' or '/' or '@' or '[' or ']');
 
     /// <summary>
-    /// The resolution chain, most specific wins (Decisions Log #33): a task-level override
-    /// beats the per-role default, which beats the project default, which beats the platform
-    /// default. Every level is optional (Unknown at a level means "not set here", so the
-    /// chain falls through) and it bottoms out at an explicit value, never at inheritance
-    /// from whatever the human's personal settings happen to say that day.
+    /// The resolution chain, most specific wins (Decisions Log #33, its order flipped to match
+    /// the effort chain's): a task-level override beats the project default, which beats the
+    /// node's per-role default, which beats the platform default. Every level is optional (Unknown
+    /// at a level means "not set here", so the chain falls through) and it bottoms out at an
+    /// explicit value, never at inheritance from whatever the human's personal settings happen to
+    /// say that day.
     /// </summary>
     public static AgentModel Resolve(
-        AgentModel? taskOverride, AgentModel? roleDefault, AgentModel? projectDefault, string? platformDefault)
+        AgentModel? taskOverride, AgentModel? projectDefault, AgentModel? roleDefault, string? platformDefault)
     {
         foreach (AgentModel candidate in new[]
                  {
                      FromInput(taskOverride),
-                     FromInput(roleDefault),
                      FromInput(projectDefault),
+                     FromInput(roleDefault),
                      FromInput(platformDefault),
                  })
         {
